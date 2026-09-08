@@ -199,6 +199,8 @@ finish at once, utterances line up behind a single audio owner instead of overla
 
 ## Prior art
 
+Full writeup in [docs/happy-voice-reference.md](docs/happy-voice-reference.md).
+
 Happy (`~/code/happy`) does hands-free Claude Code over ElevenLabs ConvAI. Worth reading
 for what to avoid: it dumps 50 raw records at connect **in reverse chronological order**,
 never summarizes, streams every message change unbounded into one context window that is
