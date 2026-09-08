@@ -87,6 +87,22 @@ SubagentStop TaskCompleted TaskCreated TeammateIdle UserPromptExpansion
 UserPromptSubmit WorktreeCreate WorktreeRemove
 ```
 
+### Pull, don't push
+
+The controller's context window holds **the conversation with you** — not session
+transcripts. Hooks deliver what just happened; anything older is a query it makes when
+asked. Nobody asks about a message from thirty turns ago, and when they do,
+`read_session` fetches it.
+
+This is the single decision that avoids most of Happy's trouble. Happy pushed history in
+and had no way to pull, so it needed a bootstrap dump, an eviction policy it never wrote,
+and a window that only grew. Remove the push and all three problems stop existing.
+
+The one thing that must be preserved for "give me the details of that part" to resolve:
+**every narration carries the `uuid` of the record it came from.** Then "that part" is a
+lookup rather than a fuzzy search back through what it said. Cheap at the source,
+impossible to retrofit.
+
 ### Transcripts are for backfill only
 
 When the controller attaches to a session that's been running for an hour, no hooks
@@ -199,7 +215,9 @@ finish at once, utterances line up behind a single audio owner instead of overla
 
 ## Prior art
 
-Full writeup in [docs/happy-voice-reference.md](docs/happy-voice-reference.md).
+Full writeup in [docs/happy-voice-reference.md](docs/happy-voice-reference.md), and the
+catalogue of what goes wrong — observed and anticipated, each with the rule that prevents
+it — in [docs/failure-modes.md](docs/failure-modes.md).
 
 Happy (`~/code/happy`) does hands-free Claude Code over ElevenLabs ConvAI. Worth reading
 for what to avoid: it dumps 50 raw records at connect **in reverse chronological order**,
