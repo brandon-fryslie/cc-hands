@@ -4,6 +4,12 @@ Two kinds: ones observed in Happy (`~/code/happy`, read 2026-09-08, citations ar
 `file:line` there) and ones inherent to cc-hands' own design. Each carries the rule that
 prevents it. The rules are the point — the catalogue exists to produce them.
 
+**Read this as a defect list, not a verdict.** Happy's core workflow works well in
+practice. Its approach — a conversational intermediary between you and running coding
+agents — is proven, which is exactly why it's worth studying. What it was, in real use,
+is unreliable and fiddly, and that is a different axis from most of what follows. See
+§11 for where the actual pain was.
+
 ## Observed
 
 ### 1. History delivered backwards
@@ -109,11 +115,41 @@ turning an inaudible failure into a loud one.
 quietly must be made to fail loudly, because the user cannot tell "broken" from
 "thinking."
 
+### 11. The transport, not the content — where the pain actually was
+
+Everything above was found by reading source. None of it generated a bug fix. The
+subsystem's entire fix history is connection lifecycle, and four of the five commits are
+the *same* bug:
+
+```
+cf145bea  second-session disconnect via provider re-key
+c837a5e9  LiveKit stale Room reuse — fixes second-session disconnect
+c252c326  use web hook on native — fresh Room per session
+8353b4b5  force voice session remount between calls — second-session disconnect
+fda9be00  force kill voice assistant when stuck in connecting state
+```
+
+Start a second call in one app session and it connected to a dead room. Four attempts at
+four different layers — remount the component, swap the hook, patch LiveKit's Room reuse,
+re-key the provider. The final fix even appears twice under two hashes (`632feb17` and
+`cf145bea`, same day, same message), which is its own kind of evidence.
+
+**The lesson is about where defects hide.** In an LLM-in-the-loop system, content defects
+degrade gracefully — a reversed history or a duplicated announcement gets absorbed by the
+model and shows up as vague low quality nobody files. Transport defects are hard failures
+the user feels on the first try. So the bugs you find by reading are not the bugs that
+determine whether the thing is pleasant to use.
+
+**Rule:** budget engineering effort against lived failure, not against code smell. For
+cc-hands that means session lifecycle, daemon liveness, and reconnect get tested first and
+hardest — before any of the context refinements above. And it means "I found this by
+reading" is a weaker signal than "this made me stop using it."
+
 ## Anticipated
 
 These come from cc-hands' own architecture. No citations — they haven't happened yet.
 
-### 11. A hook shim stalls the agent
+### 12. A hook shim stalls the agent
 
 Hooks run in Claude Code's critical path with a timeout (`timeoutMs`/`budgetMs`), and
 `MessageDisplay` and `SessionStart` dispatch with `forceSyncExecution: true`. A shim that
@@ -122,7 +158,7 @@ waits on TTS synthesis stutters the agent's own output.
 **Rule:** every shim POSTs to the daemon socket and returns immediately. The sole
 exception is `PermissionRequest`, where blocking *is* the feature.
 
-### 12. The permission timeout expires mid-sentence
+### 13. The permission timeout expires mid-sentence
 
 `PermissionRequest` blocks while you decide out loud. You will sometimes be slow, or
 across the room, or talking to someone else.
@@ -131,7 +167,7 @@ across the room, or talking to someone else.
 real hook timeout, not a guess. Speak the timeout as it approaches rather than letting
 the decision evaporate.
 
-### 13. The daemon dies and everything stays quiet
+### 14. The daemon dies and everything stays quiet
 
 The worst one, because it's invisible. Hooks POST and don't care about the response,
 Claude Code runs normally, and you simply stop hearing things — indistinguishable from
@@ -141,18 +177,18 @@ Claude Code runs normally, and you simply stop hearing things — indistinguisha
 the socket leaves a visible trace. Never let a dead pipeline look like a working one with
 nothing to say.
 
-### 14. Two sessions speak at once
+### 15. Two sessions speak at once
 
 **Rule:** one audio owner, one queue. Utterances line up; they don't mix.
 
-### 15. The controller does the work itself
+### 16. The controller does the work itself
 
 Give it `Edit` and eventually it will decide that editing the file is faster than routing
 your request.
 
 **Rule:** `--allowed-tools 'mcp__hands__*'` and nothing else. No Bash, no Read, no Edit.
 
-### 16. Something is sent that you didn't approve
+### 17. Something is sent that you didn't approve
 
 The model loses track of whether it's mid-draft and calls `send_draft`.
 
@@ -160,14 +196,14 @@ The model loses track of whether it's mid-draft and calls `send_draft`.
 write path, its call log is the audit trail, and the readback is generated from stored
 text rather than from the model repeating itself.
 
-### 17. Speech-to-text mangles an identifier
+### 18. Speech-to-text mangles an identifier
 
 "auth middleware" becomes a filename guess; a flag becomes a word.
 
 **Rule:** the readback speaks what *changed* — resolutions, guesses, inferred targets —
 not a recitation of your sentence. If it guessed, you hear the guess.
 
-### 18. `tmux send-keys` collides with the UI
+### 19. `tmux send-keys` collides with the UI
 
 Text beginning with `/` or `@` triggers Claude Code's own completion; sending mid-turn
 races the input box.
@@ -175,7 +211,7 @@ races the input box.
 **Rule:** the daemon knows each session's turn state from hooks, so it holds input until
 the target is idle, and it escapes leading sigils.
 
-### 19. The session registry goes stale
+### 20. The session registry goes stale
 
 A session dies without `SessionEnd` — crash, closed pane, killed terminal — and
 `list_sessions` keeps offering it.
@@ -183,12 +219,12 @@ A session dies without `SessionEnd` — crash, closed pane, killed terminal — 
 **Rule:** registry entries expire on silence. Liveness is a recent event, not a past
 `SessionStart`.
 
-### 20. Subagent chatter gets narrated
+### 21. Subagent chatter gets narrated
 
 **Rule:** filter `isSidechain: false` on the narration path. `SubagentStop` is a separate,
 deliberate announcement if you want one at all.
 
-### 21. The controller inherits the personal environment
+### 22. The controller inherits the personal environment
 
 Left alone it pulls in `~/.claude`: per-turn hooks, a large skill catalog, several MCP
 servers, and a global CLAUDE.md of git and ticket mandates.
@@ -197,7 +233,7 @@ servers, and a global CLAUDE.md of git and ticket mandates.
 run the controller from its own directory so no project `CLAUDE.md` is picked up from the
 working directory.
 
-### 22. "That part" can't be resolved
+### 23. "That part" can't be resolved
 
 You ask for detail on something it narrated. If narration is just text, resolving that
 means fuzzy-matching back through what it said.

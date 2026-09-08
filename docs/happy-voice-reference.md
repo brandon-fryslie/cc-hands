@@ -5,6 +5,10 @@ Claude Code through a conversational agent, shipped and in use. This documents h
 works so nobody has to re-read its source, and records which of its decisions to copy and
 which to avoid.
 
+**Its core workflow works well.** The approach is proven — that's why it's worth this
+much attention. In real use its trouble was reliability and setup friction rather than
+anything below; see `failure-modes.md` §11.
+
 Everything below was read out of the source on 2026-09-08 and citations are `file:line`
 relative to `~/code/happy`. Line numbers drift; the function names won't.
 
