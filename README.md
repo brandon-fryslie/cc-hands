@@ -4,19 +4,6 @@ Hands-free control of Claude Code. You speak; an intermediary agent cleans up wh
 said, sends it to the right session, watches what comes back, and tells you about it.
 It's your hands when your own hands are otherwise occupied.
 
-The name is deliberately specific. Every interface this consumes — hook payloads, the
-`~/.claude/projects` transcript layout, `CLAUDE_CONFIG_DIR` — is Claude Code's. A
-tool-agnostic rewrite would earn the name `hands`; this one hasn't.
-
-## The relationship
-
-You are the executive. The intermediary is not a delegate off doing its own thing and
-not a deputy with standing authority to decide — it works hand in hand with you. It
-holds your half-formed intent, improves it, confirms, and only then acts.
-
-That distinction drives the whole design. **`send_draft` is the only call that writes to
-a coding session**, and nothing calls it without your say-so.
-
 ## Why an intermediary at all
 
 Dictation straight into a coding agent doesn't work. Speech-to-text mangles identifiers,
@@ -164,7 +151,7 @@ read_session(session, since?)
 stage_draft(session, text)
 amend_draft(session, text)
 discard_draft(session)
-send_draft(session)          # the only call that writes to a coding session
+send_draft(session)
 speak(text)
 ```
 

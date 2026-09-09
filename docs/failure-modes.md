@@ -192,9 +192,9 @@ your request.
 
 The model loses track of whether it's mid-draft and calls `send_draft`.
 
-**Rule:** the draft lives in the daemon, not the model's head. `send_draft` is the only
-write path, its call log is the audit trail, and the readback is generated from stored
-text rather than from the model repeating itself.
+**Rule:** the draft lives in the daemon, not the model's head. Its call log is the
+audit trail, and the readback is generated from stored text rather than from the model
+repeating itself.
 
 ### 18. Speech-to-text mangles an identifier
 
