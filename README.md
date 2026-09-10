@@ -4,16 +4,31 @@ Hands-free control of Claude Code. You speak; an intermediary agent cleans up wh
 said, sends it to the right session, watches what comes back, and tells you about it.
 It's your hands when your own hands are otherwise occupied.
 
-## Why an intermediary at all
+## The intermediary
 
-Dictation straight into a coding agent doesn't work. Speech-to-text mangles identifiers,
-you revise yourself mid-sentence, and you leave out the context the agent needs. Sending
-that raw to something holding an `Edit` tool is how you get confidently wrong work.
+The intermediary makes the workflow eyes-free as well as hands-free: a full
+voice-to-voice loop that needs neither hands nor eyes. The workflow has been tested and
+works well in practice.
 
-So the intermediary proofreads. That's the load-bearing use case, not a nicety. The
-second one is follow-up: you hear a summary and ask "give me the details of that part."
-That only works if the thing that summarized still holds what it summarized — which is
-why summarization and Q&A are one stateful agent rather than a cheap stateless narrator.
+A basic hands-free workflow involves proofreading STT output and re-reading the original
+when TTS output is garbled by special characters. The intermediary handles both. To
+proofread a message before it goes to Claude, have the agent read it back. Claude's
+output becomes an interactive surface you explore on demand. The intermediary is
+designed to be fast.
+
+Follow-up works the same way: you hear a summary and ask "give me the details of that
+part." Summarization and Q&A are one stateful agent, so the thing that summarized still
+holds what it summarized.
+
+Starting functionality:
+
+- Take audio, write the prompt for the coding session
+- Read a draft back before it is sent; amend, discard, or send it (`stage_draft`,
+  `amend_draft`, `discard_draft`, `send_draft`)
+- List the running sessions and read what a session has done (`list_sessions`,
+  `read_session`)
+- Speak what came back (`speak`)
+- Answer follow-up questions about anything it summarized
 
 ## Architecture
 
@@ -31,7 +46,7 @@ lowtalker (STT) ──► daemon ──► tmux send-keys ──► controller s
    hook shims ────────┘                        target Claude Code sessions
    (from every session)                         (any pane, started any way)
 
-                    daemon ──► OpenAI TTS ──► speech queue ──► speakers
+                    daemon ──► pocket-tts ──► speech queue ──► speakers
 ```
 
 **The daemon** owns everything stateful: the session registry, the speech queue with a
