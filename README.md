@@ -27,37 +27,70 @@ Starting functionality:
   `amend_draft`, `discard_draft`, `send_draft`)
 - List the running sessions and read what a session has done (`list_sessions`,
   `read_session`)
-- Speak what came back (`speak`)
+- Speak what came back
 - Answer follow-up questions about anything it summarized
 
 ## Architecture
 
-Three processes.
+Two processes.
 
 ```
-lowtalker (STT) ──► daemon ──► tmux send-keys ──► controller session
-                      ▲                                  │
-                      │                            MCP (unix socket)
-                      │                                  ▼
-                      │                              daemon tools
-                      │                                  │
-                      │                          tmux send-keys
-                      │                                  ▼
-   hook shims ────────┘                        target Claude Code sessions
-   (from every session)                         (any pane, started any way)
-
-                    daemon ──► pocket-tts ──► speech queue ──► speakers
+mic ──► push-to-talk gate ──► Whisper (MLX) ──► Claude (API) ──► pocket-tts ──► speakers
+                                                  │    ▲
+                                       tool calls │    │ hook events, as frames
+                                                  ▼    │
+                                           sessions module
+                                    registry · drafts · JSONL reader
+                                                  │
+                                           tmux send-keys
+                                                  ▼
+                                    target Claude Code sessions
+                                    (any pane, started any way)
+                                                  │
+                                 hook shims ──► unix socket ──► sessions module
 ```
 
-**The daemon** owns everything stateful: the session registry, the speech queue with a
-single audio owner, the draft buffer, and the MCP server. One process, one unix socket.
+**The daemon** is one Python process, launchd-supervised, named `hands`. It holds two
+modules with a one-way dependency: `voice` depends on `sessions`, never the reverse.
 
-**The controller** is a real interactive `claude` CLI session in its own tmux pane,
-configured in isolation, restricted to the MCP tools and nothing else. Input arrives via
-`tmux send-keys`. No SDK.
+`sessions` is the Claude Code side: the hook socket the shims POST to, the session
+registry, the JSONL backfill reader, the draft buffer, `tmux send-keys` to target
+sessions, and permission replies. Its core is a pure reducer — state plus event in, new
+state plus a list of effect descriptions out — and thin adapters perform the effects:
+send keys, reply to a blocked shim, append an audit record. The core describes effects;
+it never performs them.
 
-**The hook shims** are two-line scripts installed in the isolated config dir. Each POSTs
-its stdin to the daemon socket and returns immediately.
+`voice` is the Pipecat pipeline: microphone, push-to-talk gate, Whisper on MLX, Claude
+over the Anthropic API, pocket-tts, speakers. The LLM's tools are Python functions
+registered on Pipecat's LLM service that call into `sessions`. Hook events enter the
+pipeline as frames.
+
+**The hook shims** are two-line scripts in every target Claude Code session. Each POSTs
+its stdin to the daemon socket and returns immediately. `PermissionRequest` is the one
+that blocks.
+
+### Stack
+
+Pipecat ships every piece the pipeline needs: an in-process pocket-tts service, a local
+audio transport over PyAudio, a Whisper service with an MLX build
+(`pipecat-ai[mlx-whisper]`, models such as `mlx-community/whisper-large-v3-turbo`), an
+Anthropic LLM service, and function registration on that service. Verified from the
+upstream repos on 2026-09-11.
+
+pocket-tts is MIT, 100M parameters, CPU-only by design, and streams: about 200 ms to
+the first audio chunk and about 6x real time on an M4 MacBook Air CPU. It clones a voice
+from a wav and exports it to safetensors for fast load. Kyutai measured no GPU speedup
+on Apple silicon — the model is tiny and batch size is 1 — so PyTorch's Mac GPU story is
+irrelevant here: it runs on two CPU cores with the CPU-only wheels macOS gets by default.
+If CPU load ever matters, a community MLX port (`pocket-tts-mlx`) is reachable behind a
+small custom Pipecat TTS service. That is an escape hatch, not the plan.
+
+STT is Whisper on MLX: Apple-silicon native, no torch in that path.
+
+The LLM model is chosen by measured latency in the first spike.
+
+Python, `uv`, pyright strict. State types are discriminated unions: dataclasses with a
+`Literal` kind field.
 
 ### Hooks are the event source, not the transcripts
 
@@ -74,9 +107,10 @@ Hooks are lower latency than tailing JSONL and carry more data. Verified payload
 | `UserPromptSubmit` | `prompt`, `session_title` |
 | `SessionStart` | `source`, `agent_type`, `model`, `session_title` |
 
-`Stop` carries the turn's full text, so narration needs no transcript read.
-`MessageDisplay` carries streaming `delta`s, so speech can start before a turn finishes.
-`PermissionRequest` is a synchronous interception point — it's how voice approval works.
+`Stop` carries the turn's full text but no record id, so the daemon does one tail read
+of the session JSONL at each `Stop` to attach the `uuid`. `MessageDisplay` carries
+streaming `delta`s, so speech can start before a turn finishes. `PermissionRequest` is a
+synchronous interception point — it's how voice approval works.
 
 The documented nine events are not the real set. There are 33:
 
@@ -89,12 +123,22 @@ SubagentStop TaskCompleted TaskCreated TeammateIdle UserPromptExpansion
 UserPromptSubmit WorktreeCreate WorktreeRemove
 ```
 
-### Pull, don't push
+### Push pointers, pull content
 
-The controller's context window holds **the conversation with you** — not session
-transcripts. Hooks deliver what just happened; anything older is a query it makes when
-asked. Nobody asks about a message from thirty turns ago, and when they do,
-`read_session` fetches it.
+The LLM's context window holds **the conversation with you** — not session transcripts.
+Hook events are injected as small frames carrying the session title, the event kind, the
+record's `uuid`, and for `Stop` the turn's final text, which is already in the payload.
+Anything older is a `read_session` query. Nobody asks about a message from thirty turns
+ago, and when they do, `read_session` fetches it.
+
+Which events run the LLM: `Stop` and `PermissionRequest` append with `run_llm` on.
+`SubagentStop` is a deliberate separate choice. Everything else is either silent context
+or not delivered at all.
+
+Pipecat's `LLMMessagesAppendFrame` has a `run_llm` flag. Appending with it off is
+Happy's silent-context channel; appending with it on is the speaks-now channel. That is
+the same distinction Happy got right (see
+[docs/happy-voice-reference.md](docs/happy-voice-reference.md)).
 
 This is the single decision that avoids most of Happy's trouble. Happy pushed history in
 and had no way to pull, so it needed a bootstrap dump, an eviction policy it never wrote,
@@ -107,10 +151,11 @@ impossible to retrofit.
 
 ### Transcripts are for backfill only
 
-When the controller attaches to a session that's been running for an hour, no hooks
-fired for those turns. `read_session(since)` reads
+When the daemon comes up after a session has been running for an hour, no hooks fired
+for those turns. `read_session(since)` reads
 `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` to answer "what happened before I
-got here." That is its only job.
+got here." That, plus the one-record tail read at `Stop`, is all the transcripts are
+read for.
 
 Record shapes worth knowing:
 
@@ -129,34 +174,12 @@ internal chatter; and the block-type filter, because in a sampled real session o
 **6 of 69 assistant content blocks were `text`** — the rest were `thinking` and
 `tool_use`. Budget speakable blocks, never records.
 
-## Controller isolation
+### Liveness
 
-The controller must not inherit the personal `~/.claude`. Left alone it would pull in
-hooks that fire on every turn, a large skill catalog, five MCP servers, and a global
-CLAUDE.md full of git-workflow and ticket-lifecycle mandates — none of which belong in a
-session whose job is to say one sentence back to you.
-
-```bash
-CLAUDE_CONFIG_DIR=~/code/cc-hands/.controller \
-claude \
-  --system-prompt-file ./prompts/controller.md \
-  --setting-sources '' \
-  --mcp-config ./mcp.json --strict-mcp-config \
-  --allowed-tools 'mcp__hands__*' \
-  --session-id "$CTL_SESSION"
-```
-
-`--system-prompt` and `--system-prompt-file` do a **full replacement**, not an append.
-`--setting-sources ''` blocks user, project, and local settings — which also closes the
-trap that `CLAUDE_CONFIG_DIR` alone leaves open, where a project `CLAUDE.md` is picked up
-from the working directory. Assigning `--session-id` means the controller's own
-transcript path is known before the process starts.
-
-Config lives in this repo, not in dotfiles. It's product configuration, versioned with
-the thing it configures.
-
-Flag *names* are verified against the installed bundle; argument arities are not. Check
-`claude --help` before relying on the exact shapes above.
+Silence says nothing about whether a session is alive. A session waiting for input is
+silent for hours and alive; a session in a tool loop is never silent. So the shim
+reports its parent pid at `SessionStart`, and liveness is a process check: one OS fact
+instead of a timestamp heuristic.
 
 ## Tool surface
 
@@ -167,11 +190,10 @@ stage_draft(session, text)
 amend_draft(session, text)
 discard_draft(session)
 send_draft(session)
-speak(text)
+answer_permission(request, decision)
 ```
 
-Nothing else. No Bash, no Read, no Edit — a controller that can edit files will
-eventually decide to do the work itself, and that ends the experiment.
+Nothing else. The intermediary cannot read or edit files; it stages text and sends it.
 
 The draft buffer lives in the daemon rather than in the model's head. Models are
 unreliable at holding "I am currently mid-draft" across a long conversation, and the
@@ -184,6 +206,14 @@ middleware to use the new token helper — I read 'auth middleware' as
 `authMiddleware.ts`" is worth three seconds. Reciting your own sentence back at you is
 not, and you'll stop using it by day two.
 
+### Sending while a target is busy
+
+Text beginning with `/` or `@` triggers Claude Code's own completion, so the daemon
+escapes leading sigils. Sending mid-turn races the input box, and whether
+`tmux send-keys` mid-turn lands in Claude Code's own input queue is unverified. The
+spike decides between sending immediately and `send_draft` returning a typed
+refused-busy result. The daemon never holds a hidden queue.
+
 ## The constraint that will bite
 
 Hooks run in the agent's critical path with a timeout — the bundle carries `timeoutMs`
@@ -192,28 +222,48 @@ and `budgetMs` per invocation, and `MessageDisplay` and `SessionStart` dispatch 
 own output.
 
 Every shim POSTs and returns immediately. The one exception is `PermissionRequest`, where
-blocking is the entire point — and there you're racing a timeout with your own voice, so
-the daemon needs a default when you don't answer in time. Find out what that budget
-actually is before depending on it.
+blocking is the entire point — and there you're racing a timeout with your own voice.
+The budget is ours to set: each hook entry in Claude Code settings takes a `timeout`
+field, so the shim's hook config declares it and the daemon's default-deny deadline is
+derived from the same number.
+
+## Permission approval
+
+The `PermissionRequest` shim blocks. The daemon injects the request with `run_llm` on,
+the pipeline speaks it, you answer by voice, the LLM calls `answer_permission`, and the
+daemon replies to the blocked shim with `{"behavior":"allow"}` or
+`{"behavior":"deny","message":"..."}`. That reply shape is verified from the Claude Code
+2.1.263 binary. If you haven't answered by the declared timeout, the daemon denies.
 
 ## Turn-taking
 
 Push-to-talk makes the mic key the turn boundary: unambiguous, no VAD, no crosstalk
-heuristics, no wake word, no agent guessing whether you were talking to it. Barge-in is
-a keybind that kills playback.
+heuristics, no wake word, no agent guessing whether you were talking to it. A hotkey
+processor in the pipeline emits Pipecat's user-started-speaking and user-stopped-speaking
+frames and gates the microphone audio; VAD is off.
 
-The one piece worth keeping from a realtime design is the output queue. When two sessions
-finish at once, utterances line up behind a single audio owner instead of overlapping.
+Pressing the key while the pipeline is speaking emits an interruption, which flushes
+queued audio: that is barge-in. Because the mic is closed unless the key is held, TTS
+output cannot leak into the mic.
+
+Pipecat's output transport is the single audio owner. When two sessions finish at once,
+their utterances line up behind it instead of overlapping.
 
 ## Build order
 
-1. `list_sessions`, `read_session`, `speak` — driven by **typing** at the controller.
-   That's enough to answer "what's it doing" and "tell me more about that part," which is
-   the half of the use case that proves the loop. If it's good typed, voice makes it
-   better. If it's bad typed, voice won't rescue it.
-2. Draft buffer and `send_draft`.
-3. lowtalker on the input side.
-4. `PermissionRequest` voice approval.
+1. Pipeline spike: mic, push-to-talk gate, Whisper on MLX, Claude over the API,
+   pocket-tts, speakers, and one stub `list_sessions` tool. Measure voice-to-voice
+   latency and whether push-to-talk is clean. This is the go/no-go for the whole
+   architecture.
+2. Session state types and the pure reducer, with tests for every lifecycle transition;
+   then hook shims, the registry, and a real `list_sessions`.
+3. `read_session` backfill from JSONL with the two non-negotiable filters.
+4. Draft buffer, `send_draft`, `tmux send-keys`, and the busy-target decision.
+5. Voice permission approval.
+
+The spike is step 1 for the reason failure mode 11 gives: in an LLM-in-the-loop system,
+content defects degrade gracefully and transport defects are the ones you feel on the
+first try. So transport is tested first and hardest.
 
 ## Prior art
 

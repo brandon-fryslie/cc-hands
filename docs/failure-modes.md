@@ -62,7 +62,8 @@ sessions means three full histories in one window with no priority and no decay.
 
 **Rule:** anything pushed into a context window needs an eviction story written at the
 same time. If you can't say what removes it, don't push it — make it a query instead.
-(This is the one cc-hands avoids structurally; see "Pull, don't push" in the README.)
+(This is the one cc-hands avoids structurally; see "Push pointers, pull content" in
+the README.)
 
 ### 6. A silent split between configurations
 
@@ -163,15 +164,17 @@ exception is `PermissionRequest`, where blocking *is* the feature.
 `PermissionRequest` blocks while you decide out loud. You will sometimes be slow, or
 across the room, or talking to someone else.
 
-**Rule:** the daemon owns an explicit default (deny) and a budget measured against the
-real hook timeout, not a guess. Speak the timeout as it approaches rather than letting
+**Rule:** the budget is declared, not discovered. The shim's hook config sets the
+`timeout` on its `PermissionRequest` entry, and the daemon's default-deny deadline
+derives from that same number. Speak the timeout as it approaches rather than letting
 the decision evaporate.
 
 ### 14. The daemon dies and everything stays quiet
 
-The worst one, because it's invisible. Hooks POST and don't care about the response,
-Claude Code runs normally, and you simply stop hearing things — indistinguishable from
-"the agent is still working."
+The worst one, because it's invisible. The daemon is the single process that also holds
+the pipeline, so a dead daemon is also a silent pipeline. Hooks POST and don't care
+about the response, Claude Code runs normally, and you simply stop hearing things —
+indistinguishable from "the agent is still working."
 
 **Rule:** the daemon emits a heartbeat you can hear or see, and a shim that can't reach
 the socket leaves a visible trace. Never let a dead pipeline look like a working one with
@@ -179,14 +182,16 @@ nothing to say.
 
 ### 15. Two sessions speak at once
 
-**Rule:** one audio owner, one queue. Utterances line up; they don't mix.
+**Rule:** one audio owner, one queue. Utterances line up; they don't mix. Pipecat's
+output transport is that single owner.
 
-### 16. The controller does the work itself
+### 16. The intermediary does the work itself
 
 Give it `Edit` and eventually it will decide that editing the file is faster than routing
 your request.
 
-**Rule:** `--allowed-tools 'mcp__hands__*'` and nothing else. No Bash, no Read, no Edit.
+**Rule:** it has the seven tools in the README's tool surface and nothing else. No file
+access of any kind.
 
 ### 17. Something is sent that you didn't approve
 
@@ -205,38 +210,43 @@ not a recitation of your sentence. If it guessed, you hear the guess.
 
 ### 19. `tmux send-keys` collides with the UI
 
-Text beginning with `/` or `@` triggers Claude Code's own completion; sending mid-turn
-races the input box.
+This applies to target sessions, the only thing the daemon types into. Text beginning
+with `/` or `@` triggers Claude Code's own completion; sending mid-turn races the input
+box. Whether `tmux send-keys` mid-turn lands in Claude Code's own input queue is
+unverified.
 
-**Rule:** the daemon knows each session's turn state from hooks, so it holds input until
-the target is idle, and it escapes leading sigils.
+**Rule:** the daemon escapes leading sigils. The spike decides between sending
+immediately and `send_draft` returning a typed refused-busy result; the daemon never
+holds a hidden queue.
 
 ### 20. The session registry goes stale
 
 A session dies without `SessionEnd` — crash, closed pane, killed terminal — and
 `list_sessions` keeps offering it.
 
-**Rule:** registry entries expire on silence. Liveness is a recent event, not a past
-`SessionStart`.
+**Rule:** liveness is a process check. The shim reports its parent pid at
+`SessionStart`, and `list_sessions` offers a session while that pid is alive. Silence
+measures nothing: a session waiting for input is silent for hours and alive, and a
+session in a tool loop is never silent.
 
 ### 21. Subagent chatter gets narrated
 
 **Rule:** filter `isSidechain: false` on the narration path. `SubagentStop` is a separate,
 deliberate announcement if you want one at all.
 
-### 22. The controller inherits the personal environment
+### 22. TTS output leaks into the mic
 
-Left alone it pulls in `~/.claude`: per-turn hooks, a large skill catalog, several MCP
-servers, and a global CLAUDE.md of git and ticket mandates.
+Speakers and microphone share a room. An open mic during playback feeds the pipeline's
+own speech back in as your next utterance.
 
-**Rule:** `CLAUDE_CONFIG_DIR` plus `--setting-sources ''` plus `--strict-mcp-config`, and
-run the controller from its own directory so no project `CLAUDE.md` is picked up from the
-working directory.
+**Rule:** the push-to-talk gate closes the mic unless the key is held; VAD is off.
 
 ### 23. "That part" can't be resolved
 
 You ask for detail on something it narrated. If narration is just text, resolving that
 means fuzzy-matching back through what it said.
 
-**Rule:** every narration carries the `uuid` of the record it came from. "That part"
-becomes a lookup. Cheap at the source, impossible to retrofit.
+**Rule:** every narration carries the `uuid` of the record it came from. `Stop` carries
+the text but no record id, so the daemon attaches the `uuid` with one tail read of the
+session JSONL at each `Stop`. "That part" becomes a lookup. Cheap at the source,
+impossible to retrofit.
