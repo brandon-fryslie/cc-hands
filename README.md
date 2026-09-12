@@ -35,7 +35,7 @@ Starting functionality:
 Two processes.
 
 ```
-mic ──► push-to-talk gate ──► Whisper (MLX) ──► Claude (API) ──► pocket-tts ──► speakers
+mic ──► push-to-talk gate ──► Whisper (MLX) ──► LLM backend ──► pocket-tts ──► speakers
                                                   │    ▲
                                        tool calls │    │ hook events, as frames
                                                   ▼    │
@@ -60,10 +60,14 @@ state plus a list of effect descriptions out — and thin adapters perform the e
 send keys, reply to a blocked shim, append an audit record. The core describes effects;
 it never performs them.
 
-`voice` is the Pipecat pipeline: microphone, push-to-talk gate, Whisper on MLX, Claude
-over the Anthropic API, pocket-tts, speakers. The LLM's tools are Python functions
-registered on Pipecat's LLM service that call into `sessions`. Hook events enter the
-pipeline as frames.
+`voice` is the Pipecat pipeline: microphone, push-to-talk gate, Whisper on MLX, the LLM
+backend, pocket-tts, speakers. The LLM leg is a variant chosen at startup:
+`HANDS_LLM=local`, the default, talks to an OpenAI-compatible chat completions server;
+`HANDS_LLM=anthropic` talks to Claude through the Anthropic API. In code the two are
+frozen dataclasses, `AnthropicBackend` and `OpenAICompatibleBackend`, and `build_llm` is
+the only function that inspects which one it got. The LLM's tools are the same Python
+functions either way: Pipecat registers them from the `LLMContext`, and they call into
+`sessions`. Hook events enter the pipeline as frames.
 
 **The hook shims** are two-line scripts in every target Claude Code session. Each POSTs
 its stdin to the daemon socket and returns immediately. `PermissionRequest` is the one
@@ -74,8 +78,8 @@ that blocks.
 Pipecat ships every piece the pipeline needs: an in-process pocket-tts service, a local
 audio transport over PyAudio, a Whisper service with an MLX build
 (`pipecat-ai[mlx-whisper]`, models such as `mlx-community/whisper-large-v3-turbo`), an
-Anthropic LLM service, and function registration on that service. Verified from the
-upstream repos on 2026-09-11.
+OpenAI-compatible LLM service and an Anthropic one, and function registration from the
+`LLMContext`. Verified from the upstream repos on 2026-09-11.
 
 pocket-tts is MIT, 100M parameters, CPU-only by design, and streams: about 200 ms to
 the first audio chunk and about 6x real time on an M4 MacBook Air CPU. It clones a voice
@@ -87,7 +91,15 @@ small custom Pipecat TTS service. That is an escape hatch, not the plan.
 
 STT is Whisper on MLX: Apple-silicon native, no torch in that path.
 
-The LLM model is chosen by measured latency in the first spike.
+The default LLM is local: Qwen3-30B-A3B-Instruct-2507, MLX 8-bit, served by
+`mlx_lm.server` on inferno, the M4 Max on the LAN, at `http://inferno.local:8080/v1`.
+That server is OpenAI-compatible, with continuous batching and tool calling. The
+alternative is Claude through the Anthropic API, selected with `HANDS_LLM=anthropic`.
+Measured on 2026-09-12 with the local model, full voice-to-voice: a turn with a tool call
+had first audio 4.3 s after key release (transcript at 1.0 s, two model calls); a plain
+barge-in turn had first audio 1.4 s after key release (transcript at 0.37 s, first token
+at 1.13 s). The server alone gives a first token in about 0.5 s without tools and about
+1.0 s with tools, and decodes at roughly 84 tokens per second.
 
 Python, `uv`, pyright strict. State types are discriminated unions: dataclasses with a
 `Literal` kind field.
@@ -262,7 +274,7 @@ their utterances line up behind it instead of overlapping.
 
 ## Build order
 
-1. Pipeline spike: mic, push-to-talk gate, Whisper on MLX, Claude over the API,
+1. Pipeline spike: mic, push-to-talk gate, Whisper on MLX, the LLM backend,
    pocket-tts, speakers, and one stub `list_sessions` tool. Measure voice-to-voice
    latency and whether push-to-talk is clean. This is the go/no-go for the whole
    architecture.
