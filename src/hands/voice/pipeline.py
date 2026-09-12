@@ -23,7 +23,7 @@ from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from hands.voice.latency import LatencyObserver
-from hands.voice.ptt import KeyVAD
+from hands.voice.ptt import KeyMute, KeyVAD, PushToTalk
 from hands.voice.tools import list_sessions
 
 # Replies are spoken, so the instruction is about speech, not personality.
@@ -52,13 +52,20 @@ class Voice:
     """The assembled pipeline plus the handle the keyboard edge needs."""
 
     worker: PipelineWorker
-    key: KeyVAD
+    key: PushToTalk
 
 
 def build_voice(config: VoiceConfig) -> Voice:
     """Wire mic, push-to-talk, Whisper on MLX, Claude, pocket-tts, speakers."""
+    # [LAW:one-source-of-truth] the key is the only voice activity signal:
+    # it mutes the microphone at the transport and it is the VAD the turn
+    # strategies read. The turn opens on the press and closes on the release;
+    # the release is final, so there is no wait for the user to "say more".
+    key = PushToTalk()
     transport = LocalAudioTransport(
-        LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
+        LocalAudioTransportParams(
+            audio_in_enabled=True, audio_out_enabled=True, audio_in_filter=KeyMute(key)
+        )
     )
     stt = WhisperSTTServiceMLX(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model))
     llm = AnthropicLLMService(
@@ -71,11 +78,6 @@ def build_voice(config: VoiceConfig) -> Voice:
     )
     tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice))
 
-    # [LAW:one-source-of-truth] the key is the only voice activity signal.
-    # The turn opens when the key-VAD says speech and closes when it says
-    # silence and the transcript has arrived; the key release is final, so
-    # there is no wait for the user to "say more".
-    key = KeyVAD()
     turns = UserTurnStrategies(
         start=[VADUserTurnStartStrategy()],
         stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.0)],
@@ -83,7 +85,7 @@ def build_voice(config: VoiceConfig) -> Voice:
     context = LLMContext(tools=[list_sessions])
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=key, user_turn_strategies=turns),
+        user_params=LLMUserAggregatorParams(vad_analyzer=KeyVAD(key), user_turn_strategies=turns),
     )
 
     pipeline = Pipeline(

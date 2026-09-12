@@ -1,6 +1,9 @@
-"""The push-to-talk decisions, with no pipeline and no audio."""
+"""The push-to-talk decisions, with no pipeline and no audio device."""
 
-from hands.voice.ptt import KEY_VAD_PARAMS, Gate, KeyVAD
+from hands.voice.ptt import KEY_VAD_PARAMS, Gate, KeyMute, KeyVAD, PushToTalk
+
+LOUD = b"\x7f\x7f" * 160
+QUIET = b"\x00\x00" * 160
 
 
 def test_starts_up_and_silent() -> None:
@@ -32,17 +35,39 @@ def test_repeated_position_is_not_a_transition() -> None:
     assert up == Gate()
 
 
+def test_key_up_hears_silence_of_the_same_length() -> None:
+    assert Gate().audible(LOUD) == QUIET
+    held, _ = Gate().moved("down")
+    assert held.audible(LOUD) == LOUD
+
+
 def test_key_vad_reports_the_key_not_the_audio() -> None:
-    vad = KeyVAD(sample_rate=16000)
-    loud = b"\x7f\x7f" * vad.num_frames_required()
-    assert vad.voice_confidence(loud) == 0.0
-    assert vad.move_key("down") == "start"
-    assert vad.voice_confidence(b"\x00\x00" * vad.num_frames_required()) == 1.0
-    assert vad.move_key("up") == "stop"
-    assert vad.voice_confidence(loud) == 0.0
+    key = PushToTalk()
+    vad = KeyVAD(key, sample_rate=16000)
+    assert vad.voice_confidence(LOUD) == 0.0
+    assert key.move_key("down") == "start"
+    assert vad.voice_confidence(QUIET) == 1.0
+    assert key.move_key("up") == "stop"
+    assert vad.voice_confidence(LOUD) == 0.0
+
+
+async def test_key_mute_follows_the_same_key_as_the_vad() -> None:
+    key = PushToTalk()
+    mute = KeyMute(key)
+    vad = KeyVAD(key, sample_rate=16000)
+    assert await mute.filter(LOUD) == QUIET
+    key.move_key("down")
+    assert await mute.filter(LOUD) == LOUD
+    assert vad.voice_confidence(LOUD) == 1.0
 
 
 def test_key_vad_thresholds_let_the_key_decide_alone() -> None:
     assert KEY_VAD_PARAMS.min_volume == 0.0
     assert KEY_VAD_PARAMS.confidence <= 1.0
     assert KEY_VAD_PARAMS.start_secs == KEY_VAD_PARAMS.stop_secs
+
+
+def test_one_analysis_frame_is_twenty_milliseconds() -> None:
+    vad = KeyVAD(PushToTalk())
+    vad.set_sample_rate(16000)
+    assert vad.num_frames_required() == 320
