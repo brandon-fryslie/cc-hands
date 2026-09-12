@@ -178,7 +178,9 @@ indistinguishable from "the agent is still working."
 
 **Rule:** the daemon emits a heartbeat you can hear or see, and a shim that can't reach
 the socket leaves a visible trace. Never let a dead pipeline look like a working one with
-nothing to say.
+nothing to say. The design is the "Loud failure" section of `architecture.md`: launchd
+restarts it, `status.json` is the heartbeat, the system speech channel needs no model,
+and the shim exits non-zero.
 
 ### 15. Two sessions speak at once
 
@@ -190,8 +192,8 @@ output transport is that single owner.
 Give it `Edit` and eventually it will decide that editing the file is faster than routing
 your request.
 
-**Rule:** it has the seven tools in the README's tool surface and nothing else. No file
-access of any kind.
+**Rule:** it has the tools listed in `architecture.md` and nothing else. They route,
+name, and read session records; none reads or writes a file in a repository.
 
 ### 17. Something is sent that you didn't approve
 
@@ -247,6 +249,6 @@ You ask for detail on something it narrated. If narration is just text, resolvin
 means fuzzy-matching back through what it said.
 
 **Rule:** every narration carries the `uuid` of the record it came from. `Stop` carries
-the text but no record id, so the daemon attaches the `uuid` with one tail read of the
-session JSONL at each `Stop`. "That part" becomes a lookup. Cheap at the source,
-impossible to retrofit.
+the text but no record id, so the daemon reads the turn's records from the session
+JSONL at each `Stop` and attaches the `uuid` of the last one. "That part" becomes a
+lookup. Cheap at the source, impossible to retrofit.
