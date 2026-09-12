@@ -237,14 +237,25 @@ daemon replies to the blocked shim with `{"behavior":"allow"}` or
 
 ## Turn-taking
 
-Push-to-talk makes the mic key the turn boundary: unambiguous, no VAD, no crosstalk
-heuristics, no wake word, no agent guessing whether you were talking to it. A hotkey
-processor in the pipeline emits Pipecat's user-started-speaking and user-stopped-speaking
-frames and gates the microphone audio; VAD is off.
+Push-to-talk makes the mic key the turn boundary: no crosstalk heuristics, no wake
+word, no agent guessing whether you were talking to it. Pipecat's Whisper service and
+its turn strategies act on voice-activity frames, not on raw audio, so the key is the
+voice activity detector: a KeyVAD analyzer whose confidence is 1.0 while the key is held
+and 0.0 otherwise, with a zero volume threshold and 20 ms start and stop windows. The
+key is also the mute. Whisper keeps the last second of microphone audio from before
+the turn opens and prepends it to the segment, so the input transport's audio filter
+(KeyMute) replaces the microphone bytes with silence of the same length while the key
+is up and passes them through untouched while it is down. Frames flow at full rate
+either way, so the VAD and Whisper see an unbroken stream; only its content changes.
 
-Pressing the key while the pipeline is speaking emits an interruption, which flushes
-queued audio: that is barge-in. Because the mic is closed unless the key is held, TTS
-output cannot leak into the mic.
+The press starts the turn (VADUserTurnStartStrategy). The release stops it
+(SpeechTimeoutUserTurnStopStrategy with a zero-second speech timeout), so the release
+is final and nothing waits for you to say more. Pressing the key while the pipeline is
+speaking starts a turn mid-utterance, which broadcasts the interruption that flushes
+queued audio: that is barge-in. Because of the mute, whatever the mic hears while the
+key is up is silence to the pipeline, so TTS output cannot transcribe itself. The spike
+reads the key from the terminal, which cannot report key-up, so the space bar toggles:
+one press is key down, the next is key up. A global hotkey is future work.
 
 Pipecat's output transport is the single audio owner. When two sessions finish at once,
 their utterances line up behind it instead of overlapping.
