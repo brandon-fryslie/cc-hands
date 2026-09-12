@@ -15,6 +15,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.services.anthropic.llm import AnthropicLLMService
+from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.pocket_tts.tts import PocketTTSService
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
@@ -36,15 +37,60 @@ SPOKEN_REPLY_INSTRUCTION = (
 )
 
 
+# [LAW:types-are-the-program] the two ways to reach a model differ in what
+# they need, not in what they do, so each is a variant with exactly its own
+# fields; there is no bag of optional keys and URLs to guard downstream.
+@dataclass(frozen=True)
+class AnthropicBackend:
+    """Claude over the Anthropic API."""
+
+    api_key: str
+    model: str
+
+
+@dataclass(frozen=True)
+class OpenAICompatibleBackend:
+    """Any OpenAI-compatible chat completions server, such as mlx_lm.server."""
+
+    base_url: str
+    model: str
+
+
+LLMBackend = AnthropicBackend | OpenAICompatibleBackend
+
+
 @dataclass(frozen=True)
 class VoiceConfig:
     """Everything that varies between two runs of the pipeline."""
 
-    anthropic_api_key: str
-    llm_model: str
+    llm: LLMBackend
     whisper_model: str
     voice: str
     max_reply_tokens: int = 300
+
+
+def build_llm(
+    backend: LLMBackend, *, instruction: str, max_tokens: int
+) -> AnthropicLLMService | OpenAILLMService:
+    """The one place the backend variant is inspected."""
+    # [LAW:one-type-per-behavior] both services speak the same frame protocol
+    # to the rest of the pipeline; only their construction differs.
+    match backend:
+        case AnthropicBackend(api_key=api_key, model=model):
+            return AnthropicLLMService(
+                api_key=api_key,
+                settings=AnthropicLLMService.Settings(
+                    model=model, system_instruction=instruction, max_tokens=max_tokens
+                ),
+            )
+        case OpenAICompatibleBackend(base_url=base_url, model=model):
+            return OpenAILLMService(
+                base_url=base_url,
+                api_key="unused",
+                settings=OpenAILLMService.Settings(
+                    model=model, system_instruction=instruction, max_tokens=max_tokens
+                ),
+            )
 
 
 @dataclass(frozen=True)
@@ -68,13 +114,8 @@ def build_voice(config: VoiceConfig) -> Voice:
         )
     )
     stt = WhisperSTTServiceMLX(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model))
-    llm = AnthropicLLMService(
-        api_key=config.anthropic_api_key,
-        settings=AnthropicLLMService.Settings(
-            model=config.llm_model,
-            system_instruction=SPOKEN_REPLY_INSTRUCTION,
-            max_tokens=config.max_reply_tokens,
-        ),
+    llm = build_llm(
+        config.llm, instruction=SPOKEN_REPLY_INSTRUCTION, max_tokens=config.max_reply_tokens
     )
     tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice))
 
