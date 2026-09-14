@@ -8,7 +8,7 @@ from loguru import logger
 
 from hands.core.drafts import DraftOutcome, DraftRequest, decide
 from hands.core.effects import AfterEnd, Audit, AuditRecord, Decision, Effect, Heard, HookReply, Narrate, Reply, Sending, Speak, Type, Unregistered
-from hands.core.events import Abandoned, Event, PermissionRequested, Tick
+from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
 from hands.core.permissions import AnswerPermission, PermissionOutcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Instant, Registry, RequestId, Session, SessionId
@@ -52,8 +52,12 @@ class Sessions:
             await self.apply(event)
             return await waiting
         except asyncio.CancelledError:
-            # The hook's connection closed: Claude Code gave up on it, or exited. No reply can reach it now,
-            # so the session stops waiting, and a voice answer after this is told the request is gone.
+            # The hook's connection closed: the user answered No or Esc at the dialog, which kills the hook, or
+            # Claude Code gave up on it, or exited. No reply can reach it now, so the session stops waiting,
+            # and a voice answer after this is told the request is gone.
+            # [LAW:no-silent-failure] a reply decided in the instant before the close was logged as sent; this says it was not.
+            lost = f"; its reply {waiting.result()} was never delivered" if waiting.done() and not waiting.cancelled() else ""
+            logger.info(f"the hook for session {event.session} request {event.request} closed{lost}")
             await self.apply(Abandoned(event.session, event.request, self._clock()))
             raise
         finally:
@@ -130,6 +134,9 @@ def _listing(session: Session) -> Listing:
 
 def _audited(record: AuditRecord) -> tuple[str, str]:
     match record:
+        case Unregistered(event=ToolFinished() as event):
+            # Every tool call of a session started before the daemon lands here; its prompts and stops already warn.
+            return "DEBUG", f"ToolFinished for session {event.session}, which never joined"
         case Unregistered(event=event):
             return "WARNING", f"{type(event).__name__} for session {event.session}, which never joined"
         case AfterEnd(event=event):

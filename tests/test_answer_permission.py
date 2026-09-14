@@ -17,8 +17,8 @@ from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.effects import Narrate, PermissionAsked, PermissionDeadlineNear, PermissionExpired, Speak
-from hands.core.events import Tick
+from hands.core.effects import Allow, Narrate, PermissionAsked, PermissionDeadlineNear, PermissionExpired, Speak
+from hands.core.events import PermissionRequested, Tick, ToolFinished
 from hands.core.reducer import EXPIRED_MESSAGE
 from hands.core.session import Blocked, Permission, RequestId, SessionId, Working
 from hands.sessions.home import Home
@@ -162,7 +162,7 @@ async def test_a_session_that_moves_on_lets_its_hook_return_undecided(home: Home
 
 async def test_a_hook_that_went_away_is_neither_warned_about_nor_denied(home: Home, sessions: Sessions, clock: Clock) -> None:
     logged: list[str] = []
-    sink = logger.add(lambda message: logged.append(str(message)), level="INFO")
+    sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
     try:
         shim, moment = await asked(home, sessions)
         shim.process.kill()
@@ -174,7 +174,35 @@ async def test_a_hook_that_went_away_is_neither_warned_about_nor_denied(home: Ho
         logger.remove(sink)
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(sessions.heard(), 0.1)
-    assert [line for line in logged if moment.request in line] == []
+    assert [line for line in logged if moment.request in line] == [f"the hook for session {moment.session} request {moment.request} closed"]
+
+
+async def test_a_reply_decided_as_the_hook_closes_is_logged_as_never_delivered(home: Home, sessions: Sessions) -> None:
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
+    try:
+        assert await (await Shim.run(home, START)).finished() == (0, "", "")
+        request = PermissionRequested(SID, at=0.0, request=RequestId("r1"), permission=Permission("Bash", {}))
+        waiting = asyncio.create_task(sessions.ask(request))
+        await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
+        await sessions.answer(request.request, Allow())
+        waiting.cancel()  # the connection closes before the handler resumes with the reply
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+    finally:
+        logger.remove(sink)
+    assert f"the hook for session {SID} request r1 closed; its reply Allow() was never delivered" in logged
+
+
+async def test_tool_calls_from_a_session_that_never_joined_are_not_warned_about(sessions: Sessions) -> None:
+    # Every tool call of a session started before the daemon would otherwise bury the warnings that matter.
+    levels: list[str] = []
+    sink = logger.add(lambda message: levels.append(message.record["level"].name), level="DEBUG")
+    try:
+        await sessions.apply(ToolFinished(SID, at=1.0, call=Permission("Bash", {})))
+    finally:
+        logger.remove(sink)
+    assert levels == ["DEBUG"]
 
 
 async def test_a_request_from_a_session_this_daemon_never_met_is_let_go_at_once(home: Home, sessions: Sessions) -> None:

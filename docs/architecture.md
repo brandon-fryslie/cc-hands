@@ -389,9 +389,13 @@ it runs on to its own end and its output is ignored. So the daemon never learns 
 keyboard answer directly. It learns that the session moved on: the asked-about tool
 finishing (`PostToolUse` or `PostToolUseFailure` with the same tool and input), or the
 next `UserPromptSubmit`, `Stop`, `SessionEnd`, or `PermissionRequest`, withdraws the
-waiting reply, which prints nothing. A hook whose connection closes first, because
-Claude Code killed or dropped it, ends the wait with no reply at all, so a later voice
-answer hears that the request is gone rather than that it went through. What is left
+waiting reply, which prints nothing. A hook whose connection closes first ends the wait with
+no reply at all, so a later voice answer hears that the request is gone rather than
+that it went through. That is how a keyboard refusal arrives: answering No or Esc at
+the dialog fires no post-tool hook and no `Stop`, but Claude Code kills the waiting
+hook, and the closed connection releases the session (measured on 2.1.270). An
+`AskUserQuestion` answered at the keyboard, whose tool input comes back changed, is
+released by the `Stop` that follows. What is left
 is a tool approved at the keyboard that is still running at the deadline: its warning
 and its deny, which Claude Code ignores, are still heard, so the expiry is spoken as
 what hands did ("so I told it no"), never as what happened to the tool. A permission
