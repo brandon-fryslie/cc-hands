@@ -48,7 +48,13 @@ def audited(tool: Tool, record: Record) -> Tool:
             record(Called(params.function_name, arguments, result))
             await answer(result, properties=properties)
 
-        await tool(replace(params, result_callback=result_callback), **arguments)
+        try:
+            await tool(replace(params, result_callback=result_callback), **arguments)
+        except Exception:
+            # [LAW:no-silent-failure] a tool that raises hands the model no result, so it has no Called line; Pipecat
+            # logs the error under its own name, which the failure sink does not hear. This is its line.
+            logger.exception(f"the tool {params.function_name} raised, called with {arguments!r}")
+            raise
 
     return cast(Tool, call)
 

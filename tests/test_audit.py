@@ -185,3 +185,34 @@ async def test_a_send_that_fails_to_type_is_written_as_failed(tmp_path: Path) ->
     [failed] = [entry for entry in recorded if isinstance(entry, EffectFailed)]
     assert failed.effect == typed and "can't find pane" in failed.error
     assert Performed(typed) not in recorded
+
+
+async def test_a_tool_that_raises_is_a_failure_line_naming_it_and_its_arguments() -> None:
+    recorded: list[Entry] = []
+
+    async def broken(params: FunctionCallParams, session: str) -> None:
+        """Fail."""
+        raise RuntimeError("the transcript went away")
+
+    sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
+    try:
+        with pytest.raises(RuntimeError):
+            await invoke(audited(broken, recorded.append), session="s1")
+    finally:
+        logger.remove(sink)
+    assert recorded == [Failure(source="hands.voice.tools:call", message="the tool broken raised, called with {'session': 's1'}: RuntimeError: the transcript went away")]
+
+
+def test_hands_log_piped_into_a_reader_that_stops_ends_quietly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    home.audit.write_text("a\n")
+
+    def closed(*_: object, **__: object) -> None:
+        raise BrokenPipeError
+
+    def discarded(*_: object) -> None:
+        pass
+
+    monkeypatch.setattr("builtins.print", closed)
+    monkeypatch.setattr(cli.os, "dup2", discarded)
+    assert cli.main(["--home", str(tmp_path), "log"]) == 0

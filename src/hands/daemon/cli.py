@@ -69,12 +69,16 @@ LOG_POLL_SECONDS = 0.25
 
 def tail_log(home: Home, lines: int) -> int:
     newest, position = audit.tail(home.audit, lines)
-    for line in newest:
-        print(line, flush=True)
     try:
+        for line in newest:
+            print(line, flush=True)
         for line in audit.follow(home.audit, position, lambda: time.sleep(LOG_POLL_SECONDS)):
             print(line, flush=True)
     except KeyboardInterrupt:
+        return 0
+    except BrokenPipeError:
+        # Piped into head, which has read what it wanted. Python's own flush at exit would raise again into the closed pipe.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
     raise AssertionError("following the audit log ends only when interrupted")
 
