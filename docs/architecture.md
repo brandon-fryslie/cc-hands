@@ -730,7 +730,8 @@ alone, and everything else reads it.
 
 The heartbeat is honest at both ends of a run. `hands run` writes its first heartbeat,
 `pipeline starting`, before it imports Pipecat. The models load off the event loop,
-which keeps beating, so a restart shows its new pid within half a second of the kill,
+which keeps beating, so a restart shows its new pid within half a second of launchd starting it
+(launchd waits out its 10-second throttle when the process it replaces had only just launched),
 and only a loop that is actually stuck reads as not responding. launchd's SIGTERM,
 Ctrl-C, the `q` key, and a failed background task all set one quit event. Its handler
 is in place before the models load, so a stop during the load does not wait for them.
