@@ -20,8 +20,12 @@ def membership(tmp_path: Path, name: str) -> Membership:
 
 
 def titled(path: Path, *titles: str) -> None:
-    records = [{"type": "user", "message": {"content": 'grep "type":"ai-title" says hi'}}]
-    records += [{"type": "ai-title", "aiTitle": title, "sessionId": path.stem} for title in titles]
+    records: list[dict[str, object]] = [
+        {"type": "user", "message": {"content": 'grep "type":"ai-title" says hi'}},
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "input": {"record": {"type": "ai-title"}}}]}},
+    ]
+    title_records: list[dict[str, object]] = [{"type": "ai-title", "aiTitle": t, "sessionId": path.stem} for t in titles]
+    records += title_records
     path.write_text("".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records))
 
 

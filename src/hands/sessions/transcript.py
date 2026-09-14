@@ -4,8 +4,9 @@ from pathlib import Path
 
 from hands.sessions.payload import Payload
 
-# Records are written without spaces. A mention of this text inside a message is
-# JSON-escaped, so it cannot match.
+# Records are written without spaces, so this finds every title record cheaply.
+# It also finds a nested object with that type inside another record, so a
+# candidate counts only when the record's own type is the title.
 _AI_TITLE_RECORD = b'"type":"ai-title"'
 
 
@@ -23,5 +24,7 @@ def ai_title(transcript: Path) -> str | None:
     title = None
     for line in complete:
         if _AI_TITLE_RECORD in line:
-            title = Payload.parse(line).text("aiTitle")
+            record = Payload.parse(line)
+            if record.text("type") == "ai-title":
+                title = record.text("aiTitle")
     return title
