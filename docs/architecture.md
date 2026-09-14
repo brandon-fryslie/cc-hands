@@ -666,13 +666,13 @@ that tail into a word ("Wow.", "Well.", "What?") in every run where nobody spoke
 Pipecat input filter could not stop it, because it runs when the event loop reaches a
 frame, tens of milliseconds after capture. So `hands.voice.microphone` replaces the
 local transport's two halves: the `Speaker` records, on every non-silent write, when
-that sound will have died away at the microphone (the output stream's latency plus a
-measured 150 ms echo path), and the `KeyedMicrophone` decides each buffer in PortAudio's
+that sound will have died away at the microphone (the chunk's own length, the output stream's latency, and a
+measured 150 ms echo path, counted from when the chunk is handed over, since an interruption cancels the wait for a write but not the write), and the `KeyedMicrophone` decides each buffer in PortAudio's
 capture callback, dated by the buffer's recording time, not the callback's: silence
 while the key is up or while the speaker's sound is still in the room. With it, a press
 during playback gave no transcript with nobody speaking, and exactly "What time is it?"
 when that was said 250 ms after the press. The cost is half duplex: while the speaker
-is sounding, and for 225 ms after, the user is not heard, so a word spoken on top of
+is sounding, and for about 265 ms after its last chunk was handed over, the user is not heard, so a word spoken on top of
 the press is lost rather than mixed with the reply. A stalled event loop delays the
 interruption itself, and the mute then covers the reply for as long as it plays.
 Acoustic echo cancellation would lift the half duplex and is a separate ticket.

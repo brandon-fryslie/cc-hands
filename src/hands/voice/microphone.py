@@ -31,9 +31,10 @@ from hands.voice.ptt import Gate, PushToTalk
 
 Instant = float  # seconds on the monotonic clock
 
-# From a speaker write returning to its sound having died away at the microphone, beyond the output
-# stream's own latency: the chunk just accepted, the room, and the microphone's buffer. The measured
-# total above was 185 ms against a reported output latency of 76 ms; this leaves about 40 ms of margin.
+# From the end of a chunk given to the speaker to its sound having died away at the microphone, beyond
+# the output stream's own latency: the room and the microphone's buffer. The measured total above was
+# 185 ms after the last blocking write returned, against a reported output latency of 76 ms; this leaves
+# about 40 ms of margin.
 ECHO_PATH_SECS = 0.15
 
 
@@ -60,11 +61,17 @@ class Speaker(LocalAudioOutputTransport):
         self._fade = _output_stream(self).get_output_latency() + ECHO_PATH_SECS
 
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
-        written = await super().write_audio_frame(frame)
-        if written and frame.audio.count(0) != len(frame.audio):
+        if frame.audio.count(0) != len(frame.audio):
+            # [LAW:no-ambient-temporal-coupling] recorded before the write is awaited: an interruption cancels
+            # the await, but the chunk already handed to PortAudio's thread plays out all the same.
             # Silence padding makes no sound, so it holds nothing shut.
-            self.quiet_at = self._clock() + self._fade
-        return written
+            self.quiet_at = self._clock() + _duration(frame) + self._fade
+        return await super().write_audio_frame(frame)
+
+
+def _duration(frame: OutputAudioRawFrame) -> float:
+    # 16-bit samples, as Pipecat's local transport opens its stream.
+    return len(frame.audio) / (2 * frame.num_channels * frame.sample_rate)
 
 
 class KeyedMicrophone(LocalAudioInputTransport):
