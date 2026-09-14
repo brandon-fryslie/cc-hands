@@ -4,13 +4,14 @@ import asyncio
 import time
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from loguru import logger
 
 from hands.core.events import Attached, Died, MovedOn, Observed
 from hands.core.session import Membership, SessionId
 from hands.sessions.home import Home
-from hands.sessions.membership import read_membership, remove_ended_membership
+from hands.sessions.membership import parse_membership, remove_ended_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 
@@ -24,39 +25,50 @@ class Recorded:
     written_at: float  # wall-clock seconds: the file's modification time
 
 
-async def sweep(home: Home, sessions: Sessions) -> None:
+# Sessions listed while their files were missing at one sweep, which the next one may conclude have ended.
+Unfiled = frozenset[SessionId]
+
+
+async def sweep(home: Home, sessions: Sessions, unfiled_before: Unfiled) -> Unfiled:
     """Apply what the files and the process table say now: a running session is attached, an ended one ends and its file goes."""
     # [LAW:no-ambient-temporal-coupling] taken before the directory is read: a session joins only after its shim
     # has written its file, so one that joins while the sweep runs is never taken for a session whose file is gone.
     listed = sessions.live_members()
     records = recorded(home)
     started = await process_starts({record.membership.pid for record in records} | {membership.pid for membership in listed})
-    for seen in observations(listed, records, started):
+    seen_all, unfiled = observations(listed, records, started, unfiled_before)
+    for seen in seen_all:
         await sessions.apply(seen)
         match seen:
             case Died(membership=membership) | MovedOn(membership=membership):
                 remove_ended_membership(home, membership)
             case Attached():
                 pass
+    return unfiled
 
 
 async def keep_sweeping(home: Home, sessions: Sessions, period: float) -> None:
     """Sweep now and once a period after, until cancelled. The period is how late a closed pane is heard."""
+    unfiled: Unfiled = frozenset()
     while True:
-        await sweep(home, sessions)
+        unfiled = await sweep(home, sessions, unfiled)
         await asyncio.sleep(period)
 
 
-def observations(listed: Collection[Membership], records: Collection[Recorded], started: Mapping[int, float]) -> list[Observed]:
-    """What each file, and each listed session whose file is gone, says about its session."""
+def observations(
+    listed: Collection[Membership], records: Collection[Recorded], started: Mapping[int, float], unfiled_before: Unfiled
+) -> tuple[list[Observed], Unfiled]:
+    """What each file, and each listed session whose file stayed gone, says about its session; and which listed sessions have no file now."""
     # One process holds one session, so of the files naming a pid the newest is its session and the rest are over.
     newest = {record.membership.pid: record for record in sorted(records, key=lambda record: record.written_at)}
     on_file = {record.membership.id for record in records}
+    unfiled = [membership for membership in listed if membership.id not in on_file]
     return [
         *(_observed(record, newest[record.membership.pid] is record, started) for record in records),
-        # A listed session whose file is gone ended without its end hook reaching the daemon: the shim removes the file first.
-        *(MovedOn(membership) if membership.pid in started else Died(membership) for membership in listed if membership.id not in on_file),
-    ]
+        # The shim removes a session's file before it posts SessionEnd, so a listed session with no file has ended. It is
+        # judged only once its file was also gone a sweep ago, so the end hook, which lands in milliseconds, says how.
+        *(MovedOn(membership) if membership.pid in started else Died(membership) for membership in unfiled if membership.id in unfiled_before),
+    ], frozenset(membership.id for membership in unfiled)
 
 
 def _observed(record: Recorded, holds_its_process: bool, started: Mapping[int, float]) -> Observed:
@@ -78,20 +90,29 @@ def recorded(home: Home) -> list[Recorded]:
     records: list[Recorded] = []
     # A shim's staging file ends in .tmp until it is renamed into place.
     for path in sorted(home.memberships.glob("*.json")):
-        session = SessionId(path.stem)
         try:
             written_at = path.stat().st_mtime
-            records.append(Recorded(read_membership(home, session), written_at))
+            raw = path.read_bytes()
         except FileNotFoundError:
             # The session ended between the listing and the read.
             continue
+        try:
+            records.append(Recorded(parse_membership(SessionId(path.stem), raw), written_at))
         except Rejected as error:
-            if not path.exists():
-                continue
-            # [LAW:no-silent-failure] said once, as it is removed, rather than every sweep.
-            logger.error(f"removing the membership file {path}, which names no session hands can attach: {error}")
-            path.unlink(missing_ok=True)
+            _remove_unreadable(path, raw, error)
     return records
+
+
+def _remove_unreadable(path: Path, raw: bytes, error: Rejected) -> None:
+    try:
+        # A shim that rewrote the file since it was read wrote a good one, which stays.
+        if path.read_bytes() != raw:
+            return
+    except FileNotFoundError:
+        return
+    # [LAW:no-silent-failure] said once, as it is removed, rather than every sweep.
+    logger.error(f"removing the membership file {path}, which names no session hands can attach: {error}")
+    path.unlink(missing_ok=True)
 
 
 async def process_starts(pids: Collection[int]) -> dict[int, float]:

@@ -578,11 +578,14 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   pid the newest is its session, and the older ones are `MovedOn`: a `/clear` or a
   resume inside the process whose end hook never arrived. They end without a word
   and their files are removed. The shim removes a session's file before it posts
-  `SessionEnd`, so a listed session with no file ended even if that post was lost: it
-  is `MovedOn` while its process runs and `Died` once it does not. The sweep takes the
-  listed sessions before it reads the directory, and a session joins only after its
-  file is written, so a session joining mid-sweep is never taken for one whose file
-  is gone.
+  `SessionEnd`, so a listed session with no file ended even if that post was lost.
+  It is judged only when its file was also gone at the sweep before, which leaves the
+  end hook two seconds to say how the session ended: then it is `MovedOn` while its
+  process runs and `Died` once it does not. The sweep takes the listed sessions before
+  it reads the directory, and a session joins only after its file is written, so a
+  session joining mid-sweep is never taken for one whose file is gone. A file whose
+  pid no macOS process can have (outside 1 to 99999) is reported and removed as it is
+  read, like one that does not parse, so the process table is never asked about it.
 - **Liveness** comes from the process table, one `ps -o pid=,etime=` for every file per
   sweep. A session waiting for input is silent for hours and alive; a session in a
   tool loop is never silent. Silence measures nothing. A process counts as the

@@ -106,7 +106,7 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash:
         loop.add_signal_handler(signal_number, quit_event.set)
     try:
         # A restart is back where it was before the models load: every session with a file and a running process is listed.
-        await sweep(home, sessions)
+        await sweep(home, sessions, frozenset())
         voice = await load(config, sessions, heart, quit_event)
         if voice is not None:
             await converse(voice, home, sessions, heart, quit_event, Started(after_crash))

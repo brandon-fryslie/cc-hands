@@ -1,6 +1,7 @@
 """The liveness sweep against real membership files and the real process table."""
 
 import asyncio
+import json
 import os
 import subprocess
 import time
@@ -49,7 +50,7 @@ def test_ps_elapsed_time_reads_as_seconds(etime: str, seconds: int) -> None:
 )
 def test_a_file_names_a_running_session_only_if_its_process_started_before_the_file(started: dict[int, float], seen: type) -> None:
     record = Recorded(member("a", 4242), written_at=1000.0)
-    assert observations([], [record], started) == [seen(record.membership)]
+    assert observations([], [record], started, frozenset()) == ([seen(record.membership)], frozenset())
 
 
 @pytest.mark.parametrize("names", [("a", "b"), ("b", "a")])
@@ -59,13 +60,16 @@ def test_of_the_files_naming_one_process_the_newest_is_its_session_whatever_the_
     started = {4242: 500.0} if alive else {}
     newest: Observed = Attached(new.membership) if alive else Died(new.membership)
     for records in ([old, new], [new, old]):
-        assert set(observations([], records, started)) == {MovedOn(old.membership), newest}
+        assert set(observations([], records, started, frozenset())[0]) == {MovedOn(old.membership), newest}
 
 
-def test_a_listed_session_whose_file_is_gone_moved_on_if_its_process_runs_and_died_if_not() -> None:
+def test_a_listed_session_whose_file_stayed_gone_moved_on_if_its_process_runs_and_died_if_not() -> None:
     running, dead, on_file = member("running", 4242), member("dead", 5353), member("on_file", 6464)
-    records = [Recorded(on_file, written_at=1000.0)]
-    assert observations([running, dead, on_file], records, {4242: 1.0, 6464: 1.0}) == [Attached(on_file), MovedOn(running), Died(dead)]
+    records, started = [Recorded(on_file, written_at=1000.0)], {4242: 1.0, 6464: 1.0}
+    unfiled = frozenset({running.id, dead.id})
+    # The first sweep without its file leaves the end hook time to say how the session ended.
+    assert observations([running, dead, on_file], records, started, frozenset()) == ([Attached(on_file)], unfiled)
+    assert observations([running, dead, on_file], records, started, unfiled) == ([Attached(on_file), MovedOn(running), Died(dead)], unfiled)
 
 
 async def test_ps_says_when_a_running_process_started_and_leaves_out_a_dead_one() -> None:
@@ -108,14 +112,14 @@ async def test_a_sweep_attaches_the_running_ends_the_dead_and_the_reused_and_spe
     os.utime(home.membership(reused.id), (long_ago, long_ago))
     registry = sessions()
 
-    await sweep(home, registry)
+    await sweep(home, registry, frozenset())
     assert [listing.session.membership.id for listing in registry.live()] == [running.id]
     assert registry.listing(dead.id).session.state == Gone()  # pyright: ignore[reportOptionalMemberAccess]
     heard = {await registry.heard(), await registry.heard()}
     assert heard == {Speak(SessionGone(dead.id)), Speak(SessionGone(reused.id))}
     assert sorted(path.stem for path in home.memberships.glob("*.json")) == [running.id]
 
-    await sweep(home, registry)
+    await sweep(home, registry, frozenset())
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(registry.heard(), 0.1)
 
@@ -128,7 +132,7 @@ async def test_a_restart_lists_the_session_a_cleared_process_holds_now_not_the_o
     os.utime(home.membership(SessionId(stale)), (long_ago, long_ago))
     write_membership(home, member("m-current", os.getpid()))
     registry = sessions()
-    await sweep(home, registry)
+    await sweep(home, registry, frozenset())
     assert [listing.session.membership.id for listing in registry.live()] == ["m-current"]
     assert sorted(path.stem for path in home.memberships.glob("*.json")) == ["m-current"]
     with pytest.raises(asyncio.TimeoutError):
@@ -139,7 +143,9 @@ async def test_a_session_whose_end_hook_was_lost_after_its_file_went_is_ended_by
     home = Home(tmp_path)
     registry = sessions()
     await registry.apply(Joined(member("closed", dead_pid()), "startup"))
-    await sweep(home, registry)
+    unfiled = await sweep(home, registry, frozenset())
+    assert len(registry.live()) == 1
+    await sweep(home, registry, unfiled)
     assert registry.live() == []
     assert await registry.heard() == Speak(SessionGone(SessionId("closed")))
 
@@ -149,8 +155,8 @@ async def test_a_restarted_daemon_lists_the_sessions_the_last_one_did(tmp_path: 
     for name, pid in (("one", os.getpid()), ("two", os.getppid())):
         write_membership(home, member(name, pid))
     before, after = sessions(), sessions()
-    await sweep(home, before)
-    await sweep(home, after)
+    await sweep(home, before, frozenset())
+    await sweep(home, after, frozenset())
     assert [listing.session for listing in after.live()] == [listing.session for listing in before.live()]
     assert {listing.session.state for listing in after.live()} == {Idle()}
     assert len(after.live()) == 2
@@ -160,3 +166,12 @@ def test_a_death_is_spoken_as_written_by_the_sessions_name() -> None:
     spoken = frame(Speak(SessionGone(SessionId("s1"))), names=lambda _: "cc-hands")
     assert isinstance(spoken, TTSSpeakFrame)
     assert spoken.text == "The session cc-hands is gone."
+
+
+@pytest.mark.parametrize("pid", [0, -1, 100000, 99999999999])
+def test_a_file_naming_no_possible_pid_is_removed_before_the_process_table_is_asked(tmp_path: Path, pid: int) -> None:
+    home = Home(tmp_path)
+    home.memberships.mkdir()
+    home.membership(SessionId("bad")).write_text(json.dumps({"pid": pid, "pane": None, "cwd": "/c", "transcript_path": "/t.jsonl"}))
+    assert recorded(home) == []
+    assert not home.membership(SessionId("bad")).exists()

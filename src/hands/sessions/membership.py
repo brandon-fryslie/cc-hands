@@ -45,17 +45,29 @@ def remove_ended_membership(home: Home, ended: Membership) -> None:
         home.membership(ended.id).unlink(missing_ok=True)
 
 
+# The largest pid macOS hands out; ps refuses to look up anything above it.
+PID_MAX = 99999
+
+
 def read_membership(home: Home, session: SessionId) -> Membership:
     path = home.membership(session)
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
         raise Rejected(f"no membership file for session {session} at {path}") from None
+    return parse_membership(session, raw)
+
+
+def parse_membership(session: SessionId, raw: bytes) -> Membership:
     record = Payload.parse(raw)
     pane = record.optional_text("pane")
+    pid = record.integer("pid")
+    # [LAW:parse-dont-validate] a pid no process can have is refused here, so no sweep ever asks the OS about it.
+    if not 0 < pid <= PID_MAX:
+        raise Rejected(f"pid {pid} is not a process id")
     return Membership(
         id=session,
-        pid=record.integer("pid"),
+        pid=pid,
         pane=None if pane is None else TmuxPane(pane),
         cwd=Path(record.text("cwd")),
         transcript=Path(record.text("transcript_path")),
