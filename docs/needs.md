@@ -46,16 +46,26 @@ changed, nothing is said. Announce transitions, never states.
 Carried by the routing table, the per-session overlay, the priority queue, and the
 `coalesce` pass. Delivered by **Attention**.
 
-## 4. Output is understandable by ear, at the depth you choose
+## 4. Claude's results are understandable by ear, at the depth you choose
 
-A turn's result is a summary by default: "edited three files, tests pass, one
-question for you." The details are there on request: what the tests said, the exact
-text of a paragraph, a diff read sensibly, a code block skipped with its length named.
-"That part" resolves to the record it came from. The summary rests on facts the
-daemon computed, not on the agent's own description of what it did.
+A turn's result is what Claude did, not only what it wrote at the end: it changed the
+token refresh to retry three times, two tests in the auth suite failed, it committed
+and opened a pull request, and it wants to know whether to keep the old endpoint.
+Most of that lives in tool calls and their results, and some of it only in the
+repository. So the summary is built from every source that holds it: the transcript's
+text, its tool calls and results, and the turn's git changes.
 
-Carried by the turn ledger and by the `uuid` on every narration. Delivered by
-**Narration depth**.
+Nothing is read aloud verbatim. Markdown, code, diffs, paths, hashes, and tables
+cannot be heard as written, so everything spoken is first put in spoken form: code
+is described by what it does, a path by its file name, a table by what it shows. A
+summary comes first, and each part of it opens into more detail when asked. A
+question Claude asked is always said, however short the summary. When you cut the
+reading off to ask something, "go back to what you were talking about" picks it up
+where it stopped. "That part" resolves to the records it came from.
+
+Carried by the transcript tail, the step recognisers, the turn's git delta, the
+spoken-form transform, the narration tree, and the playback bookmarks. Delivered by
+**Narration**.
 
 ## 5. Nothing happens without you
 
@@ -86,10 +96,10 @@ mode 11).
 The measured spike is 1.4 s from key release to first audio on a plain turn and
 4.3 s when a tool call is involved. The need is a bound that holds under load, and
 work that skips the model where the model adds nothing: a session finishing is a
-template, not a summary; the ledger is computed before the model is asked; the
-prompt is cached.
+template, not a summary; steps are summarised while the turn runs, from the
+transcript tail, so the summary is ready when the turn stops; the prompt is cached.
 
-Carried by the `Speak` channel and by the turn slice computed at `Stop`. Delivered
+Carried by the `Speak` channel and by summaries built during the turn. Delivered
 throughout, with the measurement kept in the latency observer.
 
 ## 8. It works where you are

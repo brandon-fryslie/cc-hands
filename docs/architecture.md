@@ -27,8 +27,8 @@ owns the speaker.
  │  ───────────────────────────────────────────────────────────────────────────  │
  │  sessions                  ┌──────────────────┐                               │
  │  hook socket · session     │  core (pure)     │  tmux · procs · repos         │
- │  files · JSONL reader      │  types · reducer │  audit log                    │
- │                            │  digest · policy │                               │
+ │  files · JSONL tail · git  │  types · reducer │  audit log                    │
+ │                            │  steps · policy  │                               │
  │                            └──────────────────┘                               │
  └────────▲──────────────────────────────────────────────┬───────────────────────┘
           │ hook shims, unix socket                       │ send-keys · hook replies
@@ -43,19 +43,20 @@ sessions API.
 
 ## Packages and the direction of dependency
 
-**`core`** holds the domain: the state types, the reducer, the turn digest, the
-attention policy, and the coalescing of pending speech. It imports the standard
-library and nothing else. A test asserts that: `core` must not import `pipecat`,
-`subprocess`, `socket`, or `asyncio` streams. That test is what makes
-`[LAW:effects-at-boundaries]` a property of the package rather than a habit of its
-authors. Everything in `core` can be exercised with plain values and no mocks.
+**`core`** holds the domain: the state types, the reducer, the step recognisers, the
+spoken-form transform, the narration tree, the attention policy, and the coalescing of
+pending speech. It imports the standard library and nothing else. A test asserts that:
+`core` must not import `pipecat`, `subprocess`, `socket`, or `asyncio` streams. That
+test is what makes `[LAW:effects-at-boundaries]` a property of the package rather than
+a habit of its authors. Everything in `core` can be exercised with plain values and no
+mocks.
 
 **`sessions`** is every edge on the Claude Code side: the unix socket the hook shims
-POST to, the session files the shims write, the JSONL reader, the tmux adapter, the
-process-liveness check, the repo registry, and the audit log. It parses hook input once
-at the socket into a `HookEvent` and rejects anything it does not recognise with a
-logged error and a non-2xx reply `[LAW:parse-dont-validate]`. It exposes two things
-upward: an async stream of events, and a small API the tools call.
+POST to, the session files the shims write, the JSONL tail, the git delta reader, the
+tmux adapter, the process-liveness check, the repo registry, and the audit log. It
+parses hook input once at the socket into a `HookEvent` and rejects anything it does
+not recognise with a logged error and a non-2xx reply `[LAW:parse-dont-validate]`. It
+exposes two things upward: an async stream of events, and a small API the tools call.
 
 **`voice`** is every edge on the audio side: the Pipecat pipeline, the gate and the
 edges that drive it, the audio transport, the STT, LLM, and TTS services, and the tool
@@ -80,6 +81,8 @@ the map the type checker redraws on every run `[LAW:types-are-the-program]`.
 ```python
 SessionId = NewType("SessionId", str)
 Uuid      = NewType("Uuid", str)            # a JSONL record id
+NarrationId = NewType("NarrationId", str)
+SegmentId   = NewType("SegmentId", str)
 Instant   = float                           # monotonic seconds
 
 @dataclass(frozen=True)
@@ -126,7 +129,7 @@ Input = Text | Command | Key
 Keystroke = Literal["escape", "enter", "ctrl_c", "up", "down", "tab", "shift_tab"]
 
 # The reducer's whole vocabulary of effects. Adapters perform these and nothing else.
-Effect = Reply | Type | Speak | Narrate | Note | Audit | ReadTurn | Launch
+Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | Audit | Launch
 @dataclass(frozen=True)
 class Reply:    request: RequestId; reply: HookReply
 @dataclass(frozen=True)
@@ -138,23 +141,45 @@ class Narrate:  event: Narration; priority: Priority         # LLM, run_llm on
 @dataclass(frozen=True)
 class Note:     event: Narration                             # LLM context, silent
 @dataclass(frozen=True)
-class Audit:    record: AuditRecord
+class Play:     narration: NarrationId; segment: SegmentId   # straight to TTS, bookmarked
 @dataclass(frozen=True)
-class ReadTurn: session: SessionId; since: Uuid | None       # the JSONL slice
+class Summarise: narration: NarrationId; steps: Sequence[Step]; expand: SegmentId | None
+@dataclass(frozen=True)
+class Snapshot: session: SessionId; point: Literal["turn_start", "turn_end"]  # git delta
+@dataclass(frozen=True)
+class Audit:    record: AuditRecord
 @dataclass(frozen=True)
 class Launch:   repo: Path; title: str                       # a new tmux window
 
 Priority = Literal["blocking", "result", "fyi"]
 
-# Every narration carries the record it came from, so "that part" is a lookup.
+# A narration is a tree of spoken segments. The top level plays first; each segment
+# opens into children, and every segment names the records it summarises, so
+# "that part" and "more on that" are lookups.
+@dataclass(frozen=True)
+class Segment:
+    id: SegmentId
+    kind: Literal["headline", "question", "section", "detail"]
+    spoken: str                     # already in spoken form; goes straight to TTS
+    refs: Sequence[Uuid]            # the records this segment summarises
+    children: Sequence[SegmentId]   # empty until built, on request or ahead of time
+
 @dataclass(frozen=True)
 class Narration:
+    id: NarrationId
     session: SessionId
     title: str
-    kind: Literal["stop", "blocked", "subagent", "idle", "gone"]
-    ref: Uuid | None
-    text: str
-    ledger: Ledger | None      # what the turn did, computed from the transcript
+    kind: Literal["stop", "progress", "blocked", "subagent", "idle", "gone"]
+    top: Sequence[SegmentId]        # headline, then questions, then sections
+    segments: Mapping[SegmentId, Segment]
+
+# Where playback is, and where it was when you cut in. Resume pops the stack.
+@dataclass(frozen=True)
+class Bookmark: narration: NarrationId; segment: SegmentId
+@dataclass(frozen=True)
+class Playback:
+    playing: Bookmark | None
+    interrupted: Sequence[Bookmark]  # most recent last
 
 Draft = NoDraft | Staged
 @dataclass(frozen=True)
@@ -172,20 +197,23 @@ second one `[LAW:one-source-of-truth]`.
 reduce(state: Registry, event: Event) -> tuple[Registry, list[Effect]]
 ```
 
-`Event` is the union of parsed hook events, tool calls from the intermediary, ticks
-from the one clock, results of `ReadTurn`, and liveness reports. The reducer is a
+`Event` is the union of parsed hook events, steps from the transcript tail, tool calls
+from the intermediary, ticks from the one clock, results of `Summarise` and `Snapshot`,
+playback reports from the output transport, and liveness reports. The reducer is a
 pure function `[LAW:effects-at-boundaries]`: it never reads a file, checks a process,
 or looks at a clock. When it needs the time it has already been handed one in a
-`Tick`. When it needs the last turn's records it emits `ReadTurn` and receives them
-back as an event.
+`Tick`. When it needs a summary it emits `Summarise` and receives the segments back as
+an event.
 
-The adapters live in `sessions` and `voice` and each performs one effect kind:
-`Type` becomes `tmux send-keys`, `Reply` writes to the blocked shim's socket
-connection, `Speak` becomes a Pipecat `TTSSpeakFrame`, `Narrate` and `Note` become
-`LLMMessagesAppendFrame` with `run_llm` on or off, `Audit` appends one JSONL line,
-`ReadTurn` reads the transcript slice, `Launch` opens a tmux window. An adapter that
-fails raises; the supervisor logs it and the failure is spoken through the system
-channel. Nothing is retried silently and nothing falls back `[LAW:no-silent-failure]`.
+The adapters live in `sessions` and `voice` and each performs one effect kind: `Type`
+becomes `tmux send-keys`, `Reply` writes to the blocked shim's socket connection,
+`Speak` becomes a Pipecat `TTSSpeakFrame`, `Narrate` and `Note` become
+`LLMMessagesAppendFrame` with `run_llm` on or off, `Play` sends a segment to TTS
+through the player, `Summarise` calls the summariser, `Snapshot` records or diffs the
+target's git state, `Audit` appends one JSONL line, `Launch` opens a tmux window. An
+adapter that fails raises; the supervisor logs it and the failure is spoken through
+the system channel. Nothing is retried silently and nothing falls back
+`[LAW:no-silent-failure]`.
 
 Because every transition is `reduce` on values, the test suite for the session
 lifecycle is a table: state before, event, state after, effects. There is no pipeline,
@@ -200,6 +228,7 @@ Each timing fact has one owner.
 |---|---|
 | When a user turn starts and ends | the gate, through the key position |
 | Which utterance plays next, and that two never overlap | Pipecat's output transport |
+| Where a narration resumes after you cut in | the player's bookmark stack, from the segment the output transport was playing |
 | When a permission deadline warns and expires | the reducer, from `Blocked.deadline`, driven by one `Tick` source |
 | Whether text typed mid-turn is queued or lost | Claude Code's own input queue |
 | When the daemon is up, and restarting it | launchd, with `KeepAlive` |
@@ -218,9 +247,9 @@ by experiment. If it does, `send_draft` while a target is working is an ordinary
 send. If it does not, `send_draft` returns a typed `RefusedBusy` result and the user
 hears it. Either way the daemon holds nothing.
 
-## Three ways to reach the ear
+## Four ways to reach the ear
 
-Every event that reaches the pipeline takes one of three routes, and the route is
+Every event that reaches the pipeline takes one of four routes, and the route is
 chosen by a table, not by code that looks at the event `[LAW:dataflow-not-control-flow]`.
 
 - **Speak.** Text goes straight to TTS as a `TTSSpeakFrame`. No model call, no
@@ -228,9 +257,15 @@ chosen by a table, not by code that looks at the event `[LAW:dataflow-not-contro
   "auth-refactor finished", "ten seconds on that permission", "cc-hands is gone, the
   pane closed", "the language model is unreachable". This channel is also how the
   daemon reports its own failures, which is why it must not depend on the LLM.
+- **Play.** A narration's segments go to TTS one at a time through the player,
+  already in spoken form. There is no model call at playback, because the
+  summariser did that work first. The player knows which segment is on the speaker,
+  so an interruption leaves a bookmark, and each played segment is appended to the
+  intermediary's context as a note so it can answer about what you heard. Used for
+  a turn's results, progress while a session works, and a subagent's report.
 - **Narrate.** The event is appended to the intermediary's context with `run_llm`
-  on. The model summarises and speaks. Used when the content needs interpretation:
-  a `Stop` with its ledger, a permission request, a question.
+  on. The model interprets and speaks. Used when the content is a conversation
+  turn: a permission request, a question from `AskUserQuestion`, a plan.
 - **Note.** Appended with `run_llm` off. The model knows, and says nothing until
   asked. Used for context that changes what a later answer should say: a focus
   change, a subagent finishing, a session going idle.
@@ -238,31 +273,35 @@ chosen by a table, not by code that looks at the event `[LAW:dataflow-not-contro
 The routing table is a value in `core`:
 
 ```python
-Route = Literal["speak", "narrate", "note", "drop"]
+Route = Literal["speak", "play", "narrate", "note", "drop"]
 DEFAULT_POLICY: Mapping[EventKind, Route] = {
-    "stop": "narrate", "blocked": "narrate", "subagent_stop": "note",
-    "idle_prompt": "speak", "gone": "speak", "session_start": "note",
-    "message_display": "drop", "post_tool_use": "drop", ...
+    "stop": "play", "progress": "note", "blocked": "narrate", "subagent_stop": "note",
+    "idle_prompt": "speak", "gone": "speak", "session_start": "note", ...
 }
 ```
 
-A per-session overlay of `focused | normal | muted` is a second table over the
-first: a muted session's `narrate` becomes `note`, a focused session's `note` becomes
-`narrate`. Adding a new event kind is a new row, and adding an overlay value is a new
-column `[LAW:one-type-per-behavior]`.
+A per-session overlay of `focused | normal | muted` is a second table over the first:
+a muted session's `play` and `narrate` become `note`, and a focused session's
+`progress` becomes `play`. Adding a new event kind is a new row, and adding an overlay
+value is a new column `[LAW:one-type-per-behavior]`.
 
 Pending speech is a priority queue in `voice`: `blocking` before `result` before
 `fyi`, and nothing starts while the key is down. Before an utterance plays, a pure
-`coalesce` pass folds pending items from one session into one narration carrying all
-their record ids, so three `Stop`s that arrived while you were talking become one
-sentence, not three. Each item is a transition keyed by the record id that caused it,
-so nothing is announced twice `[LAW:one-source-of-truth]`.
+`coalesce` pass folds pending items from one session into one narration whose headline
+covers them all and whose segments keep their record ids, so three `Stop`s that
+arrived while you were talking start with one sentence, not three. Each item is a
+transition keyed by the record id that caused it, so nothing is announced twice
+`[LAW:one-source-of-truth]`.
 
-## Hooks are the event source, not the transcripts
+## Hooks carry the lifecycle; the transcript carries the content
 
-Hooks are lower latency than tailing JSONL and carry more data. Every hook input
-carries `session_id`, `transcript_path`, `cwd`, `permission_mode`, and
-`hook_event_name`; the event-specific fields below were read out of the 2.1.263 bundle.
+Hooks say when things happen: a session starts, a prompt is submitted, a turn stops, a
+permission is needed. They fire at the moment, and the blocking one is the only way to
+answer a permission. What a turn did is in the transcript, which Claude Code appends
+to while the turn runs, so the daemon tails it rather than hooking every tool call.
+Every hook input carries `session_id`, `transcript_path`, `cwd`, `permission_mode`,
+and `hook_event_name`; the event-specific fields below were read out of the 2.1.263
+bundle.
 
 | Event | Payload fields |
 |---|---|
@@ -293,9 +332,11 @@ SubagentStop TaskCompleted TaskCreated TeammateIdle UserPromptExpansion
 UserPromptSubmit WorktreeCreate WorktreeRemove
 ```
 
-The daemon subscribes to the eight in the table. `PostToolUse` is deliberately not
-one of them: it would put a process spawn on the agent's critical path for every tool
-call, and the same facts are in the transcript at `Stop` for free.
+The daemon subscribes to seven events in the table; `MessageDisplay` is listed for
+its payload and is not subscribed. It and `PostToolUse` would each put a process spawn
+on the agent's critical path, for every text delta and every tool call, and
+`MessageDisplay` dispatches synchronously. The transcript tail carries the same text
+and the same tool calls at no cost to the agent.
 
 **The shims.** Each is a two-line script in the target session's hook config: POST
 stdin to the daemon socket, exit. At `SessionStart` the shim also writes
@@ -312,62 +353,158 @@ sole exception is `PermissionRequest`, where blocking is the feature. Its timeou
 declared in the hook config, and the daemon derives its default-deny deadline from
 that same number, so there is one place the budget is set `[LAW:single-enforcer]`.
 
-## Transcripts: backfill, and the turn slice at Stop
+## Transcripts: the live tail, and backfill
 
-Transcripts are read in two situations and no others.
+Claude Code appends to a session's JSONL while the turn runs, one record per content
+block. While this design was written, its own session's transcript held a record 21
+seconds old in the middle of a turn. So the daemon reads transcripts continuously, not
+only when a turn stops.
+
+**The tail.** From the moment a session registers, the adapter follows its JSONL from
+the watermark and hands each new record to a pure `recognise`, which turns records into
+`Step`s through one table of recognisers `[LAW:one-type-per-behavior]`. The reducer
+receives steps as events and asks for their summaries as they arrive, so by the time
+`Stop` fires most of the turn's summary is built.
 
 **Backfill.** When the daemon attaches to a session that has been running for an
-hour, no hooks fired for those turns. `read_session(session, since)` reads the JSONL
-at the `transcript_path` the shim recorded to answer "what happened before I got
-here."
-
-**The turn slice.** `Stop` carries the turn's final text but no record id and no
-account of what the turn did. So at each `Stop` the reducer emits `ReadTurn(session,
-since=last)`, and the adapter reads the records since the watermark: the `uuid` of the
-final assistant record, and every `tool_use` and `tool_result` block in between. From
-those a pure `digest` computes the `Ledger`:
+hour, `read_session(session, since)` reads the same file from an earlier point through
+the same recognisers.
 
 ```python
+# One variant per kind of thing a turn does. Every step names the record it came from.
+Step = Said | Edited | Ran | Tested | Looked | Committed | Planned | Delegated | Asked | Other
+
 @dataclass(frozen=True)
-class Ledger:
-    files_edited: Sequence[Path]
-    files_read: int
-    commands: Sequence[CommandRun]      # command, exit code, one-line tail
-    tests: TestSummary | None           # passed, failed, the failing names
-    turns_in_slice: int
+class Said:      ref: Uuid; markdown: str                  # assistant text; never spoken as is
+@dataclass(frozen=True)
+class Edited:    ref: Uuid; path: Path; patch: Patch       # Edit, Write, MultiEdit, NotebookEdit
+@dataclass(frozen=True)
+class Ran:       ref: Uuid; command: str; purpose: str | None; failed: bool; output: str
+@dataclass(frozen=True)
+class Tested:    ref: Uuid; runner: str; passed: int; failed: int; failing: Sequence[str]
+@dataclass(frozen=True)
+class Looked:    ref: Uuid; tool: str; target: str; found: str   # Read, Grep, Glob, web tools
+@dataclass(frozen=True)
+class Committed: ref: Uuid; operation: GitOperation        # commit, push, branch, pull request
+@dataclass(frozen=True)
+class Planned:   ref: Uuid; items: Sequence[TodoItem]      # TodoWrite and the task tools
+@dataclass(frozen=True)
+class Delegated: ref: Uuid; agent_type: str; description: str; report: str | None
+@dataclass(frozen=True)
+class Asked:     ref: Uuid; questions: Sequence[AskedQuestion]    # AskUserQuestion
+@dataclass(frozen=True)
+class Other:     ref: Uuid; tool: str; input: str; result: str    # named and summarised, never dropped
 ```
 
-The ledger is deterministic, small, and attached to the narration, so the model
-summarises "edited three files and the tests pass" from facts rather than from
-Claude's prose about itself. Known tool shapes are parsed by one table of
-recognisers `[LAW:one-type-per-behavior]`; an unrecognised tool counts and is named.
+`Tested` is a `Ran` whose output a test-runner parser accepts: pytest, vitest, cargo
+test, go test. Questions asked in plain text rather than through `AskUserQuestion` are
+found when the turn is summarised.
 
-Record shapes worth knowing:
+Record shapes worth knowing, observed in transcripts on 2026-09-14:
 
 - `ai-title` → `aiTitle`. Live session name, free, no model call. Use it for
   `list_sessions` labels.
 - `assistant` → `.message.content[]`, blocks typed `text` | `thinking` | `tool_use`.
-  Narrate `text` only.
+  `text` and `tool_use` are both content. A Bash `tool_use` carries a `description` of
+  its purpose.
 - `user` → `.message.content` is a plain string for real user turns, or an array of
-  `tool_result`; `isMeta: true` marks injected reminders. Filter to string + non-meta.
+  `tool_result`; `isMeta: true` marks injected reminders. The record's top-level
+  `toolUseResult` holds the structured result: `structuredPatch` for edits and writes;
+  `stdout`, `stderr`, and `interrupted` for commands; `gitOperation` for a commit, a
+  push, a branch change, or a pull request. A failed command's result is a string that
+  begins `Error: Exit code N`.
 - `permission-mode` → live session mode.
 - Every record: `uuid`, `parentUuid`, `timestamp`, `cwd`, `gitBranch`, `sessionId`.
 
-Two filters are non-negotiable: `isSidechain: false`, or you narrate every subagent's
-internal chatter; and the block-type filter, because in a sampled real session only
-6 of 69 assistant content blocks were `text`. Budget speakable blocks, never records.
+**Prose is the smallest part of a turn.** In one session sampled for this design there
+were 24 assistant text blocks and 157 tool calls; the text came to 126 thousand
+characters and the tool results to nearly 2 million, most of them screenshots. Happy
+narrated only the text, which is the least of what happened (failure mode 2). Here the
+recognisers cover the rest, and the length budget applies to what is spoken, after
+summarising.
+
+**Subagents.** On the parent's tail, where `isSidechain` is false, a subagent is one
+`Agent` call and its report, which becomes `Delegated`. Its own records are in
+`<session>/subagents/agent-<id>.jsonl`, with `agentType`, `description`, and the
+parent's `toolUseId` in the `.meta.json` beside it. Tailing those is later work
+(failure mode 21).
+
+**Results outside the transcript.** A formatter, a code generator, or a `sed` in a
+shell command changes files that no `Edited` step names. So at `UserPromptSubmit` the
+reducer emits `Snapshot(turn_start)`, and the adapter records the target's `HEAD` and a
+`git stash create` object, which captures the working tree without changing it. At
+`Stop`, `Snapshot(turn_end)` diffs against that baseline, lists the commits since
+`HEAD`, and lists untracked files that appeared, which a stash object does not hold.
+The summariser gets the delta with the steps. The snapshot races the agent's first edit
+by however long the model takes to start, which is seconds, and an edit that wins the
+race is still an `Edited` step.
+
+## Summaries: spoken form, and the narration tree
+
+Nothing is read verbatim. Claude writes for a screen, and markdown, code, tables, paths,
+and hashes cannot be heard as written, so every word that reaches the speaker is
+summarised or transformed first.
+
+**Spoken form** is a pure function in `core` from text to speakable text, installed as
+the TTS service's text transform so there is one place it is enforced
+`[LAW:single-enforcer]`. It applies to summaries, to the intermediary's replies, and to
+system speech alike. Headings become section cues and lists become counted sequences.
+Identifiers are split into words, so `authMiddleware` is "auth middleware". A path
+becomes its file name, with its directory only when two files share the name. Flags
+become their names, and hashes, ids, and URLs are named by what they point at or
+dropped. Code blocks, diffs, and tables never reach it as text, because they are
+summarised first; one that leaks through is replaced by its kind and length, and the
+leak is logged.
+
+**The summariser** is a stateless call on the configured backend, separate from the
+conversational context. It takes steps, the turn's final text, and the git delta, and
+returns segments. Code and diffs are described by what they do: "adds a retry around
+the token refresh, three attempts with backoff," not the lines. Step summaries are
+requested as steps arrive from the tail, and the turn's narration at `Stop` assembles
+them, so first audio does not wait for the whole turn to be read.
+
+**The narration tree.** A turn's narration plays its top level: a headline, then any
+questions, then one section per topic, such as the change, the tests, and the commit.
+Each segment opens into children when asked, built from its records the first time.
+Questions come from the final text and from choices Claude offered, and they are in the
+top level at every length. The top level's length is a number in the config. It starts
+at one sentence and is expected to change as soon as it is heard, so the eval script
+measures it and changing it is cheap.
+
+**Streaming.** Steps from the tail are events like any other, so a session's progress
+can be played as it happens: "running the tests," "editing the auth middleware." The
+routing table makes `progress` a note by default and the focus overlay makes it play;
+`coalesce` folds a burst of edits into one sentence.
+
+## Playback: bookmarks and resume
+
+You will cut the reading off often, to ask which file or to answer something else, and
+every interrupted reading must be resumable. So where playback is lives in the daemon,
+not in the model's memory (failure modes 8 and 25). The player holds a `Playback`: the
+segment on the speaker, and a stack of bookmarks where earlier readings were cut off.
+
+An interruption pushes a bookmark at the segment that was playing. "Go back to what you
+were talking about" is `resume()`, which pops the bookmark and replays that segment from
+its start. "Skip that" and "say that again" are `skip()` and `repeat()`. "That part" is
+the segment playing, or the last one played, and "more on that" is `expand()` on it.
+
+Pipecat's output transport reports text as its audio plays, and on an interruption only
+the text that played reaches the context. pocket-tts reports no word timings, so the
+finest position is a sentence, and a segment is one to a few sentences. The playback
+ticket confirms when a sentence's text frame arrives relative to its audio.
 
 ## Push pointers, pull content
 
 The intermediary's context window holds the conversation with you, not session
-transcripts. Hook events are injected as small frames carrying the session title, the
-event kind, the record's `uuid`, the turn's final text for `Stop`, and the ledger.
-Anything older is a `read_session` query. This is the single decision that avoids
+transcripts. Hook events and played segments are injected as small frames carrying the
+session title, the event kind, the spoken text, and the segment id. Steps, records, and
+unplayed segments stay in the daemon, and `expand`, `read_session`, and `recall` pull
+them. This is the single decision that avoids
 most of Happy's trouble: it pushed history in and could not pull, so it needed a
 bootstrap dump, an eviction policy it never wrote, and a window that only grew.
 
 The one thing that must be preserved for "give me the details of that part" to
-resolve: every narration carries the `uuid` of the record it came from. "That part"
+resolve: every segment carries the `uuid`s of the records it summarises. "That part"
 is then a lookup rather than a fuzzy search back through what was said.
 
 ## Sessions: membership from files, state from events, liveness from the OS
@@ -424,10 +561,15 @@ answer_question(request, answers)
 find_path(session?, query)
 catch_up(since?)
 recall(query, since?)
+expand(segment?)                 resume()
+skip()                           repeat()
 ```
 
-The boundary rule: the tools route, name, and read session records. None reads or
-writes a file in a repository. `find_path` returns paths from `git ls-files` in the
+The boundary rule: the tools route, name, and read session records and summaries.
+None writes to a repository, and the conversational model is never handed a file's
+contents. The daemon does read what a session changed, through its transcript and its
+git delta, because summarising results is the job; the summariser sees diffs so that it
+can describe them. `find_path` returns paths from `git ls-files` in the
 target's `cwd` so that a spoken "the auth middleware file" can be resolved to a real
 path before it is sent; it returns names, never contents. `catch_up` and `recall`
 read the daemon's own audit log. Give the intermediary an edit tool and it will
@@ -539,7 +681,8 @@ Anthropic one, function registration from the `LLMContext`, `TTSSpeakFrame` for 
 system channel, and `LLMMessagesAppendFrame` with `run_llm` for the other two.
 Verified against the installed Pipecat 1.10 on 2026-09-12.
 
-pocket-tts is MIT, 100M parameters, CPU-only by design, and streams: measured on this
+pocket-tts is MIT, 100M parameters, CPU-only by design, reports no word timings, and
+streams: measured on this
 Mac, first audio 87 ms after the text arrives and about 5.6x real time. Whisper
 large-v3-turbo on MLX transcribes a four-second clip in under a second. The default
 LLM is Qwen3-30B-A3B-Instruct-2507 in MLX 8-bit served by `mlx_lm.server` on inferno,

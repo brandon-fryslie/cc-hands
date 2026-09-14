@@ -32,8 +32,11 @@ than trusting what it was handed.
 session, 6 of 69 assistant content blocks were speakable text. "50 messages" can mean two
 sentences.
 
-**Rule:** budget the thing you're actually spending. Count speakable blocks or tokens,
-never records, and measure after the filter.
+**Rule:** budget the thing you're actually spending, which for speech is spoken length,
+and measure it after summarising, never on the records going in. The same number
+carries the lesson Happy missed: if 6 of 69 blocks are prose, the other 63 hold most of
+what the agent did. Tool calls and their results are the primary record of a turn, and
+a filter that drops them drops the results.
 
 ### 3. The same event announced twice, one of them useless
 
@@ -231,10 +234,17 @@ A session dies without `SessionEnd` — crash, closed pane, killed terminal — 
 measures nothing: a session waiting for input is silent for hours and alive, and a
 session in a tool loop is never silent.
 
-### 21. Subagent chatter gets narrated
+### 21. Subagent work is narrated as noise, or lost
 
-**Rule:** filter `isSidechain: false` on the narration path. `SubagentStop` is a separate,
-deliberate announcement if you want one at all.
+A subagent's records are its own conversation: a prompt, its tool calls, and a report.
+Spliced into the parent's narration they are noise. Dropped, they lose work the parent
+relied on, because the parent often says only "the review found three issues."
+
+**Rule:** the parent's narration reads the parent transcript, where a subagent is one
+`Agent` call and its report. A subagent's own transcript, at
+`<session>/subagents/agent-<id>.jsonl` with its type and description in the `.meta.json`
+beside it, is summarised as its own narration and linked to the parent call by
+`toolUseId`.
 
 ### 22. TTS output leaks into the mic
 
@@ -248,7 +258,30 @@ own speech back in as your next utterance.
 You ask for detail on something it narrated. If narration is just text, resolving that
 means fuzzy-matching back through what it said.
 
-**Rule:** every narration carries the `uuid` of the record it came from. `Stop` carries
-the text but no record id, so the daemon reads the turn's records from the session
-JSONL at each `Stop` and attaches the `uuid` of the last one. "That part" becomes a
-lookup. Cheap at the source, impossible to retrofit.
+**Rule:** every segment of a narration carries the `uuid`s of the records it summarises.
+The daemon tails the session JSONL, so the ids are in hand when the summary is built.
+"That part" becomes a lookup: the segment playing, or the last one played. Cheap at the
+source, impossible to retrofit.
+
+### 24. Something unspeakable reaches the speaker
+
+Claude writes for a screen: fenced code, tables, nested bullets, backticked identifiers,
+file paths, commit hashes, URLs. Sent to TTS as written, that becomes "backtick backtick
+backtick python" or a minute of symbols, and the listener gives up.
+
+**Rule:** nothing is read verbatim, and no text reaches TTS without passing through the
+spoken-form transform. Code and diffs are summarised by what they do; identifiers are
+split into words; a path is its file name; a hash, id, or URL is named by what it points
+at or dropped. The transform runs in one place, the TTS service's text transform, so a
+model reply that slips a backtick through is caught there too.
+
+### 25. An interruption loses the thread
+
+You cut in to ask "which file?" in the middle of a summary. The answer comes, and the
+rest of the summary is gone, because the model's only memory of where it was is its own
+context, which now ends at the interruption.
+
+**Rule:** where playback stopped is daemon state, not model memory. A narration is a
+sequence of segments; an interruption pushes a bookmark at the segment that was playing;
+"go back to what you were talking about" pops it and replays that segment from its
+start.

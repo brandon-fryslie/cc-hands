@@ -15,7 +15,7 @@ the session, draft, and permission plumbing, comes first, and **Loud daemon** is
 the first epic after it, ahead of every feature that makes the intermediary
 smarter. After that, the epics are ordered by how soon their absence
 sends you back to the keyboard: interrupt and questions first, then attention across
-sessions, then narration quality, then starting sessions, dictation, the phone, and
+sessions, then narration, then starting sessions, dictation, the phone, and
 the day-long memory.
 
 Nothing in the plan is a flag. Where two behaviours are wanted, they are variants of
@@ -59,7 +59,7 @@ closes.
 - **Audio device loss.** Unplugging the headset does not kill the pipeline: the
   transport error is spoken through the surviving device or shown on screen, and
   the transport is rebuilt on the default device. Done by unplugging mid-turn.
-- **Hook installer.** `hands install-hooks` merges the eight shim entries, with
+- **Hook installer.** `hands install-hooks` merges the seven shim entries, with
   their timeouts, into the Claude Code settings file, idempotently, keyed by a
   marker so re-running changes nothing. Done when running it twice yields one diff.
 
@@ -110,28 +110,74 @@ Need 3. How several sessions share one ear.
   is a note. Done when "be quiet for a while" suppresses `Stop`s and a permission
   request still gets through.
 
-## Narration depth (`hands-narration-2mc`)
+## Narration (`hands-narration-2mc`)
 
-Need 4, and the deterministic half of need 7.
+Need 4, and the precomputing half of need 7. How Claude's results reach the ear.
+Nothing here reads text verbatim, and tool calls are content, not noise to filter.
+The first eight tickets are the first working version; progress while working and
+subagent narration follow it.
 
-- **Turn slice and ledger.** At `Stop` the adapter reads the transcript since the
-  watermark; `digest` computes the `Ledger` from one table of tool recognisers:
-  Edit, Write, Read, Bash with exit codes, and pytest, vitest, cargo, and go test
-  output. Done by fixture tests on real JSONL slices, and when a narration of a
-  turn that ran tests names the failing test without the model having been told.
-- **The intermediary's prompt.** Its own deliverable: one-sentence default, no
-  formatting, no ids aloud, titles for sessions, "speak what changed" for
-  readbacks, "that part" resolved by id. Done by an eval script over fixtures
-  that checks length, the presence of the ledger's facts, and the absence of
-  identifiers, run against the local model.
-- **Drill-down and exact reading.** "The details of that part" is
-  `read_session(session, since=uuid)`; "read it exactly" returns the raw text and
-  the prompt reads it verbatim, naming a code block's length instead of reading it.
-  Done live.
-
-Streaming narration from `MessageDisplay` deltas is not planned. Stop-based
-narration with the local model is 1.4 s to first audio; streaming would trade that
-for narrating tool chatter, and the ledger already carries what the deltas would.
+- **Transcript tail and step recognisers.** While a session is registered, the
+  adapter follows its JSONL from the watermark, and one table of recognisers turns
+  records into typed `Step`s: text, edits with their patches, commands with their
+  purpose, output, and failure, test runs with the failing names, reads and
+  searches, git operations, todo and task updates, `Agent` dispatches with their
+  reports, and `AskUserQuestion`. An unrecognised tool is named and summarised,
+  never dropped. Done by fixture tests on real JSONL slices, and by a measurement
+  of the lag from a record's `timestamp` to its `Step`.
+- **The turn's git delta.** At `UserPromptSubmit` the daemon records the target's
+  git baseline without touching the working tree; at `Stop` it computes the files
+  changed, the commits made, new untracked files, and the diff. Changes made by any
+  means, a formatter or a `sed` in a shell command included, are part of the
+  result. Done when a turn whose only change came from a shell command is
+  summarised as changing that file.
+- **Spoken form.** A pure transform in `core`, installed as the TTS service's text
+  transform so every utterance passes through it: headings become section cues,
+  lists become counted sequences, identifiers are split into words, paths become
+  file names, and flags, hashes, ids, and URLs are named or dropped. Code, diffs,
+  and tables are summarised before they get here. Done by a table test of written
+  inputs from real Claude replies and their spoken forms, and a test that no text
+  reaching TTS contains a backtick, a pipe table, or a fenced block.
+- **Summaries and the narration tree.** A stateless summariser call on the
+  configured backend turns a turn's steps, final text, and git delta into a tree
+  of segments: a headline, the questions, then one section per topic, each
+  carrying its record ids and opening into children. Code and diffs are described
+  by what they do. Step summaries are built as steps arrive, so the headline is
+  ready at `Stop`. The top level's length is a config number that starts at one
+  sentence and is expected to change as soon as it is heard. Done by an eval
+  script over real turn fixtures that checks the steps' facts are present, no
+  identifier or code is spoken, and the length holds, and by first audio after
+  `Stop` measured on inferno.
+- **Question detection.** Questions in the final text, and choices Claude offered,
+  become question segments that play at every length, ahead of the sections; a
+  turn that ends on one makes the idle nudge say the session has a question. Done
+  by fixtures of real turns that do and do not end on a question, with the eval
+  reporting misses and false alarms.
+- **The intermediary's prompt.** The conversational model's own deliverable,
+  separate from the summariser's: titles for sessions and no ids aloud, replies in
+  spoken form, "speak what changed" for readbacks, and calling `expand`, `resume`,
+  `skip`, and `repeat` instead of paraphrasing from memory. Done by an eval script
+  over conversation fixtures, run against the local model.
+- **Playback bookmarks and resume.** One player knows which segment is on the
+  speaker. An interruption pushes a bookmark; "go back to what you were talking
+  about" pops it and replays that segment from its start; "skip that" and "say
+  that again" move the same cursor. Done by reducer table tests, and live: barge
+  in mid-summary, ask something unrelated, and resume at the segment that was cut
+  off.
+- **Drill-down.** "More on that" expands the segment playing, or the last one
+  played, into its children, built from its records on demand. There is no
+  verbatim mode: the deepest level is a longer summary, and code is still
+  described, not recited. Done live: a failing test named in a headline opens into
+  what failed and why.
+- **Progress while working.** Streaming narration from the tail: a focused
+  session's steps play at `fyi` priority as they happen, coalesced so a burst of
+  edits is one sentence, and a normal session's steps are notes. Done live: a
+  focused session running tests is heard doing so before it stops.
+- **Subagent narration.** After the first working version. A subagent's transcript
+  under the session's `subagents/` directory is tailed like the parent's, its type
+  and description come from the `.meta.json` beside it, and its report is
+  summarised as its own narration linked to the parent's `Agent` call. Done when
+  "what did the reviewer find" is answered from the subagent's own steps.
 
 ## Sessions by voice (`hands-lifecycle-n1m`)
 
