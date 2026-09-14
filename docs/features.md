@@ -59,9 +59,11 @@ closes.
 - **Audio device loss.** Unplugging the headset does not kill the pipeline: the
   transport error is spoken through the surviving device or shown on screen, and
   the transport is rebuilt on the default device. Done by unplugging mid-turn.
-- **Hook installer.** `hands install-hooks` merges the seven shim entries, with
+- **Hook installer.** `hands install-hooks` merges the eight hook entries, with
   their timeouts, into the Claude Code settings file, idempotently, keyed by a
-  marker so re-running changes nothing. Done when running it twice yields one diff.
+  marker so re-running changes nothing; `MessageDisplay` is an HTTP hook, the rest
+  are shims. Done when running it twice yields one diff, and when a streaming turn
+  with the daemon stopped stalls no longer than the hook's timeout.
 
 ## Whole keyboard by voice (`hands-keyboard-gxr`)
 
@@ -155,8 +157,9 @@ subagent narration follow it.
   reporting misses and false alarms.
 - **The intermediary's prompt.** The conversational model's own deliverable,
   separate from the summariser's: titles for sessions and no ids aloud, replies in
-  spoken form, "speak what changed" for readbacks, and calling `expand`, `resume`,
-  `skip`, and `repeat` instead of paraphrasing from memory. Done by an eval script
+  spoken form, "speak what changed" for readbacks, calling `expand`, `resume`,
+  `skip`, and `repeat` instead of paraphrasing from memory, and `stay_silent` for
+  words not addressed to it. Done by an eval script
   over conversation fixtures, run against the local model.
 - **Playback bookmarks and resume.** One player knows which segment is on the
   speaker. An interruption pushes a bookmark; "go back to what you were talking
@@ -169,10 +172,11 @@ subagent narration follow it.
   verbatim mode: the deepest level is a longer summary, and code is still
   described, not recited. Done live: a failing test named in a headline opens into
   what failed and why.
-- **Progress while working.** Streaming narration from the tail: a focused
-  session's steps play at `fyi` priority as they happen, coalesced so a burst of
-  edits is one sentence, and a normal session's steps are notes. Done live: a
-  focused session running tests is heard doing so before it stops.
+- **Progress while working.** Streaming narration: a focused session's steps from
+  the tail, and its text line by line from `MessageDisplay`, play at `fyi` priority
+  as they happen, coalesced so a burst of edits is one sentence, and a normal
+  session's are notes. Done live: a focused session running tests is heard doing so
+  before it stops, and a long explanation is summarised before it finishes.
 - **Subagent narration.** After the first working version. A subagent's transcript
   under the session's `subagents/` directory is tailed like the parent's, its type
   and description come from the `.meta.json` beside it, and its report is

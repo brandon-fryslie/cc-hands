@@ -293,14 +293,15 @@ arrived while you were talking start with one sentence, not three. Each item is 
 transition keyed by the record id that caused it, so nothing is announced twice
 `[LAW:one-source-of-truth]`.
 
-## Hooks carry the lifecycle; the transcript carries the content
+## Hooks carry the moment; the transcript carries the record
 
 Hooks say when things happen: a session starts, a prompt is submitted, a turn stops, a
-permission is needed. They fire at the moment, and the blocking one is the only way to
-answer a permission. What a turn did is in the transcript, which Claude Code appends
-to while the turn runs, so the daemon tails it rather than hooking every tool call.
-Every hook input carries `session_id`, `transcript_path`, `cwd`, `permission_mode`,
-and `hook_event_name`; the event-specific fields below were read out of the 2.1.263
+permission is needed, a line of Claude's text is ready. They fire at the moment, and
+the blocking one is the only way to answer a permission. What a turn did, with the
+record id of each step, is in the transcript, which Claude Code appends to while the
+turn runs, so the daemon tails it rather than hooking every tool call. Every hook
+input carries `session_id`, `transcript_path`, `cwd`, `permission_mode`, and
+`hook_event_name`; the event-specific fields below were read out of the 2.1.263
 bundle.
 
 | Event | Payload fields |
@@ -332,11 +333,15 @@ SubagentStop TaskCompleted TaskCreated TeammateIdle UserPromptExpansion
 UserPromptSubmit WorktreeCreate WorktreeRemove
 ```
 
-The daemon subscribes to seven events in the table; `MessageDisplay` is listed for
-its payload and is not subscribed. It and `PostToolUse` would each put a process spawn
-on the agent's critical path, for every text delta and every tool call, and
-`MessageDisplay` dispatches synchronously. The transcript tail carries the same text
-and the same tool calls at no cost to the agent.
+The daemon subscribes to the eight events in the table. `MessageDisplay` is the only
+live source of Claude's text: the transcript writes a text block once, after it
+finishes (checked on 2026-09-14), while `MessageDisplay` fires with each batch of
+finished lines as the text streams. It is dispatched synchronously for every batch,
+even to a hook that declares itself async, so it is installed as an HTTP hook, which
+Claude Code 2.1.270 supports: the event is POSTed to the daemon with no process
+spawned, under a short timeout. Its cost per batch and Claude's behaviour when the
+daemon is down are measured before it is relied on. `PostToolUse` stays unsubscribed,
+because the tail carries tool calls and their results with their record ids.
 
 **The shims.** Each is a two-line script in the target session's hook config: POST
 stdin to the daemon socket, exit. At `SessionStart` the shim also writes
@@ -356,7 +361,7 @@ that same number, so there is one place the budget is set `[LAW:single-enforcer]
 ## Transcripts: the live tail, and backfill
 
 Claude Code appends to a session's JSONL while the turn runs, one record per content
-block. While this design was written, its own session's transcript held a record 21
+block, each written once when the block finishes. While this design was written, its own session's transcript held a record 21
 seconds old in the middle of a turn. So the daemon reads transcripts continuously, not
 only when a turn stops.
 
@@ -472,9 +477,11 @@ at one sentence and is expected to change as soon as it is heard, so the eval sc
 measures it and changing it is cheap.
 
 **Streaming.** Steps from the tail are events like any other, so a session's progress
-can be played as it happens: "running the tests," "editing the auth middleware." The
-routing table makes `progress` a note by default and the focus overlay makes it play;
-`coalesce` folds a burst of edits into one sentence.
+can be played as it happens: "running the tests," "editing the auth middleware." Text
+streams line by line from `MessageDisplay`, so a long explanation is summarised while
+Claude is still writing it; the transcript record that lands when the block finishes
+supplies its record id. The routing table makes `progress` a note by default and the
+focus overlay makes it play; `coalesce` folds a burst of edits into one sentence.
 
 ## Playback: bookmarks and resume
 
@@ -499,7 +506,9 @@ The intermediary's context window holds the conversation with you, not session
 transcripts. Hook events and played segments are injected as small frames carrying the
 session title, the event kind, the spoken text, and the segment id. Steps, records, and
 unplayed segments stay in the daemon, and `expand`, `read_session`, and `recall` pull
-them. This is the single decision that avoids
+them. When the daemon starts or reconnects, the intermediary gets one note listing the
+live sessions by title, state, and focus, and never their history; Happy's session
+directory at connect is the model for it. This is the single decision that avoids
 most of Happy's trouble: it pushed history in and could not pull, so it needed a
 bootstrap dump, an eviction policy it never wrote, and a window that only grew.
 
@@ -563,6 +572,7 @@ catch_up(since?)
 recall(query, since?)
 expand(segment?)                 resume()
 skip()                           repeat()
+stay_silent()
 ```
 
 The boundary rule: the tools route, name, and read session records and summaries.
@@ -575,6 +585,10 @@ path before it is sent; it returns names, never contents. `catch_up` and `recall
 read the daemon's own audit log. Give the intermediary an edit tool and it will
 eventually decide that editing the file is faster than routing your request; the
 surface above is the whole surface `[LAW:no-mode-explosion]`.
+
+`stay_silent` is how the model declines to answer words that were not addressed to
+it, taken from Happy's `skip_turn`. Push-to-talk rarely needs it; the wake-word edge,
+which opens the mic without a hand, does.
 
 `send_command` exists so that `/clear`, `/compact`, and `/model` reach the target as
 commands, with their sigil intact. `stage_draft` text always has a leading sigil

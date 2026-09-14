@@ -160,7 +160,9 @@ Hooks run in Claude Code's critical path with a timeout (`timeoutMs`/`budgetMs`)
 waits on TTS synthesis stutters the agent's own output.
 
 **Rule:** every shim POSTs to the daemon socket and returns immediately. The sole
-exception is `PermissionRequest`, where blocking *is* the feature.
+exception is `PermissionRequest`, where blocking *is* the feature. `MessageDisplay`,
+which fires for every batch of streamed lines, is an HTTP hook with a short timeout, so
+no process is spawned per batch.
 
 ### 13. The permission timeout expires mid-sentence
 
