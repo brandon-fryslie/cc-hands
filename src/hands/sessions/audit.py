@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
+from loguru import logger
+
 if TYPE_CHECKING:
     # Defined only in loguru's type stubs.
     from loguru import Message
@@ -93,9 +95,15 @@ class AuditLog:
 
     def record(self, entry: Entry) -> None:
         line = json.dumps({"at": self._clock().isoformat(timespec="milliseconds"), **encoded(entry)}, ensure_ascii=False)
-        # Opened for each line, so a line is on disk when record returns and a log moved aside is started again.
-        with self._path.open("a", encoding="utf-8") as log:
-            log.write(line + "\n")
+        try:
+            # Opened for each line, so a line is on disk when record returns and a log moved aside is started again.
+            with self._path.open("a", encoding="utf-8") as log:
+                log.write(line + "\n")
+        except OSError as error:
+            # [LAW:single-enforcer] the log watches what the daemon does and never changes it: a full or unwritable
+            # disk loses the line here, not a send's answer, a permission's question, or a background task.
+            # [LAW:no-silent-failure] the loss is said on stderr, as a warning: an error would be sent back to this log.
+            logger.warning(f"the audit log {self._path} lost a {type(entry).__name__} line: {error}")
 
 
 def encoded(value: object) -> dict[str, object]:
@@ -135,31 +143,43 @@ def failures_to(record: Record) -> "Callable[[Message], None]":
     return sink
 
 
-def tail(path: Path, count: int) -> tuple[list[str], int]:
-    """The last count whole lines of the log, and the offset just past them, where following it begins."""
-    try:
-        data = path.read_bytes()
-    except FileNotFoundError:
-        return [], 0
-    end = data.rfind(b"\n") + 1
-    lines = data[:end].decode("utf-8").splitlines()
-    return (lines[-count:] if count > 0 else []), end
+@dataclass(frozen=True)
+class Position:
+    """How far into which file the log has been read. A file with another inode is another log, whatever its size."""
+
+    inode: int  # 0 while there is no log
+    offset: int
 
 
-def follow(path: Path, offset: int, poll: Callable[[], None]) -> Iterator[str]:
-    """Each whole line written to the log past offset, calling poll between looks, for as long as the caller asks."""
+START = Position(inode=0, offset=0)
+
+
+def tail(path: Path, count: int) -> tuple[list[str], Position]:
+    """The last count whole lines of the log, and the position just past them, where following it begins."""
+    lines, position = _read(path, START)
+    return (lines[-count:] if count > 0 else []), position
+
+
+def follow(path: Path, position: Position, poll: Callable[[], None]) -> Iterator[str]:
+    """Each whole line written to the log past position, calling poll between looks, for as long as the caller asks."""
     while True:
-        try:
-            with path.open("rb") as log:
-                if os.fstat(log.fileno()).st_size < offset:
-                    # Moved aside and started again: the new log is read from its first line.
-                    offset = 0
-                log.seek(offset)
-                data = log.read()
-        except FileNotFoundError:
-            offset, data = 0, b""
-        # A line still being written is left for the next look.
-        end = data.rfind(b"\n") + 1
-        yield from data[:end].decode("utf-8").splitlines()
-        offset += end
+        lines, position = _read(path, position)
+        yield from lines
         poll()
+
+
+def _read(path: Path, since: Position) -> tuple[list[str], Position]:
+    try:
+        with path.open("rb") as log:
+            status = os.fstat(log.fileno())
+            # [LAW:one-source-of-truth] the offset means something only in the file it was read from: a log moved
+            # aside, or cut short in place, is read again from its first line, never from the middle of one.
+            same = status.st_ino == since.inode and status.st_size >= since.offset
+            offset = since.offset if same else 0
+            log.seek(offset)
+            data = log.read()
+    except FileNotFoundError:
+        return [], START
+    # A line still being written is left for the next look.
+    end = data.rfind(b"\n") + 1
+    return data[:end].decode("utf-8").splitlines(), Position(status.st_ino, offset + end)

@@ -22,6 +22,7 @@ from hands.sessions.audit import (
     Entry,
     Failure,
     Performed,
+    START,
     Replied,
     Transcribed,
     encoded,
@@ -88,19 +89,44 @@ def test_each_entry_is_one_line_stamped_with_when_it_was_written(tmp_path: Path)
 
 def test_the_tail_is_the_newest_whole_lines_and_following_picks_up_where_it_ended(tmp_path: Path) -> None:
     path = tmp_path / "audit.jsonl"
-    assert tail(path, 5) == ([], 0)
+    assert tail(path, 5) == ([], START)
     path.write_text("one\ntwo\nthree\npart")
-    newest, offset = tail(path, 2)
+    newest, position = tail(path, 2)
     assert newest == ["two", "three"]
 
     looks: list[str] = []
-    followed = follow(path, offset, lambda: looks.append("look"))
+    followed = follow(path, position, lambda: looks.append("look"))
     with path.open("a") as log:
         log.write("ial\nfour\n")
     assert [next(followed), next(followed)] == ["partial", "four"]
-    # Moved aside and started again: the new log is read from its first line.
+    # Cut short in place: the log is read again from its first line.
     path.write_text("fresh\n")
     assert next(followed) == "fresh"
+
+
+def test_a_log_moved_aside_is_followed_from_the_first_line_of_the_new_one_even_when_it_has_grown_past_the_old_offset(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    path.write_text("old\n")
+    _, position = tail(path, 1)
+    followed = follow(path, position, lambda: None)
+    path.rename(tmp_path / "audit.jsonl.1")
+    # Longer than the old log, and the old offset falls inside a two-byte character.
+    path.write_text("\u00e9t\u00e9\nsecond\n")
+    assert [next(followed), next(followed)] == ["\u00e9t\u00e9", "second"]
+
+
+def test_a_line_the_disk_will_not_take_is_lost_out_loud_and_the_daemon_carries_on(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, clock=lambda: AT)
+    path.mkdir()  # opening a directory to append fails as a full or read-only disk does
+    warnings: list[str] = []
+    sink = logger.add(lambda message: warnings.append(message.record["message"]), level="WARNING")
+    try:
+        log.record(Transcribed("send it"))
+    finally:
+        logger.remove(sink)
+    [warning] = warnings
+    assert warning.startswith(f"the audit log {path} lost a Transcribed line: ")
 
 
 def test_following_stops_at_ctrl_c_after_printing_the_newest_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

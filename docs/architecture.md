@@ -772,7 +772,10 @@ thing that failed `[LAW:no-silent-failure]`:
    the system channel writes `Announced` with whether it spoke or posted; and a
    loguru sink turns every error a `hands` module logs into a `Failure`. A send is
    traced from the words to the keys: `Transcribed`, `Called stage_draft`,
-   `Transcribed`, `Sending`, `Performed Type`, `Called send_draft`.
+   `Transcribed`, `Sending`, `Performed Type`, `Called send_draft`. The log watches
+   and never steers: a line the disk will not take is lost with a warning on stderr,
+   and the send, the question, or the tick it described goes on. `hands log` follows
+   the file by inode and offset, so a log moved aside is read from its first line.
 
 The daemon runs under launchd with `KeepAlive`, so a crash is a restart, and the
 restart re-reads the session files and speaks that it is back. A hook shim that cannot

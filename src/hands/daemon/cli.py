@@ -68,11 +68,11 @@ LOG_POLL_SECONDS = 0.25
 
 
 def tail_log(home: Home, lines: int) -> int:
-    newest, offset = audit.tail(home.audit, lines)
+    newest, position = audit.tail(home.audit, lines)
     for line in newest:
         print(line, flush=True)
     try:
-        for line in audit.follow(home.audit, offset, lambda: time.sleep(LOG_POLL_SECONDS)):
+        for line in audit.follow(home.audit, position, lambda: time.sleep(LOG_POLL_SECONDS)):
             print(line, flush=True)
     except KeyboardInterrupt:
         return 0
