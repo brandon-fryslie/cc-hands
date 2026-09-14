@@ -17,7 +17,7 @@ from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.effects import Allow, Narrate, PermissionAsked, PermissionDeadlineNear, PermissionExpired, Speak
+from hands.core.effects import Allow, Narrate, Withdraw, PermissionAsked, PermissionDeadlineNear, PermissionExpired, Speak
 from hands.core.events import PermissionRequested, Tick, ToolFinished
 from hands.core.reducer import EXPIRED_MESSAGE
 from hands.core.session import Blocked, Permission, RequestId, SessionId, Working
@@ -201,6 +201,13 @@ async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_
     await asyncio.wait_for(runner.cleanup(), WAIT_SECONDS)
     # Empty output decides nothing: Claude Code's own dialog stands.
     assert await shim.finished() == (0, "", "")
+
+
+async def test_a_hook_that_asks_after_shutdown_began_is_let_go_at_once(home: Home, sessions: Sessions) -> None:
+    assert await (await Shim.run(home, START)).finished() == (0, "", "")
+    sessions.release_waiting()
+    request = PermissionRequested(SID, at=0.0, request=RequestId("late"), permission=Permission("Bash", {}))
+    assert await asyncio.wait_for(sessions.ask(request), WAIT_SECONDS) == Withdraw()
 
 
 async def test_tool_calls_from_a_session_that_never_joined_are_not_warned_about(sessions: Sessions) -> None:

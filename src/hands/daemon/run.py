@@ -96,6 +96,9 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart) -> None:
         voice = await asyncio.to_thread(build_voice, config, tools=tools)
     finally:
         starting.cancel()
+    # [LAW:no-silent-failure] a heartbeat that failed while the models loaded stops the run, as the steady one does.
+    if starting.done() and not starting.cancelled() and (error := starting.exception()) is not None:
+        raise error
     pipeline = PipelineWatch(voice.worker)
     quit_event = asyncio.Event()
 

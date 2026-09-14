@@ -33,6 +33,8 @@ class Sessions:
         self._clock = clock
         # A blocking hook's connection waits on its future; only a Reply effect resolves one, until shutdown lets them all go.
         self._waiting: dict[RequestId, asyncio.Future[HookReply]] = {}
+        # Set once, at shutdown: from then on a permission hook is let go as soon as it asks.
+        self._released = False
         self._heard: asyncio.Queue[Heard] = asyncio.Queue()
 
     def now(self) -> Instant:
@@ -44,6 +46,9 @@ class Sessions:
 
     async def ask(self, event: PermissionRequested) -> HookReply:
         """Apply a permission request and wait for its reply: an answer, a withdrawal, or the deny at its deadline."""
+        if self._released:
+            # A hook that reached the socket as shutdown began would otherwise wait with nothing left to answer it.
+            return Withdraw()
         waiting = asyncio.get_running_loop().create_future()
         # [LAW:no-ambient-temporal-coupling] registered before the event is applied, so no reply can be decided
         # before there is somewhere for it to go.
@@ -69,7 +74,8 @@ class Sessions:
             del self._waiting[event.request]
 
     def release_waiting(self) -> None:
-        """At shutdown, let every waiting hook go undecided: its session's own dialog stands, and the daemon can exit."""
+        """At shutdown, let every waiting hook go undecided, and every later one as it asks: its session's own dialog stands, and the daemon can exit."""
+        self._released = True
         for request, waiting in self._waiting.items():
             if not waiting.done():
                 logger.info(f"shutting down: request {request} is left to its session's dialog")
