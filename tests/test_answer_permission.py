@@ -194,6 +194,15 @@ async def test_a_reply_decided_as_the_hook_closes_is_logged_as_never_delivered(h
     assert f"the hook for session {SID} request r1 closed; its reply Allow() was never delivered" in logged
 
 
+async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_out_its_deadline(home: Home, clock: Clock) -> None:
+    registry = Sessions(permission_deadline=DEADLINE, clock=clock)
+    runner = await serve_hooks(home, registry)
+    shim, _ = await asked(home, registry)
+    await asyncio.wait_for(runner.cleanup(), WAIT_SECONDS)
+    # Empty output decides nothing: Claude Code's own dialog stands.
+    assert await shim.finished() == (0, "", "")
+
+
 async def test_tool_calls_from_a_session_that_never_joined_are_not_warned_about(sessions: Sessions) -> None:
     # Every tool call of a session started before the daemon would otherwise bury the warnings that matter.
     levels: list[str] = []

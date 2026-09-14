@@ -728,6 +728,16 @@ reach the socket fails visibly in the target session. Two clocks are never allow
 disagree about whether the daemon is up: the heartbeat file is written by the daemon
 alone, and everything else reads it.
 
+The heartbeat is honest at both ends of a run. `hands run` writes its first heartbeat,
+`pipeline starting`, before it imports Pipecat. The models load off the event loop,
+which keeps beating, so a restart shows its new pid within half a second of the kill,
+and only a loop that is actually stuck reads as not responding. launchd stops the
+agent with SIGTERM, which ends the pipeline the way Ctrl-C does. Shutdown lets every
+permission hook still waiting go undecided, so that session's own dialog stands and
+the daemon exits in under a second. The last heartbeat, written after the socket is
+released, says `stopped`. A stopped daemon reads as stopped even if its pid is later
+reused.
+
 ## Endurance
 
 The intermediary talks with you for hours, and its own context is the one thing in

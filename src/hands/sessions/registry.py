@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from loguru import logger
 
 from hands.core.drafts import DraftOutcome, DraftRequest, decide
-from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Decision, Effect, Heard, HookReply, Narrate, Reply, Sending, Speak, Type, Unregistered
+from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Decision, Effect, Heard, HookReply, Narrate, Reply, Sending, Speak, Type, Unregistered, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
 from hands.core.permissions import AnswerPermission, PermissionOutcome, answer
 from hands.core.reducer import reduce
@@ -31,7 +31,7 @@ class Sessions:
         self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={})
         # [LAW:effects-at-boundaries] the one clock: hooks, answers, and ticks are all stamped from it.
         self._clock = clock
-        # A blocking hook's connection waits on its future; only a Reply effect resolves one.
+        # A blocking hook's connection waits on its future; only a Reply effect resolves one, until shutdown lets them all go.
         self._waiting: dict[RequestId, asyncio.Future[HookReply]] = {}
         self._heard: asyncio.Queue[Heard] = asyncio.Queue()
 
@@ -67,6 +67,13 @@ class Sessions:
             raise
         finally:
             del self._waiting[event.request]
+
+    def release_waiting(self) -> None:
+        """At shutdown, let every waiting hook go undecided: its session's own dialog stands, and the daemon can exit."""
+        for request, waiting in self._waiting.items():
+            if not waiting.done():
+                logger.info(f"shutting down: request {request} is left to its session's dialog")
+                waiting.set_result(Withdraw())
 
     async def answer(self, request: RequestId, decision: Decision) -> PermissionOutcome:
         self._registry, outcome, effects = answer(self._registry, AnswerPermission(request, decision, at=self._clock()))

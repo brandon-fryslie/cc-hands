@@ -88,10 +88,14 @@ def config_from_env() -> VoiceConfig:
 async def run(config: VoiceConfig, home: Home, heart: status.Heart) -> None:
     sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic)
     hooks = await serve_hooks(home, sessions)
-    # Importing Pipecat and building the voice each hold the event loop for seconds; a heartbeat between
-    # them keeps either one from reading as a hang.
-    heart.beat("starting", None, sessions.live_count())
-    voice = build_voice(config, tools=[list_sessions_tool(sessions), *draft_tools(sessions), *permission_tools(sessions)])
+    tools = [list_sessions_tool(sessions), *draft_tools(sessions), *permission_tools(sessions)]
+    # Loading the models takes seconds, so it runs off the event loop and the loop keeps beating "starting":
+    # a slow start reads as starting, and only a stuck loop reads as not responding.
+    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, sessions.live_count()), heart.period.total_seconds()))
+    try:
+        voice = await asyncio.to_thread(build_voice, config, tools=tools)
+    finally:
+        starting.cancel()
     pipeline = PipelineWatch(voice.worker)
     quit_event = asyncio.Event()
 
