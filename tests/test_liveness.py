@@ -31,7 +31,7 @@ def dead_pid() -> int:
 
 
 def sessions() -> Sessions:
-    return Sessions(permission_deadline=60.0, clock=time.monotonic)
+    return Sessions(permission_deadline=60.0, clock=time.monotonic, record=lambda _: None)
 
 
 @pytest.mark.parametrize(("etime", "seconds"), [("00:07", 7), ("12:34", 754), ("01:02:03", 3723), ("2-01:02:03", 176523), ("10-00:00:00", 864000)])

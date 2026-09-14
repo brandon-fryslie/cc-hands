@@ -59,7 +59,7 @@ def clock() -> Clock:
 
 @pytest.fixture
 async def sessions(home: Home, clock: Clock) -> AsyncIterator[Sessions]:
-    registry = Sessions(permission_deadline=DEADLINE, clock=clock)
+    registry = Sessions(permission_deadline=DEADLINE, clock=clock, record=lambda _: None)
     runner = await serve_hooks(home, registry)
     yield registry
     await runner.cleanup()
@@ -195,7 +195,7 @@ async def test_a_reply_decided_as_the_hook_closes_is_logged_as_never_delivered(h
 
 
 async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_out_its_deadline(home: Home, clock: Clock) -> None:
-    registry = Sessions(permission_deadline=DEADLINE, clock=clock)
+    registry = Sessions(permission_deadline=DEADLINE, clock=clock, record=lambda _: None)
     runner = await serve_hooks(home, registry)
     shim, _ = await asked(home, registry)
     await asyncio.wait_for(runner.cleanup(), WAIT_SECONDS)

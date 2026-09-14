@@ -7,23 +7,27 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
 from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import AssistantTurnStoppedMessage, LLMContextAggregatorPair, UserTurnMessageAddedMessage
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Text
 from hands.core.drafts import SendDraft
 from hands.core.events import Joined, PermissionRequested
 from hands.core.session import Membership, Permission, PromptText, RequestId, SessionId, TmuxPane
+from hands.sessions.audit import AuditLog
 from hands.sessions.registry import Sessions
 from hands.sessions.tmux import TmuxFailed, type_into
-from hands.voice.tools import Tool, draft_tools
+from hands.voice.conversation import record_turns
+from hands.voice.tools import Tool, audited, draft_tools
 
 RECORDER = Path(__file__).parent / "pane_recorder.py"
 WAIT_SECONDS = 5.0
@@ -72,7 +76,7 @@ def pane() -> Iterator[Pane]:
 
 
 async def joined(pane: TmuxPane | None, tmp: Path) -> tuple[Sessions, SessionId]:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0)
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     membership = Membership(SessionId("s1"), pid=1, pane=pane, cwd=Path("/code/cc-hands"), transcript=tmp / "none.jsonl")
     await sessions.apply(Joined(membership, "startup"))
     return sessions, membership.id
@@ -85,7 +89,11 @@ async def call(tools: list[Tool], name: str, **arguments: object) -> dict[str, o
         results.append(result)
 
     [tool] = [tool for tool in tools if DirectFunctionWrapper(tool).name == name]
-    await DirectFunctionWrapper(tool).invoke(arguments, cast(FunctionCallParams, SimpleNamespace(result_callback=capture)))
+    params = FunctionCallParams(
+        function_name=name, tool_call_id="call-1", arguments=arguments,
+        llm=cast(Any, None), pipeline_worker=cast(Any, None), context=cast(Any, None), result_callback=capture,
+    )
+    await DirectFunctionWrapper(tool).invoke(arguments, params)
     [result] = results
     return result
 
@@ -189,3 +197,44 @@ async def test_a_send_cancelled_while_typing_still_reaches_the_pane(pane: Pane, 
 async def test_an_interruption_does_not_cancel_a_draft_tool(tmp_path: Path) -> None:
     sessions, _ = await joined(None, tmp_path)
     assert [getattr(tool, "_pipecat_cancel_on_interruption") for tool in draft_tools(sessions)] == [False] * 4
+
+
+async def fire(aggregator: object, event: str, message: object) -> None:
+    """Raise one of an aggregator's events as Pipecat does when a turn is added to the context."""
+    handler = cast(Callable[..., Awaitable[None]], getattr(aggregator, "_call_event_handler"))
+    await handler(event, message)
+
+
+async def test_a_send_is_traced_in_the_audit_log_from_what_the_user_said_to_the_keys_typed(pane: Pane, tmp_path: Path) -> None:
+    pair = LLMContextAggregatorPair(LLMContext())
+    path = tmp_path / "audit.jsonl"
+    record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record)
+    await sessions.apply(Joined(Membership(SessionId("s1"), pid=4242, pane=pane.id, cwd=Path("/code/cc-hands"), transcript=tmp_path / "s1.jsonl"), "startup"))
+    tools = [audited(tool, record) for tool in draft_tools(sessions)]
+    user, assistant = pair.user(), pair.assistant()
+    record_turns(user, assistant, record)
+
+    await fire(user, "on_user_turn_message_added", UserTurnMessageAddedMessage("tell cc-hands to run the tests", "t1"))
+    await call(tools, "stage_draft", session="s1", text="run the tests", resolutions=[])
+    await fire(assistant, "on_assistant_turn_stopped", AssistantTurnStoppedMessage("", False, "t2"))
+    await fire(assistant, "on_assistant_turn_stopped", AssistantTurnStoppedMessage("Draft for cc-hands: run the tests", False, "t2"))
+    await fire(user, "on_user_turn_message_added", UserTurnMessageAddedMessage("send it", "t3"))
+    await call(tools, "send_draft", session="s1")
+
+    assert await pane.prompts(1) == [" run the tests"]
+    written = [json.loads(line) for line in path.read_text().splitlines()]
+    trace = [(line["type"], line.get("text") or line.get("tool") or line.get("effect", {}).get("type")) for line in written]
+    assert trace == [
+        ("Applied", None),
+        ("Transcribed", "tell cc-hands to run the tests"),
+        ("Called", "stage_draft"),
+        ("Replied", "Draft for cc-hands: run the tests"),
+        ("Transcribed", "send it"),
+        ("Sending", "run the tests"),
+        ("Performed", "Type"),
+        ("Called", "send_draft"),
+    ]
+    assert written[5] == {**written[5], "session": "s1", "pane": pane.id}
+    assert written[6]["effect"] == {"type": "Type", "pane": pane.id, "input": {"type": "Text", "body": "run the tests"}}
+    assert [datetime.fromisoformat(line["at"]) for line in written] == sorted(datetime.fromisoformat(line["at"]) for line in written)

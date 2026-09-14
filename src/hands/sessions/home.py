@@ -20,6 +20,11 @@ class Home:
         return self.root / "status.json"
 
     @property
+    def audit(self) -> Path:
+        """Everything the daemon did, heard, said, and failed at, one JSON line each, written by the daemon alone."""
+        return self.root / "audit.jsonl"
+
+    @property
     def daemon_log(self) -> Path:
         """What the daemon process prints, as launchd captures it."""
         return self.root / "daemon.log"

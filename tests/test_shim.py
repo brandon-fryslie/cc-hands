@@ -34,7 +34,7 @@ def home() -> Iterator[Home]:
 
 @pytest.fixture
 async def sessions(home: Home) -> AsyncIterator[Sessions]:
-    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0)
+    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None)
     runner = await serve_hooks(home, registry)
     yield registry
     await runner.cleanup()
@@ -84,7 +84,7 @@ async def test_a_hook_the_daemon_refuses_exits_nonzero_with_its_reason(home: Hom
 
 async def test_a_second_daemon_will_not_take_a_live_socket(home: Home, sessions: Sessions) -> None:
     with pytest.raises(RuntimeError, match="already listening"):
-        await serve_hooks(home, Sessions(60.0, clock=lambda: 0.0))
+        await serve_hooks(home, Sessions(60.0, clock=lambda: 0.0, record=lambda _: None))
     await shim(home, START)
     assert [listing.session.state for listing in sessions.live()] == [Idle()]
 
@@ -95,7 +95,7 @@ async def test_a_socket_left_by_a_dead_daemon_is_reclaimed(home: Home) -> None:
     dead.bind(str(home.socket))
     dead.close()
     assert home.socket.exists()
-    registry = Sessions(60.0, clock=lambda: 0.0)
+    registry = Sessions(60.0, clock=lambda: 0.0, record=lambda _: None)
     runner = await serve_hooks(home, registry)
     try:
         assert await shim(home, START) == (0, "")

@@ -1,17 +1,21 @@
 """The tools the intermediary can call."""
 
+import functools
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TypedDict, cast
 
 from loguru import logger
 from pipecat.adapters.schemas import direct_function
 from pipecat.adapters.schemas.direct_function import DirectFunction
+from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, SendDraft, StageDraft
 from hands.core.effects import Allow, Decision, Deny
 from hands.core.session import Blocked, Gone, Idle, PromptText, RequestId, Resolution, SessionId, SessionState, Staged, Working
+from hands.sessions.audit import Called, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.registry import Listing, Sessions
 from hands.sessions.tmux import TmuxFailed
@@ -29,6 +33,24 @@ DENIED_BY_VOICE = "The user denied this by voice."
 
 # Every C0 and C1 control character but newline and tab: each would press a key in the pane.
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def audited(tool: Tool, record: Record) -> Tool:
+    """The tool, with every call written to the audit log beside the result the model is handed."""
+
+    # [LAW:single-enforcer] one wrapper for every tool, so no tool can be called without leaving its line.
+    # functools.wraps keeps the signature and docstring, which are the schema the model sees.
+    @functools.wraps(tool)
+    async def call(params: FunctionCallParams, **arguments: object) -> None:
+        answer = params.result_callback
+
+        async def result_callback(result: object, *, properties: FunctionCallResultProperties | None = None) -> None:
+            record(Called(params.function_name, arguments, result))
+            await answer(result, properties=properties)
+
+        await tool(replace(params, result_callback=result_callback), **arguments)
+
+    return cast(Tool, call)
 
 
 def list_sessions_tool(sessions: Sessions) -> Tool:

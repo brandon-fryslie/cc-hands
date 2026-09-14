@@ -16,7 +16,9 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
+    LLMAssistantAggregator,
     LLMContextAggregatorPair,
+    LLMUserAggregator,
     LLMUserAggregatorParams,
 )
 from pipecat.services.anthropic.llm import AnthropicLLMService
@@ -117,7 +119,7 @@ def build_llm(
 
 @dataclass(frozen=True)
 class Voice:
-    """The assembled pipeline plus the handles its edges need: the key, the speaker, and the three services that report failures."""
+    """The assembled pipeline plus the handles its edges need: the key, the speaker, the three services that report failures, and the two sides of the conversation."""
 
     worker: PipelineWorker
     key: PushToTalk
@@ -125,6 +127,8 @@ class Voice:
     stt: Whisper
     llm: AnthropicLLMService | OpenAILLMService
     tts: PocketTTSService
+    user_turns: LLMUserAggregator
+    assistant_turns: LLMAssistantAggregator
 
 
 def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
@@ -146,10 +150,11 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
         stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.0)],
     )
     context = LLMContext(tools=list(tools))
-    user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
+    pair = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=KeyVAD(key), user_turn_strategies=turns),
     )
+    user_aggregator, assistant_aggregator = pair.user(), pair.assistant()
 
     pipeline = Pipeline(
         [
@@ -168,4 +173,6 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
         observers=[LatencyObserver()],
         idle_timeout_secs=None,
     )
-    return Voice(worker=worker, key=key, speaker=transport.output(), stt=stt, llm=llm, tts=tts)
+    return Voice(
+        worker=worker, key=key, speaker=transport.output(), stt=stt, llm=llm, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator
+    )

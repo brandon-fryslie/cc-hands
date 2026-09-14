@@ -80,6 +80,7 @@ uv sync
 uv run hands run                        # in a terminal: space to talk, space again to stop, q to quit
 HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
+uv run hands log                        # the audit log: what hands heard, said, called, typed, and failed at
 uv run pytest && uv run pyright
 ```
 
@@ -90,8 +91,8 @@ uv run hands launchd > ~/Library/LaunchAgents/hands.daemon.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/hands.daemon.plist
 ```
 
-Every heartbeat rewrites `~/.hands/status.json`, and the daemon's output goes to
-`~/.hands/daemon.log`. Under launchd there is no terminal, so there is no key edge
+Every heartbeat rewrites `~/.hands/status.json`, every effect and failure is a line
+in `~/.hands/audit.jsonl`, and the daemon's output goes to `~/.hands/daemon.log`. Under launchd there is no terminal, so there is no key edge
 yet: sessions are registered and spoken about but not answered by voice.
 
 ## Prior art

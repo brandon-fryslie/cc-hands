@@ -758,8 +758,21 @@ thing that failed `[LAW:no-silent-failure]`:
    uptime, pipeline state, last audio out, and the count of live sessions. `hands
    status` prints it, and a tmux status-line snippet shows one glyph from it. When
    TTS itself is down, a macOS notification is posted through `osascript`.
-3. **Log.** Every effect and every failure is one line in the audit JSONL.
-   `hands log` tails it.
+3. **Log.** Every effect and every failure is one line in `~/.hands/audit.jsonl`,
+   written by the daemon alone (`hands.sessions.audit`). `hands log` prints the
+   newest lines and follows the file. Each line is a value encoded one way: its type
+   under `"type"`, its fields beside it, nested events and effects alike, and the
+   wall-clock time under `"at"`. `Sessions` is the single writer for the session
+   side: an `Applied` event (only one that changed the registry or called for an
+   effect, so a quiet tick is not a line), each `Audit` record as it is (`Sending`
+   before the keys are typed, `Unregistered`, `AfterEnd`), then `Performed` or
+   `EffectFailed` for every other effect. One wrapper writes every tool call as
+   `Called` with its arguments and the result the model was handed; the context
+   aggregators write each user turn as `Transcribed` and each reply as `Replied`;
+   the system channel writes `Announced` with whether it spoke or posted; and a
+   loguru sink turns every error a `hands` module logs into a `Failure`. A send is
+   traced from the words to the keys: `Transcribed`, `Called stage_draft`,
+   `Transcribed`, `Sending`, `Performed Type`, `Called send_draft`.
 
 The daemon runs under launchd with `KeepAlive`, so a crash is a restart, and the
 restart re-reads the session files and speaks that it is back. A hook shim that cannot

@@ -12,6 +12,7 @@ from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolF
 from hands.core.permissions import AnswerPermission, PermissionOutcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Instant, Membership, Registry, RequestId, Session, SessionId
+from hands.sessions.audit import Applied, EffectFailed, Performed, Record
 from hands.sessions.payload import Rejected
 from hands.sessions.tmux import type_into
 from hands.sessions.transcript import ai_title
@@ -26,11 +27,13 @@ class Listing:
 class Sessions:
     """Applies events, draft requests, and permission answers through the core, performs their effects, and answers who is running."""
 
-    def __init__(self, permission_deadline: float, clock: Callable[[], Instant]) -> None:
+    def __init__(self, permission_deadline: float, clock: Callable[[], Instant], record: Record) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
         self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={})
         # [LAW:effects-at-boundaries] the one clock: hooks, answers, and ticks are all stamped from it.
         self._clock = clock
+        # [LAW:single-enforcer] every event and every effect passes through here, so here is where each becomes an audit line.
+        self._record = record
         # A blocking hook's connection waits on its future; only a Reply effect resolves one, until shutdown lets them all go.
         self._waiting: dict[RequestId, asyncio.Future[HookReply]] = {}
         # Set once, at shutdown: from then on a permission hook is let go as soon as it asks.
@@ -41,7 +44,10 @@ class Sessions:
         return self._clock()
 
     async def apply(self, event: Event) -> None:
-        self._registry, effects = reduce(self._registry, event)
+        before = self._registry
+        self._registry, effects = reduce(before, event)
+        if effects or self._registry != before:
+            self._record(Applied(event))
         await self._perform_all(effects)
 
     async def ask(self, event: PermissionRequested) -> HookReply:
@@ -124,7 +130,22 @@ class Sessions:
 
     async def _perform_all(self, effects: list[Effect]) -> None:
         for effect in effects:
-            await self._perform(effect)
+            match effect:
+                case Audit(record=record):
+                    # The effect is the line itself; its record is written as it is, not wrapped as performed.
+                    self._record(record)
+                case _:
+                    pass
+            try:
+                await self._perform(effect)
+            except Exception as error:
+                self._record(EffectFailed(effect, str(error)))
+                raise
+            match effect:
+                case Audit():
+                    pass
+                case _:
+                    self._record(Performed(effect))
 
     async def _perform(self, effect: Effect) -> None:
         match effect:

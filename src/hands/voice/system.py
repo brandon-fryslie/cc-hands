@@ -15,6 +15,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
+from hands.sessions.audit import Announced, Record
 from hands.voice.pipeline import Voice
 from hands.voice.whisper import NOTHING_TRANSCRIBED, Whisper
 
@@ -114,9 +115,10 @@ Notify = Callable[[str], Awaitable[None]]
 class SystemChannel:
     """Says each fact through text-to-speech alone, and posts it to the screen when speech cannot."""
 
-    def __init__(self, tts: FrameProcessor, notify: Notify) -> None:
+    def __init__(self, tts: FrameProcessor, notify: Notify, record: Record) -> None:
         self._tts = tts
         self._notify = notify
+        self._record = record
 
     async def say(self, fact: SystemFact) -> None:
         text = system_text(fact)
@@ -125,8 +127,10 @@ class SystemChannel:
             # [LAW:effects-at-boundaries] queued at the TTS, past the model, because this channel reports the model's own failures;
             # kept out of the model's context too, where it would read as a reply the model gave.
             await self._tts.queue_frame(TTSSpeakFrame(text, append_to_context=False))
+            self._record(Announced(text, "speech"))
         else:
             await self._notify(f"hands cannot speak, so: {text}")
+            self._record(Announced(text, "screen"))
 
     async def sound(self, alarm: Alarm) -> None:
         match alarm:

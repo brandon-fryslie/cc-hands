@@ -15,6 +15,7 @@ from pipecat.utils.errors import ErrorCategory
 
 from hands.daemon import status
 from hands.daemon.cli import crashed_before
+from hands.sessions.audit import Announced, Entry
 from hands.daemon.notify import notification_command
 from hands.sessions.home import Home
 from hands.voice.system import (
@@ -86,7 +87,8 @@ async def test_a_fact_goes_to_speech_while_it_works_and_to_the_screen_when_it_do
     async def notify(text: str) -> None:
         posted.append(text)
 
-    channel = SystemChannel(tts, notify)
+    recorded: list[Entry] = []
+    channel = SystemChannel(tts, notify, recorded.append)
     await channel.say(ModelUnreachable())
     # Kept out of the model's context: there it would read as the model's own reply.
     assert [(type(frame), getattr(frame, "text", None), getattr(frame, "append_to_context", None)) for frame in tts.frames] == [
@@ -97,6 +99,7 @@ async def test_a_fact_goes_to_speech_while_it_works_and_to_the_screen_when_it_do
     await channel.sound(Post("hands cannot speak: no voice"))
     assert len(tts.frames) == 1
     assert posted == ["hands cannot speak, so: Whisper returned nothing for that turn.", "hands cannot speak: no voice"]
+    assert recorded == [Announced("The language model is unreachable.", "speech"), Announced("Whisper returned nothing for that turn.", "screen")]
 
 
 async def test_whisper_reports_a_turn_it_transcribed_to_nothing_and_only_that(monkeypatch: pytest.MonkeyPatch) -> None:

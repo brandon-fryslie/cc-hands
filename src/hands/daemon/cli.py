@@ -4,11 +4,13 @@ import argparse
 import asyncio
 import os
 import sys
+import time
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
 from hands.daemon import launchd, status
+from hands.sessions import audit
 from hands.sessions.home import Home, default_home
 from hands.sessions.payload import Rejected
 
@@ -20,6 +22,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("run", help="run the daemon in the foreground (launchd runs it this way)")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     commands.add_parser("launchd", help="print the LaunchAgent property list that keeps the daemon up")
+    log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
+    log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
     arguments = parser.parse_args(argv)
     home = Home(arguments.home)
     match arguments.command:
@@ -37,6 +41,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         case "status":
             return report(home)
+        case "log":
+            return tail_log(home, arguments.lines)
         case "launchd":
             sys.stdout.buffer.write(launchd.agent(Path(sys.executable), home, path=os.environ.get("PATH", "")))
             return 0
@@ -55,6 +61,22 @@ def report(home: Home) -> int:
     verdict = status.judge(home.status, last, now, alive=last is not None and pid_alive(last.pid))
     print(status.describe(verdict, now))
     return 0 if isinstance(verdict, status.Up) else 1
+
+
+# How often `hands log` looks for new lines.
+LOG_POLL_SECONDS = 0.25
+
+
+def tail_log(home: Home, lines: int) -> int:
+    newest, offset = audit.tail(home.audit, lines)
+    for line in newest:
+        print(line, flush=True)
+    try:
+        for line in audit.follow(home.audit, offset, lambda: time.sleep(LOG_POLL_SECONDS)):
+            print(line, flush=True)
+    except KeyboardInterrupt:
+        return 0
+    raise AssertionError("following the audit log ends only when interrupted")
 
 
 def crashed_before(home: Home) -> bool:

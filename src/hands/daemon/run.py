@@ -36,6 +36,7 @@ from pipecat.workers.runner import WorkerRunner
 from hands.daemon import status
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
+from hands.sessions.audit import AuditLog, Record, failures_to
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.registry import Sessions
@@ -51,8 +52,9 @@ from hands.voice.pipeline import (
 )
 from hands.voice.ptt import Key
 from hands.voice.speech import relay
+from hands.voice.conversation import record_turns
 from hands.voice.system import Started, SystemChannel, listen
-from hands.voice.tools import draft_tools, list_sessions_tool, permission_tools
+from hands.voice.tools import audited, draft_tools, list_sessions_tool, permission_tools
 
 # The model lives on inferno, the M4 Max on the LAN, served by mlx_lm.server.
 LOCAL_LLM_URL = "http://inferno.local:8080/v1"
@@ -96,7 +98,10 @@ def config_from_env() -> VoiceConfig:
 
 
 async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash: bool) -> None:
-    sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic)
+    audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
+    failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
+    sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record)
     hooks = await serve_hooks(home, sessions)
     quit_event = asyncio.Event()
     # [LAW:single-enforcer] launchd's SIGTERM, a terminal's Ctrl-C, the q key, and a failed background task all set
@@ -107,22 +112,23 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash:
     try:
         # A restart is back where it was before the models load: every session with a file and a running process is listed.
         await sweep(home, sessions, frozenset())
-        voice = await load(config, sessions, heart, quit_event)
+        voice = await load(config, sessions, heart, quit_event, audit.record)
         if voice is not None:
-            await converse(voice, home, sessions, heart, quit_event, Started(after_crash))
+            await converse(voice, home, sessions, heart, quit_event, Started(after_crash), audit.record)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
         # From here a signal has its default effect again: nothing is left to stop gracefully.
         for signal_number in (signal.SIGINT, signal.SIGTERM):
             loop.remove_signal_handler(signal_number)
+        logger.remove(failures)
     # Written only by a stop: a crash leaves the last heartbeat naming a pid that is gone, which reads as down.
     heart.beat("stopped", None if voice is None else _wall(voice.speaker.sounded_at), sessions.live_count())
 
 
-async def load(config: VoiceConfig, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event) -> Voice | None:
+async def load(config: VoiceConfig, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event, record: Record) -> Voice | None:
     """The voice, built off the event loop while the loop beats "starting"; None when told to stop first."""
-    tools = [list_sessions_tool(sessions), *draft_tools(sessions), *permission_tools(sessions)]
+    tools = [audited(tool, record) for tool in (list_sessions_tool(sessions), *draft_tools(sessions), *permission_tools(sessions))]
     # Loading the models takes seconds: off the loop, a slow start reads as starting, and only a stuck loop as not responding.
     building = asyncio.create_task(off_loop(lambda: build_voice(config, tools=tools), "the voice load"))
     starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, sessions.live_count()), heart.period.total_seconds()))
@@ -140,10 +146,13 @@ async def load(config: VoiceConfig, sessions: Sessions, heart: status.Heart, qui
     return building.result() if building.done() and not building.cancelled() else None
 
 
-async def converse(voice: Voice, home: Home, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event, started: Started) -> None:
+async def converse(
+    voice: Voice, home: Home, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event, started: Started, record: Record
+) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
-    listen(voice, SystemChannel(voice.tts, post_notification), started)
+    listen(voice, SystemChannel(voice.tts, post_notification, record), started)
+    record_turns(voice.user_turns, voice.assistant_turns, record)
     failures: list[BaseException] = []
 
     def beat() -> None:
