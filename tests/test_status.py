@@ -115,6 +115,36 @@ def test_hands_status_exits_zero_only_when_the_daemon_is_up(tmp_path: Path, caps
     assert "cannot read" in capsys.readouterr().err
 
 
+def test_each_verdict_is_one_glyph_red_for_a_dead_daemon(tmp_path: Path) -> None:
+    assert status.glyph(status.Up(beat())) == "#[fg=green]●#[default]"
+    assert status.glyph(status.Unresponsive(beat())) == "#[fg=yellow]◐#[default]"
+    assert status.glyph(status.Down(beat())) == "#[fg=red,bold]✖#[default]"
+    assert status.glyph(status.Stopped(beat(pipeline="stopped"))) == status.glyph(status.NeverRan(tmp_path)) == "#[fg=colour244]○#[default]"
+
+
+def test_hands_glyph_shows_the_verdict_and_a_heartbeat_that_does_not_parse_as_loudly_as_a_dead_one(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    home = Home(tmp_path)
+    assert main(["--home", str(tmp_path), "glyph"]) == 0
+    assert capsys.readouterr().out == "#[fg=colour244]○#[default]\n"
+    status.write(home.status, beat(pid=os.getpid(), written_at=datetime.now(UTC)))
+    main(["--home", str(tmp_path), "glyph"])
+    assert capsys.readouterr().out == "#[fg=green]●#[default]\n"
+    status.write(home.status, beat(pid=2**22 + 12345, written_at=datetime.now(UTC)))
+    main(["--home", str(tmp_path), "glyph"])
+    assert capsys.readouterr().out == "#[fg=red,bold]✖#[default]\n"
+    home.status.write_text("{")
+    assert main(["--home", str(tmp_path), "glyph"]) == 0
+    assert capsys.readouterr().out == status.UNREADABLE_GLYPH + "\n"
+
+
+def test_hands_tmux_appends_the_glyph_run_by_this_python_to_every_status_line(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--home", str(tmp_path), "tmux"]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == f'set -ag status-right " #({sys.executable} -m hands.daemon --home {tmp_path} glyph)"'
+    home = tmp_path / "Application Support" / "$hands"
+    assert main(["--home", str(home), "tmux"]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == f'set -ag status-right " #({sys.executable} -m hands.daemon --home \'{home.parent}/\\$hands\' glyph)"'
+
+
 def test_liveness_comes_from_the_os() -> None:
     assert pid_alive(os.getpid())
     assert pid_alive(1)  # launchd: alive, and not ours to signal

@@ -756,7 +756,10 @@ thing that failed `[LAW:no-silent-failure]`:
    heartbeat names a pid that is gone without having said `stopped`.
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, and the count of live sessions. `hands
-   status` prints it, and a tmux status-line snippet shows one glyph from it. When
+   status` prints it, and `hands glyph` shows one tmux-styled glyph from the same
+   verdict: green ● up, yellow ◐ running but not beating, red ✖ down, grey ○ stopped
+   or never ran, red ? for a heartbeat that does not parse. `hands tmux` prints the
+   `status-right` line that puts it in every session's status line. When
    TTS itself is down, a macOS notification is posted through `osascript`.
 3. **Log.** Every effect and every failure is one line in `~/.hands/audit.jsonl`,
    written by the daemon alone (`hands.sessions.audit`). `hands log` prints the
