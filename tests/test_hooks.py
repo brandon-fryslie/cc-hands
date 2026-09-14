@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.events import Ended, Joined, PermissionRequested, Prompted, Stopped
+from hands.core.events import Ended, Joined, PermissionRequested, Prompted, Stopped, ToolFinished
 from hands.core.session import Membership, Permission, RequestId, SessionId, TmuxPane
 from hands.sessions.home import Home
 from hands.sessions.hooks import parse_hook
@@ -58,13 +58,20 @@ def test_a_permission_request_carries_the_tool_and_its_input(home: Home) -> None
     assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, permission=permission)
 
 
+def test_a_finished_or_failed_tool_names_its_call_as_a_permission_does(home: Home) -> None:
+    done = body(hook_event_name="PostToolUse", tool_name="Bash", tool_input={"command": "ls"}, tool_use_id="t", tool_response={})
+    failed = body(hook_event_name="PostToolUseFailure", tool_name="Bash", tool_input={"command": "ls"}, tool_use_id="t", error="no")
+    call = Permission(tool="Bash", input={"command": "ls"})
+    assert parse(home, done) == parse(home, failed) == ToolFinished(SID, at=12.5, call=call)
+
+
 @pytest.mark.parametrize(
     ("raw", "reason"),
     [
         (b"not json", "not JSON"),
         (body(hook_event_name="SessionStart", source="teleport"), "source 'teleport' is not one hands knows"),
         (b"[1, 2]", "JSON object"),
-        (body(hook_event_name="PostToolUse"), "'PostToolUse' is not one hands handles"),
+        (body(hook_event_name="PreCompact"), "'PreCompact' is not one hands handles"),
         (body(hook_event_name="PermissionRequest", tool_input={}), "missing field 'tool_name'"),
         (body(hook_event_name="PermissionRequest", tool_name="Bash", tool_input="ls"), "'tool_input' should be an object"),
         (json.dumps({**COMMON, "session_id": "../../etc/x", "hook_event_name": "Stop"}).encode(), "not a Claude Code session id"),

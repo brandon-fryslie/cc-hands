@@ -81,8 +81,21 @@ async def run(config: VoiceConfig) -> None:
     sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic)
     hooks = await serve_hooks(default_home(), sessions)
     voice = build_voice(config, tools=[list_sessions_tool(sessions), *draft_tools(sessions), *permission_tools(sessions)])
-    background = [asyncio.create_task(sessions.keep_time(TICK_SECONDS)), asyncio.create_task(relay(sessions, voice.worker.queue_frame))]
     quit_event = asyncio.Event()
+
+    def stop_if_failed(task: asyncio.Task[None]) -> None:
+        # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, and without the relay
+        # nothing is asked aloud, so either one failing stops the run where it can be seen.
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
+            quit_event.set()
+
+    background = [
+        asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
+        asyncio.create_task(relay(sessions, voice.worker.queue_frame), name="the session speech relay"),
+    ]
+    for task in background:
+        task.add_done_callback(stop_if_failed)
 
     async def on_key(position: Key) -> None:
         turn = voice.key.move_key(position)

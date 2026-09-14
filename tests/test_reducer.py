@@ -19,7 +19,7 @@ from hands.core.effects import (
     Unregistered,
     Withdraw,
 )
-from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick
+from hands.core.events import Abandoned, Ended, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished
 from hands.core.reducer import EXPIRED_MESSAGE, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
     Blocked,
@@ -50,6 +50,7 @@ SESSION_EVENTS: list[SessionEvent] = [
     Prompted(ONE.id, at=5.0),
     Stopped(ONE.id),
     PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), permission=BASH),
+    ToolFinished(ONE.id, at=5.0, call=BASH),
     Ended(ONE.id),
 ]
 
@@ -171,13 +172,39 @@ def test_an_ended_session_compacting_is_idle() -> None:
 
 @pytest.mark.parametrize("event", SESSION_EVENTS)
 def test_an_ended_session_ignores_late_hooks_and_audits_them(event: SessionEvent) -> None:
-    assert reduce(holding(Gone()), event) == (holding(Gone()), [Audit(AfterEnd(event))])
+    assert reduce(holding(Gone()), event) == (holding(Gone()), [Audit(AfterEnd(event)), *let_go(event)])
 
 
 @pytest.mark.parametrize("event", SESSION_EVENTS)
 def test_an_event_for_a_session_that_never_joined_changes_nothing_and_is_audited(event: SessionEvent) -> None:
     before = registry(Session(TWO, Idle()))
-    assert reduce(before, event) == (before, [Audit(Unregistered(event))])
+    assert reduce(before, event) == (before, [Audit(Unregistered(event)), *let_go(event)])
+
+
+def let_go(event: SessionEvent) -> list[Effect]:
+    # A permission hook the registry cannot block on is released at once instead of hanging.
+    return [Reply(ONE.id, RequestId("r1"), Withdraw())] if isinstance(event, PermissionRequested) else []
+
+
+def test_the_tool_a_session_waits_on_finishing_means_its_dialog_was_answered_at_the_keyboard() -> None:
+    after, effects = reduce(holding(WAITING), ToolFinished(ONE.id, at=20.0, call=BASH))
+    assert (after, effects) == (holding(Working(since=20.0)), [Reply(ONE.id, RequestId("r0"), Withdraw())])
+
+
+@pytest.mark.parametrize("before", [WAITING, Idle(), Working(since=1.0)])
+def test_any_other_tool_finishing_changes_nothing(before: SessionState) -> None:
+    other = Permission(tool="Bash", input={"command": "ls -la"})
+    expected = holding(before)
+    assert reduce(holding(before), ToolFinished(ONE.id, at=20.0, call=other)) == (expected, [])
+
+
+def test_a_hook_that_went_away_ends_the_wait_with_nothing_to_reply_to() -> None:
+    assert reduce(holding(WAITING), Abandoned(ONE.id, RequestId("r0"), at=30.0)) == (holding(Working(since=30.0)), [])
+
+
+@pytest.mark.parametrize("before", [replace(WAITING, request=RequestId("newer")), Idle(), Gone()])
+def test_an_abandoned_request_the_session_no_longer_waits_on_changes_nothing(before: SessionState) -> None:
+    assert reduce(holding(before), Abandoned(ONE.id, RequestId("r0"), at=30.0)) == (holding(before), [])
 
 
 def test_an_event_moves_only_its_own_session() -> None:

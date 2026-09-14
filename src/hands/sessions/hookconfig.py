@@ -24,10 +24,13 @@ PERMISSION_DEADLINE_SECONDS = float(PERMISSION_HOOK_TIMEOUT_SECONDS - REPLY_MARG
 # Every other hook posts and returns, so a daemon slower than this is reported as unreachable.
 POST_TIMEOUT_SECONDS = 2.0
 
-SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "SessionEnd")
+SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd")
 
-# [LAW:dataflow-not-control-flow] the hooks that declare their own timeout, as a table; the rest take Claude Code's default.
+# [LAW:dataflow-not-control-flow] what each hook declares beyond its command, as a table; the rest take Claude Code's defaults.
 _DECLARED_TIMEOUTS: Mapping[str, int] = {"PermissionRequest": PERMISSION_HOOK_TIMEOUT_SECONDS}
+# Fired for every tool call, so they run in the background and never hold the agent up. They are how the
+# daemon learns that a tool it was asked about ran after all: its dialog was answered at the keyboard.
+_IN_BACKGROUND = frozenset({"PostToolUse", "PostToolUseFailure"})
 
 
 def post_timeout(event: str) -> float:
@@ -38,12 +41,12 @@ def post_timeout(event: str) -> float:
 def hook_settings(python: Path, home: Home) -> dict[str, object]:
     # A single simple command, so the hook's shell execs it and the shim's parent is the claude process.
     command = shlex.join([str(python), "-m", "hands.sessions.shim", str(home.root)])
-    return {"hooks": {event: [{"hooks": [{"type": "command", "command": command, **_timeout(event)}]}] for event in SUBSCRIBED}}
+    return {"hooks": {event: [{"hooks": [{"type": "command", "command": command, **_declared(event)}]}] for event in SUBSCRIBED}}
 
 
-def _timeout(event: str) -> dict[str, int]:
-    declared = _DECLARED_TIMEOUTS.get(event)
-    return {} if declared is None else {"timeout": declared}
+def _declared(event: str) -> dict[str, object]:
+    timeout = _DECLARED_TIMEOUTS.get(event)
+    return {**({} if timeout is None else {"timeout": timeout}), **({"async": True} if event in _IN_BACKGROUND else {})}
 
 
 def main() -> None:

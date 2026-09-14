@@ -8,10 +8,11 @@ from loguru import logger
 
 from hands.core.drafts import DraftOutcome, DraftRequest, decide
 from hands.core.effects import AfterEnd, Audit, AuditRecord, Decision, Effect, Heard, HookReply, Narrate, Reply, Sending, Speak, Type, Unregistered
-from hands.core.events import Event, PermissionRequested, Tick
+from hands.core.events import Abandoned, Event, PermissionRequested, Tick
 from hands.core.permissions import AnswerPermission, PermissionOutcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Instant, Registry, RequestId, Session, SessionId
+from hands.sessions.payload import Rejected
 from hands.sessions.tmux import type_into
 from hands.sessions.transcript import ai_title
 
@@ -50,8 +51,12 @@ class Sessions:
         try:
             await self.apply(event)
             return await waiting
+        except asyncio.CancelledError:
+            # The hook's connection closed: Claude Code gave up on it, or exited. No reply can reach it now,
+            # so the session stops waiting, and a voice answer after this is told the request is gone.
+            await self.apply(Abandoned(event.session, event.request, self._clock()))
+            raise
         finally:
-            # A hook Claude Code gave up on cancels this wait; a reply decided later is logged as unheard.
             del self._waiting[event.request]
 
     async def answer(self, request: RequestId, decision: Decision) -> PermissionOutcome:
@@ -113,7 +118,14 @@ class Sessions:
 
 
 def _listing(session: Session) -> Listing:
-    return Listing(session, ai_title(session.membership.transcript))
+    try:
+        title = ai_title(session.membership.transcript)
+    except (Rejected, OSError) as error:
+        # [LAW:no-silent-failure] a transcript hands cannot read names no session; the session is still
+        # listed, spoken, and answered under its directory, and the log says why it has no title.
+        logger.error(f"cannot read the title of session {session.membership.id} from {session.membership.transcript}: {error}")
+        title = None
+    return Listing(session, title)
 
 
 def _audited(record: AuditRecord) -> tuple[str, str]:

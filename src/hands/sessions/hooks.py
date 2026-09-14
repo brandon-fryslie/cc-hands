@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 
 from hands.core.effects import Allow, Deny, HookReply, Withdraw
-from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped
+from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished
 from hands.core.session import Instant, Permission, RequestId
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership
@@ -27,6 +27,8 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
         case "PermissionRequest":
             permission = Permission(tool=payload.text("tool_name"), input=payload.mapping("tool_input"))
             return PermissionRequested(session, at, request, permission)
+        case "PostToolUse" | "PostToolUseFailure":
+            return ToolFinished(session, at, Permission(tool=payload.text("tool_name"), input=payload.mapping("tool_input")))
         case "SessionEnd":
             return Ended(session)
         case other:

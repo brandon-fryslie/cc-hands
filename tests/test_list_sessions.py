@@ -76,6 +76,14 @@ def test_a_title_record_still_being_written_is_not_read(tmp_path: Path) -> None:
         assert ai_title(transcript) == "finished title"
 
 
+async def test_a_transcript_whose_title_cannot_be_read_lists_the_session_untitled(tmp_path: Path) -> None:
+    broken = membership(tmp_path, "broken")
+    broken.transcript.write_text('{"type":"ai-title","sessionId":"broken"}\n')
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0)
+    await sessions.apply(Joined(broken, "startup"))
+    assert await call(sessions) == {"sessions": [{"id": "broken", "title": "untitled, in broken", "state": "idle"}]}
+
+
 def test_the_tool_is_a_valid_pipecat_direct_function() -> None:
     wrapper = DirectFunctionWrapper(list_sessions_tool(Sessions(permission_deadline=60.0, clock=lambda: 0.0)))
     assert wrapper.name == "list_sessions"

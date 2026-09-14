@@ -35,8 +35,26 @@ class PermissionRequested:
 
 
 @dataclass(frozen=True)
+class ToolFinished:
+    """A tool call ran to its end, or failed. The call is named by its tool and input, as a permission is."""
+
+    session: SessionId
+    at: Instant
+    call: Permission
+
+
+@dataclass(frozen=True)
 class Ended:
     session: SessionId
+
+
+@dataclass(frozen=True)
+class Abandoned:
+    """The hook waiting on a permission reply went away before one was decided, so nothing can be answered."""
+
+    session: SessionId
+    request: RequestId
+    at: Instant
 
 
 @dataclass(frozen=True)
@@ -47,5 +65,5 @@ class Tick:
 
 
 # Events about a session the registry must already know; a join is how it comes to.
-SessionEvent = Prompted | Stopped | PermissionRequested | Ended
-Event = Joined | SessionEvent | Tick
+SessionEvent = Prompted | Stopped | PermissionRequested | ToolFinished | Ended
+Event = Joined | SessionEvent | Abandoned | Tick

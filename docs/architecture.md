@@ -325,6 +325,7 @@ event-specific fields below were read out of the 2.1.263 bundle. Payloads captur
 | `UserPromptSubmit` | `prompt`, `prompt_id` |
 | `Stop` | `stop_hook_active`, `last_assistant_message` |
 | `PermissionRequest` | `tool_name`, `tool_input`, `permission_suggestions` |
+| `PostToolUse`, `PostToolUseFailure` | `tool_name`, `tool_input`, `tool_use_id`, and the response or the error |
 | `Notification` | `message`, `title`, `notification_type` in `permission_prompt`, `idle_prompt`, `auth_success`, `elicitation_dialog` |
 | `SubagentStop` | `agent_id`, `agent_transcript_path`, `agent_type`, `last_assistant_message` |
 | `MessageDisplay` | `turn_id`, `message_id`, `index`, `final`, `delta` |
@@ -352,15 +353,19 @@ SubagentStop TaskCompleted TaskCreated TeammateIdle UserPromptExpansion
 UserPromptSubmit WorktreeCreate WorktreeRemove
 ```
 
-The daemon subscribes to the eight events in the table. `MessageDisplay` is the only
+The daemon subscribes to the events in the table. `MessageDisplay` is the only
 live source of Claude's text: the transcript writes a text block once, after it
 finishes (checked on 2026-09-14), while `MessageDisplay` fires with each batch of
 finished lines as the text streams. It is dispatched synchronously for every batch,
 even to a hook that declares itself async, so it is installed as an HTTP hook, which
 Claude Code 2.1.270 supports: the event is POSTed to the daemon with no process
 spawned, under a short timeout. Its cost per batch and Claude's behaviour when the
-daemon is down are measured before it is relied on. `PostToolUse` stays unsubscribed,
-because the tail carries tool calls and their results with their record ids.
+daemon is down are measured before it is relied on. The tail, not a hook, is how
+the daemon reads tool calls and their results. `PostToolUse` and `PostToolUseFailure`
+are subscribed for one fact the tail would give too late to use: that a tool the
+daemon is still waiting on a permission for has run, because its dialog was answered
+at the keyboard. They are declared `async`, so the shim they spawn on every tool call
+never holds the agent up.
 
 **The shims.** Each is a two-line script in the target session's hook config: POST
 stdin to the daemon socket, exit. At `SessionStart` the shim also writes
@@ -381,12 +386,17 @@ that same number, so there is one place the budget is set `[LAW:single-enforcer]
 permission dialog at once and runs the `PermissionRequest` hook beside it, and
 whichever answers first decides. An answer typed at the dialog does not end the hook;
 it runs on to its own end and its output is ignored. So the daemon never learns of a
-keyboard answer directly. It learns that the session moved on: the next
-`UserPromptSubmit`, `Stop`, `SessionEnd`, or `PermissionRequest` withdraws the waiting
-reply, which prints nothing. Until one of those arrives, a request answered at the
-keyboard can still hear its warning, and its deadline's deny, which Claude Code
-ignores; the expiry is therefore spoken as what hands did ("so I told it no"), never
-as what happened to the tool.
+keyboard answer directly. It learns that the session moved on: the asked-about tool
+finishing (`PostToolUse` or `PostToolUseFailure` with the same tool and input), or the
+next `UserPromptSubmit`, `Stop`, `SessionEnd`, or `PermissionRequest`, withdraws the
+waiting reply, which prints nothing. A hook whose connection closes first, because
+Claude Code killed or dropped it, ends the wait with no reply at all, so a later voice
+answer hears that the request is gone rather than that it went through. What is left
+is a tool approved at the keyboard that is still running at the deadline: its warning
+and its deny, which Claude Code ignores, are still heard, so the expiry is spoken as
+what hands did ("so I told it no"), never as what happened to the tool. A permission
+request from a session the daemon does not know, such as one started before the
+daemon was, is let go at once.
 
 ## Transcripts: the live tail, and backfill
 

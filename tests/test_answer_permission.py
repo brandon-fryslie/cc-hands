@@ -160,7 +160,7 @@ async def test_a_session_that_moves_on_lets_its_hook_return_undecided(home: Home
     assert await shim.finished() == (0, "", "")
 
 
-async def test_a_hook_claude_code_gave_up_on_is_let_go_and_its_deny_is_logged_as_unheard(home: Home, sessions: Sessions, clock: Clock) -> None:
+async def test_a_hook_that_went_away_is_neither_warned_about_nor_denied(home: Home, sessions: Sessions, clock: Clock) -> None:
     logged: list[str] = []
     sink = logger.add(lambda message: logged.append(str(message)), level="INFO")
     try:
@@ -172,11 +172,34 @@ async def test_a_hook_claude_code_gave_up_on_is_let_go_and_its_deny_is_logged_as
         await sessions.apply(Tick(clock.now))
     finally:
         logger.remove(sink)
-    assert [listing.session.state for listing in sessions.live()] == [Working(since=DEADLINE)]
-    assert await sessions.heard() == Speak(PermissionExpired(SID, moment.permission))
-    assert [line for line in logged if moment.request in line and "request" in line] == [
-        next(line for line in logged if "which no hook is waiting on" in line)
-    ]
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(sessions.heard(), 0.1)
+    assert [line for line in logged if moment.request in line] == []
+
+
+async def test_a_request_from_a_session_this_daemon_never_met_is_let_go_at_once(home: Home, sessions: Sessions) -> None:
+    # A session that started before the daemon did: no SessionStart reached it, so nothing can be asked aloud.
+    started = asyncio.get_running_loop().time()
+    assert await (await Shim.run(home, ASK)).finished() == (0, "", "")
+    assert asyncio.get_running_loop().time() - started < WAIT_SECONDS
+
+
+async def test_a_voice_answer_after_the_hook_went_away_is_told_nothing_was_answered(home: Home, sessions: Sessions, clock: Clock) -> None:
+    shim, moment = await asked(home, sessions)
+    shim.process.kill()
+    await shim.process.wait()
+    await asyncio.sleep(0.2)  # the daemon notices the closed connection
+    assert [listing.session.state for listing in sessions.live()] == [Working(since=0.0)]
+    assert await call(permission_tools(sessions), request=moment.request, decision="allow") == {
+        "readback": "That request is no longer waiting: it was already answered, answered at the keyboard, or denied at its deadline."
+    }
+
+
+async def test_the_tool_running_after_a_keyboard_answer_lets_the_hook_go(home: Home, sessions: Sessions) -> None:
+    shim, _ = await asked(home, sessions)
+    finished = {**COMMON, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -r build"}, "tool_use_id": "t", "tool_response": {}}
+    assert await (await Shim.run(home, finished)).finished() == (0, "", "")
+    assert await shim.finished() == (0, "", "")
 
 
 @pytest.mark.parametrize(

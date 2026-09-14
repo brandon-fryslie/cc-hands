@@ -76,9 +76,9 @@ async def test_an_end_removes_membership_and_leaves_the_listing(home: Home, sess
 
 
 async def test_a_hook_the_daemon_refuses_exits_nonzero_with_its_reason(home: Home, sessions: Sessions) -> None:
-    code, stderr = await shim(home, {**COMMON, "hook_event_name": "PostToolUse"})
+    code, stderr = await shim(home, {**COMMON, "hook_event_name": "PreCompact"})
     assert code == 1
-    assert "refused this hook (400): hook event 'PostToolUse' is not one hands handles" in stderr
+    assert "refused this hook (400): hook event 'PreCompact' is not one hands handles" in stderr
     assert sessions.live() == []
 
 

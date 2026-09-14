@@ -1,5 +1,6 @@
 """The session lifecycle as one pure function."""
 
+from collections.abc import Callable
 from dataclasses import replace
 
 from hands.core.effects import (
@@ -16,8 +17,20 @@ from hands.core.effects import (
     Unregistered,
     Withdraw,
 )
-from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick
-from hands.core.session import Blocked, Gone, Idle, Instant, Registry, Session, SessionId, SessionState, Working
+from hands.core.events import (
+    Abandoned,
+    Ended,
+    Event,
+    Joined,
+    PermissionRequested,
+    Prompted,
+    SessionEvent,
+    StartSource,
+    Stopped,
+    Tick,
+    ToolFinished,
+)
+from hands.core.session import Blocked, Gone, Idle, Instant, Permission, Registry, RequestId, Session, SessionId, SessionState, Working
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
@@ -40,14 +53,18 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             before = None if previous is None else previous.state
             return registry.put(Session(membership, state)), _transition(membership.id, before, state)
         case Prompted(at=at):
-            return _enter(registry, event, Working(since=at))
+            return _enter(registry, event, lambda _: Working(since=at))
         case Stopped():
-            return _enter(registry, event, Idle())
+            return _enter(registry, event, lambda _: Idle())
         case PermissionRequested(at=at, request=request, permission=permission):
             deadline = at + registry.permission_deadline
-            return _enter(registry, event, Blocked(on=permission, request=request, deadline=deadline, warned=False))
+            return _enter(registry, event, lambda _: Blocked(on=permission, request=request, deadline=deadline, warned=False))
+        case ToolFinished(at=at, call=call):
+            return _enter(registry, event, lambda state: _finished(state, call, at))
         case Ended():
-            return _enter(registry, event, Gone())
+            return _enter(registry, event, lambda _: Gone())
+        case Abandoned(session=session, request=request, at=at):
+            return _abandoned(registry, session, request, at), []
         case Tick(at=at):
             return _ticked(registry, at)
 
@@ -63,16 +80,45 @@ def _started(source: StartSource, previous: Session | None) -> SessionState:
             return Idle()
 
 
-def _enter(registry: Registry, event: SessionEvent, state: SessionState) -> tuple[Registry, list[Effect]]:
+def _enter(registry: Registry, event: SessionEvent, next: Callable[[SessionState], SessionState]) -> tuple[Registry, list[Effect]]:
     match registry.sessions.get(event.session):
         case None:
             # [LAW:no-silent-failure] an event for a session that never joined is a record, not a drop.
-            return registry, [Audit(Unregistered(event))]
+            return registry, [Audit(Unregistered(event)), *_unwaited(event)]
         case Session(state=Gone()):
             # Ended is final until the session starts again; a hook that lands late cannot revive it.
-            return registry, [Audit(AfterEnd(event))]
+            return registry, [Audit(AfterEnd(event)), *_unwaited(event)]
         case Session(membership=membership, state=before):
-            return registry.put(Session(membership, state)), _transition(membership.id, before, state)
+            after = next(before)
+            return registry.put(Session(membership, after)), _transition(membership.id, before, after)
+
+
+def _unwaited(event: SessionEvent) -> list[Effect]:
+    # A permission hook from a session this registry cannot block, such as one that started before the
+    # daemon did, is let go at once rather than left to hang until Claude Code kills it.
+    match event:
+        case PermissionRequested(session=session, request=request):
+            return [Reply(session, request, Withdraw())]
+        case _:
+            return []
+
+
+def _finished(state: SessionState, call: Permission, at: Instant) -> SessionState:
+    match state:
+        case Blocked(on=asked) if asked == call:
+            # The tool the session was waiting to run has run, so its dialog was answered at the keyboard.
+            return Working(since=at)
+        case _:
+            return state
+
+
+def _abandoned(registry: Registry, session: SessionId, request: RequestId, at: Instant) -> Registry:
+    match registry.sessions.get(session):
+        case Session(membership=membership, state=Blocked(request=held)) if held == request:
+            # No hook waits for a reply, so there is nothing to withdraw, answer, or deny.
+            return registry.put(Session(membership, Working(since=at)))
+        case _:
+            return registry
 
 
 def _transition(session: SessionId, before: SessionState | None, after: SessionState) -> list[Effect]:
@@ -85,8 +131,8 @@ def _transition(session: SessionId, before: SessionState | None, after: SessionS
         case (Blocked(request=held), Blocked(request=asked, on=permission)):
             return [Reply(session, held, Withdraw()), Narrate(PermissionAsked(session, asked, permission))]
         case (Blocked(request=held), _):
-            # The session moved on without a voice answer, most often because the user answered its
-            # dialog at the keyboard; the waiting hook is let go so it cannot decide a settled question.
+            # The session moved on without a voice answer: the user answered its dialog at the keyboard
+            # and the tool ran, or the turn went on. The waiting hook is let go, deciding nothing.
             return [Reply(session, held, Withdraw())]
         case (_, Blocked(request=asked, on=permission)):
             return [Narrate(PermissionAsked(session, asked, permission))]

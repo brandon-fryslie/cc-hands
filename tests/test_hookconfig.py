@@ -20,7 +20,7 @@ from hands.sessions.hookconfig import (
 from hands.sessions.hooks import hook_output
 
 
-def test_every_subscribed_hook_runs_the_shim_and_only_the_permission_hook_declares_a_timeout() -> None:
+def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_and_tool_hooks_run_in_the_background() -> None:
     home = Home(Path("/Users/me/my hands"))
     settings = hook_settings(Path("/venv/bin/python"), home)
     hooks = cast(dict[str, object], settings["hooks"])
@@ -28,8 +28,12 @@ def test_every_subscribed_hook_runs_the_shim_and_only_the_permission_hook_declar
     command = "/venv/bin/python -m hands.sessions.shim '/Users/me/my hands'"
     assert shlex.split(command)[-1] == str(home.root)
     for event, entries in hooks.items():
-        timeout = {"timeout": PERMISSION_HOOK_TIMEOUT_SECONDS} if event == "PermissionRequest" else {}
-        assert entries == [{"hooks": [{"type": "command", "command": command, **timeout}]}]
+        declared = {
+            "PermissionRequest": {"timeout": PERMISSION_HOOK_TIMEOUT_SECONDS},
+            "PostToolUse": {"async": True},
+            "PostToolUseFailure": {"async": True},
+        }.get(event, {})
+        assert entries == [{"hooks": [{"type": "command", "command": command, **declared}]}]
 
 
 def test_the_shim_waits_as_long_as_claude_code_lets_the_hook_and_the_daemon_denies_before_that() -> None:
