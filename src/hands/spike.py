@@ -3,6 +3,12 @@
     uv run hands-spike            # Qwen on inferno (HANDS_LLM=local, the default)
     HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands-spike
 
+Sessions join through the hook socket at ~/.hands/hands.sock. A Claude Code
+session is registered when its settings run the shim for SessionStart,
+UserPromptSubmit, Stop, PermissionRequest, and SessionEnd:
+
+    <this venv>/bin/python -m hands.sessions.shim ~/.hands
+
 Hold the conversation with the space bar: press once to start talking, press
 again to stop. `q` quits. Latency from key release to each milestone, ending
 with the first audio out of the speaker, is logged for every turn.
@@ -11,11 +17,15 @@ with the first audio out of the speaker, is logged for every turn.
 import asyncio
 import os
 import sys
+import time
 
 from loguru import logger
 from pipecat.services.whisper.stt import MLXModel
 from pipecat.workers.runner import WorkerRunner
 
+from hands.sessions.home import default_home
+from hands.sessions.registry import Sessions
+from hands.sessions.server import serve_hooks
 from hands.voice.keys import drive_key
 from hands.voice.pipeline import (
     AnthropicBackend,
@@ -25,11 +35,13 @@ from hands.voice.pipeline import (
     build_voice,
 )
 from hands.voice.ptt import Key
+from hands.voice.tools import list_sessions_tool
 
 # The model lives on inferno, the M4 Max on the LAN, served by mlx_lm.server.
 LOCAL_LLM_URL = "http://inferno.local:8080/v1"
 LOCAL_LLM_MODEL = "mlx-community/Qwen3-30B-A3B-Instruct-2507-8bit"
 API_KEY_VAR = "ANTHROPIC_API_KEY"
+PERMISSION_TIMEOUT_SECONDS = 60.0
 
 
 def backend_from_env() -> LLMBackend:
@@ -64,7 +76,9 @@ def config_from_env() -> VoiceConfig:
 
 
 async def run(config: VoiceConfig) -> None:
-    voice = build_voice(config)
+    sessions = Sessions(permission_timeout=PERMISSION_TIMEOUT_SECONDS)
+    hooks = await serve_hooks(default_home(), sessions.apply, clock=time.monotonic)
+    voice = build_voice(config, tools=[list_sessions_tool(sessions)])
     quit_event = asyncio.Event()
 
     async def on_key(position: Key) -> None:
@@ -79,6 +93,7 @@ async def run(config: VoiceConfig) -> None:
     await runner.cancel("quit")
     await pipeline_run
     keys.cancel()
+    await hooks.cleanup()
 
 
 def main() -> None:

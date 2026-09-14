@@ -85,15 +85,20 @@ NarrationId = NewType("NarrationId", str)
 SegmentId   = NewType("SegmentId", str)
 Instant   = float                           # monotonic seconds
 
+# What the shim records at SessionStart. The title is not here: it is the newest
+# ai-title record in the transcript, read when a listing needs it.
 @dataclass(frozen=True)
-class Session:
+class Membership:
     id: SessionId
-    title: str                # Claude Code's own ai-title
+    pid: int                  # the shim's parent, which is the claude process
+    pane: TmuxPane | None     # None outside tmux
     cwd: Path
     transcript: Path          # the JSONL, from the hook payload
-    pane: TmuxPane
-    pid: int                  # the shim's parent, reported at SessionStart
-    mode: PermissionMode      # from the hook payload
+
+@dataclass(frozen=True)
+class Session:
+    membership: Membership
+    mode: PermissionMode      # from each hook payload that carries it
     state: SessionState
 
 # One session is in exactly one of these. A session waiting on you and a session
@@ -301,13 +306,15 @@ the blocking one is the only way to answer a permission. What a turn did, with t
 record id of each step, is in the transcript, which Claude Code appends to while the
 turn runs, so the daemon tails it rather than hooking every tool call. Every hook
 input carries `session_id`, `transcript_path`, `cwd`, `permission_mode`, and
-`hook_event_name`; the event-specific fields below were read out of the 2.1.263
-bundle.
+`hook_event_name`, and every one but `SessionStart` carries `permission_mode`; the
+event-specific fields below were read out of the 2.1.263 bundle. Payloads captured from
+2.1.270 on 2026-09-14 carry no session title, so a session's title is the newest
+`ai-title` record in its transcript.
 
 | Event | Payload fields |
 |---|---|
-| `SessionStart` | `source`, `agent_type`, `model`, `session_title` |
-| `UserPromptSubmit` | `prompt`, `session_title` |
+| `SessionStart` | `source`, `agent_type`, `model` |
+| `UserPromptSubmit` | `prompt`, `prompt_id` |
 | `Stop` | `stop_hook_active`, `last_assistant_message` |
 | `PermissionRequest` | `tool_name`, `tool_input`, `permission_suggestions` |
 | `Notification` | `message`, `title`, `notification_type` in `permission_prompt`, `idle_prompt`, `auth_success`, `elicitation_dialog` |

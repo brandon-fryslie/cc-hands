@@ -5,6 +5,7 @@ model, or calls an API until the returned worker is run. The daemon's edges do
 that. `VoiceConfig` is the whole variability of the pipeline as data.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from pipecat.pipeline.pipeline import Pipeline
@@ -25,7 +26,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from hands.voice.latency import LatencyObserver
 from hands.voice.ptt import KeyMute, KeyVAD, PushToTalk
-from hands.voice.tools import list_sessions
+from hands.voice.tools import Tool
 
 # Replies are spoken, so the instruction is about speech, not personality.
 # The real intermediary prompt is its own deliverable; this is the spike's.
@@ -101,7 +102,7 @@ class Voice:
     key: PushToTalk
 
 
-def build_voice(config: VoiceConfig) -> Voice:
+def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
     """Wire mic, push-to-talk, Whisper on MLX, Claude, pocket-tts, speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport and it is the VAD the turn
@@ -123,7 +124,7 @@ def build_voice(config: VoiceConfig) -> Voice:
         start=[VADUserTurnStartStrategy()],
         stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.0)],
     )
-    context = LLMContext(tools=[list_sessions])
+    context = LLMContext(tools=list(tools))
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=KeyVAD(key), user_turn_strategies=turns),
