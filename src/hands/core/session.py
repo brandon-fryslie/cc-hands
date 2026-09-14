@@ -10,6 +10,10 @@ RequestId = NewType("RequestId", str)
 TmuxPane = NewType("TmuxPane", str)
 Instant = float  # monotonic seconds
 
+# Prompt text that holds no terminal control characters, so typing it into a pane
+# cannot press a key the text does not name. Made only where the model's words are parsed.
+PromptText = NewType("PromptText", str)
+
 
 @dataclass(frozen=True)
 class Membership:
@@ -63,12 +67,36 @@ class Session:
 
 
 @dataclass(frozen=True)
+class Resolution:
+    """A spoken phrase the model turned into something exact, such as a file name."""
+
+    heard: str
+    meant: str
+
+
+@dataclass(frozen=True)
+class Staged:
+    """A draft waiting for the user's word: the text to send and how it was resolved."""
+
+    text: PromptText
+    resolutions: tuple[Resolution, ...]
+
+
+@dataclass(frozen=True)
 class Registry:
     permission_timeout: float
     sessions: Mapping[SessionId, Session]
+    # [LAW:types-are-the-program] a session with no entry has nothing staged; there is no empty draft.
+    drafts: Mapping[SessionId, Staged]
 
     def put(self, session: Session) -> Self:
         return replace(self, sessions={**self.sessions, session.membership.id: session})
+
+    def stage(self, session: SessionId, draft: Staged) -> Self:
+        return replace(self, drafts={**self.drafts, session: draft})
+
+    def unstage(self, session: SessionId) -> Self:
+        return replace(self, drafts={id: draft for id, draft in self.drafts.items() if id != session})
 
     def live(self) -> list[Session]:
         return [session for session in self.sessions.values() if not isinstance(session.state, Gone)]

@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from hands.core.events import SessionEvent
+from hands.core.session import PromptText, SessionId, TmuxPane
 
 
 @dataclass(frozen=True)
@@ -19,7 +20,16 @@ class AfterEnd:
     event: SessionEvent
 
 
-AuditRecord = Unregistered | AfterEnd
+@dataclass(frozen=True)
+class Sending:
+    """A draft the user approved, recorded before a key of it is typed."""
+
+    session: SessionId
+    pane: TmuxPane
+    text: PromptText
+
+
+AuditRecord = Unregistered | AfterEnd | Sending
 
 
 @dataclass(frozen=True)
@@ -27,4 +37,22 @@ class Audit:
     record: AuditRecord
 
 
-Effect = Audit
+# [LAW:types-are-the-program] what goes into a pane decides its own escaping, so no
+# code path looks at the first character to find out what the input is.
+@dataclass(frozen=True)
+class Text:
+    """A prompt, submitted as text even when it starts with /, @, or !."""
+
+    body: PromptText
+
+
+Input = Text
+
+
+@dataclass(frozen=True)
+class Type:
+    pane: TmuxPane
+    input: Input
+
+
+Effect = Audit | Type

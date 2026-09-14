@@ -34,7 +34,8 @@ SPOKEN_REPLY_INSTRUCTION = (
     "You are the voice intermediary for a developer's Claude Code sessions. "
     "Everything you say is spoken aloud: answer in one or two short sentences "
     "with no formatting, no lists, and no code. Call list_sessions when asked "
-    "what is running."
+    "what is running. When the user dictates something for a session, stage it "
+    "with stage_draft and say the readback; send it only when they say send."
 )
 
 

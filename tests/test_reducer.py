@@ -42,7 +42,7 @@ SESSION_EVENTS: list[SessionEvent] = [
 
 
 def registry(*sessions: Session) -> Registry:
-    return Registry(permission_timeout=TIMEOUT, sessions={s.membership.id: s for s in sessions})
+    return Registry(permission_timeout=TIMEOUT, sessions={s.membership.id: s for s in sessions}, drafts={})
 
 
 def holding(state: SessionState) -> Registry:

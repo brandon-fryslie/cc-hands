@@ -35,7 +35,7 @@ from hands.voice.pipeline import (
     build_voice,
 )
 from hands.voice.ptt import Key
-from hands.voice.tools import list_sessions_tool
+from hands.voice.tools import draft_tools, list_sessions_tool
 
 # The model lives on inferno, the M4 Max on the LAN, served by mlx_lm.server.
 LOCAL_LLM_URL = "http://inferno.local:8080/v1"
@@ -78,7 +78,7 @@ def config_from_env() -> VoiceConfig:
 async def run(config: VoiceConfig) -> None:
     sessions = Sessions(permission_timeout=PERMISSION_TIMEOUT_SECONDS)
     hooks = await serve_hooks(default_home(), sessions.apply, clock=time.monotonic)
-    voice = build_voice(config, tools=[list_sessions_tool(sessions)])
+    voice = build_voice(config, tools=[list_sessions_tool(sessions), *draft_tools(sessions)])
     quit_event = asyncio.Event()
 
     async def on_key(position: Key) -> None:

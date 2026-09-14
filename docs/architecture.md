@@ -235,7 +235,7 @@ Each timing fact has one owner.
 | Which utterance plays next, and that two never overlap | Pipecat's output transport |
 | Where a narration resumes after you cut in | the player's bookmark stack, from the segment the output transport was playing |
 | When a permission deadline warns and expires | the reducer, from `Blocked.deadline`, driven by one `Tick` source |
-| Whether text typed mid-turn is queued or lost | Claude Code's own input queue |
+| Whether text typed mid-turn is queued or lost | Claude Code's own input queue, measured to queue it |
 | When the daemon is up, and restarting it | launchd, with `KeepAlive` |
 
 Deadlines are data. The `Blocked` state carries the instant it expires and whether
@@ -246,11 +246,12 @@ timer callback. At the deadline it emits `Reply(deny)`. There are no `sleep` cal
 in the daemon that a correctness property depends on.
 
 Claude Code queues messages submitted while a turn is running and shows them with
-"Press up to edit queued messages" (seen in the 2.1.263 bundle). Whether `tmux
-send-keys` mid-turn lands in that queue is the one thing the drafts ticket verifies
-by experiment. If it does, `send_draft` while a target is working is an ordinary
-send. If it does not, `send_draft` returns a typed `RefusedBusy` result and the user
-hears it. Either way the daemon holds nothing.
+"Press up to edit queued messages". Measured on 2.1.270: text pasted into a working
+pane and submitted lands in that queue and runs when the turn ends, so `send_draft`
+to a working target is an ordinary send and the daemon holds nothing. A permission
+dialog is the exception: it swallows pasted text and takes the Enter as "Yes". So
+`send_draft` to a `Blocked` target is refused as `AwaitingPermission`, the draft stays
+staged, and the user hears why.
 
 ## Four ways to reach the ear
 
@@ -600,7 +601,10 @@ which opens the mic without a hand, does.
 `send_command` exists so that `/clear`, `/compact`, and `/model` reach the target as
 commands, with their sigil intact. `stage_draft` text always has a leading sigil
 escaped. The two never share a code path that inspects the first character; the
-`Input` variant already knows.
+`Input` variant already knows. Claude Code reads three sigils at the start of a
+prompt: `/` a command, `@` a file mention, `!` shell mode. Behind a space each is
+plain text, so `Text` is always typed with a leading space, whatever it starts with,
+as one bracketed paste followed by Enter, which keeps its newlines inside the prompt.
 
 ## The audio side
 
