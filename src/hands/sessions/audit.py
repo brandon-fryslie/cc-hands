@@ -94,15 +94,20 @@ class AuditLog:
         self._clock = clock
 
     def record(self, entry: Entry) -> None:
-        line = json.dumps({"at": self._clock().isoformat(timespec="milliseconds"), **encoded(entry)}, ensure_ascii=False)
+        # [LAW:single-enforcer] the log watches what the daemon does and never changes it: a line it cannot encode or
+        # write is lost here, not a send's answer, a tool's result, a permission's question, or a background task.
+        try:
+            line = json.dumps({"at": self._clock().isoformat(timespec="milliseconds"), **encoded(entry)}, ensure_ascii=False)
+        except TypeError as error:
+            # [LAW:no-silent-failure] a bug in what was recorded: logged as an error, it is a Failure line, whose fields always encode.
+            logger.error(f"the audit log cannot encode a {type(entry).__name__} line: {error}")
+            return
         try:
             # Opened for each line, so a line is on disk when record returns and a log moved aside is started again.
             with self._path.open("a", encoding="utf-8") as log:
                 log.write(line + "\n")
         except OSError as error:
-            # [LAW:single-enforcer] the log watches what the daemon does and never changes it: a full or unwritable
-            # disk loses the line here, not a send's answer, a permission's question, or a background task.
-            # [LAW:no-silent-failure] the loss is said on stderr, as a warning: an error would be sent back to this log.
+            # [LAW:no-silent-failure] said on stderr, as a warning: an error would be sent back to the log that just failed.
             logger.warning(f"the audit log {self._path} lost a {type(entry).__name__} line: {error}")
 
 
@@ -172,9 +177,14 @@ def _read(path: Path, since: Position) -> tuple[list[str], Position]:
     try:
         with path.open("rb") as log:
             status = os.fstat(log.fileno())
-            # [LAW:one-source-of-truth] the offset means something only in the file it was read from: a log moved
-            # aside, or cut short in place, is read again from its first line, never from the middle of one.
+            # [LAW:one-source-of-truth] the offset means something only in the file it was read from, just past a newline.
+            # A log moved aside, or cut short in place, is read again from its first line, never from the middle of one.
+            # One cut short and regrown past the offset between looks, with a newline where the old one was, is not
+            # told apart: lines are skipped, but none is split.
             same = status.st_ino == since.inode and status.st_size >= since.offset
+            if same and since.offset > 0:
+                log.seek(since.offset - 1)
+                same = log.read(1) == b"\n"
             offset = since.offset if same else 0
             log.seek(offset)
             data = log.read()

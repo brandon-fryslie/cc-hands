@@ -216,3 +216,25 @@ def test_hands_log_piped_into_a_reader_that_stops_ends_quietly(tmp_path: Path, m
     monkeypatch.setattr("builtins.print", closed)
     monkeypatch.setattr(cli.os, "dup2", discarded)
     assert cli.main(["--home", str(tmp_path), "log"]) == 0
+
+
+def test_a_log_cut_short_and_regrown_past_the_offset_between_looks_is_read_from_its_first_line(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    path.write_text("old\n")
+    _, position = tail(path, 1)
+    followed = follow(path, position, lambda: None)
+    path.write_text("regrown\nlines\n")
+    assert [next(followed), next(followed)] == ["regrown", "lines"]
+
+
+def test_an_entry_the_log_cannot_encode_is_a_failure_line_and_the_daemon_carries_on(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, clock=lambda: AT)
+    sink = logger.add(failures_to(log.record), level="ERROR", filter="hands")
+    try:
+        log.record(Called("list_sessions", {}, object()))
+    finally:
+        logger.remove(sink)
+    [line] = lines(path)
+    assert line["type"] == "Failure"
+    assert line["message"].startswith("the audit log cannot encode a Called line: the audit log cannot encode a object")

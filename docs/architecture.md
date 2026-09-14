@@ -774,7 +774,7 @@ thing that failed `[LAW:no-silent-failure]`:
    traced from the words to the keys: `Transcribed`, `Called stage_draft`,
    `Transcribed`, `Sending`, `Performed Type`, `Called send_draft`. The log watches
    and never steers: a line the disk will not take is lost with a warning on stderr,
-   and the send, the question, or the tick it described goes on. `hands log` follows
+   a value it cannot encode is a `Failure` line instead, and the send, the question, or the tick it described goes on. `hands log` follows
    the file by inode and offset, so a log moved aside is read from its first line.
 
 The daemon runs under launchd with `KeepAlive`, so a crash is a restart, and the
