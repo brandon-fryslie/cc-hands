@@ -59,7 +59,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def verdict_at(home: Home, now: datetime) -> status.Verdict:
-    """What the heartbeat means now; Rejected when it does not parse."""
+    """What the heartbeat means now; Rejected when it does not parse, OSError when it cannot be read."""
     last = status.read(home.status)
     return status.judge(home.status, last, now, alive=last is not None and pid_alive(last.pid))
 
@@ -68,7 +68,7 @@ def report(home: Home) -> int:
     now = datetime.now(UTC)
     try:
         verdict = verdict_at(home, now)
-    except Rejected as error:
+    except (Rejected, OSError) as error:
         # [LAW:no-silent-failure] a heartbeat that does not parse is reported, not taken for "not running".
         print(f"hands status cannot read {home.status}: {error}", file=sys.stderr)
         return 2
@@ -79,7 +79,7 @@ def report(home: Home) -> int:
 def show_glyph(home: Home) -> int:
     try:
         print(status.glyph(verdict_at(home, datetime.now(UTC))))
-    except Rejected:
+    except (Rejected, OSError):
         # tmux shows what is printed and nothing else, so the refusal is the glyph; `hands status` says why.
         print(status.UNREADABLE_GLYPH)
     # A status line shows the glyph whatever the exit, so the exit carries nothing here.
@@ -87,17 +87,24 @@ def show_glyph(home: Home) -> int:
 
 
 def tmux_lines(python: Path, home: Home) -> str:
-    """Lines for tmux.conf: the glyph appended to every session's status-right, run by this Python against this home."""
-    command = shlex.join([str(python), "-m", "hands.daemon", "--home", str(home.root), "glyph"])
-    # Double-quoted for tmux, which expands $ and reads backslashes inside them; the command inside is quoted for the shell #() runs.
-    status_right = " #(" + command + ")"
-    quoted = '"' + "".join("\\" + char if char in '"\\$' else char for char in status_right) + '"'
+    """Lines for tmux.conf that put the glyph, run by this Python against this home, in every session's status-right, however often they are sourced."""
+    # Absolute: tmux runs the command in each session's own directory. `#` doubled: tmux expands formats in a #() command.
+    command = shlex.join([str(python), "-m", "hands.daemon", "--home", str(home.root.resolve()), "glyph"]).replace("#", "##")
+    # [LAW:one-source-of-truth] the command lives in one user option, set again on every reload; status-right holds only
+    # a reference to it, appended once, so sourcing the file twice neither doubles the glyph nor keeps a stale command.
     return "\n".join(
         [
             "# hands: one glyph from the daemon's heartbeat, redrawn every status-interval (15 s unless set)",
-            f"set -ag status-right {quoted}",
+            f"set -g @hands_glyph {_tmux_quoted('#(' + command + ')')}",
+            "if -F '#{m:*@hands_glyph*,#{status-right}}' '' \"set -ag status-right ' #{E:@hands_glyph}'\"",
         ]
     )
+
+
+def _tmux_quoted(text: str) -> str:
+    """A double-quoted tmux.conf string, which expands $ and reads backslashes, holding exactly text."""
+    return '"' + "".join("\\" + char if char in '"\\$' else char for char in text) + '"'
+
 
 
 # How often `hands log` looks for new lines.

@@ -86,8 +86,8 @@ uv run pytest && uv run pyright
 ```
 
 A dead daemon shows in every tmux session's status line, without speech. Append the
-printed lines to `~/.tmux.conf` and reload it; the glyph is redrawn every
-`status-interval`, 15 s unless set:
+printed lines to `~/.tmux.conf` and reload it (reloading again adds nothing); the glyph
+is redrawn every `status-interval`, 15 s unless set:
 
 ```
 uv run hands tmux >> ~/.tmux.conf
