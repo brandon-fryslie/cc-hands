@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from loguru import logger
 
 from hands.core.drafts import DraftOutcome, DraftRequest, decide
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Decision, Effect, Heard, HookReply, Narrate, Reply, Sending, Speak, Type, Unregistered
+from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Decision, Effect, Heard, HookReply, Narrate, Reply, Sending, Speak, Type, Unregistered
 from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
 from hands.core.permissions import AnswerPermission, PermissionOutcome, answer
 from hands.core.reducer import reduce
@@ -56,7 +56,12 @@ class Sessions:
             # Claude Code gave up on it, or exited. No reply can reach it now, so the session stops waiting,
             # and a voice answer after this is told the request is gone.
             # [LAW:no-silent-failure] a reply decided in the instant before the close was logged as sent; this says it was not.
-            lost = f"; its reply {waiting.result()} was never delivered" if waiting.done() and not waiting.cancelled() else ""
+            match waiting.result() if waiting.done() and not waiting.cancelled() else None:
+                case Allow() | Deny() as decision:
+                    lost = f"; its reply {decision} was never delivered"
+                case _:
+                    # Nothing was decided, or only a withdrawal, which prints nothing either way.
+                    lost = ""
             logger.info(f"the hook for session {event.session} request {event.request} closed{lost}")
             await self.apply(Abandoned(event.session, event.request, self._clock()))
             raise
