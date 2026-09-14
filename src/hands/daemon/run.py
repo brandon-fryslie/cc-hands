@@ -25,6 +25,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from loguru import logger
 from pipecat.frames.frames import Frame
@@ -133,8 +134,9 @@ async def load(config: VoiceConfig, sessions: Sessions, heart: status.Heart, qui
 
 
 async def converse(voice: Voice, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event) -> None:
-    """Run the pipeline and what feeds it until it ends or the run is told to stop."""
+    """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
+    failures: list[BaseException] = []
 
     def beat() -> None:
         heart.beat(pipeline.state, _wall(voice.speaker.sounded_at), sessions.live_count())
@@ -145,6 +147,7 @@ async def converse(voice: Voice, sessions: Sessions, heart: status.Heart, quit_e
         # them failing stops the run where it can be seen, and launchd starts it again.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
+            failures.append(error)
             quit_event.set()
 
     background = [
@@ -174,21 +177,25 @@ async def converse(voice: Voice, sessions: Sessions, heart: status.Heart, quit_e
         quitting.cancel()
         for task in background:
             task.cancel()
+    # [LAW:no-silent-failure] a run that failed ends by raising, so it is not written as stopped: it reads as down,
+    # exits nonzero, and launchd starts it again.
+    if failures:
+        raise failures[0]
+    if not quit_event.is_set():
+        raise RuntimeError("the pipeline ended without being told to stop")
 
 
 class PipelineWatch:
-    """The pipeline's state as Pipecat reports it, for the heartbeat."""
+    """Whether Pipecat has reported the pipeline started, for the heartbeat."""
 
     def __init__(self, worker: PipelineWorker) -> None:
-        self.state: status.PipelineState = "starting"
+        # [LAW:single-enforcer] "stopped" is not the watch's to say: a pipeline also finishes while a failed run
+        # tears down, and only run() knows the run was told to stop.
+        self.state: Literal["starting", "running"] = "starting"
 
         @worker.event_handler("on_pipeline_started")
         async def started(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
             self.state = "running"
-
-        @worker.event_handler("on_pipeline_finished")
-        async def finished(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
-            self.state = "stopped"
 
 
 async def off_loop[T](work: Callable[[], T], name: str) -> T:

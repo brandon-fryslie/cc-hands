@@ -14,7 +14,7 @@ from typing import Literal
 
 from hands.sessions.payload import Payload, Rejected
 
-# Starting until Pipecat reports the pipeline started, running until it reports it finished.
+# Starting until Pipecat reports the pipeline started; stopped only in the last heartbeat of a run told to stop.
 PipelineState = Literal["starting", "running", "stopped"]
 
 # How often the daemon rewrites the file.

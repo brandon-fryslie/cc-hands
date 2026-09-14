@@ -739,7 +739,8 @@ arrives as shutdown begins, so that session's own dialog stands and the daemon e
 in under a second. After the socket is released, a stop writes a last heartbeat that
 says `stopped`, and a stopped daemon reads as stopped even if its pid is later reused.
 A crash writes nothing more, so its last heartbeat names a pid that is gone, and it
-reads as down.
+reads as down. A background task that failed or a pipeline that ended on its own
+counts as a crash: the run raises, exits nonzero, and launchd starts it again.
 
 ## Endurance
 
