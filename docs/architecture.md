@@ -731,12 +731,15 @@ alone, and everything else reads it.
 The heartbeat is honest at both ends of a run. `hands run` writes its first heartbeat,
 `pipeline starting`, before it imports Pipecat. The models load off the event loop,
 which keeps beating, so a restart shows its new pid within half a second of the kill,
-and only a loop that is actually stuck reads as not responding. launchd stops the
-agent with SIGTERM, which ends the pipeline the way Ctrl-C does. Shutdown lets every
-permission hook still waiting go undecided, so that session's own dialog stands and
-the daemon exits in under a second. The last heartbeat, written after the socket is
-released, says `stopped`. A stopped daemon reads as stopped even if its pid is later
-reused.
+and only a loop that is actually stuck reads as not responding. launchd's SIGTERM,
+Ctrl-C, the `q` key, and a failed background task all set one quit event. Its handler
+is in place before the models load, so a stop during the load does not wait for them.
+Shutdown lets every permission hook still waiting go undecided, including one that
+arrives as shutdown begins, so that session's own dialog stands and the daemon exits
+in under a second. After the socket is released, a stop writes a last heartbeat that
+says `stopped`, and a stopped daemon reads as stopped even if its pid is later reused.
+A crash writes nothing more, so its last heartbeat names a pid that is gone, and it
+reads as down.
 
 ## Endurance
 

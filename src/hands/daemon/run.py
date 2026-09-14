@@ -18,6 +18,7 @@ every turn.
 
 import asyncio
 import os
+import signal
 import sys
 import time
 from collections.abc import Callable
@@ -39,6 +40,7 @@ from hands.voice.pipeline import (
     AnthropicBackend,
     LLMBackend,
     OpenAICompatibleBackend,
+    Voice,
     VoiceConfig,
     build_voice,
 )
@@ -88,19 +90,46 @@ def config_from_env() -> VoiceConfig:
 async def run(config: VoiceConfig, home: Home, heart: status.Heart) -> None:
     sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic)
     hooks = await serve_hooks(home, sessions)
-    tools = [list_sessions_tool(sessions), *draft_tools(sessions), *permission_tools(sessions)]
-    # Loading the models takes seconds, so it runs off the event loop and the loop keeps beating "starting":
-    # a slow start reads as starting, and only a stuck loop reads as not responding.
-    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, sessions.live_count()), heart.period.total_seconds()))
-    try:
-        voice = await asyncio.to_thread(build_voice, config, tools=tools)
-    finally:
-        starting.cancel()
-    # [LAW:no-silent-failure] a heartbeat that failed while the models loaded stops the run, as the steady one does.
-    if starting.done() and not starting.cancelled() and (error := starting.exception()) is not None:
-        raise error
-    pipeline = PipelineWatch(voice.worker)
     quit_event = asyncio.Event()
+    # [LAW:single-enforcer] launchd's SIGTERM, a terminal's Ctrl-C, the q key, and a failed background task all set
+    # this one event, and it is installed before the models load, so a stop is heard in every phase of the run.
+    loop = asyncio.get_running_loop()
+    for signal_number in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(signal_number, quit_event.set)
+    try:
+        voice = await load(config, sessions, heart, quit_event)
+        if voice is not None:
+            await converse(voice, sessions, heart, quit_event)
+    finally:
+        # A run that raised still lets go of the socket and of every permission hook waiting on it.
+        await hooks.cleanup()
+    # Written only by a stop: a crash leaves the last heartbeat naming a pid that is gone, which reads as down.
+    heart.beat("stopped", None if voice is None else _wall(voice.speaker.sounded_at), sessions.live_count())
+
+
+async def load(config: VoiceConfig, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event) -> Voice | None:
+    """The voice, built off the event loop while the loop beats "starting"; None when told to stop first."""
+    tools = [list_sessions_tool(sessions), *draft_tools(sessions), *permission_tools(sessions)]
+    # Loading the models takes seconds: off the loop, a slow start reads as starting, and only a stuck loop as not responding.
+    building = asyncio.create_task(asyncio.to_thread(build_voice, config, tools=tools))
+    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, sessions.live_count()), heart.period.total_seconds()))
+    quitting = asyncio.create_task(quit_event.wait())
+    try:
+        await asyncio.wait({building, starting, quitting}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        # A stop does not wait for the models; the thread finishes on its own before the process exits.
+        for task in (building, starting, quitting):
+            if not task.done():
+                task.cancel()
+    if starting.done() and not starting.cancelled():
+        # [LAW:no-silent-failure] the heartbeat only ends by raising, and its error stops the run as the steady one does.
+        starting.result()
+    return building.result() if building.done() and not building.cancelled() else None
+
+
+async def converse(voice: Voice, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event) -> None:
+    """Run the pipeline and what feeds it until it ends or the run is told to stop."""
+    pipeline = PipelineWatch(voice.worker)
 
     def beat() -> None:
         heart.beat(pipeline.state, _wall(voice.speaker.sounded_at), sessions.live_count())
@@ -125,25 +154,21 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart) -> None:
         turn = voice.key.move_key(position)
         logger.info(f"key {position}: turn {turn}")
 
-    # launchd stops an agent with SIGTERM, a terminal with SIGINT: either one ends the pipeline cleanly.
-    runner = WorkerRunner(handle_sigint=True, handle_sigterm=True)
     if sys.stdin.isatty():
         background.append(asyncio.create_task(drive_key(on_key, quit_event), name="the terminal key edge"))
         logger.info("space: press to talk, press again to stop. q: quit.")
+    # The run's own signal handler stops the pipeline, so Pipecat installs none of its own.
+    runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
     pipeline_run = asyncio.create_task(runner.run(voice.worker))
     quitting = asyncio.create_task(quit_event.wait())
-    # A signal ends the pipeline without a quit key, and a quit ends the run without a signal: either one stops it.
     try:
         await asyncio.wait({pipeline_run, quitting}, return_when=asyncio.FIRST_COMPLETED)
         await runner.cancel("quit")
         await pipeline_run
     finally:
-        # A pipeline that raised still lets go of the socket; the last heartbeat is written once all of it is done.
         quitting.cancel()
         for task in background:
             task.cancel()
-        await hooks.cleanup()
-        beat()
 
 
 class PipelineWatch:
