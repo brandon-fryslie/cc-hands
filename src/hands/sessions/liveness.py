@@ -35,7 +35,7 @@ async def sweep(home: Home, sessions: Sessions, unfiled_before: Unfiled) -> Unfi
     # has written its file, so one that joins while the sweep runs is never taken for a session whose file is gone.
     listed = sessions.live_members()
     records = recorded(home)
-    started = await process_starts({record.membership.pid for record in records} | {membership.pid for membership in listed})
+    started = await process_starts({record.membership.pid for record in records})
     seen_all, unfiled = observations(listed, records, started, unfiled_before)
     for seen in seen_all:
         await sessions.apply(seen)
@@ -59,30 +59,35 @@ def observations(
     listed: Collection[Membership], records: Collection[Recorded], started: Mapping[int, float], unfiled_before: Unfiled
 ) -> tuple[list[Observed], Unfiled]:
     """What each file, and each listed session whose file stayed gone, says about its session; and which listed sessions have no file now."""
-    # One process holds one session, so of the files naming a pid the newest is its session and the rest are over.
-    newest = {record.membership.pid: record for record in sorted(records, key=lambda record: record.written_at)}
+    running = [record for record in records if _running(record, started)]
+    # One process holds one session: of the files naming a running process, the newest is the session it holds.
+    holders = {record.membership.pid: record.membership for record in sorted(running, key=lambda record: record.written_at)}
     on_file = {record.membership.id for record in records}
     unfiled = [membership for membership in listed if membership.id not in on_file]
     return [
-        *(_observed(record, newest[record.membership.pid] is record, started) for record in records),
+        *(_observed(record.membership, holders.get(record.membership.pid)) for record in records),
         # The shim removes a session's file before it posts SessionEnd, so a listed session with no file has ended. It is
         # judged only once its file was also gone a sweep ago, so the end hook, which lands in milliseconds, says how.
-        *(MovedOn(membership) if membership.pid in started else Died(membership) for membership in unfiled if membership.id in unfiled_before),
+        *(_observed(membership, holders.get(membership.pid)) for membership in unfiled if membership.id in unfiled_before),
     ], frozenset(membership.id for membership in unfiled)
 
 
-def _observed(record: Recorded, holds_its_process: bool, started: Mapping[int, float]) -> Observed:
+def _running(record: Recorded, started: Mapping[int, float]) -> bool:
     start = started.get(record.membership.pid)
     # [LAW:types-are-the-program] a running pid is not enough: a process that started after the file was written
     # took the number of the one the file names, which is dead.
-    alive = start is not None and start <= record.written_at + START_SLACK_SECONDS
-    match (holds_its_process, alive):
-        case (False, _):
-            return MovedOn(record.membership)
-        case (True, True):
-            return Attached(record.membership)
-        case (True, False):
-            return Died(record.membership)
+    return start is not None and start <= record.written_at + START_SLACK_SECONDS
+
+
+def _observed(membership: Membership, holder: Membership | None) -> Observed:
+    match holder:
+        case None:
+            # No running process holds a session under this pid, so this session's process is gone.
+            return Died(membership)
+        case Membership(id=held) if held == membership.id:
+            return Attached(membership)
+        case Membership():
+            return MovedOn(membership)
 
 
 def recorded(home: Home) -> list[Recorded]:

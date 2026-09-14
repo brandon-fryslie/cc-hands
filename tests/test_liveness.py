@@ -58,18 +58,20 @@ def test_a_file_names_a_running_session_only_if_its_process_started_before_the_f
 def test_of_the_files_naming_one_process_the_newest_is_its_session_whatever_the_ids(names: tuple[str, str], alive: bool) -> None:
     old, new = Recorded(member(names[0], 4242), written_at=1000.0), Recorded(member(names[1], 4242), written_at=2000.0)
     started = {4242: 500.0} if alive else {}
-    newest: Observed = Attached(new.membership) if alive else Died(new.membership)
+    # With the process gone neither file holds it, so both sessions died.
+    seen: set[Observed] = {MovedOn(old.membership), Attached(new.membership)} if alive else {Died(old.membership), Died(new.membership)}
     for records in ([old, new], [new, old]):
-        assert set(observations([], records, started, frozenset())[0]) == {MovedOn(old.membership), newest}
+        assert set(observations([], records, started, frozenset())[0]) == seen
 
 
-def test_a_listed_session_whose_file_stayed_gone_moved_on_if_its_process_runs_and_died_if_not() -> None:
-    running, dead, on_file = member("running", 4242), member("dead", 5353), member("on_file", 6464)
-    records, started = [Recorded(on_file, written_at=1000.0)], {4242: 1.0, 6464: 1.0}
-    unfiled = frozenset({running.id, dead.id})
+def test_a_listed_session_whose_file_stayed_gone_moved_on_if_another_session_holds_its_process_and_died_if_none_does() -> None:
+    cleared, dead, current = member("cleared", 4242), member("dead", 5353), member("current", 4242)
+    records, started = [Recorded(current, written_at=1000.0)], {4242: 1.0, 5353: 1.0}
+    unfiled = frozenset({cleared.id, dead.id})
     # The first sweep without its file leaves the end hook time to say how the session ended.
-    assert observations([running, dead, on_file], records, started, frozenset()) == ([Attached(on_file)], unfiled)
-    assert observations([running, dead, on_file], records, started, unfiled) == ([Attached(on_file), MovedOn(running), Died(dead)], unfiled)
+    assert observations([cleared, dead, current], records, started, frozenset()) == ([Attached(current)], unfiled)
+    # 5353 runs, but no file says it holds a session: the number went to some other process.
+    assert observations([cleared, dead, current], records, started, unfiled) == ([Attached(current), MovedOn(cleared), Died(dead)], unfiled)
 
 
 async def test_ps_says_when_a_running_process_started_and_leaves_out_a_dead_one() -> None:
@@ -111,6 +113,8 @@ async def test_a_sweep_attaches_the_running_ends_the_dead_and_the_reused_and_spe
     long_ago = time.time() - 10 * 365 * 86400
     os.utime(home.membership(reused.id), (long_ago, long_ago))
     registry = sessions()
+    for membership in (running, dead, reused):
+        await registry.apply(Joined(membership, "startup"))
 
     await sweep(home, registry, frozenset())
     assert [listing.session.membership.id for listing in registry.live()] == [running.id]
@@ -175,3 +179,15 @@ def test_a_file_naming_no_possible_pid_is_removed_before_the_process_table_is_as
     home.membership(SessionId("bad")).write_text(json.dumps({"pid": pid, "pane": None, "cwd": "/c", "transcript_path": "/t.jsonl"}))
     assert recorded(home) == []
     assert not home.membership(SessionId("bad")).exists()
+
+
+async def test_after_a_reboot_the_files_of_sessions_that_did_not_survive_are_removed_without_a_word(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    for name in ("one", "two", "three"):
+        write_membership(home, member(name, dead_pid()))
+    registry = sessions()
+    await sweep(home, registry, frozenset())
+    assert registry.live() == []
+    assert list(home.memberships.glob("*.json")) == []
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(registry.heard(), 0.1)

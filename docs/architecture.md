@@ -574,14 +574,15 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   restart therefore loses nothing: its first sweep lists every session the last run
   listed, before a word is spoken.
 - **State** comes from the reducer applied to hook events since the daemon attached.
-- **Ends nobody heard.** One process holds one session, so of the files naming one
-  pid the newest is its session, and the older ones are `MovedOn`: a `/clear` or a
-  resume inside the process whose end hook never arrived. They end without a word
-  and their files are removed. The shim removes a session's file before it posts
-  `SessionEnd`, so a listed session with no file ended even if that post was lost.
-  It is judged only when its file was also gone at the sweep before, which leaves the
-  end hook two seconds to say how the session ended: then it is `MovedOn` while its
-  process runs and `Died` once it does not. The sweep takes the listed sessions before
+- **Ends nobody heard.** One process holds one session, so a running process's
+  *holder* is the newest file that names it and passes the start-time check. A file
+  whose process is not running is `Died`; the holder is `Attached`; any other file on
+  a running process is `MovedOn`: a `/clear` or a resume inside the process whose end
+  hook never arrived, which ends without a word and has its file removed. The shim
+  removes a session's file before it posts `SessionEnd`, so a listed session with no
+  file ended even if that post was lost. It is judged only when its file was also gone
+  at the sweep before, which leaves the end hook two seconds to say how the session
+  ended: then it is `MovedOn` if another session holds its pid and `Died` if none does. The sweep takes the listed sessions before
   it reads the directory, and a session joins only after its file is written, so a
   session joining mid-sweep is never taken for one whose file is gone. A file whose
   pid no macOS process can have (outside 1 to 99999) is reported and removed as it is
@@ -592,8 +593,9 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   session's only if it started before the file was written, so a pid reused by a later
   process reads as dead. A dead one becomes `Died`: the session is `Gone`, a waiting
   permission hook is let go, the file is removed unless a new process has rewritten
-  it, and "The session cc-hands is gone" is spoken, once. A session that died while the
-  daemon was down is spoken the same way at the restart.
+  it, and "The session cc-hands is gone" is spoken, once. A session this run never
+  listed, such as one that died while the daemon was down or before a reboot, has its
+  file removed without a word: the user was not told of it here.
 - **Ends** arrive through `SessionEnd`, whose `reason` says who ended the session.
   Measured on 2.1.270: `/exit` and a double Ctrl-C report `prompt_input_exit`, `/clear`
   reports `clear`, and a closed tmux pane or window reports `other`. An end the user

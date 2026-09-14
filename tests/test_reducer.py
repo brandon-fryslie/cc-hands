@@ -229,8 +229,9 @@ def test_a_file_for_a_session_already_known_changes_nothing(before: SessionState
     assert reduce(holding(before), Attached(moved)) == (holding(before), [])
 
 
-def test_a_session_that_died_unheard_while_the_daemon_was_down_is_kept_gone_and_spoken() -> None:
-    assert reduce(registry(), Died(ONE)) == (holding(Gone()), [Speak(SessionGone(ONE.id))])
+@pytest.mark.parametrize("ended", [Died(ONE), MovedOn(ONE)])
+def test_a_session_this_run_never_listed_ending_says_nothing(ended: Event) -> None:
+    assert reduce(registry(), ended) == (registry(), [])
 
 
 @pytest.mark.parametrize("before", LIVE)

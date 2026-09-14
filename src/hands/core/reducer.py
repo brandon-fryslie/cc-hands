@@ -105,14 +105,14 @@ def _join(registry: Registry, membership: Membership, state: SessionState) -> tu
 def _ended_unheard(registry: Registry, membership: Membership, said: list[Effect]) -> tuple[Registry, list[Effect]]:
     """A session the sweep found over, though no end hook said so; `said` is what the user hears about it."""
     match registry.sessions.get(membership.id):
-        case Session(state=Gone()):
+        case None | Session(state=Gone()):
+            # A session this run never listed ended while the daemon was down, or before a reboot: the user was not told
+            # of it here, so there is nothing to take back.
             return registry, []
         case Session(membership=held) if held.pid != membership.pid:
             # Started again in a new process since the sweep looked; what it saw ending is not this session.
             return registry, []
-        case previous:
-            # A session that ended while the daemon was down is kept as gone, so its name can still be spoken.
-            before = None if previous is None else previous.state
+        case Session(state=before):
             return registry.put(Session(membership, Gone())), [*_transition(membership.id, before, Gone()), *said]
 
 
