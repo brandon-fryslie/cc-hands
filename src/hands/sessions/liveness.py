@@ -7,10 +7,10 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from hands.core.events import Attached, Died, Observed
+from hands.core.events import Attached, Died, MovedOn, Observed
 from hands.core.session import Membership, SessionId
 from hands.sessions.home import Home
-from hands.sessions.membership import read_membership, remove_dead_membership
+from hands.sessions.membership import read_membership, remove_ended_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 
@@ -25,15 +25,17 @@ class Recorded:
 
 
 async def sweep(home: Home, sessions: Sessions) -> None:
-    """Apply what every membership file says now: a running session is attached, a dead one ends and its file goes."""
+    """Apply what the files and the process table say now: a running session is attached, an ended one ends and its file goes."""
+    # [LAW:no-ambient-temporal-coupling] taken before the directory is read: a session joins only after its shim
+    # has written its file, so one that joins while the sweep runs is never taken for a session whose file is gone.
+    listed = sessions.live_members()
     records = recorded(home)
-    started = await process_starts({record.membership.pid for record in records})
-    for record in records:
-        seen = observed(record, started)
+    started = await process_starts({record.membership.pid for record in records} | {membership.pid for membership in listed})
+    for seen in observations(listed, records, started):
         await sessions.apply(seen)
         match seen:
-            case Died(membership=membership):
-                remove_dead_membership(home, membership)
+            case Died(membership=membership) | MovedOn(membership=membership):
+                remove_ended_membership(home, membership)
             case Attached():
                 pass
 
@@ -45,12 +47,30 @@ async def keep_sweeping(home: Home, sessions: Sessions, period: float) -> None:
         await asyncio.sleep(period)
 
 
-def observed(record: Recorded, started: Mapping[int, float]) -> Observed:
+def observations(listed: Collection[Membership], records: Collection[Recorded], started: Mapping[int, float]) -> list[Observed]:
+    """What each file, and each listed session whose file is gone, says about its session."""
+    # One process holds one session, so of the files naming a pid the newest is its session and the rest are over.
+    newest = {record.membership.pid: record for record in sorted(records, key=lambda record: record.written_at)}
+    on_file = {record.membership.id for record in records}
+    return [
+        *(_observed(record, newest[record.membership.pid] is record, started) for record in records),
+        # A listed session whose file is gone ended without its end hook reaching the daemon: the shim removes the file first.
+        *(MovedOn(membership) if membership.pid in started else Died(membership) for membership in listed if membership.id not in on_file),
+    ]
+
+
+def _observed(record: Recorded, holds_its_process: bool, started: Mapping[int, float]) -> Observed:
     start = started.get(record.membership.pid)
     # [LAW:types-are-the-program] a running pid is not enough: a process that started after the file was written
     # took the number of the one the file names, which is dead.
     alive = start is not None and start <= record.written_at + START_SLACK_SECONDS
-    return Attached(record.membership) if alive else Died(record.membership)
+    match (holds_its_process, alive):
+        case (False, _):
+            return MovedOn(record.membership)
+        case (True, True):
+            return Attached(record.membership)
+        case (True, False):
+            return Died(record.membership)
 
 
 def recorded(home: Home) -> list[Recorded]:

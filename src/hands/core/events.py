@@ -26,7 +26,14 @@ class Attached:
 
 @dataclass(frozen=True)
 class Died:
-    """A membership file names a process that is no longer running, and no hook said the session ended."""
+    """A session's process is no longer running, and no hook said the session ended."""
+
+    membership: Membership
+
+
+@dataclass(frozen=True)
+class MovedOn:
+    """A session's process runs, but holds another session now: a /clear or a resume in it, whose end hook never arrived."""
 
     membership: Membership
 
@@ -84,5 +91,5 @@ class Tick:
 # Events about a session the registry must already know; a join is how it comes to.
 SessionEvent = Prompted | Stopped | PermissionRequested | ToolFinished | Ended
 # What the liveness sweep saw in one membership file.
-Observed = Attached | Died
+Observed = Attached | Died | MovedOn
 Event = Joined | Observed | SessionEvent | Abandoned | Tick

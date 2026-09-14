@@ -20,7 +20,7 @@ from hands.core.effects import (
     Unregistered,
     Withdraw,
 )
-from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished
+from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, MovedOn, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished
 from hands.core.reducer import EXPIRED_MESSAGE, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
     Blocked,
@@ -248,13 +248,15 @@ def test_a_dead_process_that_is_no_longer_the_sessions_changes_nothing() -> None
     assert reduce(resumed, Died(replace(ONE, pid=ONE.pid + 1))) == (resumed, [])
 
 
-@pytest.mark.parametrize("arrival", [Joined(replace(TWO, pid=ONE.pid), "clear"), Attached(replace(TWO, pid=ONE.pid))])
-def test_a_new_session_in_a_process_ends_the_one_it_held(arrival: Event) -> None:
-    waiting = Blocked(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False)
-    after, effects = reduce(holding(waiting), arrival)
-    assert after.sessions[ONE.id].state == Gone()
-    assert [session.membership.id for session in after.live()] == [TWO.id]
-    assert effects == [Reply(ONE.id, RequestId("r0"), Withdraw())]
+@pytest.mark.parametrize("before", LIVE)
+def test_a_session_whose_process_moved_on_is_gone_silently_and_its_hook_let_go(before: SessionState) -> None:
+    released = [Reply(ONE.id, before.request, Withdraw())] if isinstance(before, Blocked) else []
+    assert reduce(holding(before), MovedOn(ONE)) == (holding(Gone()), released)
+
+
+def test_a_file_on_a_pid_another_session_holds_attaches_beside_it_the_sweep_decides_which_is_over() -> None:
+    both = reduce(holding(Idle()), Attached(replace(TWO, pid=ONE.pid)))[0]
+    assert [session.membership.id for session in both.live()] == [ONE.id, TWO.id]
 
 
 @pytest.mark.parametrize("before", LIVE)

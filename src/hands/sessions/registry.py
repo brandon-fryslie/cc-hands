@@ -11,7 +11,7 @@ from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Decisi
 from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
 from hands.core.permissions import AnswerPermission, PermissionOutcome, answer
 from hands.core.reducer import reduce
-from hands.core.session import Instant, Registry, RequestId, Session, SessionId
+from hands.core.session import Instant, Membership, Registry, RequestId, Session, SessionId
 from hands.sessions.payload import Rejected
 from hands.sessions.tmux import type_into
 from hands.sessions.transcript import ai_title
@@ -109,6 +109,10 @@ class Sessions:
     def live_count(self) -> int:
         """How many sessions have not ended, without reading their transcripts."""
         return len(self._registry.live())
+
+    def live_members(self) -> list[Membership]:
+        """The membership of every session that has not ended, without reading their transcripts."""
+        return [session.membership for session in self._registry.live()]
 
     def live(self) -> list[Listing]:
         return [_listing(session) for session in self._registry.live()]

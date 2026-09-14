@@ -574,9 +574,15 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   restart therefore loses nothing: its first sweep lists every session the last run
   listed, before a word is spoken.
 - **State** comes from the reducer applied to hook events since the daemon attached.
-  One process holds one session, so a session joining from a pid ends any other live
-  session on that pid: a `/clear` whose end hook never arrived does not leave the old
-  session listed.
+- **Ends nobody heard.** One process holds one session, so of the files naming one
+  pid the newest is its session, and the older ones are `MovedOn`: a `/clear` or a
+  resume inside the process whose end hook never arrived. They end without a word
+  and their files are removed. The shim removes a session's file before it posts
+  `SessionEnd`, so a listed session with no file ended even if that post was lost: it
+  is `MovedOn` while its process runs and `Died` once it does not. The sweep takes the
+  listed sessions before it reads the directory, and a session joins only after its
+  file is written, so a session joining mid-sweep is never taken for one whose file
+  is gone.
 - **Liveness** comes from the process table, one `ps -o pid=,etime=` for every file per
   sweep. A session waiting for input is silent for hours and alive; a session in a
   tool loop is never silent. Silence measures nothing. A process counts as the

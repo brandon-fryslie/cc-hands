@@ -23,6 +23,7 @@ from hands.core.events import (
     Attached,
     Died,
     Ended,
+    MovedOn,
     Event,
     Joined,
     PermissionRequested,
@@ -53,13 +54,16 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case Joined(membership=membership, source=source):
             return _join(registry, membership, _started(source, registry.sessions.get(membership.id)))
         case Attached(membership=membership) if membership.id not in registry.sessions:
-            return _join(registry, membership, Idle())
+            return registry.put(Session(membership, Idle())), []
         case Attached():
             # [LAW:no-ambient-temporal-coupling] a session the registry already knows was heard from its hooks, which
             # know more than its file: a sweep that read the file before a hook landed never overwrites it.
             return registry, []
         case Died(membership=membership):
-            return _died(registry, membership)
+            return _ended_unheard(registry, membership, [Speak(SessionGone(membership.id))])
+        case MovedOn(membership=membership):
+            # The user moved the process on at the keyboard, so there is nothing to tell them.
+            return _ended_unheard(registry, membership, [])
         case Prompted(at=at):
             return _enter(registry, event, lambda _: Working(since=at))
         case Stopped():
@@ -95,27 +99,21 @@ def _started(source: StartSource, previous: Session | None) -> SessionState:
 
 def _join(registry: Registry, membership: Membership, state: SessionState) -> tuple[Registry, list[Effect]]:
     previous = registry.sessions.get(membership.id)
-    after = registry.put(Session(membership, state))
-    effects = _transition(membership.id, None if previous is None else previous.state, state)
-    for other in registry.live():
-        if other.membership.pid == membership.pid and other.membership.id != membership.id:
-            # One process holds one session: a /clear or a resume in it ended the other, whether or not its end hook arrived.
-            after = after.put(Session(other.membership, Gone()))
-            effects += _transition(other.membership.id, other.state, Gone())
-    return after, effects
+    return registry.put(Session(membership, state)), _transition(membership.id, None if previous is None else previous.state, state)
 
 
-def _died(registry: Registry, membership: Membership) -> tuple[Registry, list[Effect]]:
+def _ended_unheard(registry: Registry, membership: Membership, said: list[Effect]) -> tuple[Registry, list[Effect]]:
+    """A session the sweep found over, though no end hook said so; `said` is what the user hears about it."""
     match registry.sessions.get(membership.id):
         case Session(state=Gone()):
             return registry, []
         case Session(membership=held) if held.pid != membership.pid:
-            # Started again in a new process since the file was read; the process that died is not this session's.
+            # Started again in a new process since the sweep looked; what it saw ending is not this session.
             return registry, []
         case previous:
-            # A session that died while the daemon was down is kept as gone, so its name can still be spoken.
+            # A session that ended while the daemon was down is kept as gone, so its name can still be spoken.
             before = None if previous is None else previous.state
-            return registry.put(Session(membership, Gone())), [*_transition(membership.id, before, Gone()), Speak(SessionGone(membership.id))]
+            return registry.put(Session(membership, Gone())), [*_transition(membership.id, before, Gone()), *said]
 
 
 def _enter(registry: Registry, event: SessionEvent, next: Callable[[SessionState], SessionState]) -> tuple[Registry, list[Effect]]:
