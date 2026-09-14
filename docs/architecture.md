@@ -714,7 +714,19 @@ thing that failed `[LAW:no-silent-failure]`:
 
 1. **Speech.** The system channel says "the language model is unreachable", "Whisper
    returned nothing for that turn", "the session cc-hands is gone". These are
-   `Speak` effects and need no model.
+   `Speak` effects and need no model. `hands.voice.system` renders each fact from a
+   template and queues it at the TTS processor, past the LLM. The worker's
+   `on_pipeline_error` routes every error by the processor that raised it: the LLM's
+   become "unreachable" or "failed: <category>", Whisper's become "speech recognition
+   failed", and a TTS error goes to the screen. Pipecat files an SDK connection error
+   under UNKNOWN, so "unreachable" is recognised from the exception type. Pipecat drops
+   a turn Whisper transcribed to nothing without a word, so a thin `Whisper` subclass
+   reports it as the transcription ends, rather than after the user turn's 5-second
+   stop timeout. The LLM clients do not retry: against inferno, the SDK's two retries
+   stretched a refused connection into 4.6 s of silence. Measured against a refused
+   port on inferno, the failure is heard 1.75 s after the key release. The pipeline's
+   start is spoken too: "hands is up", or "hands is back after a crash" when the last
+   heartbeat names a pid that is gone without having said `stopped`.
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, and the count of live sessions. `hands
    status` prints it, and a tmux status-line snippet shows one glyph from it. When

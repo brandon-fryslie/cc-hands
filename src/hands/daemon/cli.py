@@ -24,6 +24,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     home = Home(arguments.home)
     match arguments.command:
         case "run":
+            # Read before this run's first heartbeat replaces it.
+            after_crash = crashed_before(home)
             heart = status.Heart(home.status, os.getpid(), datetime.now(UTC), status.HEARTBEAT)
             # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its
             # models load, seconds of silence in which the file would otherwise still name the process that died.
@@ -31,7 +33,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Imported here, after that heartbeat, and so that `hands status` answers without loading Pipecat.
             from hands.daemon.run import config_from_env, run
 
-            asyncio.run(run(config_from_env(), home, heart))
+            asyncio.run(run(config_from_env(), home, heart, after_crash))
             return 0
         case "status":
             return report(home)
@@ -53,6 +55,17 @@ def report(home: Home) -> int:
     verdict = status.judge(home.status, last, now, alive=last is not None and pid_alive(last.pid))
     print(status.describe(verdict, now))
     return 0 if isinstance(verdict, status.Up) else 1
+
+
+def crashed_before(home: Home) -> bool:
+    """Whether the last run ended without being stopped: its heartbeat names a pid that is gone, or one that went quiet."""
+    try:
+        last = status.read(home.status)
+    except Rejected as error:
+        print(f"hands run: the last heartbeat at {home.status} does not parse, so it is not taken for a crash: {error}", file=sys.stderr)
+        return False
+    verdict = status.judge(home.status, last, datetime.now(UTC), alive=last is not None and pid_alive(last.pid))
+    return isinstance(verdict, status.Down | status.Unresponsive)
 
 
 def pid_alive(pid: int) -> bool:

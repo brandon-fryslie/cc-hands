@@ -7,6 +7,10 @@ that. `VoiceConfig` is the whole variability of the pipeline as data.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
+
+from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -28,6 +32,7 @@ from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport, Speaker
 from hands.voice.ptt import KeyVAD, PushToTalk
 from hands.voice.tools import Tool
+from hands.voice.whisper import Whisper
 
 # Replies are spoken, so the instruction is about speech, not personality.
 # The real intermediary prompt is its own deliverable; this is the spike's.
@@ -74,6 +79,16 @@ class VoiceConfig:
     max_reply_tokens: int = 300
 
 
+class FailFastOpenAILLMService(OpenAILLMService):
+    """An OpenAI-compatible model whose failed request is reported at once, not retried with backoff."""
+
+    def create_client(self, *args: Any, **kwargs: Any) -> AsyncOpenAI:
+        # [LAW:no-silent-failure] the SDK's two retries turn a refused connection into 4.6 s of silence (measured
+        # against inferno); in a voice turn that sounds like thinking, so the failure is spoken instead.
+        client: AsyncOpenAI = super().create_client(*args, **kwargs)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        return client.with_options(max_retries=0)
+
+
 def build_llm(
     backend: LLMBackend, *, instruction: str, max_tokens: int
 ) -> AnthropicLLMService | OpenAILLMService:
@@ -84,12 +99,14 @@ def build_llm(
         case AnthropicBackend(api_key=api_key, model=model):
             return AnthropicLLMService(
                 api_key=api_key,
+                # Reported at once, as for the OpenAI-compatible model: a retry with backoff is silence in a voice turn.
+                client=AsyncAnthropic(api_key=api_key, max_retries=0),
                 settings=AnthropicLLMService.Settings(
                     model=model, system_instruction=instruction, max_tokens=max_tokens
                 ),
             )
         case OpenAICompatibleBackend(base_url=base_url, model=model):
-            return OpenAILLMService(
+            return FailFastOpenAILLMService(
                 base_url=base_url,
                 api_key="unused",
                 settings=OpenAILLMService.Settings(
@@ -100,11 +117,14 @@ def build_llm(
 
 @dataclass(frozen=True)
 class Voice:
-    """The assembled pipeline plus the handle the keyboard edge needs."""
+    """The assembled pipeline plus the handles its edges need: the key, the speaker, and the three services that report failures."""
 
     worker: PipelineWorker
     key: PushToTalk
     speaker: Speaker
+    stt: Whisper
+    llm: AnthropicLLMService | OpenAILLMService
+    tts: PocketTTSService
 
 
 def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
@@ -115,7 +135,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
     # the release is final, so there is no wait for the user to "say more".
     key = PushToTalk()
     transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key)
-    stt = WhisperSTTServiceMLX(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model))
+    stt = Whisper(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model))
     llm = build_llm(
         config.llm, instruction=SPOKEN_REPLY_INSTRUCTION, max_tokens=config.max_reply_tokens
     )
@@ -148,4 +168,4 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
         observers=[LatencyObserver()],
         idle_timeout_secs=None,
     )
-    return Voice(worker=worker, key=key, speaker=transport.output())
+    return Voice(worker=worker, key=key, speaker=transport.output(), stt=stt, llm=llm, tts=tts)

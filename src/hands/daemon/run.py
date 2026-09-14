@@ -34,6 +34,7 @@ from pipecat.services.whisper.stt import MLXModel
 from pipecat.workers.runner import WorkerRunner
 
 from hands.daemon import status
+from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
 from hands.sessions.registry import Sessions
@@ -49,6 +50,7 @@ from hands.voice.pipeline import (
 )
 from hands.voice.ptt import Key
 from hands.voice.speech import relay
+from hands.voice.system import Started, SystemChannel, listen
 from hands.voice.tools import draft_tools, list_sessions_tool, permission_tools
 
 # The model lives on inferno, the M4 Max on the LAN, served by mlx_lm.server.
@@ -90,7 +92,7 @@ def config_from_env() -> VoiceConfig:
     )
 
 
-async def run(config: VoiceConfig, home: Home, heart: status.Heart) -> None:
+async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash: bool) -> None:
     sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic)
     hooks = await serve_hooks(home, sessions)
     quit_event = asyncio.Event()
@@ -102,7 +104,7 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart) -> None:
     try:
         voice = await load(config, sessions, heart, quit_event)
         if voice is not None:
-            await converse(voice, sessions, heart, quit_event)
+            await converse(voice, sessions, heart, quit_event, Started(after_crash))
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -133,9 +135,10 @@ async def load(config: VoiceConfig, sessions: Sessions, heart: status.Heart, qui
     return building.result() if building.done() and not building.cancelled() else None
 
 
-async def converse(voice: Voice, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event) -> None:
+async def converse(voice: Voice, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event, started: Started) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
+    listen(voice, SystemChannel(voice.tts, post_notification), started)
     failures: list[BaseException] = []
 
     def beat() -> None:
