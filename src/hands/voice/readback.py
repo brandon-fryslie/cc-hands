@@ -16,7 +16,8 @@ from hands.core.drafts import (
     SessionEnded,
     UnknownSession,
 )
-from hands.core.session import Resolution
+from hands.core.session import Resolution, SessionId
+from hands.sessions.registry import Listing, Sessions
 
 _WORDS = re.compile(r"[^\s]+|\n")
 
@@ -46,6 +47,16 @@ def readback(outcome: DraftOutcome, name: str) -> str:
             return f"{name} is not running in tmux, so I cannot type into it."
         case AwaitingPermission(permission=permission):
             return f"{name} is waiting for permission to use {permission.tool}. Answer that first; the draft is still staged."
+
+
+def spoken_title(listing: Listing) -> str:
+    return listing.title or f"untitled, in {listing.session.membership.cwd.name}"
+
+
+def spoken_name(sessions: Sessions, session: SessionId) -> str:
+    """How the user knows a session: its title, or its id when the registry has never heard of it."""
+    listing = sessions.listing(session)
+    return session if listing is None else spoken_title(listing)
 
 
 def _reading(resolutions: Iterable[Resolution]) -> str:

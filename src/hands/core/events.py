@@ -39,6 +39,13 @@ class Ended:
     session: SessionId
 
 
+@dataclass(frozen=True)
+class Tick:
+    """The one clock the reducer hears: deadlines are compared against it, never against a timer."""
+
+    at: Instant
+
+
 # Events about a session the registry must already know; a join is how it comes to.
 SessionEvent = Prompted | Stopped | PermissionRequested | Ended
-Event = Joined | SessionEvent
+Event = Joined | SessionEvent | Tick

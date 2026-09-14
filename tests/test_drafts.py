@@ -47,13 +47,13 @@ HEADLESS = Membership(SessionId("s1"), pid=1, pane=None, cwd=Path("/code/a"), tr
 FIX = Staged(PromptText("/fix the auth middleware"), (Resolution("auth middleware", "authMiddleware.ts"),))
 BETTER = Staged(PromptText("fix the token helper"), ())
 BASH = Permission(tool="Bash", input={"command": "ls"})
-BLOCKED = Blocked(on=BASH, request=RequestId("r"), deadline=9.0)
+BLOCKED = Blocked(on=BASH, request=RequestId("r"), deadline=9.0, warned=False)
 
 
 def registry(
     state: SessionState = Idle(), membership: Membership = ONE, drafts: dict[SessionId, Staged] | None = None
 ) -> Registry:
-    return Registry(permission_timeout=60.0, sessions={membership.id: Session(membership, state)}, drafts=drafts or {})
+    return Registry(permission_deadline=60.0, sessions={membership.id: Session(membership, state)}, drafts=drafts or {})
 
 
 def staged(state: SessionState = Idle(), membership: Membership = ONE) -> Registry:
@@ -117,7 +117,7 @@ def test_a_session_that_never_joined_is_named_unknown(request_: DraftRequest) ->
 
 def test_a_send_touches_only_its_own_session() -> None:
     both = Registry(
-        permission_timeout=60.0,
+        permission_deadline=60.0,
         sessions={ONE.id: Session(ONE, Idle()), TWO.id: Session(TWO, Idle())},
         drafts={ONE.id: FIX, TWO.id: BETTER},
     )

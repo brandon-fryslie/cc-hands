@@ -50,6 +50,9 @@ class Blocked:
     on: Permission
     request: RequestId
     deadline: Instant
+    # [LAW:no-ambient-temporal-coupling] the warning is spoken once because speaking it is this
+    # value changing, not a timer that could fire twice.
+    warned: bool
 
 
 @dataclass(frozen=True)
@@ -84,7 +87,7 @@ class Staged:
 
 @dataclass(frozen=True)
 class Registry:
-    permission_timeout: float
+    permission_deadline: float  # seconds from a permission request to its default deny
     sessions: Mapping[SessionId, Session]
     # [LAW:types-are-the-program] a session with no entry has nothing staged; there is no empty draft.
     drafts: Mapping[SessionId, Staged]

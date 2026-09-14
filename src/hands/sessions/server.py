@@ -1,37 +1,45 @@
 """The unix socket the shims post to."""
 
 import socket
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from uuid import uuid4
 
 from aiohttp import web
 from loguru import logger
 
-from hands.core.events import Event
-from hands.core.session import Instant, RequestId
+from hands.core.events import PermissionRequested
+from hands.core.session import RequestId
 from hands.sessions.home import Home
-from hands.sessions.hooks import parse_hook
+from hands.sessions.hooks import hook_output, parse_hook
 from hands.sessions.payload import Rejected
+from hands.sessions.registry import Sessions
 
 
-async def serve_hooks(home: Home, deliver: Callable[[Event], Awaitable[None]], clock: Callable[[], Instant]) -> web.AppRunner:
+async def serve_hooks(home: Home, sessions: Sessions) -> web.AppRunner:
     """Listen on the home's socket until the returned runner is cleaned up."""
 
     async def hook(request: web.Request) -> web.Response:
         body = await request.read()
         try:
-            event = parse_hook(body, home=home, at=clock(), request=RequestId(uuid4().hex))
+            event = parse_hook(body, home=home, at=sessions.now(), request=RequestId(uuid4().hex))
         except Rejected as error:
             # The shim prints this reply, so the session that sent the hook shows why.
             logger.error(f"rejected hook: {error}")
             return web.Response(status=400, text=str(error))
-        await deliver(event)
-        return web.Response(status=204)
+        match event:
+            case PermissionRequested():
+                # The one hook that waits: the response body is the answer Claude Code reads.
+                output = hook_output(await sessions.ask(event))
+                return web.Response(status=204) if output is None else web.json_response(output)
+            case _:
+                await sessions.apply(event)
+                return web.Response(status=204)
 
     app = web.Application()
     app.router.add_post("/hook", hook)
-    runner = web.AppRunner(app, access_log=None)
+    # A hook Claude Code killed closes its connection; cancelling the handler lets go of its wait,
+    # so a reply decided afterwards is logged as unheard instead of as delivered.
+    runner = web.AppRunner(app, access_log=None, handler_cancellation=True)
     await runner.setup()
     claim_socket(home.socket)
     await web.UnixSite(runner, str(home.socket)).start()

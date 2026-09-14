@@ -4,7 +4,8 @@
 
 It runs in Claude Code's critical path for every subscribed hook, so it imports
 only the standard library and hands' data modules, and it never waits on
-anything but the post.
+anything but the post. Every post returns at once but a PermissionRequest's,
+which waits for the answer and prints it for Claude Code to read.
 """
 
 import http.client
@@ -16,10 +17,9 @@ from pathlib import Path
 
 from hands.core.session import Membership, TmuxPane
 from hands.sessions.home import Home
+from hands.sessions.hookconfig import post_timeout
 from hands.sessions.membership import remove_membership, write_membership
 from hands.sessions.payload import Payload, Rejected
-
-POST_TIMEOUT_SECONDS = 2.0
 
 # [LAW:no-silent-failure] Claude Code shows a hook's stderr for exit 1 and carries
 # on. Exit 2 would instead block the prompt or the stop and hand the message to
@@ -33,8 +33,8 @@ class Undelivered(Exception):
 
 
 class _UnixConnection(http.client.HTTPConnection):
-    def __init__(self, path: Path) -> None:
-        super().__init__("hands", timeout=POST_TIMEOUT_SECONDS)
+    def __init__(self, path: Path, timeout: float) -> None:
+        super().__init__("hands", timeout=timeout)
         self._path = path
 
     def connect(self) -> None:
@@ -64,8 +64,9 @@ def record(home: Home, payload: Payload) -> None:
             pass
 
 
-def post(home: Home, body: bytes) -> None:
-    connection = _UnixConnection(home.socket)
+def post(home: Home, body: bytes, timeout: float) -> str:
+    """The daemon's reply: empty for every hook but a decided permission request."""
+    connection = _UnixConnection(home.socket, timeout)
     try:
         connection.request("POST", "/hook", body, {"Content-Type": "application/json"})
         response = connection.getresponse()
@@ -76,6 +77,7 @@ def post(home: Home, body: bytes) -> None:
         connection.close()
     if response.status >= 300:
         raise Undelivered(f"the hands daemon refused this hook ({response.status}): {detail}")
+    return detail
 
 
 def main(argv: Sequence[str]) -> int:
@@ -87,11 +89,14 @@ def main(argv: Sequence[str]) -> int:
             return USAGE
     body = sys.stdin.buffer.read()
     try:
-        record(home, Payload.parse(body))
-        post(home, body)
+        payload = Payload.parse(body)
+        record(home, payload)
+        reply = post(home, body, post_timeout(payload.text("hook_event_name")))
     except (Rejected, Undelivered) as error:
         print(f"hands: {error}", file=sys.stderr)
         return FAILED
+    # Claude Code reads a permission decision from the hook's stdout.
+    sys.stdout.write(reply)
     return 0
 
 

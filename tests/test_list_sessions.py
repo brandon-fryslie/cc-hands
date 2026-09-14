@@ -46,7 +46,7 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
     titled(working.transcript, "first guess", "pipeline spike")
     titled(blocked.transcript, "auth refactor")
     titled(ended.transcript, "old work")
-    sessions = Sessions(permission_timeout=60.0)
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0)
     for event in (
         Joined(working, "startup"),
         Prompted(working.id, at=1.0),
@@ -77,6 +77,6 @@ def test_a_title_record_still_being_written_is_not_read(tmp_path: Path) -> None:
 
 
 def test_the_tool_is_a_valid_pipecat_direct_function() -> None:
-    wrapper = DirectFunctionWrapper(list_sessions_tool(Sessions(permission_timeout=60.0)))
+    wrapper = DirectFunctionWrapper(list_sessions_tool(Sessions(permission_deadline=60.0, clock=lambda: 0.0)))
     assert wrapper.name == "list_sessions"
     assert "running Claude Code sessions" in (wrapper.description or "")

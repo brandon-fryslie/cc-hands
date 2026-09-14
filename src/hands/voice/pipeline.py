@@ -35,7 +35,9 @@ SPOKEN_REPLY_INSTRUCTION = (
     "Everything you say is spoken aloud: answer in one or two short sentences "
     "with no formatting, no lists, and no code. Call list_sessions when asked "
     "what is running. When the user dictates something for a session, stage it "
-    "with stage_draft and say the readback; send it only when they say send."
+    "with stage_draft and say the readback; send it only when they say send. "
+    "When a session asks permission, explain what it wants and ask; call "
+    "answer_permission only with the decision the user gave."
 )
 
 

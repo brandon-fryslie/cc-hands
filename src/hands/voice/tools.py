@@ -10,17 +10,22 @@ from pipecat.adapters.schemas.direct_function import DirectFunction
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, SendDraft, StageDraft
-from hands.core.session import Blocked, Gone, Idle, PromptText, Resolution, SessionId, SessionState, Staged, Working
+from hands.core.effects import Allow, Decision, Deny
+from hands.core.session import Blocked, Gone, Idle, PromptText, RequestId, Resolution, SessionId, SessionState, Staged, Working
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.registry import Listing, Sessions
 from hands.sessions.tmux import TmuxFailed
-from hands.voice.readback import readback
+from hands.voice.readback import readback, spoken_name, spoken_title
+from hands.voice.speech import permission_readback
 
 # A Pipecat direct function: its signature and docstring are the schema the model sees.
 Tool = DirectFunction
 
 # Pipecat's decorator is untyped; this names what it does to a tool.
 _uncancelled_by_interruption = cast(Callable[[Tool], Tool], direct_function.tool_options(cancel_on_interruption=False))  # pyright: ignore[reportUnknownMemberType]
+
+# What the agent reads when the user says no and gives no reason.
+DENIED_BY_VOICE = "The user denied this by voice."
 
 # Every C0 and C1 control character but newline and tab: each would press a key in the pane.
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -44,10 +49,6 @@ def describe(listing: Listing) -> dict[str, str]:
         "title": spoken_title(listing),
         "state": _spoken_state(listing.session.state),
     }
-
-
-def spoken_title(listing: Listing) -> str:
-    return listing.title or f"untitled, in {listing.session.membership.cwd.name}"
 
 
 def _spoken_state(state: SessionState) -> str:
@@ -129,9 +130,59 @@ async def _answer(
         logger.error(f"send failed: {error}")
         await params.result_callback({"error": f"The send failed and the draft is gone, so dictate it again. {error}"})
         return
-    listing = sessions.listing(id)
-    name = id if listing is None else spoken_title(listing)
-    await params.result_callback({"readback": readback(outcome, name)})
+    await params.result_callback({"readback": readback(outcome, spoken_name(sessions, id))})
+
+
+def permission_tools(sessions: Sessions) -> list[Tool]:
+    """answer_permission: the only way a voice answer reaches a session waiting on its permission dialog."""
+
+    async def answer_permission(params: FunctionCallParams, request: str, decision: str, message: str = "") -> None:
+        """Answer a session's permission request with what the user decided. Call it only after the user has said to allow or deny.
+
+        Say the returned readback to the user.
+
+        Args:
+            request: The request id given with the permission request.
+            decision: "allow" to let the tool run, or "deny" to refuse it.
+            message: Only when denying: what the user wants the session to know or do instead, in their words.
+        """
+        # [LAW:no-silent-failure] the model hears a refused answer and says it; the log keeps it.
+        try:
+            outcome = await sessions.answer(_request_id(request), parse_decision(decision, message))
+        except Rejected as error:
+            logger.error(f"answer_permission refused its arguments: {error}")
+            await params.result_callback({"error": str(error)})
+            return
+        await params.result_callback({"readback": permission_readback(outcome, lambda id: spoken_name(sessions, id))})
+
+    # A barge-in must not cancel an answer part way: the user would never hear whether it went through.
+    return [_uncancelled_by_interruption(answer_permission)]
+
+
+def parse_decision(decision: object, message: object) -> Decision:
+    """The model's answer, parsed once into the only two things a person can decide."""
+    # [LAW:parse-dont-validate] a Decision is made here and nowhere else, so nothing but "allow" runs a tool.
+    match (decision, message):
+        case ("allow", ""):
+            return Allow()
+        case ("allow", str()):
+            raise Rejected("a message goes only with deny; an allow carries none, so nothing was answered")
+        case ("deny", ""):
+            return Deny(DENIED_BY_VOICE)
+        case ("deny", str()):
+            return Deny(message)
+        case ("allow" | "deny", other):
+            raise Rejected(f"message should be a string, got {type(other).__name__}")
+        case (other, _):
+            raise Rejected(f"decision should be 'allow' or 'deny', got {other!r}")
+
+
+def _request_id(request: object) -> RequestId:
+    match request:
+        case str() if request:
+            return RequestId(request)
+        case other:
+            raise Rejected(f"request should be the request id string, got {other!r}")
 
 
 def _session_id(session: object) -> SessionId:

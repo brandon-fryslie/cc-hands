@@ -1,5 +1,8 @@
-"""A hook's POST body, parsed once into a core event."""
+"""A hook's POST body, parsed once into a core event, and the reply a blocking hook prints."""
 
+from collections.abc import Mapping
+
+from hands.core.effects import Allow, Deny, HookReply, Withdraw
 from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped
 from hands.core.session import Instant, Permission, RequestId
 from hands.sessions.home import Home
@@ -36,3 +39,16 @@ def _start_source(source: str) -> StartSource:
             return source
         case other:
             raise Rejected(f"SessionStart source {other!r} is not one hands knows")
+
+
+def hook_output(reply: HookReply) -> Mapping[str, object] | None:
+    """What a waiting PermissionRequest hook prints for Claude Code; None leaves the question to its dialog."""
+    # The reply shape Claude Code 2.1.270 parses from a PermissionRequest hook's stdout.
+    match reply:
+        case Allow():
+            decision: dict[str, object] = {"behavior": "allow"}
+        case Deny(message=message):
+            decision = {"behavior": "deny", "message": message}
+        case Withdraw():
+            return None
+    return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}

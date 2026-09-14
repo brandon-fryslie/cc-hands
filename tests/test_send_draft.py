@@ -72,7 +72,7 @@ def pane() -> Iterator[Pane]:
 
 
 async def joined(pane: TmuxPane | None, tmp: Path) -> tuple[Sessions, SessionId]:
-    sessions = Sessions(permission_timeout=60.0)
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0)
     membership = Membership(SessionId("s1"), pid=1, pane=pane, cwd=Path("/code/cc-hands"), transcript=tmp / "none.jsonl")
     await sessions.apply(Joined(membership, "startup"))
     return sessions, membership.id

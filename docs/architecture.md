@@ -242,8 +242,15 @@ Deadlines are data. The `Blocked` state carries the instant it expires and wheth
 the warning has been spoken. A single ticker sends `Tick(now)` once a second; the
 reducer compares, and emits `Speak("ten seconds on that permission")` exactly once,
 because the transition from `warned=False` to `warned=True` is a state change, not a
-timer callback. At the deadline it emits `Reply(deny)`. There are no `sleep` calls
-in the daemon that a correctness property depends on.
+timer callback. At the deadline it emits `Reply(deny)` and says so. The ticker's
+period only bounds how late a deadline is heard; no correctness property depends on
+a `sleep`.
+
+The deadline itself comes from one number. `hands.sessions.hookconfig` declares the
+`PermissionRequest` hook's timeout (90 seconds) in the settings it prints; the shim
+waits on the daemon that long for that hook alone, and the daemon denies 5 seconds
+earlier, so the deny reaches Claude Code before Claude Code kills the hook
+`[LAW:single-enforcer]`.
 
 Claude Code queues messages submitted while a turn is running and shows them with
 "Press up to edit queued messages". Measured on 2.1.270: text pasted into a working
@@ -323,8 +330,12 @@ event-specific fields below were read out of the 2.1.263 bundle. Payloads captur
 | `MessageDisplay` | `turn_id`, `message_id`, `index`, `final`, `delta` |
 | `SessionEnd` | the common fields |
 
-The reply a `PermissionRequest` hook may give is `{"behavior": "allow",
-"updatedInput"?: object}` or `{"behavior": "deny", "message": string}`. Permission
+The reply a `PermissionRequest` hook may give is printed on its stdout as
+`{"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": ...}}`,
+where the decision is `{"behavior": "allow", "updatedInput"?: object}` or
+`{"behavior": "deny", "message": string}`; empty output decides nothing (read out of
+the 2.1.270 bundle, and verified live: an allow runs the tool, and the agent reads a
+deny's message as the tool's error). Permission
 prompts, plan approval, and `AskUserQuestion` all arrive through this one hook, which
 is why `Blocked.on` is a union of three and the answer path is one adapter. Answering
 a question by returning the answers in `updatedInput` is the path the questions
@@ -365,6 +376,17 @@ waits for anything stutters the agent's own output. Every shim POSTs and returns
 sole exception is `PermissionRequest`, where blocking is the feature. Its timeout is
 declared in the hook config, and the daemon derives its default-deny deadline from
 that same number, so there is one place the budget is set `[LAW:single-enforcer]`.
+
+**The dialog and the hook race.** Measured on 2.1.270: Claude Code shows its
+permission dialog at once and runs the `PermissionRequest` hook beside it, and
+whichever answers first decides. An answer typed at the dialog does not end the hook;
+it runs on to its own end and its output is ignored. So the daemon never learns of a
+keyboard answer directly. It learns that the session moved on: the next
+`UserPromptSubmit`, `Stop`, `SessionEnd`, or `PermissionRequest` withdraws the waiting
+reply, which prints nothing. Until one of those arrives, a request answered at the
+keyboard can still hear its warning, and its deadline's deny, which Claude Code
+ignores; the expiry is therefore spoken as what hands did ("so I told it no"), never
+as what happened to the tool.
 
 ## Transcripts: the live tail, and backfill
 
