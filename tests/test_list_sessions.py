@@ -11,6 +11,7 @@ from pipecat.services.llm_service import FunctionCallParams
 from hands.core.events import Ended, Joined, PermissionRequested, Prompted
 from hands.core.session import Membership, Permission, RequestId, SessionId
 from hands.sessions.registry import Sessions
+from hands.sessions.transcript import ai_title
 from hands.voice.tools import list_sessions_tool
 
 
@@ -60,6 +61,15 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
             {"id": "blocked", "title": "auth refactor", "state": "waiting for permission to use Bash"},
         ]
     }
+
+
+def test_a_title_record_still_being_written_is_not_read(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    titled(transcript, "finished title")
+    whole = transcript.read_bytes()
+    for unfinished in (b'{"type":"ai-title","aiTitle":"half', '{"type":"ai-title","aiTitle":"caf\u00e9'.encode()[:-1]):
+        transcript.write_bytes(whole + unfinished)
+        assert ai_title(transcript) == "finished title"
 
 
 def test_the_tool_is_a_valid_pipecat_direct_function() -> None:

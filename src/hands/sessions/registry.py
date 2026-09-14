@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from hands.core.effects import Audit, Effect, Unregistered
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Effect, Unregistered
 from hands.core.events import Event
 from hands.core.reducer import reduce
 from hands.core.session import Registry, Session
@@ -35,5 +35,13 @@ class Sessions:
 
 def _perform(effect: Effect) -> None:
     match effect:
-        case Audit(record=Unregistered(event=event)):
-            logger.warning(f"{type(event).__name__} for session {event.session}, which never joined")
+        case Audit(record=record):
+            logger.warning(_audited(record))
+
+
+def _audited(record: AuditRecord) -> str:
+    match record:
+        case Unregistered(event=event):
+            return f"{type(event).__name__} for session {event.session}, which never joined"
+        case AfterEnd(event=event):
+            return f"{type(event).__name__} for session {event.session}, which had already ended"

@@ -1,6 +1,6 @@
 """The session lifecycle as one pure function."""
 
-from hands.core.effects import Audit, Effect, Unregistered
+from hands.core.effects import AfterEnd, Audit, Effect, Unregistered
 from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, SessionEvent, Stopped
 from hands.core.session import Blocked, Gone, Idle, Registry, Session, SessionState, Working
 
@@ -11,9 +11,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
     # inside the registry, so a deadline is arithmetic on values, never a clock read.
     match event:
         case Joined(membership=membership):
-            # A resumed or compacted session starts again: its membership is
-            # replaced whole, never merged with the record it had before.
-            return registry.put(Session(membership, Idle())), []
+            return registry.put(Session(membership, _rejoined(registry.sessions.get(membership.id)))), []
         case Prompted(at=at):
             return _enter(registry, event, Working(since=at))
         case Stopped():
@@ -25,10 +23,23 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _enter(registry, event, Gone())
 
 
+def _rejoined(previous: Session | None) -> SessionState:
+    # Compaction starts a session again under the same id in the middle of a
+    # turn, so what it was doing carries over; a new or resumed session is idle.
+    match previous:
+        case None | Session(state=Gone()):
+            return Idle()
+        case Session(state=state):
+            return state
+
+
 def _enter(registry: Registry, event: SessionEvent, state: SessionState) -> tuple[Registry, list[Effect]]:
     match registry.sessions.get(event.session):
         case None:
             # [LAW:no-silent-failure] an event for a session that never joined is a record, not a drop.
             return registry, [Audit(Unregistered(event))]
+        case Session(state=Gone()):
+            # Ended is final until the session starts again; a hook that lands late cannot revive it.
+            return registry, [Audit(AfterEnd(event))]
         case Session(membership=membership):
             return registry.put(Session(membership, state)), []

@@ -12,7 +12,14 @@ class Unregistered:
     event: SessionEvent
 
 
-AuditRecord = Unregistered
+@dataclass(frozen=True)
+class AfterEnd:
+    """An event arrived for a session that had already ended, so it changed nothing."""
+
+    event: SessionEvent
+
+
+AuditRecord = Unregistered | AfterEnd
 
 
 @dataclass(frozen=True)

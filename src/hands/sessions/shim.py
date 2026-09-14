@@ -50,7 +50,8 @@ def record(home: Home, payload: Payload) -> None:
             pane = os.environ.get("TMUX_PANE")
             membership = Membership(
                 id=payload.session_id(),
-                # Claude Code runs the hook command as its own child, with no shell between.
+                # The hook's shell execs a single simple command, so this is the claude
+                # process. A compound hook command (`a; b`) would make it that shell.
                 pid=os.getppid(),
                 pane=None if pane is None else TmuxPane(pane),
                 cwd=Path(payload.text("cwd")),
