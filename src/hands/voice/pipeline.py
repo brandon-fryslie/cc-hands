@@ -19,13 +19,14 @@ from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.pocket_tts.tts import PocketTTSService
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
-from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
+from pipecat.transports.local.audio import LocalAudioTransportParams
 from pipecat.turns.user_start import VADUserTurnStartStrategy
 from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from hands.voice.latency import LatencyObserver
-from hands.voice.ptt import KeyMute, KeyVAD, PushToTalk
+from hands.voice.microphone import KeyedAudioTransport
+from hands.voice.ptt import KeyVAD, PushToTalk
 from hands.voice.tools import Tool
 
 # Replies are spoken, so the instruction is about speech, not personality.
@@ -112,11 +113,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
     # strategies read. The turn opens on the press and closes on the release;
     # the release is final, so there is no wait for the user to "say more".
     key = PushToTalk()
-    transport = LocalAudioTransport(
-        LocalAudioTransportParams(
-            audio_in_enabled=True, audio_out_enabled=True, audio_in_filter=KeyMute(key)
-        )
-    )
+    transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key)
     stt = WhisperSTTServiceMLX(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model))
     llm = build_llm(
         config.llm, instruction=SPOKEN_REPLY_INSTRUCTION, max_tokens=config.max_reply_tokens

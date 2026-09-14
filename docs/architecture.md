@@ -653,12 +653,29 @@ the draft is spoken.
 **The gate is the turn boundary and the mute.** Pipecat's turn strategies act on
 voice-activity frames, so the key is the VAD: a `KeyVAD` whose confidence is 1.0
 while the key is down and 0.0 otherwise. Whisper keeps a second of pre-roll, so the
-key is also the mute: a `KeyMute` input filter replaces microphone bytes with silence
-of the same length while the key is up. Frames flow at full rate either way; only
-their content changes. The press starts the turn, the release ends it and is final,
-and a press during playback broadcasts the interruption that flushes queued audio.
-That is barge-in, and because of the mute the pipeline cannot transcribe its own
-speech.
+key is also the mute: microphone bytes become silence of the same length while the
+key is up. Frames flow at full rate either way; only their content changes. The press
+starts the turn, the release ends it and is final, and a press during playback
+broadcasts the interruption that flushes queued audio. That is barge-in.
+
+**The mute is decided where sound is captured, and waits out the speaker.** Measured
+on 2026-09-14 with MacBook Pro speakers and microphone: the interruption stops writes
+to the speaker within a few milliseconds of the press, but what was already written
+stays above the room's floor at the microphone for about 185 ms, and Whisper turned
+that tail into a word ("Wow.", "Well.", "What?") in every run where nobody spoke. A
+Pipecat input filter could not stop it, because it runs when the event loop reaches a
+frame, tens of milliseconds after capture. So `hands.voice.microphone` replaces the
+local transport's two halves: the `Speaker` records, on every non-silent write, when
+that sound will have died away at the microphone (the output stream's latency plus a
+measured 150 ms echo path), and the `KeyedMicrophone` decides each buffer in PortAudio's
+capture callback, dated by the buffer's recording time, not the callback's: silence
+while the key is up or while the speaker's sound is still in the room. With it, a press
+during playback gave no transcript with nobody speaking, and exactly "What time is it?"
+when that was said 250 ms after the press. The cost is half duplex: while the speaker
+is sounding, and for 225 ms after, the user is not heard, so a word spoken on top of
+the press is lost rather than mixed with the reply. A stalled event loop delays the
+interruption itself, and the mute then covers the reply for as long as it plays.
+Acoustic echo cancellation would lift the half duplex and is a separate ticket.
 
 **The gate has one owner and several edges.** `PushToTalk` holds the key position;
 whatever reads the physical world calls `move_key`. The edges are variants of one

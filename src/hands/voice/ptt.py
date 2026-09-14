@@ -4,9 +4,9 @@ Pipecat's turn machinery, and the segmented Whisper service that decides when
 to transcribe, both run off VAD frames. So the key *is* the VAD: `KeyVAD`
 reports full voice confidence while the key is held and none while it is up.
 Whisper also keeps the last second of audio from before the turn opened, so
-the key is also the mute: `KeyMute` is the transport's input filter and turns
-the microphone bytes to silence while the key is up. Audio frames always flow;
-only their content and their voice confidence follow the key. Everything
+the key is also the mute: the microphone bytes are silence while the key is up
+(applied where they are captured, in `hands.voice.microphone`). Audio frames
+always flow; only their content and their voice confidence follow the key. Everything
 downstream is stock Pipecat: the VAD turn strategies open and close the user
 turn, broadcast the interruption that flushes queued speech on barge-in, and
 tell Whisper what to transcribe. While the key is up, whatever the microphone
@@ -16,9 +16,7 @@ hears, including the pipeline's own speech, is silence to the pipeline.
 from dataclasses import dataclass
 from typing import Literal
 
-from pipecat.audio.filters.base_audio_filter import BaseAudioFilter
 from pipecat.audio.vad.vad_analyzer import VADAnalyzer, VADParams
-from pipecat.frames.frames import FilterControlFrame
 
 # [LAW:types-are-the-program] the key has exactly two positions and a move is
 # only a transition when the position changes; a repeated press or release is
@@ -62,7 +60,7 @@ class Gate:
 
 
 class PushToTalk:
-    """The one owner of the key position; the keyboard edge writes, the filters read."""
+    """The one owner of the key position; the keyboard edge writes, the microphone and the VAD read."""
 
     # [LAW:no-shared-mutable-globals] two pipeline components consult the key,
     # so it lives here once with one writer, not once in each of them.
@@ -76,6 +74,7 @@ class PushToTalk:
 
     @property
     def gate(self) -> Gate:
+        # Read from the audio callback thread too: one attribute load of a frozen value, whole either way.
         return self._gate
 
 
@@ -93,24 +92,3 @@ class KeyVAD(VADAnalyzer):
         # [LAW:dataflow-not-control-flow] the audio is ignored on purpose: the
         # key is the signal, and the same call answers for every buffer.
         return self._key.gate.confidence
-
-
-class KeyMute(BaseAudioFilter):
-    """The input transport's audio filter: the microphone is silent while the key is up."""
-
-    def __init__(self, key: PushToTalk) -> None:
-        self._key = key
-
-    async def start(self, sample_rate: int) -> None:
-        pass
-
-    async def stop(self) -> None:
-        pass
-
-    async def process_frame(self, frame: FilterControlFrame) -> None:
-        # [LAW:one-source-of-truth] the key is the only control; runtime
-        # filter settings frames have nothing to set.
-        pass
-
-    async def filter(self, audio: bytes) -> bytes:
-        return self._key.gate.audible(audio)

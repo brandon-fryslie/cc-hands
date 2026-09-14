@@ -1,6 +1,6 @@
 """The push-to-talk decisions, with no pipeline and no audio device."""
 
-from hands.voice.ptt import KEY_VAD_PARAMS, Gate, KeyMute, KeyVAD, PushToTalk
+from hands.voice.ptt import KEY_VAD_PARAMS, Gate, KeyVAD, PushToTalk
 
 LOUD = b"\x7f\x7f" * 160
 QUIET = b"\x00\x00" * 160
@@ -49,16 +49,6 @@ def test_key_vad_reports_the_key_not_the_audio() -> None:
     assert vad.voice_confidence(QUIET) == 1.0
     assert key.move_key("up") == "stop"
     assert vad.voice_confidence(LOUD) == 0.0
-
-
-async def test_key_mute_follows_the_same_key_as_the_vad() -> None:
-    key = PushToTalk()
-    mute = KeyMute(key)
-    vad = KeyVAD(key, sample_rate=16000)
-    assert await mute.filter(LOUD) == QUIET
-    key.move_key("down")
-    assert await mute.filter(LOUD) == LOUD
-    assert vad.voice_confidence(LOUD) == 1.0
 
 
 def test_key_vad_thresholds_let_the_key_decide_alone() -> None:
