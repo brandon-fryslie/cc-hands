@@ -53,6 +53,8 @@ class Speaker(LocalAudioOutputTransport):
         self._fade = ECHO_PATH_SECS
         # Written by the output task, read by the microphone's capture thread: one float, whole either way.
         self.quiet_at: Instant = 0.0
+        # When sound was last handed to the speaker, for the heartbeat; None before the first.
+        self.sounded_at: Instant | None = None
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         await super().setup(setup)
@@ -65,7 +67,8 @@ class Speaker(LocalAudioOutputTransport):
             # [LAW:no-ambient-temporal-coupling] recorded before the write is awaited: an interruption cancels
             # the await, but the chunk already handed to PortAudio's thread plays out all the same.
             # Silence padding makes no sound, so it holds nothing shut.
-            self.quiet_at = self._clock() + _duration(frame) + self._fade
+            self.sounded_at = self._clock()
+            self.quiet_at = self.sounded_at + _duration(frame) + self._fade
         return await super().write_audio_frame(frame)
 
 

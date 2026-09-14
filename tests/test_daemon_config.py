@@ -2,7 +2,7 @@
 
 import pytest
 
-from hands.spike import LOCAL_LLM_MODEL, LOCAL_LLM_URL, backend_from_env
+from hands.daemon.run import LOCAL_LLM_MODEL, LOCAL_LLM_URL, backend_from_env
 from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 
 

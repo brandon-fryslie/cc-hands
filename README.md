@@ -73,17 +73,26 @@ so the turn boundary is the key and the pipeline can never transcribe itself. Me
 on 2026-09-12, voice to voice with the local model: 1.4 s from key release to first
 audio on a plain turn, 4.3 s on a turn with a tool call.
 
-## Running the spike
+## Running
 
 ```
 uv sync
-uv run hands-spike                      # space to talk, space again to stop, q to quit
-HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands-spike
+uv run hands run                        # in a terminal: space to talk, space again to stop, q to quit
+HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
+uv run hands status                     # up, not responding, down, or never ran; exits 0 only when up
 uv run pytest && uv run pyright
 ```
 
-The spike is build-order step 1 and it is closed: GO. It runs the full pipeline with
-one stub tool and logs the latency of every turn.
+launchd keeps the daemon up, starting it at login and again whenever it exits:
+
+```
+uv run hands launchd > ~/Library/LaunchAgents/hands.daemon.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/hands.daemon.plist
+```
+
+Every heartbeat rewrites `~/.hands/status.json`, and the daemon's output goes to
+`~/.hands/daemon.log`. Under launchd there is no terminal, so there is no key edge
+yet: sessions are registered and spoken about but not answered by voice.
 
 ## Prior art
 

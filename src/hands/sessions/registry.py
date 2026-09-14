@@ -93,6 +93,10 @@ class Sessions:
         """The next thing a session has to say to the user, in the order the reducer decided it."""
         return await self._heard.get()
 
+    def live_count(self) -> int:
+        """How many sessions have not ended, without reading their transcripts."""
+        return len(self._registry.live())
+
     def live(self) -> list[Listing]:
         return [_listing(session) for session in self._registry.live()]
 
