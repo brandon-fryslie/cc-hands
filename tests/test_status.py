@@ -3,6 +3,9 @@
 import asyncio
 import os
 import plistlib
+import subprocess
+import sys
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -10,7 +13,7 @@ import pytest
 
 from hands.daemon import launchd, status
 from hands.daemon.cli import main, pid_alive
-from hands.daemon.run import keep_beating
+from hands.daemon.run import keep_beating, off_loop
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 
@@ -124,6 +127,27 @@ async def test_the_heartbeat_is_rewritten_every_period() -> None:
     await asyncio.sleep(0.055)
     beating.cancel()
     assert 3 <= len(beats) <= 6
+
+
+async def test_work_off_the_loop_returns_its_result_or_raises_its_error() -> None:
+    assert await off_loop(lambda: 42, "answer") == 42
+    with pytest.raises(ValueError, match="no models"):
+        await off_loop(lambda: (_ for _ in ()).throw(ValueError("no models")), "failure")
+
+
+def test_a_process_exits_without_waiting_for_work_left_running_off_the_loop(tmp_path: Path) -> None:
+    script = (
+        "import asyncio, time\n"
+        "from hands.daemon.run import off_loop\n"
+        "async def main():\n"
+        "    work = asyncio.create_task(off_loop(lambda: time.sleep(30), 'slow'))\n"
+        "    await asyncio.sleep(0.1)\n"
+        "    work.cancel()\n"
+        "asyncio.run(main())\n"
+    )
+    started = time.monotonic()
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=10)
+    assert time.monotonic() - started < 5
 
 
 def test_the_launch_agent_keeps_the_daemon_up_and_logs_where_status_can_point(tmp_path: Path) -> None:

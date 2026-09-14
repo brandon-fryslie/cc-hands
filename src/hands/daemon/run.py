@@ -17,9 +17,11 @@ every turn.
 """
 
 import asyncio
+import contextlib
 import os
 import signal
 import sys
+import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -103,6 +105,9 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart) -> None:
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
+        # From here a signal has its default effect again: nothing is left to stop gracefully.
+        for signal_number in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(signal_number)
     # Written only by a stop: a crash leaves the last heartbeat naming a pid that is gone, which reads as down.
     heart.beat("stopped", None if voice is None else _wall(voice.speaker.sounded_at), sessions.live_count())
 
@@ -111,13 +116,13 @@ async def load(config: VoiceConfig, sessions: Sessions, heart: status.Heart, qui
     """The voice, built off the event loop while the loop beats "starting"; None when told to stop first."""
     tools = [list_sessions_tool(sessions), *draft_tools(sessions), *permission_tools(sessions)]
     # Loading the models takes seconds: off the loop, a slow start reads as starting, and only a stuck loop as not responding.
-    building = asyncio.create_task(asyncio.to_thread(build_voice, config, tools=tools))
+    building = asyncio.create_task(off_loop(lambda: build_voice(config, tools=tools), "the voice load"))
     starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, sessions.live_count()), heart.period.total_seconds()))
     quitting = asyncio.create_task(quit_event.wait())
     try:
         await asyncio.wait({building, starting, quitting}, return_when=asyncio.FIRST_COMPLETED)
     finally:
-        # A stop does not wait for the models; the thread finishes on its own before the process exits.
+        # A stop does not wait for the models: the load's thread is a daemon, which the process exits without.
         for task in (building, starting, quitting):
             if not task.done():
                 task.cancel()
@@ -184,6 +189,32 @@ class PipelineWatch:
         @worker.event_handler("on_pipeline_finished")
         async def finished(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
             self.state = "stopped"
+
+
+async def off_loop[T](work: Callable[[], T], name: str) -> T:
+    """The result of work run on a daemon thread, so a process told to stop exits without waiting for it."""
+    # asyncio.to_thread's executor thread is joined at exit, which would hold a stopped daemon until its models load.
+    loop = asyncio.get_running_loop()
+    settled: asyncio.Future[T] = loop.create_future()
+
+    def settle(outcome: Callable[[], None]) -> None:
+        if not settled.cancelled():
+            outcome()
+
+    def target() -> None:
+        try:
+            result = work()
+        except BaseException as error:
+            # Bound now: Python unbinds `error` when the except block ends, before the loop runs the report.
+            report: Callable[[], None] = lambda failure=error: settled.set_exception(failure)
+        else:
+            report = lambda: settled.set_result(result)
+        with contextlib.suppress(RuntimeError):
+            # The loop is closed only when the run has already ended; there is nobody left to tell.
+            loop.call_soon_threadsafe(settle, report)
+
+    threading.Thread(target=target, name=name, daemon=True).start()
+    return await settled
 
 
 async def keep_beating(beat: Callable[[], None], period: float) -> None:
