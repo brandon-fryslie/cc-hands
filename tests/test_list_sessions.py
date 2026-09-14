@@ -56,7 +56,7 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
         Joined(ended, "startup"),
         Ended(ended.id),
     ):
-        sessions.apply(event)
+        await sessions.apply(event)
 
     assert await call(sessions) == {
         "sessions": [

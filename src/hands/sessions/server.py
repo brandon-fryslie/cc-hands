@@ -1,7 +1,7 @@
 """The unix socket the shims post to."""
 
 import socket
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,7 +15,7 @@ from hands.sessions.hooks import parse_hook
 from hands.sessions.payload import Rejected
 
 
-async def serve_hooks(home: Home, deliver: Callable[[Event], None], clock: Callable[[], Instant]) -> web.AppRunner:
+async def serve_hooks(home: Home, deliver: Callable[[Event], Awaitable[None]], clock: Callable[[], Instant]) -> web.AppRunner:
     """Listen on the home's socket until the returned runner is cleaned up."""
 
     async def hook(request: web.Request) -> web.Response:
@@ -26,7 +26,7 @@ async def serve_hooks(home: Home, deliver: Callable[[Event], None], clock: Calla
             # The shim prints this reply, so the session that sent the hook shows why.
             logger.error(f"rejected hook: {error}")
             return web.Response(status=400, text=str(error))
-        deliver(event)
+        await deliver(event)
         return web.Response(status=204)
 
     app = web.Application()

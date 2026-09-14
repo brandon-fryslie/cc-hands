@@ -26,17 +26,18 @@ class Sessions:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
         self._registry = Registry(permission_timeout=permission_timeout, sessions={}, drafts={})
 
-    def apply(self, event: Event) -> None:
+    async def apply(self, event: Event) -> None:
         self._registry, effects = reduce(self._registry, event)
         for effect in effects:
-            _perform(effect)
+            await _perform(effect)
 
-    def draft(self, request: DraftRequest) -> DraftOutcome:
-        registry, outcome, effects = decide(self._registry, request)
+    async def draft(self, request: DraftRequest) -> DraftOutcome:
+        # [LAW:no-ambient-temporal-coupling] committed before any effect is awaited, so a hook
+        # that lands while tmux types is reduced against this registry and not overwritten by it.
+        # A send that fails while typing has let go of its draft: some of it may be in the pane.
+        self._registry, outcome, effects = decide(self._registry, request)
         for effect in effects:
-            _perform(effect)
-        # Kept only once its effects have run: a send tmux refused leaves the draft staged.
-        self._registry = registry
+            await _perform(effect)
         return outcome
 
     def live(self) -> list[Listing]:
@@ -52,12 +53,12 @@ def _listing(session: Session) -> Listing:
     return Listing(session, ai_title(session.membership.transcript))
 
 
-def _perform(effect: Effect) -> None:
+async def _perform(effect: Effect) -> None:
     match effect:
         case Audit(record=record):
             logger.log(*_audited(record))
         case Type(pane=pane, input=input):
-            type_into(pane, input)
+            await type_into(pane, input)
 
 
 def _audited(record: AuditRecord) -> tuple[str, str]:

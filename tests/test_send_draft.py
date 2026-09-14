@@ -65,10 +65,10 @@ def pane() -> Iterator[Pane]:
     shutil.rmtree(root)
 
 
-def joined(pane: TmuxPane | None, tmp: Path) -> tuple[Sessions, SessionId]:
+async def joined(pane: TmuxPane | None, tmp: Path) -> tuple[Sessions, SessionId]:
     sessions = Sessions(permission_timeout=60.0)
     membership = Membership(SessionId("s1"), pid=1, pane=pane, cwd=Path("/code/cc-hands"), transcript=tmp / "none.jsonl")
-    sessions.apply(Joined(membership, "startup"))
+    await sessions.apply(Joined(membership, "startup"))
     return sessions, membership.id
 
 
@@ -85,7 +85,7 @@ async def call(tools: list[Tool], name: str, **arguments: object) -> dict[str, o
 
 
 async def test_a_draft_staged_amended_and_sent_lands_in_the_pane_as_read_back(pane: Pane, tmp_path: Path) -> None:
-    sessions, id = joined(pane.id, tmp_path)
+    sessions, id = await joined(pane.id, tmp_path)
     tools = draft_tools(sessions)
     resolved = [{"heard": "auth middleware", "meant": "authMiddleware.ts"}]
 
@@ -103,7 +103,7 @@ async def test_a_draft_staged_amended_and_sent_lands_in_the_pane_as_read_back(pa
 
 
 async def test_a_draft_starting_with_a_sigil_arrives_as_text_with_its_lines_whole(pane: Pane, tmp_path: Path) -> None:
-    sessions, id = joined(pane.id, tmp_path)
+    sessions, id = await joined(pane.id, tmp_path)
     tools = draft_tools(sessions)
     text = "/compact is what I want you to explain\n@README.md second line ends in a backslash \\"
     await call(tools, "stage_draft", session=id, text=text, resolutions=[])
@@ -113,14 +113,14 @@ async def test_a_draft_starting_with_a_sigil_arrives_as_text_with_its_lines_whol
 
 
 async def test_a_session_at_a_permission_dialog_is_sent_nothing_and_keeps_its_draft(pane: Pane, tmp_path: Path) -> None:
-    sessions, id = joined(pane.id, tmp_path)
+    sessions, id = await joined(pane.id, tmp_path)
     tools = draft_tools(sessions)
     await call(tools, "stage_draft", session=id, text="carry on", resolutions=[])
-    sessions.apply(PermissionRequested(id, at=1.0, request=RequestId("r"), permission=Permission("Bash", {})))
+    await sessions.apply(PermissionRequested(id, at=1.0, request=RequestId("r"), permission=Permission("Bash", {})))
     assert await call(tools, "send_draft", session=id) == {
         "readback": "untitled, in cc-hands is waiting for permission to use Bash. Answer that first; the draft is still staged."
     }
-    type_into(pane.id, Text(PromptText("marker")))
+    await type_into(pane.id, Text(PromptText("marker")))
     assert pane.prompts(1) == [" marker"]
 
 
@@ -136,24 +136,26 @@ async def test_a_session_at_a_permission_dialog_is_sent_nothing_and_keeps_its_dr
 async def test_arguments_that_do_not_parse_are_refused_out_loud(
     text: str, resolutions: object, error: str, tmp_path: Path
 ) -> None:
-    sessions, id = joined(TmuxPane("%999999"), tmp_path)
+    sessions, id = await joined(TmuxPane("%999999"), tmp_path)
     result = await call(draft_tools(sessions), "stage_draft", session=id, text=text, resolutions=resolutions)
     assert error in str(result["error"])
 
 
-async def test_a_pane_tmux_cannot_find_is_a_spoken_error_and_the_draft_stays(tmp_path: Path) -> None:
-    sessions, id = joined(TmuxPane("%999999"), tmp_path)
+async def test_a_send_tmux_cannot_type_is_spoken_and_lets_go_of_the_draft(tmp_path: Path) -> None:
+    # Keeping it would let the next send type a second copy after whatever reached the pane.
+    sessions, id = await joined(TmuxPane("%999999"), tmp_path)
     tools = draft_tools(sessions)
     await call(tools, "stage_draft", session=id, text="hello", resolutions=[])
     result = await call(tools, "send_draft", session=id)
-    assert "tmux" in str(result["error"])
+    assert str(result["error"]).startswith("The send failed and the draft is gone")
+    assert "can't find pane" in str(result["error"])
+    assert await call(tools, "send_draft", session=id) == {"readback": "There is no draft for untitled, in cc-hands."}
     with pytest.raises(TmuxFailed):
-        type_into(TmuxPane("%999999"), Text(PromptText("hello")))
-    assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for untitled, in cc-hands."}
+        await type_into(TmuxPane("%999999"), Text(PromptText("hello")))
 
 
-def test_the_draft_tools_are_valid_pipecat_direct_functions(tmp_path: Path) -> None:
-    sessions, _ = joined(None, tmp_path)
+async def test_the_draft_tools_are_valid_pipecat_direct_functions(tmp_path: Path) -> None:
+    sessions, _ = await joined(None, tmp_path)
     wrappers = [DirectFunctionWrapper(tool) for tool in draft_tools(sessions)]
     assert [wrapper.name for wrapper in wrappers] == ["stage_draft", "amend_draft", "discard_draft", "send_draft"]
     schema = wrappers[0].to_function_schema()

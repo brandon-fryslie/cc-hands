@@ -112,13 +112,17 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
 async def _answer(
     params: FunctionCallParams, sessions: Sessions, session: object, request: Callable[[SessionId], DraftRequest]
 ) -> None:
+    # [LAW:no-silent-failure] the model hears each failure and says it; the log keeps it.
     try:
         id = _session_id(session)
-        outcome = sessions.draft(request(id))
-    except (Rejected, TmuxFailed) as error:
-        # [LAW:no-silent-failure] the model hears the failure and says it; the log keeps it.
-        logger.error(f"draft tool failed: {error}")
+        outcome = await sessions.draft(request(id))
+    except Rejected as error:
+        logger.error(f"draft tool refused its arguments: {error}")
         await params.result_callback({"error": str(error)})
+        return
+    except TmuxFailed as error:
+        logger.error(f"send failed: {error}")
+        await params.result_callback({"error": f"The send failed and the draft is gone, so dictate it again. {error}"})
         return
     listing = sessions.listing(id)
     name = id if listing is None else spoken_title(listing)

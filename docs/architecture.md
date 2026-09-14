@@ -605,6 +605,12 @@ escaped. The two never share a code path that inspects the first character; the
 prompt: `/` a command, `@` a file mention, `!` shell mode. Behind a space each is
 plain text, so `Text` is always typed with a leading space, whatever it starts with,
 as one bracketed paste followed by Enter, which keeps its newlines inside the prompt.
+The paste lands after whatever is already in the target's input box. Claude Code
+2.1.270 has no key that empties the box safely: Ctrl-S stashes but restores an
+existing stash when the box is empty, Ctrl-L only redraws, a burst of Ctrl-U is
+dropped, and Escape and Ctrl-C interrupt a turn. So what was actually submitted is
+read back from the transcript, which records every prompt, and a prompt that is not
+the draft is spoken.
 
 ## The audio side
 
