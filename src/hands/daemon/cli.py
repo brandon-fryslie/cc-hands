@@ -24,10 +24,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     home = Home(arguments.home)
     match arguments.command:
         case "run":
-            # Imported here so that `hands status` answers without loading Pipecat and its models.
+            heart = status.Heart(home.status, os.getpid(), datetime.now(UTC), status.HEARTBEAT)
+            # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its
+            # models load, seconds of silence in which the file would otherwise still name the process that died.
+            heart.beat("starting", None, 0)
+            # Imported here, after that heartbeat, and so that `hands status` answers without loading Pipecat.
             from hands.daemon.run import config_from_env, run
 
-            asyncio.run(run(config_from_env(), home))
+            asyncio.run(run(config_from_env(), home, heart))
             return 0
         case "status":
             return report(home)

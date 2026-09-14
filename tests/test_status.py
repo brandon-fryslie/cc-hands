@@ -39,6 +39,18 @@ def test_a_heartbeat_reads_back_as_it_was_written(tmp_path: Path) -> None:
     assert [path.name for path in tmp_path.iterdir()] == ["status.json"]  # nothing left of the replacement
 
 
+def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -> None:
+    heart = status.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT)
+    heart.beat("starting", None, 0)
+    first = status.read(heart.path)
+    heart.beat("running", NOW, 2)
+    second = status.read(heart.path)
+    assert first is not None and second is not None
+    assert (first.pid, first.started_at, first.heartbeat, first.pipeline, first.live_sessions) == (4242, NOW, BEAT, "starting", 0)
+    assert (second.pid, second.started_at, second.heartbeat, second.pipeline, second.last_audio_out) == (4242, NOW, BEAT, "running", NOW)
+    assert second.written_at >= first.written_at
+
+
 def test_no_file_is_a_daemon_that_never_ran(tmp_path: Path) -> None:
     assert status.read(tmp_path / "status.json") is None
 
@@ -66,6 +78,13 @@ def test_the_verdict_follows_the_pid_and_the_heartbeat_age(tmp_path: Path) -> No
     assert status.judge(path, late, NOW, alive=True) == status.Unresponsive(late)
 
 
+@pytest.mark.parametrize("alive", [False, True])
+def test_a_daemon_whose_last_heartbeat_said_stopped_is_stopped_whoever_holds_its_pid_now(alive: bool, tmp_path: Path) -> None:
+    # Alive is a daemon still cleaning up, or another process that got the pid; neither is a hang.
+    stopped = beat(pipeline="stopped", written_at=NOW - timedelta(hours=1))
+    assert status.judge(tmp_path, stopped, NOW, alive=alive) == status.Stopped(stopped)
+
+
 def test_each_verdict_is_said_plainly(tmp_path: Path) -> None:
     assert status.describe(status.Up(beat()), NOW) == (
         "hands is up: pid 4242, up 5m 3s, pipeline running, last audio out 12s ago, 2 live sessions"
@@ -75,8 +94,9 @@ def test_each_verdict_is_said_plainly(tmp_path: Path) -> None:
     )
     assert status.describe(status.Down(beat()), NOW) == "hands is down: pid 4242 is not running; its last heartbeat was 1s ago"
     assert status.describe(status.Unresponsive(beat(written_at=NOW - timedelta(minutes=3))), NOW) == (
-        "hands is not responding: pid 4242 is running, but its last heartbeat was 3m 0s ago"
+        "hands is not responding: pid 4242 is running, pipeline running, but its last heartbeat was 3m 0s ago"
     )
+    assert status.describe(status.Stopped(beat(pipeline="stopped")), NOW) == "hands is stopped: pid 4242 finished its pipeline 1s ago"
     assert status.describe(status.NeverRan(tmp_path), NOW) == f"hands has not run: there is no heartbeat at {tmp_path}"
 
 

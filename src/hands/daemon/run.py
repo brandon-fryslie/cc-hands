@@ -52,8 +52,6 @@ LOCAL_LLM_MODEL = "mlx-community/Qwen3-30B-A3B-Instruct-2507-8bit"
 API_KEY_VAR = "ANTHROPIC_API_KEY"
 # How late a permission deadline can be heard.
 TICK_SECONDS = 1.0
-# How often status.json is rewritten; a reader calls the daemon unresponsive after a few missed.
-HEARTBEAT_SECONDS = 2.0
 
 
 def backend_from_env() -> LLMBackend:
@@ -87,30 +85,18 @@ def config_from_env() -> VoiceConfig:
     )
 
 
-async def run(config: VoiceConfig, home: Home) -> None:
-    started_at = datetime.now(UTC)
+async def run(config: VoiceConfig, home: Home, heart: status.Heart) -> None:
     sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic)
     hooks = await serve_hooks(home, sessions)
+    # Importing Pipecat and building the voice each hold the event loop for seconds; a heartbeat between
+    # them keeps either one from reading as a hang.
+    heart.beat("starting", None, sessions.live_count())
     voice = build_voice(config, tools=[list_sessions_tool(sessions), *draft_tools(sessions), *permission_tools(sessions)])
     pipeline = PipelineWatch(voice.worker)
     quit_event = asyncio.Event()
 
     def beat() -> None:
-        status.write(
-            home.status,
-            status.Status(
-                pid=os.getpid(),
-                started_at=started_at,
-                written_at=datetime.now(UTC),
-                heartbeat=timedelta(seconds=HEARTBEAT_SECONDS),
-                pipeline=pipeline.state,
-                last_audio_out=_wall(voice.speaker.sounded_at),
-                live_sessions=sessions.live_count(),
-            ),
-        )
-
-    # The first heartbeat goes out before the pipeline loads its models, so a restart shows its new pid at once.
-    beat()
+        heart.beat(pipeline.state, _wall(voice.speaker.sounded_at), sessions.live_count())
 
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the relay
@@ -123,7 +109,7 @@ async def run(config: VoiceConfig, home: Home) -> None:
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
         asyncio.create_task(relay(sessions, voice.worker.queue_frame), name="the session speech relay"),
-        asyncio.create_task(keep_beating(beat, HEARTBEAT_SECONDS), name="the heartbeat"),
+        asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
     ]
     for task in background:
         task.add_done_callback(stop_if_failed)
@@ -132,7 +118,8 @@ async def run(config: VoiceConfig, home: Home) -> None:
         turn = voice.key.move_key(position)
         logger.info(f"key {position}: turn {turn}")
 
-    runner = WorkerRunner(handle_sigint=True)
+    # launchd stops an agent with SIGTERM, a terminal with SIGINT: either one ends the pipeline cleanly.
+    runner = WorkerRunner(handle_sigint=True, handle_sigterm=True)
     if sys.stdin.isatty():
         background.append(asyncio.create_task(drive_key(on_key, quit_event), name="the terminal key edge"))
         logger.info("space: press to talk, press again to stop. q: quit.")
@@ -165,10 +152,10 @@ class PipelineWatch:
 
 
 async def keep_beating(beat: Callable[[], None], period: float) -> None:
-    """Write the heartbeat once a period, until cancelled."""
+    """Write the heartbeat now and once a period after, until cancelled."""
     while True:
-        await asyncio.sleep(period)
         beat()
+        await asyncio.sleep(period)
 
 
 def _wall(instant: float | None) -> datetime | None:

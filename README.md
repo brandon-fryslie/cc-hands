@@ -79,7 +79,7 @@ audio on a plain turn, 4.3 s on a turn with a tool call.
 uv sync
 uv run hands run                        # in a terminal: space to talk, space again to stop, q to quit
 HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
-uv run hands status                     # up, not responding, down, or never ran; exits 0 only when up
+uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run pytest && uv run pyright
 ```
 

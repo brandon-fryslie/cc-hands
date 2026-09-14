@@ -8,7 +8,7 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +17,8 @@ from hands.sessions.payload import Payload, Rejected
 # Starting until Pipecat reports the pipeline started, running until it reports it finished.
 PipelineState = Literal["starting", "running", "stopped"]
 
+# How often the daemon rewrites the file.
+HEARTBEAT = timedelta(seconds=2)
 # A reader that has missed this many heartbeats in a row calls the daemon unresponsive.
 MISSED_BEATS = 3
 
@@ -72,6 +74,21 @@ def write(path: Path, status: Status) -> None:
     os.replace(temporary, path)
 
 
+@dataclass(frozen=True)
+class Heart:
+    """What every heartbeat of one run repeats, fixed when the process starts."""
+
+    # [LAW:one-source-of-truth] the pid, start time, and period are decided once, at the process door,
+    # so the heartbeat written before Pipecat loads and every one after it agree.
+    path: Path
+    pid: int
+    started_at: datetime
+    period: timedelta
+
+    def beat(self, pipeline: PipelineState, last_audio_out: datetime | None, live_sessions: int) -> None:
+        write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions))
+
+
 def read(path: Path) -> Status | None:
     """The last heartbeat, or None when the daemon has never written one."""
     try:
@@ -102,7 +119,14 @@ class Down:
     status: Status
 
 
-Verdict = NeverRan | Up | Unresponsive | Down
+@dataclass(frozen=True)
+class Stopped:
+    """The daemon's last heartbeat said its pipeline had finished: it stopped, rather than died or hung."""
+
+    status: Status
+
+
+Verdict = NeverRan | Up | Unresponsive | Down | Stopped
 
 
 def judge(path: Path, status: Status | None, now: datetime, alive: bool) -> Verdict:
@@ -110,6 +134,9 @@ def judge(path: Path, status: Status | None, now: datetime, alive: bool) -> Verd
     match status:
         case None:
             return NeverRan(path)
+        # Checked before the pid: once stopped, a running pid is a daemon still cleaning up, or a stranger reusing the number.
+        case Status(pipeline="stopped"):
+            return Stopped(status)
         case Status() if not alive:
             return Down(status)
         case Status() if now - status.written_at > status.heartbeat * MISSED_BEATS:
@@ -125,7 +152,12 @@ def describe(verdict: Verdict, now: datetime) -> str:
         case Down(status=status):
             return f"hands is down: pid {status.pid} is not running; its last heartbeat was {_span(now - status.written_at)} ago"
         case Unresponsive(status=status):
-            return f"hands is not responding: pid {status.pid} is running, but its last heartbeat was {_span(now - status.written_at)} ago"
+            return (
+                f"hands is not responding: pid {status.pid} is running, pipeline {status.pipeline}, "
+                f"but its last heartbeat was {_span(now - status.written_at)} ago"
+            )
+        case Stopped(status=status):
+            return f"hands is stopped: pid {status.pid} finished its pipeline {_span(now - status.written_at)} ago"
         case Up(status=status):
             heard = "never" if status.last_audio_out is None else f"{_span(now - status.last_audio_out)} ago"
             sessions = "1 live session" if status.live_sessions == 1 else f"{status.live_sessions} live sessions"
