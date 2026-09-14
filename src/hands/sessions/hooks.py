@@ -1,6 +1,6 @@
 """A hook's POST body, parsed once into a core event."""
 
-from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, Stopped
+from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped
 from hands.core.session import Instant, Permission, RequestId
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership
@@ -15,7 +15,8 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
     match payload.text("hook_event_name"):
         case "SessionStart":
             # The shim writes the membership file before it posts, so the start reads it.
-            return Joined(read_membership(home, session))
+            source = _start_source(payload.text("source"))
+            return Joined(read_membership(home, session), source)
         case "UserPromptSubmit":
             return Prompted(session, at)
         case "Stop":
@@ -27,3 +28,11 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
             return Ended(session)
         case other:
             raise Rejected(f"hook event {other!r} is not one hands handles")
+
+
+def _start_source(source: str) -> StartSource:
+    match source:
+        case "startup" | "resume" | "clear" | "compact":
+            return source
+        case other:
+            raise Rejected(f"SessionStart source {other!r} is not one hands knows")

@@ -1,7 +1,7 @@
 """The session lifecycle as one pure function."""
 
 from hands.core.effects import AfterEnd, Audit, Effect, Unregistered
-from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, SessionEvent, Stopped
+from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped
 from hands.core.session import Blocked, Gone, Idle, Registry, Session, SessionState, Working
 
 
@@ -10,8 +10,8 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
     # [LAW:effects-at-boundaries] time arrives inside the event and the timeout
     # inside the registry, so a deadline is arithmetic on values, never a clock read.
     match event:
-        case Joined(membership=membership):
-            return registry.put(Session(membership, _rejoined(registry.sessions.get(membership.id)))), []
+        case Joined(membership=membership, source=source):
+            return registry.put(Session(membership, _started(source, registry.sessions.get(membership.id)))), []
         case Prompted(at=at):
             return _enter(registry, event, Working(since=at))
         case Stopped():
@@ -23,14 +23,15 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _enter(registry, event, Gone())
 
 
-def _rejoined(previous: Session | None) -> SessionState:
-    # Compaction starts a session again under the same id in the middle of a
-    # turn, so what it was doing carries over; a new or resumed session is idle.
-    match previous:
-        case None | Session(state=Gone()):
-            return Idle()
-        case Session(state=state):
+def _started(source: StartSource, previous: Session | None) -> SessionState:
+    # Compaction starts a session again in the middle of a turn, so what it was
+    # doing carries over. Every other start sits at the prompt, whatever the
+    # registry last heard: a session resumed after a crash was never told it stopped.
+    match (source, previous):
+        case ("compact", Session(state=Working() | Blocked() as state)):
             return state
+        case _:
+            return Idle()
 
 
 def _enter(registry: Registry, event: SessionEvent, state: SessionState) -> tuple[Registry, list[Effect]]:

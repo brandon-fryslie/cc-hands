@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from hands.core.effects import AfterEnd, Audit, Unregistered
-from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, SessionEvent, Stopped
+from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped
 from hands.core.reducer import reduce
 from hands.core.session import (
     Blocked,
@@ -50,7 +50,7 @@ def holding(state: SessionState) -> Registry:
 
 
 def test_a_start_registers_the_session_idle() -> None:
-    assert reduce(registry(), Joined(ONE)) == (holding(Idle()), [])
+    assert reduce(registry(), Joined(ONE, "startup")) == (holding(Idle()), [])
 
 
 @pytest.mark.parametrize("before", LIVE)
@@ -73,11 +73,18 @@ def test_every_state_takes_each_event_to_its_state(before: SessionState, event: 
 @pytest.mark.parametrize("before", LIVE)
 def test_a_compacted_session_keeps_its_state_and_takes_the_new_membership(before: SessionState) -> None:
     moved = replace(ONE, pid=7777, pane=None)
-    assert reduce(holding(before), Joined(moved)) == (registry(Session(moved, before)), [])
+    assert reduce(holding(before), Joined(moved, "compact")) == (registry(Session(moved, before)), [])
 
 
-def test_an_ended_session_that_starts_again_is_idle() -> None:
-    assert reduce(holding(Gone()), Joined(ONE)) == (holding(Idle()), [])
+@pytest.mark.parametrize("before", [*LIVE, Gone()])
+@pytest.mark.parametrize("source", ["startup", "resume", "clear"])
+def test_any_start_but_compaction_is_at_the_prompt(before: SessionState, source: StartSource) -> None:
+    # a session resumed after a crash never sent the Stop or SessionEnd the registry is still waiting for
+    assert reduce(holding(before), Joined(ONE, source)) == (holding(Idle()), [])
+
+
+def test_an_ended_session_compacting_is_idle() -> None:
+    assert reduce(holding(Gone()), Joined(ONE, "compact")) == (holding(Idle()), [])
 
 
 @pytest.mark.parametrize("event", SESSION_EVENTS)

@@ -44,12 +44,12 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
     titled(ended.transcript, "old work")
     sessions = Sessions(permission_timeout=60.0)
     for event in (
-        Joined(working),
+        Joined(working, "startup"),
         Prompted(working.id, at=1.0),
-        Joined(untitled),
-        Joined(blocked),
+        Joined(untitled, "startup"),
+        Joined(blocked, "startup"),
         PermissionRequested(blocked.id, at=2.0, request=RequestId("r"), permission=Permission("Bash", {})),
-        Joined(ended),
+        Joined(ended, "startup"),
         Ended(ended.id),
     ):
         sessions.apply(event)

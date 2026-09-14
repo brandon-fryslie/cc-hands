@@ -34,7 +34,8 @@ def home(tmp_path: Path) -> Home:
 def test_a_start_reads_the_membership_the_shim_wrote(home: Home) -> None:
     membership = Membership(SID, pid=51810, pane=TmuxPane("%8"), cwd=Path("/code/a"), transcript=Path(TRANSCRIPT))
     write_membership(home, membership)
-    assert parse(home, body(hook_event_name="SessionStart", source="startup")) == Joined(membership)
+    assert parse(home, body(hook_event_name="SessionStart", source="startup")) == Joined(membership, "startup")
+    assert parse(home, body(hook_event_name="SessionStart", source="compact")) == Joined(membership, "compact")
 
 
 def test_a_start_with_no_membership_file_is_rejected(home: Home) -> None:
@@ -61,6 +62,7 @@ def test_a_permission_request_carries_the_tool_and_its_input(home: Home) -> None
     ("raw", "reason"),
     [
         (b"not json", "not JSON"),
+        (body(hook_event_name="SessionStart", source="teleport"), "source 'teleport' is not one hands knows"),
         (b"[1, 2]", "JSON object"),
         (body(hook_event_name="PostToolUse"), "'PostToolUse' is not one hands handles"),
         (body(hook_event_name="PermissionRequest", tool_input={}), "missing field 'tool_name'"),

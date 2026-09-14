@@ -1,13 +1,18 @@
 """Everything that can happen to the registry: parsed at the edges, reduced here."""
 
 from dataclasses import dataclass
+from typing import Literal
 
 from hands.core.session import Instant, Membership, Permission, RequestId, SessionId
+
+
+StartSource = Literal["startup", "resume", "clear", "compact"]
 
 
 @dataclass(frozen=True)
 class Joined:
     membership: Membership
+    source: StartSource
 
 
 @dataclass(frozen=True)
