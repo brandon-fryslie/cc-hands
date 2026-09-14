@@ -126,14 +126,17 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart) -> None:
     pipeline_run = asyncio.create_task(runner.run(voice.worker))
     quitting = asyncio.create_task(quit_event.wait())
     # A signal ends the pipeline without a quit key, and a quit ends the run without a signal: either one stops it.
-    await asyncio.wait({pipeline_run, quitting}, return_when=asyncio.FIRST_COMPLETED)
-    await runner.cancel("quit")
-    await pipeline_run
-    quitting.cancel()
-    for task in background:
-        task.cancel()
-    beat()
-    await hooks.cleanup()
+    try:
+        await asyncio.wait({pipeline_run, quitting}, return_when=asyncio.FIRST_COMPLETED)
+        await runner.cancel("quit")
+        await pipeline_run
+    finally:
+        # A pipeline that raised still lets go of the socket; the last heartbeat is written once all of it is done.
+        quitting.cancel()
+        for task in background:
+            task.cancel()
+        await hooks.cleanup()
+        beat()
 
 
 class PipelineWatch:
