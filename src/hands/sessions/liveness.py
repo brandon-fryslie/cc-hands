@@ -65,7 +65,8 @@ def observations(
     on_file = {record.membership.id for record in records}
     unfiled = [membership for membership in listed if membership.id not in on_file]
     return [
-        *(_observed(record.membership, holders.get(record.membership.pid)) for record in records),
+        # A file whose own process is not running holds nothing, even when a later session took its pid.
+        *(_observed(record.membership, holders.get(record.membership.pid) if record in running else None) for record in records),
         # The shim removes a session's file before it posts SessionEnd, so a listed session with no file has ended. It is
         # judged only once its file was also gone a sweep ago, so the end hook, which lands in milliseconds, says how.
         *(_observed(membership, holders.get(membership.pid)) for membership in unfiled if membership.id in unfiled_before),

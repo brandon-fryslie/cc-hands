@@ -64,6 +64,11 @@ def test_of_the_files_naming_one_process_the_newest_is_its_session_whatever_the_
         assert set(observations([], records, started, frozenset())[0]) == seen
 
 
+def test_a_file_whose_process_died_is_dead_even_when_a_later_session_took_its_pid() -> None:
+    crashed, later = Recorded(member("crashed", 4242), written_at=1000.0), Recorded(member("later", 4242), written_at=5001.0)
+    assert observations([], [crashed, later], {4242: 5000.0}, frozenset())[0] == [Died(crashed.membership), Attached(later.membership)]
+
+
 def test_a_listed_session_whose_file_stayed_gone_moved_on_if_another_session_holds_its_process_and_died_if_none_does() -> None:
     cleared, dead, current = member("cleared", 4242), member("dead", 5353), member("current", 4242)
     records, started = [Recorded(current, written_at=1000.0)], {4242: 1.0, 5353: 1.0}
