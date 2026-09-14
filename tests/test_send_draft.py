@@ -1,5 +1,6 @@
 """The draft tools against a live tmux pane: what is read back is what is typed."""
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -17,6 +18,7 @@ from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Text
+from hands.core.drafts import SendDraft
 from hands.core.events import Joined, PermissionRequested
 from hands.core.session import Membership, Permission, PromptText, RequestId, SessionId, TmuxPane
 from hands.sessions.registry import Sessions
@@ -40,8 +42,12 @@ class Pane:
         self.id = TmuxPane(created.stdout.strip())
         self._wait_for(lambda: self.prompts_file.with_suffix(".ready").exists())
 
-    def prompts(self, count: int) -> list[str]:
-        self._wait_for(lambda: self.prompts_file.exists() and len(json.loads(self.prompts_file.read_text())) >= count)
+    async def prompts(self, count: int) -> list[str]:
+        # Polled without blocking the loop: the send being waited for runs on it.
+        deadline = time.monotonic() + WAIT_SECONDS
+        while not (self.prompts_file.exists() and len(json.loads(self.prompts_file.read_text())) >= count):
+            assert time.monotonic() < deadline, "the pane did not receive the prompts in time"
+            await asyncio.sleep(0.02)
         return json.loads(self.prompts_file.read_text())
 
     def close(self) -> None:
@@ -98,7 +104,7 @@ async def test_a_draft_staged_amended_and_sent_lands_in_the_pane_as_read_back(pa
     assert amended == {"readback": "In the draft for untitled, in cc-hands: 'old' is now 'new token'"}
     assert await call(tools, "send_draft", session=id) == {"readback": "Sent to untitled, in cc-hands."}
 
-    assert pane.prompts(1) == [" refactor authMiddleware.ts to use the new token helper"]
+    assert await pane.prompts(1) == [" refactor authMiddleware.ts to use the new token helper"]
     assert await call(tools, "send_draft", session=id) == {"readback": "There is no draft for untitled, in cc-hands."}
 
 
@@ -109,7 +115,7 @@ async def test_a_draft_starting_with_a_sigil_arrives_as_text_with_its_lines_whol
     await call(tools, "stage_draft", session=id, text=text, resolutions=[])
     await call(tools, "send_draft", session=id)
     # The leading space is what keeps Claude Code from reading /compact as the command.
-    assert pane.prompts(1) == [f" {text}"]
+    assert await pane.prompts(1) == [f" {text}"]
 
 
 async def test_a_session_at_a_permission_dialog_is_sent_nothing_and_keeps_its_draft(pane: Pane, tmp_path: Path) -> None:
@@ -121,7 +127,7 @@ async def test_a_session_at_a_permission_dialog_is_sent_nothing_and_keeps_its_dr
         "readback": "untitled, in cc-hands is waiting for permission to use Bash. Answer that first; the draft is still staged."
     }
     await type_into(pane.id, Text(PromptText("marker")))
-    assert pane.prompts(1) == [" marker"]
+    assert await pane.prompts(1) == [" marker"]
 
 
 @pytest.mark.parametrize(
@@ -161,3 +167,25 @@ async def test_the_draft_tools_are_valid_pipecat_direct_functions(tmp_path: Path
     schema = wrappers[0].to_function_schema()
     assert schema.required == ["session", "text", "resolutions"]
     assert schema.properties["resolutions"]["items"]["required"] == ["heard", "meant"]
+
+
+async def test_a_machine_without_tmux_is_a_failed_send_not_a_crash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(TmuxFailed, match="cannot run tmux"):
+        await type_into(TmuxPane("%1"), Text(PromptText("hello")))
+
+
+async def test_a_send_cancelled_while_typing_still_reaches_the_pane(pane: Pane, tmp_path: Path) -> None:
+    sessions, id = await joined(pane.id, tmp_path)
+    await call(draft_tools(sessions), "stage_draft", session=id, text="finish what you started", resolutions=[])
+    sending = asyncio.create_task(sessions.draft(SendDraft(id)))
+    await asyncio.sleep(0)  # let the send begin before it is cancelled, as a barge-in would
+    sending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await sending
+    assert await pane.prompts(1) == [" finish what you started"]
+
+
+async def test_an_interruption_does_not_cancel_a_draft_tool(tmp_path: Path) -> None:
+    sessions, _ = await joined(None, tmp_path)
+    assert [getattr(tool, "_pipecat_cancel_on_interruption") for tool in draft_tools(sessions)] == [False] * 4

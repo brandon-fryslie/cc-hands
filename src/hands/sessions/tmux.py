@@ -29,9 +29,13 @@ async def type_into(pane: TmuxPane, input: Input) -> None:
 
 
 async def _tmux(args: list[str], stdin: str) -> None:
-    process = await asyncio.create_subprocess_exec(
-        "tmux", *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "tmux", *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+        )
+    except OSError as error:
+        # tmux missing from PATH is a failed send like any other, and is heard as one.
+        raise TmuxFailed(f"cannot run tmux: {error}") from error
     _, stderr = await process.communicate(stdin.encode())
     if process.returncode != 0:
         raise TmuxFailed(f"tmux {' '.join(args)} exited {process.returncode}: {stderr.decode(errors='replace').strip()}")

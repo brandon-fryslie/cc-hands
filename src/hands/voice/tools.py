@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import TypedDict, cast
 
 from loguru import logger
+from pipecat.adapters.schemas import direct_function
 from pipecat.adapters.schemas.direct_function import DirectFunction
 from pipecat.services.llm_service import FunctionCallParams
 
@@ -17,6 +18,9 @@ from hands.voice.readback import readback
 
 # A Pipecat direct function: its signature and docstring are the schema the model sees.
 Tool = DirectFunction
+
+# Pipecat's decorator is untyped; this names what it does to a tool.
+_uncancelled_by_interruption = cast(Callable[[Tool], Tool], direct_function.tool_options(cancel_on_interruption=False))  # pyright: ignore[reportUnknownMemberType]
 
 # Every C0 and C1 control character but newline and tab: each would press a key in the pane.
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -106,7 +110,8 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         """
         await _answer(params, sessions, session, SendDraft)
 
-    return [stage_draft, amend_draft, discard_draft, send_draft]
+    # A barge-in must not cancel a draft call part way: the user would never hear whether it was sent.
+    return [_uncancelled_by_interruption(tool) for tool in (stage_draft, amend_draft, discard_draft, send_draft)]
 
 
 async def _answer(

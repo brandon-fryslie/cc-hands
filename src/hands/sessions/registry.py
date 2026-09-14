@@ -1,5 +1,6 @@
 """The one owner of the session registry."""
 
+import asyncio
 from dataclasses import dataclass
 
 from loguru import logger
@@ -28,16 +29,16 @@ class Sessions:
 
     async def apply(self, event: Event) -> None:
         self._registry, effects = reduce(self._registry, event)
-        for effect in effects:
-            await _perform(effect)
+        await _perform_all(effects)
 
     async def draft(self, request: DraftRequest) -> DraftOutcome:
         # [LAW:no-ambient-temporal-coupling] committed before any effect is awaited, so a hook
         # that lands while tmux types is reduced against this registry and not overwritten by it.
         # A send that fails while typing has let go of its draft: some of it may be in the pane.
         self._registry, outcome, effects = decide(self._registry, request)
-        for effect in effects:
-            await _perform(effect)
+        # A decided send runs to the end even if its caller is cancelled: the draft has already
+        # been let go, so stopping part way would lose it without typing it.
+        await asyncio.shield(_perform_all(effects))
         return outcome
 
     def live(self) -> list[Listing]:
@@ -51,6 +52,11 @@ class Sessions:
 
 def _listing(session: Session) -> Listing:
     return Listing(session, ai_title(session.membership.transcript))
+
+
+async def _perform_all(effects: list[Effect]) -> None:
+    for effect in effects:
+        await _perform(effect)
 
 
 async def _perform(effect: Effect) -> None:
