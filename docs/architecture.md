@@ -566,15 +566,30 @@ Three facts about a session have three different sources, and the registry deriv
 from all three rather than storing any of them twice `[LAW:one-source-of-truth]`.
 
 - **Membership** is the set of files in `~/.hands/sessions/`. The shim writes one at
-  `SessionStart`; the daemon reads the directory when it starts and watches it after.
-  A daemon restart therefore loses nothing: it re-reads the files, checks each pid,
-  and is back where it was, with each surviving session in `Idle(last=None)` until
-  the first backfill read establishes the watermark.
+  `SessionStart` and removes it at `SessionEnd`. The daemon sweeps the directory once
+  before its models load and every 2 seconds after (`hands.sessions.liveness`). A file
+  whose process is running becomes `Attached`, which registers a session the registry
+  has never heard of in `Idle` and changes nothing for one it knows: a hook heard first
+  knows more than the file, so a sweep and a hook can land in either order. A daemon
+  restart therefore loses nothing: its first sweep lists every session the last run
+  listed, before a word is spoken.
 - **State** comes from the reducer applied to hook events since the daemon attached.
-- **Liveness** is `kill(pid, 0)`. A session waiting for input is silent for hours and
-  alive; a session in a tool loop is never silent. Silence measures nothing. A dead
-  pid moves the session to `Gone("pid_dead")`, the file is removed, and the change is
-  spoken.
+  One process holds one session, so a session joining from a pid ends any other live
+  session on that pid: a `/clear` whose end hook never arrived does not leave the old
+  session listed.
+- **Liveness** comes from the process table, one `ps -o pid=,etime=` for every file per
+  sweep. A session waiting for input is silent for hours and alive; a session in a
+  tool loop is never silent. Silence measures nothing. A process counts as the
+  session's only if it started before the file was written, so a pid reused by a later
+  process reads as dead. A dead one becomes `Died`: the session is `Gone`, a waiting
+  permission hook is let go, the file is removed unless a new process has rewritten
+  it, and "The session cc-hands is gone" is spoken, once. A session that died while the
+  daemon was down is spoken the same way at the restart.
+- **Ends** arrive through `SessionEnd`, whose `reason` says who ended the session.
+  Measured on 2.1.270: `/exit` and a double Ctrl-C report `prompt_input_exit`, `/clear`
+  reports `clear`, and a closed tmux pane or window reports `other`. An end the user
+  chose at the keyboard is not spoken; `other`, and any reason hands does not know, is
+  spoken as gone, the same sentence a dead process gets.
 
 `list_sessions` offers a session while its pid is alive, labelled with its `aiTitle`,
 its state, and whether it is the focus.

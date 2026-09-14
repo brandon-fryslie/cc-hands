@@ -13,12 +13,15 @@ from hands.core.effects import (
     PermissionDeadlineNear,
     PermissionExpired,
     Reply,
+    SessionGone,
     Speak,
     Unregistered,
     Withdraw,
 )
 from hands.core.events import (
     Abandoned,
+    Attached,
+    Died,
     Ended,
     Event,
     Joined,
@@ -30,7 +33,7 @@ from hands.core.events import (
     Tick,
     ToolFinished,
 )
-from hands.core.session import Blocked, Gone, Idle, Instant, Permission, Registry, RequestId, Session, SessionId, SessionState, Working
+from hands.core.session import Blocked, Gone, Idle, Instant, Membership, Permission, Registry, RequestId, Session, SessionId, SessionState, Working
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
@@ -48,10 +51,15 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
     # inside the registry, so a deadline is arithmetic on values, never a clock read.
     match event:
         case Joined(membership=membership, source=source):
-            previous = registry.sessions.get(membership.id)
-            state = _started(source, previous)
-            before = None if previous is None else previous.state
-            return registry.put(Session(membership, state)), _transition(membership.id, before, state)
+            return _join(registry, membership, _started(source, registry.sessions.get(membership.id)))
+        case Attached(membership=membership) if membership.id not in registry.sessions:
+            return _join(registry, membership, Idle())
+        case Attached():
+            # [LAW:no-ambient-temporal-coupling] a session the registry already knows was heard from its hooks, which
+            # know more than its file: a sweep that read the file before a hook landed never overwrites it.
+            return registry, []
+        case Died(membership=membership):
+            return _died(registry, membership)
         case Prompted(at=at):
             return _enter(registry, event, lambda _: Working(since=at))
         case Stopped():
@@ -61,7 +69,12 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _enter(registry, event, lambda _: Blocked(on=permission, request=request, deadline=deadline, warned=False))
         case ToolFinished(at=at, call=call):
             return _enter(registry, event, lambda state: _finished(state, call, at))
+        case Ended(session=session, reason="other") if session in registry.sessions and not isinstance(registry.sessions[session].state, Gone):
+            # Nobody ended it at the keyboard: its pane or terminal closed. Spoken, as a process found dead is.
+            after, effects = _enter(registry, event, lambda _: Gone())
+            return after, [*effects, Speak(SessionGone(session))]
         case Ended():
+            # /exit, Ctrl-C, /clear, /resume, and logging out are the user's own doing, at the keyboard.
             return _enter(registry, event, lambda _: Gone())
         case Abandoned(session=session, request=request, at=at):
             return _abandoned(registry, session, request, at), []
@@ -78,6 +91,31 @@ def _started(source: StartSource, previous: Session | None) -> SessionState:
             return state
         case _:
             return Idle()
+
+
+def _join(registry: Registry, membership: Membership, state: SessionState) -> tuple[Registry, list[Effect]]:
+    previous = registry.sessions.get(membership.id)
+    after = registry.put(Session(membership, state))
+    effects = _transition(membership.id, None if previous is None else previous.state, state)
+    for other in registry.live():
+        if other.membership.pid == membership.pid and other.membership.id != membership.id:
+            # One process holds one session: a /clear or a resume in it ended the other, whether or not its end hook arrived.
+            after = after.put(Session(other.membership, Gone()))
+            effects += _transition(other.membership.id, other.state, Gone())
+    return after, effects
+
+
+def _died(registry: Registry, membership: Membership) -> tuple[Registry, list[Effect]]:
+    match registry.sessions.get(membership.id):
+        case Session(state=Gone()):
+            return registry, []
+        case Session(membership=held) if held.pid != membership.pid:
+            # Started again in a new process since the file was read; the process that died is not this session's.
+            return registry, []
+        case previous:
+            # A session that died while the daemon was down is kept as gone, so its name can still be spoken.
+            before = None if previous is None else previous.state
+            return registry.put(Session(membership, Gone())), [*_transition(membership.id, before, Gone()), Speak(SessionGone(membership.id))]
 
 
 def _enter(registry: Registry, event: SessionEvent, next: Callable[[SessionState], SessionState]) -> tuple[Registry, list[Effect]]:

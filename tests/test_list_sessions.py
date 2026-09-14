@@ -1,5 +1,6 @@
 """list_sessions answers with live sessions, labelled by Claude Code's own ai-title."""
 
+import zlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +17,8 @@ from hands.voice.tools import list_sessions_tool
 
 
 def membership(tmp_path: Path, name: str) -> Membership:
-    return Membership(SessionId(name), pid=1, pane=None, cwd=Path("/code") / name, transcript=tmp_path / f"{name}.jsonl")
+    # A distinct pid per name: one process holds one session.
+    return Membership(SessionId(name), pid=zlib.crc32(name.encode()), pane=None, cwd=Path("/code") / name, transcript=tmp_path / f"{name}.jsonl")
 
 
 def titled(path: Path, *titles: str) -> None:
@@ -54,7 +56,7 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
         Joined(blocked, "startup"),
         PermissionRequested(blocked.id, at=2.0, request=RequestId("r"), permission=Permission("Bash", {})),
         Joined(ended, "startup"),
-        Ended(ended.id),
+        Ended(ended.id, "prompt_input_exit"),
     ):
         await sessions.apply(event)
 

@@ -7,12 +7,28 @@ from hands.core.session import Instant, Membership, Permission, RequestId, Sessi
 
 
 StartSource = Literal["startup", "resume", "clear", "compact"]
+# Why Claude Code 2.1.270 says a session ended. `other` is what a closed tmux pane or window reports.
+EndReason = Literal["clear", "resume", "logout", "prompt_input_exit", "bypass_permissions_disabled", "other"]
 
 
 @dataclass(frozen=True)
 class Joined:
     membership: Membership
     source: StartSource
+
+
+@dataclass(frozen=True)
+class Attached:
+    """A membership file names a running process: a session from before the daemon started, or one whose start hook never arrived."""
+
+    membership: Membership
+
+
+@dataclass(frozen=True)
+class Died:
+    """A membership file names a process that is no longer running, and no hook said the session ended."""
+
+    membership: Membership
 
 
 @dataclass(frozen=True)
@@ -46,6 +62,7 @@ class ToolFinished:
 @dataclass(frozen=True)
 class Ended:
     session: SessionId
+    reason: EndReason
 
 
 @dataclass(frozen=True)
@@ -66,4 +83,6 @@ class Tick:
 
 # Events about a session the registry must already know; a join is how it comes to.
 SessionEvent = Prompted | Stopped | PermissionRequested | ToolFinished | Ended
-Event = Joined | SessionEvent | Abandoned | Tick
+# What the liveness sweep saw in one membership file.
+Observed = Attached | Died
+Event = Joined | Observed | SessionEvent | Abandoned | Tick

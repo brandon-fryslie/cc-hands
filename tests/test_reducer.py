@@ -15,11 +15,12 @@ from hands.core.effects import (
     PermissionDeadlineNear,
     PermissionExpired,
     Reply,
+    SessionGone,
     Speak,
     Unregistered,
     Withdraw,
 )
-from hands.core.events import Abandoned, Ended, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished
+from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished
 from hands.core.reducer import EXPIRED_MESSAGE, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
     Blocked,
@@ -51,7 +52,7 @@ SESSION_EVENTS: list[SessionEvent] = [
     Stopped(ONE.id),
     PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), permission=BASH),
     ToolFinished(ONE.id, at=5.0, call=BASH),
-    Ended(ONE.id),
+    Ended(ONE.id, "prompt_input_exit"),
 ]
 
 
@@ -77,7 +78,7 @@ def test_a_start_registers_the_session_idle() -> None:
             PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), permission=BASH),
             Blocked(on=BASH, request=RequestId("r1"), deadline=5.0 + TIMEOUT, warned=False),
         ),
-        (Ended(ONE.id), Gone()),
+        (Ended(ONE.id, "prompt_input_exit"), Gone()),
     ],
 )
 def test_every_state_takes_each_event_to_its_state(before: SessionState, event: Event, after: SessionState) -> None:
@@ -88,7 +89,7 @@ WAITING = Blocked(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False)
 
 
 @pytest.mark.parametrize("before", [Idle(), Working(since=1.0)])
-@pytest.mark.parametrize("event", [Prompted(ONE.id, at=5.0), Stopped(ONE.id), Ended(ONE.id), Joined(ONE, "startup")])
+@pytest.mark.parametrize("event", [Prompted(ONE.id, at=5.0), Stopped(ONE.id), Ended(ONE.id, "prompt_input_exit"), Joined(ONE, "startup")])
 def test_moving_between_states_that_wait_on_nothing_asks_for_nothing(before: SessionState, event: Event) -> None:
     assert reduce(holding(before), event)[1] == []
 
@@ -100,7 +101,7 @@ def test_a_permission_request_is_handed_to_the_intermediary(before: SessionState
 
 
 @pytest.mark.parametrize(
-    "event", [Prompted(ONE.id, at=5.0), Stopped(ONE.id), Ended(ONE.id), *(Joined(ONE, source) for source in ("startup", "resume", "clear"))]
+    "event", [Prompted(ONE.id, at=5.0), Stopped(ONE.id), Ended(ONE.id, "prompt_input_exit"), *(Joined(ONE, source) for source in ("startup", "resume", "clear"))]
 )
 def test_a_session_that_moves_on_while_waiting_lets_its_hook_go_undecided(event: Event) -> None:
     # Most often the user answered the dialog at the keyboard; a voice reply after that would decide nothing.
@@ -216,3 +217,57 @@ def test_an_event_moves_only_its_own_session() -> None:
 def test_live_is_every_session_that_has_not_ended() -> None:
     both = registry(Session(ONE, Blocked(on=BASH, request=RequestId("r"), deadline=9.0, warned=False)), Session(TWO, Gone()))
     assert both.live() == [Session(ONE, Blocked(on=BASH, request=RequestId("r"), deadline=9.0, warned=False))]
+
+
+def test_a_file_for_a_session_never_heard_of_attaches_it_at_the_prompt() -> None:
+    assert reduce(registry(), Attached(ONE)) == (holding(Idle()), [])
+
+
+@pytest.mark.parametrize("before", [*LIVE, Gone()])
+def test_a_file_for_a_session_already_known_changes_nothing(before: SessionState) -> None:
+    moved = replace(ONE, pane=TmuxPane("%9"))
+    assert reduce(holding(before), Attached(moved)) == (holding(before), [])
+
+
+def test_a_session_that_died_unheard_while_the_daemon_was_down_is_kept_gone_and_spoken() -> None:
+    assert reduce(registry(), Died(ONE)) == (holding(Gone()), [Speak(SessionGone(ONE.id))])
+
+
+@pytest.mark.parametrize("before", LIVE)
+def test_a_live_session_whose_process_died_is_gone_and_spoken_and_its_hook_let_go(before: SessionState) -> None:
+    released = [Reply(ONE.id, before.request, Withdraw())] if isinstance(before, Blocked) else []
+    assert reduce(holding(before), Died(ONE)) == (holding(Gone()), [*released, Speak(SessionGone(ONE.id))])
+
+
+def test_a_session_already_gone_dying_again_says_nothing() -> None:
+    assert reduce(holding(Gone()), Died(ONE)) == (holding(Gone()), [])
+
+
+def test_a_dead_process_that_is_no_longer_the_sessions_changes_nothing() -> None:
+    resumed = holding(Working(since=1.0))
+    assert reduce(resumed, Died(replace(ONE, pid=ONE.pid + 1))) == (resumed, [])
+
+
+@pytest.mark.parametrize("arrival", [Joined(replace(TWO, pid=ONE.pid), "clear"), Attached(replace(TWO, pid=ONE.pid))])
+def test_a_new_session_in_a_process_ends_the_one_it_held(arrival: Event) -> None:
+    waiting = Blocked(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False)
+    after, effects = reduce(holding(waiting), arrival)
+    assert after.sessions[ONE.id].state == Gone()
+    assert [session.membership.id for session in after.live()] == [TWO.id]
+    assert effects == [Reply(ONE.id, RequestId("r0"), Withdraw())]
+
+
+@pytest.mark.parametrize("before", LIVE)
+def test_a_session_whose_pane_closed_is_gone_and_spoken(before: SessionState) -> None:
+    released = [Reply(ONE.id, before.request, Withdraw())] if isinstance(before, Blocked) else []
+    assert reduce(holding(before), Ended(ONE.id, "other")) == (holding(Gone()), [*released, Speak(SessionGone(ONE.id))])
+
+
+@pytest.mark.parametrize("reason", ["clear", "resume", "logout", "prompt_input_exit", "bypass_permissions_disabled"])
+def test_a_session_ended_at_the_keyboard_is_not_spoken(reason: EndReason) -> None:
+    assert reduce(holding(Idle()), Ended(ONE.id, reason)) == (holding(Gone()), [])
+
+
+def test_a_closed_pane_after_the_sweep_found_the_session_dead_says_nothing_more() -> None:
+    event = Ended(ONE.id, "other")
+    assert reduce(holding(Gone()), event) == (holding(Gone()), [Audit(AfterEnd(event))])

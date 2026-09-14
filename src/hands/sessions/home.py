@@ -24,8 +24,13 @@ class Home:
         """What the daemon process prints, as launchd captures it."""
         return self.root / "daemon.log"
 
+    @property
+    def memberships(self) -> Path:
+        """One file per session, written by its shim: the set of sessions hands is attached to."""
+        return self.root / "sessions"
+
     def membership(self, session: SessionId) -> Path:
-        return self.root / "sessions" / f"{session}.json"
+        return self.memberships / f"{session}.json"
 
 
 def default_home() -> Home:

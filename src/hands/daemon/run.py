@@ -37,6 +37,7 @@ from hands.daemon import status
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
+from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
 from hands.voice.keys import drive_key
@@ -59,6 +60,8 @@ LOCAL_LLM_MODEL = "mlx-community/Qwen3-30B-A3B-Instruct-2507-8bit"
 API_KEY_VAR = "ANTHROPIC_API_KEY"
 # How late a permission deadline can be heard.
 TICK_SECONDS = 1.0
+# How late a session whose process died, or one that started unheard, is noticed.
+SWEEP_SECONDS = 2.0
 
 
 def backend_from_env() -> LLMBackend:
@@ -102,9 +105,11 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash:
     for signal_number in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(signal_number, quit_event.set)
     try:
+        # A restart is back where it was before the models load: every session with a file and a running process is listed.
+        await sweep(home, sessions)
         voice = await load(config, sessions, heart, quit_event)
         if voice is not None:
-            await converse(voice, sessions, heart, quit_event, Started(after_crash))
+            await converse(voice, home, sessions, heart, quit_event, Started(after_crash))
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -135,7 +140,7 @@ async def load(config: VoiceConfig, sessions: Sessions, heart: status.Heart, qui
     return building.result() if building.done() and not building.cancelled() else None
 
 
-async def converse(voice: Voice, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event, started: Started) -> None:
+async def converse(voice: Voice, home: Home, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event, started: Started) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
     listen(voice, SystemChannel(voice.tts, post_notification), started)
@@ -145,7 +150,8 @@ async def converse(voice: Voice, sessions: Sessions, heart: status.Heart, quit_e
         heart.beat(pipeline.state, _wall(voice.speaker.sounded_at), sessions.live_count())
 
     def stop_if_failed(task: asyncio.Task[None]) -> None:
-        # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the relay
+        # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
+        # session stays listed, without the relay
         # nothing is asked aloud, and without the heartbeat the daemon looks dead while it runs, so any of
         # them failing stops the run where it can be seen, and launchd starts it again.
         if not task.cancelled() and (error := task.exception()) is not None:
@@ -155,6 +161,7 @@ async def converse(voice: Voice, sessions: Sessions, heart: status.Heart, quit_e
 
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
+        asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(relay(sessions, voice.worker.queue_frame), name="the session speech relay"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
     ]

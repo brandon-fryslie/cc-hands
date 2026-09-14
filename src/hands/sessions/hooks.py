@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 
 from hands.core.effects import Allow, Deny, HookReply, Withdraw
-from hands.core.events import Ended, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished
+from hands.core.events import Ended, EndReason, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished
 from hands.core.session import Instant, Permission, RequestId
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership
@@ -30,7 +30,7 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
         case "PostToolUse" | "PostToolUseFailure":
             return ToolFinished(session, at, Permission(tool=payload.text("tool_name"), input=payload.mapping("tool_input")))
         case "SessionEnd":
-            return Ended(session)
+            return Ended(session, _end_reason(payload.text("reason")))
         case other:
             raise Rejected(f"hook event {other!r} is not one hands handles")
 
@@ -41,6 +41,17 @@ def _start_source(source: str) -> StartSource:
             return source
         case other:
             raise Rejected(f"SessionStart source {other!r} is not one hands knows")
+
+
+def _end_reason(reason: str) -> EndReason:
+    match reason:
+        case "clear" | "resume" | "logout" | "prompt_input_exit" | "bypass_permissions_disabled" | "other":
+            return reason
+        case _:
+            # Not refused, as an unknown start is: the shim has already removed the file, so a refused end would
+            # leave the session listed with nothing left to end it. A reason this version does not know is spoken
+            # as an end nobody chose, which is the loud way to be wrong.
+            return "other"
 
 
 def hook_output(reply: HookReply) -> Mapping[str, object] | None:

@@ -49,7 +49,7 @@ def test_the_turn_hooks(home: Home) -> None:
     end = body(hook_event_name="SessionEnd", reason="other")
     assert parse(home, prompt) == Prompted(SID, at=12.5)
     assert parse(home, stop) == Stopped(SID)
-    assert parse(home, end) == Ended(SID)
+    assert parse(home, end) == Ended(SID, "other")
 
 
 def test_a_permission_request_carries_the_tool_and_its_input(home: Home) -> None:
@@ -80,3 +80,7 @@ def test_a_finished_or_failed_tool_names_its_call_as_a_permission_does(home: Hom
 def test_what_does_not_parse_is_rejected_by_name(home: Home, raw: bytes, reason: str) -> None:
     with pytest.raises(Rejected, match=reason):
         parse(home, raw)
+
+
+def test_an_end_reason_this_version_does_not_know_is_an_end_nobody_chose(home: Home) -> None:
+    assert parse(home, body(hook_event_name="SessionEnd", reason="solar_flare")) == Ended(SID, "other")

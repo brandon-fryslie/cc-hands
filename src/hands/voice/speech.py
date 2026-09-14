@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 
-from hands.core.effects import Allow, Decision, Deny, Heard, Narrate, PermissionAsked, PermissionDeadlineNear, PermissionExpired, Speak
+from hands.core.effects import Allow, Announcement, Decision, Deny, Heard, Narrate, PermissionAsked, PermissionDeadlineNear, PermissionExpired, SessionGone, Speak
 from hands.core.permissions import NotWaiting, PermissionAnswered, PermissionOutcome
 from hands.core.session import SessionId
 from hands.sessions.registry import Sessions
@@ -45,13 +45,15 @@ def narration(moment: PermissionAsked, names: Names) -> str:
     )
 
 
-def announcement_text(announcement: PermissionDeadlineNear | PermissionExpired, names: Names) -> str:
+def announcement_text(announcement: Announcement, names: Names) -> str:
     match announcement:
         case PermissionDeadlineNear(session=session, permission=permission, remaining=remaining):
             return f"{round(remaining)} seconds left to answer {names(session)} about {permission.tool}."
         case PermissionExpired(session=session, permission=permission):
             # Said as what hands did: an answer typed at the dialog meanwhile would already have settled it.
             return f"Nobody answered {names(session)} about {permission.tool} in time, so I told it no."
+        case SessionGone(session=session):
+            return f"The session {names(session)} is gone."
 
 
 def permission_readback(outcome: PermissionOutcome, names: Names) -> str:

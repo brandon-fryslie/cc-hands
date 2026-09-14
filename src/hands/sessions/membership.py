@@ -34,6 +34,17 @@ def remove_membership(home: Home, session: SessionId) -> None:
     home.membership(session).unlink(missing_ok=True)
 
 
+def remove_dead_membership(home: Home, dead: Membership) -> None:
+    """Remove the file of a session whose process died, unless a new process has since started the session again."""
+    try:
+        current = read_membership(home, dead.id)
+    except Rejected:
+        # Already removed by the session's end, or unreadable, which the next sweep reports.
+        return
+    if current.pid == dead.pid:
+        home.membership(dead.id).unlink(missing_ok=True)
+
+
 def read_membership(home: Home, session: SessionId) -> Membership:
     path = home.membership(session)
     try:

@@ -112,10 +112,20 @@ class PermissionExpired:
 
 
 @dataclass(frozen=True)
+class SessionGone:
+    """A session ended without the user ending it at the keyboard: its pane or terminal closed, or its process died."""
+
+    session: SessionId
+
+
+Announcement = PermissionDeadlineNear | PermissionExpired | SessionGone
+
+
+@dataclass(frozen=True)
 class Speak:
     """Said as written, with no model in the way."""
 
-    announcement: PermissionDeadlineNear | PermissionExpired
+    announcement: Announcement
 
 
 @dataclass(frozen=True)
