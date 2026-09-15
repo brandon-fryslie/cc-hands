@@ -10,17 +10,17 @@ from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core.effects import Summarise
-from hands.core.events import Joined, Prompted, Stopped
+from hands.core.events import Ended, Joined, Prompted, Stopped
 from hands.core.session import Membership, SessionId
 from hands.core.turn import Budget
 from hands.sessions.audit import Entry, Failure, Recounted, failures_to
 from hands.sessions.registry import Sessions
-from hands.voice.narrator import narrate_turns, recount
+from hands.voice.narrator import narrate, recount
 from hands.voice.pipeline import OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
 
 FIXTURE = Path(__file__).parent / "fixtures" / "turn.jsonl"
-BUDGET = Budget(prompt=100, said=100, input=100, result=100, steps=10)
+BUDGET = Budget(opening=100, said=100, input=100, result=100, steps=10)
 SID = SessionId("s1")
 
 
@@ -36,7 +36,7 @@ async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_d
         return "Loaded the repo conventions and hit an API error."
 
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate_turns(sessions, summarise, frames.put, recorded.append, BUDGET))
+    narrating = asyncio.create_task(narrate(sessions, summarise, frames.put, recorded.append, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0))
@@ -50,6 +50,36 @@ async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_d
     [turn] = shown
     assert turn.startswith("The user asked:\nI'd like you to go a bit further") and "Claude used Bash (Inspect repo layout and remotes)" in turn
     assert Recounted(SID, "Loaded the repo conventions and hit an API error.") in recorded
+
+
+async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_after_that_turn(tmp_path: Path) -> None:
+    transcript = tmp_path / "s1.jsonl"
+    shutil.copy(FIXTURE, transcript)
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    thinking = asyncio.Event()
+
+    async def summarise(turn: str) -> str:
+        await thinking.wait()
+        return "Hit an API error."
+
+    frames: asyncio.Queue[Frame] = asyncio.Queue()
+    narrating = asyncio.create_task(narrate(sessions, summarise, frames.put, lambda _: None, BUDGET))
+    try:
+        await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
+        await sessions.apply(Prompted(SID, at=1.0))
+        await sessions.apply(Stopped(SID))
+        # `claude -p` exits the moment its turn stops, so the end lands while the model is still summarising.
+        await sessions.apply(Ended(SID, "other"))
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(frames.get(), 0.2)
+        thinking.set()
+        spoken = [await asyncio.wait_for(frames.get(), 5.0), await asyncio.wait_for(frames.get(), 5.0)]
+    finally:
+        narrating.cancel()
+    assert [frame.text for frame in spoken if isinstance(frame, TTSSpeakFrame)] == [
+        "Hands-free interactive coding agent architecture: Hit an API error.",
+        "The session Hands-free interactive coding agent architecture is gone.",
+    ]
 
 
 async def test_a_turn_that_cannot_be_summarised_is_said_to_have_failed_and_logged(tmp_path: Path) -> None:

@@ -85,14 +85,7 @@ class PermissionExpired:
     permission: Permission
 
 
-@dataclass(frozen=True)
-class SessionGone:
-    """A session ended without the user ending it at the keyboard: its terminal closed, or its process died."""
-
-    session: SessionId
-
-
-Announcement = PermissionDeadlineNear | PermissionExpired | SessionGone
+Announcement = PermissionDeadlineNear | PermissionExpired
 
 
 @dataclass(frozen=True)
@@ -120,4 +113,15 @@ class Summarise:
     transcript: Path
 
 
-Effect = Audit | Reply | Heard | Summarise
+@dataclass(frozen=True)
+class SessionGone:
+    """A session ended without the user ending it at the keyboard: its terminal closed, or its process died."""
+
+    session: SessionId
+
+
+# [LAW:no-ambient-temporal-coupling] what a session did and that it ended are told in the order they happened:
+# a summary takes seconds, so an end spoken at once would be heard before the last turn it ends.
+Story = Summarise | SessionGone
+
+Effect = Audit | Reply | Heard | Story

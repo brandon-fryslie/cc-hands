@@ -1,4 +1,4 @@
-"""Finished turns, heard: each turn a session finishes is read from its transcript, summarised, and spoken with its name."""
+"""Sessions' stories, heard: each turn a session finishes is read from its transcript, summarised, and spoken with its name, and each session gone is said after its last turn."""
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -8,7 +8,7 @@ import openai
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
-from hands.core.effects import Summarise
+from hands.core.effects import SessionGone, Summarise
 from hands.core.turn import Budget, render
 from hands.sessions.audit import Recounted, Record
 from hands.sessions.payload import Rejected
@@ -18,30 +18,35 @@ from hands.voice.readback import spoken_name
 from hands.voice.summary import Summariser, SummaryFailed
 
 # How much of a turn the summariser is shown: enough to name its results, few enough tokens for a local model to answer in seconds.
-TURN_BUDGET = Budget(prompt=600, said=1500, input=200, result=400, steps=40)
+TURN_BUDGET = Budget(opening=600, said=1500, input=200, result=400, steps=40)
 
 # Everything reading and summarising a turn is expected to fail with; each is said, and the next turn is still heard.
 _FAILURES = (Rejected, OSError, SummaryFailed, openai.OpenAIError, anthropic.AnthropicError)
 
 
-async def narrate_turns(
+async def narrate(
     sessions: Sessions, summarise: Summariser, queue_frame: Callable[[Frame], Awaitable[None]], record: Record, budget: Budget = TURN_BUDGET
 ) -> None:
-    """Speak each finished turn, in the order the sessions stopped, until cancelled."""
+    """Speak each finished turn and each session gone, in the order they happened, until cancelled."""
     while True:
-        finished = await sessions.finished()
-        spoken = await recount(finished, spoken_name(sessions, finished.session), summarise, record, budget)
+        told = await sessions.story()
+        name = spoken_name(sessions, told.session)
+        match told:
+            case Summarise():
+                spoken = await recount(told, name, summarise, record, budget)
+            case SessionGone():
+                spoken = TTSSpeakFrame(f"The session {name} is gone.")
         if spoken is not None:
             await queue_frame(spoken)
 
 
 async def recount(finished: Summarise, name: str, summarise: Summariser, record: Record, budget: Budget) -> Frame | None:
-    """The frame that tells the user what the turn did; None for a session that stopped before it was ever prompted."""
+    """The frame that tells the user what the turn did; None for a session that stopped before anything opened a turn."""
     try:
         # Off the loop: a long session's transcript is tens of megabytes.
         turn = await asyncio.to_thread(read_turn, finished.transcript)
         if turn is None:
-            logger.info(f"session {finished.session} stopped with no prompt in {finished.transcript}, so there is no turn to tell")
+            logger.info(f"session {finished.session} stopped with nothing opening a turn in {finished.transcript}, so there is no turn to tell")
             return None
         summary = await summarise(render(turn, budget))
     except _FAILURES as error:

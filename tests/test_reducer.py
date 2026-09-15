@@ -246,7 +246,7 @@ def test_a_session_this_run_never_listed_ending_says_nothing(ended: Event) -> No
 @pytest.mark.parametrize("before", LIVE)
 def test_a_live_session_whose_process_died_is_gone_and_spoken_and_its_hook_let_go(before: SessionState) -> None:
     released = [Reply(ONE.id, before.request, Withdraw())] if isinstance(before, Blocked) else []
-    assert reduce(holding(before), Died(ONE)) == (holding(Gone()), [*released, Speak(SessionGone(ONE.id))])
+    assert reduce(holding(before), Died(ONE)) == (holding(Gone()), [*released, SessionGone(ONE.id)])
 
 
 def test_a_session_already_gone_dying_again_says_nothing() -> None:
@@ -272,7 +272,7 @@ def test_a_file_on_a_pid_another_session_holds_attaches_beside_it_the_sweep_deci
 @pytest.mark.parametrize("before", LIVE)
 def test_a_session_whose_terminal_closed_is_gone_and_spoken(before: SessionState) -> None:
     released = [Reply(ONE.id, before.request, Withdraw())] if isinstance(before, Blocked) else []
-    assert reduce(holding(before), Ended(ONE.id, "other")) == (holding(Gone()), [*released, Speak(SessionGone(ONE.id))])
+    assert reduce(holding(before), Ended(ONE.id, "other")) == (holding(Gone()), [*released, SessionGone(ONE.id)])
 
 
 @pytest.mark.parametrize("reason", ["clear", "resume", "logout", "prompt_input_exit", "bypass_permissions_disabled"])

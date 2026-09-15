@@ -26,8 +26,26 @@ Step = Said | Used
 
 
 @dataclass(frozen=True)
+class Asked:
+    """The user's own prompt, typed or sent through the SDK."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class Notified:
+    """A background task's notification, which Claude Code hands the session as its next prompt."""
+
+    text: str
+
+
+# [LAW:types-are-the-program] who opened the turn is a variant, so a notification is never reported as something the user asked.
+Opening = Asked | Notified
+
+
+@dataclass(frozen=True)
 class Turn:
-    prompt: str
+    opening: Opening
     steps: tuple[Step, ...]
 
 
@@ -35,7 +53,7 @@ class Turn:
 class Budget:
     """How much of a turn the summariser is shown. Values, so the length that works is found by changing numbers."""
 
-    prompt: int  # characters of the user's prompt
+    opening: int  # characters of the prompt or notification that opened the turn
     said: int  # characters of each text block
     input: int  # characters of each tool input
     result: int  # characters of each tool result
@@ -56,7 +74,15 @@ def render(turn: Turn, budget: Budget) -> str:
         shown.extend(_step(step, budget) for step in steps[len(steps) - tail :])
     else:
         shown = [_step(step, budget) for step in steps]
-    return "\n\n".join([f"The user asked:\n{_cut(turn.prompt, budget.prompt)}", *shown])
+    return "\n\n".join([_opening(turn.opening, budget), *shown])
+
+
+def _opening(opening: Opening, budget: Budget) -> str:
+    match opening:
+        case Asked(text=text):
+            return f"The user asked:\n{_cut(text, budget.opening)}"
+        case Notified(text=text):
+            return f"A background task reported:\n{_cut(text, budget.opening)}"
 
 
 def _step(step: Step, budget: Budget) -> str:

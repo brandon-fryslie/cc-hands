@@ -61,7 +61,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             # know more than its file: a sweep that read the file before a hook landed never overwrites it.
             return registry, []
         case Died(membership=membership):
-            return _ended_unheard(registry, membership, [Speak(SessionGone(membership.id))])
+            return _ended_unheard(registry, membership, [SessionGone(membership.id)])
         case MovedOn(membership=membership):
             # The user moved the process on at the keyboard, so there is nothing to tell them.
             return _ended_unheard(registry, membership, [])
@@ -77,7 +77,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case Ended(session=session, reason="other") if session in registry.sessions and not isinstance(registry.sessions[session].state, Gone):
             # Nobody ended it at the keyboard: its terminal closed. Spoken, as a process found dead is.
             after, effects = _enter(registry, event, lambda _: Gone())
-            return after, [*effects, Speak(SessionGone(session))]
+            return after, [*effects, SessionGone(session)]
         case Ended():
             # /exit, Ctrl-C, /clear, /resume, and logging out are the user's own doing, at the keyboard.
             return _enter(registry, event, lambda _: Gone())

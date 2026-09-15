@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-from hands.core.turn import Said, Step, Turn, Used
+from hands.core.turn import Asked, Notified, Opening, Said, Step, Turn, Used
 from hands.sessions.payload import Payload, Rejected
 
 # Records are written without spaces, so this finds every title record cheaply.
@@ -39,24 +39,40 @@ _TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"')
 
 
 def read_turn(transcript: Path) -> Turn | None:
-    """The newest turn: the last prompt the user submitted, and everything Claude said and used after it. None before any prompt."""
+    """The newest turn: what last opened one, and everything Claude said and used after it. None before anything has."""
     *complete, _unfinished = transcript.read_bytes().split(b"\n")
     records = [Payload.parse(line) for line in complete if any(marker in line for marker in _TURN_RECORDS)]
     turn = [record for record in records if record.fields.get("type") in ("user", "assistant") and record.fields.get("isSidechain") is not True]
-    prompts = [index for index, record in enumerate(turn) if _prompt(record) is not None]
-    if not prompts:
+    openings = [(index, opening) for index, record in enumerate(turn) if (opening := _opening(record, turn[index - 1] if index else None)) is not None]
+    if not openings:
         return None
-    start = prompts[-1]
-    return Turn(prompt=cast(str, _prompt(turn[start])), steps=tuple(_steps(turn[start + 1 :])))
+    start, opening = openings[-1]
+    return Turn(opening=opening, steps=tuple(_steps(turn[start + 1 :])))
 
 
-def _prompt(record: Payload) -> str | None:
-    """A prompt is a user record whose content is a string and that Claude Code did not inject; tool results are lists."""
-    match (record.fields.get("type"), _message(record).get("content"), record.fields.get("isMeta")):
-        case ("user", str() as text, None | False):
-            return text
+def _opening(record: Payload, previous: Payload | None) -> Opening | None:
+    """What opens a turn: a prompt or a notification Claude Code handed a session that was not waiting on a tool."""
+    if previous is not None and any(block.get("type") in ("tool_use", "tool_result") for block in _blocks(previous)):
+        # Sent while a tool ran: Claude Code folds it into the turn already under way, whose Stop has not come.
+        return None
+    fields = record.fields
+    # Meta records (skill bodies, command caveats) and compaction's summary are Claude Code's own, not a new request.
+    if fields.get("type") != "user" or fields.get("isMeta") is True or fields.get("isCompactSummary") is True:
+        return None
+    blocks = _blocks(record)
+    match _message(record).get("content"):
+        case str() as text:
+            pass
+        case list() if blocks and all(block.get("type") in ("text", "image") for block in blocks):
+            # A prompt with an image attached, or one sent through the SDK.
+            text = _result_text(blocks)
         case _:
             return None
+    match fields.get("origin"):
+        case {"kind": "task-notification"}:
+            return Notified(text)
+        case _:
+            return Asked(text)
 
 
 def _steps(records: list[Payload]) -> list[Step]:

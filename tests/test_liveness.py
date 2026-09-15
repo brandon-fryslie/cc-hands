@@ -8,16 +8,13 @@ import time
 from pathlib import Path
 
 import pytest
-from pipecat.frames.frames import TTSSpeakFrame
-
-from hands.core.effects import SessionGone, Speak
+from hands.core.effects import SessionGone
 from hands.core.events import Attached, Died, Joined, MovedOn, Observed
 from hands.core.session import Gone, Idle, Membership, SessionId
 from hands.sessions.home import Home
 from hands.sessions.liveness import START_SLACK_SECONDS, Recorded, elapsed_seconds, observations, process_starts, recorded, sweep
 from hands.sessions.membership import remove_ended_membership, write_membership
 from hands.sessions.registry import Sessions
-from hands.voice.speech import frame
 
 
 def member(name: str, pid: int) -> Membership:
@@ -124,13 +121,13 @@ async def test_a_sweep_attaches_the_running_ends_the_dead_and_the_reused_and_spe
     await sweep(home, registry, frozenset())
     assert [listing.session.membership.id for listing in registry.live()] == [running.id]
     assert registry.listing(dead.id).session.state == Gone()  # pyright: ignore[reportOptionalMemberAccess]
-    heard = {await registry.heard(), await registry.heard()}
-    assert heard == {Speak(SessionGone(dead.id)), Speak(SessionGone(reused.id))}
+    told = {await registry.story(), await registry.story()}
+    assert told == {SessionGone(dead.id), SessionGone(reused.id)}
     assert sorted(path.stem for path in home.memberships.glob("*.json")) == [running.id]
 
     await sweep(home, registry, frozenset())
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(registry.heard(), 0.1)
+        await asyncio.wait_for(registry.story(), 0.1)
 
 
 @pytest.mark.parametrize("stale", ["0-cleared", "z-cleared"])
@@ -145,7 +142,7 @@ async def test_a_restart_lists_the_session_a_cleared_process_holds_now_not_the_o
     assert [listing.session.membership.id for listing in registry.live()] == ["m-current"]
     assert sorted(path.stem for path in home.memberships.glob("*.json")) == ["m-current"]
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(registry.heard(), 0.1)
+        await asyncio.wait_for(registry.story(), 0.1)
 
 
 async def test_a_session_whose_end_hook_was_lost_after_its_file_went_is_ended_by_the_next_sweep(tmp_path: Path) -> None:
@@ -156,7 +153,7 @@ async def test_a_session_whose_end_hook_was_lost_after_its_file_went_is_ended_by
     assert len(registry.live()) == 1
     await sweep(home, registry, unfiled)
     assert registry.live() == []
-    assert await registry.heard() == Speak(SessionGone(SessionId("closed")))
+    assert await registry.story() == SessionGone(SessionId("closed"))
 
 
 async def test_a_restarted_daemon_lists_the_sessions_the_last_one_did(tmp_path: Path) -> None:
@@ -169,12 +166,6 @@ async def test_a_restarted_daemon_lists_the_sessions_the_last_one_did(tmp_path: 
     assert [listing.session for listing in after.live()] == [listing.session for listing in before.live()]
     assert {listing.session.state for listing in after.live()} == {Idle()}
     assert len(after.live()) == 2
-
-
-def test_a_death_is_spoken_as_written_by_the_sessions_name() -> None:
-    spoken = frame(Speak(SessionGone(SessionId("s1"))), names=lambda _: "cc-hands")
-    assert isinstance(spoken, TTSSpeakFrame)
-    assert spoken.text == "The session cc-hands is gone."
 
 
 @pytest.mark.parametrize("pid", [0, -1, 100000, 99999999999])
@@ -195,4 +186,4 @@ async def test_after_a_reboot_the_files_of_sessions_that_did_not_survive_are_rem
     assert registry.live() == []
     assert list(home.memberships.glob("*.json")) == []
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(registry.heard(), 0.1)
+        await asyncio.wait_for(registry.story(), 0.1)
