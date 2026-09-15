@@ -13,7 +13,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import AssistantTurnStoppedMessage, LLMContextAggregatorPair, UserTurnMessageAddedMessage
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.events import Joined
+from hands.core.events import Ended, Joined
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import AuditLog, Record
 from hands.sessions.registry import Sessions
@@ -62,6 +62,17 @@ async def test_a_draft_staged_amended_and_discarded_is_read_back_at_each_step(tm
     assert amended == {"readback": "In the draft for untitled, in cc-hands: 'old' is now 'new token'"}
     assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for untitled, in cc-hands."}
     assert await call(tools, "discard_draft", session=id) == {"readback": "There is no draft for untitled, in cc-hands."}
+
+
+async def test_an_ended_session_is_told_its_draft_cannot_change_and_the_draft_can_still_be_discarded(tmp_path: Path) -> None:
+    sessions, id = await joined(tmp_path)
+    tools = draft_tools(sessions)
+    await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
+    await sessions.apply(Ended(id, "other"))
+    assert await call(tools, "amend_draft", session=id, text="run the linter", resolutions=[]) == {
+        "readback": "untitled, in cc-hands has ended, so its draft cannot be staged or changed."
+    }
+    assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for untitled, in cc-hands."}
 
 
 @pytest.mark.parametrize(

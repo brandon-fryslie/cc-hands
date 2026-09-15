@@ -37,7 +37,7 @@ def readback(outcome: DraftOutcome, name: str) -> str:
         case NothingStaged():
             return f"There is no draft for {name}."
         case SessionEnded():
-            return f"{name} has ended, so there is no draft to keep for it."
+            return f"{name} has ended, so its draft cannot be staged or changed."
 
 
 def spoken_title(listing: Listing) -> str:
