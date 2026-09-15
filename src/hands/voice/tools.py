@@ -130,7 +130,7 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         """
         await _answer(params, sessions, session, DiscardDraft)
 
-    # A barge-in must not cancel a draft call part way: the user would never hear whether it was sent.
+    # A barge-in must not cancel a draft call part way: the draft would change without its readback being heard.
     return [_uncancelled_by_interruption(tool) for tool in (stage_draft, amend_draft, discard_draft)]
 
 
