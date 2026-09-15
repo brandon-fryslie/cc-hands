@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from hands.core.events import SessionEvent
-from hands.core.session import Permission, PromptText, RequestId, SessionId, TmuxPane
+from hands.core.session import Permission, RequestId, SessionId
 
 
 @dataclass(frozen=True)
@@ -20,39 +20,12 @@ class AfterEnd:
     event: SessionEvent
 
 
-@dataclass(frozen=True)
-class Sending:
-    """A draft the user approved, recorded before a key of it is typed."""
-
-    session: SessionId
-    pane: TmuxPane
-    text: PromptText
-
-
-AuditRecord = Unregistered | AfterEnd | Sending
+AuditRecord = Unregistered | AfterEnd
 
 
 @dataclass(frozen=True)
 class Audit:
     record: AuditRecord
-
-
-# [LAW:types-are-the-program] what goes into a pane decides its own escaping, so no
-# code path looks at the first character to find out what the input is.
-@dataclass(frozen=True)
-class Text:
-    """A prompt, submitted as text even when it starts with /, @, or !."""
-
-    body: PromptText
-
-
-Input = Text
-
-
-@dataclass(frozen=True)
-class Type:
-    pane: TmuxPane
-    input: Input
 
 
 @dataclass(frozen=True)
@@ -113,7 +86,7 @@ class PermissionExpired:
 
 @dataclass(frozen=True)
 class SessionGone:
-    """A session ended without the user ending it at the keyboard: its pane or terminal closed, or its process died."""
+    """A session ended without the user ending it at the keyboard: its terminal closed, or its process died."""
 
     session: SessionId
 
@@ -136,4 +109,4 @@ class Narrate:
 
 
 Heard = Speak | Narrate
-Effect = Audit | Type | Reply | Heard
+Effect = Audit | Reply | Heard

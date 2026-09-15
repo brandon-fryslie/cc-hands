@@ -18,7 +18,7 @@ from hands.voice.tools import list_sessions_tool
 
 def membership(tmp_path: Path, name: str) -> Membership:
     # A distinct pid per name: one process holds one session.
-    return Membership(SessionId(name), pid=zlib.crc32(name.encode()), pane=None, cwd=Path("/code") / name, transcript=tmp_path / f"{name}.jsonl")
+    return Membership(SessionId(name), pid=zlib.crc32(name.encode()), cwd=Path("/code") / name, transcript=tmp_path / f"{name}.jsonl")
 
 
 def titled(path: Path, *titles: str) -> None:

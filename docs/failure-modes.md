@@ -202,7 +202,8 @@ name, and read session records; none reads or writes a file in a repository.
 
 ### 17. Something is sent that you didn't approve
 
-The model loses track of whether it's mid-draft and calls `send_draft`.
+The model loses track of whether it's mid-draft and sends one, once the virtual
+keyboard makes sending possible.
 
 **Rule:** the draft lives in the daemon, not the model's head. Its call log is the
 audit trail, and the readback is generated from stored text rather than from the model
@@ -215,20 +216,22 @@ repeating itself.
 **Rule:** the readback speaks what *changed* — resolutions, guesses, inferred targets —
 not a recitation of your sentence. If it guessed, you hear the guess.
 
-### 19. `tmux send-keys` collides with the UI
+### 19. The virtual keyboard collides with the UI
 
-This applies to target sessions, the only thing the daemon types into. Text beginning
-with `/` or `@` triggers Claude Code's own completion; sending mid-turn races the input
-box. Whether `tmux send-keys` mid-turn lands in Claude Code's own input queue is
-unverified.
+This applies to target sessions, the only thing the daemon will type into, through the
+planned virtual keyboard. Text beginning with `/` or `@` triggers Claude Code's own
+completion; sending mid-turn races the input box; a permission dialog takes Enter as
+"Yes". Synthetic keystrokes add two more: keys typed while you are typing interleave
+with yours, and keys sent while another window has focus land in that window.
 
-**Rule:** the daemon escapes leading sigils. The spike decides between sending
-immediately and `send_draft` returning a typed refused-busy result; the daemon never
-holds a hidden queue.
+**Rule:** the daemon escapes leading sigils, refuses a send to a session blocked on a
+permission, and never holds a hidden queue. How keys reach the right session's window
+without taking over your typing, and how a send is confirmed, are settled before the
+keyboard types anything.
 
 ### 20. The session registry goes stale
 
-A session dies without `SessionEnd` — crash, closed pane, killed terminal — and
+A session dies without `SessionEnd` — crash, closed terminal, killed process — and
 `list_sessions` keeps offering it.
 
 **Rule:** liveness is a process check. The shim reports its parent pid at

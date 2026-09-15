@@ -44,7 +44,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         case "log":
             return tail_log(home, arguments.lines)
         case "launchd":
-            sys.stdout.buffer.write(launchd.agent(Path(sys.executable), home, path=os.environ.get("PATH", "")))
+            sys.stdout.buffer.write(launchd.agent(Path(sys.executable), home))
             return 0
         case other:
             raise AssertionError(f"argparse admitted an unknown command {other!r}")

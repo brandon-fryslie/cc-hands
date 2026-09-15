@@ -152,7 +152,7 @@ def test_a_process_exits_without_waiting_for_work_left_running_off_the_loop(tmp_
 
 def test_the_launch_agent_keeps_the_daemon_up_and_logs_where_status_can_point(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    agent = plistlib.loads(launchd.agent(Path("/venv/bin/python"), home, path="/opt/homebrew/bin:/usr/bin"))
+    agent = plistlib.loads(launchd.agent(Path("/venv/bin/python"), home))
     assert agent == {
         "Label": "hands.daemon",
         "ProgramArguments": ["/venv/bin/python", "-m", "hands.daemon", "--home", str(tmp_path), "run"],
@@ -161,5 +161,4 @@ def test_the_launch_agent_keeps_the_daemon_up_and_logs_where_status_can_point(tm
         "ProcessType": "Interactive",
         "StandardOutPath": str(home.daemon_log),
         "StandardErrorPath": str(home.daemon_log),
-        "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/bin"},
     }

@@ -5,14 +5,11 @@ import re
 from collections.abc import Iterable
 
 from hands.core.drafts import (
-    AwaitingPermission,
     DraftAmended,
     DraftDiscarded,
     DraftOutcome,
-    DraftSent,
     DraftStaged,
     NothingStaged,
-    OutsideTmux,
     SessionEnded,
     UnknownSession,
 )
@@ -35,18 +32,12 @@ def readback(outcome: DraftOutcome, name: str) -> str:
             return f"In the draft for {name}{_reading(added)}: {_amendment(before.text, after.text)}"
         case DraftDiscarded():
             return f"Discarded the draft for {name}."
-        case DraftSent():
-            return f"Sent to {name}."
         case UnknownSession(session=session):
             return f"There is no session {session}."
         case NothingStaged():
             return f"There is no draft for {name}."
         case SessionEnded():
-            return f"{name} has ended, so nothing was sent."
-        case OutsideTmux():
-            return f"{name} is not running in tmux, so I cannot type into it."
-        case AwaitingPermission(permission=permission):
-            return f"{name} is waiting for permission to use {permission.tool}. Answer that first; the draft is still staged."
+            return f"{name} has ended, so there is no draft to keep for it."
 
 
 def spoken_title(listing: Listing) -> str:

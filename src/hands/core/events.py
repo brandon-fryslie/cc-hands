@@ -7,7 +7,7 @@ from hands.core.session import Instant, Membership, Permission, RequestId, Sessi
 
 
 StartSource = Literal["startup", "resume", "clear", "compact"]
-# Why Claude Code 2.1.270 says a session ended. `other` is what a closed tmux pane or window reports.
+# Why Claude Code 2.1.270 says a session ended. `other` is what a closed terminal reports.
 EndReason = Literal["clear", "resume", "logout", "prompt_input_exit", "bypass_permissions_disabled", "other"]
 
 

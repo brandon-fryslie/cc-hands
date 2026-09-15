@@ -8,7 +8,7 @@ from hands.sessions.home import Home
 LABEL = "hands.daemon"
 
 
-def agent(python: Path, home: Home, path: str, label: str = LABEL) -> bytes:
+def agent(python: Path, home: Home, label: str = LABEL) -> bytes:
     """The property list for `~/Library/LaunchAgents/<label>.plist`."""
     return plistlib.dumps(
         {
@@ -22,7 +22,5 @@ def agent(python: Path, home: Home, path: str, label: str = LABEL) -> bytes:
             "ProcessType": "Interactive",
             "StandardOutPath": str(home.daemon_log),
             "StandardErrorPath": str(home.daemon_log),
-            # launchd starts agents with a bare PATH, without the tmux the daemon types through.
-            "EnvironmentVariables": {"PATH": path},
         }
     )

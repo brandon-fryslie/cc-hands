@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.session import Idle, Membership, Session, SessionId, TmuxPane, Working
+from hands.core.session import Idle, Membership, Session, SessionId, Working
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
@@ -48,7 +48,6 @@ async def shim(home: Home, payload: Mapping[str, object]) -> tuple[int | None, s
         str(home.root),
         stdin=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "TMUX_PANE": "%7"},
     )
     _, stderr = await process.communicate(json.dumps(payload).encode())
     return process.returncode, stderr.decode()
@@ -63,7 +62,7 @@ async def test_with_no_daemon_the_shim_exits_nonzero_naming_the_socket(home: Hom
 async def test_a_start_records_membership_and_joins_the_registry(home: Home, sessions: Sessions) -> None:
     assert await shim(home, START) == (0, "")
     assert await shim(home, PROMPT) == (0, "")
-    membership = Membership(SID, pid=os.getpid(), pane=TmuxPane("%7"), cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl"))
+    membership = Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl"))
     assert [listing.session for listing in sessions.live()] == [Session(membership, Working(since=10.0))]
     assert home.membership(SID).exists()
 

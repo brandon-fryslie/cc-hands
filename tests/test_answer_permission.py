@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import os
 import shutil
 import sys
 import tempfile
@@ -76,7 +75,6 @@ class Shim:
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "hands.sessions.shim", str(home.root),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "TMUX_PANE": "%7"},
         )
         assert process.stdin is not None
         process.stdin.write(json.dumps(payload).encode())

@@ -1,7 +1,7 @@
 # cc-hands
 
 Hands-free control of Claude Code. You speak; an intermediary agent cleans up what you
-said, sends it to the right session, watches what comes back, and tells you about it.
+said, types it into the right session, watches what comes back, and tells you about it.
 It's your hands when your own hands are otherwise occupied.
 
 ## The intermediary
@@ -22,8 +22,9 @@ holds what it summarized.
 
 What it does, once built:
 
-- Takes audio and writes the prompt for the coding session; reads a draft back before it
-  is sent, and amends, discards, or sends it.
+- Takes audio and writes the prompt for the coding session; reads a draft back until it
+  is right, amends or discards it, and sends it by typing it into the session with a
+  virtual keyboard, which is planned.
 - Lists the running sessions, reads what a session has done, starts and ends sessions,
   and switches which one you are talking to.
 - Answers permission prompts, questions, and plan approvals by voice, and denies by
@@ -59,9 +60,9 @@ mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts �
                              sessions + core
                      registry · drafts · JSONL reader · audit log
                                     │
-                             tmux send-keys · hook replies
+                     hook replies · virtual keyboard (planned)
                                     ▼
-                     target Claude Code sessions (any pane, started any way)
+                     target Claude Code sessions (any terminal, started any way)
                                     │
                   hook shims ──► unix socket ──► sessions
 ```
@@ -80,7 +81,7 @@ uv sync
 uv run hands run                        # in a terminal: space to talk, space again to stop, q to quit
 HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
-uv run hands log                        # the audit log: what hands heard, said, called, typed, and failed at
+uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run pytest && uv run pyright
 ```
 

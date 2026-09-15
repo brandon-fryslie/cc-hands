@@ -8,8 +8,8 @@ from hands.core.effects import Allow, Decision, Deny, Reply
 from hands.core.permissions import AnswerPermission, NotWaiting, PermissionAnswered, answer
 from hands.core.session import Blocked, Gone, Idle, Membership, Permission, Registry, RequestId, Session, SessionId, SessionState, Working
 
-ONE = Membership(SessionId("s1"), pid=1, pane=None, cwd=Path("/code/a"), transcript=Path("/t/s1.jsonl"))
-TWO = Membership(SessionId("s2"), pid=2, pane=None, cwd=Path("/code/b"), transcript=Path("/t/s2.jsonl"))
+ONE = Membership(SessionId("s1"), pid=1, cwd=Path("/code/a"), transcript=Path("/t/s1.jsonl"))
+TWO = Membership(SessionId("s2"), pid=2, cwd=Path("/code/b"), transcript=Path("/t/s2.jsonl"))
 BASH = Permission(tool="Bash", input={"command": "rm -r build"})
 REQUEST = RequestId("r1")
 

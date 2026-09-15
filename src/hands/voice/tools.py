@@ -12,13 +12,12 @@ from pipecat.adapters.schemas.direct_function import DirectFunction
 from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, SendDraft, StageDraft
+from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, StageDraft
 from hands.core.effects import Allow, Decision, Deny
 from hands.core.session import Blocked, Gone, Idle, PromptText, RequestId, Resolution, SessionId, SessionState, Staged, Working
 from hands.sessions.audit import Called, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.registry import Listing, Sessions
-from hands.sessions.tmux import TmuxFailed
 from hands.voice.readback import readback, spoken_name, spoken_title
 from hands.voice.speech import permission_readback
 
@@ -31,7 +30,7 @@ _uncancelled_by_interruption = cast(Callable[[Tool], Tool], direct_function.tool
 # What the agent reads when the user says no and gives no reason.
 DENIED_BY_VOICE = "The user denied this by voice."
 
-# Every C0 and C1 control character but newline and tab: each would press a key in the pane.
+# Every C0 and C1 control character but newline and tab: each would press a key when the draft is typed.
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
@@ -97,10 +96,10 @@ class Resolved(TypedDict):
 
 
 def draft_tools(sessions: Sessions) -> list[Tool]:
-    """stage_draft, amend_draft, discard_draft, send_draft: nothing reaches a session until the user says send."""
+    """stage_draft, amend_draft, discard_draft: a prompt dictated for a session, read back until it is right. Nothing reaches a session from here."""
 
     async def stage_draft(params: FunctionCallParams, session: str, text: str, resolutions: list[Resolved]) -> None:
-        """Stage a prompt the user dictated for a session. Nothing is sent until send_draft.
+        """Stage a prompt the user dictated for a session. It is not sent: hands cannot type into a session yet.
 
         Say the returned readback to the user word for word.
 
@@ -131,16 +130,8 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         """
         await _answer(params, sessions, session, DiscardDraft)
 
-    async def send_draft(params: FunctionCallParams, session: str) -> None:
-        """Send a session's staged draft, exactly as it was read back. Call only when the user says to send.
-
-        Args:
-            session: The session's id, from list_sessions.
-        """
-        await _answer(params, sessions, session, SendDraft)
-
     # A barge-in must not cancel a draft call part way: the user would never hear whether it was sent.
-    return [_uncancelled_by_interruption(tool) for tool in (stage_draft, amend_draft, discard_draft, send_draft)]
+    return [_uncancelled_by_interruption(tool) for tool in (stage_draft, amend_draft, discard_draft)]
 
 
 async def _answer(
@@ -149,14 +140,10 @@ async def _answer(
     # [LAW:no-silent-failure] the model hears each failure and says it; the log keeps it.
     try:
         id = _session_id(session)
-        outcome = await sessions.draft(request(id))
+        outcome = sessions.draft(request(id))
     except Rejected as error:
         logger.error(f"draft tool refused its arguments: {error}")
         await params.result_callback({"error": str(error)})
-        return
-    except TmuxFailed as error:
-        logger.error(f"send failed: {error}")
-        await params.result_callback({"error": f"The send failed and the draft is gone, so dictate it again. {error}"})
         return
     await params.result_callback({"readback": readback(outcome, spoken_name(sessions, id))})
 
@@ -232,7 +219,7 @@ def _prompt_text(text: object) -> PromptText:
         case str() if not text.strip():
             raise Rejected("the draft text is empty")
         case str() if _CONTROL.search(text):
-            raise Rejected("the draft text holds a control character, which would press a key in the pane")
+            raise Rejected("the draft text holds a control character, which would press a key when the draft is typed")
         case str():
             return PromptText(text)
         case other:

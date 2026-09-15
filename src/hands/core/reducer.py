@@ -74,7 +74,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case ToolFinished(at=at, call=call):
             return _enter(registry, event, lambda state: _finished(state, call, at))
         case Ended(session=session, reason="other") if session in registry.sessions and not isinstance(registry.sessions[session].state, Gone):
-            # Nobody ended it at the keyboard: its pane or terminal closed. Spoken, as a process found dead is.
+            # Nobody ended it at the keyboard: its terminal closed. Spoken, as a process found dead is.
             after, effects = _enter(registry, event, lambda _: Gone())
             return after, [*effects, Speak(SessionGone(session))]
         case Ended():

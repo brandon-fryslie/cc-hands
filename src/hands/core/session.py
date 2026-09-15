@@ -7,21 +7,19 @@ from typing import NewType, Self
 
 SessionId = NewType("SessionId", str)
 RequestId = NewType("RequestId", str)
-TmuxPane = NewType("TmuxPane", str)
 Instant = float  # monotonic seconds
 
-# Prompt text that holds no terminal control characters, so typing it into a pane
+# Prompt text that holds no control characters, so typing it into a session
 # cannot press a key the text does not name. Made only where the model's words are parsed.
 PromptText = NewType("PromptText", str)
 
 
 @dataclass(frozen=True)
 class Membership:
-    """Which process and pane a session is, as the shim recorded it at SessionStart."""
+    """Which process a session is, and where it works, as the shim recorded it at SessionStart."""
 
     id: SessionId
     pid: int
-    pane: TmuxPane | None  # None when Claude Code runs outside tmux
     cwd: Path
     transcript: Path
 

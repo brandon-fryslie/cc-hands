@@ -48,7 +48,7 @@ async def sweep(home: Home, sessions: Sessions, unfiled_before: Unfiled) -> Unfi
 
 
 async def keep_sweeping(home: Home, sessions: Sessions, period: float) -> None:
-    """Sweep now and once a period after, until cancelled. The period is how late a closed pane is heard."""
+    """Sweep now and once a period after, until cancelled. The period is how late a closed terminal is heard."""
     unfiled: Unfiled = frozenset()
     while True:
         unfiled = await sweep(home, sessions, unfiled)

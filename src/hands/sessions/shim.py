@@ -15,7 +15,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from hands.core.session import Membership, TmuxPane
+from hands.core.session import Membership
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import post_timeout
 from hands.sessions.membership import remove_membership, write_membership
@@ -47,13 +47,11 @@ class _UnixConnection(http.client.HTTPConnection):
 def record(home: Home, payload: Payload) -> None:
     match payload.text("hook_event_name"):
         case "SessionStart":
-            pane = os.environ.get("TMUX_PANE")
             membership = Membership(
                 id=payload.session_id(),
                 # The hook's shell execs a single simple command, so this is the claude
                 # process. A compound hook command (`a; b`) would make it that shell.
                 pid=os.getppid(),
-                pane=None if pane is None else TmuxPane(pane),
                 cwd=Path(payload.text("cwd")),
                 transcript=Path(payload.text("transcript_path")),
             )

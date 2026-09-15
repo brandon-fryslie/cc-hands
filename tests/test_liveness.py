@@ -21,7 +21,7 @@ from hands.voice.speech import frame
 
 
 def member(name: str, pid: int) -> Membership:
-    return Membership(SessionId(name), pid=pid, pane=None, cwd=Path("/code") / name, transcript=Path("/nowhere") / f"{name}.jsonl")
+    return Membership(SessionId(name), pid=pid, cwd=Path("/code") / name, transcript=Path("/nowhere") / f"{name}.jsonl")
 
 
 def dead_pid() -> int:
@@ -181,7 +181,7 @@ def test_a_death_is_spoken_as_written_by_the_sessions_name() -> None:
 def test_a_file_naming_no_possible_pid_is_removed_before_the_process_table_is_asked(tmp_path: Path, pid: int) -> None:
     home = Home(tmp_path)
     home.memberships.mkdir()
-    home.membership(SessionId("bad")).write_text(json.dumps({"pid": pid, "pane": None, "cwd": "/c", "transcript_path": "/t.jsonl"}))
+    home.membership(SessionId("bad")).write_text(json.dumps({"pid": pid, "cwd": "/c", "transcript_path": "/t.jsonl"}))
     assert recorded(home) == []
     assert not home.membership(SessionId("bad")).exists()
 

@@ -10,8 +10,8 @@ The design has one organizing idea: **the pure core decides, the edges act, and 
 fact has one home.** State, events, and effects are typed unions. The reducer that turns
 an event into new state and a list of effects has no I/O, so every lifecycle transition
 is a unit test with no mocks. The adapters that perform the effects are thin, and there
-is exactly one of each: one process types into tmux, one replies to blocked hooks, one
-owns the speaker.
+is exactly one of each: one replies to blocked hooks, one owns the speaker, and the
+virtual keyboard, once it is built, is the one that types into sessions.
 
 ## Shape
 
@@ -26,14 +26,14 @@ owns the speaker.
  │   button · web · wakeword        │  ▼        │                                │
  │  ───────────────────────────────────────────────────────────────────────────  │
  │  sessions                  ┌──────────────────┐                               │
- │  hook socket · session     │  core (pure)     │  tmux · procs · repos         │
+ │  hook socket · session     │  core (pure)     │  procs · repos                │
  │  files · JSONL tail · git  │  types · reducer │  audit log                    │
  │                            │  steps · policy  │                               │
  │                            └──────────────────┘                               │
  └────────▲──────────────────────────────────────────────┬───────────────────────┘
-          │ hook shims, unix socket                       │ send-keys · hook replies
+          │ hook shims, unix socket                       │ hook replies · virtual keyboard (planned)
           │                                               ▼
-       target Claude Code sessions (any tmux pane, started any way)
+       target Claude Code sessions (any terminal, started any way)
 ```
 
 The audio leg on the left is the Pipecat pipeline the spike already runs. The
@@ -53,7 +53,7 @@ mocks.
 
 **`sessions`** is every edge on the Claude Code side: the unix socket the hook shims
 POST to, the session files the shims write, the JSONL tail, the git delta reader, the
-tmux adapter, the process-liveness check, the repo registry, and the audit log. It
+process-liveness check, the repo registry, and the audit log. It
 parses hook input once at the socket into a `HookEvent` and rejects anything it does
 not recognise with a logged error and a non-2xx reply `[LAW:parse-dont-validate]`. It
 exposes two things upward: an async stream of events, and a small API the tools call.
@@ -91,7 +91,6 @@ Instant   = float                           # monotonic seconds
 class Membership:
     id: SessionId
     pid: int                  # the shim's parent, which is the claude process
-    pane: TmuxPane | None     # None outside tmux
     cwd: Path
     transcript: Path          # the JSONL, from the hook payload
 
@@ -116,7 +115,7 @@ class Blocked:
     deadline: Instant                     # derived from the hook config's timeout
     warned: bool                          # the deadline warning has been spoken
 @dataclass(frozen=True)
-class Gone:      reason: Literal["exited", "pane_closed", "pid_dead"]
+class Gone:      reason: Literal["exited", "terminal_closed", "pid_dead"]
 
 # Everything Claude Code stops for arrives through the same PermissionRequest hook.
 Blocker = Permission | Question | Plan
@@ -127,8 +126,8 @@ class Question:   questions: Sequence[AskedQuestion]
 @dataclass(frozen=True)
 class Plan:       text: str
 
-# What goes into a target pane. The variant decides the escaping, so there is no
-# "if it starts with a slash" anywhere: Text always escapes a leading sigil,
+# What the virtual keyboard types into a session. The variant decides the escaping,
+# so there is no "if it starts with a slash" anywhere: Text always escapes a leading sigil,
 # Command never does, Key is a named chord and carries no text at all.
 Input = Text | Command | Key
 Keystroke = Literal["escape", "enter", "ctrl_c", "up", "down", "tab", "shift_tab"]
@@ -138,7 +137,7 @@ Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | A
 @dataclass(frozen=True)
 class Reply:    request: RequestId; reply: HookReply
 @dataclass(frozen=True)
-class Type:     pane: TmuxPane; input: Input
+class Type:     session: SessionId; input: Input             # the virtual keyboard, planned
 @dataclass(frozen=True)
 class Speak:    text: str; priority: Priority                # straight to TTS
 @dataclass(frozen=True)
@@ -154,7 +153,7 @@ class Snapshot: session: SessionId; point: Literal["turn_start", "turn_end"]  # 
 @dataclass(frozen=True)
 class Audit:    record: AuditRecord
 @dataclass(frozen=True)
-class Launch:   repo: Path; title: str                       # a new tmux window
+class Launch:   repo: Path; title: str                       # a new claude session, planned
 
 Priority = Literal["blocking", "result", "fyi"]
 
@@ -211,18 +210,18 @@ or looks at a clock. When it needs the time it has already been handed one in a
 an event.
 
 The adapters live in `sessions` and `voice` and each performs one effect kind: `Type`
-becomes `tmux send-keys`, `Reply` writes to the blocked shim's socket connection,
-`Speak` becomes a Pipecat `TTSSpeakFrame`, `Narrate` and `Note` become
+becomes synthetic keystrokes from the planned virtual keyboard, `Reply` writes to the
+blocked shim's socket connection, `Speak` becomes a Pipecat `TTSSpeakFrame`, `Narrate` and `Note` become
 `LLMMessagesAppendFrame` with `run_llm` on or off, `Play` sends a segment to TTS
 through the player, `Summarise` calls the summariser, `Snapshot` records or diffs the
-target's git state, `Audit` appends one JSONL line, `Launch` opens a tmux window. An
+target's git state, `Audit` appends one JSONL line, `Launch` starts `claude` in a repo. An
 adapter that fails raises; the supervisor logs it and the failure is spoken through
 the system channel. Nothing is retried silently and nothing falls back
 `[LAW:no-silent-failure]`.
 
 Because every transition is `reduce` on values, the test suite for the session
 lifecycle is a table: state before, event, state after, effects. There is no pipeline,
-no socket, and no tmux in those tests.
+no socket, and no keyboard in those tests.
 
 ## Time has named owners
 
@@ -254,11 +253,11 @@ earlier, so the deny reaches Claude Code before Claude Code kills the hook
 
 Claude Code queues messages submitted while a turn is running and shows them with
 "Press up to edit queued messages". Measured on 2.1.270: text pasted into a working
-pane and submitted lands in that queue and runs when the turn ends, so `send_draft`
-to a working target is an ordinary send and the daemon holds nothing. A permission
-dialog is the exception: it swallows pasted text and takes the Enter as "Yes". So
-`send_draft` to a `Blocked` target is refused as `AwaitingPermission`, the draft stays
-staged, and the user hears why.
+session and submitted lands in that queue and runs when the turn ends, so a send to a
+working target is an ordinary send and the daemon holds nothing. A permission dialog
+is the exception: it swallows pasted text and takes the Enter as "Yes". So when the
+virtual keyboard sends drafts, a send to a `Blocked` target is refused, the draft
+stays staged, and the user hears why.
 
 ## Four ways to reach the ear
 
@@ -267,8 +266,8 @@ chosen by a table, not by code that looks at the event `[LAW:dataflow-not-contro
 
 - **Speak.** Text goes straight to TTS as a `TTSSpeakFrame`. No model call, no
   interpretation, no latency beyond synthesis. Used for facts a template can say:
-  "auth-refactor finished", "ten seconds on that permission", "cc-hands is gone, the
-  pane closed", "the language model is unreachable". This channel is also how the
+  "auth-refactor finished", "ten seconds on that permission", "cc-hands is gone, its
+  terminal closed", "the language model is unreachable". This channel is also how the
   daemon reports its own failures, which is why it must not depend on the LLM.
 - **Play.** A narration's segments go to TTS one at a time through the player,
   already in spoken form. There is no model call at playback, because the
@@ -369,7 +368,7 @@ never holds the agent up.
 
 **The shims.** Each is a two-line script in the target session's hook config: POST
 stdin to the daemon socket, exit. At `SessionStart` the shim also writes
-`~/.hands/sessions/<session_id>.json` with its parent pid, `$TMUX_PANE`, `cwd`, and
+`~/.hands/sessions/<session_id>.json` with its parent pid, `cwd`, and
 `transcript_path`; that file is the one record of the session's membership, written
 by one writer. A shim that cannot reach the socket exits non-zero with a message, so
 Claude Code shows the failure in the session where it happened rather than letting a
@@ -598,7 +597,7 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   file removed without a word: the user was not told of it here.
 - **Ends** arrive through `SessionEnd`, whose `reason` says who ended the session.
   Measured on 2.1.270: `/exit` and a double Ctrl-C report `prompt_input_exit`, `/clear`
-  reports `clear`, and a closed tmux pane or window reports `other`. An end the user
+  reports `clear`, and a closed terminal reports `other`. An end the user
   chose at the keyboard is not spoken; `other`, and any reason hands does not know, is
   spoken as gone, the same sentence a dead process gets.
 
@@ -618,10 +617,14 @@ answers "which one did you mean".
 
 **Drafts** are per target: `NoDraft | Staged(text, resolutions)`. The readback is
 generated from the stored resolutions, never from the model repeating itself:
-"Sending to cc-hands: refactor the auth middleware to use the new token helper. I read
-'auth middleware' as `authMiddleware.ts`." Speak what changed, not what you said.
-`send_draft` appends an audit record before it types, so "did it send something I
-didn't approve" is answered by one file.
+"Draft for cc-hands, reading 'auth middleware' as `authMiddleware.ts`: refactor the
+auth middleware to use the new token helper." Speak what changed, not what you said.
+A draft is staged, amended, and discarded; sending it waits for the virtual keyboard
+(`hands-harness-5nb`), whose design is open: how keys reach the right session's
+window, the macOS permission it needs, and confirming the send through the
+`UserPromptSubmit` hook. Until then the model tells the user that sending is not
+built. The send will append an audit record before it types, so "did it send
+something I didn't approve" is answered by one file.
 
 ## The intermediary's tools
 
@@ -634,7 +637,7 @@ end_session(session?)
 interrupt_session(session?)
 send_command(session?, command, args?)
 stage_draft(session?, text)      amend_draft(session?, text)
-discard_draft(session?)          send_draft(session?)
+discard_draft(session?)
 answer_permission(request, decision, message?)
 answer_question(request, answers)
 find_path(session?, query)
@@ -651,7 +654,7 @@ contents. The daemon does read what a session changed, through its transcript an
 git delta, because summarising results is the job; the summariser sees diffs so that it
 can describe them. `find_path` returns paths from `git ls-files` in the
 target's `cwd` so that a spoken "the auth middleware file" can be resolved to a real
-path before it is sent; it returns names, never contents. `catch_up` and `recall`
+path in the draft; it returns names, never contents. `catch_up` and `recall`
 read the daemon's own audit log. Give the intermediary an edit tool and it will
 eventually decide that editing the file is faster than routing your request; the
 surface above is the whole surface `[LAW:no-mode-explosion]`.
@@ -661,13 +664,13 @@ it, taken from Happy's `skip_turn`. Push-to-talk rarely needs it; the wake-word 
 which opens the mic without a hand, does.
 
 `send_command` exists so that `/clear`, `/compact`, and `/model` reach the target as
-commands, with their sigil intact. `stage_draft` text always has a leading sigil
-escaped. The two never share a code path that inspects the first character; the
+commands, with their sigil intact, once the virtual keyboard can type them.
+`stage_draft` text always has a leading sigil escaped. The two never share a code path that inspects the first character; the
 `Input` variant already knows. Claude Code reads three sigils at the start of a
 prompt: `/` a command, `@` a file mention, `!` shell mode. Behind a space each is
 plain text, so `Text` is always typed with a leading space, whatever it starts with,
-as one bracketed paste followed by Enter, which keeps its newlines inside the prompt.
-The paste lands after whatever is already in the target's input box. Claude Code
+and its newlines must stay inside the prompt rather than submit it.
+Typed text lands after whatever is already in the target's input box. Claude Code
 2.1.270 has no key that empties the box safely: Ctrl-S stashes but restores an
 existing stash when the box is empty, Ctrl-L only redraws, a burst of Ctrl-U is
 dropped, and Escape and Ctrl-C interrupt a turn. So what was actually submitted is
@@ -756,25 +759,27 @@ thing that failed `[LAW:no-silent-failure]`:
    heartbeat names a pid that is gone without having said `stopped`.
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, and the count of live sessions. `hands
-   status` prints it, and a tmux status-line snippet shows one glyph from it. When
-   TTS itself is down, a macOS notification is posted through `osascript`.
+   status` prints it. When TTS itself is down, a macOS notification is posted through
+   `osascript`. Planned: a hands menu-bar status item, run by its own launchd agent
+   rather than the daemon, whose icon follows the heartbeat's verdict, with a macOS
+   notification when the daemon stops being up.
 3. **Log.** Every effect and every failure is one line in `~/.hands/audit.jsonl`,
    written by the daemon alone (`hands.sessions.audit`). `hands log` prints the
    newest lines and follows the file. Each line is a value encoded one way: its type
    under `"type"`, its fields beside it, nested events and effects alike, and the
    wall-clock time under `"at"`. `Sessions` is the single writer for the session
    side: an `Applied` event (only one that changed the registry or called for an
-   effect, so a quiet tick is not a line), each `Audit` record as it is (`Sending`
-   before the keys are typed, `Unregistered`, `AfterEnd`), then `Performed` or
+   effect, so a quiet tick is not a line), each `Audit` record as it is (`Unregistered`,
+   `AfterEnd`), then `Performed` or
    `EffectFailed` for every other effect. One wrapper writes every tool call as
    `Called` with its arguments and the result the model was handed; the context
    aggregators write each user turn as `Transcribed` and each reply as `Replied`;
    the system channel writes `Announced` with whether it spoke or posted; and a
-   loguru sink turns every error a `hands` module logs into a `Failure`. A send is
-   traced from the words to the keys: `Transcribed`, `Called stage_draft`,
-   `Transcribed`, `Sending`, `Performed Type`, `Called send_draft`. The log watches
+   loguru sink turns every error a `hands` module logs into a `Failure`. A dictation is
+   traced from the words to the readback: `Transcribed`, `Called stage_draft`,
+   `Replied`. The log watches
    and never steers: a line the disk will not take is lost with a warning on stderr,
-   a value it cannot encode is a `Failure` line instead, and the send, the question, or the tick it described goes on. `hands log` follows
+   a value it cannot encode is a `Failure` line instead, and the draft, the question, or the tick it described goes on. `hands log` follows
    the file by inode and offset, so a log moved aside is read from its first line.
 
 The daemon runs under launchd with `KeepAlive`, so a crash is a restart, and the

@@ -11,11 +11,13 @@ two never disagree about rank.
 Transport before content. In an LLM-in-the-loop system a content defect degrades
 gracefully and a transport defect is a hard failure you feel on the first try
 (failure mode 11). So the foundation epic, which delivers the spike's go/no-go and
-the session, draft, and permission plumbing, comes first, and **Loud daemon** is
-the first epic after it, ahead of every feature that makes the intermediary
+the session, draft, and permission plumbing, comes first. **Narration** is the first
+epic after it: hearing a spoken summary of each Claude turn is the most important
+thing hands does, so the output path comes ahead of anything that types into a
+session. **Loud daemon** follows, ahead of every feature that makes the intermediary
 smarter. After that, the epics are ordered by how soon their absence
 sends you back to the keyboard: interrupt and questions first, then attention across
-sessions, then narration, then starting sessions, dictation, the phone, and
+sessions, then starting sessions, dictation, the phone, and
 the day-long memory.
 
 Nothing in the plan is a flag. Where two behaviours are wanted, they are variants of
@@ -30,87 +32,6 @@ permission approval, then the own-voice bleed bug. Two refinements from the
 architecture apply to them and are recorded as comments on the tickets: the reducer
 and its types live in the `core` package with an import-boundary test, and the shim
 writes the session file at `SessionStart`.
-
-## Loud daemon (`hands-liveness-x20`)
-
-Need 6, and the restart half of need 9. The first epic after the foundation. Its
-tickets depend on nothing past the reducer, so it can start the moment that ticket
-closes.
-
-- **Daemon under launchd with a heartbeat.** `hands run` is the entry point; a
-  launchd plist with `KeepAlive` supervises it; every heartbeat rewrites
-  `~/.hands/status.json`; `hands status` prints it. Done when killing the daemon
-  produces a restart within the launchd interval and `hands status` shows the new
-  pid and uptime.
-- **System speech channel.** The `Speak` effect becomes a `TTSSpeakFrame`; the
-  daemon speaks its own start and restart, an unreachable LLM, an empty Whisper
-  result, and a TTS error posts a macOS notification instead. Done when stopping
-  `mlx_lm.server` on inferno is heard within one turn, with no model involved.
-- **Membership from session files, liveness from pids.** The shim writes
-  `~/.hands/sessions/<id>.json` at `SessionStart`; the daemon reads the directory at
-  start and watches it; a liveness sweep moves dead pids to `Gone` and speaks it.
-  Done when a daemon restart lists the same sessions it listed before, and closing a
-  pane is spoken within the sweep interval.
-- **Audit log.** Every effect and every failure is one JSONL line; `hands log`
-  tails it. Done when a `send_draft` can be traced from transcript to keystrokes in
-  the log.
-- **Screen path.** A tmux status-line snippet renders one glyph from
-  `status.json`. Done when a dead daemon shows in every tmux session's status line.
-- **Audio device loss.** Unplugging the headset does not kill the pipeline: the
-  transport error is spoken through the surviving device or shown on screen, and
-  the transport is rebuilt on the default device. Done by unplugging mid-turn.
-- **Hook installer.** `hands install-hooks` merges the eight hook entries, with
-  their timeouts, into the Claude Code settings file, idempotently, keyed by a
-  marker so re-running changes nothing; `MessageDisplay` is an HTTP hook, the rest
-  are shims. Done when running it twice yields one diff, and when a streaming turn
-  with the daemon stopped stalls no longer than the hook's timeout.
-
-## Whole keyboard by voice (`hands-keyboard-gxr`)
-
-Need 1. The acts a keyboard performs that the foundation does not yet cover.
-
-- **The `Input` union in the tmux adapter.** `Text` escapes a leading sigil,
-  `Command` keeps it, `Key` sends a named chord; `send_command` and
-  `interrupt_session` are the tools. Done when "/compact" reaches the target as a
-  command, "slash compact" as text, and "stop it" sends Escape, each verified in a
-  live pane.
-- **Questions through the permission hook.** `AskUserQuestion` arrives as a
-  `PermissionRequest`; the `Blocked.on` becomes `Question`; the pipeline reads the
-  options; `answer_question` replies with the answers in `updatedInput`. Done when a
-  real `AskUserQuestion` in a target session is answered by voice and the agent
-  proceeds with that answer. If the hook cannot carry the answer, the ticket records
-  that and falls back to `Key` chords through the same `Blocked` state.
-- **Plan approval.** `ExitPlanMode` arrives the same way; the plan text is
-  narrated at summary depth; `answer_permission` accepts or rejects it. Done live.
-- **Mode readback.** `permission_mode` from every hook payload lands in
-  `Session.mode`; `list_sessions` speaks it; a mode change is a `Note`. Done when
-  shift-tab in a pane is reflected in the next `list_sessions`.
-- **Waiting-for-you nudge.** The `idle_prompt` notification becomes a `Speak`: "X
-  is waiting for you." Done when leaving a session idle triggers exactly one nudge.
-
-## Attention (`hands-attention-ssy`)
-
-Need 3. How several sessions share one ear.
-
-- **Routing table and overlays.** The `DEFAULT_POLICY` table and the per-session
-  overlay `focused | normal | muted`; `focus_session` and `mute_session` tools; every
-  tool's `session` argument defaults to the focus. Done when muting a session turns
-  its `Stop`s into notes and the model can still answer "what did it do" from them.
-- **Priority queue with hold and coalesce.** Pending speech orders `blocking`
-  before `result` before `fyi`, waits while the key is down, and a pure `coalesce`
-  folds one session's pending items into one narration carrying all their record
-  ids. Done by a table test on `coalesce` and a live test with two sessions
-  finishing during one held key.
-- **Transitions only.** Every announcement is keyed by the record id or request id
-  that caused it and is never repeated; the deadline warning is the
-  `warned: False → True` transition. Done by reducer tests: the same event twice
-  yields one utterance.
-- **Catch-up.** `catch_up(since)` reads the audit log and narrates what was said
-  and done while you were away, at summary depth. Done when "what did I miss"
-  after ten minutes lists every session that finished.
-- **Quiet.** A global overlay under which only `blocking` speaks and everything else
-  is a note. Done when "be quiet for a while" suppresses `Stop`s and a permission
-  request still gets through.
 
 ## Narration (`hands-narration-2mc`)
 
@@ -183,16 +104,102 @@ subagent narration follow it.
   summarised as its own narration linked to the parent's `Agent` call. Done when
   "what did the reviewer find" is answered from the subagent's own steps.
 
+## Loud daemon (`hands-liveness-x20`)
+
+Need 6, and the restart half of need 9. The first epic after narration. Its
+tickets depend on nothing past the reducer, so it can start the moment that ticket
+closes.
+
+- **Daemon under launchd with a heartbeat.** `hands run` is the entry point; a
+  launchd plist with `KeepAlive` supervises it; every heartbeat rewrites
+  `~/.hands/status.json`; `hands status` prints it. Done when killing the daemon
+  produces a restart within the launchd interval and `hands status` shows the new
+  pid and uptime.
+- **System speech channel.** The `Speak` effect becomes a `TTSSpeakFrame`; the
+  daemon speaks its own start and restart, an unreachable LLM, an empty Whisper
+  result, and a TTS error posts a macOS notification instead. Done when stopping
+  `mlx_lm.server` on inferno is heard within one turn, with no model involved.
+- **Membership from session files, liveness from pids.** The shim writes
+  `~/.hands/sessions/<id>.json` at `SessionStart`; the daemon reads the directory at
+  start and watches it; a liveness sweep moves dead pids to `Gone` and speaks it.
+  Done when a daemon restart lists the same sessions it listed before, and closing a
+  session's terminal is spoken within the sweep interval.
+- **Audit log.** Every effect and every failure is one JSONL line; `hands log`
+  tails it. Done when a dictation can be traced in the log from the transcribed
+  words to the readback.
+- **Screen path.** A hands menu-bar status item, run by its own launchd agent
+  rather than the daemon, reads `status.json` and shows the verdict as its icon, and
+  a macOS notification is posted when the daemon stops being up. Done when killing
+  the daemon changes the icon and posts the notification within a few seconds.
+- **Audio device loss.** Unplugging the headset does not kill the pipeline: the
+  transport error is spoken through the surviving device or shown on screen, and
+  the transport is rebuilt on the default device. Done by unplugging mid-turn.
+- **Hook installer.** `hands install-hooks` merges the eight hook entries, with
+  their timeouts, into the Claude Code settings file, idempotently, keyed by a
+  marker so re-running changes nothing; `MessageDisplay` is an HTTP hook, the rest
+  are shims. Done when running it twice yields one diff, and when a streaming turn
+  with the daemon stopped stalls no longer than the hook's timeout.
+
+## Whole keyboard by voice (`hands-keyboard-gxr`)
+
+Need 1. The acts a keyboard performs that the foundation does not yet cover.
+
+- **The `Input` union on the virtual keyboard.** Planned under
+  `hands-harness-5nb`, whose design is open: how keys reach the right session's
+  window, the macOS permission it needs, and confirming a send through the
+  `UserPromptSubmit` hook. `Text` escapes a leading sigil, `Command` keeps it, `Key`
+  sends a named chord; `send_command` and `interrupt_session` are the tools. Done
+  when "/compact" reaches the target as a command, "slash compact" as text, and
+  "stop it" sends Escape, each verified in a live session.
+- **Questions through the permission hook.** `AskUserQuestion` arrives as a
+  `PermissionRequest`; the `Blocked.on` becomes `Question`; the pipeline reads the
+  options; `answer_question` replies with the answers in `updatedInput`. Done when a
+  real `AskUserQuestion` in a target session is answered by voice and the agent
+  proceeds with that answer. If the hook cannot carry the answer, the ticket records
+  that and falls back to `Key` chords through the same `Blocked` state.
+- **Plan approval.** `ExitPlanMode` arrives the same way; the plan text is
+  narrated at summary depth; `answer_permission` accepts or rejects it. Done live.
+- **Mode readback.** `permission_mode` from every hook payload lands in
+  `Session.mode`; `list_sessions` speaks it; a mode change is a `Note`. Done when
+  shift-tab in a session is reflected in the next `list_sessions`.
+- **Waiting-for-you nudge.** The `idle_prompt` notification becomes a `Speak`: "X
+  is waiting for you." Done when leaving a session idle triggers exactly one nudge.
+
+## Attention (`hands-attention-ssy`)
+
+Need 3. How several sessions share one ear.
+
+- **Routing table and overlays.** The `DEFAULT_POLICY` table and the per-session
+  overlay `focused | normal | muted`; `focus_session` and `mute_session` tools; every
+  tool's `session` argument defaults to the focus. Done when muting a session turns
+  its `Stop`s into notes and the model can still answer "what did it do" from them.
+- **Priority queue with hold and coalesce.** Pending speech orders `blocking`
+  before `result` before `fyi`, waits while the key is down, and a pure `coalesce`
+  folds one session's pending items into one narration carrying all their record
+  ids. Done by a table test on `coalesce` and a live test with two sessions
+  finishing during one held key.
+- **Transitions only.** Every announcement is keyed by the record id or request id
+  that caused it and is never repeated; the deadline warning is the
+  `warned: False → True` transition. Done by reducer tests: the same event twice
+  yields one utterance.
+- **Catch-up.** `catch_up(since)` reads the audit log and narrates what was said
+  and done while you were away, at summary depth. Done when "what did I miss"
+  after ten minutes lists every session that finished.
+- **Quiet.** A global overlay under which only `blocking` speaks and everything else
+  is a note. Done when "be quiet for a while" suppresses `Stop`s and a permission
+  request still gets through.
+
 ## Sessions by voice (`hands-lifecycle-n1m`)
 
 Need 1, the lifecycle acts.
 
 - **Start a session in a known repo.** Config lists repo roots; the registry scans
-  them for git directories; `start_session(repo, title?)` opens a tmux window in
-  that directory running `claude`, and the shim's `SessionStart` registers it. Done
-  when "start a session in cc-hands" yields a listed, focused session.
-- **End a session.** `end_session` sends `/exit` as a `Command`; the pane closing
-  moves the session to `Gone` and it is spoken. Done live.
+  them for git directories; `start_session(repo, title?)` starts `claude` in that
+  directory, and the shim's `SessionStart` registers it. How the new session gets a
+  window the virtual keyboard can type into is part of that keyboard's open design.
+  Done when "start a session in cc-hands" yields a listed, focused session.
+- **End a session.** `end_session` types `/exit` as a `Command` through the virtual
+  keyboard; the session ending moves it to `Gone` and it is spoken. Done live.
 
 ## Dictation fidelity (`hands-dictation-vpz`)
 
@@ -206,7 +213,7 @@ Need 2.
 - **Path grounding.** `find_path(session, query)` returns matching paths from
   `git ls-files` in the target's `cwd`, names only; the draft records the
   resolution and the readback speaks it. Done when a spoken file reference lands
-  in the sent prompt as the real path.
+  in the staged draft as the real path.
 - **Spelled identifiers.** "Spell it" and letter names produce the exact token in
   the draft and the readback confirms it letter by letter. Done by a fixture of
   spoken spellings and their expected tokens.
@@ -240,8 +247,8 @@ Need 9, the memory half.
   three-hour conversation stays under the configured token bound and the model
   still answers a question about its first ten minutes from the summary.
 - **Recall.** `recall(query, since)` searches the audit log for what was said,
-  sent, and approved. Done when "what did we decide about the token helper"
-  returns the sent draft that mentioned it.
+  drafted, and approved. Done when "what did we decide about the token helper"
+  returns the draft that mentioned it.
 
 ## Config (`hands-config-60f`)
 

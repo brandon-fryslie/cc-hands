@@ -1,4 +1,4 @@
-"""The audit log: what is written, how it reads back, and a send traced from the user's words to the keys typed."""
+"""The audit log: what is written, how it reads back, and what becomes a line when writing or encoding fails."""
 
 import json
 from datetime import UTC, datetime
@@ -10,15 +10,14 @@ from loguru import logger
 from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.effects import Text, Type
+from hands.core.effects import Reply, Withdraw
 from hands.core.events import Joined, Tick
-from hands.core.session import Membership, PromptText, SessionId, TmuxPane
+from hands.core.session import Membership, RequestId, SessionId
 from hands.daemon import cli
 from hands.sessions.audit import (
     Applied,
     AuditLog,
     Called,
-    EffectFailed,
     Entry,
     Failure,
     Performed,
@@ -37,8 +36,8 @@ from hands.voice.tools import Tool, audited, draft_tools
 AT = datetime(2026, 9, 14, 12, 0, 0, 123000, tzinfo=UTC)
 
 
-def member(pane: TmuxPane | None) -> Membership:
-    return Membership(SessionId("s1"), pid=4242, pane=pane, cwd=Path("/code/cc-hands"), transcript=Path("/nowhere/s1.jsonl"))
+def member() -> Membership:
+    return Membership(SessionId("s1"), pid=4242, cwd=Path("/code/cc-hands"), transcript=Path("/nowhere/s1.jsonl"))
 
 
 def lines(path: Path) -> list[dict[str, Any]]:
@@ -61,13 +60,13 @@ async def invoke(tool: Tool, **arguments: object) -> object:
 
 
 def test_an_entry_is_its_type_and_fields_nested_values_alike() -> None:
-    assert encoded(Performed(Type(TmuxPane("%3"), Text(PromptText("fix it"))))) == {
+    assert encoded(Performed(Reply(SessionId("s1"), RequestId("r1"), Withdraw()))) == {
         "type": "Performed",
-        "effect": {"type": "Type", "pane": "%3", "input": {"type": "Text", "body": "fix it"}},
+        "effect": {"type": "Reply", "session": "s1", "request": "r1", "reply": {"type": "Withdraw"}},
     }
-    assert encoded(Applied(Joined(member(None), "startup")))["event"] == {
+    assert encoded(Applied(Joined(member(), "startup")))["event"] == {
         "type": "Joined",
-        "membership": {"type": "Membership", "id": "s1", "pid": 4242, "pane": None, "cwd": "/code/cc-hands", "transcript": "/nowhere/s1.jsonl"},
+        "membership": {"type": "Membership", "id": "s1", "pid": 4242, "cwd": "/code/cc-hands", "transcript": "/nowhere/s1.jsonl"},
         "source": "startup",
     }
 
@@ -160,8 +159,8 @@ async def test_an_event_that_changed_nothing_is_not_a_line_and_one_that_did_is()
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Tick(1.0))
     assert recorded == []
-    await sessions.apply(Joined(member(None), "startup"))
-    assert recorded == [Applied(Joined(member(None), "startup"))]
+    await sessions.apply(Joined(member(), "startup"))
+    assert recorded == [Applied(Joined(member(), "startup"))]
 
 
 async def test_an_audited_tool_keeps_its_schema_and_writes_its_call_beside_its_result() -> None:
@@ -172,19 +171,6 @@ async def test_an_audited_tool_keeps_its_schema_and_writes_its_call_beside_its_r
     assert DirectFunctionWrapper(wrapped).to_function_schema().to_default_dict() == DirectFunctionWrapper(stage).to_function_schema().to_default_dict()
     result = await invoke(wrapped, session="nobody", text="hi", resolutions=[])
     assert recorded == [Called("stage_draft", {"session": "nobody", "text": "hi", "resolutions": []}, result)]
-
-
-async def test_a_send_that_fails_to_type_is_written_as_failed(tmp_path: Path) -> None:
-    recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
-    await sessions.apply(Joined(member(TmuxPane("%999999")), "startup"))
-    [stage, _, _, send] = [audited(tool, recorded.append) for tool in draft_tools(sessions)]
-    await invoke(stage, session="s1", text="hello", resolutions=[])
-    await invoke(send, session="s1")
-    typed = Type(TmuxPane("%999999"), Text(PromptText("hello")))
-    [failed] = [entry for entry in recorded if isinstance(entry, EffectFailed)]
-    assert failed.effect == typed and "can't find pane" in failed.error
-    assert Performed(typed) not in recorded
 
 
 async def test_a_tool_that_raises_is_a_failure_line_naming_it_and_its_arguments() -> None:

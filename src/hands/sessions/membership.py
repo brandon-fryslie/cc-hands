@@ -6,7 +6,7 @@ The file's name is the session id, so the id is not repeated inside it.
 import json
 from pathlib import Path
 
-from hands.core.session import Membership, SessionId, TmuxPane
+from hands.core.session import Membership, SessionId
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
 
@@ -17,7 +17,6 @@ def write_membership(home: Home, membership: Membership) -> None:
     body = json.dumps(
         {
             "pid": membership.pid,
-            "pane": membership.pane,
             "cwd": str(membership.cwd),
             "transcript_path": str(membership.transcript),
         }
@@ -60,7 +59,6 @@ def read_membership(home: Home, session: SessionId) -> Membership:
 
 def parse_membership(session: SessionId, raw: bytes) -> Membership:
     record = Payload.parse(raw)
-    pane = record.optional_text("pane")
     pid = record.integer("pid")
     # [LAW:parse-dont-validate] a pid no process can have is refused here, so no sweep ever asks the OS about it.
     if not 0 < pid <= PID_MAX:
@@ -68,7 +66,6 @@ def parse_membership(session: SessionId, raw: bytes) -> Membership:
     return Membership(
         id=session,
         pid=pid,
-        pane=None if pane is None else TmuxPane(pane),
         cwd=Path(record.text("cwd")),
         transcript=Path(record.text("transcript_path")),
     )

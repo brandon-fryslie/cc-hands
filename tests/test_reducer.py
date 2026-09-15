@@ -33,13 +33,12 @@ from hands.core.session import (
     Session,
     SessionId,
     SessionState,
-    TmuxPane,
     Working,
 )
 
 TIMEOUT = 60.0
-ONE = Membership(SessionId("s1"), pid=4242, pane=TmuxPane("%3"), cwd=Path("/code/a"), transcript=Path("/t/s1.jsonl"))
-TWO = Membership(SessionId("s2"), pid=5353, pane=None, cwd=Path("/code/b"), transcript=Path("/t/s2.jsonl"))
+ONE = Membership(SessionId("s1"), pid=4242, cwd=Path("/code/a"), transcript=Path("/t/s1.jsonl"))
+TWO = Membership(SessionId("s2"), pid=5353, cwd=Path("/code/b"), transcript=Path("/t/s2.jsonl"))
 BASH = Permission(tool="Bash", input={"command": "ls"})
 
 LIVE: list[SessionState] = [
@@ -156,7 +155,7 @@ def test_a_tick_moves_only_sessions_waiting_on_a_deadline() -> None:
 
 @pytest.mark.parametrize("before", LIVE)
 def test_a_compacted_session_keeps_its_state_and_takes_the_new_membership(before: SessionState) -> None:
-    moved = replace(ONE, pid=7777, pane=None)
+    moved = replace(ONE, pid=7777)
     assert reduce(holding(before), Joined(moved, "compact")) == (registry(Session(moved, before)), [])
 
 
@@ -225,7 +224,7 @@ def test_a_file_for_a_session_never_heard_of_attaches_it_at_the_prompt() -> None
 
 @pytest.mark.parametrize("before", [*LIVE, Gone()])
 def test_a_file_for_a_session_already_known_changes_nothing(before: SessionState) -> None:
-    moved = replace(ONE, pane=TmuxPane("%9"))
+    moved = replace(ONE, cwd=Path("/code/elsewhere"))
     assert reduce(holding(before), Attached(moved)) == (holding(before), [])
 
 
@@ -261,7 +260,7 @@ def test_a_file_on_a_pid_another_session_holds_attaches_beside_it_the_sweep_deci
 
 
 @pytest.mark.parametrize("before", LIVE)
-def test_a_session_whose_pane_closed_is_gone_and_spoken(before: SessionState) -> None:
+def test_a_session_whose_terminal_closed_is_gone_and_spoken(before: SessionState) -> None:
     released = [Reply(ONE.id, before.request, Withdraw())] if isinstance(before, Blocked) else []
     assert reduce(holding(before), Ended(ONE.id, "other")) == (holding(Gone()), [*released, Speak(SessionGone(ONE.id))])
 
@@ -271,6 +270,6 @@ def test_a_session_ended_at_the_keyboard_is_not_spoken(reason: EndReason) -> Non
     assert reduce(holding(Idle()), Ended(ONE.id, reason)) == (holding(Gone()), [])
 
 
-def test_a_closed_pane_after_the_sweep_found_the_session_dead_says_nothing_more() -> None:
+def test_a_closed_terminal_after_the_sweep_found_the_session_dead_says_nothing_more() -> None:
     event = Ended(ONE.id, "other")
     assert reduce(holding(Gone()), event) == (holding(Gone()), [Audit(AfterEnd(event))])

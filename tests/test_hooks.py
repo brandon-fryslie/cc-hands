@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from hands.core.events import Ended, Joined, PermissionRequested, Prompted, Stopped, ToolFinished
-from hands.core.session import Membership, Permission, RequestId, SessionId, TmuxPane
+from hands.core.session import Membership, Permission, RequestId, SessionId
 from hands.sessions.home import Home
 from hands.sessions.hooks import parse_hook
 from hands.sessions.membership import write_membership
@@ -32,7 +32,7 @@ def home(tmp_path: Path) -> Home:
 
 
 def test_a_start_reads_the_membership_the_shim_wrote(home: Home) -> None:
-    membership = Membership(SID, pid=51810, pane=TmuxPane("%8"), cwd=Path("/code/a"), transcript=Path(TRANSCRIPT))
+    membership = Membership(SID, pid=51810, cwd=Path("/code/a"), transcript=Path(TRANSCRIPT))
     write_membership(home, membership)
     assert parse(home, body(hook_event_name="SessionStart", source="startup")) == Joined(membership, "startup")
     assert parse(home, body(hook_event_name="SessionStart", source="compact")) == Joined(membership, "compact")

@@ -1,6 +1,6 @@
 """The heartbeat file: what the daemon last said about itself, and what a reader can conclude from it.
 
-The daemon is the file's only writer; `hands status` and the tmux glyph only read it,
+The daemon is the file's only writer; `hands status` only reads it,
 so there is one clock that says whether hands is up.
 """
 

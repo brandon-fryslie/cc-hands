@@ -7,14 +7,13 @@ from dataclasses import dataclass
 from loguru import logger
 
 from hands.core.drafts import DraftOutcome, DraftRequest, decide
-from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Decision, Effect, Heard, HookReply, Narrate, Reply, Sending, Speak, Type, Unregistered, Withdraw
+from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Decision, Effect, Heard, HookReply, Narrate, Reply, Speak, Unregistered, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
 from hands.core.permissions import AnswerPermission, PermissionOutcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Instant, Membership, Registry, RequestId, Session, SessionId
 from hands.sessions.audit import Applied, EffectFailed, Performed, Record
 from hands.sessions.payload import Rejected
-from hands.sessions.tmux import type_into
 from hands.sessions.transcript import ai_title
 
 
@@ -92,14 +91,8 @@ class Sessions:
         await self._perform_all(effects)
         return outcome
 
-    async def draft(self, request: DraftRequest) -> DraftOutcome:
-        # [LAW:no-ambient-temporal-coupling] committed before any effect is awaited, so a hook
-        # that lands while tmux types is reduced against this registry and not overwritten by it.
-        # A send that fails while typing has let go of its draft: some of it may be in the pane.
-        self._registry, outcome, effects = decide(self._registry, request)
-        # A decided send runs to the end even if its caller is cancelled: the draft has already
-        # been let go, so stopping part way would lose it without typing it.
-        await asyncio.shield(self._perform_all(effects))
+    def draft(self, request: DraftRequest) -> DraftOutcome:
+        self._registry, outcome = decide(self._registry, request)
         return outcome
 
     async def keep_time(self, period: float) -> None:
@@ -151,8 +144,6 @@ class Sessions:
         match effect:
             case Audit(record=record):
                 logger.log(*_audited(record))
-            case Type(pane=pane, input=input):
-                await type_into(pane, input)
             case Reply(session=session, request=request, reply=reply):
                 self._reply(session, request, reply)
             case Speak() | Narrate():
@@ -188,5 +179,3 @@ def _audited(record: AuditRecord) -> tuple[str, str]:
             return "WARNING", f"{type(event).__name__} for session {event.session}, which never joined"
         case AfterEnd(event=event):
             return "WARNING", f"{type(event).__name__} for session {event.session}, which had already ended"
-        case Sending(session=session, pane=pane, text=text):
-            return "INFO", f"sending to session {session} in pane {pane}: {text!r}"
