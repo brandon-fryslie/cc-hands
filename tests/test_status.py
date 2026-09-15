@@ -115,48 +115,6 @@ def test_hands_status_exits_zero_only_when_the_daemon_is_up(tmp_path: Path, caps
     assert "cannot read" in capsys.readouterr().err
 
 
-def test_each_verdict_is_one_glyph_red_for_a_dead_daemon(tmp_path: Path) -> None:
-    assert status.glyph(status.Up(beat())) == "#[fg=green]●#[default]"
-    assert status.glyph(status.Unresponsive(beat())) == "#[fg=yellow]◐#[default]"
-    assert status.glyph(status.Down(beat())) == "#[fg=red,bold]✖#[default]"
-    assert status.glyph(status.Stopped(beat(pipeline="stopped"))) == status.glyph(status.NeverRan(tmp_path)) == "#[fg=colour244]○#[default]"
-
-
-def test_hands_glyph_shows_the_verdict_and_a_heartbeat_that_does_not_parse_as_loudly_as_a_dead_one(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    home = Home(tmp_path)
-    assert main(["--home", str(tmp_path), "glyph"]) == 0
-    assert capsys.readouterr().out == "#[fg=colour244]○#[default]\n"
-    status.write(home.status, beat(pid=os.getpid(), written_at=datetime.now(UTC)))
-    main(["--home", str(tmp_path), "glyph"])
-    assert capsys.readouterr().out == "#[fg=green]●#[default]\n"
-    status.write(home.status, beat(pid=2**22 + 12345, written_at=datetime.now(UTC)))
-    main(["--home", str(tmp_path), "glyph"])
-    assert capsys.readouterr().out == "#[fg=red,bold]✖#[default]\n"
-    home.status.write_text("{")
-    assert main(["--home", str(tmp_path), "glyph"]) == 0
-    assert capsys.readouterr().out == status.UNREADABLE_GLYPH + "\n"
-    home.status.unlink()
-    home.status.mkdir()  # a heartbeat that cannot be read at all is shown the same way, not as an empty segment
-    assert main(["--home", str(tmp_path), "glyph"]) == 0
-    assert capsys.readouterr().out == status.UNREADABLE_GLYPH + "\n"
-    assert main(["--home", str(tmp_path), "status"]) == 2
-    assert "cannot read" in capsys.readouterr().err
-
-
-def test_hands_tmux_puts_the_glyph_run_by_this_python_in_every_status_line_once_however_often_it_is_sourced(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    home = tmp_path / "live #{home}" / "$h"
-    assert main(["--home", str(home), "tmux"]) == 0
-    [_, command, append] = capsys.readouterr().out.splitlines()
-    assert command == f'set -g @hands_glyph "#({sys.executable} -m hands.daemon --home \'{tmp_path}/live ##{{home}}/\\$h\' glyph)"'
-    assert append == "if -F '#{m:*@hands_glyph*,#{status-right}}' '' \"set -ag status-right ' #{E:@hands_glyph}'\""
-
-
-def test_a_relative_home_is_written_absolute_because_tmux_runs_the_glyph_in_each_session_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.chdir(tmp_path)
-    assert main(["--home", "dev-home", "tmux"]) == 0
-    assert f"--home {tmp_path.resolve()}/dev-home glyph" in capsys.readouterr().out
-
-
 def test_liveness_comes_from_the_os() -> None:
     assert pid_alive(os.getpid())
     assert pid_alive(1)  # launchd: alive, and not ours to signal

@@ -81,17 +81,7 @@ uv run hands run                        # in a terminal: space to talk, space ag
 HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run hands log                        # the audit log: what hands heard, said, called, typed, and failed at
-uv run hands glyph                      # one glyph for a tmux status line: green up, yellow stuck, red down, grey not running
 uv run pytest && uv run pyright
-```
-
-A dead daemon shows in every tmux session's status line, without speech. Append the
-printed lines to `~/.tmux.conf` and reload it (reloading again adds nothing); the glyph
-is redrawn every `status-interval`, 15 s unless set:
-
-```
-uv run hands tmux >> ~/.tmux.conf
-tmux source-file ~/.tmux.conf
 ```
 
 launchd keeps the daemon up, starting it at login and again whenever it exits:

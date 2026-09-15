@@ -167,25 +167,6 @@ def describe(verdict: Verdict, now: datetime) -> str:
             )
 
 
-# [LAW:one-source-of-truth] the glyph is read off the same verdict `hands status` says in words, never off raw fields.
-# Colour carries the urgency and the shape survives a monochrome status line.
-def glyph(verdict: Verdict) -> str:
-    """One tmux-styled character for a status line: green when up, yellow when stuck, red when down, grey when not meant to run."""
-    match verdict:
-        case Up():
-            return "#[fg=green]●#[default]"
-        case Unresponsive():
-            return "#[fg=yellow]◐#[default]"
-        case Down():
-            return "#[fg=red,bold]✖#[default]"
-        case Stopped() | NeverRan():
-            return "#[fg=colour244]○#[default]"
-
-
-# A heartbeat that does not parse says nothing about the daemon, so it is shown as loudly as a dead one.
-UNREADABLE_GLYPH = "#[fg=red,bold]?#[default]"
-
-
 def _span(elapsed: timedelta) -> str:
     seconds = max(0, int(elapsed.total_seconds()))
     hours, rest = divmod(seconds, 3600)
