@@ -76,6 +76,14 @@ class Announced:
 
 
 @dataclass(frozen=True)
+class Recounted:
+    """What the user heard about a turn a session finished."""
+
+    session: str
+    summary: str
+
+
+@dataclass(frozen=True)
 class Failure:
     """An error the daemon logged: where it was raised and what it said."""
 
@@ -83,7 +91,7 @@ class Failure:
     message: str
 
 
-Entry = AuditRecord | Applied | Performed | EffectFailed | Transcribed | Replied | Called | Announced | Failure
+Entry = AuditRecord | Applied | Performed | EffectFailed | Transcribed | Replied | Called | Announced | Recounted | Failure
 Record = Callable[[Entry], None]
 
 

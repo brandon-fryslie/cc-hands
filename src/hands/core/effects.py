@@ -1,6 +1,7 @@
 """What the reducer asks the edges to do. Adapters perform these and nothing else."""
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from hands.core.events import SessionEvent
 from hands.core.session import Permission, RequestId, SessionId
@@ -109,4 +110,14 @@ class Narrate:
 
 
 Heard = Speak | Narrate
-Effect = Audit | Reply | Heard
+
+
+@dataclass(frozen=True)
+class Summarise:
+    """A session finished a turn: the turn is read from its transcript, summarised by the model, and spoken."""
+
+    session: SessionId
+    transcript: Path
+
+
+Effect = Audit | Reply | Heard | Summarise

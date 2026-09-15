@@ -1,0 +1,70 @@
+"""A finished turn, read from a transcript made of real Claude Code records, and rendered for the summariser."""
+
+from pathlib import Path
+
+from hands.core.turn import CUT, Budget, Said, Turn, Used, render
+from hands.sessions.transcript import read_turn
+
+# Real records from this repository's own sessions: an earlier /clear prompt, the prompt that starts the turn,
+# attachments, modes, a title, thinking, text, three Bash calls with their results (the last failed),
+# an injected isMeta user record, a final text, and a record still being written.
+FIXTURE = Path(__file__).parent / "fixtures" / "turn.jsonl"
+ROOMY = Budget(prompt=10_000, said=10_000, input=10_000, result=10_000, steps=100)
+
+
+def test_the_turn_is_everything_said_and_used_after_the_last_prompt_in_order() -> None:
+    turn = read_turn(FIXTURE)
+    assert turn is not None
+    assert turn.prompt.startswith("I'd like you to go a bit further and architect a robust system")
+    assert [type(step).__name__ for step in turn.steps] == ["Said", "Used", "Used", "Used", "Said"]
+    said, loaded, inspected, commented, final = turn.steps
+    assert isinstance(said, Said) and said.text.startswith("I'll start by loading the repo conventions")
+    assert isinstance(loaded, Used)
+    assert loaded == Used(
+        tool="Bash", purpose="Load lit workflow and check git state", input=loaded.input, result=loaded.result, failed=False
+    )
+    assert loaded.input.startswith("lit quickstart 2>&1 | head -80") and loaded.result.startswith("Agent instructions for using links issue tracker")
+    assert isinstance(inspected, Used) and inspected.purpose == "Inspect repo layout and remotes"
+    # A call without a description has no purpose, and a result marked as an error is a failure.
+    assert isinstance(commented, Used) and commented.purpose is None and commented.failed
+    assert commented.result.startswith("Exit code 2")
+    assert isinstance(final, Said) and final.text.startswith("API Error: Unable to connect to API")
+
+
+def test_a_transcript_with_no_prompt_yet_has_no_turn(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text('{"type":"ai-title","aiTitle":"x"}\n{"type":"user","isMeta":true,"message":{"role":"user","content":"injected"}}\n')
+    assert read_turn(transcript) is None
+
+
+def test_a_prompt_with_nothing_after_it_is_a_turn_with_no_steps(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text('{"type":"user","message":{"role":"user","content":"hello"}}\n')
+    assert read_turn(transcript) == Turn("hello", ())
+
+
+def test_a_call_whose_result_never_came_is_shown_as_having_none(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        '{"type":"user","message":{"role":"user","content":"go"}}\n'
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/a/b.py"}}]}}\n'
+    )
+    assert read_turn(transcript) == Turn("go", (Used("Read", None, '{"file_path": "/a/b.py"}', "(no result)", False),))
+
+
+def test_the_rendered_turn_names_each_step_and_its_outcome() -> None:
+    turn = Turn("fix the test", (Said("Looking."), Used("Bash", "Run the tests", "pytest", "1 failed", True), Used("Edit", None, "{}", "updated", False)))
+    assert render(turn, ROOMY) == (
+        "The user asked:\nfix the test\n\n"
+        "Claude said:\nLooking.\n\n"
+        "Claude used Bash (Run the tests): pytest\nResult (failed): 1 failed\n\n"
+        "Claude used Edit: {}\nResult: updated"
+    )
+
+
+def test_a_long_turn_keeps_how_it_started_and_how_it_ended_and_each_part_is_cut_to_its_budget() -> None:
+    steps = tuple(Said(f"step {n}") for n in range(10))
+    rendered = render(Turn("x" * 50, steps), Budget(prompt=10, said=100, input=100, result=100, steps=4))
+    assert rendered == "\n\n".join(
+        ["The user asked:\n" + "x" * 10 + CUT, "Claude said:\nstep 0", "Claude said:\nstep 1", "(6 steps in the middle are left out)", "Claude said:\nstep 8", "Claude said:\nstep 9"]
+    )

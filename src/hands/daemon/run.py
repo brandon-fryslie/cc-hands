@@ -51,7 +51,10 @@ from hands.voice.pipeline import (
     build_voice,
 )
 from hands.voice.ptt import Key
+from hands.voice.narrator import narrate_turns
 from hands.voice.speech import relay
+from hands.voice.summary import Summariser, summariser
+from hands.voice.summary_instruction import TURN_SUMMARY_INSTRUCTION
 from hands.voice.conversation import record_turns
 from hands.voice.system import Started, SystemChannel, listen
 from hands.voice.tools import audited, draft_tools, list_sessions_tool, permission_tools
@@ -64,6 +67,9 @@ API_KEY_VAR = "ANTHROPIC_API_KEY"
 TICK_SECONDS = 1.0
 # How late a session whose process died, or one that started unheard, is noticed.
 SWEEP_SECONDS = 2.0
+# A turn's summary is spoken, so it is short; a model that has not answered in this long is said to have failed.
+SUMMARY_MAX_TOKENS = 200
+SUMMARY_TIMEOUT_SECONDS = 30.0
 
 
 def backend_from_env() -> LLMBackend:
@@ -114,7 +120,8 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash:
         await sweep(home, sessions, frozenset())
         voice = await load(config, sessions, heart, quit_event, audit.record)
         if voice is not None:
-            await converse(voice, home, sessions, heart, quit_event, Started(after_crash), audit.record)
+            summarise = summariser(config.llm, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
+            await converse(voice, home, sessions, summarise, heart, quit_event, Started(after_crash), audit.record)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -147,7 +154,7 @@ async def load(config: VoiceConfig, sessions: Sessions, heart: status.Heart, qui
 
 
 async def converse(
-    voice: Voice, home: Home, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event, started: Started, record: Record
+    voice: Voice, home: Home, sessions: Sessions, summarise: Summariser, heart: status.Heart, quit_event: asyncio.Event, started: Started, record: Record
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
@@ -161,7 +168,7 @@ async def converse(
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
         # session stays listed, without the relay
-        # nothing is asked aloud, and without the heartbeat the daemon looks dead while it runs, so any of
+        # nothing is asked aloud, without the narrator no finished turn is heard, and without the heartbeat the daemon looks dead while it runs, so any of
         # them failing stops the run where it can be seen, and launchd starts it again.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
@@ -172,6 +179,7 @@ async def converse(
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(relay(sessions, voice.worker.queue_frame), name="the session speech relay"),
+        asyncio.create_task(narrate_turns(sessions, summarise, voice.worker.queue_frame, record), name="the turn narrator"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
     ]
     for task in background:

@@ -17,6 +17,7 @@ from hands.core.effects import (
     Reply,
     SessionGone,
     Speak,
+    Summarise,
     Unregistered,
     Withdraw,
 )
@@ -88,7 +89,7 @@ WAITING = Blocked(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False)
 
 
 @pytest.mark.parametrize("before", [Idle(), Working(since=1.0)])
-@pytest.mark.parametrize("event", [Prompted(ONE.id, at=5.0), Stopped(ONE.id), Ended(ONE.id, "prompt_input_exit"), Joined(ONE, "startup")])
+@pytest.mark.parametrize("event", [Prompted(ONE.id, at=5.0), Ended(ONE.id, "prompt_input_exit"), Joined(ONE, "startup")])
 def test_moving_between_states_that_wait_on_nothing_asks_for_nothing(before: SessionState, event: Event) -> None:
     assert reduce(holding(before), event)[1] == []
 
@@ -100,11 +101,20 @@ def test_a_permission_request_is_handed_to_the_intermediary(before: SessionState
 
 
 @pytest.mark.parametrize(
-    "event", [Prompted(ONE.id, at=5.0), Stopped(ONE.id), Ended(ONE.id, "prompt_input_exit"), *(Joined(ONE, source) for source in ("startup", "resume", "clear"))]
+    "event", [Prompted(ONE.id, at=5.0), Ended(ONE.id, "prompt_input_exit"), *(Joined(ONE, source) for source in ("startup", "resume", "clear"))]
 )
 def test_a_session_that_moves_on_while_waiting_lets_its_hook_go_undecided(event: Event) -> None:
     # Most often the user answered the dialog at the keyboard; a voice reply after that would decide nothing.
     assert reduce(holding(WAITING), event)[1] == [Reply(ONE.id, RequestId("r0"), Withdraw())]
+
+
+@pytest.mark.parametrize("before", [Idle(), Working(since=1.0)])
+def test_a_finished_turn_is_summarised_from_the_session_transcript(before: SessionState) -> None:
+    assert reduce(holding(before), Stopped(ONE.id)) == (holding(Idle()), [Summarise(ONE.id, ONE.transcript)])
+
+
+def test_a_turn_that_finishes_while_waiting_lets_the_hook_go_and_is_summarised() -> None:
+    assert reduce(holding(WAITING), Stopped(ONE.id))[1] == [Reply(ONE.id, RequestId("r0"), Withdraw()), Summarise(ONE.id, ONE.transcript)]
 
 
 def test_a_second_request_while_waiting_lets_the_first_go_and_asks_the_second() -> None:

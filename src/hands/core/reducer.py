@@ -15,6 +15,7 @@ from hands.core.effects import (
     Reply,
     SessionGone,
     Speak,
+    Summarise,
     Unregistered,
     Withdraw,
 )
@@ -66,8 +67,8 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _ended_unheard(registry, membership, [])
         case Prompted(at=at):
             return _enter(registry, event, lambda _: Working(since=at))
-        case Stopped():
-            return _enter(registry, event, lambda _: Idle())
+        case Stopped(session=session):
+            return _enter(registry, event, lambda _: Idle(), lambda membership: [Summarise(session, membership.transcript)])
         case PermissionRequested(at=at, request=request, permission=permission):
             deadline = at + registry.permission_deadline
             return _enter(registry, event, lambda _: Blocked(on=permission, request=request, deadline=deadline, warned=False))
@@ -116,7 +117,13 @@ def _ended_unheard(registry: Registry, membership: Membership, said: list[Effect
             return registry.put(Session(membership, Gone())), [*_transition(membership.id, before, Gone()), *said]
 
 
-def _enter(registry: Registry, event: SessionEvent, next: Callable[[SessionState], SessionState]) -> tuple[Registry, list[Effect]]:
+def _enter(
+    registry: Registry,
+    event: SessionEvent,
+    next: Callable[[SessionState], SessionState],
+    also: Callable[[Membership], list[Effect]] = lambda _: [],
+) -> tuple[Registry, list[Effect]]:
+    """The event moves a live session to its next state; `also` is what the move calls for beyond the transition."""
     match registry.sessions.get(event.session):
         case None:
             # [LAW:no-silent-failure] an event for a session that never joined is a record, not a drop.
@@ -126,7 +133,7 @@ def _enter(registry: Registry, event: SessionEvent, next: Callable[[SessionState
             return registry, [Audit(AfterEnd(event)), *_unwaited(event)]
         case Session(membership=membership, state=before):
             after = next(before)
-            return registry.put(Session(membership, after)), _transition(membership.id, before, after)
+            return registry.put(Session(membership, after)), [*_transition(membership.id, before, after), *also(membership)]
 
 
 def _unwaited(event: SessionEvent) -> list[Effect]:

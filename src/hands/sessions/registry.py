@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from loguru import logger
 
 from hands.core.drafts import DraftOutcome, DraftRequest, decide
-from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Decision, Effect, Heard, HookReply, Narrate, Reply, Speak, Unregistered, Withdraw
+from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Decision, Effect, Heard, HookReply, Narrate, Reply, Speak, Summarise, Unregistered, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
 from hands.core.permissions import AnswerPermission, PermissionOutcome, answer
 from hands.core.reducer import reduce
@@ -38,6 +38,8 @@ class Sessions:
         # Set once, at shutdown: from then on a permission hook is let go as soon as it asks.
         self._released = False
         self._heard: asyncio.Queue[Heard] = asyncio.Queue()
+        # Apart from what is heard: a summary takes seconds of model time, which must not hold up a permission request.
+        self._finished: asyncio.Queue[Summarise] = asyncio.Queue()
 
     def now(self) -> Instant:
         return self._clock()
@@ -101,6 +103,10 @@ class Sessions:
             await asyncio.sleep(period)
             await self.apply(Tick(self._clock()))
 
+    async def finished(self) -> Summarise:
+        """The next turn a session finished, to be summarised and spoken, in the order the sessions stopped."""
+        return await self._finished.get()
+
     async def heard(self) -> Heard:
         """The next thing a session has to say to the user, in the order the reducer decided it."""
         return await self._heard.get()
@@ -148,6 +154,8 @@ class Sessions:
                 self._reply(session, request, reply)
             case Speak() | Narrate():
                 self._heard.put_nowait(effect)
+            case Summarise():
+                self._finished.put_nowait(effect)
 
     def _reply(self, session: SessionId, request: RequestId, reply: HookReply) -> None:
         waiting = self._waiting.get(request)
