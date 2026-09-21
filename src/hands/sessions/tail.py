@@ -8,18 +8,18 @@ about where the turn started or what of it was heard.
 import asyncio
 import os
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol
 
 from loguru import logger
 
 from hands.core.session import Membership, SessionId
-from hands.core.steps import Call, Result, recognise
-from hands.core.turn import Opening, Said, Step, Turn
+from hands.core.turn import Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.transcript import blocks, holds_a_tool, opening_of, ref_of, result_text, structured_result, turn_record
+from hands.sessions.transcript import turn_record
+from hands.sessions.turning import Turning
 
 
 @dataclass(frozen=True)
@@ -39,44 +39,35 @@ class Telling:
 
 @dataclass
 class Following:
-    """One transcript as far as it has been read, and the turn that is open in it."""
+    """One transcript as far as it has been read, the turn open in it, and how much of that turn was told."""
 
     path: Path
     offset: int = 0
     number: int = 0
-    opening: Opening | None = None
-    # A call's result arrives in a later record; its id holds the call's place in the order until it does.
-    slots: list[Step | str] = field(default_factory=list[Step | str])
-    calls: dict[str, Call] = field(default_factory=dict[str, Call])
-    places: dict[str, int] = field(default_factory=dict[str, int])
+    turn: Turning = field(default_factory=Turning)
     told: int = 0
     stood_in: str | None = None
-    mid_tool: bool = False
 
-    def open(self, opening: Opening) -> None:
-        """A turn opened: nothing told of the last one counts for this one."""
-        self.forget()
-        self.opening = opening
+    def consume(self, record: Payload) -> None:
+        """Read one record into the turn, letting go of the turn before it where this record opens a new one."""
+        opening = self.turn.consume(record)
+        if opening is not None:
+            self.forget()
+            self.turn.begin(opening)
 
     def restart(self) -> None:
         """Read this file again from its start: nothing read of the file it was says anything about the file it is."""
         self.forget()
         self.offset = 0
-        self.mid_tool = False
+        self.turn.mid_tool = False
 
     def forget(self) -> None:
+        """Nothing told of the turn that was counts for the turn that is."""
         # The number says which turn this is, so a telling made before any of this marks nothing after it.
         self.number += 1
-        self.opening = None
-        self.slots = []
-        self.calls = {}
-        self.places = {}
         self.told = 0
         self.stood_in = None
-
-    def settled(self) -> list[Step]:
-        """Every step of the turn so far. A call whose result has not been written is told as having none."""
-        return [slot if not isinstance(slot, str) else recognise(self.calls[slot]) for slot in self.slots]
+        self.turn.clear()
 
 
 class Known(Protocol):
@@ -140,9 +131,9 @@ class Tails:
             # The turn stopped a moment ago, so the last records of it may not have been read by the loop yet.
             # A transcript that cannot be read raises here, where the narrator says so rather than saying nothing.
             await asyncio.to_thread(self._read, session, following)
-            if following.opening is None:
+            if following.turn.opening is None:
                 return None
-            steps = following.settled()
+            steps = following.turn.steps()
             # Claude Code only ever appends, so the record of a stand-in that has since been written is the first step
             # after what was heard; counting it heard too is how the stand-in gives way without the reply being told twice.
             heard = following.told + (1 if following.stood_in is not None and _said_at(steps, following.told) == following.stood_in else 0)
@@ -152,7 +143,7 @@ class Tails:
             reply = _spoken(closing)
             stand_in = None if reply == _said_at(steps, len(steps) - 1) else reply
             shown = steps[heard:] if stand_in is None else [*steps[heard:], Said(None, stand_in)]
-            return Telling(session, Turn(following.opening, tuple(shown)), following.number, len(steps), stand_in)
+            return Telling(session, Turn(following.turn.opening, tuple(shown)), following.number, len(steps), stand_in)
 
     async def spoken(self, telling: Telling) -> None:
         """Mark what a telling held as told. A telling of a turn that has since been replaced marks nothing.
@@ -203,39 +194,8 @@ class Tails:
                 logger.error(f"a record in the transcript of session {session} could not be read, so it is not told: {error}")
                 continue
             if record is not None:
-                self._consume(following, record)
+                following.consume(record)
                 self.lag = _lag(record)
-
-    def _consume(self, following: Following, record: Payload) -> None:
-        opening = opening_of(record, following.mid_tool)
-        parts = blocks(record)
-        mid_tool = holds_a_tool(record)
-        if opening is not None:
-            following.open(opening)
-            following.mid_tool = mid_tool
-            # The record that opens a turn is what was asked, not a step of the answer.
-            return
-        following.mid_tool = mid_tool
-        ref = ref_of(record)
-        # `toolUseResult` describes one call, so a record carrying results for several says which of them it
-        # belongs to for none: each is then recognised from its own text, rather than from another call's record.
-        structured = structured_result(record) if sum(block.get("type") == "tool_result" for block in parts) == 1 else None
-        for block in parts:
-            match block:
-                case {"type": "text", "text": str() as text} if record.fields.get("type") == "assistant" and text.strip():
-                    following.slots.append(Said(ref, text))
-                case {"type": "tool_use", "id": str() as id, "name": str() as name, "input": dict()}:
-                    following.calls[id] = Call(ref, name, cast(dict[str, object], block["input"]), None)
-                    following.places[id] = len(following.slots)
-                    following.slots.append(id)
-                case {"type": "tool_result", "tool_use_id": str() as id}:
-                    place = following.places.get(id)
-                    if place is not None:
-                        result = Result(result_text(block.get("content")), structured, block.get("is_error") is True)
-                        following.slots[place] = recognise(replace(following.calls[id], result=result))
-                case _:
-                    # Thinking is how Claude reached a result, not a result; the summariser is shown what a turn did.
-                    pass
 
 
 async def keep_tailing(tails: Tails, period: float) -> None:
