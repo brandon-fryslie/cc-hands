@@ -5,12 +5,14 @@ import shutil
 import socket
 import tempfile
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from hands.core.session import Membership, PromptText, SessionId
+from hands.sessions import typing
 from hands.sessions.typing import Typist, Untyped
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
@@ -126,3 +128,73 @@ def test_an_answer_that_says_neither_yes_nor_no_is_not_taken_for_yes(short_dir: 
                 Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
         finally:
             fritter.close()
+
+
+class EndlessFritter:
+    """A fritter that answers and answers and never finishes the line."""
+
+    def __init__(self, path: Path, chunk: bytes, gap: float, stop_after: float) -> None:
+        self._chunk, self._gap, self._stop_after = chunk, gap, stop_after
+        self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._listener.bind(str(path))
+        self._listener.listen(1)
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        try:
+            connection, _ = self._listener.accept()
+        except OSError:
+            return
+        # It gives up on its own so that a client which does not bound the exchange fails
+        # the test slowly rather than hanging it.
+        until = time.monotonic() + self._stop_after
+        with connection:
+            connection.recv(65536)
+            while time.monotonic() < until:
+                try:
+                    connection.sendall(self._chunk)
+                except OSError:
+                    return
+                time.sleep(self._gap)
+
+    def close(self) -> None:
+        self._listener.close()
+        self._thread.join(timeout=8)
+
+
+def test_a_fritter_that_answers_forever_does_not_hold_the_daemon_forever(
+    short_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # settimeout bounds each recv and not the exchange, so a byte every 20ms resets the
+    # clock indefinitely and a wedged session would own a daemon task for as long as it
+    # kept dribbling. One deadline is computed before the first read instead.
+    monkeypatch.setattr(typing, "ANSWER_TIMEOUT", 0.3)
+    path = short_dir / "slow.sock"
+    fritter = EndlessFritter(path, chunk=b"x", gap=0.02, stop_after=5.0)
+    try:
+        started = time.monotonic()
+        with pytest.raises(Untyped):
+            Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
+        waited = time.monotonic() - started
+    finally:
+        fritter.close()
+    assert waited < 2.0, f"the deadline is {typing.ANSWER_TIMEOUT}s and the exchange took {waited:.1f}s"
+
+
+def test_an_answer_that_runs_past_its_size_is_cut_off(short_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # [LAW:no-silent-failure] An answer is one small JSON object. Reading anything larger
+    # to its end is the daemon taking dictation from a session that has lost the plot.
+    monkeypatch.setattr(typing, "ANSWER_LIMIT", 1024)
+    path = short_dir / "loud.sock"
+    fritter = EndlessFritter(path, chunk=b"x" * 4096, gap=0.0, stop_after=5.0)
+    try:
+        started = time.monotonic()
+        with pytest.raises(Untyped):
+            Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
+        waited = time.monotonic() - started
+    finally:
+        fritter.close()
+    # Cut off at the cap rather than read to the end of whatever the session felt like
+    # sending, which is what the elapsed time is here to distinguish.
+    assert waited < 2.0, f"the cap is {typing.ANSWER_LIMIT} bytes and the read took {waited:.1f}s"

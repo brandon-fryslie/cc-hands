@@ -59,11 +59,13 @@ def read_membership(home: Home, session: SessionId) -> Membership:
 
 def parse_membership(session: SessionId, raw: bytes) -> Membership:
     record = Payload.parse(raw)
+    # [LAW:parse-dont-validate] Missing and empty both mean this session was not wrapped.
+    # Path("") is PosixPath("."), and a Typist made from that would dial a directory.
     address = record.optional_text("fritter_socket")
     return Membership(
         id=session,
         pid=parse_pid(record.integer("pid")),
         cwd=Path(record.text("cwd")),
         transcript=Path(record.text("transcript_path")),
-        fritter=None if address is None else Path(address),
+        fritter=Path(address) if address else None,
     )

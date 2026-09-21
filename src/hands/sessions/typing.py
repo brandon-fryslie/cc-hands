@@ -11,15 +11,18 @@ reaches here `[LAW:single-enforcer]`.
 
 import json
 import socket
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from hands.core.session import Keystroke, Membership, PromptText, SessionId
 
-# How long to wait for fritter to answer. It answers as soon as it has written to the
-# pty, so this bounds a fritter that is wedged rather than one that is busy; long enough
-# to be certain of that, short enough that the daemon is not held by it.
+# How long the whole exchange may take, and the most an answer may run to. fritter
+# answers as soon as it has written to the pty, so this bounds a fritter that is wedged
+# rather than one that is busy; long enough to be certain of that, short enough that the
+# daemon is not held by it.
 ANSWER_TIMEOUT = 5.0
+ANSWER_LIMIT = 64 * 1024
 
 
 class Untyped(Exception):
@@ -62,12 +65,17 @@ class Typist:
 
     def _ask(self, request: dict[str, object]) -> None:
         body = json.dumps(request).encode() + b"\n"
+        # One deadline covers connecting, sending and reading. Per-operation timeouts
+        # bound each call and not the exchange, so a fritter dribbling a byte every four
+        # seconds would hold the daemon forever without once timing out.
+        deadline = time.monotonic() + ANSWER_TIMEOUT
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(ANSWER_TIMEOUT)
+                connection.settimeout(_left(deadline))
                 connection.connect(str(self.socket))
+                connection.settimeout(_left(deadline))
                 connection.sendall(body)
-                answer = _read_line(connection)
+                answer = _read_line(connection, deadline)
         except OSError as error:
             # A session whose process is gone leaves a socket nobody is listening on, and
             # that is the common case here rather than an exotic one.
@@ -75,13 +83,31 @@ class Typist:
         _raise_if_refused(self.session, answer)
 
 
-def _read_line(connection: socket.socket) -> bytes:
+def _left(deadline: float) -> float:
+    """What is left of the exchange's deadline, or a timeout if it is spent."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError(f"no answer within {ANSWER_TIMEOUT} seconds")
+    return remaining
+
+
+def _read_line(connection: socket.socket, deadline: float) -> bytes:
     chunks: list[bytes] = []
-    while b"\n" not in b"".join(chunks):
+    size = 0
+    while True:
+        connection.settimeout(_left(deadline))
         chunk = connection.recv(4096)
         if not chunk:
             break
         chunks.append(chunk)
+        size += len(chunk)
+        # [LAW:no-silent-failure] An answer is one small JSON object. Anything still
+        # arriving past this is not one, and reading it to the end would be the daemon
+        # taking dictation from a wedged session.
+        if size > ANSWER_LIMIT:
+            raise ConnectionError(f"the answer ran past {ANSWER_LIMIT} bytes without ending")
+        if b"\n" in chunk:
+            break
     return b"".join(chunks)
 
 

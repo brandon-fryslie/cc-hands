@@ -70,7 +70,7 @@ def record(home: Home, payload: Payload) -> None:
                 # and this hook inherited that environment, so the address arrives here
                 # without fritter and hands agreeing on a path or a filename. Empty or
                 # unset both mean this session was not wrapped.
-                fritter=Path(socket) if (socket := os.environ.get("FRITTER_SOCKET")) else None,
+                fritter=Path(address) if (address := os.environ.get("FRITTER_SOCKET")) else None,
             )
             write_membership(home, membership)
         case "SessionEnd":

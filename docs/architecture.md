@@ -143,7 +143,7 @@ Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | A
 @dataclass(frozen=True)
 class Reply:    request: RequestId; reply: HookReply
 @dataclass(frozen=True)
-class Type:     session: SessionId; input: Input             # performed through fritter
+class Type:     session: SessionId; input: Input             # through fritter; unbuilt, hands-keyboard-gxr.i5n
 @dataclass(frozen=True)
 class Speak:    text: str; priority: Priority                # straight to TTS
 @dataclass(frozen=True)
@@ -225,15 +225,19 @@ for an interrupt, and for a turn that a prompt naming another turn finds still r
 and the narrator reads, summarises, and speaks the turn without returning to the
 reducer.
 
-The adapters live in `sessions` and `voice` and each performs one effect kind: `Type`
-becomes a request to the session's fritter (`hands.sessions.typing`), `Reply` writes to the
-blocked shim's socket connection, `Speak` becomes a Pipecat `TTSSpeakFrame`, `Narrate` and `Note` become
+The adapters live in `sessions` and `voice` and each performs one effect kind: `Reply`
+writes to the blocked shim's socket connection, `Speak` becomes a Pipecat `TTSSpeakFrame`,
+`Narrate` and `Note` become
 `LLMMessagesAppendFrame` with `run_llm` on or off, `Play` sends a segment to TTS
 through the player, `Summarise` calls the summariser, `Snapshot` records or diffs the
 target's git state, `Audit` appends one JSONL line. An
 adapter that fails raises; the supervisor logs it and the failure is spoken through
 the system channel. Nothing is retried silently and nothing falls back
 `[LAW:no-silent-failure]`.
+
+There is no `Type` effect yet. What it will call is built and measured -
+`hands.sessions.typing.Typist` types into a session's fritter - but the effect itself and
+its place in the reducer are `hands-keyboard-gxr.i5n`.
 
 Because every transition is `reduce` on values, the test suite for the session
 lifecycle is a table: state before, event, state after, effects. There is no pipeline,
@@ -295,9 +299,13 @@ into nothing.
 
 Two things are divided rather than duplicated. hands decides *whether* a session may be
 written to, from state fritter cannot see. fritter decides only whether the person at
-the keyboard has unsent text in the box, which hands cannot see because those keystrokes
-never reach it; a write arriving then is refused with a reason. And escaping stays here:
-what a leading `/` means is `Input`'s business, and fritter types the text it is given.
+the keyboard has characters in the box they have not sent, which hands cannot see because
+those keystrokes never reach it; text arriving then is refused with a reason. A key is
+not, because a key does exactly what the person pressing it would do and cannot
+interleave with anything, and because Enter and Ctrl-C are the keys that give the line
+back - gating them would leave a held session reachable only by a human at the physical
+keyboard, which is the case fritter exists to remove. And escaping stays here: what a
+leading `/` means is `Input`'s business, and fritter types the text it is given.
 
 `fritter/README.md` holds the protocol and what was measured.
 
@@ -1196,10 +1204,11 @@ generated from the stored resolutions, never from the model repeating itself:
 "Draft for cc-hands, reading 'auth middleware' as `authMiddleware.ts`: refactor the
 auth middleware to use the new token helper." Speak what changed, not what you said.
 A draft is staged, amended, and discarded; sending it waits for the Type effect
-(`hands-harness-5nb`), whose design is open: how keys reach the right session's
-window, the macOS permission it needs, and confirming the send through the
-`UserPromptSubmit` hook. Until then the model tells the user that sending is not
-built. The send will append an audit record before it types, so "did it send
+(`hands-keyboard-gxr.i5n`). How the keys reach the right session is settled and built:
+fritter holds that session's pseudo-terminal and `Typist` types into it over a unix
+socket, so there is no window to find, no focus to steal and no macOS permission to
+ask for. What is left open is confirming the send through the `UserPromptSubmit` hook.
+Until then the model tells the user that sending is not built. The send will append an audit record before it types, so "did it send
 something I didn't approve" is answered by one file.
 
 ## The intermediary's tools
