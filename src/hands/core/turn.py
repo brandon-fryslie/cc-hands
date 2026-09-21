@@ -188,11 +188,11 @@ def render(turn: Turn, budget: Budget) -> str:
     tail = budget.steps - head
     steps = turn.steps
     if len(steps) > budget.steps:
-        shown = [_step(step, budget) for step in steps[:head]]
+        shown = [describe(step, budget) for step in steps[:head]]
         shown.append(f"({len(steps) - budget.steps} steps in the middle are left out)")
-        shown.extend(_step(step, budget) for step in steps[len(steps) - tail :])
+        shown.extend(describe(step, budget) for step in steps[len(steps) - tail :])
     else:
-        shown = [_step(step, budget) for step in steps]
+        shown = [describe(step, budget) for step in steps]
     return "\n\n".join([_opening(turn.opening, budget), *shown])
 
 
@@ -204,7 +204,8 @@ def _opening(opening: Opening, budget: Budget) -> str:
             return f"A background task reported:\n{_cut(text, budget.opening)}"
 
 
-def _step(step: Step, budget: Budget) -> str:
+def describe(step: Step, budget: Budget) -> str:
+    """One step in words, cut to its budget. What a turn is rendered out of, and what a session is read back as."""
     match step:
         case Said(text=text):
             return f"Claude said:\n{_cut(text, budget.said)}"

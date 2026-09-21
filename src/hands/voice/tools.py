@@ -1,5 +1,6 @@
 """The tools the intermediary can call."""
 
+import asyncio
 import functools
 import re
 from collections.abc import Callable
@@ -15,6 +16,8 @@ from pipecat.services.llm_service import FunctionCallParams
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, StageDraft
 from hands.core.effects import Allow, Decision, Deny
 from hands.core.session import Blocked, Gone, Idle, PromptText, RequestId, Resolution, SessionId, SessionState, Staged, Working
+from hands.core.turn import Budget, Ref, describe
+from hands.sessions.backfill import steps_since
 from hands.sessions.audit import Called, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.registry import Listing, Sessions
@@ -26,6 +29,10 @@ Tool = DirectFunction
 
 # Pipecat's decorator is untyped; this names what it does to a tool.
 _uncancelled_by_interruption = cast(Callable[[Tool], Tool], direct_function.tool_options(cancel_on_interruption=False))  # pyright: ignore[reportUnknownMemberType]
+
+# How many steps one reading hands over. A session that has run for an hour has hundreds, and all of them at
+# once is a context spent on history; the rest are read on from `more_since`, in the order they happened.
+STEP_READBACK = 40
 
 # What the agent reads when the user says no and gives no reason.
 DENIED_BY_VOICE = "The user denied this by voice."
@@ -65,12 +72,54 @@ def list_sessions_tool(sessions: Sessions) -> Tool:
         Call this when the user asks what is running, what sessions exist, or
         what Claude is working on.
         """
-        await params.result_callback({"sessions": [describe(listing) for listing in sessions.live()]})
+        await params.result_callback({"sessions": [describe_listing(listing) for listing in sessions.live()]})
 
     return list_sessions
 
 
-def describe(listing: Listing) -> dict[str, str]:
+# How much of one step the intermediary is shown when it reads a session back: enough to say what happened,
+# and short enough that a screenful of them still leaves room for the conversation they are read into.
+READBACK_BUDGET = Budget(opening=200, said=400, input=120, result=200, steps=STEP_READBACK)
+
+
+def read_session_tool(sessions: Sessions) -> Tool:
+    async def read_session(params: FunctionCallParams, session: str, since: str = "") -> None:
+        """What a session has done, in the order it did it, from the point you last read to.
+
+        Call this when the user asks what a session has been doing, or to catch up on one that was already
+        running before you attached. When `more` comes back true there is more after what you were given: call
+        again with `since` set to `more_since`.
+
+        Args:
+            session: The session's id, from list_sessions.
+            since: The record id you last read to, from an earlier call's `more_since`. Empty reads from the start.
+        """
+        membership = sessions.membership(SessionId(session))
+        if membership is None:
+            await params.result_callback({"error": f"there is no session {session}"})
+            return
+        try:
+            steps = await asyncio.to_thread(steps_since, membership.transcript, Ref(since) if since else None)
+        except OSError as error:
+            # [LAW:no-silent-failure] the model is told why it got nothing, rather than being handed nothing.
+            logger.error(f"cannot read what session {session} did from {membership.transcript}: {error}")
+            await params.result_callback({"error": f"the transcript of session {session} could not be read"})
+            return
+        # The earliest of what it has not had, not the newest: read on from `more_since` and a session is
+        # caught up on in order, which is the only order any of it makes sense in.
+        shown = steps[:STEP_READBACK]
+        await params.result_callback(
+            {
+                "steps": [{"record": step.ref, "step": describe(step, READBACK_BUDGET)} for step in shown],
+                "more": len(steps) > len(shown),
+                "more_since": shown[-1].ref if shown else since,
+            }
+        )
+
+    return read_session
+
+
+def describe_listing(listing: Listing) -> dict[str, str]:
     return {
         "id": listing.session.membership.id,
         "title": spoken_title(listing),

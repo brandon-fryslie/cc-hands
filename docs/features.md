@@ -26,9 +26,14 @@ is wanted for N things, it is one type and N values `[LAW:one-type-per-behavior]
 
 ## Foundation (existing epic `hands-architecture-3qr`)
 
-The spike is closed: GO, with the latency numbers in the ticket. The remaining
-children are the reducer, the backfill reader, the draft buffer, and voice
-permission approval, then the own-voice bleed bug. Two refinements from the
+The spike is closed: GO, with the latency numbers in the ticket. The reducer, the
+draft buffer, voice permission approval and the own-voice bleed bug are closed with
+it, which leaves the backfill reader. Built: `read_session` answers what a session
+did before the daemon attached, reading its transcript through the same fold the
+live tail runs, so a turn nobody heard and a turn heard live are told in the same
+words. Every step names the record it came from, and a reading hands over forty of
+them and where to read on from, because an hour of work is hundreds and all of them
+at once is a context spent on history. Two refinements from the
 architecture apply to them and are recorded as comments on the tickets: the reducer
 and its types live in the `core` package with an import-boundary test, and the shim
 writes the session file at `SessionStart`.
