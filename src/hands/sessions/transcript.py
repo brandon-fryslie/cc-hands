@@ -80,11 +80,12 @@ def opening_of(record: Payload, mid_tool: bool) -> Opening | None:
             text = result_text(parts)
         case _:
             return None
+    ref = ref_of(record)
     match fields.get("origin"):
         case {"kind": "task-notification"}:
-            return Notified(text)
+            return Notified(ref, text)
         case _:
-            return Asked(text)
+            return Asked(ref, text)
 
 
 def holds_a_tool(record: Payload) -> bool:

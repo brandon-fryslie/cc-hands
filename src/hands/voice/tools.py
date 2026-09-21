@@ -16,8 +16,8 @@ from pipecat.services.llm_service import FunctionCallParams
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, StageDraft
 from hands.core.effects import Allow, Decision, Deny
 from hands.core.session import Blocked, Gone, Idle, PromptText, RequestId, Resolution, SessionId, SessionState, Staged, Working
-from hands.core.turn import Budget, Ref, describe
-from hands.sessions.backfill import steps_since
+from hands.core.turn import Budget, Happening, Ref, describe
+from hands.sessions.backfill import Unseen, read_since
 from hands.sessions.audit import Called, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.registry import Listing, Sessions
@@ -30,9 +30,9 @@ Tool = DirectFunction
 # Pipecat's decorator is untyped; this names what it does to a tool.
 _uncancelled_by_interruption = cast(Callable[[Tool], Tool], direct_function.tool_options(cancel_on_interruption=False))  # pyright: ignore[reportUnknownMemberType]
 
-# How many steps one reading hands over. A session that has run for an hour has hundreds, and all of them at
-# once is a context spent on history; the rest are read on from `more_since`, in the order they happened.
-STEP_READBACK = 40
+# How much of a session one reading hands over. A session that has run for an hour has hundreds of steps, and
+# all of them at once is a context spent on history; the rest are read on from `more_since`, in order.
+READBACK_COUNT = 40
 
 # What the agent reads when the user says no and gives no reason.
 DENIED_BY_VOICE = "The user denied this by voice."
@@ -79,7 +79,7 @@ def list_sessions_tool(sessions: Sessions) -> Tool:
 
 # How much of one step the intermediary is shown when it reads a session back: enough to say what happened,
 # and short enough that a screenful of them still leaves room for the conversation they are read into.
-READBACK_BUDGET = Budget(opening=200, said=400, input=120, result=200, steps=STEP_READBACK)
+READBACK_BUDGET = Budget(opening=200, said=400, input=120, result=200, steps=READBACK_COUNT)
 
 
 def read_session_tool(sessions: Sessions) -> Tool:
@@ -99,7 +99,12 @@ def read_session_tool(sessions: Sessions) -> Tool:
             await params.result_callback({"error": f"there is no session {session}"})
             return
         try:
-            steps = await asyncio.to_thread(steps_since, membership.transcript, Ref(since) if since else None)
+            reading = await asyncio.to_thread(read_since, membership.transcript, Ref(since) if since else None)
+        except Unseen:
+            # [LAW:no-silent-failure] a mark from another session, or from a transcript since rewritten, is said
+            # rather than read as "from the start", which would narrate the whole session over again unasked.
+            await params.result_callback({"error": f"session {session} has no record {since}; call again with since empty to read from the start"})
+            return
         except OSError as error:
             # [LAW:no-silent-failure] the model is told why it got nothing, rather than being handed nothing.
             logger.error(f"cannot read what session {session} did from {membership.transcript}: {error}")
@@ -107,16 +112,35 @@ def read_session_tool(sessions: Sessions) -> Tool:
             return
         # The earliest of what it has not had, not the newest: read on from `more_since` and a session is
         # caught up on in order, which is the only order any of it makes sense in.
-        shown = steps[:STEP_READBACK]
+        shown = _page(reading.happenings)
+        # A call the session is still waiting on is shown but never marked as read, so its result is told once
+        # it lands rather than falling into the gap between one reading and the next.
+        settled = shown[: min(reading.settled, len(shown))]
         await params.result_callback(
             {
-                "steps": [{"record": step.ref, "step": describe(step, READBACK_BUDGET)} for step in shown],
-                "more": len(steps) > len(shown),
-                "more_since": shown[-1].ref if shown else since,
+                "happened": [{"record": happening.ref, "what": describe(happening, READBACK_BUDGET)} for happening in shown],
+                "more": len(reading.happenings) > len(shown),
+                # [LAW:one-source-of-truth] the mark is a record, so it is the last one this page can name: a
+                # record carries no uuid only rarely, and naming nothing reads as "from the start" next time.
+                "more_since": next((happening.ref for happening in reversed(settled) if happening.ref is not None), since),
             }
         )
 
     return read_session
+
+
+def _page(happenings: list[Happening]) -> list[Happening]:
+    """As much of a reading as one call hands over, ending where a record does.
+
+    The mark the reader comes back with names a record, and a reading goes on from after that record, so a page
+    that ended inside one would lose the rest of it [LAW:one-source-of-truth]. No record written by the Claude
+    Code here carries more than one happening — 26,285 records, none of them — so this only ever holds where a
+    harness batches blocks into a record, which is exactly where nothing would notice the loss.
+    """
+    shown = happenings[:READBACK_COUNT]
+    while len(shown) > 1 and len(shown) < len(happenings) and shown[-1].ref is not None and shown[-1].ref == happenings[len(shown)].ref:
+        shown = shown[:-1]
+    return shown
 
 
 def describe_listing(listing: Listing) -> dict[str, str]:

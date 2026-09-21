@@ -31,9 +31,12 @@ draft buffer, voice permission approval and the own-voice bleed bug are closed w
 it, which leaves the backfill reader. Built: `read_session` answers what a session
 did before the daemon attached, reading its transcript through the same fold the
 live tail runs, so a turn nobody heard and a turn heard live are told in the same
-words. Every step names the record it came from, and a reading hands over forty of
-them and where to read on from, because an hour of work is hundreds and all of them
-at once is a context spent on history. Two refinements from the
+words. What was asked is kept in its place among what was done, because the steps
+alone say how a session spent an hour and never what for. Everything names the record
+it came from, and a reading hands over forty of them and where to read on from,
+because an hour of work is hundreds and all of them at once is a context spent on
+history — never a mark on a call the session has not come back from, whose result
+would otherwise land after the mark and be told to nobody. Two refinements from the
 architecture apply to them and are recorded as comments on the tickets: the reducer
 and its types live in the `core` package with an import-boundary test, and the shim
 writes the session file at `SessionStart`.

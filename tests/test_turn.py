@@ -28,12 +28,12 @@ ROOMY = Budget(opening=10_000, said=10_000, input=10_000, result=10_000, steps=1
 
 def rendered(*steps: object, budget: Budget = ROOMY) -> str:
     """Everything after the opening, which every case below shares."""
-    turn = Turn(Asked("fix the test"), tuple(steps))  # pyright: ignore[reportArgumentType]
+    turn = Turn(Asked(None, "fix the test"), tuple(steps))  # pyright: ignore[reportArgumentType]
     return render(turn, budget).removeprefix("The user asked:\nfix the test\n\n")
 
 
 def test_a_notification_is_rendered_as_what_reported_rather_than_as_something_the_user_asked() -> None:
-    assert render(Turn(Notified("<task-notification>tests passed</task-notification>"), ()), ROOMY).startswith("A background task reported:\n")
+    assert render(Turn(Notified(None, "<task-notification>tests passed</task-notification>"), ()), ROOMY).startswith("A background task reported:\n")
 
 
 def test_text_a_command_and_a_tool_nobody_named_each_say_what_came_of_them() -> None:
@@ -95,7 +95,7 @@ def test_a_suite_that_failed_whole_has_its_names_cut_to_budget_like_every_other_
 
 def test_a_long_turn_keeps_how_it_started_and_how_it_ended_and_each_part_is_cut_to_its_budget() -> None:
     steps = tuple(Said(None, f"step {n}") for n in range(10))
-    rendered_turn = render(Turn(Asked("x" * 50), steps), Budget(opening=10, said=100, input=100, result=100, steps=4))
+    rendered_turn = render(Turn(Asked(None, "x" * 50), steps), Budget(opening=10, said=100, input=100, result=100, steps=4))
     assert rendered_turn == "\n\n".join(
         [
             "The user asked:\n" + "x" * 10 + CUT,

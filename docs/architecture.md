@@ -457,7 +457,24 @@ ticket's, not this one's.
 
 **Backfill.** When the daemon attaches to a session that has been running for an
 hour, `read_session(session, since)` reads the same file from an earlier point through
-the same recognisers.
+the same recognisers. What it hands over is `Happening = Opening | Step`: what opened
+each turn as well as each step of the answer, because the steps alone say how a session
+spent an hour and never what for. A `Turn` keeps the two apart, because it is summarised
+as a whole against its request; a reading of a session nobody heard has no whole to
+summarise, and hands them over in the one order they make sense in. Both are put into
+words by the same `describe`, so a request cannot be worded one way in a turn and another
+in a reading `[LAW:one-source-of-truth]`.
+
+The whole file is folded and only then cut at the record named, so a call made before the
+cut and answered after it is still one step that knows its result; read from the mark on,
+that result would arrive with no call to belong to. A call the session has not come back
+from is shown — it is working on something, and that is worth saying — but it is not
+marked as read: a mark names a record and a reading goes on from after it, so marking a
+call still in flight would spend its result on nobody, and the reader would be told the
+suite was being run and never told what failed `[LAW:no-silent-failure]`. Only a call a
+reading *ends* on, so that one the session carried on past cannot hold the mark behind it
+for ever. A mark this transcript never held is said rather than read as a mark at the
+start, which would tell the whole session over again as though it were new.
 
 ```python
 # One variant per kind of thing a turn does. Every step names the record it came from, except

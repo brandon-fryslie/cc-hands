@@ -148,6 +148,7 @@ Step = Said | Edited | Ran | Tested | Looked | Planned | Delegated | Questioned 
 class Asked:
     """The user's own prompt, typed or sent through the SDK."""
 
+    ref: Ref | None
     text: str
 
 
@@ -155,11 +156,19 @@ class Asked:
 class Notified:
     """A background task's notification, which Claude Code hands the session as its next prompt."""
 
+    ref: Ref | None
     text: str
 
 
 # [LAW:types-are-the-program] who opened the turn is a variant, so a notification is never reported as something the user asked.
 Opening = Asked | Notified
+
+# One thing that happened in a session: what opened a turn, or a step of the answer to it. A Turn holds the two
+# apart because it is summarised as a whole, against its request. A reading of a session that nobody was
+# listening to has no whole to summarise, and hands them over in the one order they make sense in — the order
+# they happened [LAW:one-source-of-truth]. Both are put in words by the same function, so a request cannot be
+# described one way in a turn and another in a reading.
+Happening = Opening | Step
 
 
 @dataclass(frozen=True)
@@ -193,20 +202,16 @@ def render(turn: Turn, budget: Budget) -> str:
         shown.extend(describe(step, budget) for step in steps[len(steps) - tail :])
     else:
         shown = [describe(step, budget) for step in steps]
-    return "\n\n".join([_opening(turn.opening, budget), *shown])
+    return "\n\n".join([describe(turn.opening, budget), *shown])
 
 
-def _opening(opening: Opening, budget: Budget) -> str:
-    match opening:
+def describe(happening: Happening, budget: Budget) -> str:
+    """One thing that happened, in words, cut to its budget. What a turn is rendered out of, and what a session is read back as."""
+    match happening:
         case Asked(text=text):
             return f"The user asked:\n{_cut(text, budget.opening)}"
         case Notified(text=text):
             return f"A background task reported:\n{_cut(text, budget.opening)}"
-
-
-def describe(step: Step, budget: Budget) -> str:
-    """One step in words, cut to its budget. What a turn is rendered out of, and what a session is read back as."""
-    match step:
         case Said(text=text):
             return f"Claude said:\n{_cut(text, budget.said)}"
         case Edited(path=path, created=created, change=change):

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from hands.core.session import Membership, SessionId
 from hands.core.steps import Call, Result, recognise
 from hands.core.testrun import report_of
-from hands.core.turn import Asked, Committed, Delegated, Edited, Looked, Other, Planned, Questioned, Ran, Step, Tested
+from hands.core.turn import Asked, Committed, Delegated, Edited, Looked, Other, Planned, Questioned, Ran, Ref, Step, Tested
 from hands.sessions.tail import Tails
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -42,7 +42,7 @@ async def steps(tmp_path: Path) -> tuple[Step, ...]:
     transcript.write_text(f"{OPENING}\n{(FIXTURES / 'steps.jsonl').read_text()}")
     tails = Tails(Registry(Membership(SID, pid=4242, cwd=tmp_path, transcript=transcript)))
     telling = await tails.tell(SID, None)
-    assert telling is not None and telling.turn.opening == Asked("do everything")
+    assert telling is not None and telling.turn.opening == Asked(Ref("open-1"), "do everything")
     return telling.turn.steps
 
 

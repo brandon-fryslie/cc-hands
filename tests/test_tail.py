@@ -80,14 +80,14 @@ async def test_a_prompt_sent_as_blocks_with_an_image_opens_the_turn(tmp_path: Pa
     transcript = tmp_path / "t.jsonl"
     image = '{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":[{"type":"text","text":"match this"},{"type":"image","source":{}}]}}'
     transcript.write_text(lines(PROMPT, DONE, image))
-    assert await turn_of(transcript) == Turn(Asked("match this\n[an image]"), ())
+    assert await turn_of(transcript) == Turn(Asked(None, "match this\n[an image]"), ())
 
 
 async def test_a_notification_after_the_turn_ended_opens_a_turn_of_its_own_and_is_not_what_the_user_asked(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     notified = '{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>tests passed</task-notification>"}}'
     transcript.write_text(lines(PROMPT, DONE, notified, DONE))
-    assert await turn_of(transcript) == Turn(Notified("<task-notification>tests passed</task-notification>"), (Said(None, "Done."),))
+    assert await turn_of(transcript) == Turn(Notified(None, "<task-notification>tests passed</task-notification>"), (Said(None, "Done."),))
 
 
 @pytest.mark.parametrize("kind", ["human", "task-notification"])
@@ -95,21 +95,21 @@ async def test_a_message_that_lands_while_a_tool_runs_belongs_to_the_turn_under_
     transcript = tmp_path / "t.jsonl"
     landed = f'{{"type":"user","origin":{{"kind":"{kind}"}},"message":{{"role":"user","content":"also this"}}}}'
     transcript.write_text(lines(PROMPT, CALL, RESULT, landed, DONE))
-    assert await turn_of(transcript) == Turn(Asked("first"), (RAN, Said(None, "Done.")))
+    assert await turn_of(transcript) == Turn(Asked(None, "first"), (RAN, Said(None, "Done.")))
 
 
 async def test_compactions_summary_does_not_open_a_turn(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     summary = '{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued"}}'
     transcript.write_text(lines(PROMPT, DONE, summary, DONE))
-    assert await turn_of(transcript) == Turn(Asked("first"), (Said(None, "Done."), Said(None, "Done.")))
+    assert await turn_of(transcript) == Turn(Asked(None, "first"), (Said(None, "Done."), Said(None, "Done.")))
 
 
 async def test_a_prompt_with_a_document_attached_opens_the_turn_and_names_the_document_rather_than_its_bytes(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     document = '{"type":"user","message":{"role":"user","content":[{"type":"document","source":{"data":"JVBERi0x"}},{"type":"text","text":"read this"}]}}'
     transcript.write_text(lines(PROMPT, DONE, document))
-    assert await turn_of(transcript) == Turn(Asked("[a document]\nread this"), ())
+    assert await turn_of(transcript) == Turn(Asked(None, "[a document]\nread this"), ())
 
 
 async def test_a_transcript_with_no_prompt_yet_has_no_turn(tmp_path: Path) -> None:
@@ -136,7 +136,7 @@ async def test_a_session_that_stops_before_the_catch_up_has_reached_it_is_still_
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(PROMPT, DONE))
     telling = await Tails(Registry([member(transcript)])).tell(SID, None)
-    assert telling is not None and telling.turn == Turn(Asked("first"), (Said(None, "Done."),))
+    assert telling is not None and telling.turn == Turn(Asked(None, "first"), (Said(None, "Done."),))
 
 
 async def test_a_call_whose_result_never_came_is_shown_as_having_none(tmp_path: Path) -> None:
@@ -145,7 +145,7 @@ async def test_a_call_whose_result_never_came_is_shown_as_having_none(tmp_path: 
         '{"type":"user","message":{"role":"user","content":"go"}}\n'
         '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/a/b.py"}}]}}\n'
     )
-    assert await turn_of(transcript) == Turn(Asked("go"), (Looked(None, "Read", "/a/b.py", "(no result)"),))
+    assert await turn_of(transcript) == Turn(Asked(None, "go"), (Looked(None, "Read", "/a/b.py", "(no result)"),))
 
 
 async def test_only_what_was_appended_since_the_last_reading_is_read_again(tmp_path: Path) -> None:
@@ -154,12 +154,12 @@ async def test_only_what_was_appended_since_the_last_reading_is_read_again(tmp_p
     transcript.write_text(lines(PROMPT, DONE))
     tails = await following(transcript)
     first = await tails.tell(SID, None)
-    assert first is not None and first.turn == Turn(Asked("first"), (Said(None, "Done."),))
+    assert first is not None and first.turn == Turn(Asked(None, "first"), (Said(None, "Done."),))
     await tails.spoken(first)
     with transcript.open("a") as more:
         more.write(lines(CALL, RESULT, DONE))
     second = await tails.tell(SID, None)
-    assert second is not None and second.turn == Turn(Asked("first"), (RAN, Said(None, "Done.")))
+    assert second is not None and second.turn == Turn(Asked(None, "first"), (RAN, Said(None, "Done.")))
 
 
 async def test_a_record_only_half_written_is_not_read_until_the_newline_that_ends_it_is(tmp_path: Path) -> None:
@@ -167,10 +167,10 @@ async def test_a_record_only_half_written_is_not_read_until_the_newline_that_end
     transcript.write_text(lines(PROMPT) + DONE[:40])
     tails = await following(transcript)
     first = await tails.tell(SID, None)
-    assert first is not None and first.turn == Turn(Asked("first"), ())
+    assert first is not None and first.turn == Turn(Asked(None, "first"), ())
     transcript.write_text(lines(PROMPT, DONE))
     second = await tails.tell(SID, None)
-    assert second is not None and second.turn == Turn(Asked("first"), (Said(None, "Done."),))
+    assert second is not None and second.turn == Turn(Asked(None, "first"), (Said(None, "Done."),))
 
 
 async def test_a_transcript_that_grew_shorter_is_read_again_from_its_start(tmp_path: Path) -> None:
@@ -186,7 +186,7 @@ async def test_a_transcript_that_grew_shorter_is_read_again_from_its_start(tmp_p
         again = await tails.tell(SID, None)
     finally:
         logger.remove(sink)
-    assert again is not None and again.turn == Turn(Asked("first"), (Said(None, "Done."),))
+    assert again is not None and again.turn == Turn(Asked(None, "first"), (Said(None, "Done."),))
     assert warnings and "shorter than what was read of it" in warnings[0]
 
 
@@ -199,7 +199,7 @@ async def test_a_line_that_is_not_a_record_is_said_and_skipped_and_the_rest_of_t
         turn = await turn_of(transcript)
     finally:
         logger.remove(sink)
-    assert turn == Turn(Asked("first"), (Said(None, "Done."),))
+    assert turn == Turn(Asked(None, "first"), (Said(None, "Done."),))
     assert errors and "could not be read, so it is not told" in errors[0]
 
 
@@ -217,7 +217,7 @@ async def test_a_record_whose_message_is_not_an_object_is_skipped_and_the_rest_o
         telling = await tails.tell(SID, None)
     finally:
         logger.remove(sink)
-    assert telling is not None and telling.turn == Turn(Asked("first"), (Said(None, "Done."),))
+    assert telling is not None and telling.turn == Turn(Asked(None, "first"), (Said(None, "Done."),))
     assert errors and "should be an object" in errors[0]
 
 
@@ -226,9 +226,9 @@ async def test_a_reading_picks_up_after_the_steps_already_told(tmp_path: Path) -
     transcript.write_text(lines(PROMPT, DONE))
     tails = await following(transcript)
     first = await tails.tell(SID, None)
-    assert first is not None and first == Telling(SID, Turn(Asked("first"), (Said(None, "Done."),)), number=1, through=1, stood_in=None)
+    assert first is not None and first == Telling(SID, Turn(Asked(None, "first"), (Said(None, "Done."),)), number=1, through=1, stood_in=None)
     await tails.spoken(first)
-    assert (await tails.tell(SID, None)) == Telling(SID, Turn(Asked("first"), ()), number=1, through=1, stood_in=None)
+    assert (await tails.tell(SID, None)) == Telling(SID, Turn(Asked(None, "first"), ()), number=1, through=1, stood_in=None)
 
 
 async def test_a_turn_told_but_never_spoken_is_told_again(tmp_path: Path) -> None:
@@ -246,12 +246,12 @@ async def test_the_hooks_closing_reply_ends_a_turn_whose_transcript_does_not_hol
     transcript.write_text(lines(PROMPT, CALL, RESULT))
     tails = await following(transcript)
     first = await tails.tell(SID, "Done.")
-    assert first is not None and first.turn == Turn(Asked("first"), (RAN, Said(None, "Done.")))
+    assert first is not None and first.turn == Turn(Asked(None, "first"), (RAN, Said(None, "Done.")))
     await tails.spoken(first)
     with transcript.open("a") as more:
         more.write(lines(DONE))
     second = await tails.tell(SID, "Done.")
-    assert second is not None and second.turn == Turn(Asked("first"), ())
+    assert second is not None and second.turn == Turn(Asked(None, "first"), ())
 
 
 async def test_a_closing_reply_is_matched_to_its_record_however_the_whitespace_around_it_differs(tmp_path: Path) -> None:
@@ -265,14 +265,14 @@ async def test_a_closing_reply_is_matched_to_its_record_however_the_whitespace_a
     with transcript.open("a") as more:
         more.write(lines(padded))
     second = await tails.tell(SID, "Done.")
-    assert second is not None and second.turn == Turn(Asked("first"), ())
+    assert second is not None and second.turn == Turn(Asked(None, "first"), ())
 
 
 async def test_a_closing_reply_the_turn_said_once_before_still_ends_it(tmp_path: Path) -> None:
     """The record of the reply is the one the turn ends on, so an earlier reply in the same words does not stand for it."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(PROMPT, DONE, CALL, RESULT))
-    assert await turn_of(transcript, closing="Done.") == Turn(Asked("first"), (Said(None, "Done."), RAN, Said(None, "Done.")))
+    assert await turn_of(transcript, closing="Done.") == Turn(Asked(None, "first"), (Said(None, "Done."), RAN, Said(None, "Done.")))
 
 
 async def test_a_reply_a_later_turn_repeats_is_told_again_because_a_turn_is_told_only_what_it_did(tmp_path: Path) -> None:
@@ -281,12 +281,12 @@ async def test_a_reply_a_later_turn_repeats_is_told_again_because_a_turn_is_told
     transcript.write_text(lines(PROMPT))
     tails = await following(transcript)
     first = await tails.tell(SID, "Nothing to do.")
-    assert first is not None and first.turn == Turn(Asked("first"), (Said(None, "Nothing to do."),))
+    assert first is not None and first.turn == Turn(Asked(None, "first"), (Said(None, "Nothing to do."),))
     await tails.spoken(first)
     with transcript.open("a") as more:
         more.write(lines(DONE, '{"type":"user","message":{"role":"user","content":"check again"}}'))
     second = await tails.tell(SID, "Nothing to do.")
-    assert second is not None and second.turn == Turn(Asked("check again"), (Said(None, "Nothing to do."),))
+    assert second is not None and second.turn == Turn(Asked(None, "check again"), (Said(None, "Nothing to do."),))
 
 
 async def test_a_turn_told_while_the_next_one_opened_marks_nothing_of_the_next(tmp_path: Path) -> None:
@@ -302,7 +302,7 @@ async def test_a_turn_told_while_the_next_one_opened_marks_nothing_of_the_next(t
     assert (await tails.tell(SID, None)) is not None
     await tails.spoken(first)
     second = await tails.tell(SID, None)
-    assert second is not None and second.turn == Turn(Asked("second"), (RAN, Said(None, "Done.")))
+    assert second is not None and second.turn == Turn(Asked(None, "second"), (RAN, Said(None, "Done.")))
 
 
 async def test_a_session_the_registry_stops_listing_is_let_go_of_with_the_turn_it_was_holding(tmp_path: Path) -> None:
@@ -320,12 +320,12 @@ async def test_a_session_the_registry_stops_listing_is_let_go_of_with_the_turn_i
     tails = Tails(registry)
     await tails.catch_up()
     told = await tails.tell(SID, None)
-    assert told is not None and told.turn == Turn(Asked("first"), (RAN, Said(None, "Done.")))
+    assert told is not None and told.turn == Turn(Asked(None, "first"), (RAN, Said(None, "Done.")))
     await tails.spoken(told)
     registry.members.clear()
     await tails.catch_up()
     again = await tails.tell(SID, None)
-    assert again is not None and again.turn == Turn(Asked("first"), (RAN, Said(None, "Done.")))
+    assert again is not None and again.turn == Turn(Asked(None, "first"), (RAN, Said(None, "Done.")))
 
 
 async def test_a_session_that_exits_before_its_turn_is_told_is_still_told_all_of_it(tmp_path: Path) -> None:
@@ -338,7 +338,7 @@ async def test_a_session_that_exits_before_its_turn_is_told_is_still_told_all_of
     registry.members.clear()
     await tails.catch_up()
     telling = await tails.tell(SID, None)
-    assert telling is not None and telling.turn == Turn(Asked("first"), (RAN, Said(None, "Done.")))
+    assert telling is not None and telling.turn == Turn(Asked(None, "first"), (RAN, Said(None, "Done.")))
 
 
 async def test_a_record_carrying_results_for_several_calls_hands_its_own_record_to_none_of_them(tmp_path: Path) -> None:
@@ -374,7 +374,7 @@ async def test_what_a_turn_was_told_is_marked_only_while_nothing_else_is_reading
         await asyncio.sleep(0)
         assert not marking.done()
     await marking
-    assert (await tails.tell(SID, None)) == Telling(SID, Turn(Asked("first"), ()), number=1, through=1, stood_in=None)
+    assert (await tails.tell(SID, None)) == Telling(SID, Turn(Asked(None, "first"), ()), number=1, through=1, stood_in=None)
 
 
 async def test_a_session_registered_again_is_told_from_the_transcript_it_has_now(tmp_path: Path) -> None:
@@ -394,7 +394,7 @@ async def test_a_session_registered_again_is_told_from_the_transcript_it_has_now
     registry.heard[:] = [member(second)]
     await tails.catch_up()
     telling = await tails.tell(SID, None)
-    assert telling is not None and telling.turn == Turn(Asked("again"), (Said(None, "Done."),))
+    assert telling is not None and telling.turn == Turn(Asked(None, "again"), (Said(None, "Done."),))
 
 
 async def test_how_far_behind_the_newest_record_was_when_it_was_read_is_measured(tmp_path: Path) -> None:
@@ -418,4 +418,4 @@ async def test_the_catch_up_and_a_stop_never_read_the_same_bytes_twice(tmp_path:
     telling = await tails.tell(SID, None)
     # Read twice, every step would be here twice over.
     assert telling is not None
-    assert telling.turn == Turn(Asked("first"), (Said(None, "Done."), RAN, Said(None, "Done.")))
+    assert telling.turn == Turn(Asked(None, "first"), (Said(None, "Done."), RAN, Said(None, "Done.")))
