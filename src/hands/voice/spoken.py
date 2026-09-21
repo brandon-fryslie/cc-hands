@@ -17,11 +17,20 @@ block at the aggregator, before it is ever broken up. Every rule that makes text
 applies to every chunk, which is the guarantee that does hold here.
 
 The filtered text is also what the intermediary remembers: Pipecat builds the frame it appends to the
-assistant context from the text a filter returned. That is the intent the two `TTSSpeakFrame` sites state
-in their own words — the context is kept so the model can answer about *what the user heard* — and until
-this filter existed it held what was sent to the speaker instead, which was never the same string. What it
-costs is that the model cannot read an exact path or sha back out of its own memory; it has the session
-tools for facts, and what it said is what was heard.
+assistant context from the text a filter returned. Of the five places a `TTSSpeakFrame` is built, three
+keep their text — `narrator.py` twice and `speech.py` once — and both of those files say in their own
+words why: the context is kept so the model can answer about *what the user heard*. Until this filter
+existed it held what was sent to the speaker instead, which was never the same string. What it costs is
+that the model cannot read an exact path or sha back out of its own memory; it has the session tools for
+facts, and what it said is now what was heard.
+
+One path that crosses this seam does not want a summary's liberties. A draft readback (`voice/readback.py`)
+is read out so the user can check what will be sent, and a path in it is spoken as its file name like any
+other — "fix src/auth.py" is heard as "fix auth". That is not a regression this filter introduced, because
+the unfiltered string was `s-r-c slash auth dot p y` and could not be checked by ear either, and the
+readback already passes through the model before it is spoken. But it does mean a readback can no longer
+be relied on to distinguish two files whose names agree, which is tracked as its own ticket rather than
+solved by giving this function a mode [LAW:no-mode-explosion].
 
 Stateless, so a barge-in in the middle of a sentence leaves nothing to reset. In a system where the user
 interrupts constantly, a filter holding half an utterance between calls is a bug waiting for the second

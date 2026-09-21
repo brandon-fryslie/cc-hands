@@ -32,10 +32,13 @@ _HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]+(.*?)[ \t]*#*[ \t]*$", re.MULTILINE)
 # Two digits at most, because a numbered list counts and a year does not: "2024. It was a good year."
 # is a sentence, and read as a list marker it lost the year off the front of itself.
 _BULLET = re.compile(r"^[ \t]*(?:[-*+]|\d{1,2}[.)])[ \t]+(.*)$")
+_CONTINUED = re.compile(r"^[ \t]+\S")
 _CODE = re.compile(r"`+([^`\n]+)`+")
 _BOLD = re.compile(r"\*\*([^*\n]+)\*\*|__([^_\n]+)__")
 _ITALIC = re.compile(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])")
-_MD_LINK = re.compile(r"\[([^\]\n]+)\]\([^)\n]+\)")
+# Stopping at the first `)` left the rest of the address behind, and a stray bracket was read aloud.
+_MD_LINK = re.compile(r"\[([^\]\n]+)\]\((?:[^()\s]|\([^()\s]*\))*\)")
+_AUTOLINK = re.compile(r"<(?:https?://|www\.)[^\s>]*>")
 _URL = re.compile(r"\b(?:https?://|www\.)[^\s<>]*[^\s<>.,;:!?)\]'\"]")
 _UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE)
 # Both tells at once, and neither alone is one. Letters without a digit is a word — "defaced" is a perfectly
@@ -48,12 +51,22 @@ _NAMED_SHA = re.compile(rf"\b(commits?|sha|hash|revision|rev)\s+{_HEX}", re.IGNO
 # and made of words — and a name made of words is `_SNAKE`'s to say, not an id to be dropped whole.
 # Both cases, not merely one: `HTTP_TIMEOUT_30` has an upper and `update_database_2` has a lower, and a
 # config constant named out loud in a summary is a fact, not an id to be dropped whole.
-_ID = r"(?=[A-Za-z0-9_]{12,}\b)(?=[A-Za-z0-9_]*\d)(?=[A-Za-z0-9_]*[A-Z])(?=[A-Za-z0-9_]*[a-z])[A-Za-z0-9_]+\b"
-_OPAQUE = re.compile(rf"\b{_ID}")
-# The trigger word is what ignores case here, and nothing else. Setting the flag on the whole pattern
-# reached inside `_ID` and cancelled the very tell it states, so `refresh_token_v2` counted as an id after
-# the word "token" and as a name anywhere else — the same name, deleted or spoken by its neighbour.
-_NAMED_OPAQUE = re.compile(rf"\b((?i:ids?|tokens?|requests?|sessions?|runs?))\s+{_ID}")
+# And length is the tell that separates an id from a name, because every other one they share.
+# `Base64Decoder`, `Float32Array`, `HTTP2Handler`, `Sha256Checksum` and `OAuth2TokenStore` are long,
+# numbered and mixed case, and are names `_CAMEL` exists to say; they measure 12 to 16 characters.
+# `011CewaSjsqPyMa9o6U1HSUg` and `toolu_01ShPUZU4n3cWZ5ikycdXMZj` measure 24 to 29. A name is as long as
+# a person cared to type and an id is as long as the machine that made it needed, so the gap is the line.
+def _id(least: int) -> str:
+    return rf"(?=[A-Za-z0-9_]{{{least},}}\b)(?=[A-Za-z0-9_]*\d)(?=[A-Za-z0-9_]*[A-Z])(?=[A-Za-z0-9_]*[a-z])[A-Za-z0-9_]+\b"
+
+
+_OPAQUE = re.compile(rf"\b{_id(20)}")
+# Shorter where the sentence has already said what it is: the word in front of it is the tell, so the
+# length does not have to be. Nouns only — "run" is a verb, and as a trigger it deleted the object of
+# every sentence it stood in front of. And the trigger word is what ignores case here, nothing else:
+# setting the flag on the whole pattern reached inside the tell and cancelled it, so the same name was
+# dropped after "token" and spoken anywhere else.
+_NAMED_OPAQUE = re.compile(rf"\b((?i:ids?|tokens?|requests?|sessions?))\s+{_id(12)}")
 _FILE = re.compile(r"\b([\w\-]+)\.([A-Za-z0-9]{1,5})\b")
 
 # A closed list, so no ordinary sentence is ever mistaken for a file name. "e.g." and "etc." and a domain
@@ -126,10 +139,19 @@ def spoken(text: str) -> Spoken:
     return Spoken(_tidied(said), tuple(leaks))
 
 
-def _leaked(kind: str, lines: list[str], leaks: list[Leak]) -> str:
+def _leaked(kind: str, lines: list[str], leaks: list[Leak]) -> list[str]:
+    """What is said in place of the block, or nothing where the block held nothing.
+
+    An empty fence and a table of nothing but its own rule have no content to apologise for. Saying "a
+    block of code of 0 lines" tells the listener something was there when nothing was — and warning about
+    it [LAW:no-silent-failure] would report a fault every time the closing fence of a block split across
+    two streamed chunks arrived on its own, which is the shape this seam is already known to produce.
+    """
+    if not lines:
+        return []
     leak = Leak(kind, len(lines))
     leaks.append(leak)
-    return f"{leak}."
+    return [f"{leak}."]
 
 
 def _unfenced(text: str, leaks: list[Leak]) -> str:
@@ -154,12 +176,12 @@ def _unfenced(text: str, leaks: list[Leak]) -> str:
             # Closed only by its own fence, at least as long. A four-backtick block is how a model quotes a
             # three-backtick one, and a closer that ignored length ended the outer block at the inner
             # opening — which read the quoted code out loud, the one thing this exists to prevent.
-            out.append(_leaked("code", held, leaks))
+            out.extend(_leaked("code", held, leaks))
             held = None
             continue
         (out if held is None else held).append(line)
     if held is not None:
-        out.append(_leaked("code", held, leaks))
+        out.extend(_leaked("code", held, leaks))
     return "\n".join(out)
 
 
@@ -182,7 +204,7 @@ def _table(run: list[str], leaks: list[Leak]) -> list[str]:
     if len(run) < 2:
         return run
     # The rule under a table's heading row is drawn, not said, so it is not one of the rows counted.
-    return [_leaked("table", [line for line in run if not set(line) <= set("|-: \t")], leaks)]
+    return _leaked("table", [line for line in run if not set(line) <= set("|-: \t")], leaks)
 
 
 def _undiffed(text: str, leaks: list[Leak]) -> str:
@@ -203,7 +225,7 @@ def _undiffed(text: str, leaks: list[Leak]) -> str:
             at += 1
             continue
         ends = _diff_ends(lines, at)
-        out.append(_leaked("diff", lines[at:ends], leaks))
+        out.extend(_leaked("diff", lines[at:ends], leaks))
         at = ends
     return "\n".join(out)
 
@@ -256,15 +278,31 @@ def _lists(text: str) -> str:
     """A list read straight through is heard as one long sentence, so the items are counted aloud."""
     out: list[str] = []
     run: list[str] = []
+    # A blank line between items is how a model writes a list as often as not, and a run that ended on one
+    # became a string of single items — which `_counted` then declines to number, so the one shape this
+    # function most exists for was the one shape it did nothing to.
+    held: list[str] = []
     for line in text.splitlines():
         found = _BULLET.match(line)
         if found:
             run.append(found.group(1))
+            held = []
+            continue
+        if run and not line.strip():
+            held.append(line)
+            continue
+        if run and not held and _CONTINUED.match(line):
+            # An item wrapped onto the next line is still that item. Counted as the end of the run, the
+            # item after it was announced to the listener as the first [LAW:no-ambient-temporal-coupling].
+            run[-1] = f"{run[-1]} {line.strip()}"
             continue
         out.extend(_counted(run))
         run = []
+        out.extend(held)
+        held = []
         out.append(line)
     out.extend(_counted(run))
+    out.extend(held)
     return "\n".join(out)
 
 
@@ -300,6 +338,9 @@ def _emphasis(text: str) -> str:
 def _links(text: str) -> str:
     """A written link already says what it points at; an address says nothing that can be heard."""
     text = _MD_LINK.sub(lambda found: found.group(1), text)
+    # The brackets of an address written inside them go with it, rather than being left for `_tidied` to
+    # sweep up: `<` and `>` mean less than and greater than in every other sentence they appear in.
+    text = _AUTOLINK.sub("a link", text)
     return _URL.sub("a link", text)
 
 
@@ -368,7 +409,13 @@ def _tidied(text: str) -> str:
     """
     # Empty parentheses are how a function is written, never how one is named out loud.
     text = text.replace("()", " ")
-    text = re.sub(r"[`|*_#<>~]+", " ", text)
+    # Four of these marks say something in an ordinary sentence, so each is dropped only in the shape that
+    # makes it markdown [LAW:carrying-cost]. Swept up unconditionally, "Latency is now < 200 ms" became
+    # "Latency is now 200 ms" — grammatical, and a different fact than the one that was written.
+    text = re.sub(r"^[ \t]*>+[ \t]*", "", text, flags=re.MULTILINE)  # a blockquote marker, which is drawn
+    text = text.replace("~~", " ")  # struck-through text, which is doubled where "about 500" is not
+    text = re.sub(r"\*+(?=\S)|(?<=\S)\*+", " ", text)  # emphasis left unpaired, where `3 * 4` is spaced
+    text = re.sub(r"[`|_#]+", " ", text)
     text = re.sub(r"[ \t]+", " ", text)
     # A rule across the page and the dashes under a heading are drawn, not written: they are a line with
     # nothing in it but marks. Dropped whole rather than by character, because a dash inside a line is a

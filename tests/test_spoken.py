@@ -64,6 +64,14 @@ WRITTEN_AND_SPOKEN = [
     # A constant is shouted, not opaque: one case present is no tell at all, and an id needs both.
     ("Set HTTP_TIMEOUT_30 in the config.", "Set HTTP TIMEOUT 30 in the config."),
     ("Use MAX_RETRIES_5 instead.", "Use MAX RETRIES 5 instead."),
+    # "run" is a verb before it is a label, and as a trigger word it deleted the object of the sentence.
+    ("I will run update_Database_2 tomorrow.", "I will run update Database 2 tomorrow."),
+    # An address written inside angle brackets takes them with it rather than leaving them to be swept up.
+    ("Check <https://x.com> now.", "Check a link now."),
+    # A bracket inside the address is part of it; stopping at the first one read the rest of it aloud.
+    ("[doc](https://x.com/a_(b)) rest", "doc rest"),
+    ("It is ~~struck~~ out.", "It is struck out."),
+    ("> quoted line", "quoted line"),
     # A full stop with no space after it is a sentence, not a file: `go`, `c`, `h` and `sh` are all words.
     ("Ran it on node.js and Deno.Go figure.", "Ran it on node and Deno.Go figure."),
     # A module named rather than called: the dots are read out one by one just the same.
@@ -87,6 +95,17 @@ PROSE = [
     "There are 1234567 records.",
     "It calls base64 encode on the body.",
     "It defaced the output, then passed.",
+    # Four marks that say something in an ordinary sentence. Dropped for being markdown, each left a
+    # grammatical sentence stating a different fact than the one that was written.
+    "Latency is now < 200 ms.",
+    "Coverage is > 80 percent.",
+    "It removed ~500 lines.",
+    "The area is 3 * 4 metres.",
+    # A class name is long, numbered and mixed case, which is every tell an id has except its length.
+    "It uses Base64Decoder now.",
+    "Switched to Float32Array for speed.",
+    "Added an OAuth2TokenStore class.",
+    "The HTTP2Handler is done.",
     # A year at the start of a line is a sentence, not the number of a list item.
     "2024. It was a good year.\n1999. It was better.",
     "The well-known issue is that three tests fail. Should it fix them?",
@@ -152,6 +171,29 @@ def test_a_fence_is_closed_only_by_one_at_least_as_long_as_itself() -> None:
     said = spoken("Here is a nested fence:\n````\nouter\n```\ninner\n```\nouter again\n````\nDone.")
     assert said.text == "Here is a nested fence:\na block of code of 5 lines.\nDone."
     assert "inner" not in said.text and said.leaks == (Leak("code", 5),)
+
+
+def test_a_list_keeps_counting_across_a_wrapped_item_and_a_blank_line() -> None:
+    """The two shapes a model actually writes a list in, both of which broke the count.
+
+    A wrapped item ended the run, so the item after it was announced to the listener as "First". A blank
+    line between items ended it too, leaving a string of single items that `_counted` declines to number
+    at all — no counting, on the shape this function most exists for.
+    """
+    wrapped = spoken("- this is a long item\n  that continues here\n- second item\n- third item").text
+    assert wrapped == "First, this is a long item that continues here. Second, second item. Third, third item."
+    assert spoken("- a\n\n- b\n\n- c").text == "First, a. Second, b. Third, c."
+
+
+@pytest.mark.parametrize("written", ["```python\n```", "|---|---|\n|:-:|:-:|"])
+def test_a_block_that_held_nothing_is_not_reported_as_a_leak(written: str) -> None:
+    """Nothing was there, so there is nothing to say and nothing to warn about.
+
+    "a block of code of 0 lines" tells the listener something was there when nothing was, and a closing
+    fence arriving alone is the known shape of the streamed path — so it would warn on every one.
+    """
+    said = spoken(written)
+    assert said.text == "" and said.leaks == ()
 
 
 def test_a_table_is_counted_in_rows_and_the_rule_under_its_heading_is_not_one() -> None:

@@ -752,7 +752,7 @@ applies a TTS service's filters to the text of a `TTSSpeakFrame` and to each agg
 sentence of a model's streamed reply alike, so summaries, announcements, system speech
 and the intermediary's own words all meet there, and text that has not been through it
 cannot reach the speaker at all. That last part is why the filter goes here rather than
-at each place a frame is built: there are four of those and the intermediary's own reply
+at each place a frame is built: there are five of those and the intermediary's own reply
 is not one of them, so four enforcers would still have left the largest source unpoliced.
 Asking a model for spoken form does not settle it either — that is a rule held as an
 instruction, obeyed or not, checked by nobody, and it had already been heard saying a
@@ -796,11 +796,13 @@ barge-in never sends — so closing the second means skipping the block at the a
 broken up. Every rule that makes text sayable at all still applies to every chunk.
 
 The filtered text is also what the intermediary remembers, because Pipecat builds the frame it appends
-to the assistant context out of what a filter returned. That is intended: both `TTSSpeakFrame` sites
-say in their own comments that the context is kept so the model can answer about what the user heard,
-and before this filter it held what was sent to the speaker, which was never the same string. The cost
-is that the model cannot read an exact path or sha back out of its own memory, and it has the session
-tools for facts.
+to the assistant context out of what a filter returned. That is intended: of the five places a
+`TTSSpeakFrame` is built, the three that keep their text say in their own comments that the context is
+kept so the model can answer about what the user heard, and before this filter it held what was sent to
+the speaker, which was never the same string. The cost is that the model cannot read an exact path or
+sha back out of its own memory, and it has the session tools for facts. A draft readback crosses the
+same seam and does not want a summary's liberties — it is read out so the user can check what will be
+sent — which is tracked separately rather than solved by giving the function a mode.
 
 The function is pure and stdlib-only because it is the domain — what a developer who is
 not looking can hear — and it therefore cannot log. A leak is returned rather than
