@@ -53,15 +53,54 @@ WRITTEN_AND_SPOKEN = [
     ),
     # One bullet is not a sequence, and "First," in front of a lone item promises a second.
     ("- ran the suite", "ran the suite."),
-    # Ordinary English is left alone, which is most of what is said.
-    ("The well-known issue is that three tests fail. Should it fix them?", "The well-known issue is that three tests fail. Should it fix them?"),
-    ("It defaced the output, then passed.", "It defaced the output, then passed."),
+    # An absolute path is the form Claude Code's own tools require, so it is the form most replies carry.
+    ("Edited /Users/bmf/code/cc-hands/src/hands/core/turn.py today.", "Edited turn today."),
+    ("Read /etc/hosts for that.", "Read hosts for that."),
+    # A module named rather than called: the dots are read out one by one just the same.
+    ("See hands.core.spoken for details.", "See hands core spoken for details."),
+    # The period ends the sentence, and taking it with the address runs the next sentence into this one.
+    ("See https://docs.pipecat.ai/guide. It explains the rest.", "See a link. It explains the rest."),
+]
+
+
+# Sentences with no tell in them anywhere, which must come back exactly as they went in. This list is what
+# holds the module to the law it states about itself: every rule asks for a tell that ordinary English does
+# not have. Each line below is a shape that once had a rule fire on it, and each lost a word when it did
+# [LAW:carrying-cost] — a promise in a docstring is a map nobody redraws, so it is kept here instead.
+PROSE = [
+    "Read and/or write the file.",
+    "The input/output split matters.",
+    "It runs 24/7 on the box.",
+    "Shipped on 12/25/2025 as planned.",
+    "The ratio is 1/2 of the total.",
+    "The file is 1048576 bytes long.",
+    "There are 1234567 records.",
+    "It calls base64 encode on the body.",
+    "It defaced the output, then passed.",
+    "The well-known issue is that three tests fail. Should it fix them?",
 ]
 
 
 @pytest.mark.parametrize(("written", "said"), WRITTEN_AND_SPOKEN)
 def test_what_is_written_and_what_is_heard(written: str, said: str) -> None:
     assert spoken(written).text == said
+
+
+@pytest.mark.parametrize("written", PROSE)
+def test_a_sentence_with_no_tell_in_it_comes_back_whole(written: str) -> None:
+    """The cost side of every rule above, and the reason each one asks for a tell.
+
+    A rule with no tell does not merely fail to help: it deletes a word out of the middle of a sentence and
+    leaves it grammatical, so nothing downstream can notice. "and/or" became "or", and "1048576 bytes"
+    became "a commit bytes".
+    """
+    assert spoken(written).text == written
+
+
+@pytest.mark.parametrize("written", ["base64_encode", "sha256_checksum", "parse_utf8_header"])
+def test_a_long_name_made_of_words_is_said_as_its_words_and_not_dropped_as_an_id(written: str) -> None:
+    """Long, and carrying a digit, and still a name: the tell an id has that these do not is mixed case."""
+    assert spoken(f"It calls {written} on the body.").text == f"It calls {written.replace('_', ' ')} on the body."
 
 
 def test_a_block_of_code_is_said_as_what_it_was_and_reported() -> None:
@@ -81,6 +120,28 @@ def test_a_fence_nothing_ever_closes_does_not_read_the_rest_of_the_reply_out() -
     assert said.text == "As follows:\na block of code of 2 lines."
 
 
+def test_an_inline_span_at_the_start_of_a_line_does_not_open_a_fence() -> None:
+    """A backtick fence may carry no backtick in its info string, so this is a sentence, not an opening.
+
+    Read as an opening it swallowed every line after it to the end of the reply, which is the whole of what
+    the listener would have heard [LAW:parse-dont-validate].
+    """
+    said = spoken("```bash``` is what I ran.\nThen everything else in this reply.\nAnd more.")
+    assert said.text == "bash is what I ran.\nThen everything else in this reply.\nAnd more."
+    assert not said.leaks
+
+
+def test_a_fence_is_closed_only_by_one_at_least_as_long_as_itself() -> None:
+    """Quoting a three-backtick block inside a four-backtick one is how a model shows markup.
+
+    Closed by length-blind matching, the outer block ended at the inner opening and the quoted code was
+    read out loud — the one thing this module exists to prevent.
+    """
+    said = spoken("Here is a nested fence:\n````\nouter\n```\ninner\n```\nouter again\n````\nDone.")
+    assert said.text == "Here is a nested fence:\na block of code of 5 lines.\nDone."
+    assert "inner" not in said.text and said.leaks == (Leak("code", 5),)
+
+
 def test_a_table_is_counted_in_rows_and_the_rule_under_its_heading_is_not_one() -> None:
     said = spoken("| name | count |\n| --- | --- |\n| a | 1 |\n| b | 2 |")
     assert said.text == "a table of 3 rows." and said.leaks == (Leak("table", 3),)
@@ -97,6 +158,19 @@ def test_a_diff_only_counts_as_one_where_it_says_so() -> None:
     said = spoken("diff --git a/a.py b/a.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\nDone.")
     assert said.text == "a diff of 4 lines.\nDone." and said.leaks == (Leak("diff", 4),)
     assert not spoken("- first point\n- second point\n- third point").leaks
+
+
+def test_a_blank_line_that_ended_a_diff_is_not_counted_as_part_of_it() -> None:
+    """The count is the only thing the listener is given about a block they will never hear."""
+    said = spoken("diff --git a/a.py b/a.py\n@@ -1 +1 @@\n-x = 1\n\nDone.")
+    assert said.leaks == (Leak("diff", 3),) and said.text == "a diff of 3 lines.\nDone."
+
+
+@pytest.mark.parametrize("written", ["Done.\n\n---\n\nNext up.", "Done.\n***\nNext up.", "Heading\n=======\nbody"])
+def test_a_line_that_is_only_marks_is_drawn_rather_than_said(written: str) -> None:
+    """A rule across the page and the dashes under a heading are for the eye; there is nothing to read."""
+    said = spoken(written).text
+    assert "-" not in said and "=" not in said and said.count("\n") == 1
 
 
 def real_replies() -> list[str]:

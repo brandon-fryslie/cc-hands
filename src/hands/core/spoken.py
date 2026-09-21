@@ -22,7 +22,9 @@ _ORDINALS = ("First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", 
 
 # Each rule asks for a tell that ordinary English does not have, because a rule that mangles a sentence
 # costs more than the code name it fixes [LAW:carrying-cost]. That is why a diff must announce itself, a
-# table must be two rows rather than one line with a pipe in it, and a hash must carry a digit.
+# table must be two rows rather than one line with a pipe in it, and a hash must carry a digit and a letter
+# both. A rule below with no tell is a bug in this module's terms, and `test_spoken.py` holds it to them.
+_FENCE = re.compile(r"^[ \t]*(?P<run>`{3,}|~{3,})(?P<info>.*)$")
 _DIFF_OPENS = re.compile(r"^(diff --git |@@ )")
 _DIFF_BODY = re.compile(r"^([+\-@\\ ]|index [0-9a-f]|new file|deleted file|similarity index)")
 _HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]+(.*?)[ \t]*#*[ \t]*$", re.MULTILINE)
@@ -31,13 +33,19 @@ _CODE = re.compile(r"`+([^`\n]+)`+")
 _BOLD = re.compile(r"\*\*([^*\n]+)\*\*|__([^_\n]+)__")
 _ITALIC = re.compile(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])")
 _MD_LINK = re.compile(r"\[([^\]\n]+)\]\([^)\n]+\)")
-_URL = re.compile(r"\b(?:https?://|www\.)\S+")
+_URL = re.compile(r"\b(?:https?://|www\.)[^\s<>]*[^\s<>.,;:!?)\]'\"]")
 _UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE)
-_SHA = re.compile(r"\b(?=[0-9a-f]{7,40}\b)[0-9a-f]*\d[0-9a-f]*\b", re.IGNORECASE)
-_NAMED_SHA = re.compile(r"\b(commits?|sha|hash|revision|rev)\s+(?=[0-9a-f]{7,40}\b)[0-9a-f]*\d[0-9a-f]*\b", re.IGNORECASE)
-_OPAQUE = re.compile(r"\b(?=[A-Za-z0-9_]{12,}\b)[A-Za-z0-9_]*\d[A-Za-z0-9_]*\b")
-_NAMED_OPAQUE = re.compile(r"\b(ids?|tokens?|requests?|sessions?|runs?)\s+(?=[A-Za-z0-9_]{12,}\b)[A-Za-z0-9_]*\d[A-Za-z0-9_]*\b", re.IGNORECASE)
-_PATH = re.compile(r"(?<![\w/])(?:[\w.\-]+/)+[\w\-]+(?:\.[\w\-]+)*")
+# Both tells at once, and neither alone is one. Letters without a digit is a word — "defaced" is a perfectly
+# good past participle. Digits without a letter is a number, and a file of 1048576 bytes is a fact a
+# developer who is not looking actually needs [LAW:carrying-cost].
+_HEX = r"(?=[0-9a-f]{7,40}\b)(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]+\b"
+_SHA = re.compile(rf"\b{_HEX}", re.IGNORECASE)
+_NAMED_SHA = re.compile(rf"\b(commits?|sha|hash|revision|rev)\s+{_HEX}", re.IGNORECASE)
+# An id is mixed case as well as long and numbered, because `base64_encode` is all three of long, numbered
+# and made of words — and a name made of words is `_SNAKE`'s to say, not an id to be dropped whole.
+_ID = r"(?=[A-Za-z0-9_]{12,}\b)(?=[A-Za-z0-9_]*\d)(?=[A-Za-z0-9_]*[A-Z])[A-Za-z0-9_]+\b"
+_OPAQUE = re.compile(rf"\b{_ID}")
+_NAMED_OPAQUE = re.compile(rf"\b(ids?|tokens?|requests?|sessions?|runs?)\s+{_ID}", re.IGNORECASE)
 _FILE = re.compile(r"\b([\w\-]+)\.([A-Za-z0-9]{1,5})\b")
 
 # A closed list, so no ordinary sentence is ever mistaken for a file name. "e.g." and "etc." and a domain
@@ -46,8 +54,17 @@ _FILE = re.compile(r"\b([\w\-]+)\.([A-Za-z0-9]{1,5})\b")
 _EXTENSIONS = frozenset(
     "py js ts tsx jsx md txt json jsonl toml yaml yml sh bash zsh rs go java rb c h cpp cc css html lock cfg ini sql csv xml png jpg svg".split()
 )
+# A path says so the way prose never does: it starts at the root with a directory above it, or its last
+# word ends in one of the extensions above [LAW:one-source-of-truth]. Asking for neither made "and/or",
+# "input/output", "24/7", "12/25/2025" and "1/2" all paths, and every one of them lost a word.
+_PATH = re.compile(
+    r"(?<![\w/])(?:/(?:[\w.\-]+/)+[\w.\-]+"
+    rf"|(?:[\w.\-]+/)+[\w\-]+\.(?:{'|'.join(sorted(_EXTENSIONS))}))\b"
+)
 _FLAG = re.compile(r"(?<![\w-])--?([A-Za-z][\w-]*)(=)?")
-_DOTTED = re.compile(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\b(?=\s*\()")
+_DOTTED_CALL = re.compile(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\b(?=\s*\()")
+# Three names joined by dots is a module; two is "e.g." or a sentence that ended without a space after it.
+_DOTTED_NAME = re.compile(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){2,}\b")
 _SNAKE = re.compile(r"\b\w*_\w*\b")
 _CAMEL = re.compile(r"\b[a-z]+(?:[A-Z][a-z0-9]*)+\b")
 
@@ -115,13 +132,22 @@ def _unfenced(text: str, leaks: list[Leak]) -> str:
     """
     out: list[str] = []
     held: list[str] | None = None
+    fence = ""
     for line in text.splitlines():
-        if re.match(r"^[ \t]*(`{3,}|~{3,})", line):
-            if held is None:
-                held = []
-            else:
-                out.append(_leaked("code", held, leaks))
-                held = None
+        found = _FENCE.match(line)
+        if held is None:
+            # A backtick fence may not carry a backtick in what follows it, so "```bash``` is what I ran"
+            # opens nothing: it is a sentence with an inline span at the front of it, and treating it as a
+            # fence swallowed every line after it to the end of the reply [LAW:parse-dont-validate].
+            if found and not (found["run"][0] == "`" and "`" in found["info"]):
+                held, fence = [], found["run"]
+                continue
+        elif found and found["run"][0] == fence[0] and len(found["run"]) >= len(fence) and not found["info"].strip():
+            # Closed only by its own fence, at least as long. A four-backtick block is how a model quotes a
+            # three-backtick one, and a closer that ignored length ended the outer block at the inner
+            # opening — which read the quoted code out loud, the one thing this exists to prevent.
+            out.append(_leaked("code", held, leaks))
+            held = None
             continue
         (out if held is None else held).append(line)
     if held is not None:
@@ -156,19 +182,31 @@ def _undiffed(text: str, leaks: list[Leak]) -> str:
     leading `-` is no tell at all, and a list of three points would be swallowed as a patch."""
     out: list[str] = []
     held: list[str] | None = None
+    # A blank line inside a diff is part of it; the same blank line is part of the text again if the diff
+    # turns out to have ended there. Held aside until the next line says which, because the count is the
+    # only thing the listener is given about a block they will never hear [LAW:no-silent-failure].
+    blank: list[str] = []
     for line in text.splitlines():
         if held is None and _DIFF_OPENS.match(line):
             held = [line]
             continue
         if held is not None:
-            if _DIFF_BODY.match(line) or not line.strip():
+            if not line.strip():
+                blank.append(line)
+                continue
+            if _DIFF_BODY.match(line):
+                held.extend(blank)
                 held.append(line)
+                blank = []
                 continue
             out.append(_leaked("diff", held, leaks))
             held = None
+            out.extend(blank)
+            blank = []
         out.append(line)
     if held is not None:
         out.append(_leaked("diff", held, leaks))
+        out.extend(blank)
     return "\n".join(out)
 
 
@@ -268,7 +306,8 @@ def _flags(text: str) -> str:
 
 def _identifiers(text: str) -> str:
     """The symbols in a code name are read aloud one by one, so the name becomes the words it is made of."""
-    text = _DOTTED.sub(lambda found: found.group(0).replace(".", " "), text)
+    text = _DOTTED_CALL.sub(lambda found: found.group(0).replace(".", " "), text)
+    text = _DOTTED_NAME.sub(lambda found: found.group(0).replace(".", " "), text)
     text = _SNAKE.sub(lambda found: found.group(0).replace("_", " ").strip(), text)
     return _CAMEL.sub(lambda found: re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", found.group(0)).lower(), text)
 
@@ -281,6 +320,9 @@ def _tidied(text: str) -> str:
     """
     # Empty parentheses are how a function is written, never how one is named out loud.
     text = text.replace("()", " ")
-    text = re.sub(r"[`|*_#>~]+", " ", text)
+    text = re.sub(r"[`|*_#<>~]+", " ", text)
     text = re.sub(r"[ \t]+", " ", text)
-    return "\n".join(line.strip() for line in text.splitlines() if line.strip()).strip()
+    # A rule across the page and the dashes under a heading are drawn, not written: they are a line with
+    # nothing in it but marks. Dropped whole rather than by character, because a dash inside a line is a
+    # hyphen and a minus sign, and speech wants both of those kept.
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip() and not set(line.strip()) <= set("-=+. ")).strip()

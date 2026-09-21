@@ -767,12 +767,24 @@ leaks through is replaced by its kind and length, and the leak is logged.
 
 Two things the rules are shaped by. Each asks for a tell that ordinary English does not
 have — a diff must announce itself with `@@` or `diff --git`, a table must be two rows
-rather than one line with a pipe in it, a hash must carry a digit, and a bare file name
-must end in an extension on a closed list — because a rule that mangles a sentence costs
-more than the code name it fixes `[LAW:carrying-cost]`. And the last step drops every
-mark left over, unconditionally, which is what makes "no backtick, no pipe table, no
-fence reaches the speaker" a property of the function rather than a hope about the rules
-above it `[LAW:parse-dont-validate]`.
+rather than one line with a pipe in it, a hash must carry a digit and a hex letter both,
+a path must start at the root or end in an extension on a closed list, and an id must be
+mixed case as well as long — because a rule that mangles a sentence costs more than the
+code name it fixes `[LAW:carrying-cost]`. A rule with no tell does not merely fail to
+help: it takes a word out of the middle of a sentence and leaves it grammatical, so
+nothing downstream can notice. "and/or" was heard as "or", "24/7" as "7", a file of
+1048576 bytes as "a commit bytes", and `base64_encode` as "an id". That is why the tells
+are held by a table of ordinary sentences in `tests/test_spoken.py` that must come back
+unchanged, rather than by this paragraph: a promise in prose is a map nobody redraws.
+
+And the last step drops every mark left over, unconditionally — including a line with
+nothing in it but marks, which is how a rule across the page and the dashes under a
+heading are drawn — which is what makes "no backtick, no pipe table, no fence reaches
+the speaker" a property of the function rather than a hope about the rules above it
+`[LAW:parse-dont-validate]`. A fence is parsed rather than recognised by its first three
+characters: its closing run must be its own character and at least as long, because a
+four-backtick block is how a model quotes a three-backtick one, and a length-blind
+closer ended the outer block at the inner opening and read the quoted code out loud.
 
 The function is pure and stdlib-only because it is the domain — what a developer who is
 not looking can hear — and it therefore cannot log. A leak is returned rather than
