@@ -10,8 +10,8 @@ The design has one organizing idea: **the pure core decides, the edges act, and 
 fact has one home.** State, events, and effects are typed unions. The reducer that turns
 an event into new state and a list of effects has no I/O, so every lifecycle transition
 is a unit test with no mocks. The adapters that perform the effects are thin, and there
-is exactly one of each: one replies to blocked hooks, one owns the speaker, and one
-types into sessions, through the fritter that wrapped them.
+is exactly one of each: one replies to blocked hooks, one owns the speaker, and one -
+once it is built - types into sessions, through the fritter that wrapped them.
 
 ## Shape
 
@@ -1213,7 +1213,7 @@ generated from the stored resolutions, never from the model repeating itself:
 "Draft for cc-hands, reading 'auth middleware' as `authMiddleware.ts`: refactor the
 auth middleware to use the new token helper." Speak what changed, not what you said.
 A draft is staged, amended, and discarded; sending it waits for the Type effect
-(`hands-keyboard-gxr.i5n`). How the keys reach the right session is settled and built:
+(`hands-harness-5nb.l0u`; `hands-keyboard-gxr.i5n` is the commands and keys beside it). How the keys reach the right session is settled and built:
 fritter holds that session's pseudo-terminal and `Typist` types into it over a unix
 socket, so there is no window to find, no focus to steal and no macOS permission to
 ask for. What is left open is confirming the send through the `UserPromptSubmit` hook.

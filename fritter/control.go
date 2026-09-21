@@ -50,24 +50,28 @@ var keystrokes = map[string][]byte{
 	"shift_tab": []byte("\x1b[Z"),
 }
 
-// How long one caller may take over the whole of its request and its answer, and the
-// most it may send.
+// How long each phase of one exchange may take, and the most a caller may send.
 //
 // [LAW:no-silent-failure] Without a bound, a client that connects and never finishes its
 // line holds a goroutine for the rest of the session's life, and the socket is reachable
 // by anything running as this user.
 //
-// [LAW:one-source-of-truth] Three deadlines nest, and the order is the whole of what
-// makes a refusal arrive instead of a silence: a write gives up first, so its reason has
-// time to be written; the connection gives up next, so a caller that waits is answered
-// rather than dropped; and hands' own five seconds is longest of all, so what it hears is
-// fritter's reason and not its own timer. Widen any one of them without the others and a
-// wedged session stops being able to say that it is wedged.
+// [LAW:one-source-of-truth] The bounds are per phase rather than one over the whole
+// connection, and that is the point rather than an accident. Injecting is the slow phase:
+// under a single deadline a write that spends nearly all of it leaves nothing for the
+// reply, so fritter types the text and is then unable to say that it did. A caller told
+// only that the connection closed reads it as "nothing happened" and sends the message
+// again. The reply is the one thing that must always have time left, so it is given its
+// own budget after the typing is over.
 //
-//	writeGrace (1s) < askDeadline (3s) < hands' ANSWER_TIMEOUT (5s)
+// Their sum is what hands must outlast, and does:
+//
+//	readDeadline (1s) + at most two writes at writeGrace (2s) + replyDeadline (1s)
+//	  = 4s < hands' ANSWER_TIMEOUT (5s)
 const (
-	askDeadline = 3 * time.Second
-	askLimit    = 64 * 1024
+	readDeadline  = 1 * time.Second
+	replyDeadline = 1 * time.Second
+	askLimit      = 64 * 1024
 )
 
 // How long a write into the child's input may take before fritter stops waiting on it,
@@ -106,7 +110,7 @@ func (w *Wrapped) serve(listener net.Listener) {
 
 func (w *Wrapped) answer(connection net.Conn) {
 	defer connection.Close()
-	if err := connection.SetDeadline(time.Now().Add(askDeadline)); err != nil {
+	if err := connection.SetReadDeadline(time.Now().Add(readDeadline)); err != nil {
 		warn("cannot put a deadline on a control connection: %v", err)
 	}
 	reader := bufio.NewReader(io.LimitReader(connection, askLimit))
@@ -133,6 +137,12 @@ func (w *Wrapped) answer(connection net.Conn) {
 }
 
 func reply(connection net.Conn, answer response) {
+	// Set here, after any injecting is done, and so unspent by it. A caller is waiting to
+	// hear whether its text was typed, and that answer has to be affordable even when the
+	// typing took everything the request itself was allowed.
+	if err := connection.SetWriteDeadline(time.Now().Add(replyDeadline)); err != nil {
+		warn("cannot put a deadline on a reply: %v", err)
+	}
 	encoded, err := json.Marshal(answer)
 	if err != nil {
 		warn("cannot encode the reply %+v: %v", answer, err)

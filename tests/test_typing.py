@@ -120,14 +120,53 @@ def test_a_socket_nobody_is_listening_on_says_so(short_dir: Path) -> None:
 
 def test_an_answer_that_says_neither_yes_nor_no_is_not_taken_for_yes(short_dir: Path) -> None:
     # [LAW:no-silent-failure] Anything but a clear yes leaves the draft unsent, and says so.
-    for answer in (b'{"maybe":1}\n', b"not json at all\n"):
+    #
+    # And says the same thing a silence says. All of these arrive after fritter took the
+    # request, and fritter types before it answers, so none of them is evidence that
+    # nothing happened. A caller told only "that was not JSON" reads it as "nothing was
+    # sent" and retypes a draft that is already in the box.
+    for answer in (b'{"maybe":1}\n', b"not json at all\n", b'{"ok":"sure"}\n'):
         path = short_dir / f"f{len(answer)}.sock"
         fritter = FakeFritter(path, answer)
         try:
-            with pytest.raises(Untyped):
+            with pytest.raises(Untyped) as refused:
                 Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
         finally:
             fritter.close()
+        assert "may already be in the input box" in str(refused.value), answer
+        assert "do not send it again" in str(refused.value), answer
+
+
+def test_a_refusal_fritter_actually_gave_is_not_dressed_up_as_a_silence(short_dir: Path) -> None:
+    # The one answer that does not get the warning: fritter said no and said why, and the
+    # reason itself says whether anything reached the box. Adding "it may already be in
+    # the input box" to a refusal that begins "the user has unsent text" would tell a
+    # caller not to resend a message that was never sent at all.
+    path = short_dir / "refused.sock"
+    fritter = FakeFritter(path, b'{"ok":false,"reason":"the user has unsent text in this session\'s input"}\n')
+    try:
+        with pytest.raises(Untyped) as refused:
+            Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
+    finally:
+        fritter.close()
+    assert "the user has unsent text" in str(refused.value)
+    assert "may already be in the input box" not in str(refused.value)
+
+
+def test_a_request_too_big_for_fritter_is_refused_rather_than_sent(short_dir: Path) -> None:
+    # fritter reads its limit and then answers and closes. A larger request has the close
+    # land partway through sendall, so the caller sees a broken pipe and is told the
+    # fritter cannot be reached - which invites retrying a request that can never work.
+    path = short_dir / "big.sock"
+    fritter = FakeFritter(path, b'{"ok":true}\n')
+    try:
+        with pytest.raises(Untyped) as refused:
+            Typist.of(wrapped(path)).type(PromptText("x" * (typing.REQUEST_LIMIT + 1)), submit=True)
+    finally:
+        fritter.close()
+    assert fritter.asked is None, "an oversize request was sent rather than refused"
+    assert "takes at most" in str(refused.value)
+    assert "nothing was typed" in str(refused.value)
 
 
 class EndlessFritter:
@@ -257,3 +296,7 @@ def test_a_fritter_that_hangs_up_without_answering_says_that_and_not_that_it_ans
         fritter.close()
     assert "closed the connection without answering" in str(refused.value)
     assert "not JSON" not in str(refused.value)
+    # MuteFritter reads the request before it hangs up, so this is a delivered request
+    # whose answer never came - the text may be in the box already.
+    assert fritter.asked, "the request never reached the fake fritter, so this tests nothing"
+    assert "may already be in the input box" in str(refused.value)

@@ -14,6 +14,7 @@ reaches here `[LAW:single-enforcer]`.
 import json
 import socket
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,18 +22,31 @@ from hands.core.session import Keystroke, Membership, PromptText, SessionId
 
 # How long the whole exchange may take, and the most an answer may run to.
 #
-# This is the longest of three nested deadlines and must stay that way: fritter stops
-# waiting on a write into the session after one second, drops the connection after three,
-# and so always has time to answer with a reason. Shorten this below fritter's own and
-# hands hears its own timer instead of what fritter had to say. Reaching it at all means
+# This must stay longer than fritter's own bounds added up, and they are: one second to
+# read the request, one for each write into the session (at most two), and one more for the
+# reply, which fritter grants after the typing is over so that answering is always
+# affordable. Four against this five. Shorten this below fritter's sum and hands hears its
+# own timer instead of what fritter had to say. Reaching it at all means
 # fritter itself is stuck, which is why a deadline reached after the request went out says
 # something different from one reached before: see _ask.
 ANSWER_TIMEOUT = 5.0
 ANSWER_LIMIT = 64 * 1024
 
+# The most a request may run to. fritter reads this much and no more, and then answers and
+# closes - so a larger request is refused here rather than sent, because the close arrives
+# while sendall is still writing and the caller sees a broken pipe instead of the reason.
+REQUEST_LIMIT = 64 * 1024
+
 
 class Untyped(Exception):
-    """The text did not reach the session. The message names why."""
+    """The text was not typed, or it is not known whether it was. The message says which.
+
+    Not "the text did not reach the session": that is true of most of these and false of
+    some. fritter writes to the pty before it answers, so a failure after the request went
+    out leaves a message that may be sitting in the input box, and a write that had to be
+    given up on leaves one that is partly there. The message is where that distinction
+    lives, because the only reader of it is a model reading English.
+    """
 
 
 @dataclass(frozen=True)
@@ -71,6 +85,14 @@ class Typist:
 
     def _ask(self, request: dict[str, object]) -> None:
         body = json.dumps(request).encode() + b"\n"
+        # [LAW:parse-dont-validate] Refused here rather than sent: fritter stops reading at
+        # its own limit and closes, which arrives as a broken pipe partway through sendall
+        # and is reported as a fritter that cannot be reached - inviting a retry of a
+        # request that can never succeed.
+        if len(body) > REQUEST_LIMIT:
+            raise Untyped(
+                f"this request is {len(body)} bytes and fritter takes at most {REQUEST_LIMIT}; nothing was typed"
+            )
         # One deadline covers connecting, sending and reading. Per-operation timeouts
         # bound each call and not the exchange, so a fritter dribbling a byte every four
         # seconds would hold the daemon forever without once timing out.
@@ -90,14 +112,26 @@ class Typist:
                 answer = _read_line(connection, deadline)
         except OSError as error:
             if delivered:
-                raise Untyped(
-                    f"the request reached the fritter for session {self.session} at {self.socket} but it never"
-                    f" answered, so the text may already be in the input box - do not send it again: {error}"
-                ) from error
+                raise self._nobody_knows(f"it never answered ({error})") from error
             # A session whose process is gone leaves a socket nobody is listening on, and
             # that is the common case here rather than an exotic one.
             raise Untyped(f"cannot reach the fritter for session {self.session} at {self.socket}: {error}") from error
-        _raise_if_refused(self.session, answer)
+        _raise_if_refused(self.session, answer, self._nobody_knows)
+
+    def _nobody_knows(self, what: str) -> Untyped:
+        """The failure to report when the request went out and no answer came back.
+
+        [LAW:one-source-of-truth] Every failure past the point the request was delivered is
+        worded here, because they all mean the same thing and one of them saying less than
+        the others is how a message gets typed twice. fritter types into the pty before it
+        answers, so "no answer" never means "nothing happened" - not when the connection
+        closed silently, not when what came back was not JSON, and not when it was JSON
+        that says neither yes nor no.
+        """
+        return Untyped(
+            f"the request reached the fritter for session {self.session} at {self.socket} but {what},"
+            " so the text may already be in the input box - do not send it again"
+        )
 
 
 def _left(deadline: float) -> float:
@@ -128,19 +162,27 @@ def _read_line(connection: socket.socket, deadline: float) -> bytes:
     return b"".join(chunks)
 
 
-def _raise_if_refused(session: SessionId, answer: bytes) -> None:
+def _raise_if_refused(session: SessionId, answer: bytes, nobody_knows: Callable[[str], Untyped]) -> None:
+    """Read the answer. An answer that says nothing is not the same as one that says no.
+
+    [LAW:parse-dont-validate] Three outcomes, and only the middle one is fritter speaking:
+    it said yes, it said no and why, or nothing usable came back. The last is every other
+    shape an answer can take, and all of them happen after fritter has already typed.
+    """
     if not answer:
         # A closed connection and a malformed reply both reach json.loads, and the second
         # message would send someone looking for a garbled answer that was never sent.
-        raise Untyped(f"fritter for session {session} closed the connection without answering")
+        raise nobody_knows("it closed the connection without answering")
     try:
         decoded = json.loads(answer)
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise Untyped(f"fritter for session {session} answered something that is not JSON: {error}") from error
+        raise nobody_knows(f"it answered something that is not JSON ({error})") from error
     match decoded:
         case {"ok": True}:
             return
         case {"ok": False, "reason": str() as reason}:
+            # The one answer fritter actually gave. Its reason says whether anything
+            # reached the box, so this is the only failure that does not need the warning.
             raise Untyped(f"fritter refused to type into session {session}: {reason}")
         case other:
-            raise Untyped(f"fritter for session {session} answered {other!r}, which says neither yes nor no")
+            raise nobody_knows(f"it answered {other!r}, which says neither yes nor no")

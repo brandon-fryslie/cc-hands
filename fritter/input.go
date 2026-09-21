@@ -66,22 +66,32 @@ const sequenceLimit = 64
 // end in the middle of an escape sequence, and a paste the user made at their own
 // keyboard can run across many of them.
 type reader struct {
-	unfinished partial // a sequence that has not finished arriving
-	pasting    bool    // inside a paste the user began at their own keyboard
+	unfinished partial  // a sequence, or a character, that has not finished arriving
+	paste      pasteRun // the paste the user is making at their own keyboard
 }
 
-// partial is a sequence a read ended in the middle of.
+// partial is a sequence, or a character, that a read ended in the middle of.
 //
 // [LAW:types-are-the-program] It is a value of its own because emptying the input box
-// invalidates exactly this much and no more. Those bytes are not in the box any longer,
-// whatever they were going to turn out to be - but a paste the user is still making at
-// their own keyboard is not over, and the terminal will send the rest of it either way.
-// Flat in the reader, "forget the sequence" and "forget the paste" are one assignment,
-// and the second of them is wrong: outside its brackets the rest of a paste is read as
-// typing and the newlines in it empty a count that is not empty.
+// invalidates exactly this much and no more: whatever these bytes were going to turn out
+// to be, they are not in the box any longer.
 type partial struct {
 	bytes []byte // what has arrived of it
 	alone bool   // it is a single ESC, which arrived with nothing after it
+}
+
+// pasteRun is a paste the user began at their own keyboard, and the bytes at the end of
+// the last read that could be the beginning of the marker that ends it.
+//
+// [LAW:types-are-the-program] Those held bytes live here rather than in partial because
+// an emptied box settles a half-read sequence and settles nothing about a paste: the
+// terminal sends the rest of one regardless. Sharing one slot, "forget the sequence" and
+// "forget the marker" are the same statement - and forgetting the marker leaves the
+// parser inside a paste that has ended, counting every Enter afterwards as a character,
+// which no keystroke recovers from.
+type pasteRun struct {
+	on   bool
+	tail []byte
 }
 
 // read measures one slice of stdin.
@@ -93,14 +103,18 @@ func (r *reader) read(chunk []byte) []press {
 	// for telling an Escape the user pressed from the ESC of a sequence a read happened
 	// to cut in half, and settling says which sequence gets to use it.
 	settling := r.unfinished.alone
-	if len(r.unfinished.bytes) > 0 {
+	switch {
+	case len(r.paste.tail) > 0:
+		scan = append(append([]byte(nil), r.paste.tail...), chunk...)
+		r.paste.tail = nil
+	case len(r.unfinished.bytes) > 0:
 		scan = append(append([]byte(nil), r.unfinished.bytes...), chunk...)
 		r.unfinished = partial{}
 	}
 
 	var out []press
 	for len(scan) > 0 {
-		if r.pasting {
+		if r.paste.on {
 			n, did, ended := r.inPaste(scan)
 			out = append(out, did)
 			if !ended {
@@ -157,14 +171,23 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 	case next == esc:
 		// Two escapes running are not one sequence. Taking both would throw away the
 		// introducer of whatever the second one begins and leave its parameters to be
-		// read as typing - which is how a mouse report becomes twelve keypresses. Take
+		// read as typing - which is how a mouse report becomes ten keypresses. Take
 		// the first alone; the second starts again from here.
 		return 1, press{}, true
-	case settling && (next < 0x20 || next == del):
-		// No sequence has a control byte in second place, and this ESC came in a read of
-		// its own, so it was the Escape key and this is the next thing the user pressed.
-		// Take the ESC alone and read on: what follows may be the Enter that empties the
-		// box, and swallowing it would hold a line that is no longer there.
+	case settling:
+		// This ESC arrived in a read of its own. The bytes of one keypress are written by
+		// the terminal together, so nothing arriving in a later read belongs to it: it was
+		// the Escape key, and this byte is the next thing the user pressed.
+		//
+		// That holds for `[` and `O` too, which are the second byte of an arrow key and
+		// also two characters people type. The bytes cannot say which, so what is being
+		// chosen here is the direction to be wrong in. Read as an arrow key, an Escape
+		// and a typed `Ok` leave the count at zero with two characters in the box, free
+		// reports the line clear, and hands writes over the user's words - nothing undoes
+		// that. Read as typing, an arrow key whose sequence really was split counts two
+		// characters that are not there and holds a line that is empty, which the user's
+		// next Enter clears and which hands can clear itself with a ctrl_u, because a key
+		// is never refused. One of those is recoverable.
 		return 1, press{}, true
 	case next == '[':
 		return r.csi(s)
@@ -172,6 +195,12 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 		// SS3: one byte follows. Arrow keys in application mode, and F1 to F4.
 		if len(s) < 3 {
 			return 0, press{}, false
+		}
+		if s[2] < 0x20 || s[2] == del {
+			// The same rule csi and the string scan carry: no SS3 ends on a control byte,
+			// so this was never one, and taking three bytes regardless would swallow the
+			// Enter the user just pressed.
+			return 1, press{}, true
 		}
 		return 3, press{}, true
 	case next == ']' || next == 'P' || next == '^' || next == '_':
@@ -203,16 +232,6 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 			}
 		}
 		return unterminated(s)
-	case settling:
-		// The ESC came in a read of its own, so it was the Escape key, and this byte is
-		// the next thing the user pressed rather than the other half of a chord. Taking
-		// both would drop the character silently: the count stays where it was and the
-		// line reads free with their word in the box.
-		//
-		// Only here. A split arrow key really does arrive as ESC then "[A", so the cases
-		// above keep reading across the join; what separates them is that no sequence
-		// begins with an ordinary character.
-		return 1, press{}, true
 	default:
 		// ESC and one more byte, arriving together, is a meta chord - Alt and a key. It
 		// is a command rather than a character, except for the Option-Enter that puts a
@@ -236,7 +255,7 @@ func (r *reader) csi(s []byte) (n int, did press, complete bool) {
 	// The same markers the child is sent when fritter injects text, arriving the other
 	// way: this is the user pasting at their own keyboard.
 	if bytes.HasPrefix(s, pasteStart) {
-		r.pasting = true
+		r.paste.on = true
 		return len(pasteStart), press{}, true
 	}
 	if bytes.HasPrefix(s, x10Mouse) {
@@ -264,13 +283,13 @@ func (r *reader) csi(s []byte) (n int, did press, complete bool) {
 // which is what the markers are for.
 func (r *reader) inPaste(s []byte) (n int, did press, ended bool) {
 	if end := bytes.Index(s, pasteEnd); end >= 0 {
-		r.pasting = false
+		r.paste.on = false
 		return end + len(pasteEnd), press{does: inserted, count: utf8.RuneCount(s[:end])}, true
 	}
 	// The end marker can straddle a read, so a tail that could be its beginning is held
 	// back rather than counted as text.
 	held := beginningOf(s, pasteEnd)
-	r.unfinished = partial{bytes: append([]byte(nil), s[len(s)-held:]...)}
+	r.paste.tail = append([]byte(nil), s[len(s)-held:]...)
 	return len(s), press{does: inserted, count: utf8.RuneCount(s[:len(s)-held])}, false
 }
 
@@ -308,7 +327,7 @@ func printable(s []byte) (n, chars int, whole bool) {
 // [LAW:no-silent-failure] An ambiguity the bytes cannot settle is reported as one rather
 // than guessed at. It settles itself on the next read, or at sequenceLimit.
 func (r *reader) undecided() bool {
-	return len(r.unfinished.bytes) > 1
+	return len(r.unfinished.bytes) > 1 || len(r.paste.tail) > 0
 }
 
 // beginningOf reports how many bytes at the end of s could be the start of marker.

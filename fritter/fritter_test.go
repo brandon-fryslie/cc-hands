@@ -58,7 +58,11 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"a device attributes report", []string{"\x1b[?1;2c"}, true},
 		{"a colour query answered", []string{"\x1b]11;rgb:1b1b/1b1b/1b1b\x07"}, true},
 		{"a report split across two reads", []string{"\x1b[<35;8", "9;12M"}, true},
-		{"an escape split from its sequence", []string{"\x1b", "[A"}, true},
+		// An ESC alone in a read is the Escape key, so `[A` after it is two characters -
+		// even when it really was an arrow key whose sequence the read cut in half. That
+		// holds a line that is empty, which an Enter or a ctrl_u clears. The other way
+		// round frees a line that is not empty, and nothing clears that.
+		{"an escape split from what might be its sequence", []string{"\x1b", "[A"}, false},
 		{"arrow keys move without typing", []string{"\x1b[A", "\x1b[B", "\x1bOC"}, true},
 		{"escape alone is not a character", []string{"\x1b"}, true},
 
@@ -92,6 +96,14 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"escape, then a character typed", []string{"\x1b", "a"}, false},
 		{"escape, then two typed and one taken back", []string{"\x1b", "ab", "\x7f"}, false},
 		{"alt and a key arrive together and are a chord", []string{"\x1ba"}, true},
+		// `O` and `[` are ordinary characters as well as the second byte of an arrow key.
+		// Read as the sequence, these count nothing and free a line holding two letters.
+		{"escape, then a word beginning with O", []string{"\x1b", "O", "k"}, false},
+		{"escape, then a word beginning with a bracket", []string{"\x1b", "[", "x"}, false},
+		{"escape, then a word beginning with O, backspaced to one", []string{"\x1b", "Oops", "\x7f\x7f"}, false},
+		// An SS3 that ends on a control byte was never an SS3, and taking three bytes
+		// regardless swallows the Enter that was the third of them.
+		{"a half-read SS3 must not swallow the Enter after it", []string{"a\x1bO", "\r"}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			line := newLineOwner()
@@ -147,6 +159,25 @@ func TestAKeyThatEmptiesTheBoxSettlesTheLineEvenMidSequence(t *testing.T) {
 	line.sent(keystrokes["ctrl_u"])
 	if !line.free() {
 		t.Fatal("the box was emptied and the line is still held; nothing can recover it")
+	}
+}
+
+func TestAKeyDoesNotTakeTheEndOfThePasteWithIt(t *testing.T) {
+	// The marker that ends a paste can be cut in half by the end of a read, and the half
+	// of it that arrived is held over. Those bytes are not an unfinished sequence, so
+	// emptying the box must not discard them: without the marker's first bytes the marker
+	// never matches, the parser stays inside a paste that has ended, and from then on
+	// every Enter counts as a pasted character instead of emptying the box. No keystroke
+	// recovers from that - the session can never be typed into again.
+	line := newLineOwner()
+	line.typed([]byte("\x1b[200~line one"))
+	line.typed([]byte(" and more\x1b[20"))
+	line.sent(keystrokes["ctrl_u"])
+	line.typed([]byte("1~"))
+	line.typed([]byte("hi"))
+	line.typed([]byte("\r"))
+	if !line.free() {
+		t.Fatal("the paste's end marker was discarded, so the paste never ended and Enter no longer empties the box")
 	}
 }
 

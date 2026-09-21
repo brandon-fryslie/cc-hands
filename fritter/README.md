@@ -10,8 +10,10 @@ keyboard had typed it.
 fritter [--socket-dir DIR] -- COMMAND [ARGS...]
 ```
 
-hands uses it to drive Claude Code sessions. Nothing in fritter knows that; Claude Code
-is simply its first caller.
+hands is what it was built for, and hands' client for it - `hands.sessions.typing` - is
+written and tested against it. The effect that will call that client is not built yet
+(`hands-harness-5nb.l0u`), so nothing in hands dials this socket today. Nothing in fritter
+knows any of that; Claude Code is simply the first program it wraps.
 
 ## Why a pseudo-terminal and not a pipe
 
@@ -58,17 +60,20 @@ went wrong, because a write that was refused and a write that landed must never 
 alike to the caller. When the text lands but the Enter after it does not, the reason says
 so in those words — retyping text that is already sitting in the box would double it.
 
-A caller has three seconds and 64 KB for its request. Past the size it is refused with a
-reason that says so; past the time the connection is dropped, because a client that
+A caller has one second and 64 KB to get its request in. Past the size it is refused with
+a reason that says so; past the time the connection is dropped, because a client that
 connects and never finishes its line would otherwise hold a goroutine for the rest of the
-session.
+session. Both are generous for a local client sending one small object.
 
-Three deadlines nest, and the order is the whole of what makes a refusal arrive instead of
-a silence — a write into the session gives up after **one** second so its reason has time
-to be written, the connection gives up after **three** so a caller that waits is answered
-rather than dropped, and hands allows **five** so what it hears is fritter's reason and not
-its own timer. Widen any one without the others and a wedged session stops being able to
-say that it is wedged.
+Each phase of an exchange is bounded on its own, and that is deliberate. Reading the
+request gets **one** second, a write into the session gives up after **one** so its reason
+has time to be written, and the reply gets **one** of its own, granted after the typing is
+over. A single deadline across all three would let a slow write spend what the reply
+needed — fritter would type the text and then be unable to say so, and a caller hearing
+only that the connection closed sends the message twice. The sum is at most four seconds
+against the **five** hands allows, so what hands hears is fritter's reason and not its own
+timer. Widen any one without the others and a wedged session stops being able to say that
+it is wedged.
 
 `text` is typed literally. fritter does not decide what a leading `/` or `@` means to the
 program underneath — that belongs to the caller, and in hands it is already settled
