@@ -93,8 +93,9 @@ WAITING = Blocked(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False)
 @pytest.mark.parametrize("before", [Idle(), Working(since=1.0)])
 @pytest.mark.parametrize("event", [Prompted(ONE.id, at=5.0), Ended(ONE.id, "prompt_input_exit"), Joined(ONE, "startup")])
 def test_moving_between_states_that_wait_on_nothing_asks_for_nothing(before: SessionState, event: Event) -> None:
-    # A prompt marks the repository it is about to change, which asks the user nothing and is not spoken.
-    marked = [Snapshot(ONE.id, ONE.cwd)] if isinstance(event, Prompted) else []
+    # A prompt at the prompt marks the repository it is about to change, which asks the user nothing and is
+    # not spoken. A prompt arriving mid-turn opens no turn and so marks nothing: see the test below.
+    marked = [Snapshot(ONE.id, ONE.cwd)] if isinstance(event, Prompted) and isinstance(before, Idle) else []
     assert reduce(holding(before), event)[1] == marked
 
 
@@ -109,8 +110,19 @@ def test_a_permission_request_is_handed_to_the_intermediary(before: SessionState
 )
 def test_a_session_that_moves_on_while_waiting_lets_its_hook_go_undecided(event: Event) -> None:
     # Most often the user answered the dialog at the keyboard; a voice reply after that would decide nothing.
-    marked = [Snapshot(ONE.id, ONE.cwd)] if isinstance(event, Prompted) else []
-    assert reduce(holding(WAITING), event)[1] == [Reply(ONE.id, RequestId("r0"), Withdraw()), *marked]
+    assert reduce(holding(WAITING), event)[1] == [Reply(ONE.id, RequestId("r0"), Withdraw())]
+
+
+@pytest.mark.parametrize("before", [Working(since=1.0), WAITING])
+def test_a_prompt_inside_a_running_turn_leaves_the_mark_where_that_turn_began(before: SessionState) -> None:
+    """A turn opens from the prompt and nowhere else, so a prompt that lands inside one opens nothing.
+
+    Claude Code sends the hook for a queued prompt, and a Stop that the daemon never heard leaves a session
+    working as far as the registry knows. Marked again at either, the turn is compared against the middle of
+    its own work: everything it changed before that second prompt is missing from the one telling that names
+    it, which is exactly the result no tool record would name either.
+    """
+    assert Snapshot(ONE.id, ONE.cwd) not in reduce(holding(before), Prompted(ONE.id, at=5.0))[1]
 
 
 @pytest.mark.parametrize("before", [Idle(), Working(since=1.0)])

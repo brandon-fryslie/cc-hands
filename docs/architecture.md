@@ -605,6 +605,19 @@ one taken now, and lists the commits reachable from where the turn ended and not
 where it began. The summariser gets the `Delta` beside the steps, because it is the
 result of all of them together and the file a `sed` changed belongs to no step at all.
 
+A mark is taken only from a session sitting at the prompt, because a turn opens there
+and nowhere else. Claude Code sends the hook for a prompt queued while a turn runs, and
+a `Stop` the daemon never heard leaves a session working as far as the registry knows;
+marked again at either, a turn would be compared against the middle of its own work and
+everything it changed before that second prompt would be missing from the one telling
+that names it `[LAW:no-ambient-temporal-coupling]`. A mark whose `HEAD` could not be
+read is no mark at all, and that is a distinction the deadline has to make: `rev-parse`
+says nothing both for a repository with no commit yet and for one it ran out of time on,
+and only the second leaves no time on the clock. Read as the first, a mark that merely
+ran late compares against no commit, so every commit ever made in that repository is
+reachable from where the turn ended and not from where it began — and the turn is
+spoken as having made all of them `[LAW:parse-dont-validate]`.
+
 The tree is written through an index of the daemon's own — the repository's index
 copied to a scratch file, `git add -A`, `git write-tree` — so nothing is staged,
 stashed, or reverted, and the repository's own index is never written. `git stash
@@ -613,8 +626,11 @@ untracked file, and the file a code generator just wrote is exactly what a turn 
 able to name; it also touches the repository's index to do its work. The index is
 copied rather than started from nothing because it carries what git already knows about
 every file: 0.105 s against 1.409 s on a repository of 20,000 files, and this is taken
-while a prompt's hook waits on it `[LAW:carrying-cost]`. The one mark left behind is a
-few unreferenced objects, which git's own housekeeping collects.
+while a prompt's hook waits on it `[LAW:carrying-cost]`. The one mark left behind is one
+unreferenced object per content git has not stored already, which its own housekeeping
+collects. Content is what git names an object by, so a file that does not change costs
+its size once however many turns read it: measured at 1.6 MB the first time two hundred
+untracked files were seen, and nothing at all on the two readings after.
 
 `Compare` is its own effect, emitted before `Summarise` and performed before it, rather
 than read when the summary is made: summaries are made one at a time and take seconds,
@@ -626,7 +642,15 @@ effect queued after `Compare` is the one that has the turn spoken at all, so a r
 that is slow, that fails, or whose handler is cancelled must cost the turn its delta
 and never its telling `[LAW:no-silent-failure]`. Measured: the stop hook waits 0 ms,
 and the prompt hook 40 ms here and 145 ms on 20,000 files, against a mark's whole
-budget of `POST_TIMEOUT_SECONDS - 0.5`.
+budget of `POST_TIMEOUT_SECONDS - 0.5`. A mark and a reading are both best effort and
+neither may cost the turn what it was read for, so both are performed under one guard
+rather than one guard each `[LAW:single-enforcer]`: a mark may not fail the prompt hook
+waiting on it, and a reading may not cost the turn the `Summarise` queued behind it.
+
+Everything the summariser is shown of a delta is bounded by the `Budget`, commits
+included: a turn that pulls or rebases brings them by the hundred, and the count is the
+story where the subjects are not. The reader keeps no more than `MOST_COMMITS` of them
+for the same reason it keeps no more than `MOST` characters of patch.
 
 One reading is made for every turn that stops, held in the order the turns stopped, and
 every telling takes exactly one — including a telling whose summary failed. That is the

@@ -22,7 +22,7 @@ from hands.voice.pipeline import OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
 
 FIXTURE = Path(__file__).parent / "fixtures" / "turn.jsonl"
-BUDGET = Budget(opening=100, said=100, input=100, result=100, steps=10, files=10, changes=500)
+BUDGET = Budget(opening=100, said=100, input=100, result=100, steps=10, files=10, commits=10, changes=500)
 SID = SessionId("s1")
 
 

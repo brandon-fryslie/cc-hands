@@ -20,7 +20,7 @@ from hands.voice.readback import spoken_name
 from hands.voice.summary import Summariser, SummaryFailed
 
 # How much of a turn the summariser is shown: enough to name its results, few enough tokens for a local model to answer in seconds.
-TURN_BUDGET = Budget(opening=600, said=1500, input=200, result=400, steps=40, files=25, changes=2000)
+TURN_BUDGET = Budget(opening=600, said=1500, input=200, result=400, steps=40, files=25, commits=10, changes=2000)
 
 # Everything reading and summarising a turn is expected to fail with; each is said, and the next turn is still heard.
 _FAILURES = (Rejected, OSError, SummaryFailed, openai.OpenAIError, anthropic.AnthropicError)

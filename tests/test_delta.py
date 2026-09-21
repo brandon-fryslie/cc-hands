@@ -1,14 +1,35 @@
 """What a turn changed in the repository it ran in, read from git without disturbing it."""
 
+import asyncio
 import subprocess
 import time
 from pathlib import Path
 
 from hands.core.delta import Delta
-from hands.core.session import SessionId
-from hands.sessions.delta import Deltas
+from hands.core.effects import Summarise
+from hands.core.events import Joined, Prompted, Stopped
+from hands.core.session import Membership, SessionId, Working
+from hands.sessions.delta import MOST_COMMITS, Deltas
+from hands.sessions.registry import Sessions
 
 SID = SessionId("s1")
+
+
+class Breaks:
+    """A repository reader that fails at both ends, which neither end of a turn may be made to care about."""
+
+    async def snapshot(self, session: SessionId, cwd: Path) -> None:
+        raise RuntimeError("there is nowhere to put a scratch index")
+
+    async def compare(self, session: SessionId) -> None:
+        raise RuntimeError("git is on fire")
+
+    async def taken(self, session: SessionId) -> Delta:
+        return Delta()
+
+
+def attached(tmp_path: Path) -> Sessions:
+    return Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=Breaks())
 
 
 def git(repo: Path, *args: str) -> str:
@@ -244,27 +265,25 @@ async def test_a_reading_that_fails_outright_still_lets_the_turn_be_told(tmp_pat
 
     Without this the turn is never told and nothing says why: the user simply stops hearing about a session.
     """
-    import asyncio
-
-    from hands.core.effects import Summarise
-    from hands.core.events import Joined, Stopped
-    from hands.core.session import Membership
-    from hands.sessions.registry import Sessions
-
-    class Breaks:
-        async def snapshot(self, session: SessionId, cwd: Path) -> None: ...
-
-        async def compare(self, session: SessionId) -> None:
-            raise RuntimeError("git is on fire")
-
-        async def taken(self, session: SessionId) -> Delta:
-            return Delta()
-
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=Breaks())
+    sessions = attached(tmp_path)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Stopped(SID, "Done."))
     story = await asyncio.wait_for(sessions.story(), 2.0)
     assert isinstance(story, Summarise) and story.session == SID
+
+
+async def test_a_mark_that_fails_outright_still_lets_the_prompt_through(tmp_path: Path) -> None:
+    """The same promise on the other side of the turn: a mark is taken while the user's prompt hook waits.
+
+    Every way git itself can fail is already answered with None, but the reading needs a temporary file, and
+    a TMPDIR that is full or read-only fails before git is ever run. Unguarded, that turns a best-effort read
+    of a repository into an error on the prompt the user just typed [LAW:no-silent-failure].
+    """
+    sessions = attached(tmp_path)
+    await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
+    await sessions.apply(Prompted(SID, at=1.0))
+    # The mark is gone, the turn is not: the session is working, and the hook that said so was answered.
+    assert [listing.session.state for listing in sessions.live()] == [Working(since=1.0)]
 
 
 async def test_a_repository_with_no_commit_yet_still_says_what_the_turn_did(tmp_path: Path) -> None:
@@ -294,3 +313,62 @@ async def test_a_detached_head_is_read_like_any_other(tmp_path: Path) -> None:
     git(root, "checkout", "-q", "--detach")
     delta = await turn(root, lambda: (root / "b.py").write_text("y = 2\n"))
     assert [file.path for file in delta.files] == ["b.py"]
+
+
+class Slow(Deltas):
+    """A repository whose tree takes everything the *mark* was given, which is what a slow one really does.
+
+    The deadline is the only thing separating a repository with no commit from one git could not answer for,
+    so a test of that has to spend the real deadline rather than hand one command a shorter one. Only the
+    mark is slowed: a reading slowed too would end in the narrator's patience running out, and the turn would
+    come back with no delta for a reason that has nothing to do with what this is testing.
+    """
+
+    marking = True
+
+    async def _tree(self, root: Path, deadline: float) -> str | None:
+        tree = await super()._tree(root, deadline)
+        if self.marking:
+            await asyncio.sleep(max(0.0, deadline - time.monotonic()) + 0.01)
+            self.marking = False
+        return tree
+
+
+async def test_a_mark_that_ran_out_of_time_reading_where_it_stands_is_no_mark_at_all(tmp_path: Path) -> None:
+    """Otherwise the history made before the turn is read as the history the turn made, and spoken that way.
+
+    A repository with no commit yet and a repository git could not answer for both leave `rev-parse` saying
+    nothing. A mark that takes the second for the first compares against no commit at all, so every commit
+    ever made in that repository is reachable from where the turn ended and not from where it began.
+    """
+    root = repo(tmp_path)
+    for n in range(3):
+        (root / f"c{n}.py").write_text(f"n = {n}\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", f"made long before this turn {n}")
+
+    deltas = Slow()
+    await deltas.snapshot(SID, root)
+    (root / "during.py").write_text("the turn's own work\n")
+    await deltas.compare(SID)
+    # No mark, so no delta: the turn is told by its steps alone, which is the one honest answer here.
+    assert await deltas.taken(SID) == Delta()
+
+
+def piled(root: Path, count: int) -> None:
+    """A long history in one git invocation, because five hundred of them is half a minute of subprocesses."""
+    branch = git(root, "symbolic-ref", "HEAD")
+    stream = "".join(
+        f"commit {branch}\ncommitter Test <t@example.com> {1700000000 + n} +0000\ndata {len(f'pulled {n}')}\npulled {n}\n"
+        # The first of them says where the pile starts; each after it carries on from the one before.
+        + (f"from {branch}^0\n" if n == 0 else "")
+        for n in range(count)
+    )
+    subprocess.run(("git", "-C", str(root), "fast-import", "--quiet"), input=stream, text=True, check=True)
+
+
+async def test_a_turn_that_pulled_a_history_keeps_no_more_of_it_than_it_could_ever_say(tmp_path: Path) -> None:
+    """A pull or a rebase brings commits by the hundred, and every one of them was held, whole, until told."""
+    root = repo(tmp_path)
+    delta = await turn(root, lambda: piled(root, MOST_COMMITS + 5))
+    assert len(delta.commits) == MOST_COMMITS

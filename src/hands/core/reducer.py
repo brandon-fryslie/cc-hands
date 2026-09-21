@@ -69,10 +69,19 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _ended_unheard(registry, membership, [])
         case Prompted(session=session, at=at):
             # Marked as the turn opens, so what it changes is read against a repository it has not touched yet.
-            return _enter(registry, event, lambda _: Working(since=at), lambda membership: [Snapshot(session, membership.cwd)])
+            # A turn opens from the prompt and nowhere else, so only a session sitting at one is marked: a
+            # prompt that lands inside a running turn — one that was queued, or one whose Stop nobody heard —
+            # would otherwise move the mark into the middle of the work it is there to measure, and the turn
+            # would be told only what it did after that [LAW:no-ambient-temporal-coupling].
+            return _enter(
+                registry,
+                event,
+                lambda _: Working(since=at),
+                lambda was: [Snapshot(session, was.membership.cwd)] if isinstance(was.state, Idle) else [],
+            )
         case Stopped(session=session, closing=closing):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
-            return _enter(registry, event, lambda _: Idle(), lambda _membership: [Compare(session), Summarise(session, closing)])
+            return _enter(registry, event, lambda _: Idle(), lambda _was: [Compare(session), Summarise(session, closing)])
         case PermissionRequested(at=at, request=request, permission=permission):
             deadline = at + registry.permission_deadline
             return _enter(registry, event, lambda _: Blocked(on=permission, request=request, deadline=deadline, warned=False))
@@ -125,9 +134,13 @@ def _enter(
     registry: Registry,
     event: SessionEvent,
     next: Callable[[SessionState], SessionState],
-    also: Callable[[Membership], list[Effect]] = lambda _: [],
+    also: Callable[[Session], list[Effect]] = lambda _: [],
 ) -> tuple[Registry, list[Effect]]:
-    """The event moves a live session to its next state; `also` is what the move calls for beyond the transition."""
+    """The event moves a live session to its next state; `also` is what the move calls for beyond the transition.
+
+    `also` is given the session as it stood before the move, not after: what a move calls for can depend on
+    where it moved from, and a state already overwritten cannot be asked [LAW:no-ambient-temporal-coupling].
+    """
     match registry.sessions.get(event.session):
         case None:
             # [LAW:no-silent-failure] an event for a session that never joined is a record, not a drop.
@@ -135,9 +148,9 @@ def _enter(
         case Session(state=Gone()):
             # Ended is final until the session starts again; a hook that lands late cannot revive it.
             return registry, [Audit(AfterEnd(event)), *_unwaited(event)]
-        case Session(membership=membership, state=before):
+        case Session(membership=membership, state=before) as was:
             after = next(before)
-            return registry.put(Session(membership, after)), [*_transition(membership.id, before, after), *also(membership)]
+            return registry.put(Session(membership, after)), [*_transition(membership.id, before, after), *also(was)]
 
 
 def _unwaited(event: SessionEvent) -> list[Effect]:

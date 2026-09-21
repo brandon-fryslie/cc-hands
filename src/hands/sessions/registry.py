@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from loguru import logger
 
 from hands.core.drafts import DraftOutcome, DraftRequest, decide
-from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Narrate, Reply, SessionGone, Snapshot, Speak, Story, Summarise, Unregistered, Withdraw
+from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Narrate, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Unregistered, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
 from hands.core.permissions import AnswerPermission, PermissionOutcome, answer
 from hands.core.reducer import reduce
@@ -164,15 +164,23 @@ class Sessions:
                 self._heard.put_nowait(effect)
             case Summarise() | SessionGone():
                 self._story.put_nowait(effect)
+            case Snapshot() | Compare():
+                # [LAW:no-silent-failure] what a repository says about a turn is best effort, and may never
+                # cost the turn the thing it was read for. Both reads are guarded here rather than each
+                # guarded where it is called [LAW:single-enforcer], because it is one promise: a mark may not
+                # fail the prompt hook that is waiting on it, and a reading may not cost the turn the
+                # Summarise queued behind it, which is what has the turn spoken at all.
+                try:
+                    await self._repository(effect)
+                except Exception as error:
+                    logger.error(f"what the repository of session {effect.session} says could not be read: {type(error).__name__}: {error}")
+
+    async def _repository(self, effect: Repository) -> None:
+        match effect:
             case Snapshot(session=session, cwd=cwd):
                 await self._changes.snapshot(session, cwd)
             case Compare(session=session):
-                # [LAW:no-silent-failure] reading what a turn changed is best effort, and may never cost the
-                # turn its telling: the Summarise queued after this is what has the turn spoken at all.
-                try:
-                    await self._changes.compare(session)
-                except Exception as error:
-                    logger.error(f"what the turn of session {session} changed could not be read: {type(error).__name__}: {error}")
+                await self._changes.compare(session)
 
     def _reply(self, session: SessionId, request: RequestId, reply: HookReply) -> None:
         waiting = self._waiting.get(request)

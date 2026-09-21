@@ -1,10 +1,12 @@
 """What a turn changed in the repository a session works in, read from git without disturbing it.
 
 Every command here reads: nothing moves a ref, stages anything, or touches the working tree. The one mark it
-leaves is in the object database, where writing a tree costs a few unreferenced objects that git's own
-housekeeping collects — the same price `git stash create` charges, and the reason this does not use it is that
-a stash holds no untracked file, and the new file a code generator wrote is exactly what a turn must be able
-to name [LAW:effects-at-boundaries].
+leaves is in the object database, where writing a tree costs one unreferenced object per content git has not
+stored already, and git's own housekeeping collects them. Content is what git names an object by, so a file
+that does not change costs its size once however many turns read it: measured at 1.6 MB the first time two
+hundred untracked files were seen, and nothing at all on the two readings after. That is the same price
+`git stash create` charges, and the reason this does not use it is that a stash holds no untracked file, and
+the new file a code generator wrote is exactly what a turn must be able to name [LAW:effects-at-boundaries].
 """
 
 import asyncio
@@ -45,13 +47,19 @@ HELD = 8
 # this only stops a formatter's rewrite of a whole repository from sitting here until someone asks.
 MOST = 40_000
 
+# The most commits kept from one turn. A turn that makes them one at a time makes a handful; past this it
+# pulled or rebased a history, and how many there were is the story where which ones they were is not.
+MOST_COMMITS = 500
+
 
 @dataclass(frozen=True)
 class Mark:
     """Where a repository stood: the commit it was on, and a tree of everything in it git would keep."""
 
     root: Path
-    head: str | None  # None before a repository's first commit, where there is no commit to be on
+    # None only where a repository has no commit to be on, never where git could not say. A mark that cannot
+    # tell those two apart has every commit in the repository read as the work of one turn: see _mark.
+    head: str | None
     tree: str
 
 
@@ -165,7 +173,18 @@ class Deltas:
         if not root:
             return None
         tree = await self._tree(Path(root), deadline)
-        return None if tree is None else Mark(Path(root), await self._git(Path(root), "rev-parse", "HEAD", deadline=deadline), tree)
+        if tree is None:
+            return None
+        head = await self._git(Path(root), "rev-parse", "--verify", "--quiet", "HEAD", deadline=deadline)
+        if head is None and time.monotonic() >= deadline:
+            # [LAW:parse-dont-validate] git answers nothing for a repository with no commit yet and nothing for
+            # one it ran out of time on, and the deadline is what tells them apart — every other way git can
+            # refuse leaves time on it. Read as no commit, a mark that merely ran late has _commits list the
+            # whole history, and the turn is told as having made all of it. What is not known is refused where
+            # a mark is built, so no reading downstream can be handed one that does not know where it stands.
+            logger.warning(f"there was no time left to read where {root} stands, so the turn is told without its delta")
+            return None
+        return Mark(Path(root), head, tree)
 
     async def _between(self, mark: Mark, deadline: float) -> Delta:
         tree = await self._tree(mark.root, deadline)
@@ -185,7 +204,9 @@ class Deltas:
             return ()
         # What is reachable from where the turn ended and not from where it began, which is what the turn
         # added however it got there — a merge, a rebase, or an amend that rewrote the commit before it.
-        listed = await self._git(mark.root, "log", "--format=%h%x1f%s", f"{mark.head}..{head}" if mark.head else head, deadline=deadline)
+        listed = await self._git(
+            mark.root, "log", f"--max-count={MOST_COMMITS}", "--format=%h%x1f%s", f"{mark.head}..{head}" if mark.head else head, deadline=deadline
+        )
         return () if not listed else tuple(Commit(*line.split("\x1f", 1)) for line in listed.splitlines() if "\x1f" in line)
 
     async def _tree(self, root: Path, deadline: float) -> str | None:

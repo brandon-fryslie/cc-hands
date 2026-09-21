@@ -189,6 +189,7 @@ class Budget:
     result: int  # characters of each tool result, patch, or output
     steps: int  # steps shown; the middle of a longer turn is left out, keeping how it started and how it ended
     files: int  # files of the turn's delta named one by one; a formatter touches hundreds, where the count is the story
+    commits: int  # commits of the turn's delta named one by one; a pull or a rebase brings hundreds, and the count is again the story
     changes: int  # characters of the patch between where the turn began and where it ended
 
 
@@ -224,8 +225,10 @@ def _changed(delta: Delta, budget: Budget) -> list[str]:
             named.append(f"  (and {len(delta.files) - budget.files} more files)")
         told.append("The repository is different, whether or not a step above says so:\n" + "\n".join(named))
     if delta.commits:
-        made = "\n".join(f"  {commit.sha} {commit.subject}" for commit in delta.commits)
-        told.append(f"It made {len(delta.commits)} commit{'' if len(delta.commits) == 1 else 's'}:\n{made}")
+        made = [f"  {commit.sha} {commit.subject}" for commit in delta.commits[: budget.commits]]
+        if len(delta.commits) > budget.commits:
+            made.append(f"  (and {len(delta.commits) - budget.commits} more commits)")
+        told.append(f"It made {len(delta.commits)} commit{'' if len(delta.commits) == 1 else 's'}:\n" + "\n".join(made))
     if delta.patch:
         told.append(f"What changed:\n{_cut(delta.patch, budget.changes)}")
     return told

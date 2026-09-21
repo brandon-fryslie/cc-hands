@@ -24,7 +24,7 @@ from hands.core.turn import (
     render,
 )
 
-ROOMY = Budget(opening=10_000, said=10_000, input=10_000, result=10_000, steps=100, files=100, changes=10_000)
+ROOMY = Budget(opening=10_000, said=10_000, input=10_000, result=10_000, steps=100, files=100, commits=100, changes=10_000)
 
 
 def rendered(*steps: object, budget: Budget = ROOMY) -> str:
@@ -89,14 +89,14 @@ def test_a_suite_that_failed_whole_has_its_names_cut_to_budget_like_every_other_
     """Hundreds of failing names is exactly what a bad refactor prints, and exactly when one step could fill
     the whole prompt of a model asked for two sentences."""
     failing = tuple(f"test_{n}" for n in range(200))
-    assert rendered(Tested(None, "pytest", 0, 200, failing), budget=Budget(opening=100, said=100, input=100, result=30, steps=10, files=10, changes=100)) == (
+    assert rendered(Tested(None, "pytest", 0, 200, failing), budget=Budget(opening=100, said=100, input=100, result=30, steps=10, files=10, commits=10, changes=100)) == (
         "Claude ran the pytest tests: 200 failed, 0 passed\n  test_0\n  test_1\n  test_2\n  test_3\n  te" + CUT
     )
 
 
 def test_a_long_turn_keeps_how_it_started_and_how_it_ended_and_each_part_is_cut_to_its_budget() -> None:
     steps = tuple(Said(None, f"step {n}") for n in range(10))
-    rendered_turn = render(Turn(Asked(None, "x" * 50), steps), Delta(), Budget(opening=10, said=100, input=100, result=100, steps=4, files=10, changes=100))
+    rendered_turn = render(Turn(Asked(None, "x" * 50), steps), Delta(), Budget(opening=10, said=100, input=100, result=100, steps=4, files=10, commits=10, changes=100))
     assert rendered_turn == "\n\n".join(
         [
             "The user asked:\n" + "x" * 10 + CUT,
@@ -131,9 +131,21 @@ def test_what_the_repository_says_is_told_after_the_steps_and_named_file_by_file
 def test_a_formatter_that_touched_hundreds_of_files_is_counted_rather_than_listed() -> None:
     """Naming every file is what fills a prompt budgeted for two spoken sentences; the count is the story."""
     delta = Delta(files=tuple(Changed(f"src/m{n}.py", 1, 1) for n in range(40)))
-    told = render(Turn(Asked(None, "format"), ()), delta, Budget(opening=100, said=100, input=100, result=100, steps=10, files=3, changes=100))
+    told = render(Turn(Asked(None, "format"), ()), delta, Budget(opening=100, said=100, input=100, result=100, steps=10, files=3, commits=10, changes=100))
     assert "  src/m0.py +1 -1\n  src/m1.py +1 -1\n  src/m2.py +1 -1\n  (and 37 more files)" in told
     assert "src/m3.py" not in told
+
+
+def test_a_turn_that_pulled_a_history_is_counted_rather_than_listed() -> None:
+    """The bound the files have, for the reason they have it: a pull brings hundreds and the count is the story.
+
+    Left unbounded this was the one rendered section with no budget at all, so a `git pull --rebase` after a
+    long absence put its whole subject list in a prompt sized for two spoken sentences.
+    """
+    delta = Delta(commits=tuple(Commit(f"abc{n:04d}", f"pulled {n}") for n in range(30)))
+    told = render(Turn(Asked(None, "pull"), ()), delta, Budget(opening=100, said=100, input=100, result=100, steps=10, files=10, commits=2, changes=100))
+    assert "It made 30 commits:\n  abc0000 pulled 0\n  abc0001 pulled 1\n  (and 28 more commits)" in told
+    assert "pulled 2" not in told
 
 
 def test_a_turn_that_changed_nothing_says_nothing_about_the_repository() -> None:
