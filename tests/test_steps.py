@@ -186,6 +186,29 @@ def test_a_command_that_did_more_than_run_a_suite_is_told_as_the_command_it_was(
     assert recognise(Call(None, "Bash", {"command": "pytest"}, Result("1 failed, 2 passed in 0.1s", None, True))) == Tested(None, "pytest", 2, 1, ())
 
 
+def test_a_summary_a_runner_drew_around_is_still_the_summary_it_wrote() -> None:
+    """A runner hides the cursor while it redraws, which puts a control sequence where the line starts."""
+    drawn = report_of("\x1b[?25l      Tests  2 failed | 2 passed (4)\n\x1b[?25h")
+    assert drawn is not None and drawn.runner == "vitest" and drawn.failed == 2 and drawn.passed == 2
+
+
+def test_a_run_that_both_failed_and_errored_is_counted_as_both() -> None:
+    """pytest says the two in one breath, and hearing the first alone understates the run by exactly the rest."""
+    both = report_of("=========== 3 failed, 2 errors, 1 passed in 1.0s ===========\n")
+    assert both is not None and both.failed == 5 and both.passed == 1
+
+
+def test_the_cases_of_one_failing_test_are_not_counted_as_more_failing_tests() -> None:
+    """`go test` counts nothing, so the names it prints are the count, and a table-driven test prints one a case."""
+    table = report_of(
+        "--- FAIL: TestOuter (0.00s)\n"
+        "    --- FAIL: TestOuter/case_a (0.00s)\n"
+        "    --- FAIL: TestOuter/case_b (0.00s)\n"
+        "FAIL\tsample\t0.005s\n"
+    )
+    assert table is not None and table.failed == 1 and table.failing == ("TestOuter",)
+
+
 def test_a_call_no_result_has_come_back_for_is_told_as_having_none() -> None:
     step = recognise(Call(None, "Bash", {"command": "sleep 60"}, None))
     assert step == Ran(None, "sleep 60", None, failed=False, output="(no result)", git=())

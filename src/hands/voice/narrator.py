@@ -56,6 +56,6 @@ async def recount(
         logger.error(f"cannot summarise the turn session {session} finished: {type(error).__name__}: {error}")
         return TTSSpeakFrame(f"{name} finished a turn, and I could not summarise it.", append_to_context=False)
     record(Recounted(session, summary))
-    tails.spoken(telling)
+    await tails.spoken(telling)
     # Kept in the intermediary's context, so it can answer about what the user heard.
     return TTSSpeakFrame(f"{name}: {summary}")

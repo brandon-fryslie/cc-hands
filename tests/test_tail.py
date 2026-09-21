@@ -8,7 +8,7 @@ import pytest
 from loguru import logger
 
 from hands.core.session import Membership, SessionId
-from hands.core.turn import Asked, Notified, Looked, Ran, Said, Turn
+from hands.core.turn import Asked, Notified, Looked, Other, Ran, Said, Turn
 from hands.sessions.tail import Tails, Telling
 
 SID = SessionId("bf411065-dc5c-4ec9-8302-61b84bdb5c53")
@@ -155,7 +155,7 @@ async def test_only_what_was_appended_since_the_last_reading_is_read_again(tmp_p
     tails = await following(transcript)
     first = await tails.tell(SID, None)
     assert first is not None and first.turn == Turn(Asked("first"), (Said(None, "Done."),))
-    tails.spoken(first)
+    await tails.spoken(first)
     with transcript.open("a") as more:
         more.write(lines(CALL, RESULT, DONE))
     second = await tails.tell(SID, None)
@@ -227,7 +227,7 @@ async def test_a_reading_picks_up_after_the_steps_already_told(tmp_path: Path) -
     tails = await following(transcript)
     first = await tails.tell(SID, None)
     assert first is not None and first == Telling(SID, Turn(Asked("first"), (Said(None, "Done."),)), number=1, through=1, stood_in=None)
-    tails.spoken(first)
+    await tails.spoken(first)
     assert (await tails.tell(SID, None)) == Telling(SID, Turn(Asked("first"), ()), number=1, through=1, stood_in=None)
 
 
@@ -247,7 +247,7 @@ async def test_the_hooks_closing_reply_ends_a_turn_whose_transcript_does_not_hol
     tails = await following(transcript)
     first = await tails.tell(SID, "Done.")
     assert first is not None and first.turn == Turn(Asked("first"), (RAN, Said(None, "Done.")))
-    tails.spoken(first)
+    await tails.spoken(first)
     with transcript.open("a") as more:
         more.write(lines(DONE))
     second = await tails.tell(SID, "Done.")
@@ -261,7 +261,7 @@ async def test_a_closing_reply_is_matched_to_its_record_however_the_whitespace_a
     tails = await following(transcript)
     first = await tails.tell(SID, "Done.")
     assert first is not None and first.stood_in == "Done."
-    tails.spoken(first)
+    await tails.spoken(first)
     with transcript.open("a") as more:
         more.write(lines(padded))
     second = await tails.tell(SID, "Done.")
@@ -282,7 +282,7 @@ async def test_a_reply_a_later_turn_repeats_is_told_again_because_a_turn_is_told
     tails = await following(transcript)
     first = await tails.tell(SID, "Nothing to do.")
     assert first is not None and first.turn == Turn(Asked("first"), (Said(None, "Nothing to do."),))
-    tails.spoken(first)
+    await tails.spoken(first)
     with transcript.open("a") as more:
         more.write(lines(DONE, '{"type":"user","message":{"role":"user","content":"check again"}}'))
     second = await tails.tell(SID, "Nothing to do.")
@@ -300,7 +300,7 @@ async def test_a_turn_told_while_the_next_one_opened_marks_nothing_of_the_next(t
         more.write(lines('{"type":"user","message":{"role":"user","content":"second"}}', CALL, RESULT, DONE))
     # The summary of the first turn only now comes back, and its mark is not this turn's.
     assert (await tails.tell(SID, None)) is not None
-    tails.spoken(first)
+    await tails.spoken(first)
     second = await tails.tell(SID, None)
     assert second is not None and second.turn == Turn(Asked("second"), (RAN, Said(None, "Done.")))
 
@@ -321,7 +321,7 @@ async def test_a_session_the_registry_stops_listing_is_let_go_of_with_the_turn_i
     await tails.catch_up()
     told = await tails.tell(SID, None)
     assert told is not None and told.turn == Turn(Asked("first"), (RAN, Said(None, "Done.")))
-    tails.spoken(told)
+    await tails.spoken(told)
     registry.members.clear()
     await tails.catch_up()
     again = await tails.tell(SID, None)
@@ -339,6 +339,42 @@ async def test_a_session_that_exits_before_its_turn_is_told_is_still_told_all_of
     await tails.catch_up()
     telling = await tails.tell(SID, None)
     assert telling is not None and telling.turn == Turn(Asked("first"), (RAN, Said(None, "Done.")))
+
+
+async def test_a_record_carrying_results_for_several_calls_hands_its_own_record_to_none_of_them(tmp_path: Path) -> None:
+    """`toolUseResult` describes one call. Given to two, it would say one edit wrote the file the other did."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        lines(
+            PROMPT,
+            '{"type":"assistant","message":{"content":['
+            '{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/a/one.py"}},'
+            '{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"/a/two.py"}}]}}',
+            '{"type":"user","toolUseResult":{"filePath":"/a/one.py","structuredPatch":'
+            '[{"oldStart":1,"oldLines":1,"newStart":1,"newLines":1,"lines":["-a","+b"]}]},'
+            '"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"},'
+            '{"type":"tool_result","tool_use_id":"t2","content":"ok"}]}}',
+        )
+    )
+    turn = await turn_of(transcript)
+    # Neither is an `Edited`: an edit asserts the patch it made, and that record says whose patch it holds for neither.
+    assert turn is not None and len(turn.steps) == 2 and all(isinstance(step, Other) for step in turn.steps)
+
+
+async def test_what_a_turn_was_told_is_marked_only_while_nothing_else_is_reading(tmp_path: Path) -> None:
+    """A summary takes seconds to come back, and a worker thread can be part-way through forgetting the turn it
+    was about by then. The mark waits on the reading, so it never lands between the halves of a forgetting."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE))
+    tails = await following(transcript)
+    told = await tails.tell(SID, None)
+    assert told is not None
+    async with tails._reading:  # pyright: ignore[reportPrivateUsage]
+        marking = asyncio.create_task(tails.spoken(told))
+        await asyncio.sleep(0)
+        assert not marking.done()
+    await marking
+    assert (await tails.tell(SID, None)) == Telling(SID, Turn(Asked("first"), ()), number=1, through=1, stood_in=None)
 
 
 async def test_how_far_behind_the_newest_record_was_when_it_was_read_is_measured(tmp_path: Path) -> None:

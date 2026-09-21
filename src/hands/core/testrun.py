@@ -3,8 +3,10 @@
 import re
 from dataclasses import dataclass
 
-# Runners draw their summaries, and a command's output reaches the transcript with the drawing in it.
-_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# Runners draw their summaries, and a command's output reaches the transcript with the drawing in it. Every
+# control sequence goes, not only the colours: a runner that hides the cursor before writing its summary would
+# otherwise leave `\x1b[?25l` in front of the line, where it is no longer the start of a line at all.
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,9 @@ RUNNERS: tuple[Runner, ...] = (
         mark=re.compile(r"(?m)^(?:--- FAIL: |(?:ok|FAIL)\s+\S+\s+(?:\d+(?:\.\d+)?s|\(cached\))\s*$)"),
         passed=None,
         failed=None,
-        failing=re.compile(r"(?m)^\s*--- FAIL: (\S+)"),
+        # A case of a table-driven test prints this indented under the test it belongs to. `go test` counts
+        # nothing, so these names are the count, and counting a test's cases counts one failure several times.
+        failing=re.compile(r"(?m)^--- FAIL: (\S+)"),
     ),
     Runner(
         name="vitest",
@@ -94,8 +98,12 @@ def report_of(output: str) -> Report | None:
 
 
 def _count(pattern: re.Pattern[str] | None, summaries: tuple[str, ...]) -> int | None:
-    """What every summary line counted, added up; None where this runner's output never says that number."""
+    """Every number this pattern names in the summary lines, added up; None where the output never says it.
+
+    Added up wherever it is found, and not only once per line: a runner counts what failed and what errored in
+    the same breath, and hearing the first of them alone understates what a run did by exactly the rest.
+    """
     if pattern is None:
         return None
-    found = [int(match.group(1)) for line in summaries if (match := pattern.search(line)) is not None]
+    found = [int(match.group(1)) for line in summaries for match in pattern.finditer(line)]
     return sum(found) if found else None

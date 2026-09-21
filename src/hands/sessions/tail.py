@@ -95,7 +95,8 @@ class Tails:
         self._known = known
         self._following: dict[SessionId, Following] = {}
         # [LAW:no-ambient-temporal-coupling] reading happens off the loop in a thread, and a Stop reads the same
-        # transcript the catch-up is reading. One reader at a time, so no two threads are ever inside one Following.
+        # transcript the catch-up is reading. [LAW:single-enforcer] everything that touches a Following waits on
+        # this, the marking of what was told included, so no two threads are ever inside one Following.
         self._reading = asyncio.Lock()
         # How far behind the newest record read was when it was read, in seconds.
         self.lag: float | None = None
@@ -145,14 +146,20 @@ class Tails:
             shown = steps[heard:] if stand_in is None else [*steps[heard:], Said(None, stand_in)]
             return Telling(session, Turn(following.opening, tuple(shown)), following.number, len(steps), stand_in)
 
-    def spoken(self, telling: Telling) -> None:
-        """Mark what a telling held as told. A telling of a turn that has since been replaced marks nothing."""
-        following = self._following.get(telling.session)
-        if following is None or following.number != telling.number:
-            # The session opened another turn while this one was being summarised: its steps are its own to tell.
-            return
-        following.told = telling.through
-        following.stood_in = telling.stood_in
+    async def spoken(self, telling: Telling) -> None:
+        """Mark what a telling held as told. A telling of a turn that has since been replaced marks nothing.
+
+        Under the same lock as the reading: a summary takes seconds, and the turn it was asked about can open its
+        successor in a worker thread while it comes back. Reading the turn's number and writing what it was told
+        are one step here, so a mark can never land between the two halves of a turn being forgotten.
+        """
+        async with self._reading:
+            following = self._following.get(telling.session)
+            if following is None or following.number != telling.number:
+                # The session opened another turn while this one was being summarised: its steps are its own to tell.
+                return
+            following.told = telling.through
+            following.stood_in = telling.stood_in
 
     def _follow(self, session: SessionId) -> Following | None:
         """The session's transcript, followed from now if the catch-up has not reached it yet.
@@ -202,7 +209,9 @@ class Tails:
             return
         following.mid_tool = mid_tool
         ref = ref_of(record)
-        structured = structured_result(record)
+        # `toolUseResult` describes one call, so a record carrying results for several says which of them it
+        # belongs to for none: each is then recognised from its own text, rather than from another call's record.
+        structured = structured_result(record) if sum(block.get("type") == "tool_result" for block in parts) == 1 else None
         for block in parts:
             match block:
                 case {"type": "text", "text": str() as text} if record.fields.get("type") == "assistant" and text.strip():
