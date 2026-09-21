@@ -39,6 +39,7 @@ from hands.sessions.home import Home
 from hands.sessions.audit import AuditLog, Record, failures_to
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
+from hands.sessions.tail import Tails, keep_tailing
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
 from hands.voice.keys import drive_key
@@ -67,6 +68,9 @@ API_KEY_VAR = "ANTHROPIC_API_KEY"
 TICK_SECONDS = 1.0
 # How late a session whose process died, or one that started unheard, is noticed.
 SWEEP_SECONDS = 2.0
+# How late a record Claude Code has written becomes a step of the turn it belongs to. A Stop reads the rest of
+# its own transcript before telling the turn, so this is what a turn narrated while it runs waits on, not a Stop.
+TAIL_SECONDS = 0.1
 # A turn's summary is spoken, so it is short; a model that has not answered in this long is said to have failed.
 SUMMARY_MAX_TOKENS = 200
 SUMMARY_TIMEOUT_SECONDS = 30.0
@@ -158,6 +162,7 @@ async def converse(
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
+    tails = Tails(sessions)
     listen(voice, SystemChannel(voice.tts, post_notification, record), started)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     failures: list[BaseException] = []
@@ -167,7 +172,7 @@ async def converse(
 
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
-        # session stays listed, without the relay
+        # session stays listed, without the tail no record becomes a step, without the relay
         # nothing is asked aloud, without the narrator no finished turn or ended session is heard, and without the heartbeat the daemon looks dead while it runs, so any of
         # them failing stops the run where it can be seen, and launchd starts it again.
         if not task.cancelled() and (error := task.exception()) is not None:
@@ -178,8 +183,9 @@ async def converse(
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
+        asyncio.create_task(keep_tailing(tails, TAIL_SECONDS), name="the transcript tail"),
         asyncio.create_task(relay(sessions, voice.worker.queue_frame), name="the session speech relay"),
-        asyncio.create_task(narrate(sessions, summarise, voice.worker.queue_frame, record), name="the session narrator"),
+        asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record), name="the session narrator"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
     ]
     for task in background:

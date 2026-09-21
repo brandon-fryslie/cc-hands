@@ -434,12 +434,26 @@ case anywhere: a failed edit records no patch, and is therefore an `Other` rathe
 `Edited`. `hands.core.turn.Opening` stays `Asked | Notified`, the prompt that opened the
 turn; a question Claude put to the user is the `Questioned` step.
 
-**The tail** is planned; no tail runs today. At `Stop` the narrator reads the newest turn
-from the whole file with `read_turn`, described under Summaries, through those same
-recognisers. From the moment a session registers, the adapter follows its JSONL from
-the watermark and hands each new record to them. The reducer
-receives steps as events and asks for their summaries as they arrive, so by the time
-`Stop` fires most of the turn's summary is built.
+**The tail** runs today, in `hands.sessions.tail`. From the moment the registry lists a
+session, `keep_tailing` reads what that session's JSONL has gained, ten times a second,
+and hands each new record to the recognisers. Nothing re-reads the file from its start:
+one `Following` per session holds the byte offset, the turn that is open in it, the steps
+recognised so far, and how many of them the session has been told. Measured live on
+2026-09-21, a record becomes a step 96 to 305 ms after Claude Code wrote it, median 160 ms
+— the poll period plus the read, which is what sets how late a turn narrated *while it
+runs* can be. A `Stop` does not wait for that poll: `tell` reads the rest of its own
+transcript first, so the turn is told from the whole of what has been written.
+
+`tell` returns a `Telling`, which carries the turn's number as well as its untold steps,
+and marks nothing until the narrator says it was spoken. Two things follow. A summary that
+fails is never marked told, so the turn is told again at the next `Stop`. And a summary
+that took a second to come back cannot mark a turn that opened while the model was
+answering, because the number it was made against is no longer the number of the turn that
+is open `[LAW:no-ambient-temporal-coupling]`.
+
+The reducer will receive steps as events and ask for their summaries as they arrive, so
+that by the time `Stop` fires most of the turn's summary is built; that is the progress
+ticket's, not this one's.
 
 **Backfill.** When the daemon attaches to a session that has been running for an
 hour, `read_session(session, since)` reads the same file from an earlier point through
@@ -551,8 +565,8 @@ summarised or transformed first.
 
 **What runs today** is the first slice: each finished turn becomes one to three spoken
 sentences, with no tree. When a live session's `Stop` arrives, the reducer emits
-`Summarise(session, transcript, closing)`, and `narrate` in `hands.voice.narrator`
-reads the newest turn with `read_turn`. A turn opens at the last user record that is
+`Summarise(session, closing)`, and `narrate` in `hands.voice.narrator` asks the tail what
+that session has not been told. A turn opens at the last user record that is
 not `isMeta`, not `isCompactSummary`, whose content is a string or a block list with no
 tool result in it, and that does not follow a tool call or tool result: a message sent
 while a tool runs belongs to the turn under way, and an image or document attached to a
@@ -563,10 +577,13 @@ thinking blocks are skipped, thinking because it is how Claude reached a result 
 than a result.
 
 **A turn can stop twice.** Another hook may block a `Stop`, and the same turn then runs
-on to a later one. So the narrator keeps a `Told` per session — which record opened the
-turn, how many of its steps were told, and a closing reply told before its record
-existed — and each reading tells only the steps beyond it, which is why the first half
-of a long turn is not heard twice. A session gone forgets its `Told`.
+on to a later one. So the tail keeps, per session, how many of the open turn's steps were
+told and a closing reply told before its record existed, and each telling holds only the
+steps beyond them, which is why the first half of a long turn is not heard twice. A turn
+that opens forgets both, and a session the registry stops listing is forgotten whole.
+Verified live on 2026-09-21 with a second `Stop` hook that blocks once: the first stop was
+heard as what the turn had done, and the second as `echo second` and nothing before it,
+1.41 s and 1.21 s from `Stop` to the spoken summary.
 
 `Told.closing` is there because the hook and the transcript disagree for a moment:
 measured over twelve live turns, the reply `Stop` carries is never yet in the

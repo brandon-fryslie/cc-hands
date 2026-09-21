@@ -1,231 +1,99 @@
-"""A finished turn, read from a transcript made of real Claude Code records, and rendered for the summariser."""
+"""A turn, rendered for the summariser: every kind of step says what it did, and each part is cut to its budget."""
 
-from pathlib import Path
+from hands.core.turn import (
+    CUT,
+    Asked,
+    Branched,
+    Budget,
+    Committed,
+    Delegated,
+    Edited,
+    Looked,
+    Notified,
+    Other,
+    Planned,
+    PullRequested,
+    Pushed,
+    Question,
+    Questioned,
+    Ran,
+    Said,
+    Tested,
+    Turn,
+    render,
+)
 
-import pytest
-
-from hands.core.turn import CUT, Asked, Budget, Looked, Notified, Other, Ran, Ref, Said, Turn, render
-from hands.sessions.transcript import UNTOLD, Reading, Told, read_turn
-
-# Real records from this repository's own sessions: an earlier /clear prompt, the prompt that starts the turn,
-# attachments, modes, a title, thinking, text, three Bash calls with their results (the last failed),
-# an injected isMeta user record, a final text, and a record still being written.
-FIXTURE = Path(__file__).parent / "fixtures" / "turn.jsonl"
 ROOMY = Budget(opening=10_000, said=10_000, input=10_000, result=10_000, steps=100)
 
 
-def test_the_turn_is_everything_said_and_used_after_the_last_prompt_in_order() -> None:
-    turn = turn_of(FIXTURE)
-    assert turn is not None
-    assert isinstance(turn.opening, Asked) and turn.opening.text.startswith("I'd like you to go a bit further and architect a robust system")
-    assert [type(step).__name__ for step in turn.steps] == ["Said", "Ran", "Ran", "Ran", "Said"]
-    said, loaded, inspected, commented, final = turn.steps
-    assert isinstance(said, Said) and said.text.startswith("I'll start by loading the repo conventions")
-    assert isinstance(loaded, Ran)
-    assert loaded.purpose == "Load lit workflow and check git state" and not loaded.failed and loaded.git == ()
-    assert loaded.command.startswith("lit quickstart 2>&1 | head -80") and loaded.output.startswith("Agent instructions for using links issue tracker")
-    assert isinstance(inspected, Ran) and inspected.purpose == "Inspect repo layout and remotes"
-    # A call without a description has no purpose, and a result marked as an error is a command that exited non-zero.
-    assert isinstance(commented, Ran) and commented.purpose is None and commented.failed
-    assert commented.output.startswith("Exit code 2")
-    assert isinstance(final, Said) and final.text.startswith("API Error: Unable to connect to API")
+def rendered(*steps: object) -> str:
+    """Everything after the opening, which every case below shares."""
+    turn = Turn(Asked("fix the test"), tuple(steps))  # pyright: ignore[reportArgumentType]
+    return render(turn, ROOMY).removeprefix("The user asked:\nfix the test\n\n")
 
 
-def turn_of(transcript: Path, told: Told = UNTOLD, closing: str | None = None) -> Turn | None:
-    reading = read_turn(transcript, told, closing)
-    return None if reading is None else reading.turn
+def test_a_notification_is_rendered_as_what_reported_rather_than_as_something_the_user_asked() -> None:
+    assert render(Turn(Notified("<task-notification>tests passed</task-notification>"), ()), ROOMY).startswith("A background task reported:\n")
 
 
-def lines(*records: str) -> str:
-    return "".join(f"{record}\n" for record in records)
+def test_text_a_command_and_a_tool_nobody_named_each_say_what_came_of_them() -> None:
+    assert rendered(
+        Said(None, "Looking."),
+        Ran(None, "pytest", "Run the tests", True, "1 failed", ()),
+        Other(None, "Skill", "{}", "loaded", False),
+    ) == ("Claude said:\nLooking.\n\nClaude ran pytest (Run the tests)\nOutput (exit code not zero): 1 failed\n\nClaude used Skill: {}\nResult: loaded")
 
 
-PROMPT = '{"type":"user","message":{"role":"user","content":"first"}}'
-CALL = '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"sleep 60"}}]}}'
-RESULT = '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"done"}]}}'
-DONE = '{"type":"assistant","message":{"content":[{"type":"text","text":"Done."}]}}'
-
-
-def test_a_prompt_sent_as_blocks_with_an_image_opens_the_turn(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    image = '{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":[{"type":"text","text":"match this"},{"type":"image","source":{}}]}}'
-    transcript.write_text(lines(PROMPT, DONE, image))
-    assert turn_of(transcript) == Turn(Asked("match this\n[an image]"), ())
-
-
-def test_a_notification_after_the_turn_ended_opens_a_turn_of_its_own_and_is_not_what_the_user_asked(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    notified = '{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>tests passed</task-notification>"}}'
-    transcript.write_text(lines(PROMPT, DONE, notified, DONE))
-    turn = turn_of(transcript)
-    assert turn == Turn(Notified("<task-notification>tests passed</task-notification>"), (Said(None, "Done."),))
-    assert turn is not None and render(turn, ROOMY).startswith("A background task reported:\n")
-
-
-@pytest.mark.parametrize("kind", ["human", "task-notification"])
-def test_a_message_that_lands_while_a_tool_runs_belongs_to_the_turn_under_way(tmp_path: Path, kind: str) -> None:
-    transcript = tmp_path / "t.jsonl"
-    landed = f'{{"type":"user","origin":{{"kind":"{kind}"}},"message":{{"role":"user","content":"also this"}}}}'
-    transcript.write_text(lines(PROMPT, CALL, RESULT, landed, DONE))
-    turn = turn_of(transcript)
-    assert turn is not None and turn.opening == Asked("first")
-    assert [type(step).__name__ for step in turn.steps] == ["Ran", "Said"]
-
-
-def test_compactions_summary_does_not_open_a_turn(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    summary = '{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued"}}'
-    transcript.write_text(lines(PROMPT, DONE, summary, DONE))
-    turn = turn_of(transcript)
-    assert turn is not None and turn.opening == Asked("first") and turn.steps == (Said(None, "Done."), Said(None, "Done."))
-
-
-def test_a_prompt_with_a_document_attached_opens_the_turn_and_names_the_document_rather_than_its_bytes(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    document = '{"type":"user","message":{"role":"user","content":[{"type":"document","source":{"data":"JVBERi0x"}},{"type":"text","text":"read this"}]}}'
-    transcript.write_text(lines(PROMPT, DONE, document))
-    assert turn_of(transcript) == Turn(Asked("[a document]\nread this"), ())
-
-
-def test_a_reading_picks_up_after_the_steps_already_told_and_says_what_is_told_now(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    opened = '{"type":"user","uuid":"u1","message":{"role":"user","content":"first"}}'
-    looked = '{"type":"assistant","uuid":"u2","message":{"content":[{"type":"text","text":"Looked."}]}}'
-    call = '{"type":"assistant","uuid":"u3","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest"}}]}}'
-    result = '{"type":"user","uuid":"u4","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"1 passed"}]}}'
-    transcript.write_text(lines(opened, looked, call, result))
-    ran = Ran(Ref("u3"), "pytest", None, False, "1 passed", ())
-    looked = Said(Ref("u2"), "Looked.")
-    assert read_turn(transcript, UNTOLD, None) == Reading(Turn(Asked("first"), (looked, ran)), Told(Ref("u1"), 2, None))
-    assert read_turn(transcript, Told(Ref("u1"), 1, None), None) == Reading(Turn(Asked("first"), (ran,)), Told(Ref("u1"), 2, None))
-    assert read_turn(transcript, Told(Ref("u1"), 2, None), None) == Reading(Turn(Asked("first"), ()), Told(Ref("u1"), 2, None))
-    # What was told of another turn says nothing about this one, so all of it is still to tell.
-    assert turn_of(transcript, told=Told(Ref("elsewhere"), 2, None)) == Turn(Asked("first"), (looked, ran))
-
-
-def test_the_hooks_closing_reply_ends_a_turn_whose_transcript_does_not_hold_it_yet_and_is_not_doubled_when_it_does(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(PROMPT, CALL, RESULT))
-    ran = Ran(None, "sleep 60", None, False, "done", ())
-    assert turn_of(transcript, closing="Done.") == Turn(Asked("first"), (ran, Said(None, "Done.")))
-    transcript.write_text(lines(PROMPT, CALL, RESULT, DONE))
-    assert turn_of(transcript, closing="Done.") == Turn(Asked("first"), (ran, Said(None, "Done.")))
-
-
-def test_a_closing_reply_told_before_its_record_was_written_is_not_told_again_once_it_is(tmp_path: Path) -> None:
-    """The stand-in is told once: the record Claude Code writes moments later gives way to it, whatever follows."""
-    transcript = tmp_path / "t.jsonl"
-    opened = '{"type":"user","uuid":"u1","message":{"role":"user","content":"first"}}'
-    call = '{"type":"assistant","uuid":"u2","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest"}}]}}'
-    result = '{"type":"user","uuid":"u3","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"1 passed"}]}}'
-    fixed = '{"type":"assistant","uuid":"u4","message":{"content":[{"type":"text","text":"Fixed."}]}}'
-    listed = '{"type":"assistant","uuid":"u5","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}]}}'
-    files = '{"type":"user","uuid":"u6","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"a.py"}]}}'
-    transcript.write_text(lines(opened, call, result))
-    first = read_turn(transcript, UNTOLD, "Fixed.")
-    assert first == Reading(
-        Turn(Asked("first"), (Ran(Ref("u2"), "pytest", None, False, "1 passed", ()), Said(None, "Fixed."))), Told(Ref("u1"), 1, "Fixed.")
-    )
-    # The Stop was blocked by another hook, so the same turn runs on, and by now Claude Code has written "Fixed." itself.
-    transcript.write_text(lines(opened, call, result, fixed, listed, files))
-    assert first is not None
-    assert read_turn(transcript, first.told, "Done.") == Reading(
-        Turn(Asked("first"), (Ran(Ref("u5"), "ls", None, False, "a.py", ()), Said(None, "Done."))), Told(Ref("u1"), 3, "Done.")
+def test_a_command_says_everything_it_did_to_the_repository_because_one_command_can_do_several() -> None:
+    git = (Committed("f0f9776", "committed"), Pushed("main"), Branched("origin/master", "rebased"), PullRequested(104, "https://x/104", "created"))
+    assert rendered(Ran(None, "git push", None, False, "", git)) == (
+        "Claude ran git push\nOutput: \n"
+        "It committed f0f9776.\n"
+        "It pushed main.\n"
+        "It rebased origin/master.\n"
+        "It created pull request 104, https://x/104."
     )
 
 
-def test_a_reply_a_later_turn_repeats_is_told_again_because_what_was_told_of_one_turn_says_nothing_of_the_next(tmp_path: Path) -> None:
-    """Claude says the same short thing twice in a row: the second turn is its own, and is heard."""
-    transcript = tmp_path / "t.jsonl"
-    checked = '{"type":"user","uuid":"u1","message":{"role":"user","content":"check"}}'
-    nothing = '{"type":"assistant","uuid":"u2","message":{"content":[{"type":"text","text":"Nothing to do."}]}}'
-    again = '{"type":"user","uuid":"u3","message":{"role":"user","content":"check again"}}'
-    transcript.write_text(lines(checked))
-    first = read_turn(transcript, UNTOLD, "Nothing to do.")
-    assert first == Reading(Turn(Asked("check"), (Said(None, "Nothing to do."),)), Told(Ref("u1"), 0, "Nothing to do."))
-    transcript.write_text(lines(checked, nothing, again))
-    assert first is not None
-    assert read_turn(transcript, first.told, "Nothing to do.") == Reading(
-        Turn(Asked("check again"), (Said(None, "Nothing to do."),)), Told(Ref("u3"), 0, "Nothing to do.")
+def test_an_edit_shows_its_hunks_and_a_new_file_shows_what_it_now_holds() -> None:
+    assert rendered(Edited(None, "/a/b.py", False, "@@ -1,2 +1,2 @@\n-old\n+new")) == "Claude edited /a/b.py:\n@@ -1,2 +1,2 @@\n-old\n+new"
+    assert rendered(Edited(None, "/a/new.py", True, "hello")) == "Claude wrote /a/new.py:\nhello"
+
+
+def test_a_test_run_is_its_counts_and_the_names_that_failed_rather_than_its_scrollback() -> None:
+    assert rendered(Tested(None, "pytest", 299, 2, ("test_a", "test_b"))) == "Claude ran the pytest tests: 2 failed, 299 passed\n  test_a\n  test_b"
+    # A runner that counts nothing it did not fail says only what failed.
+    assert rendered(Tested(None, "go", None, 1, ("TestX",))) == "Claude ran the go tests: 1 failed\n  TestX"
+
+
+def test_a_look_a_task_and_a_subagent_each_read_as_what_they_are() -> None:
+    assert rendered(Looked(None, "Grep", "def main", "a.py:3")) == "Claude used Grep on def main\nFound: a.py:3"
+    assert rendered(Planned(None, "Rewrite the tail", "in_progress")) == "Claude's plan: Rewrite the tail is in_progress"
+    assert rendered(Delegated(None, "Explore", "Find the parser", None)) == "Claude gave the Explore subagent this job: Find the parser\nIt is still working."
+    assert rendered(Delegated(None, None, "Find the parser", "It is in tail.py.")) == (
+        "Claude gave a subagent this job: Find the parser\nIt reported: It is in tail.py."
     )
 
 
-def test_a_closing_reply_is_matched_to_its_record_however_the_whitespace_around_it_differs(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    opened = '{"type":"user","uuid":"u1","message":{"role":"user","content":"first"}}'
-    padded = '{"type":"assistant","uuid":"u2","message":{"content":[{"type":"text","text":"  Done.\\n"}]}}'
-    transcript.write_text(lines(opened))
-    first = read_turn(transcript, UNTOLD, "Done.")
-    assert first == Reading(Turn(Asked("first"), (Said(None, "Done."),)), Told(Ref("u1"), 0, "Done."))
-    transcript.write_text(lines(opened, padded))
-    assert first is not None
-    assert read_turn(transcript, first.told, "Done.") == Reading(Turn(Asked("first"), ()), Told(Ref("u1"), 1, None))
-
-
-def test_a_turn_whose_opening_record_cannot_be_named_is_told_whole_rather_than_taken_for_the_last_one(tmp_path: Path) -> None:
-    """Two turns that carry no uuid are not the same turn, so what was told of one counts for nothing in the other."""
-    transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(PROMPT, DONE))
-    first = read_turn(transcript, UNTOLD, None)
-    assert first == Reading(Turn(Asked("first"), (Said(None, "Done."),)), Told(None, 1, None))
-    second = '{"type":"user","message":{"role":"user","content":"second"}}'
-    transcript.write_text(lines(PROMPT, DONE, second, CALL, RESULT, DONE))
-    assert first is not None
-    assert read_turn(transcript, first.told, None) == Reading(
-        Turn(Asked("second"), (Ran(None, "sleep 60", None, False, "done", ()), Said(None, "Done."))), Told(None, 2, None)
-    )
-
-
-def test_a_closing_reply_the_turn_said_once_before_still_ends_it(tmp_path: Path) -> None:
-    """The record of the reply is the one the turn ends on, so an earlier reply in the same words does not stand for it."""
-    transcript = tmp_path / "t.jsonl"
-    opened = '{"type":"user","uuid":"u1","message":{"role":"user","content":"twice"}}'
-    once = '{"type":"assistant","uuid":"u2","message":{"content":[{"type":"text","text":"Done."}]}}'
-    call = '{"type":"assistant","uuid":"u3","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}'
-    files = '{"type":"user","uuid":"u4","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"a.py"}]}}'
-    transcript.write_text(lines(opened, once, call, files))
-    assert turn_of(transcript, closing="Done.") == Turn(
-        Asked("twice"), (Said(Ref("u2"), "Done."), Ran(Ref("u3"), "ls", None, False, "a.py", ()), Said(None, "Done."))
-    )
-
-
-def test_a_transcript_with_no_prompt_yet_has_no_turn(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    transcript.write_text('{"type":"ai-title","aiTitle":"x"}\n{"type":"user","isMeta":true,"message":{"role":"user","content":"injected"}}\n')
-    assert read_turn(transcript, UNTOLD, None) is None
-
-
-def test_a_prompt_with_nothing_after_it_is_a_turn_with_no_steps(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    transcript.write_text('{"type":"user","message":{"role":"user","content":"hello"}}\n')
-    assert turn_of(transcript) == Turn(Asked("hello"), ())
-
-
-def test_a_call_whose_result_never_came_is_shown_as_having_none(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    transcript.write_text(
-        '{"type":"user","message":{"role":"user","content":"go"}}\n'
-        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/a/b.py"}}]}}\n'
-    )
-    assert turn_of(transcript) == Turn(Asked("go"), (Looked(None, "Read", "/a/b.py", "(no result)"),))
-
-
-def test_the_rendered_turn_names_each_step_and_its_outcome() -> None:
-    turn = Turn(
-        Asked("fix the test"),
-        (Said(None, "Looking."), Ran(None, "pytest", "Run the tests", True, "1 failed", ()), Other(None, "Skill", "{}", "loaded", False)),
-    )
-    assert render(turn, ROOMY) == (
-        "The user asked:\nfix the test\n\n"
-        "Claude said:\nLooking.\n\n"
-        "Claude ran pytest (Run the tests)\nOutput (exit code not zero): 1 failed\n\n"
-        "Claude used Skill: {}\nResult: loaded"
+def test_a_question_reads_as_asked_with_what_was_offered_and_what_was_chosen() -> None:
+    answered = Question("Which one?", ("This", "That"), "That")
+    unanswered = Question("And this?", (), None)
+    assert rendered(Questioned(None, (answered, unanswered))) == (
+        "Claude asked the user: Which one?\nOptions: This, That\nThe user chose: That\n"
+        "Claude asked the user: And this?\nUnanswered."
     )
 
 
 def test_a_long_turn_keeps_how_it_started_and_how_it_ended_and_each_part_is_cut_to_its_budget() -> None:
     steps = tuple(Said(None, f"step {n}") for n in range(10))
-    rendered = render(Turn(Asked("x" * 50), steps), Budget(opening=10, said=100, input=100, result=100, steps=4))
-    assert rendered == "\n\n".join(
-        ["The user asked:\n" + "x" * 10 + CUT, "Claude said:\nstep 0", "Claude said:\nstep 1", "(6 steps in the middle are left out)", "Claude said:\nstep 8", "Claude said:\nstep 9"]
+    rendered_turn = render(Turn(Asked("x" * 50), steps), Budget(opening=10, said=100, input=100, result=100, steps=4))
+    assert rendered_turn == "\n\n".join(
+        [
+            "The user asked:\n" + "x" * 10 + CUT,
+            "Claude said:\nstep 0",
+            "Claude said:\nstep 1",
+            "(6 steps in the middle are left out)",
+            "Claude said:\nstep 8",
+            "Claude said:\nstep 9",
+        ]
     )

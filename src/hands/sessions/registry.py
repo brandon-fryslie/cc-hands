@@ -122,6 +122,11 @@ class Sessions:
     def live(self) -> list[Listing]:
         return [_listing(session) for session in self._registry.live()]
 
+    def membership(self, session: SessionId) -> Membership | None:
+        """Where any session the registry has heard of works, ended or not: a session's last turn is told after it ends."""
+        known = self._registry.sessions.get(session)
+        return None if known is None else known.membership
+
     def listing(self, session: SessionId) -> Listing | None:
         """Any session the registry has heard of, ended or not; None for one it never has."""
         known = self._registry.sessions.get(session)

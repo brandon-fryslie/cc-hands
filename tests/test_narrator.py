@@ -2,6 +2,7 @@
 
 import asyncio
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -9,13 +10,12 @@ from aiohttp import web
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
-from hands.core.effects import Summarise
 from hands.core.events import Ended, Joined, Prompted, Stopped
 from hands.core.session import Membership, SessionId
 from hands.core.turn import Budget
 from hands.sessions.audit import Entry, Failure, Recounted, failures_to
 from hands.sessions.registry import Sessions
-from hands.sessions.transcript import UNTOLD
+from hands.sessions.tail import Tails
 from hands.voice.narrator import narrate, recount
 from hands.voice.pipeline import OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
@@ -23,6 +23,24 @@ from hands.voice.summary import SummaryFailed, summariser
 FIXTURE = Path(__file__).parent / "fixtures" / "turn.jsonl"
 BUDGET = Budget(opening=100, said=100, input=100, result=100, steps=10)
 SID = SessionId("s1")
+
+
+@dataclass
+class Registry:
+    """As much of the session registry as the tail asks about."""
+
+    member: Membership
+
+    def live_members(self) -> list[Membership]:
+        return [self.member]
+
+    def membership(self, session: SessionId) -> Membership | None:
+        return self.member if session == self.member.id else None
+
+
+def tailing(transcript: Path) -> Tails:
+    """A tail following one session, as the daemon's does from the registry."""
+    return Tails(Registry(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript)))
 
 
 async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_did(tmp_path: Path) -> None:
@@ -37,7 +55,7 @@ async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_d
         return "Loaded the repo conventions and hit an API error."
 
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, summarise, frames.put, recorded.append, BUDGET))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, recorded.append, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0))
@@ -64,7 +82,7 @@ async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_aft
         return "Hit an API error."
 
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, summarise, frames.put, lambda _: None, BUDGET))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, lambda _: None, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0))
@@ -99,7 +117,7 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
         return f"summary {len(shown)}"
 
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, summarise, frames.put, lambda _: None, BUDGET))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, lambda _: None, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0))
@@ -128,7 +146,7 @@ async def test_a_turn_that_cannot_be_summarised_is_said_to_have_failed_and_logge
     unreachable = summariser(OpenAICompatibleBackend(base_url="http://127.0.0.1:9/v1", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
-        spoken, _ = await recount(Summarise(SID, FIXTURE, None), UNTOLD, "cc-hands", unreachable, recorded.append, BUDGET)
+        spoken = await recount(tailing(FIXTURE), SID, None, "cc-hands", unreachable, recorded.append, BUDGET)
     finally:
         logger.remove(sink)
     assert isinstance(spoken, TTSSpeakFrame)
@@ -142,7 +160,7 @@ async def test_a_missing_transcript_is_said_to_have_failed_too(tmp_path: Path) -
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    spoken, _ = await recount(Summarise(SID, tmp_path / "gone.jsonl", None), UNTOLD, "cc-hands", never, lambda _: None, BUDGET)
+    spoken = await recount(tailing(tmp_path / "gone.jsonl"), SID, None, "cc-hands", never, lambda _: None, BUDGET)
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands finished a turn, and I could not summarise it."
 
 
@@ -153,7 +171,7 @@ async def test_a_session_that_stops_before_any_prompt_says_nothing(tmp_path: Pat
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    assert await recount(Summarise(SID, transcript, None), UNTOLD, "cc-hands", never, lambda _: None, BUDGET) == (None, UNTOLD)
+    assert await recount(tailing(transcript), SID, None, "cc-hands", never, lambda _: None, BUDGET) is None
 
 
 async def openai_server(content: str | None) -> tuple[web.AppRunner, str, list[dict[str, object]]]:

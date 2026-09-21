@@ -1,13 +1,11 @@
-"""What a session's JSONL transcript knows that its hooks do not carry."""
+"""What a session's JSONL transcript knows that its hooks do not carry: one record at a time, as it is written."""
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
-from hands.core.steps import Call, Result, recognise
-from hands.core.turn import Asked, Notified, Opening, Ref, Said, Step, Turn
+from hands.core.turn import Asked, Notified, Opening, Ref
 from hands.sessions.payload import Payload, Rejected
 
 # Records are written without spaces, so this finds every title record cheaply.
@@ -40,97 +38,43 @@ def ai_title(transcript: Path) -> str | None:
 _TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"')
 
 
-@dataclass(frozen=True)
-class Told:
-    """How much of a turn a session has been told: which record opened it, how many of its recorded steps were told,
-    and a closing reply told from the Stop hook before Claude Code had written the record of it."""
+def turn_record(line: bytes) -> Payload | None:
+    """The record this line holds if it is one a turn is made of, and None for every other line.
 
-    opening: Ref | None
-    steps: int
-    closing: str | None
-
-
-# Before a session has been told anything.
-UNTOLD = Told(opening=None, steps=0, closing=None)
-
-
-@dataclass(frozen=True)
-class Reading:
-    """The part of the newest turn a session has not been told, and what it will have been told once that part is."""
-
-    turn: Turn
-    told: Told
-
-
-def read_turn(transcript: Path, told: Told, closing: str | None) -> Reading | None:
-    """What last opened a turn, and the steps after it that `told` does not cover. None before anything has opened one.
-
-    `closing` is the reply the Stop hook carries. Measured over twelve live turns, Claude Code writes that reply's own
-    record 46 to 77 ms after the hook fires, so the hook's copy stands in until the record lands and gives way when it does.
+    Raises Rejected for a line that is not a record at all.
     """
-    *complete, _unfinished = transcript.read_bytes().split(b"\n")
-    records = [Payload.parse(line) for line in complete if any(marker in line for marker in _TURN_RECORDS)]
-    turn = [record for record in records if record.fields.get("type") in ("user", "assistant") and record.fields.get("isSidechain") is not True]
-    openings = [(index, opening) for index, record in enumerate(turn) if (opening := _opening(record, turn[index - 1] if index else None)) is not None]
-    if not openings:
+    if not any(marker in line for marker in _TURN_RECORDS):
         return None
-    start, opening = openings[-1]
-    # A Stop another hook blocked lets the same turn go on to a later Stop, which tells the steps the first one did not.
-    recorded = _steps(turn[start + 1 :])
-    began = _uuid(turn[start])
-    # [LAW:types-are-the-program] a count of steps and a stand-in mean nothing away from the turn they were told of, so a
-    # session resumes only a turn whose opening can be named and is the one it was told of; every other turn starts whole.
-    resumed = told if began is not None and told.opening == began else UNTOLD
-    # Claude Code only ever appends, so the record of a stand-in that has since been written is the first step after what
-    # was heard; counting it heard too is how the stand-in gives way to its record without the reply being told twice.
-    # A step already told keeps what it was told as: a tool result written after its call was told stays untold, which
-    # is out of reach at Stop — every call had its result in twelve live turns — and is the tail's to fix (…narration.txb).
-    stood_in = resumed.closing
-    heard = resumed.steps + (1 if stood_in is not None and _said_at(recorded, resumed.steps) == stood_in else 0)
-    # [LAW:one-source-of-truth] the transcript is the record of what Claude said; the hook's copy stands in only for as
-    # long as the closing reply's own record is unwritten, which is to say while the turn does not yet end on it. Both
-    # are read the same way, so a record padded with whitespace neither misses its stand-in nor hides behind one.
-    reply = _spoken(closing)
-    stand_in = None if reply == _said_at(recorded, len(recorded) - 1) else reply
-    steps = recorded[heard:] if stand_in is None else [*recorded[heard:], Said(None, stand_in)]
-    return Reading(Turn(opening=opening, steps=tuple(steps)), Told(opening=began, steps=len(recorded), closing=stand_in))
+    record = Payload.parse(line)
+    fields = record.fields
+    if fields.get("type") not in ("user", "assistant") or fields.get("isSidechain") is True:
+        # A subagent's own records are its transcript's, and are narrated there.
+        return None
+    return record
 
 
-def _said_at(recorded: list[Step], index: int) -> str | None:
-    """What Claude said in the step at this place; None where the turn has no such step, or used a tool there."""
-    step = recorded[index] if 0 <= index < len(recorded) else None
-    return _spoken(step.text) if isinstance(step, Said) else None
+def opening_of(record: Payload, mid_tool: bool) -> Opening | None:
+    """What opens a turn: a prompt or a notification Claude Code handed a session that was not waiting on a tool.
 
-
-def _spoken(text: str | None) -> str | None:
-    """A reply as it is compared and told: what Claude wrote without the whitespace around it, and nothing at all for an empty one."""
-    return None if text is None or not text.strip() else text.strip()
-
-
-def _uuid(record: Payload) -> Ref | None:
-    value = record.fields.get("uuid")
-    return Ref(value) if isinstance(value, str) else None
-
-
-def _opening(record: Payload, previous: Payload | None) -> Opening | None:
-    """What opens a turn: a prompt or a notification Claude Code handed a session that was not waiting on a tool."""
-    if previous is not None and any(block.get("type") in ("tool_use", "tool_result") for block in _blocks(previous)):
+    `mid_tool` says whether the record before this one was a tool call or its result.
+    """
+    if mid_tool:
         # Sent while a tool ran: Claude Code folds it into the turn already under way, whose Stop has not come.
         return None
     fields = record.fields
     # Meta records (skill bodies, command caveats) and compaction's summary are Claude Code's own, not a new request.
     if fields.get("type") != "user" or fields.get("isMeta") is True or fields.get("isCompactSummary") is True:
         return None
-    blocks = _blocks(record)
-    match _message(record).get("content"):
+    parts = blocks(record)
+    match message(record).get("content"):
         case str() as text:
             pass
-        case list() if blocks and not any(block.get("type") == "tool_result" for block in blocks):
+        case list() if parts and not any(block.get("type") == "tool_result" for block in parts):
             # A prompt with an image or a document attached, or one sent through the SDK. Anything but a tool result,
             # rather than a list of the block kinds known today: a kind added tomorrow would otherwise stop opening the
             # turn it opens, which hands the whole turn to an older opening, where a block nobody named costs the
             # summariser some JSON inside `budget.opening` and nothing else.
-            text = _result_text(blocks)
+            text = result_text(parts)
         case _:
             return None
     match fields.get("origin"):
@@ -140,49 +84,35 @@ def _opening(record: Payload, previous: Payload | None) -> Opening | None:
             return Asked(text)
 
 
-def _steps(records: list[Payload]) -> list[Step]:
-    # A call's result arrives in a later record; the id holds the call's place in the order until it does.
-    steps: list[Step | str] = []
-    calls: dict[str, Call] = {}
-    results: dict[str, Result] = {}
-    for record in records:
-        ref = _uuid(record)
-        # Claude Code writes the structured result beside the record, not inside the block, and writes none at all
-        # for an error or for a result its own harness handled, which is why a recogniser may only prefer it.
-        structured = _fields(record.fields.get("toolUseResult"))
-        for block in _blocks(record):
-            match block:
-                case {"type": "text", "text": str() as text} if record.fields.get("type") == "assistant" and text.strip():
-                    steps.append(Said(ref, text))
-                case {"type": "tool_use", "id": str() as id, "name": str() as name, "input": dict()}:
-                    calls[id] = Call(ref, name, cast(dict[str, object], block["input"]), None)
-                    steps.append(id)
-                case {"type": "tool_result", "tool_use_id": str() as id}:
-                    results[id] = Result(_result_text(block.get("content")), structured, block.get("is_error") is True)
-                case _:
-                    # Thinking is how Claude got to a result, not a result; the summariser is shown what a turn did.
-                    pass
-    # A call with no result was interrupted, or the turn stopped before its result was written.
-    return [step if not isinstance(step, str) else recognise(replace(calls[step], result=results.get(step))) for step in steps]
+def holds_a_tool(record: Payload) -> bool:
+    """Whether this record is a tool call or a tool's result, which is what makes the record after it mid-turn."""
+    return any(block.get("type") in ("tool_use", "tool_result") for block in blocks(record))
 
 
-def _fields(value: object) -> Mapping[str, object] | None:
+def ref_of(record: Payload) -> Ref | None:
+    value = record.fields.get("uuid")
+    return Ref(value) if isinstance(value, str) else None
+
+
+def structured_result(record: Payload) -> Mapping[str, object] | None:
+    """The result Claude Code wrote beside a record, which it writes for neither an error nor a result its own harness handled."""
+    value = record.fields.get("toolUseResult")
     return cast(Mapping[str, object], value) if isinstance(value, Mapping) else None
 
 
-def _message(record: Payload) -> Mapping[str, object]:
-    message = record.fields.get("message")
-    match message:
+def message(record: Payload) -> Mapping[str, object]:
+    value = record.fields.get("message")
+    match value:
         case dict():
-            return cast(dict[str, object], message)
+            return cast(dict[str, object], value)
         case None:
             return {}
         case _:
-            raise Rejected(f"a transcript record's message should be an object, got {type(message).__name__}")
+            raise Rejected(f"a transcript record's message should be an object, got {type(value).__name__}")
 
 
-def _blocks(record: Payload) -> list[Mapping[str, object]]:
-    content = _message(record).get("content")
+def blocks(record: Payload) -> list[Mapping[str, object]]:
+    content = message(record).get("content")
     match content:
         case list():
             return [cast(dict[str, object], block) for block in cast(list[object], content) if isinstance(block, dict)]
@@ -190,7 +120,7 @@ def _blocks(record: Payload) -> list[Mapping[str, object]]:
             return []
 
 
-def _result_text(content: object) -> str:
+def result_text(content: object) -> str:
     match content:
         case str():
             return content

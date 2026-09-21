@@ -9,23 +9,41 @@ from pathlib import Path
 
 import pytest
 
+from dataclasses import dataclass
+
+from hands.core.session import Membership, SessionId
 from hands.core.steps import Call, Result, recognise
 from hands.core.testrun import report_of
 from hands.core.turn import Asked, Committed, Delegated, Edited, Looked, Other, Planned, Questioned, Ran, Step, Tested
-from hands.sessions.transcript import UNTOLD, read_turn
+from hands.sessions.tail import Tails
 
 FIXTURES = Path(__file__).parent / "fixtures"
+SID = SessionId("bf411065-dc5c-4ec9-8302-61b84bdb5c53")
 # The pairs carry no prompt between them, so one opens the turn they all belong to.
 OPENING = '{"type":"user","uuid":"open-1","message":{"role":"user","content":"do everything"}}'
 
 
+@dataclass
+class Registry:
+    """As much of the session registry as the tail asks about."""
+
+    member: Membership
+
+    def live_members(self) -> list[Membership]:
+        return [self.member]
+
+    def membership(self, session: SessionId) -> Membership | None:
+        return self.member if session == self.member.id else None
+
+
 @pytest.fixture
-def steps(tmp_path: Path) -> tuple[Step, ...]:
+async def steps(tmp_path: Path) -> tuple[Step, ...]:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(f"{OPENING}\n{(FIXTURES / 'steps.jsonl').read_text()}")
-    reading = read_turn(transcript, UNTOLD, None)
-    assert reading is not None and reading.turn.opening == Asked("do everything")
-    return reading.turn.steps
+    tails = Tails(Registry(Membership(SID, pid=4242, cwd=tmp_path, transcript=transcript)))
+    telling = await tails.tell(SID, None)
+    assert telling is not None and telling.turn.opening == Asked("do everything")
+    return telling.turn.steps
 
 
 def test_each_kind_of_record_is_recognised_as_the_kind_of_step_it_is(steps: tuple[Step, ...]) -> None:

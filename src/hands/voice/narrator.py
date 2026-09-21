@@ -1,6 +1,5 @@
-"""Sessions' stories, heard: each turn a session finishes is read from its transcript, summarised, and spoken with its name, and each session gone is said after its last turn."""
+"""Sessions' stories, heard: each turn a session finishes is told from the tail, summarised, and spoken with its name, and each session gone is said after its last turn."""
 
-import asyncio
 from collections.abc import Awaitable, Callable
 
 import anthropic
@@ -14,7 +13,7 @@ from hands.core.turn import Budget, render
 from hands.sessions.audit import Recounted, Record
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
-from hands.sessions.transcript import UNTOLD, Told, read_turn
+from hands.sessions.tail import Tails
 from hands.voice.readback import spoken_name
 from hands.voice.summary import Summariser, SummaryFailed
 
@@ -26,44 +25,37 @@ _FAILURES = (Rejected, OSError, SummaryFailed, openai.OpenAIError, anthropic.Ant
 
 
 async def narrate(
-    sessions: Sessions, summarise: Summariser, queue_frame: Callable[[Frame], Awaitable[None]], record: Record, budget: Budget = TURN_BUDGET
+    sessions: Sessions, tails: Tails, summarise: Summariser, queue_frame: Callable[[Frame], Awaitable[None]], record: Record, budget: Budget = TURN_BUDGET
 ) -> None:
     """Speak each finished turn and each session gone, in the order they happened, until cancelled."""
-    # How much of its newest turn each session has been told. Only this loop reads or writes it.
-    told: dict[SessionId, Told] = {}
     while True:
         story = await sessions.story()
         name = spoken_name(sessions, story.session)
         match story:
-            case Summarise(session=session):
-                spoken, told[session] = await recount(story, told.get(session, UNTOLD), name, summarise, record, budget)
+            case Summarise(session=session, closing=closing):
+                spoken = await recount(tails, session, closing, name, summarise, record, budget)
             case SessionGone():
                 spoken = TTSSpeakFrame(f"The session {name} is gone.")
-        # A session the registry stops listing live has no turn left to tell, and most ends — /exit, /clear, /resume,
-        # logging out, a session moved on at the keyboard — are never a story, so what each was told goes when the
-        # registry lets it go rather than when its end is spoken [LAW:one-source-of-truth].
-        live = {member.id for member in sessions.live_members()}
-        told = {session: heard for session, heard in told.items() if session in live}
         if spoken is not None:
             await queue_frame(spoken)
 
 
 async def recount(
-    finished: Summarise, told: Told, name: str, summarise: Summariser, record: Record, budget: Budget
-) -> tuple[Frame | None, Told]:
-    """The frame that tells the user what the turn did beyond `told`, or None when there is nothing new; and what it has been told once it is spoken."""
+    tails: Tails, session: SessionId, closing: str | None, name: str, summarise: Summariser, record: Record, budget: Budget
+) -> Frame | None:
+    """The frame that tells the user what the turn did beyond what was told before, or None when there is nothing new."""
     try:
-        # Off the loop: a long session's transcript is tens of megabytes.
-        reading = await asyncio.to_thread(read_turn, finished.transcript, told, finished.closing)
-        if reading is None or not reading.turn.steps:
-            logger.info(f"session {finished.session} stopped with no untold turn in {finished.transcript}, so there is nothing to tell")
-            return None, UNTOLD if reading is None else reading.told
-        summary = await summarise(render(reading.turn, budget))
+        telling = await tails.tell(session, closing)
+        if telling is None or not telling.turn.steps:
+            logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")
+            return None
+        summary = await summarise(render(telling.turn, budget))
     except _FAILURES as error:
         # [LAW:no-silent-failure] said without the model, as a system fact is, and logged with the reason, which is an audit line.
-        # What could not be read is told again at the next Stop, which may read it.
-        logger.error(f"cannot summarise the turn session {finished.session} finished, from {finished.transcript}: {type(error).__name__}: {error}")
-        return TTSSpeakFrame(f"{name} finished a turn, and I could not summarise it.", append_to_context=False), told
-    record(Recounted(finished.session, summary))
+        # Nothing is marked told, so what could not be summarised is told again at the next Stop, which may summarise it.
+        logger.error(f"cannot summarise the turn session {session} finished: {type(error).__name__}: {error}")
+        return TTSSpeakFrame(f"{name} finished a turn, and I could not summarise it.", append_to_context=False)
+    record(Recounted(session, summary))
+    tails.spoken(telling)
     # Kept in the intermediary's context, so it can answer about what the user heard.
-    return TTSSpeakFrame(f"{name}: {summary}"), reading.told
+    return TTSSpeakFrame(f"{name}: {summary}")

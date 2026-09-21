@@ -219,7 +219,7 @@ def _step(step: Step, budget: Budget) -> str:
         case Planned(task=task, change=change):
             return f"Claude's plan: {_cut(task, budget.input)} is {change}"
         case Delegated(agent=agent, description=description, report=report):
-            to = "a subagent" if agent is None else f"a {agent} subagent"
+            to = "a subagent" if agent is None else f"the {agent} subagent"
             return f"Claude gave {to} this job: {_cut(description, budget.input)}\n" + (
                 "It is still working." if report is None else f"It reported: {_cut(report, budget.result)}"
             )

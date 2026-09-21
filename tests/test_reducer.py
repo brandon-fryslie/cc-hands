@@ -110,11 +110,11 @@ def test_a_session_that_moves_on_while_waiting_lets_its_hook_go_undecided(event:
 
 @pytest.mark.parametrize("before", [Idle(), Working(since=1.0)])
 def test_a_finished_turn_is_summarised_from_the_session_transcript(before: SessionState) -> None:
-    assert reduce(holding(before), Stopped(ONE.id, "Done.")) == (holding(Idle()), [Summarise(ONE.id, ONE.transcript, "Done.")])
+    assert reduce(holding(before), Stopped(ONE.id, "Done.")) == (holding(Idle()), [Summarise(ONE.id, "Done.")])
 
 
 def test_a_turn_that_finishes_while_waiting_lets_the_hook_go_and_is_summarised() -> None:
-    assert reduce(holding(WAITING), Stopped(ONE.id, None))[1] == [Reply(ONE.id, RequestId("r0"), Withdraw()), Summarise(ONE.id, ONE.transcript, None)]
+    assert reduce(holding(WAITING), Stopped(ONE.id, None))[1] == [Reply(ONE.id, RequestId("r0"), Withdraw()), Summarise(ONE.id, None)]
 
 
 def test_a_second_request_while_waiting_lets_the_first_go_and_asks_the_second() -> None:

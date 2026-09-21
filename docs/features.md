@@ -53,10 +53,12 @@ what each has and what remains.
   of the lag from a record's `timestamp` to its `Step`. Built: the recogniser table
   and its nine typed steps, fitted to shapes read out of 900 real transcripts and
   tested against fourteen real call-and-result pairs and the output four real test
-  runners write; at `Stop`, `read_turn` reads the newest turn from the whole
-  transcript through them, skipping subagent records, and a turn that stops twice is
-  told only the steps the first stop did not tell. Remaining: the tail that follows
-  each live transcript from the watermark, and the lag measurement.
+  runners write; the tail that follows every live transcript from its watermark ten
+  times a second, measured live at 96 to 305 ms from a record being written to its
+  step, median 160 ms; and at `Stop`, the turn told from the tail rather than reread,
+  skipping subagent records, with a turn that stops twice told only the steps the
+  first stop did not tell. Remaining: steps reaching the reducer as events, which is
+  what progress while working is built on.
 - **The turn's git delta.** At `UserPromptSubmit` the daemon records the target's
   git baseline without touching the working tree; at `Stop` it computes the files
   changed, the commits made, new untracked files, and the diff. Changes made by any
