@@ -133,9 +133,10 @@ def _page(happenings: list[Happening]) -> list[Happening]:
     """As much of a reading as one call hands over, ending where a record does.
 
     The mark the reader comes back with names a record, and a reading goes on from after that record, so a page
-    that ended inside one would lose the rest of it [LAW:one-source-of-truth]. No record written by the Claude
-    Code here carries more than one happening — 26,285 records, none of them — so this only ever holds where a
-    harness batches blocks into a record, which is exactly where nothing would notice the loss.
+    that ended inside one would lose the rest of it [LAW:one-source-of-truth]. Nearly every record carries one
+    happening and cannot be split: 8 of the 628,822 on this machine carry more than one — a text and the call
+    it introduces, and one record with two calls in it. Rare enough to be left to chance is exactly what this
+    is not, because the loss is silent: the reading simply never mentions what the skipped block did.
     """
     shown = happenings[:READBACK_COUNT]
     while len(shown) > 1 and len(shown) < len(happenings) and shown[-1].ref is not None and shown[-1].ref == happenings[len(shown)].ref:

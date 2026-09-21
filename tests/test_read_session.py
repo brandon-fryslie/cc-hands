@@ -79,8 +79,9 @@ async def test_a_session_with_more_than_one_reading_says_where_to_read_on_from(t
 async def test_a_reading_never_ends_inside_a_record_so_the_rest_of_one_is_never_skipped(tmp_path: Path) -> None:
     """The mark names a record and a reading goes on from after it, so a page that split one would lose its tail.
 
-    No record this Claude Code writes carries more than one happening, so this is the guard for the harness
-    that batches blocks into a record — the case where nothing downstream would notice what went missing.
+    Nearly every record carries one happening: 8 of the 628,822 on this machine carry more than one, a text
+    and the call it introduces. Rare, and silent when it happens — the reading just never mentions what the
+    skipped block did — which is why the page is cut where a record is, rather than wherever forty falls.
     """
     transcript = tmp_path / "s1.jsonl"
     records = ['{"uuid":"u0","type":"user","message":{"role":"user","content":"go"}}']
