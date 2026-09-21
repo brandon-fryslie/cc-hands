@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -160,6 +161,22 @@ func TestInjectedTextReachesTheChildAndTheExitCodeIsTheChildsOwn(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the child never exited; the text probably never arrived")
+	}
+}
+
+func TestAChildKilledByASignalIsReportedAsOne(t *testing.T) {
+	// A signalled child has no exit code of its own. Passing on the -1 that Go reports
+	// would exit 255, which is a code a program can genuinely exit with, so a caller
+	// could not tell "exited 255" from "was killed". 128 plus the signal is what shells
+	// report and what everything reading exit codes already understands.
+	_, _, exited := wrap(t, "sh", "-c", "kill -TERM $$")
+	select {
+	case code := <-exited:
+		if code != 128+int(syscall.SIGTERM) {
+			t.Fatalf("exit code %d, want %d for a child killed by SIGTERM", code, 128+int(syscall.SIGTERM))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child never exited")
 	}
 }
 

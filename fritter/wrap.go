@@ -101,7 +101,7 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer) (int, error) {
 	if err := w.cmd.Wait(); err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			return exit.ExitCode(), nil
+			return exitCode(exit), nil
 		}
 		return 0, fmt.Errorf("waiting for %s: %w", w.cmd.Path, err)
 	}
@@ -147,4 +147,20 @@ func (w *Wrapped) attach(tty *os.File) (func(), error) {
 			warn("cannot restore the terminal: %v", err)
 		}
 	}, nil
+}
+
+// exitCode is what the child's fate looks like to whatever ran fritter.
+//
+// A child killed by a signal has no exit code of its own, and ExitCode answers -1 for
+// it. Passing that on would exit 255, which is a real code some programs use and would
+// tell a caller that fritter's child exited with 255 rather than that it was killed.
+// Shells report a signalled child as 128 plus the signal, and everything that reads exit
+// codes already knows that convention, so fritter speaks it too.
+// [LAW:no-silent-failure] The alternative is a wrapper that quietly rewrites how its
+// child died.
+func exitCode(exit *exec.ExitError) int {
+	if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return 128 + int(status.Signal())
+	}
+	return exit.ExitCode()
 }
