@@ -77,26 +77,35 @@ def read_turn(transcript: Path, told: Told, closing: str | None) -> Reading | No
     # A Stop another hook blocked lets the same turn go on to a later Stop, which tells the steps the first one did not.
     recorded = _steps(turn[start + 1 :])
     began = _uuid(turn[start])
-    heard = told.steps if told.opening == began else 0
+    # [LAW:types-are-the-program] a count of steps and a stand-in mean nothing away from the turn they were told of, so
+    # a session resumes a turn it was told of and starts every other turn from its opening.
+    resumed = told if told.opening == began else UNTOLD
     # Claude Code only ever appends, so the record of a stand-in that has since been written is the first step after what
     # was heard; counting it heard too is how the stand-in gives way to its record without the reply being told twice.
-    heard += 1 if told.closing is not None and recorded[heard : heard + 1] == [Said(told.closing)] else 0
-    stand_in = _stand_in(closing, recorded)
+    stood_in = resumed.closing
+    heard = resumed.steps + (1 if stood_in is not None and _said_at(recorded, resumed.steps) == stood_in else 0)
+    # [LAW:one-source-of-truth] the transcript is the record of what Claude said; the hook's copy stands in only for as
+    # long as the closing reply's own record is unwritten, and both are read the same way so neither can miss the other.
+    reply = _spoken(closing)
+    stand_in = None if reply == _last_said(recorded) else reply
     steps = recorded[heard:] if stand_in is None else [*recorded[heard:], Said(stand_in)]
     return Reading(Turn(opening=opening, steps=tuple(steps)), Told(opening=began, steps=len(recorded), closing=stand_in))
 
 
-def _stand_in(closing: str | None, recorded: list[Step]) -> str | None:
-    """The hook's copy of the closing reply, while the transcript holds no record of it; None once it does.
-
-    [LAW:one-source-of-truth] the transcript is the record of what Claude said, and the copy stands in only until it is written.
-    """
-    return None if closing is None or closing.strip() in ("", _last_said(recorded)) else closing
+def _said_at(recorded: list[Step], index: int) -> str | None:
+    """What Claude said in the step at this place; None where the turn has no such step, or used a tool there."""
+    step = recorded[index] if index < len(recorded) else None
+    return _spoken(step.text) if isinstance(step, Said) else None
 
 
-def _last_said(steps: list[Step]) -> str | None:
-    """The last text Claude wrote among these steps, as the closing reply the Stop hook carries would read."""
-    return next((step.text.strip() for step in reversed(steps) if isinstance(step, Said) and step.text.strip()), None)
+def _last_said(recorded: list[Step]) -> str | None:
+    """The last thing Claude said in these steps, which is where the reply the Stop hook carries lands once its record is written."""
+    return next((_spoken(step.text) for step in reversed(recorded) if isinstance(step, Said) and step.text.strip()), None)
+
+
+def _spoken(text: str | None) -> str | None:
+    """A reply as it is compared and told: what Claude wrote without the whitespace around it, and nothing at all for an empty one."""
+    return None if text is None or not text.strip() else text.strip()
 
 
 def _uuid(record: Payload) -> str | None:
@@ -118,7 +127,10 @@ def _opening(record: Payload, previous: Payload | None) -> Opening | None:
         case str() as text:
             pass
         case list() if blocks and not any(block.get("type") == "tool_result" for block in blocks):
-            # A prompt with an image or a document attached, or one sent through the SDK.
+            # A prompt with an image or a document attached, or one sent through the SDK. Anything but a tool result,
+            # rather than a list of the block kinds known today: a kind added tomorrow would otherwise stop opening the
+            # turn it opens, which hands the whole turn to an older opening, where a block nobody named costs the
+            # summariser some JSON inside `budget.opening` and nothing else.
             text = _result_text(blocks)
         case _:
             return None

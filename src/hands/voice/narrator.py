@@ -37,9 +37,12 @@ async def narrate(
         match story:
             case Summarise(session=session):
                 spoken, told[session] = await recount(story, told.get(session, UNTOLD), name, summarise, record, budget)
-            case SessionGone(session=session):
-                told.pop(session, None)
+            case SessionGone():
                 spoken = TTSSpeakFrame(f"The session {name} is gone.")
+        # A session the registry no longer lists live has no turn left to tell, whether or not its end was spoken, so what
+        # it was told goes with it [LAW:one-source-of-truth]. Done after its story, which is the last one it has.
+        if story.session not in {member.id for member in sessions.live_members()}:
+            told.pop(story.session, None)
         if spoken is not None:
             await queue_frame(spoken)
 

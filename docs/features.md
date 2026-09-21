@@ -52,7 +52,8 @@ what each has and what remains.
   never dropped. Done by fixture tests on real JSONL slices, and by a measurement
   of the lag from a record's `timestamp` to its `Step`. Built: at `Stop`, `read_turn`
   reads the newest turn from the whole transcript into two step kinds, text and tool
-  calls matched to their results, skipping subagent records. Remaining: the tail from
+  calls matched to their results, skipping subagent records, and a turn that stops
+  twice is told only the steps the first stop did not tell. Remaining: the tail from
   the watermark, the recogniser table and its typed steps, and the lag measurement.
 - **The turn's git delta.** At `UserPromptSubmit` the daemon records the target's
   git baseline without touching the working tree; at `Stop` it computes the files

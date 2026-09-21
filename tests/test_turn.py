@@ -133,6 +133,34 @@ def test_a_closing_reply_told_before_its_record_was_written_is_not_told_again_on
     )
 
 
+def test_a_reply_a_later_turn_repeats_is_told_again_because_what_was_told_of_one_turn_says_nothing_of_the_next(tmp_path: Path) -> None:
+    """Claude says the same short thing twice in a row: the second turn is its own, and is heard."""
+    transcript = tmp_path / "t.jsonl"
+    checked = '{"type":"user","uuid":"u1","message":{"role":"user","content":"check"}}'
+    nothing = '{"type":"assistant","uuid":"u2","message":{"content":[{"type":"text","text":"Nothing to do."}]}}'
+    again = '{"type":"user","uuid":"u3","message":{"role":"user","content":"check again"}}'
+    transcript.write_text(lines(checked))
+    first = read_turn(transcript, UNTOLD, "Nothing to do.")
+    assert first == Reading(Turn(Asked("check"), (Said("Nothing to do."),)), Told("u1", 0, "Nothing to do."))
+    transcript.write_text(lines(checked, nothing, again))
+    assert first is not None
+    assert read_turn(transcript, first.told, "Nothing to do.") == Reading(
+        Turn(Asked("check again"), (Said("Nothing to do."),)), Told("u3", 0, "Nothing to do.")
+    )
+
+
+def test_a_closing_reply_is_matched_to_its_record_however_the_whitespace_around_it_differs(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    opened = '{"type":"user","uuid":"u1","message":{"role":"user","content":"first"}}'
+    padded = '{"type":"assistant","uuid":"u2","message":{"content":[{"type":"text","text":"  Done.\\n"}]}}'
+    transcript.write_text(lines(opened))
+    first = read_turn(transcript, UNTOLD, "Done.")
+    assert first == Reading(Turn(Asked("first"), (Said("Done."),)), Told("u1", 0, "Done."))
+    transcript.write_text(lines(opened, padded))
+    assert first is not None
+    assert read_turn(transcript, first.told, "Done.") == Reading(Turn(Asked("first"), ()), Told("u1", 1, None))
+
+
 def test_a_transcript_with_no_prompt_yet_has_no_turn(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text('{"type":"ai-title","aiTitle":"x"}\n{"type":"user","isMeta":true,"message":{"role":"user","content":"injected"}}\n')
