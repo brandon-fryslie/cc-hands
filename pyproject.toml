@@ -33,4 +33,3 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 # Every test here is a function, so nothing is collected by class name. Without this a domain type whose name
 # begins with Test, such as the Tested step, is taken for a test case the moment a test module imports it.
-python_classes = []

@@ -98,7 +98,9 @@ class Tails:
         # transcript the catch-up is reading. [LAW:single-enforcer] everything that touches a Following waits on
         # this, the marking of what was told included, so no two threads are ever inside one Following.
         self._reading = asyncio.Lock()
-        # How far behind the newest record read was when it was read, in seconds.
+        # How far behind the newest record read was when it was read, in seconds, of whichever transcript the
+        # last reading touched: it measures this loop keeping up, which is the loop's property and not a
+        # session's. None where that record carried no timestamp, because then nothing measured it.
         self.lag: float | None = None
 
     async def catch_up(self) -> None:
@@ -109,6 +111,12 @@ class Tails:
             self._following = {session: following for session, following in self._following.items() if session in live}
             for member in members:
                 following = self._following.setdefault(member.id, Following(member.transcript))
+                if following.path != member.transcript:
+                    # [LAW:one-source-of-truth] where a session's transcript is, is the registry's to say. A
+                    # session registered again writes a new one, and nothing read of the old file says anything
+                    # about the new: it is read from its start, and the turn it opens is the turn that is told.
+                    following.path = member.transcript
+                    following.restart()
                 try:
                     await asyncio.to_thread(self._read, member.id, following)
                 except FileNotFoundError:

@@ -377,6 +377,26 @@ async def test_what_a_turn_was_told_is_marked_only_while_nothing_else_is_reading
     assert (await tails.tell(SID, None)) == Telling(SID, Turn(Asked("first"), ()), number=1, through=1, stood_in=None)
 
 
+async def test_a_session_registered_again_is_told_from_the_transcript_it_has_now(tmp_path: Path) -> None:
+    """Where a session's transcript is, is the registry's to say. Registered again, it writes a new one, and
+    reading the file it used to write would follow a session that has stopped writing and say nothing ever again."""
+    first = tmp_path / "a.jsonl"
+    first.write_text(lines(PROMPT, DONE))
+    registry = Registry([member(first)])
+    tails = Tails(registry)
+    told = await tails.tell(SID, None)
+    assert told is not None
+    await tails.spoken(told)
+    second = tmp_path / "b.jsonl"
+    second.write_text(lines('{"type":"user","message":{"role":"user","content":"again"}}', DONE))
+    # The registry now knows the session by its new transcript, and by nothing of the old one.
+    registry.members[:] = [member(second)]
+    registry.heard[:] = [member(second)]
+    await tails.catch_up()
+    telling = await tails.tell(SID, None)
+    assert telling is not None and telling.turn == Turn(Asked("again"), (Said(None, "Done."),))
+
+
 async def test_how_far_behind_the_newest_record_was_when_it_was_read_is_measured(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     stamped = '{"type":"assistant","timestamp":"2026-09-01T12:00:00.000Z","message":{"content":[{"type":"text","text":"Done."}]}}'

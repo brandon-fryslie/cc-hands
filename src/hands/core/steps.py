@@ -69,14 +69,17 @@ def _ran(call: Call) -> Step | None:
         return None
     printed = _printed(call.result)
     failed = call.result is not None and call.result.failed
-    git = _git(call.result)
+    structured = _structured(call)
+    # [LAW:one-source-of-truth] whether a command touched the repository is what the record says, never what this
+    # version can name of what it says: an operation written in a shape nobody here reads yet is still a change.
+    operations = _mapping(structured.get("gitOperation")) if structured is not None else None
     report = report_of(printed)
     # A test run's result is its counts and its failing names; its scrollback is the least of it. It is claimed
     # only where those counts are the whole story: a command that failed while nothing is counted failing, or one
     # that changed the repository on its way, did more than run a suite, and only its own output says what.
-    if report is not None and not git and not (failed and report.failed == 0):
+    if report is not None and operations is None and not (failed and report.failed == 0):
         return Tested(call.ref, report.runner, report.passed, report.failed, report.failing)
-    return Ran(call.ref, command, _text(call.input.get("description")), failed, printed, git)
+    return Ran(call.ref, command, _text(call.input.get("description")), failed, printed, _changes(operations))
 
 
 def _edited(call: Call) -> Step | None:
@@ -184,9 +187,8 @@ def _printed(result: Result | None) -> str:
     return result.text
 
 
-def _git(result: Result | None) -> tuple[GitChange, ...]:
-    structured = result.structured if result is not None else None
-    operations = _mapping(structured.get("gitOperation")) if structured is not None else None
+def _changes(operations: Mapping[str, object] | None) -> tuple[GitChange, ...]:
+    """Of what the record says the command did to the repository, the operations this version can name."""
     if operations is None:
         return ()
     return tuple(change for name, value in operations.items() if (change := _change(name, _mapping(value))) is not None)

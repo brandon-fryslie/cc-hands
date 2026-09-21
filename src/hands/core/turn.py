@@ -73,6 +73,10 @@ class Ran:
 class Tested:
     """A command whose output a test runner wrote. `passed` is None for a runner that does not count what passed."""
 
+    # pytest collects any class whose name starts with Test, and this is a step, not a test case. Said here,
+    # about the one name that collides, rather than by turning class collection off for the whole repository.
+    __test__ = False
+
     ref: Ref | None
     runner: str
     passed: int | None

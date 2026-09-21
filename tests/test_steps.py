@@ -209,6 +209,16 @@ def test_the_cases_of_one_failing_test_are_not_counted_as_more_failing_tests() -
     assert table is not None and table.failed == 1 and table.failing == ("TestOuter",)
 
 
+def test_a_repository_change_this_version_cannot_name_still_keeps_the_command_it_was() -> None:
+    """That the record names an operation at all is what says the command did more than run a suite; which
+    operation it was is the lesser half. An amend carries no sha, and a stash is a word nobody here reads."""
+    amended = Result("2 passed in 0.1s", {"gitOperation": {"commit": {"kind": "amend"}}}, False)
+    step = recognise(Call(None, "Bash", {"command": "git commit --amend"}, amended))
+    assert isinstance(step, Ran) and step.command == "git commit --amend" and step.git == ()
+    stashed = Result("2 passed in 0.1s", {"gitOperation": {"stash": {"ref": "stash@{0}"}}}, False)
+    assert isinstance(recognise(Call(None, "Bash", {"command": "git stash"}, stashed)), Ran)
+
+
 def test_a_call_no_result_has_come_back_for_is_told_as_having_none() -> None:
     step = recognise(Call(None, "Bash", {"command": "sleep 60"}, None))
     assert step == Ran(None, "sleep 60", None, failed=False, output="(no result)", git=())
