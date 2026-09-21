@@ -1,6 +1,7 @@
 """What the reducer asks the edges to do. Adapters perform these and nothing else."""
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from hands.core.events import SessionEvent
 from hands.core.session import Permission, RequestId, SessionId
@@ -126,4 +127,32 @@ class SessionGone:
 # a summary takes seconds, so an end spoken at once would be heard before the last turn it ends.
 Story = Summarise | SessionGone
 
-Effect = Audit | Reply | Heard | Story
+
+@dataclass(frozen=True)
+class Snapshot:
+    """Where a session's repository stands as its turn begins, so that what the turn changes can be read against it.
+
+    Carries where the session works rather than leaving it to be looked up: where that is, is the registry's to
+    say [LAW:one-source-of-truth], and saying it here is what lets the reader be built without one.
+    """
+
+    session: SessionId
+    cwd: Path
+
+
+@dataclass(frozen=True)
+class Compare:
+    """What a session's turn changed, read against the snapshot its start took.
+
+    Told apart from Summarise and done before it, because a summary is made one at a time and takes seconds:
+    read then, the repository would already hold whatever the next turn had started doing.
+    """
+
+    session: SessionId
+
+
+# What a turn did to the repository it ran in, which no record of the session need name: a formatter, a code
+# generator, or a `sed` in a shell command changes files that no step reports.
+Repository = Snapshot | Compare
+
+Effect = Audit | Reply | Heard | Story | Repository

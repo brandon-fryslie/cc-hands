@@ -10,6 +10,7 @@ from aiohttp import web
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
+from hands.core.delta import Changed, Delta
 from hands.core.events import Ended, Joined, Prompted, Stopped
 from hands.core.session import Membership, SessionId
 from hands.core.turn import Budget
@@ -21,7 +22,7 @@ from hands.voice.pipeline import OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
 
 FIXTURE = Path(__file__).parent / "fixtures" / "turn.jsonl"
-BUDGET = Budget(opening=100, said=100, input=100, result=100, steps=10)
+BUDGET = Budget(opening=100, said=100, input=100, result=100, steps=10, files=10, changes=500)
 SID = SessionId("s1")
 
 
@@ -146,7 +147,7 @@ async def test_a_turn_that_cannot_be_summarised_is_said_to_have_failed_and_logge
     unreachable = summariser(OpenAICompatibleBackend(base_url="http://127.0.0.1:9/v1", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
-        spoken = await recount(tailing(FIXTURE), SID, None, "cc-hands", unreachable, recorded.append, BUDGET)
+        spoken = await recount(tailing(FIXTURE), SID, None, "cc-hands", unreachable, recorded.append, BUDGET, Delta())
     finally:
         logger.remove(sink)
     assert isinstance(spoken, TTSSpeakFrame)
@@ -160,7 +161,7 @@ async def test_a_missing_transcript_is_said_to_have_failed_too(tmp_path: Path) -
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    spoken = await recount(tailing(tmp_path / "gone.jsonl"), SID, None, "cc-hands", never, lambda _: None, BUDGET)
+    spoken = await recount(tailing(tmp_path / "gone.jsonl"), SID, None, "cc-hands", never, lambda _: None, BUDGET, Delta())
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands finished a turn, and I could not summarise it."
 
 
@@ -171,7 +172,40 @@ async def test_a_session_that_stops_before_any_prompt_says_nothing(tmp_path: Pat
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    assert await recount(tailing(transcript), SID, None, "cc-hands", never, lambda _: None, BUDGET) is None
+    assert await recount(tailing(transcript), SID, None, "cc-hands", never, lambda _: None, BUDGET, Delta()) is None
+
+
+async def test_a_turn_that_only_a_shell_command_changed_is_still_told_by_what_the_repository_says(tmp_path: Path) -> None:
+    """A formatter run from a shell command leaves a turn whose steps say nothing about the files it rewrote.
+
+    The turn is told anyway, and what it is told from is git: without this the user hears that a command ran
+    and never hears that it rewrote forty files, which is the whole result of the turn.
+    """
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text('{"uuid":"u1","type":"user","message":{"role":"user","content":"run the formatter"}}\n')
+    shown: list[str] = []
+
+    async def summarise(turn: str) -> str:
+        shown.append(turn)
+        return "it reformatted the whole package"
+
+    delta = Delta(files=(Changed("src/a.py", 12, 9), Changed("src/b.py", 3, 3)), commits=(), patch="@@\n-x\n+y\n")
+    spoken = await recount(tailing(transcript), SID, None, "cc-hands", summarise, lambda _: None, BUDGET, delta)
+
+    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: it reformatted the whole package"
+    [rendered] = shown
+    assert "src/a.py +12 -9" in rendered and "src/b.py +3 -3" in rendered
+
+
+async def test_a_turn_that_did_nothing_and_changed_nothing_is_still_silent(tmp_path: Path) -> None:
+    """The delta is a reason to speak, not an excuse to: a turn with neither steps nor changes has no news."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text('{"uuid":"u1","type":"user","message":{"role":"user","content":"hello"}}\n')
+
+    async def never(turn: str) -> str:
+        raise AssertionError("nothing to summarise")
+
+    assert await recount(tailing(transcript), SID, None, "cc-hands", never, lambda _: None, BUDGET, Delta()) is None
 
 
 async def openai_server(content: str | None) -> tuple[web.AppRunner, str, list[dict[str, object]]]:

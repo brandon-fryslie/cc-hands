@@ -15,6 +15,8 @@ from hands.core.effects import (
     Reply,
     SessionGone,
     Speak,
+    Compare,
+    Snapshot,
     Summarise,
     Unregistered,
     Withdraw,
@@ -65,10 +67,12 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case MovedOn(membership=membership):
             # The user moved the process on at the keyboard, so there is nothing to tell them.
             return _ended_unheard(registry, membership, [])
-        case Prompted(at=at):
-            return _enter(registry, event, lambda _: Working(since=at))
+        case Prompted(session=session, at=at):
+            # Marked as the turn opens, so what it changes is read against a repository it has not touched yet.
+            return _enter(registry, event, lambda _: Working(since=at), lambda membership: [Snapshot(session, membership.cwd)])
         case Stopped(session=session, closing=closing):
-            return _enter(registry, event, lambda _: Idle(), lambda _membership: [Summarise(session, closing)])
+            # Compared before the turn is handed over to be summarised, never after: see Compare.
+            return _enter(registry, event, lambda _: Idle(), lambda _membership: [Compare(session), Summarise(session, closing)])
         case PermissionRequested(at=at, request=request, permission=permission):
             deadline = at + registry.permission_deadline
             return _enter(registry, event, lambda _: Blocked(on=permission, request=request, deadline=deadline, warned=False))

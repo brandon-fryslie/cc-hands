@@ -17,6 +17,8 @@ from hands.core.effects import (
     Reply,
     SessionGone,
     Speak,
+    Compare,
+    Snapshot,
     Summarise,
     Unregistered,
     Withdraw,
@@ -91,7 +93,9 @@ WAITING = Blocked(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False)
 @pytest.mark.parametrize("before", [Idle(), Working(since=1.0)])
 @pytest.mark.parametrize("event", [Prompted(ONE.id, at=5.0), Ended(ONE.id, "prompt_input_exit"), Joined(ONE, "startup")])
 def test_moving_between_states_that_wait_on_nothing_asks_for_nothing(before: SessionState, event: Event) -> None:
-    assert reduce(holding(before), event)[1] == []
+    # A prompt marks the repository it is about to change, which asks the user nothing and is not spoken.
+    marked = [Snapshot(ONE.id, ONE.cwd)] if isinstance(event, Prompted) else []
+    assert reduce(holding(before), event)[1] == marked
 
 
 @pytest.mark.parametrize("before", [Idle(), Working(since=1.0)])
@@ -105,16 +109,32 @@ def test_a_permission_request_is_handed_to_the_intermediary(before: SessionState
 )
 def test_a_session_that_moves_on_while_waiting_lets_its_hook_go_undecided(event: Event) -> None:
     # Most often the user answered the dialog at the keyboard; a voice reply after that would decide nothing.
-    assert reduce(holding(WAITING), event)[1] == [Reply(ONE.id, RequestId("r0"), Withdraw())]
+    marked = [Snapshot(ONE.id, ONE.cwd)] if isinstance(event, Prompted) else []
+    assert reduce(holding(WAITING), event)[1] == [Reply(ONE.id, RequestId("r0"), Withdraw()), *marked]
 
 
 @pytest.mark.parametrize("before", [Idle(), Working(since=1.0)])
 def test_a_finished_turn_is_summarised_from_the_session_transcript(before: SessionState) -> None:
-    assert reduce(holding(before), Stopped(ONE.id, "Done.")) == (holding(Idle()), [Summarise(ONE.id, "Done.")])
+    assert reduce(holding(before), Stopped(ONE.id, "Done.")) == (holding(Idle()), [Compare(ONE.id), Summarise(ONE.id, "Done.")])
 
 
 def test_a_turn_that_finishes_while_waiting_lets_the_hook_go_and_is_summarised() -> None:
-    assert reduce(holding(WAITING), Stopped(ONE.id, None))[1] == [Reply(ONE.id, RequestId("r0"), Withdraw()), Summarise(ONE.id, None)]
+    assert reduce(holding(WAITING), Stopped(ONE.id, None))[1] == [Reply(ONE.id, RequestId("r0"), Withdraw()), Compare(ONE.id), Summarise(ONE.id, None)]
+
+
+def test_a_turn_is_compared_before_it_is_handed_over_to_be_summarised() -> None:
+    """Effects are performed in the order they are given, and this order is the whole of why it is two effects.
+
+    A summary is made one at a time and takes seconds. Read the repository when the summary is made rather
+    than when the turn stopped, and it holds whatever the next turn has since started doing.
+    """
+    effects = reduce(holding(Working(since=1.0)), Stopped(ONE.id, None))[1]
+    assert effects.index(Compare(ONE.id)) < effects.index(Summarise(ONE.id, None))
+
+
+def test_a_prompt_marks_where_the_repository_stands_before_the_turn_can_change_it() -> None:
+    """The mark is what the turn's changes are read against, so it is taken as the turn opens, not during it."""
+    assert reduce(holding(Idle()), Prompted(ONE.id, at=5.0))[1] == [Snapshot(ONE.id, ONE.cwd)]
 
 
 def test_a_second_request_while_waiting_lets_the_first_go_and_asks_the_second() -> None:

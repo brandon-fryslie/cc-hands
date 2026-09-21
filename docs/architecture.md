@@ -149,7 +149,9 @@ class Play:     narration: NarrationId; segment: SegmentId   # straight to TTS, 
 @dataclass(frozen=True)
 class Summarise: narration: NarrationId; steps: Sequence[Step]; expand: SegmentId | None
 @dataclass(frozen=True)
-class Snapshot: session: SessionId; point: Literal["turn_start", "turn_end"]  # git delta
+class Snapshot: session: SessionId; cwd: Path                # where the turn's repository stands as it opens
+@dataclass(frozen=True)
+class Compare:  session: SessionId                           # what it changed, read when the turn stops
 @dataclass(frozen=True)
 class Audit:    record: AuditRecord
 @dataclass(frozen=True)
@@ -516,6 +518,16 @@ class Notified:   ref: Ref | None; text: str    # a background task's report, ha
 
 Opening = Asked | Notified          # who opened the turn, so a notification is never told as something asked
 Happening = Opening | Step          # what a reading of a session is made of; an opening is markable like a step
+
+@dataclass(frozen=True)
+class Changed:  path: str; added: int | None; removed: int | None   # None counts for a file git reads as binary
+@dataclass(frozen=True)
+class Commit:   sha: str; subject: str
+@dataclass(frozen=True)
+class Delta:    files: tuple[Changed, ...]; commits: tuple[Commit, ...]; patch: str
+
+# Empty says the same thing three ways — nothing changed, no repository, git unreadable — because all three
+# are the same silence to a listener, who is told what happened rather than what did not. The log says which.
 ```
 
 **What the records really say**, read out of 900 transcripts on 2026-09-21, against which
@@ -587,13 +599,29 @@ parent's `toolUseId` in the `.meta.json` beside it. Tailing those is later work
 
 **Results outside the transcript.** A formatter, a code generator, or a `sed` in a
 shell command changes files that no `Edited` step names. So at `UserPromptSubmit` the
-reducer emits `Snapshot(turn_start)`, and the adapter records the target's `HEAD` and a
-`git stash create` object, which captures the working tree without changing it. At
-`Stop`, `Snapshot(turn_end)` diffs against that baseline, lists the commits since
-`HEAD`, and lists untracked files that appeared, which a stash object does not hold.
-The summariser gets the delta with the steps. The snapshot races the agent's first edit
-by however long the model takes to start, which is seconds, and an edit that wins the
-race is still an `Edited` step.
+reducer emits `Snapshot`, and the reader records the target's `HEAD` and a tree of
+everything git would keep; at `Stop` it emits `Compare`, which diffs that tree against
+one taken now, and lists the commits reachable from where the turn ended and not from
+where it began. The summariser gets the `Delta` beside the steps, because it is the
+result of all of them together and the file a `sed` changed belongs to no step at all.
+
+The tree is written through an index of the daemon's own — the repository's index
+copied to a scratch file, `git add -A`, `git write-tree` — so nothing is staged,
+stashed, or reverted, and the repository's own index is never written. `git stash
+create` would do most of this and is what this design first said, but a stash holds no
+untracked file, and the file a code generator just wrote is exactly what a turn must be
+able to name; it also touches the repository's index to do its work. The index is
+copied rather than started from nothing because it carries what git already knows about
+every file: 0.105 s against 1.409 s on a repository of 20,000 files, and this is taken
+while a prompt's hook waits on it `[LAW:carrying-cost]`. The one mark left behind is a
+few unreferenced objects, which git's own housekeeping collects.
+
+`Compare` is its own effect, emitted before `Summarise` and performed before it, rather
+than read when the summary is made: summaries are made one at a time and take seconds,
+and by then the session may have begun another turn, whose changes would be told as
+part of the one before it `[LAW:no-ambient-temporal-coupling]`. The snapshot races the
+agent's first edit by however long the model takes to start, which is seconds, and an
+edit that wins the race is still an `Edited` step.
 
 ## Summaries: spoken form, and the narration tree
 

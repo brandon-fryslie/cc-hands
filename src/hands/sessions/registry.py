@@ -7,12 +7,13 @@ from dataclasses import dataclass
 from loguru import logger
 
 from hands.core.drafts import DraftOutcome, DraftRequest, decide
-from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Decision, Effect, Heard, HookReply, Narrate, Reply, SessionGone, Speak, Story, Summarise, Unregistered, Withdraw
+from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Narrate, Reply, SessionGone, Snapshot, Speak, Story, Summarise, Unregistered, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
 from hands.core.permissions import AnswerPermission, PermissionOutcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Instant, Membership, Registry, RequestId, Session, SessionId
 from hands.sessions.audit import Applied, EffectFailed, Performed, Record
+from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import ai_title
 
@@ -26,13 +27,15 @@ class Listing:
 class Sessions:
     """Applies events, draft requests, and permission answers through the core, performs their effects, and answers who is running."""
 
-    def __init__(self, permission_deadline: float, clock: Callable[[], Instant], record: Record) -> None:
+    def __init__(self, permission_deadline: float, clock: Callable[[], Instant], record: Record, changes: Changes | None = None) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
         self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={})
         # [LAW:effects-at-boundaries] the one clock: hooks, answers, and ticks are all stamped from it.
         self._clock = clock
         # [LAW:single-enforcer] every event and every effect passes through here, so here is where each becomes an audit line.
         self._record = record
+        # What a turn did to the repository it ran in. A daemon given none tells every turn by its steps alone.
+        self._changes = changes or NoChanges()
         # A blocking hook's connection waits on its future; only a Reply effect resolves one, until shutdown lets them all go.
         self._waiting: dict[RequestId, asyncio.Future[HookReply]] = {}
         # Set once, at shutdown: from then on a permission hook is let go as soon as it asks.
@@ -161,6 +164,11 @@ class Sessions:
                 self._heard.put_nowait(effect)
             case Summarise() | SessionGone():
                 self._story.put_nowait(effect)
+            case Snapshot(session=session, cwd=cwd):
+                await self._changes.snapshot(session, cwd)
+            case Compare(session=session):
+                # Awaited here, so the delta is read and waiting before the Summarise after it is ever queued.
+                await self._changes.compare(session)
 
     def _reply(self, session: SessionId, request: RequestId, reply: HookReply) -> None:
         waiting = self._waiting.get(request)

@@ -79,7 +79,9 @@ def list_sessions_tool(sessions: Sessions) -> Tool:
 
 # How much of one step the intermediary is shown when it reads a session back: enough to say what happened,
 # and short enough that a screenful of them still leaves room for the conversation they are read into.
-READBACK_BUDGET = Budget(opening=200, said=400, input=120, result=200, steps=READBACK_COUNT)
+# A reading is of the transcript alone, so it shows no repository delta and budgets none: what a turn changed
+# in git is told when the turn stops, to the summariser, and is not a session's to be read back out of.
+READBACK_BUDGET = Budget(opening=200, said=400, input=120, result=200, steps=READBACK_COUNT, files=0, changes=0)
 
 
 def read_session_tool(sessions: Sessions) -> Tool:

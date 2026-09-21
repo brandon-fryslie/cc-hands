@@ -40,6 +40,7 @@ from hands.sessions.audit import AuditLog, Record, failures_to
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.tail import Tails, keep_tailing
+from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
 from hands.voice.keys import drive_key
@@ -111,7 +112,9 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash:
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
     # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
     failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
-    sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record)
+    # What each turn changed in the repository it ran in, which no transcript record need name.
+    deltas = Deltas()
+    sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record, changes=deltas)
     hooks = await serve_hooks(home, sessions)
     quit_event = asyncio.Event()
     # [LAW:single-enforcer] launchd's SIGTERM, a terminal's Ctrl-C, the q key, and a failed background task all set
@@ -125,7 +128,7 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash:
         voice = await load(config, sessions, heart, quit_event, audit.record)
         if voice is not None:
             summarise = summariser(config.llm, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
-            await converse(voice, home, sessions, summarise, heart, quit_event, Started(after_crash), audit.record)
+            await converse(voice, home, sessions, summarise, heart, quit_event, Started(after_crash), audit.record, deltas)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -158,7 +161,15 @@ async def load(config: VoiceConfig, sessions: Sessions, heart: status.Heart, qui
 
 
 async def converse(
-    voice: Voice, home: Home, sessions: Sessions, summarise: Summariser, heart: status.Heart, quit_event: asyncio.Event, started: Started, record: Record
+    voice: Voice,
+    home: Home,
+    sessions: Sessions,
+    summarise: Summariser,
+    heart: status.Heart,
+    quit_event: asyncio.Event,
+    started: Started,
+    record: Record,
+    deltas: Deltas,
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
@@ -185,7 +196,7 @@ async def converse(
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS), name="the transcript tail"),
         asyncio.create_task(relay(sessions, voice.worker.queue_frame), name="the session speech relay"),
-        asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record), name="the session narrator"),
+        asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
     ]
     for task in background:

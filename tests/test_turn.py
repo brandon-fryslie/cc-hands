@@ -1,5 +1,6 @@
 """A turn, rendered for the summariser: every kind of step says what it did, and each part is cut to its budget."""
 
+from hands.core.delta import Changed, Commit, Delta
 from hands.core.turn import (
     CUT,
     Asked,
@@ -23,17 +24,17 @@ from hands.core.turn import (
     render,
 )
 
-ROOMY = Budget(opening=10_000, said=10_000, input=10_000, result=10_000, steps=100)
+ROOMY = Budget(opening=10_000, said=10_000, input=10_000, result=10_000, steps=100, files=100, changes=10_000)
 
 
 def rendered(*steps: object, budget: Budget = ROOMY) -> str:
     """Everything after the opening, which every case below shares."""
     turn = Turn(Asked(None, "fix the test"), tuple(steps))  # pyright: ignore[reportArgumentType]
-    return render(turn, budget).removeprefix("The user asked:\nfix the test\n\n")
+    return render(turn, Delta(), budget).removeprefix("The user asked:\nfix the test\n\n")
 
 
 def test_a_notification_is_rendered_as_what_reported_rather_than_as_something_the_user_asked() -> None:
-    assert render(Turn(Notified(None, "<task-notification>tests passed</task-notification>"), ()), ROOMY).startswith("A background task reported:\n")
+    assert render(Turn(Notified(None, "<task-notification>tests passed</task-notification>"), ()), Delta(), ROOMY).startswith("A background task reported:\n")
 
 
 def test_text_a_command_and_a_tool_nobody_named_each_say_what_came_of_them() -> None:
@@ -88,14 +89,14 @@ def test_a_suite_that_failed_whole_has_its_names_cut_to_budget_like_every_other_
     """Hundreds of failing names is exactly what a bad refactor prints, and exactly when one step could fill
     the whole prompt of a model asked for two sentences."""
     failing = tuple(f"test_{n}" for n in range(200))
-    assert rendered(Tested(None, "pytest", 0, 200, failing), budget=Budget(opening=100, said=100, input=100, result=30, steps=10)) == (
+    assert rendered(Tested(None, "pytest", 0, 200, failing), budget=Budget(opening=100, said=100, input=100, result=30, steps=10, files=10, changes=100)) == (
         "Claude ran the pytest tests: 200 failed, 0 passed\n  test_0\n  test_1\n  test_2\n  test_3\n  te" + CUT
     )
 
 
 def test_a_long_turn_keeps_how_it_started_and_how_it_ended_and_each_part_is_cut_to_its_budget() -> None:
     steps = tuple(Said(None, f"step {n}") for n in range(10))
-    rendered_turn = render(Turn(Asked(None, "x" * 50), steps), Budget(opening=10, said=100, input=100, result=100, steps=4))
+    rendered_turn = render(Turn(Asked(None, "x" * 50), steps), Delta(), Budget(opening=10, said=100, input=100, result=100, steps=4, files=10, changes=100))
     assert rendered_turn == "\n\n".join(
         [
             "The user asked:\n" + "x" * 10 + CUT,
@@ -106,3 +107,34 @@ def test_a_long_turn_keeps_how_it_started_and_how_it_ended_and_each_part_is_cut_
             "Claude said:\nstep 9",
         ]
     )
+
+
+def test_what_the_repository_says_is_told_after_the_steps_and_named_file_by_file() -> None:
+    """A turn's result is not only what its steps report: a `sed` names no file, and a commit no step made."""
+    delta = Delta(
+        files=(Changed("src/a.py", 12, 9), Changed("logo.png", None, None)),
+        commits=(Commit("abc1234", "tidy up"),),
+        patch="@@ -1 +1 @@\n-x = 1\n+x = 2\n",
+    )
+    told = render(Turn(Asked(None, "tidy up"), (Said(None, "Done."),)), delta, ROOMY)
+    assert told == "\n\n".join(
+        [
+            "The user asked:\ntidy up",
+            "Claude said:\nDone.",
+            "The repository is different, whether or not a step above says so:\n  src/a.py +12 -9\n  logo.png (binary)",
+            "It made 1 commit:\n  abc1234 tidy up",
+            "What changed:\n@@ -1 +1 @@\n-x = 1\n+x = 2",
+        ]
+    )
+
+
+def test_a_formatter_that_touched_hundreds_of_files_is_counted_rather_than_listed() -> None:
+    """Naming every file is what fills a prompt budgeted for two spoken sentences; the count is the story."""
+    delta = Delta(files=tuple(Changed(f"src/m{n}.py", 1, 1) for n in range(40)))
+    told = render(Turn(Asked(None, "format"), ()), delta, Budget(opening=100, said=100, input=100, result=100, steps=10, files=3, changes=100))
+    assert "  src/m0.py +1 -1\n  src/m1.py +1 -1\n  src/m2.py +1 -1\n  (and 37 more files)" in told
+    assert "src/m3.py" not in told
+
+
+def test_a_turn_that_changed_nothing_says_nothing_about_the_repository() -> None:
+    assert "repository" not in render(Turn(Asked(None, "think about it"), (Said(None, "Thought."),)), Delta(), ROOMY)

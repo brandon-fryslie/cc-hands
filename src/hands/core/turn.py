@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import NewType
 
+from hands.core.delta import Changed, Delta
+
 # The uuid of the transcript record a step came from, so a spoken segment can name what it summarised.
 # A step names no record in the two cases where there is none to name: a record that carries no uuid, and
 # the closing reply a Stop hook hands over in the milliseconds before Claude Code writes its record.
@@ -186,13 +188,19 @@ class Budget:
     input: int  # characters of each tool input, command, or target
     result: int  # characters of each tool result, patch, or output
     steps: int  # steps shown; the middle of a longer turn is left out, keeping how it started and how it ended
+    files: int  # files of the turn's delta named one by one; a formatter touches hundreds, where the count is the story
+    changes: int  # characters of the patch between where the turn began and where it ended
 
 
 CUT = " ... (cut)"
 
 
-def render(turn: Turn, budget: Budget) -> str:
-    """The turn as the summariser's user message."""
+def render(turn: Turn, delta: Delta, budget: Budget) -> str:
+    """The turn as the summariser's user message: what was asked, what was done, and what the repository says.
+
+    The delta is given beside the steps rather than folded into them, because it is the result of all of them
+    together and belongs to no one step — and because the file a `sed` changed has no step to belong to.
+    """
     head = (budget.steps + 1) // 2
     tail = budget.steps - head
     steps = turn.steps
@@ -202,7 +210,32 @@ def render(turn: Turn, budget: Budget) -> str:
         shown.extend(describe(step, budget) for step in steps[len(steps) - tail :])
     else:
         shown = [describe(step, budget) for step in steps]
-    return "\n\n".join([describe(turn.opening, budget), *shown])
+    return "\n\n".join([describe(turn.opening, budget), *shown, *_changed(delta, budget)])
+
+
+def _changed(delta: Delta, budget: Budget) -> list[str]:
+    """What the repository says the turn did, said after the steps because it is what they came to."""
+    if not delta:
+        return []
+    told: list[str] = []
+    if delta.files:
+        named = [f"  {_counted(file)}" for file in delta.files[: budget.files]]
+        if len(delta.files) > budget.files:
+            named.append(f"  (and {len(delta.files) - budget.files} more files)")
+        told.append("The repository is different, whether or not a step above says so:\n" + "\n".join(named))
+    if delta.commits:
+        made = "\n".join(f"  {commit.sha} {commit.subject}" for commit in delta.commits)
+        told.append(f"It made {len(delta.commits)} commit{'' if len(delta.commits) == 1 else 's'}:\n{made}")
+    if delta.patch:
+        told.append(f"What changed:\n{_cut(delta.patch, budget.changes)}")
+    return told
+
+
+def _counted(file: Changed) -> str:
+    """A file and its size of change; git counts no lines for a file it reads as binary."""
+    if file.added is None or file.removed is None:
+        return f"{file.path} (binary)"
+    return f"{file.path} +{file.added} -{file.removed}"
 
 
 def describe(happening: Happening, budget: Budget) -> str:

@@ -67,12 +67,15 @@ what each has and what remains.
   skipping subagent records, with a turn that stops twice told only the steps the
   first stop did not tell. Remaining: steps reaching the reducer as events, which is
   what progress while working is built on.
-- **The turn's git delta.** At `UserPromptSubmit` the daemon records the target's
-  git baseline without touching the working tree; at `Stop` it computes the files
-  changed, the commits made, new untracked files, and the diff. Changes made by any
-  means, a formatter or a `sed` in a shell command included, are part of the
-  result. Done when a turn whose only change came from a shell command is
-  summarised as changing that file.
+- **The turn's git delta.** Built: at `UserPromptSubmit` the daemon records where the
+  target's repository stands, without staging, stashing or reverting anything and
+  without writing to the repository's own index; at `Stop` it reads the files changed,
+  the commits made, and the diff, and the summariser is given them beside the steps.
+  Files a turn created are in it, which is why the tree is written through a scratch
+  index rather than a stash — a stash holds no untracked file, and a generated one is
+  exactly what a turn must be able to name. Changes made by any means, a formatter or a
+  `sed` in a shell command included, are part of the result, and a turn whose steps say
+  nothing but whose repository moved is told rather than passed over in silence.
 - **Spoken form.** A pure transform in `core`, installed as the TTS service's text
   transform so every utterance passes through it: headings become section cues,
   lists become counted sequences, identifiers are split into words, paths become
