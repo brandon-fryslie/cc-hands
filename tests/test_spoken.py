@@ -291,40 +291,6 @@ async def test_the_filter_says_what_it_had_to_leave_out() -> None:
     assert any("a block of code of 1 line" in line for line in said)
 
 
-async def test_a_block_streamed_a_sentence_at_a_time_is_not_read_out_after_its_opening_chunk() -> None:
-    """The shape the streaming path actually delivers, and the one that defeated the whole guarantee.
-
-    Pipecat hands a filter one aggregated sentence at a time, so a fenced block opens in one chunk and
-    continues in the next. Without the carry the continuation arrived with no fence on it and was read
-    out as ordinary text: the block was announced once and spoken anyway.
-    """
-    filter = SpokenForm()
-    assert await filter.filter("Here:\n```python\nx = 1") == "Here:\na block of code of 1 line."
-    assert await filter.filter("y = 2\nz = 3") == "a block of code of 2 lines."
-    assert "z = 3" not in await filter.filter("still inside")
-    assert await filter.filter("```\nAll done.") == "All done."
-    # And once it has closed, the next reply is ordinary text again.
-    assert await filter.filter("Nothing is open now.") == "Nothing is open now."
-
-
-async def test_a_reply_abandoned_mid_block_does_not_swallow_the_answer_to_the_next_question() -> None:
-    """[LAW:no-ambient-temporal-coupling] a barge-in is exactly what this system does constantly.
-
-    Kept across the interruption, the open fence would suppress the beginning of whatever the user asked
-    for next, and they would hear a block of code announced in place of their answer.
-    """
-    filter = SpokenForm()
-    assert await filter.filter("Here:\n```python\nx = 1") == "Here:\na block of code of 1 line."
-    await filter.handle_interruption()
-    assert await filter.filter("The tests all pass.") == "The tests all pass."
-
-
-def test_a_whole_utterance_needs_no_carry_and_is_unchanged_by_one() -> None:
-    """A TTSSpeakFrame arrives entire, so what it returns about an open fence is nobody's to use."""
-    assert spoken("Here:\n```\nx = 1\n```\nDone.").unclosed is None
-    assert spoken("Here:\n```\nx = 1\n```\nDone.").text == "Here:\na block of code of 1 line.\nDone."
-
-
 async def test_an_ordinary_sentence_passes_through_the_filter_unremarked() -> None:
     said: list[str] = []
     sink = logger.add(lambda message: said.append(message), level="WARNING")

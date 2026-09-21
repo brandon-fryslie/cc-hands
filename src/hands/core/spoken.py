@@ -108,28 +108,14 @@ class Leak:
 
 
 @dataclass(frozen=True)
-class Fence:
-    """A fence that opened and did not close, so whatever comes next is still inside it.
-
-    Returned rather than remembered, because this module is pure: the caller that has more of the same
-    reply to convert hands it back, and one that has a whole utterance simply drops it. That keeps the
-    knowledge of where a block ends in the one place that can parse it [LAW:one-source-of-truth] while the
-    remembering stays at the edge, where state belongs [LAW:effects-at-boundaries].
-    """
-
-    run: str
-
-
-@dataclass(frozen=True)
 class Spoken:
-    """Text that can be heard, whatever had to be taken out of it whole, and whether it ended mid-block."""
+    """Text that can be heard, and whatever had to be taken out of it whole to make it so."""
 
     text: str
     leaks: tuple[Leak, ...] = ()
-    unclosed: Fence | None = None
 
 
-def spoken(text: str, inside: Fence | None = None) -> Spoken:
+def spoken(text: str) -> Spoken:
     """`text` in a form that can be spoken: the one conversion every utterance goes through.
 
     The rules run in an order, and the order is the design. What speech cannot carry at all comes out
@@ -139,7 +125,7 @@ def spoken(text: str, inside: Fence | None = None) -> Spoken:
     so each one below asks for a tell that prose does not have [LAW:carrying-cost].
     """
     leaks: list[Leak] = []
-    said, unclosed = _unfenced(text, leaks, inside)
+    said = _unfenced(text, leaks)
     said = _untabled(said, leaks)
     said = _undiffed(said, leaks)
     said = _headings(said)
@@ -150,7 +136,7 @@ def spoken(text: str, inside: Fence | None = None) -> Spoken:
     said = _paths(said)
     said = _flags(said)
     said = _identifiers(said)
-    return Spoken(_tidied(said), tuple(leaks), unclosed)
+    return Spoken(_tidied(said), tuple(leaks))
 
 
 def _leaked(kind: str, lines: list[str], leaks: list[Leak]) -> list[str]:
@@ -168,18 +154,15 @@ def _leaked(kind: str, lines: list[str], leaks: list[Leak]) -> list[str]:
     return [f"{leak}."]
 
 
-def _unfenced(text: str, leaks: list[Leak], inside: Fence | None = None) -> tuple[str, Fence | None]:
-    """A fenced block, said as what it was and how long it was, and whether one is still open at the end.
+def _unfenced(text: str, leaks: list[Leak]) -> str:
+    """A fenced block, said as what it was and how long it was.
 
     An unclosed fence runs to the end of the text, because that is what a reply cut off mid-block leaves,
-    and reading the rest of it out is the one thing this exists to prevent. `inside` is the fence a
-    previous chunk of the same reply ended within: on the streaming path a block arrives a sentence at a
-    time, so without it every chunk after the opening one carried no fence and was read out as the
-    ordinary text it then resembled — the block was announced once and spoken anyway.
+    and reading the rest of it out is the one thing this exists to prevent.
     """
     out: list[str] = []
-    held: list[str] | None = [] if inside else None
-    fence = inside.run if inside else ""
+    held: list[str] | None = None
+    fence = ""
     for line in text.splitlines():
         found = _FENCE.match(line)
         if held is None:
@@ -199,7 +182,7 @@ def _unfenced(text: str, leaks: list[Leak], inside: Fence | None = None) -> tupl
         (out if held is None else held).append(line)
     if held is not None:
         out.extend(_leaked("code", held, leaks))
-    return "\n".join(out), Fence(fence) if held is not None else None
+    return "\n".join(out)
 
 
 def _untabled(text: str, leaks: list[Leak]) -> str:
