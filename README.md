@@ -23,8 +23,8 @@ holds what it summarized.
 What it does, once built:
 
 - Takes audio and writes the prompt for the coding session; reads a draft back until it
-  is right, amends or discards it, and sends it by typing it into the session with a
-  virtual keyboard, which is planned.
+  is right, amends or discards it, and sends it by typing it into the session through
+  fritter, the pty wrapper in `fritter/`.
 - Lists the running sessions, reads what a session has done, starts and ends sessions,
   and switches which one you are talking to.
 - Answers permission prompts, questions, and plan approvals by voice, and denies by
@@ -42,6 +42,8 @@ What it does, once built:
   and how failure stays loud.
 - [docs/features.md](docs/features.md): the epics that deliver the needs, each with the
   shape of done; `lit backlog` holds the build order.
+- [fritter/README.md](fritter/README.md): the pty wrapper that types into a session,
+  its protocol, and what was measured against Claude Code.
 - [docs/failure-modes.md](docs/failure-modes.md): what goes wrong, observed and
   anticipated, and the rule each entry produced.
 - [docs/happy-voice-reference.md](docs/happy-voice-reference.md): how Happy, the
@@ -60,7 +62,7 @@ mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts �
                              sessions + core
                      registry · drafts · JSONL reader · audit log
                                     │
-                     hook replies · virtual keyboard (planned)
+                     hook replies · fritter sockets
                                     ▼
                      target Claude Code sessions (any terminal, started any way)
                                     │

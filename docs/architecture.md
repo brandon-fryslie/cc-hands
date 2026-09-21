@@ -10,8 +10,8 @@ The design has one organizing idea: **the pure core decides, the edges act, and 
 fact has one home.** State, events, and effects are typed unions. The reducer that turns
 an event into new state and a list of effects has no I/O, so every lifecycle transition
 is a unit test with no mocks. The adapters that perform the effects are thin, and there
-is exactly one of each: one replies to blocked hooks, one owns the speaker, and the
-virtual keyboard, once it is built, is the one that types into sessions.
+is exactly one of each: one replies to blocked hooks, one owns the speaker, and one
+types into sessions, through the fritter that wrapped them.
 
 ## Shape
 
@@ -31,7 +31,7 @@ virtual keyboard, once it is built, is the one that types into sessions.
  │                            │  steps · policy  │                               │
  │                            └──────────────────┘                               │
  └────────▲──────────────────────────────────────────────┬───────────────────────┘
-          │ hook shims, unix socket                       │ hook replies · virtual keyboard (planned)
+          │ hook shims, unix socket                       │ hook replies · fritter sockets
           │                                               ▼
        target Claude Code sessions (any terminal, started any way)
 ```
@@ -93,6 +93,7 @@ class Membership:
     pid: int                  # the shim's parent, which is the claude process
     cwd: Path
     transcript: Path          # the JSONL, from the hook payload
+    fritter: Path | None      # the socket to type into it; None if nobody wrapped it
 
 @dataclass(frozen=True)
 class Session:
@@ -131,7 +132,7 @@ class Question:   questions: Sequence[AskedQuestion]
 @dataclass(frozen=True)
 class Plan:       text: str             # a finished ExitPlanMode is PlanApproved: its input no longer carries the plan
 
-# What the virtual keyboard types into a session. The variant decides the escaping,
+# What is typed into a session. The variant decides the escaping,
 # so there is no "if it starts with a slash" anywhere: Text always escapes a leading sigil,
 # Command never does, Key is a named chord and carries no text at all.
 Input = Text | Command | Key
@@ -142,7 +143,7 @@ Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | A
 @dataclass(frozen=True)
 class Reply:    request: RequestId; reply: HookReply
 @dataclass(frozen=True)
-class Type:     session: SessionId; input: Input             # the virtual keyboard, planned
+class Type:     session: SessionId; input: Input             # performed through fritter
 @dataclass(frozen=True)
 class Speak:    text: str; priority: Priority                # straight to TTS
 @dataclass(frozen=True)
@@ -225,7 +226,7 @@ and the narrator reads, summarises, and speaks the turn without returning to the
 reducer.
 
 The adapters live in `sessions` and `voice` and each performs one effect kind: `Type`
-becomes synthetic keystrokes from the planned virtual keyboard, `Reply` writes to the
+becomes a request to the session's fritter (`hands.sessions.typing`), `Reply` writes to the
 blocked shim's socket connection, `Speak` becomes a Pipecat `TTSSpeakFrame`, `Narrate` and `Note` become
 `LLMMessagesAppendFrame` with `run_llm` on or off, `Play` sends a segment to TTS
 through the player, `Summarise` calls the summariser, `Snapshot` records or diffs the
@@ -275,8 +276,30 @@ Claude Code queues messages submitted while a turn is running and shows them wit
 session and submitted lands in that queue and runs when the turn ends, so a send to a
 working target is an ordinary send and the daemon holds nothing. A permission dialog
 is the exception: it swallows pasted text and takes the Enter as "Yes". So when the
-virtual keyboard sends drafts, a send to a `Blocked` target is refused, the draft
-stays staged, and the user hears why.
+drafts are sent, a send to a `Blocked` target is refused, the draft stays staged, and
+the user hears why. Measured again on 2.1.278, the workspace-trust dialog swallows a
+paste the same way, which is the same rule and not a second one.
+
+### Typing into a session
+
+A session is typed into through **fritter** (`fritter/`), which runs its `claude` on a
+pseudo-terminal and listens on a unix socket beside it. A wrapper and not synthetic key
+events, because a keyboard types into whatever has focus, and the requirement is a
+session driven with the display asleep: no window, no grant, no focus.
+
+fritter publishes its socket's address to the process it wrapped in `FRITTER_SOCKET`.
+The hook runs as a child of that process and inherits it, so the address reaches
+`Membership.fritter` without either side deriving a path from a pid. A session started
+outside fritter has no address, and `Typist.of` refuses it by name rather than writing
+into nothing.
+
+Two things are divided rather than duplicated. hands decides *whether* a session may be
+written to, from state fritter cannot see. fritter decides only whether the person at
+the keyboard has unsent text in the box, which hands cannot see because those keystrokes
+never reach it; a write arriving then is refused with a reason. And escaping stays here:
+what a leading `/` means is `Input`'s business, and fritter types the text it is given.
+
+`fritter/README.md` holds the protocol and what was measured.
 
 ## Four ways to reach the ear
 
@@ -1172,7 +1195,7 @@ answers "which one did you mean".
 generated from the stored resolutions, never from the model repeating itself:
 "Draft for cc-hands, reading 'auth middleware' as `authMiddleware.ts`: refactor the
 auth middleware to use the new token helper." Speak what changed, not what you said.
-A draft is staged, amended, and discarded; sending it waits for the virtual keyboard
+A draft is staged, amended, and discarded; sending it waits for the Type effect
 (`hands-harness-5nb`), whose design is open: how keys reach the right session's
 window, the macOS permission it needs, and confirming the send through the
 `UserPromptSubmit` hook. Until then the model tells the user that sending is not
@@ -1216,7 +1239,7 @@ it, taken from Happy's `skip_turn`. Push-to-talk rarely needs it; the wake-word 
 which opens the mic without a hand, does.
 
 `send_command` exists so that `/clear`, `/compact`, and `/model` reach the target as
-commands, with their sigil intact, once the virtual keyboard can type them.
+commands, with their sigil intact, once the Type effect can send them.
 `stage_draft` text always has a leading sigil escaped. The two never share a code path that inspects the first character; the
 `Input` variant already knows. Claude Code reads three sigils at the start of a
 prompt: `/` a command, `@` a file mention, `!` shell mode. Behind a space each is
