@@ -65,15 +65,74 @@ async def test_reading_on_from_where_it_read_to_gives_what_came_after_and_nothin
     assert (await read(sessions, since=whole["happened"][-1]["record"]))["happened"] == []
 
 
+def said(uuid: str, text: str) -> str:
+    return f'{{"uuid":"{uuid}","type":"assistant","message":{{"content":[{{"type":"text","text":"{text}"}}]}}}}'
+
+
 async def test_a_session_with_more_than_one_reading_says_where_to_read_on_from(tmp_path: Path) -> None:
     """An hour of work is hundreds of steps, and all of them at once is a context spent on history."""
     transcript = tmp_path / "s1.jsonl"
-    body = FIXTURE.read_bytes()
-    # The same real session over again, which is a session that ran for twice as long.
-    transcript.write_bytes(body * 6)
+    records = ['{"uuid":"u0","type":"user","message":{"role":"user","content":"go"}}']
+    records += [said(f"s{n}", f"step {n}") for n in range(60)]
+    transcript.write_text("".join(f"{record}\n" for record in records))
     answer = await read(await joined(transcript))
     assert len(answer["happened"]) == READBACK_COUNT
-    assert answer["more"] is True and answer["more_since"] == answer["happened"][-1]["record"]
+    assert answer["more"] is True and answer["working"] is False
+    assert answer["more_since"] == answer["happened"][-1]["record"]
+
+
+async def test_a_record_holding_both_settled_work_and_a_call_still_running_is_never_the_mark(tmp_path: Path) -> None:
+    """The mark names a record; a record holds the text and the call it introduces, written together.
+
+    Marking it because its text is finished would go on from after the whole record next time, which loses the
+    result of the call inside it — the one thing the mark is held back for in the first place.
+    """
+    transcript = tmp_path / "s1.jsonl"
+    prompt = '{"uuid":"u1","type":"user","message":{"role":"user","content":"run the suite"}}\n'
+    both = (
+        '{"uuid":"u2","type":"assistant","message":{"content":['
+        '{"type":"text","text":"now the suite"},'
+        '{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest"}}]}}\n'
+    )
+    transcript.write_text(prompt + both)
+    sessions = await joined(transcript)
+
+    working = await read(sessions)
+    assert [happening["record"] for happening in working["happened"]] == ["u1", "u2", "u2"]
+    # Nothing was paged off the end, and yet there is more to come: two facts, answered separately.
+    assert working["more"] is False and working["working"] is True
+    assert working["more_since"] == "u1"
+
+    transcript.write_text(
+        prompt + both
+        + '{"uuid":"u3","type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"3 tests did not pass"}]}}\n'
+    )
+    landed = await read(sessions, since=working["more_since"])
+    assert landed["happened"][1]["what"] == "Claude ran pytest\nOutput: 3 tests did not pass"
+    assert landed["working"] is False
+
+
+async def test_a_record_carrying_a_whole_page_is_handed_over_long_rather_than_short(tmp_path: Path) -> None:
+    """Cut to fit, the page would name that record as the mark and everything past the cut would be dropped."""
+    transcript = tmp_path / "s1.jsonl"
+    calls = ",".join(
+        f'{{"type":"tool_use","id":"c{n}","name":"Bash","input":{{"command":"echo {n}"}}}}' for n in range(READBACK_COUNT + 5)
+    )
+    results = ",".join(f'{{"type":"tool_result","tool_use_id":"c{n}","content":"{n}"}}' for n in range(READBACK_COUNT + 5))
+    transcript.write_text(
+        '{"uuid":"u1","type":"user","message":{"role":"user","content":"go"}}\n'
+        + '{"uuid":"u2","type":"assistant","message":{"content":[' + calls + ']}}\n'
+        + '{"uuid":"u3","type":"user","message":{"role":"user","content":[' + results + ']}}\n'
+    )
+    sessions = await joined(transcript)
+    # The record begins inside the page, so the page ends before it rather than splitting it.
+    first = await read(sessions)
+    assert [happening["record"] for happening in first["happened"]] == ["u1"]
+    assert first["more"] is True and first["more_since"] == "u1"
+    # On its own it is longer than a page, and is handed over whole: none of it can be marked and skipped.
+    rest = await read(sessions, since="u1")
+    assert len(rest["happened"]) == READBACK_COUNT + 5
+    assert rest["more"] is False and rest["more_since"] == "u2"
 
 
 async def test_a_reading_never_ends_inside_a_record_so_the_rest_of_one_is_never_skipped(tmp_path: Path) -> None:

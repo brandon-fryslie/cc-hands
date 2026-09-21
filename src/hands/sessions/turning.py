@@ -46,6 +46,12 @@ class Turning:
                 case {"type": "text", "text": str() as text} if record.fields.get("type") == "assistant" and text.strip():
                     self.slots.append(Said(ref, text))
                 case {"type": "tool_use", "id": str() as id, "name": str() as name, "input": dict()}:
+                    held = self.places.get(id)
+                    if held is not None and isinstance(self.slots[held], str):
+                        # The id has come round again, which a replayed or resumed transcript can do. A result
+                        # is paired by id alone, so the call it named before can never be answered now: it is
+                        # told as what it was, with no result, rather than borrowing this one's [LAW:no-silent-failure].
+                        self.slots[held] = recognise(self.calls[id])
                     self.calls[id] = Call(ref, name, cast(dict[str, object], block["input"]), None)
                     self.places[id] = len(self.slots)
                     self.slots.append(id)

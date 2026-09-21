@@ -473,8 +473,14 @@ marked as read: a mark names a record and a reading goes on from after it, so ma
 call still in flight would spend its result on nobody, and the reader would be told the
 suite was being run and never told what failed `[LAW:no-silent-failure]`. Only a call a
 reading *ends* on, so that one the session carried on past cannot hold the mark behind it
-for ever. A mark this transcript never held is said rather than read as a mark at the
-start, which would tell the whole session over again as though it were new.
+for ever. The mark is the last record *every* happening of which is settled, because one
+record holds a text and the call it introduces, and marking it for the text would go on
+from after the whole record and lose the call's result with it. A reading answers two
+facts separately — `more` for history it did not reach, `working` for a call that has not
+come back — because told as one the intermediary cannot tell "read on" from "wait and ask
+again" `[LAW:types-are-the-program]`. A mark this transcript never held is said rather
+than read as a mark at the start, which would tell the whole session over again as though
+it were new.
 
 ```python
 # One variant per kind of thing a turn does. Every step names the record it came from, except

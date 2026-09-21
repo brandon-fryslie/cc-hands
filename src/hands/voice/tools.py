@@ -88,7 +88,8 @@ def read_session_tool(sessions: Sessions) -> Tool:
 
         Call this when the user asks what a session has been doing, or to catch up on one that was already
         running before you attached. When `more` comes back true there is more after what you were given: call
-        again with `since` set to `more_since`.
+        again with `since` set to `more_since`. When `working` comes back true the session is in the middle of
+        a call that has not come back; what it did is read on the next call, so read on again later, not now.
 
         Args:
             session: The session's id, from list_sessions.
@@ -116,13 +117,23 @@ def read_session_tool(sessions: Sessions) -> Tool:
         # A call the session is still waiting on is shown but never marked as read, so its result is told once
         # it lands rather than falling into the gap between one reading and the next.
         settled = shown[: min(reading.settled, len(shown))]
+        # [LAW:one-source-of-truth] the mark names a record, and one record can carry both a settled happening
+        # and the call the session is still inside — the text and the call it introduces are written together.
+        # Marking that record would go on from after the whole of it, losing the very result the mark is held
+        # back for, so the mark is the last record every happening of which is settled.
+        waiting = {happening.ref for happening in shown[len(settled) :]}
         await params.result_callback(
             {
                 "happened": [{"record": happening.ref, "what": describe(happening, READBACK_BUDGET)} for happening in shown],
+                # Two different facts, so two answers: history this reading did not reach, and a call that has
+                # not come back. Told as one, the model cannot tell "read on" from "wait and ask again".
                 "more": len(reading.happenings) > len(shown),
-                # [LAW:one-source-of-truth] the mark is a record, so it is the last one this page can name: a
-                # record carries no uuid only rarely, and naming nothing reads as "from the start" next time.
-                "more_since": next((happening.ref for happening in reversed(settled) if happening.ref is not None), since),
+                "working": len(settled) < len(shown),
+                # A record carries no uuid only rarely, and naming nothing reads as "from the start" next time.
+                "more_since": next(
+                    (happening.ref for happening in reversed(settled) if happening.ref is not None and happening.ref not in waiting),
+                    since,
+                ),
             }
         )
 
@@ -138,10 +149,20 @@ def _page(happenings: list[Happening]) -> list[Happening]:
     it introduces, and one record with two calls in it. Rare enough to be left to chance is exactly what this
     is not, because the loss is silent: the reading simply never mentions what the skipped block did.
     """
-    shown = happenings[:READBACK_COUNT]
-    while len(shown) > 1 and len(shown) < len(happenings) and shown[-1].ref is not None and shown[-1].ref == happenings[len(shown)].ref:
-        shown = shown[:-1]
-    return shown
+    end = min(READBACK_COUNT, len(happenings))
+    ref = happenings[end - 1].ref if end else None
+    if end == len(happenings) or ref is None or happenings[end].ref != ref:
+        return happenings[:end]
+    start = end
+    while start > 0 and happenings[start - 1].ref == ref:
+        start -= 1
+    if start > 0:
+        return happenings[:start]
+    # One record carrying a whole page of them: handed over long rather than short, because a page cut to fit
+    # would name that record as the mark and drop everything after the cut [LAW:no-silent-failure].
+    while end < len(happenings) and happenings[end].ref == ref:
+        end += 1
+    return happenings[:end]
 
 
 def describe_listing(listing: Listing) -> dict[str, str]:

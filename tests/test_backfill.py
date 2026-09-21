@@ -101,6 +101,24 @@ def test_a_call_nothing_ever_answers_does_not_hold_the_reading_back(tmp_path: Pa
     assert abandoned.settled == 3
 
 
+def test_a_call_id_that_comes_round_again_does_not_take_the_first_call_with_it(tmp_path: Path) -> None:
+    """A result is paired by id alone, so a repeated id means the earlier call can never be answered here.
+
+    A reading folds a whole file without ever letting go, so the earlier slot would otherwise be told using
+    the later call's command — a step describing work that was never done at that point in the session.
+    """
+    transcript = written(
+        tmp_path / "twice.jsonl",
+        PROMPT,
+        '{"uuid":"u2","type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest -x"}}]}}',
+        '{"uuid":"u3","type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest -q"}}]}}',
+        '{"uuid":"u4","type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"all good"}]}}',
+    )
+    first, second = read_since(transcript, None).happenings[1:]
+    assert isinstance(first, Ran) and first.command == "pytest -x" and first.output == "(no result)"
+    assert isinstance(second, Ran) and second.command == "pytest -q" and second.output == "all good"
+
+
 def test_a_mark_this_transcript_never_held_is_said_rather_than_read_as_the_start(tmp_path: Path) -> None:
     """[LAW:no-silent-failure] otherwise a mark from another session re-tells this one from the top as if new."""
     transcript = written(tmp_path / "s.jsonl", PROMPT, CALL, RESULT, DONE)
