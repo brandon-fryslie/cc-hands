@@ -786,6 +786,22 @@ characters: its closing run must be its own character and at least as long, beca
 four-backtick block is how a model quotes a three-backtick one, and a length-blind
 closer ended the outer block at the inner opening and read the quoted code out loud.
 
+Two limits of the seam rather than of the function, both from the streaming path, where Pipecat hands
+the filter one aggregated sentence at a time. A list the intermediary streams is seen an item at a
+time and so is not counted aloud as a sequence, where the same list inside a summary is. And a fenced
+block spanning chunks is only seen in the chunk its fence lands in; the rest arrives carrying no fence
+and is read out as the ordinary text it then resembles. Neither is fixable by holding state in the
+filter — one that kept half an utterance across calls would be waiting for a second half that a
+barge-in never sends — so closing the second means skipping the block at the aggregator, before it is
+broken up. Every rule that makes text sayable at all still applies to every chunk.
+
+The filtered text is also what the intermediary remembers, because Pipecat builds the frame it appends
+to the assistant context out of what a filter returned. That is intended: both `TTSSpeakFrame` sites
+say in their own comments that the context is kept so the model can answer about what the user heard,
+and before this filter it held what was sent to the speaker, which was never the same string. The cost
+is that the model cannot read an exact path or sha back out of its own memory, and it has the session
+tools for facts.
+
 The function is pure and stdlib-only because it is the domain — what a developer who is
 not looking can hear — and it therefore cannot log. A leak is returned rather than
 logged, and the voice edge logs it, because logging is an effect and `core` is not the

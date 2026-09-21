@@ -26,9 +26,12 @@ _ORDINALS = ("First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", 
 # both. A rule below with no tell is a bug in this module's terms, and `test_spoken.py` holds it to them.
 _FENCE = re.compile(r"^[ \t]*(?P<run>`{3,}|~{3,})(?P<info>.*)$")
 _DIFF_OPENS = re.compile(r"^(diff --git |@@ )")
-_DIFF_BODY = re.compile(r"^([+\-@\\ ]|index [0-9a-f]|new file|deleted file|similarity index)")
+_HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+_DIFF_PREAMBLE = re.compile(r"^(index [0-9a-f]|new file|deleted file|similarity index|rename |old mode|new mode|--- |\+\+\+ |Binary files )")
 _HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]+(.*?)[ \t]*#*[ \t]*$", re.MULTILINE)
-_BULLET = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(.*)$")
+# Two digits at most, because a numbered list counts and a year does not: "2024. It was a good year."
+# is a sentence, and read as a list marker it lost the year off the front of itself.
+_BULLET = re.compile(r"^[ \t]*(?:[-*+]|\d{1,2}[.)])[ \t]+(.*)$")
 _CODE = re.compile(r"`+([^`\n]+)`+")
 _BOLD = re.compile(r"\*\*([^*\n]+)\*\*|__([^_\n]+)__")
 _ITALIC = re.compile(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])")
@@ -43,9 +46,14 @@ _SHA = re.compile(rf"\b{_HEX}", re.IGNORECASE)
 _NAMED_SHA = re.compile(rf"\b(commits?|sha|hash|revision|rev)\s+{_HEX}", re.IGNORECASE)
 # An id is mixed case as well as long and numbered, because `base64_encode` is all three of long, numbered
 # and made of words — and a name made of words is `_SNAKE`'s to say, not an id to be dropped whole.
-_ID = r"(?=[A-Za-z0-9_]{12,}\b)(?=[A-Za-z0-9_]*\d)(?=[A-Za-z0-9_]*[A-Z])[A-Za-z0-9_]+\b"
+# Both cases, not merely one: `HTTP_TIMEOUT_30` has an upper and `update_database_2` has a lower, and a
+# config constant named out loud in a summary is a fact, not an id to be dropped whole.
+_ID = r"(?=[A-Za-z0-9_]{12,}\b)(?=[A-Za-z0-9_]*\d)(?=[A-Za-z0-9_]*[A-Z])(?=[A-Za-z0-9_]*[a-z])[A-Za-z0-9_]+\b"
 _OPAQUE = re.compile(rf"\b{_ID}")
-_NAMED_OPAQUE = re.compile(rf"\b(ids?|tokens?|requests?|sessions?|runs?)\s+{_ID}", re.IGNORECASE)
+# The trigger word is what ignores case here, and nothing else. Setting the flag on the whole pattern
+# reached inside `_ID` and cancelled the very tell it states, so `refresh_token_v2` counted as an id after
+# the word "token" and as a name anywhere else — the same name, deleted or spoken by its neighbour.
+_NAMED_OPAQUE = re.compile(rf"\b((?i:ids?|tokens?|requests?|sessions?|runs?))\s+{_ID}")
 _FILE = re.compile(r"\b([\w\-]+)\.([A-Za-z0-9]{1,5})\b")
 
 # A closed list, so no ordinary sentence is ever mistaken for a file name. "e.g." and "etc." and a domain
@@ -178,36 +186,65 @@ def _table(run: list[str], leaks: list[Leak]) -> list[str]:
 
 
 def _undiffed(text: str, leaks: list[Leak]) -> str:
-    """A diff, which only counts as one where it says so: prose starts with a dash often enough that a
-    leading `-` is no tell at all, and a list of three points would be swallowed as a patch."""
+    """A diff, which only counts as one where it says so, and runs exactly as far as it says it does.
+
+    Prose starts with a dash often enough that a leading `-` is no tell at all, so a diff must announce
+    itself. And a hunk header states how many lines it covers on each side, so the end of the diff is read
+    off the diff rather than guessed from the shape of the next line [LAW:parse-dont-validate]. Guessed,
+    a bulleted list written straight under a hunk was swallowed whole — every line of it opens with a
+    dash, which is also how a removal opens — and the listener heard a line count instead of the reply.
+    """
+    lines = text.splitlines()
     out: list[str] = []
-    held: list[str] | None = None
-    # A blank line inside a diff is part of it; the same blank line is part of the text again if the diff
-    # turns out to have ended there. Held aside until the next line says which, because the count is the
-    # only thing the listener is given about a block they will never hear [LAW:no-silent-failure].
-    blank: list[str] = []
-    for line in text.splitlines():
-        if held is None and _DIFF_OPENS.match(line):
-            held = [line]
+    at = 0
+    while at < len(lines):
+        if not _DIFF_OPENS.match(lines[at]):
+            out.append(lines[at])
+            at += 1
             continue
-        if held is not None:
-            if not line.strip():
-                blank.append(line)
-                continue
-            if _DIFF_BODY.match(line):
-                held.extend(blank)
-                held.append(line)
-                blank = []
-                continue
-            out.append(_leaked("diff", held, leaks))
-            held = None
-            out.extend(blank)
-            blank = []
-        out.append(line)
-    if held is not None:
-        out.append(_leaked("diff", held, leaks))
-        out.extend(blank)
+        ends = _diff_ends(lines, at)
+        out.append(_leaked("diff", lines[at:ends], leaks))
+        at = ends
     return "\n".join(out)
+
+
+def _diff_ends(lines: list[str], start: int) -> int:
+    """The line the diff beginning at `start` stops before, by its own account."""
+    at = start
+    while at < len(lines):
+        hunk = _HUNK.match(lines[at])
+        if hunk:
+            # A header with no count covers one line of each side, which is what `@@ -1 +1 @@` means.
+            at = _hunk_ends(lines, at + 1, int(hunk.group(1) or 1), int(hunk.group(2) or 1))
+        elif at == start or lines[at].startswith("diff --git ") or _DIFF_PREAMBLE.match(lines[at]):
+            at += 1
+        else:
+            break
+    return at
+
+
+def _hunk_ends(lines: list[str], at: int, old: int, new: int) -> int:
+    """The line the hunk body stops before: where both sides have had every line they were promised.
+
+    A line only counts as what it looks like while the side it belongs to still has room. That is what
+    ends a hunk at a blank line the diff never claimed, rather than counting the blank that separates the
+    patch from the sentence after it — and the count is the whole of what the listener is told about a
+    block they will never hear [LAW:no-silent-failure].
+    """
+    while at < len(lines) and (old or new):
+        line = lines[at]
+        if line.startswith("\\"):  # "\ No newline at end of file" belongs to neither side.
+            pass
+        elif line.startswith("-") and old:
+            old -= 1
+        elif line.startswith("+") and new:
+            new -= 1
+        elif old and new and (not line or line.startswith(" ")):
+            old, new = old - 1, new - 1
+        else:
+            break
+        at += 1
+    return at
 
 
 def _headings(text: str) -> str:
@@ -236,8 +273,17 @@ def _counted(run: list[str]) -> list[str]:
         return []
     if len(run) == 1:
         # One bullet is not a sequence, and "First," in front of a lone item says there is a second.
-        return [run[0] if run[0].endswith((".", "?", "!")) else f"{run[0]}."]
-    return [" ".join(f"{_ordinal(place)}, {item.rstrip('.')}." for place, item in enumerate(run))]
+        return [_stopped(run[0])]
+    return [" ".join(f"{_ordinal(place)}, {_stopped(item)}" for place, item in enumerate(run))]
+
+
+def _stopped(item: str) -> str:
+    """An item ends in a full stop unless it already ends in something that stops it.
+
+    Added unconditionally, a bulleted question became "Should it fix them?." and the pair reached the
+    speaker [LAW:one-source-of-truth]: one rule for how an item ends, wherever the item came from.
+    """
+    return item if item.endswith((".", "?", "!")) else f"{item}."
 
 
 def _ordinal(place: int) -> str:
@@ -284,7 +330,9 @@ def _paths(text: str) -> str:
     text = _PATH.sub(lambda found: _spoken_path(found.group(0), shared), text)
     # A bare file name is a path with nothing in front of it, and is what the summariser was actually
     # heard saying out loud: "notes dot text" is not how anybody refers to the file they just changed.
-    return _FILE.sub(lambda found: found.group(1) if found.group(2).lower() in _EXTENSIONS else found.group(0), text)
+    # Matched as written rather than lowered: `Deno.Go` is a sentence that lost its space, not a Go file,
+    # and lowering it deleted the word after the full stop [LAW:carrying-cost].
+    return _FILE.sub(lambda found: found.group(1) if found.group(2) in _EXTENSIONS else found.group(0), text)
 
 
 def _stem(path: str) -> str:

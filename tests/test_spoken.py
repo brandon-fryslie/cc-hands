@@ -56,6 +56,16 @@ WRITTEN_AND_SPOKEN = [
     # An absolute path is the form Claude Code's own tools require, so it is the form most replies carry.
     ("Edited /Users/bmf/code/cc-hands/src/hands/core/turn.py today.", "Edited turn today."),
     ("Read /etc/hosts for that.", "Read hosts for that."),
+    # A name is a name whatever word stands in front of it. The trigger word makes an id of what follows
+    # only where the tell is there too, and the case-insensitive flag, set on the whole rule, reached into
+    # the tell and cancelled it: the same name was dropped after "token" and spoken anywhere else.
+    ("The token refresh_token_v2 expired.", "The token refresh token v2 expired."),
+    ("It runs update_database_2 nightly.", "It runs update database 2 nightly."),
+    # A constant is shouted, not opaque: one case present is no tell at all, and an id needs both.
+    ("Set HTTP_TIMEOUT_30 in the config.", "Set HTTP TIMEOUT 30 in the config."),
+    ("Use MAX_RETRIES_5 instead.", "Use MAX RETRIES 5 instead."),
+    # A full stop with no space after it is a sentence, not a file: `go`, `c`, `h` and `sh` are all words.
+    ("Ran it on node.js and Deno.Go figure.", "Ran it on node and Deno.Go figure."),
     # A module named rather than called: the dots are read out one by one just the same.
     ("See hands.core.spoken for details.", "See hands core spoken for details."),
     # The period ends the sentence, and taking it with the address runs the next sentence into this one.
@@ -77,6 +87,8 @@ PROSE = [
     "There are 1234567 records.",
     "It calls base64 encode on the body.",
     "It defaced the output, then passed.",
+    # A year at the start of a line is a sentence, not the number of a list item.
+    "2024. It was a good year.\n1999. It was better.",
     "The well-known issue is that three tests fail. Should it fix them?",
 ]
 
@@ -158,6 +170,26 @@ def test_a_diff_only_counts_as_one_where_it_says_so() -> None:
     said = spoken("diff --git a/a.py b/a.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\nDone.")
     assert said.text == "a diff of 4 lines.\nDone." and said.leaks == (Leak("diff", 4),)
     assert not spoken("- first point\n- second point\n- third point").leaks
+
+
+def test_a_list_written_under_a_hunk_is_spoken_rather_than_swallowed_by_it() -> None:
+    """A hunk says how many lines it covers, so the diff ends where it says and the bullets survive.
+
+    Every line of a bulleted list opens with a dash, which is also how a removal opens. Read by shape the
+    whole list went into the patch and the listener heard a line count in place of the reply.
+    """
+    said = spoken("@@ -1 +1 @@\n-x = 1\n+x = 2\n- I fixed the bug\n- I ran the suite\nDone.")
+    assert said.leaks == (Leak("diff", 3),)
+    assert said.text == "a diff of 3 lines.\nFirst, I fixed the bug. Second, I ran the suite.\nDone."
+
+
+def test_a_hunk_that_counts_more_than_one_line_a_side_is_followed_to_its_end() -> None:
+    said = spoken("@@ -1,2 +1,3 @@\n context\n-gone\n+added\n+also\nAfter.")
+    assert said.leaks == (Leak("diff", 5),) and said.text == "a diff of 5 lines.\nAfter."
+
+
+def test_a_bulleted_question_keeps_its_question_mark_and_gains_no_full_stop() -> None:
+    assert spoken("- Should it fix them?\n- Yes, do it").text == "First, Should it fix them? Second, Yes, do it."
 
 
 def test_a_blank_line_that_ended_a_diff_is_not_counted_as_part_of_it() -> None:

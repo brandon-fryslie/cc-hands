@@ -149,6 +149,10 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
     # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
     # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
     # own reply alike, so this is the one place all of them meet before they are heard.
+    # It also decides what the intermediary remembers, because the frame appended to the assistant context
+    # is built from what a filter returned. Intended: both TTSSpeakFrame sites say in their own comments
+    # that the context is kept so the model can answer about what the user heard, and before this filter
+    # it held what was sent to the speaker, which was never the same string. See voice/spoken.py.
     tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice), text_filters=[SpokenForm()])
 
     turns = UserTurnStrategies(
