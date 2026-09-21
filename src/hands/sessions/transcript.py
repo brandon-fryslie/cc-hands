@@ -77,30 +77,28 @@ def read_turn(transcript: Path, told: Told, closing: str | None) -> Reading | No
     # A Stop another hook blocked lets the same turn go on to a later Stop, which tells the steps the first one did not.
     recorded = _steps(turn[start + 1 :])
     began = _uuid(turn[start])
-    # [LAW:types-are-the-program] a count of steps and a stand-in mean nothing away from the turn they were told of, so
-    # a session resumes a turn it was told of and starts every other turn from its opening.
-    resumed = told if told.opening == began else UNTOLD
+    # [LAW:types-are-the-program] a count of steps and a stand-in mean nothing away from the turn they were told of, so a
+    # session resumes only a turn whose opening can be named and is the one it was told of; every other turn starts whole.
+    resumed = told if began is not None and told.opening == began else UNTOLD
     # Claude Code only ever appends, so the record of a stand-in that has since been written is the first step after what
     # was heard; counting it heard too is how the stand-in gives way to its record without the reply being told twice.
+    # A step already told keeps what it was told as: a tool result written after its call was told stays untold, which
+    # is out of reach at Stop — every call had its result in twelve live turns — and is the tail's to fix (…narration.txb).
     stood_in = resumed.closing
     heard = resumed.steps + (1 if stood_in is not None and _said_at(recorded, resumed.steps) == stood_in else 0)
     # [LAW:one-source-of-truth] the transcript is the record of what Claude said; the hook's copy stands in only for as
-    # long as the closing reply's own record is unwritten, and both are read the same way so neither can miss the other.
+    # long as the closing reply's own record is unwritten, which is to say while the turn does not yet end on it. Both
+    # are read the same way, so a record padded with whitespace neither misses its stand-in nor hides behind one.
     reply = _spoken(closing)
-    stand_in = None if reply == _last_said(recorded) else reply
+    stand_in = None if reply == _said_at(recorded, len(recorded) - 1) else reply
     steps = recorded[heard:] if stand_in is None else [*recorded[heard:], Said(stand_in)]
     return Reading(Turn(opening=opening, steps=tuple(steps)), Told(opening=began, steps=len(recorded), closing=stand_in))
 
 
 def _said_at(recorded: list[Step], index: int) -> str | None:
     """What Claude said in the step at this place; None where the turn has no such step, or used a tool there."""
-    step = recorded[index] if index < len(recorded) else None
+    step = recorded[index] if 0 <= index < len(recorded) else None
     return _spoken(step.text) if isinstance(step, Said) else None
-
-
-def _last_said(recorded: list[Step]) -> str | None:
-    """The last thing Claude said in these steps, which is where the reply the Stop hook carries lands once its record is written."""
-    return next((_spoken(step.text) for step in reversed(recorded) if isinstance(step, Said) and step.text.strip()), None)
 
 
 def _spoken(text: str | None) -> str | None:

@@ -161,6 +161,31 @@ def test_a_closing_reply_is_matched_to_its_record_however_the_whitespace_around_
     assert read_turn(transcript, first.told, "Done.") == Reading(Turn(Asked("first"), ()), Told("u1", 1, None))
 
 
+def test_a_turn_whose_opening_record_cannot_be_named_is_told_whole_rather_than_taken_for_the_last_one(tmp_path: Path) -> None:
+    """Two turns that carry no uuid are not the same turn, so what was told of one counts for nothing in the other."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE))
+    first = read_turn(transcript, UNTOLD, None)
+    assert first == Reading(Turn(Asked("first"), (Said("Done."),)), Told(None, 1, None))
+    second = '{"type":"user","message":{"role":"user","content":"second"}}'
+    transcript.write_text(lines(PROMPT, DONE, second, CALL, RESULT, DONE))
+    assert first is not None
+    assert read_turn(transcript, first.told, None) == Reading(
+        Turn(Asked("second"), (Used("Bash", None, "sleep 60", "done", False), Said("Done."))), Told(None, 2, None)
+    )
+
+
+def test_a_closing_reply_the_turn_said_once_before_still_ends_it(tmp_path: Path) -> None:
+    """The record of the reply is the one the turn ends on, so an earlier reply in the same words does not stand for it."""
+    transcript = tmp_path / "t.jsonl"
+    opened = '{"type":"user","uuid":"u1","message":{"role":"user","content":"twice"}}'
+    once = '{"type":"assistant","uuid":"u2","message":{"content":[{"type":"text","text":"Done."}]}}'
+    call = '{"type":"assistant","uuid":"u3","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}'
+    files = '{"type":"user","uuid":"u4","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"a.py"}]}}'
+    transcript.write_text(lines(opened, once, call, files))
+    assert turn_of(transcript, closing="Done.") == Turn(Asked("twice"), (Said("Done."), Used("Bash", None, "ls", "a.py", False), Said("Done.")))
+
+
 def test_a_transcript_with_no_prompt_yet_has_no_turn(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text('{"type":"ai-title","aiTitle":"x"}\n{"type":"user","isMeta":true,"message":{"role":"user","content":"injected"}}\n')
