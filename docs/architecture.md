@@ -660,7 +660,9 @@ of it is cut, and a turn that generated a million-line file inside the repositor
 otherwise have all of it in the daemon at once. The numstat counts that decide this cost
 one line a file and are already in hand, and what is left when the patch is refused —
 the files and their counts — is all of a diff that size that would have survived the
-budget anyway.
+budget anyway. A numstat that could not be read is not a numstat reading nothing: read
+as the second every count is zero, and the bound is not a bound at all on the one diff
+whose size was the reason to ask `[LAW:no-silent-failure]`.
 
 A reading is held for every turn that stopped, and past `HELD` of them the *newest* is
 the one dropped. Readings are bounded and the `Summarise` effects they pair with are

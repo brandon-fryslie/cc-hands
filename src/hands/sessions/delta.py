@@ -215,7 +215,15 @@ class Deltas:
         if tree is None or tree == mark.tree:
             # Unreadable, or the working tree came back to where it started — which a commit and nothing else does.
             return Delta(commits=commits)
-        files = _files(await self._git(mark.root, "diff", "--numstat", mark.tree, tree, deadline=deadline))
+        numstat = await self._git(mark.root, "diff", "--numstat", mark.tree, tree, deadline=deadline)
+        if numstat is None:
+            # [LAW:no-silent-failure] git not answering is not git saying nothing changed. Counted as the
+            # second, the numbers that decide whether the patch can be kept are all zero and the bound they
+            # are here to enforce is not enforced at all — on the diff most likely to have been what stopped
+            # the counting. What the turn committed is known either way, so that much is still told.
+            logger.info(f"what a turn changed in {mark.root} could not be counted, so its patch is not read")
+            return Delta(commits=commits)
+        files = _files(numstat)
         counted = sum((file.added or 0) + (file.removed or 0) for file in files)
         if counted > MOST_LINES:
             # git hands back a whole diff before a character of it is cut, so a turn that wrote a million-line
@@ -300,8 +308,13 @@ class Deltas:
         return out.decode(errors="replace").strip()
 
 
-def _files(numstat: str | None) -> tuple[Changed, ...]:
-    """`git diff --numstat`: added, removed and path, tab separated, with a dash for each count of a binary file."""
+def _files(numstat: str) -> tuple[Changed, ...]:
+    """`git diff --numstat`: added, removed and path, tab separated, with a dash for each count of a binary file.
+
+    Takes what git said and not whether git spoke: a command that could not answer is the caller's to answer
+    for, and a helper that quietly turned one into an empty list is what let "nothing changed" be read off a
+    reading that never happened [LAW:no-defensive-null-guards].
+    """
     if not numstat:
         return ()
     counted: list[Changed] = []

@@ -3,6 +3,7 @@
 import asyncio
 import subprocess
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 from hands.core.delta import Delta
@@ -469,3 +470,36 @@ async def test_a_commit_is_still_told_when_the_tree_it_left_behind_cannot_be_rea
     await deltas.compare(SID)
     delta = await deltas.taken(SID)
     assert [commit.subject for commit in delta.commits] == ["the one thing worth saying about this turn"]
+
+
+class Uncounted(Deltas):
+    """A repository that will say its trees differ but not by how much.
+
+    What a numstat running past the reading's deadline does — on exactly the diff whose size was the reason
+    to ask how big it was.
+    """
+
+    async def _git(self, cwd: Path, *args: str, env: Mapping[str, str] | None = None, deadline: float) -> str | None:
+        if args[:2] == ("diff", "--numstat"):
+            return None
+        return await super()._git(cwd, *args, env=env, deadline=deadline)
+
+
+async def test_a_turn_whose_changes_could_not_be_counted_has_its_patch_left_unread(tmp_path: Path) -> None:
+    """git saying nothing is not git saying nothing changed, and counted as the second the bound is not one.
+
+    Every count is then zero, the guard that keeps a generated file out of the daemon's memory passes, and
+    the whole diff is read after all. What the turn committed is known without counting anything, so that
+    much is still told.
+    """
+    root = repo(tmp_path)
+    deltas = Uncounted()
+    await deltas.snapshot(SID, root)
+    (root / "generated.csv").write_text("n,x\n" * (MOST_LINES + 10))
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "wrote the generated file")
+    await deltas.compare(SID)
+
+    delta = await deltas.taken(SID)
+    assert not delta.patch and not delta.files
+    assert [commit.subject for commit in delta.commits] == ["wrote the generated file"]
