@@ -48,13 +48,19 @@ async def sessions(home: Home) -> AsyncIterator[Sessions]:
     await runner.cleanup()
 
 
-async def shim(home: Home, payload: Mapping[str, object]) -> tuple[int | None, str, str]:
+async def shim(home: Home, payload: Mapping[str, object], fritter: str | None = None) -> tuple[int | None, str, str]:
     """The shim's exit, stdout, and stderr for one hook, run as the plugin runs it: with only HANDS_HOME to go on."""
+    # The shim reads FRITTER_SOCKET from its environment, so the tests say what is in it
+    # rather than inheriting whatever the run happens to have. Without this, running the
+    # suite from inside a wrapped session would change what the shim records.
+    environment = {key: value for key, value in os.environ.items() if key != "FRITTER_SOCKET"}
+    if fritter is not None:
+        environment["FRITTER_SOCKET"] = fritter
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
         SHIM_MODULE,
-        env={**os.environ, "HANDS_HOME": str(home.root)},
+        env={**environment, "HANDS_HOME": str(home.root)},
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -208,3 +214,25 @@ async def test_a_socket_left_by_a_dead_daemon_is_reclaimed(home: Home) -> None:
         assert len(registry.live()) == 1
     finally:
         await runner.cleanup()
+
+
+async def test_a_session_started_under_fritter_records_where_to_type_into_it(home: Home, sessions: Sessions) -> None:
+    # fritter publishes its socket in the environment of the process it wrapped, and this
+    # hook is a child of that process, so the address arrives without either side naming
+    # a path the other has to guess.
+    assert await shim(home, START, fritter="/tmp/fritter-abc.sock") == (0, "", "")
+    [listing] = sessions.live()
+    assert listing.session.membership.fritter == Path("/tmp/fritter-abc.sock")
+
+
+async def test_a_session_started_outside_fritter_records_no_way_to_type_into_it(home: Home, sessions: Sessions) -> None:
+    assert await shim(home, START) == (0, "", "")
+    [listing] = sessions.live()
+    assert listing.session.membership.fritter is None
+
+
+async def test_an_empty_fritter_address_is_no_address(home: Home, sessions: Sessions) -> None:
+    # An exported-but-empty variable is how a shell hands on a value it does not have.
+    assert await shim(home, START, fritter="") == (0, "", "")
+    [listing] = sessions.live()
+    assert listing.session.membership.fritter is None

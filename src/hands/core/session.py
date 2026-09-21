@@ -16,7 +16,13 @@ Instant = float  # monotonic seconds
 
 # Prompt text that holds no control characters, so typing it into a session
 # cannot press a key the text does not name. Made only where the model's words are parsed.
+# A newline and a tab are not control characters here: they are text a paste carries,
+# and it is the carriage return that would submit a half-written message.
 PromptText = NewType("PromptText", str)
+
+# The named chords a session can be sent, as distinct from text. Which bytes each one is
+# belongs to whatever does the typing, not here; this is the vocabulary hands speaks.
+Keystroke = Literal["escape", "enter", "ctrl_c", "up", "down", "tab", "shift_tab"]
 
 
 @dataclass(frozen=True)
@@ -27,6 +33,14 @@ class Membership:
     pid: int
     cwd: Path
     transcript: Path
+    # Where hands can type into this session: the control socket of the fritter that
+    # wrapped it, which published the address to the process in FRITTER_SOCKET.
+    #
+    # [LAW:types-are-the-program] Absent, and absent in the type, for a session started
+    # outside fritter. Such a session can be listed, read and spoken about like any
+    # other; it simply cannot be typed into, and the type says so rather than leaving a
+    # caller to find out by writing to a path that is not there.
+    fritter: Path | None = None
 
 
 @dataclass(frozen=True)
