@@ -91,6 +91,11 @@ Termination signals are forwarded to the child, so the ordinary exit path runs a
 socket is removed and the terminal restored. Without that, a killed fritter would die with
 its cleanup unrun, leaving a stale socket for the next caller to dial into nothing.
 
+The exit code is the child's. A child killed by a signal is reported as 128 plus that
+signal, the way a shell reports it — SIGTERM is 143 — because a signalled child has no
+exit code of its own, and passing on Go's -1 would exit 255 and leave a caller unable to
+tell that from a program that really did exit 255.
+
 The goroutine reading your stdin outlives `run`. A read already blocked on a terminal
 cannot be interrupted portably — `SetReadDeadline` answers *"file type does not support
 deadline"* for a pty slave on macOS, and where it returns nil it does not reliably unblock
