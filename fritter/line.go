@@ -43,13 +43,12 @@ type lineOwner struct {
 	// without it a Return there empties a count that is not empty and hands writes its
 	// words into the middle of someone's sentence.
 	//
-	// Where the cursor is, is not modelled, the same way Ctrl-W's word is not. Moving it
-	// and then pressing Return can submit a line this holds, which costs a refusal the
-	// user can clear.
+	// Where the cursor is, is not modelled - nothing on stdin says. What that costs is a
+	// backslash further back in the line than this remembers, with the cursor parked
+	// straight after it: the Return that continues it reads as one that sent it. Inside
+	// what is remembered, any backslash holds.
 	tail  []rune
 	murky bool
-	// A newline is known to be in the box, so Ctrl-U cannot empty it in one press.
-	multi bool
 	// Something changed the box by an amount the bytes did not say: a chord that is not
 	// one of the few known to leave it alone, or a history key, which pulls a whole
 	// previous prompt into a box that nothing was typed into.
@@ -111,9 +110,6 @@ func (l *lineOwner) fold(presses []press) (emptiedIt bool) {
 		case inserted:
 			for _, r := range string(p.text) {
 				l.chars++
-				if r == '\n' {
-					l.multi = true
-				}
 				l.tail = append(l.tail, r)
 				// Whatever had been forgotten, the box ends with this now.
 				l.murky = false
@@ -145,16 +141,6 @@ func (l *lineOwner) fold(presses []press) (emptiedIt bool) {
 			// The second press in a row quits the session, so it is sent once.
 			l.empty()
 			emptiedIt = true
-		case killed:
-			if l.multi || l.disturbed {
-				// Ctrl-U took a line out of something with more than one line in it, or
-				// out of a box that was already past accounting for. Either way what is
-				// left is unknown, and unknown holds the line.
-				l.disturbed = true
-				continue
-			}
-			l.empty()
-			emptiedIt = true
 		case disturbed:
 			l.disturbed = true
 		}
@@ -171,11 +157,18 @@ func (l *lineOwner) continued() bool {
 		// continuation is hands typing into a sentence somebody is still writing.
 		return true
 	}
-	if n := len(l.tail); n > 0 && l.tail[n-1] == '\\' {
-		// The backslash became the newline. The box is one character different and is not
-		// any emptier than it was.
-		l.tail[n-1] = '\n'
-		return true
+	// The child looks at the character before the cursor, wherever the cursor happens to
+	// be, and where it is is not something the bytes say. So a backslash anywhere in the
+	// remembered end of the line is read as one the cursor might be sitting after.
+	// Measured: `ab\c`, one Left, then Return, and the box kept both halves.
+	//
+	// The last one is the one a Return would have turned into the newline. Turning it
+	// keeps the count right and stops this line holding every Return after it.
+	for i := len(l.tail) - 1; i >= 0; i-- {
+		if l.tail[i] == '\\' {
+			l.tail[i] = '\n'
+			return true
+		}
 	}
 	return false
 }
@@ -183,7 +176,6 @@ func (l *lineOwner) continued() bool {
 // empty records that there is nothing in the box.
 func (l *lineOwner) empty() {
 	l.chars = 0
-	l.multi = false
 	l.disturbed = false
 	l.tail = l.tail[:0]
 	l.murky = false

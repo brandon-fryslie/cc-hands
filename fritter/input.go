@@ -25,7 +25,6 @@ const (
 	deleted                 // one character came out of it
 	submitted               // Return, which empties the box - unless what it follows says otherwise
 	cancelled               // Ctrl-C, which empties it whatever is in it
-	killed                  // Ctrl-U, which empties the line the cursor is on and not the box
 	disturbed               // the box changed by some amount these bytes do not say
 )
 
@@ -38,25 +37,32 @@ const (
 // on it - and every one of them that is guessed harmless and is not frees a line that is
 // not free. Listing the harmless ones and disturbing by default is the only way round
 // that does not need the list to be complete.
+// Ctrl-U is deliberately not here. It kills back to the start of the line the cursor is
+// on - the *displayed* line, so a prompt long enough to wrap loses one row of itself and
+// keeps the rest. Measured: 250 characters in a 100-column terminal, one press, and 192
+// characters were still in the box. Neither the cursor nor the terminal's width is
+// something this can see, so there is no press of it that proves anything.
+//
+// Nor is Ctrl-L. The shipped binary binds it to clearInput and pressing it left the box
+// exactly as it was; when the evidence disagrees with itself the honest answer is that
+// this does not know, which is what being absent from here means.
 var cursorOnly = map[byte]bool{
 	0x01: true, // Ctrl-A, to the start of the line
 	0x02: true, // Ctrl-B, back one character
 	0x05: true, // Ctrl-E, to the end of the line
 	0x06: true, // Ctrl-F, forward one character
-	0x0c: true, // Ctrl-L, redraw
 }
 
 // The bytes that leave the box empty, and the ones that take a character out of it.
 //
 // Measured against Claude Code 2.1.278 rather than assumed, and more than once, because
-// the first measurements were wrong. One Ctrl-C empties the box however many lines are in
-// it. Ctrl-U does not: it kills the line the cursor is on, so a box of three lines took
-// four presses and still had its first line. Escape does not touch the box at all.
-// Ctrl-W takes the last word, and how many characters that is depends on the word.
+// the first measurements were wrong twice over. One Ctrl-C empties the box however many
+// lines are in it, and it is the only chord that does. Escape does not touch the box.
+// Ctrl-U and Ctrl-W take back an amount that depends on where the cursor is and how wide
+// the terminal is, so neither of them is here.
 const (
 	esc       = 0x1b
 	ctrlC     = 0x03
-	ctrlU     = 0x15
 	backspace = 0x08
 	del       = 0x7f
 )
@@ -174,12 +180,6 @@ func (r *reader) read(chunk []byte) []press {
 			scan = scan[1:]
 		case b == ctrlC:
 			out = append(out, press{does: cancelled})
-			scan = scan[1:]
-		case b == ctrlU:
-			// Not the same as Ctrl-C. Measured: on a box of three lines it took four
-			// presses and the first line was still there, because it kills the line the
-			// cursor is on rather than the box. The box says what that came to.
-			out = append(out, press{does: killed})
 			scan = scan[1:]
 		case b == del || b == backspace:
 			out = append(out, press{does: deleted})

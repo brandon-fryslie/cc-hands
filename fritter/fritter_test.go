@@ -40,12 +40,14 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"typed again after submitting", []string{"hello\r", "more"}, false},
 		{"typed and submitted in one read", []string{"hello\r"}, true},
 		{"cleared with ctrl-c", []string{"oops", "\x03"}, true},
-		{"cleared with ctrl-u", []string{"oops", "\x15"}, true},
-		// Ctrl-U kills the line the cursor is on, not the box. Measured: three lines took
-		// four presses and the first was still there. Ctrl-C takes the lot in one.
-		{"ctrl-u does not clear a box with more than one line in it", []string{"aaa", "\n", "bbb", "\x15"}, false},
-		{"ctrl-c does", []string{"aaa", "\n", "bbb", "\x03"}, true},
-		{"nor does ctrl-u clear a box it could not account for", []string{"\x1b[A", "\x15"}, false},
+		// Ctrl-U kills back to the start of the line the cursor is on, and that is the
+		// displayed line: measured, 250 characters in a 100-column terminal lost one row
+		// to a single press and kept 192. Where the cursor is and how wide the terminal
+		// is are both invisible here, so no press of it proves the box is empty.
+		{"ctrl-u cannot prove the box is empty", []string{"oops", "\x15"}, false},
+		{"not on a box with more than one line in it", []string{"aaa", "\n", "bbb", "\x15"}, false},
+		{"and not on one that was already past accounting for", []string{"\x1b[A", "\x15"}, false},
+		{"ctrl-c does, however many lines are in it", []string{"aaa", "\n", "bbb", "\x03"}, true},
 		{"escape leaves the box alone", []string{"oops", "\x1b"}, false},
 		{"a word killed leaves the count standing", []string{"alpha beta", "\x17"}, false},
 		// A bare newline is Ctrl-J, which puts one in the box rather than sending it.
@@ -86,6 +88,9 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"tab can complete a path into the box", []string{"\t"}, false},
 		{"the delete key takes a character out", []string{"\x1b[3~"}, false},
 		{"but ctrl-a and ctrl-e only move", []string{"\x01", "\x05"}, true},
+		// The binary binds Ctrl-L to clearInput and pressing it changed nothing. Evidence
+		// that disagrees with itself is not evidence that the box was left alone.
+		{"ctrl-l is not known to leave the box alone", []string{"\x0c"}, false},
 		{"escape alone is not a character", []string{"\x1b"}, true},
 
 		{"a pasted line is characters in the box", []string{"\x1b[200~hello\nworld\x1b[201~"}, false},
@@ -108,7 +113,7 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"escape, then the window loses focus", []string{"\x1b", "\x1b[O"}, true},
 		{"alt-up arrives as two escapes and a history key", []string{"\x1b\x1b[A"}, false},
 		{"typed, escape, then submitted", []string{"hello", "\x1b", "\r"}, true},
-		{"typed, escape, then cleared", []string{"hello", "\x1b", "\x15"}, true},
+		{"typed, escape, then cleared", []string{"hello", "\x1b", "\x03"}, true},
 		{"typed, escape, then backspaced back to empty", []string{"ab", "\x1b", "\x7f\x7f"}, true},
 		{"an answer longer than any key holds the line rather than freeing it", []string{"\x1b]" + strings.Repeat("A", 4095), "BBB\x07"}, false},
 		{"a terminal answer split across reads is still not typing", []string{"\x1b]11;rgb:1b1b/", "1b1b/1b1b\x07"}, true},
@@ -143,9 +148,13 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"a backslash and Return arriving in one read", []string{"abc\\\r"}, false},
 		{"a line continued and then really submitted", []string{"abc\\", "\r", "def", "\r"}, true},
 		{"ctrl-c empties a continued line, because it empties anything", []string{"abc\\", "\r", "\x03"}, true},
-		{"ctrl-u empties a continued line too", []string{"abc\\", "\r", "\x15"}, true},
+		{"but ctrl-u cannot prove it emptied one", []string{"abc\\", "\r", "\x15"}, false},
 		{"a backslash taken back before Return submits as usual", []string{"abc\\", "\x7f", "\r"}, true},
-		{"a backslash anywhere but the end does not continue anything", []string{"a\\bc", "\r"}, true},
+		// The child looks at the character before the cursor, and nothing here knows where
+		// that is. Measured: `ab\c`, one Left, Return, and the box kept both halves.
+		{"a backslash anywhere in the line's end holds the Return after it", []string{"a\\bc", "\r"}, false},
+		{"and the Return after that one sends it", []string{"a\\bc", "\r", "\r"}, true},
+		{"a line with no backslash in it at all is sent", []string{"abc", "\r"}, true},
 		{"a pasted line ending in a backslash continues too", []string{"\x1b[200~a\\\x1b[201~", "\r"}, false},
 		// More came out of the box than was being remembered, so what it ends with is not
 		// known, and a Return that might be a continuation is read as one.
@@ -177,7 +186,7 @@ func TestAChordFritterSendsMeansWhatTheSameChordMeansTyped(t *testing.T) {
 	}{
 		{"enter submits the held line", "enter", true},
 		{"ctrl-c throws it away", "ctrl_c", true},
-		{"ctrl-u clears it without interrupting", "ctrl_u", true},
+		{"ctrl-u cannot prove it clear, so it stays held", "ctrl_u", false},
 		{"escape does not touch it", "escape", false},
 		{"an arrow key leaves it where it is", "up", false},
 		{"tab leaves it where it is", "tab", false},
@@ -197,7 +206,7 @@ func TestAKeyThatEmptiesTheBoxSettlesTheLineEvenMidSequence(t *testing.T) {
 	// The line has to be recoverable from a held state, and the held state that matters is
 	// the one the parser cannot resolve: an Escape, then a message that opens like a
 	// terminal answer, leaves it holding bytes it cannot yet call typing. Freeing the
-	// count alone is not enough - the doubt has to go with it, or the ctrl_u sent to
+	// count alone is not enough - the doubt has to go with it, or the ctrl_c sent to
 	// clear the line leaves the line held by the very request sent to clear it.
 	line := newLineOwner()
 	line.typed([]byte("\x1b"))
@@ -205,7 +214,7 @@ func TestAKeyThatEmptiesTheBoxSettlesTheLineEvenMidSequence(t *testing.T) {
 	if line.free() {
 		t.Fatal("the user is typing and the parser cannot yet see it; the line is not free")
 	}
-	line.sent(keystrokes["ctrl_u"])
+	line.sent(keystrokes["ctrl_c"])
 	if !line.free() {
 		t.Fatal("the box was emptied and the line is still held; nothing can recover it")
 	}
@@ -221,7 +230,7 @@ func TestAKeyDoesNotTakeTheEndOfThePasteWithIt(t *testing.T) {
 	line := newLineOwner()
 	line.typed([]byte("\x1b[200~line one"))
 	line.typed([]byte(" and more\x1b[20"))
-	line.sent(keystrokes["ctrl_u"])
+	line.sent(keystrokes["ctrl_c"])
 	line.typed([]byte("1~"))
 	line.typed([]byte("hi"))
 	line.typed([]byte("\r"))
@@ -242,7 +251,7 @@ func TestAKeyDoesNotTakeThePasteItDidNotEnd(t *testing.T) {
 	if line.free() {
 		t.Fatal("a paste in progress is characters in the box")
 	}
-	line.sent(keystrokes["ctrl_u"])
+	line.sent(keystrokes["ctrl_c"])
 	line.typed([]byte("\nline two\n\x1b[201~"))
 	if line.free() {
 		t.Fatal("the rest of the paste was read as typing and its newlines freed the line")

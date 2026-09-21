@@ -87,10 +87,11 @@ under an `ok`. Send a `key` request for a keystroke.
 
 The keys are `escape`, `enter`, `ctrl_c`, `ctrl_u`, `up`, `down`, `tab` and `shift_tab`.
 Which bytes each one is, is terminal knowledge, so that table lives here rather than in
-the caller. `ctrl_c` is the one to reach for to empty the input box, and it empties it
-however many lines are in it — but send it once, because a second press in a row quits the
-session. `ctrl_u` kills only the line the cursor is on, so it clears a one-line box and
-leaves a longer one standing.
+the caller. `ctrl_c` is the one to reach for to empty the input box, and it is the only
+key that empties it whatever is in it — but send it once, because a second press in a row
+quits the session. `ctrl_u` kills back to the start of the line the cursor is on, and that
+is the line *as displayed*: a prompt long enough to wrap loses one row and keeps the rest.
+It is offered because a caller may want it, but it never hands the line back.
 
 ## Multi-line text
 
@@ -157,19 +158,24 @@ themselves, are the whole of what can be counted.
 
 Everything else that is not a character is read as having changed the box by some amount
 the bytes do not say, and that holds the line until the box is proved empty. Ctrl-W takes
-a word; Ctrl-U takes the line the cursor is on, which clears a one-line box and leaves a
-longer one standing; Ctrl-Y pastes back whatever was last killed; Tab completes a path in;
-Up and Down pull a whole previous prompt into a box nothing was typed into. Only five
-chords are listed as leaving the box alone — Ctrl-A, Ctrl-B, Ctrl-E, Ctrl-F and Ctrl-L —
-along with the sequences that are the terminal answering a question, and the cursor keys
-that only move sideways.
+a word; Ctrl-U takes back to the start of the displayed line, so a wrapped prompt loses a
+row and keeps the rest; Ctrl-Y pastes back whatever was last killed; Tab completes a path
+in; Up and Down pull a whole previous prompt into a box nothing was typed into. Four
+chords are listed as leaving the box alone — Ctrl-A, Ctrl-B, Ctrl-E, Ctrl-F — along with
+the sequences that are the terminal answering a question, and the cursor keys that only
+move sideways.
+
+The reason the list is that short is that almost every edit is defined against something
+invisible from here: the cursor, or the width of the terminal. Ctrl-U is bounded by both.
+Nothing on stdin says where the cursor is, so anything measured from it is unknowable, and
+unknowable holds the line.
 
 Listing the harmless ones and holding the line for everything else is the only arrangement
 that does not need the list to be complete, and it will never be complete: the ways to
-edit a text box belong to the child. Successive reviews of this file each found another
-one that had been assumed harmless and was not. That is the safe direction to be wrong in
-— a refused write is loud and recoverable, a write into a half-typed line is a garbled
-prompt nobody can attribute.
+edit a text box belong to the child and change when the child changes. Successive reviews
+of this file each found another key that had been assumed harmless and was not. That is
+the safe direction to be wrong in — a refused write is loud and recoverable, a write into
+a half-typed line is a garbled prompt nobody can attribute.
 
 Enter usually empties the box, and the exceptions are the two ways a multi-line prompt
 gets written by hand — so they are not corners, and read as submits each one empties a
@@ -187,9 +193,11 @@ count. Sixteen characters of the line's end are remembered, enough that
 taking a few back and then submitting is still answered from what is known rather than
 guessed at. Past that the end is unknown, and an unknown end holds the line.
 
-Where the cursor is, is not tracked, the same way Ctrl-W's word is not. Moving it and then
-pressing Return can leave a line held that was really sent, which the user's next Enter
-clears.
+Where the cursor is, is not tracked — nothing on stdin says. A backslash anywhere in those
+sixteen characters holds the Return after it, because the cursor might be sitting on it.
+What that leaves open is a backslash further back in the line than is remembered, with the
+cursor parked immediately after it; and in the other direction, a line held that was really
+sent, which the user's next Enter clears.
 
 Escape is left alone, which is not the compromise an earlier version of this file claimed
 it was: Claude Code 2.1.278 does not clear its input box on Escape. That was measured, not
@@ -246,9 +254,14 @@ statement in `main`. A guarantee that sometimes deadlocks is worse than one not 
   still accepted; before this was parsed, one was enough to refuse every send afterwards.
 - One Ctrl-C empties the input box however many lines are in it, and leaves the session
   running. A second press in a row quits it.
-- Ctrl-U does **not** empty the box. It kills the line the cursor is on: a box holding
-  `aaa`, `bbb`, `ccc` took four presses and still had `aaa` in it. On a one-line box it
-  does clear it, which is why an earlier version of this file said it cleared the box.
+- Ctrl-U does **not** empty the box. It kills back to the start of the line the cursor is
+  on, and that is the *displayed* line. A box holding `aaa`, `bbb`, `ccc` took four presses
+  and still had `aaa` in it; 250 characters typed into a 100-column terminal lost one
+  wrapped row to a single press and kept 192. On a short one-line box it does clear it,
+  which is why an earlier version of this file said it cleared the box.
+- A Return continues the line when the character *before the cursor* is a backslash, not
+  only when the line ends in one. Typing `ab\c`, pressing Left once and pressing Return
+  left `ab` and `c` in the box.
 - Escape does not touch the box. Ctrl-W takes the last word. Backspacing to empty hands
   the line back.
 - Up pulls the previous prompt into an empty box. Nothing was typed and the box filled,

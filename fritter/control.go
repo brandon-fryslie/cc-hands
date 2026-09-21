@@ -40,10 +40,12 @@ var keystrokes = map[string][]byte{
 	"escape": {0x1b},
 	"enter":  {'\r'},
 	"ctrl_c": {0x03},
-	// Ctrl-U kills the line the cursor is on rather than the box, so it clears a one-line
-	// box and leaves a longer one standing. Measured. Ctrl-C is the chord that empties the
-	// box whatever is in it, and the one to reach for when a line has to be cleared - but
-	// only once, because a second press in a row quits the session.
+	// Ctrl-U kills back to the start of the line the cursor is on, and that is the line as
+	// displayed: measured, a 250-character prompt in a 100-column terminal lost one row to
+	// a single press and kept 192 characters. It is offered because a caller may want it,
+	// but it settles nothing. Ctrl-C is the chord that empties the box whatever is in it,
+	// and the one to reach for when a line has to be cleared - once, because a second
+	// press in a row quits the session.
 	"ctrl_u":    {0x15},
 	"up":        []byte("\x1b[A"),
 	"down":      []byte("\x1b[B"),
