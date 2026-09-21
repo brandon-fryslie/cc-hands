@@ -19,23 +19,33 @@ const remembered = 16
 // keystrokes never reach it. So this is the only input-box fact fritter owns, and it owns
 // exactly this much.
 //
-// It is a count of characters rather than a flag, because a text box is a count of
-// characters. A flag cannot be told that the user backspaced their way back to empty, so
-// it would stay set - and a fact that can only ever become true is not a fact about the
-// box, it is a one-way door.
+// It is one fact and not a count. A count was the obvious shape - a text box is a
+// number of characters - and it was wrong, because nothing on stdin ever takes the
+// number back down. Backspace looked like the exception and is not: the child reads it
+// as `if(this.isAtStart())return this`, so a Backspace with the cursor at the start of
+// the box removes nothing, and the cursor is not something stdin says. A count that only
+// ever rises is a flag that has learnt to add.
 //
 // What it cannot see it says it cannot see. Ctrl-W takes a word, Ctrl-U takes a line,
-// Ctrl-Y pastes back what was last killed, Tab completes a path, and Up pulls a whole
-// previous prompt into a box nothing was typed into - and how much any of that came to is
-// not in the bytes. All of them leave the line held until the box is proved empty by a
-// Ctrl-C or a Return that really sent. That is the safe direction to be wrong in: a
-// refused write is loud and recoverable, a write into a half-typed line is a garbled
-// prompt nobody can attribute.
+// Ctrl-Y pastes back what was last killed, Backspace takes one character or none, Tab
+// completes a path, and Up pulls a whole previous prompt into a box nothing was typed
+// into - and how much any of that came to is not in the bytes. All of them leave the line
+// held until the box is proved empty by a Ctrl-C or a Return that really sent. That is
+// the safe direction to be wrong in: a refused write is loud and recoverable, and a key
+// request is never refused, so hands can always clear a line this holds too long. A write
+// into a half-typed line is a garbled prompt nobody can attribute.
 type lineOwner struct {
 	mu    sync.Mutex
 	stdin reader
-	chars int
-	// What the box ends with, as far as the bytes say, and whether that is known at all.
+	// Something is in the box that was not seen to leave it: characters that went in, or
+	// a key whose effect on the box the bytes do not say. The two were separate fields
+	// until Backspace stopped being countable and left them with the same life - set by
+	// what the user does, cleared only by a box proved empty `[LAW:one-type-per-behavior]`.
+	//
+	// [LAW:no-silent-failure] A box that is known to hold something unaccounted for is not
+	// an empty box, and reporting it as one is the answer that cannot be taken back.
+	held bool
+	// What the box ends with, as far as the bytes say.
 	//
 	// It exists for one rule in the child. Claude Code 2.1.278 reads a Return that follows
 	// a backslash as "keep typing": the backslash becomes a newline and everything already
@@ -47,16 +57,7 @@ type lineOwner struct {
 	// backslash further back in the line than this remembers, with the cursor parked
 	// straight after it: the Return that continues it reads as one that sent it. Inside
 	// what is remembered, any backslash holds.
-	tail  []rune
-	murky bool
-	// Something changed the box by an amount the bytes did not say: a chord that is not
-	// one of the few known to leave it alone, or a history key, which pulls a whole
-	// previous prompt into a box that nothing was typed into.
-	//
-	// Only a box proved empty clears this - a Ctrl-C, or a Return that really did send.
-	// [LAW:no-silent-failure] A count that is known to be incomplete is not a count, and
-	// reporting it as one is the answer that cannot be taken back.
-	disturbed bool
+	tail []rune
 	// The parser ended a read still holding bytes that might be characters in the box.
 	// Kept here rather than asked of the parser, because emptying the box settles it
 	// whatever the parser was in the middle of: whatever those bytes were, they are not
@@ -108,24 +109,12 @@ func (l *lineOwner) fold(presses []press) (emptiedIt bool) {
 	for _, p := range presses {
 		switch p.does {
 		case inserted:
+			l.held = true
 			for _, r := range string(p.text) {
-				l.chars++
 				l.tail = append(l.tail, r)
-				// Whatever had been forgotten, the box ends with this now.
-				l.murky = false
 			}
 			if len(l.tail) > remembered {
 				l.tail = append(l.tail[:0], l.tail[len(l.tail)-remembered:]...)
-			}
-		case deleted:
-			l.chars = max(l.chars-1, 0)
-			if len(l.tail) > 0 {
-				l.tail = l.tail[:len(l.tail)-1]
-			} else {
-				l.murky = true
-			}
-			if l.chars == 0 && !l.disturbed {
-				l.empty()
 			}
 		case submitted:
 			if l.continued() {
@@ -142,28 +131,32 @@ func (l *lineOwner) fold(presses []press) (emptiedIt bool) {
 			l.empty()
 			emptiedIt = true
 		case disturbed:
-			l.disturbed = true
+			l.held = true
 		}
 	}
 	return emptiedIt
 }
 
 // continued reports whether this Return went on with the line instead of sending it.
+//
+// Two things in the child take a Return and do something with it other than send. Both
+// are decided against the cursor, which stdin does not say, so both are read off the
+// remembered end of the line and both are read the way that holds.
 func (l *lineOwner) continued() bool {
-	if l.murky {
-		// More came out of the box than was being remembered, so what it ends with is not
-		// known. A Return that might be a continuation is read as one: a line held after a
-		// submit costs a refusal the user's next Enter clears, and a line freed after a
-		// continuation is hands typing into a sentence somebody is still writing.
-		return true
-	}
+	return l.escaping() || l.completing()
+}
+
+// escaping reports whether the Return followed a backslash, which the child turns into a
+// newline and keeps typing.
+func (l *lineOwner) escaping() bool {
 	// The child looks at the character before the cursor, wherever the cursor happens to
 	// be, and where it is is not something the bytes say. So a backslash anywhere in the
 	// remembered end of the line is read as one the cursor might be sitting after.
 	// Measured: `ab\c`, one Left, then Return, and the box kept both halves.
 	//
 	// The last one is the one a Return would have turned into the newline. Turning it
-	// keeps the count right and stops this line holding every Return after it.
+	// here keeps this line from holding every Return after it, and it is what the child
+	// did to the box, so the remembered end stays a true copy of it.
 	for i := len(l.tail) - 1; i >= 0; i-- {
 		if l.tail[i] == '\\' {
 			l.tail[i] = '\n'
@@ -173,12 +166,86 @@ func (l *lineOwner) continued() bool {
 	return false
 }
 
+// completing reports whether a completion list could be open over the box, in which case
+// the Return picked an entry out of it and sent nothing.
+//
+// Claude Code's input box answers a Return in two quite different ways, and which one it
+// takes is not in the keystroke. With no suggestions up it submits. With suggestions up
+// it calls `preventDefault()` and applies the highlighted entry instead, which leaves the
+// box *longer* than it was and still unsent. An `@` naming a file is how prompts point at
+// code, and a directory keeps the list up for the press after, so this is a key people
+// hold down, not a corner.
+//
+// Whether the list is up is decided by the token ending at the cursor. Neither the token
+// nor the cursor is visible here, so what is asked instead is whether any cursor position
+// inside the remembered end of the line would have opened one - the same question the
+// child asks, over the part of the answer this can see.
+func (l *lineOwner) completing() bool {
+	for i, r := range l.tail {
+		least, opens := opensList[r]
+		if !opens || !afterABreak(l.tail, i) {
+			continue
+		}
+		token := 0
+		for _, after := range l.tail[i+1:] {
+			if !tokenChar(after) {
+				break
+			}
+			token++
+		}
+		if token >= least {
+			return true
+		}
+	}
+	return false
+}
+
+// What opens a completion list, and how many characters of token the child's own pattern
+// needs after it before it can match. Read out of 2.1.278 rather than guessed:
+//
+//	@ /(^|[\s\u3002\u3001\uFF1F\uFF01])@([\p{L}\p{N}\p{M}_\-./\\()[\]~:]*|"[^"]*"?)$/u
+//	# /(^|\s)#([a-z0-9][a-z0-9_-]*)$/
+//	: /(^|\s):([a-z0-9_+-]{2,})$/
+//
+// The `*` on the first is why `@` needs nothing after it: the cursor sitting straight
+// after an `@` already opens the list on every file there is.
+//
+// A slash command is not here. Its Return runs the command and empties the box - the
+// child passes `shouldExecute` true on that path - so it is an ordinary submit.
+var opensList = map[rune]int{'@': 0, '#': 1, ':': 2}
+
+// tokenChar reports whether a completion token can be made of this character.
+//
+// One class covers the two patterns that need one, which is wider than either alone -
+// `#` does not take `+`, `:` does not take a leading digit. Wider holds a Return now and
+// then that would have sent, and that is the direction to be wrong in.
+func tokenChar(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		return true
+	}
+	return r == '_' || r == '-' || r == '+'
+}
+
+// afterABreak reports whether the character at i could be starting a word, which is what
+// the `(^|\s)` on the front of each pattern asks.
+func afterABreak(tail []rune, i int) bool {
+	if i == 0 {
+		// What came before the remembered end of the line is not remembered, and a space
+		// is one of the things it could have been.
+		return true
+	}
+	switch tail[i-1] {
+	case ' ', '\t', '\n', '\r', '\u3002', '\u3001', '\uFF1F', '\uFF01':
+		return true
+	}
+	return false
+}
+
 // empty records that there is nothing in the box.
 func (l *lineOwner) empty() {
-	l.chars = 0
-	l.disturbed = false
+	l.held = false
 	l.tail = l.tail[:0]
-	l.murky = false
 	// An empty box is empty however unsure the parser was a moment ago. Without this the
 	// ctrl_u sent to free a held line frees the count and leaves the doubt, and the line
 	// stays held by the very request sent to clear it.
@@ -193,5 +260,5 @@ func (l *lineOwner) empty() {
 func (l *lineOwner) free() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.chars == 0 && !l.unsure && !l.disturbed
+	return !l.held && !l.unsure
 }

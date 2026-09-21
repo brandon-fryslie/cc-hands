@@ -56,9 +56,23 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"ctrl-j into an empty box puts a character in it", []string{"\n"}, false},
 		{"ctrl-j and a Return arriving in one read", []string{"hello\nworld\r"}, true},
 		{"an empty read changes nothing", []string{"half", ""}, false},
-		{"backspaced back to empty", []string{"abc", "\x7f\x7f\x7f"}, true},
+		// Backspace looks like the one key whose effect is a number - one character, every
+		// time - and it is not. The child reads it as
+		// `backspace(){if(this.isAtStart())return this;...}`, so a press with the cursor at
+		// the start of the box takes nothing out of it, and where the cursor is is not
+		// something stdin says. Counted, these free a line with the user's words still in
+		// it, which is the one mistake with no recovery.
+		{"backspaced back to what might be empty", []string{"abc", "\x7f\x7f\x7f"}, false},
 		{"backspaced most of the way", []string{"abc", "\x7f\x7f"}, false},
-		{"backspaced past empty", []string{"a", "\x7f\x7f\x7f"}, true},
+		{"backspaced past where empty would have been", []string{"a", "\x7f\x7f\x7f"}, false},
+		{"taken back from the start of the box, where it takes nothing",
+			[]string{"x", "\x01", "\x7f"}, false},
+		// Holding the key down past the start of a line is an autorepeat, not a corner:
+		// six of these erase `hello `, and the other five land at offset 0 and do nothing.
+		{"held down past the start of a line", []string{
+			"hello world", "\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D", strings.Repeat("\x7f", 11)}, false},
+		{"and a Return after all of it still hands the line back",
+			[]string{"abc", "\x7f\x7f\x7f", "\r"}, true},
 
 		{"the window losing focus", []string{"\x1b[O"}, true},
 		{"the window gaining focus", []string{"\x1b[I"}, true},
@@ -114,7 +128,8 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"alt-up arrives as two escapes and a history key", []string{"\x1b\x1b[A"}, false},
 		{"typed, escape, then submitted", []string{"hello", "\x1b", "\r"}, true},
 		{"typed, escape, then cleared", []string{"hello", "\x1b", "\x03"}, true},
-		{"typed, escape, then backspaced back to empty", []string{"ab", "\x1b", "\x7f\x7f"}, true},
+		{"typed, escape, then backspaced back to what might be empty",
+			[]string{"ab", "\x1b", "\x7f\x7f"}, false},
 		{"an answer longer than any key holds the line rather than freeing it", []string{"\x1b]" + strings.Repeat("A", 4095), "BBB\x07"}, false},
 		{"a terminal answer split across reads is still not typing", []string{"\x1b]11;rgb:1b1b/", "1b1b/1b1b\x07"}, true},
 		{"a terminal answer split at its terminator is still not typing", []string{"\x1b]11;rgb:1b1b/1b1b/1b1b\x1b", "\\"}, true},
@@ -149,19 +164,45 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"a line continued and then really submitted", []string{"abc\\", "\r", "def", "\r"}, true},
 		{"ctrl-c empties a continued line, because it empties anything", []string{"abc\\", "\r", "\x03"}, true},
 		{"but ctrl-u cannot prove it emptied one", []string{"abc\\", "\r", "\x15"}, false},
-		{"a backslash taken back before Return submits as usual", []string{"abc\\", "\x7f", "\r"}, true},
+		// Nothing comes off the remembered end any more, because nothing on stdin says how
+		// much came off the box. So what it holds is a superset of what the line really
+		// ends with - and a superset can only hold a Return that would have sent, never
+		// free one that would not.
+		{"a backslash taken back is remembered anyway, and holds", []string{"abc\\", "\x7f", "\r"}, false},
+		{"until the Return after it", []string{"abc\\", "\x7f", "\r", "\r"}, true},
 		// The child looks at the character before the cursor, and nothing here knows where
 		// that is. Measured: `ab\c`, one Left, Return, and the box kept both halves.
 		{"a backslash anywhere in the line's end holds the Return after it", []string{"a\\bc", "\r"}, false},
 		{"and the Return after that one sends it", []string{"a\\bc", "\r", "\r"}, true},
 		{"a line with no backslash in it at all is sent", []string{"abc", "\r"}, true},
 		{"a pasted line ending in a backslash continues too", []string{"\x1b[200~a\\\x1b[201~", "\r"}, false},
-		// More came out of the box than was being remembered, so what it ends with is not
-		// known, and a Return that might be a continuation is read as one.
-		{"a Return after more was taken back than was remembered holds the line",
-			[]string{strings.Repeat("a", 20), strings.Repeat("\x7f", 18), "\r"}, false},
-		{"and typing again makes the end of the line known", []string{
-			strings.Repeat("a", 20), strings.Repeat("\x7f", 18), "\r", "x", "\r"}, true},
+		// And because it cannot shrink, it can no longer run past what it remembers, which
+		// is the whole of what the murky flag used to cover.
+		{"a Return after more was taken back than was remembered sends", []string{
+			strings.Repeat("a", 20), strings.Repeat("\x7f", 18), "\r"}, true},
+		{"one with a backslash still remembered does not", []string{
+			"abc\\" + strings.Repeat("a", 12), strings.Repeat("\x7f", 12), "\r"}, false},
+
+		// A Return with a completion list up does not send. The child calls
+		// preventDefault() and applies the highlighted entry instead, which leaves the box
+		// longer than it was and still unsent. Whether the list is up is decided by the
+		// token ending at the cursor, and neither is visible here, so what is asked is
+		// whether any cursor position in the remembered end would have opened one.
+		{"a Return picking a file completion does not send", []string{"look at @src/ha", "\r"}, false},
+		{"nor the one after it, while the token is still remembered",
+			[]string{"look at @src/ha", "\r", "\r"}, false},
+		{"a bare @ opens the list on every file there is", []string{"fix @", "\r"}, false},
+		{"an @ the cursor could have been put back inside", []string{"@foo and more", "\r"}, false},
+		{"an @ in the middle of a word opens nothing", []string{"mail bmf@example", "\r"}, true},
+		{"a # with nothing after it cannot match", []string{"see #", "\r"}, true},
+		{"and holds the Return once it has something", []string{"see #12", "\r"}, false},
+		{"a colon in ordinary prose is not a completion", []string{"note: fix this", "\r"}, true},
+		{"a colon token is", []string{"nice :smile", "\r"}, false},
+		{"a slash command runs and empties the box", []string{"/compact", "\r"}, true},
+		{"an ordinary prompt is still sent by its Return", []string{"what changed today", "\r"}, true},
+		{"ctrl-c empties a box a completion left full", []string{"look at @src/ha", "\r", "\x03"}, true},
+		{"and what it left is forgotten as the user types on", []string{
+			"look at @src/ha", "\r", "and then some more words", "\r"}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			line := newLineOwner()

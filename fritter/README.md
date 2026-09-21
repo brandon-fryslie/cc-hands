@@ -149,18 +149,32 @@ next one. A paste the user made at their own keyboard is read as characters, new
 all, because that is exactly what the brackets around it say it is. What is left over is
 typing.
 
-The owner then counts characters rather than raising a flag, because a text box is a count
-of characters. Backspacing back to an empty box hands the line back; a flag could never be
-told that, and a fact that can only ever become true is not a fact about the box.
+The owner then records one fact: something is in the box that was not seen to leave it.
+A count was the obvious shape — a text box is a number of characters — and it was wrong,
+because nothing arriving on stdin ever takes the number back down.
 
-Ctrl-C empties the box; backspace takes one character out of it. Those, and the characters
-themselves, are the whole of what can be counted.
+Backspace looked like the exception, and an earlier version of this file promised that
+backspacing to an empty box hands the line back. It does not. The child reads the key as
+
+```js
+backspace(){if(this.isAtStart())return this;return this.left().modifyText(this)}
+```
+
+so a Backspace with the cursor at the start of the box removes nothing at all, and where
+the cursor is is not something stdin says. Type `x`, press Ctrl-A, press Backspace, and a
+counted box reaches zero with the character still in it. Hold the key down past the start
+of a line — an autorepeat, not a corner — and it reaches zero with a whole line still in
+it. A count that only ever rises is a flag that has learnt to add, so it is a flag.
+
+Ctrl-C empties the box. That, and the characters themselves, is the whole of what is
+known.
 
 Everything else that is not a character is read as having changed the box by some amount
-the bytes do not say, and that holds the line until the box is proved empty. Ctrl-W takes
-a word; Ctrl-U takes back to the start of the displayed line, so a wrapped prompt loses a
-row and keeps the rest; Ctrl-Y pastes back whatever was last killed; Tab completes a path
-in; Up and Down pull a whole previous prompt into a box nothing was typed into. Four
+the bytes do not say, and that holds the line until the box is proved empty. Backspace
+takes one character or none; Ctrl-W takes a word; Ctrl-U takes back to the start of the
+displayed line, so a wrapped prompt loses a row and keeps the rest; Ctrl-Y pastes back
+whatever was last killed; Tab completes a path in; Up and Down pull a whole previous
+prompt into a box nothing was typed into. Four
 chords are listed as leaving the box alone — Ctrl-A, Ctrl-B, Ctrl-E, Ctrl-F — along with
 the sequences that are the terminal answering a question, and the cursor keys that only
 move sideways.
@@ -188,16 +202,36 @@ child offers in its own footer, is a different key from Return — it arrives as
 Both were measured against the running program by typing a prompt, pressing the key, and
 watching the words stay.
 
-The backslash rule is the reason the owner keeps the end of the line rather than only a
-count. Sixteen characters of the line's end are remembered, enough that
-taking a few back and then submitting is still answered from what is known rather than
-guessed at. Past that the end is unknown, and an unknown end holds the line.
+The third is a completion list. With one open the child calls `preventDefault()` on the
+Return and applies the highlighted entry instead, which leaves the box *longer* than it
+was and still unsent. Whether a list is open is decided by the token ending at the cursor,
+and the child's own patterns say which tokens those are:
 
-Where the cursor is, is not tracked — nothing on stdin says. A backslash anywhere in those
-sixteen characters holds the Return after it, because the cursor might be sitting on it.
-What that leaves open is a backslash further back in the line than is remembered, with the
-cursor parked immediately after it; and in the other direction, a line held that was really
-sent, which the user's next Enter clears.
+```js
+@ /(^|[\s\u3002\u3001\uFF1F\uFF01])@([\p{L}\p{N}\p{M}_\-./\\()[\]~:]*|"[^"]*"?)$/u
+# /(^|\s)#([a-z0-9][a-z0-9_-]*)$/
+: /(^|\s):([a-z0-9_+-]{2,})$/
+```
+
+An `@` naming a file is how a prompt points at code, and a directory keeps the list open
+for the press after, so a user tabbing a path down with Return is ordinary use. The `*` on
+the first pattern is why a bare `@` counts: a cursor sitting straight after one already
+opens the list on every file there is. A slash command is not one of these — its Return
+runs the command and empties the box.
+
+Those two rules are why the owner keeps the end of the line rather than only a flag.
+Sixteen characters of the line's end are remembered. Nothing comes off that end, because
+nothing on stdin says how much came off the box, so what is remembered is a superset of
+what the line really ends with — and a superset can only hold a Return that would have
+sent, never free one that would not.
+
+Where the cursor is, is not tracked — nothing on stdin says. So a backslash anywhere in
+those sixteen characters holds the Return after it, and so does any cursor position among
+them that would have opened a completion list. What that leaves open is a token further
+back in the line than is remembered with the cursor parked inside it; and in the other
+direction, a line held that was really sent. That one clears when the user types sixteen
+more characters, or at once if hands sends a `ctrl_c` — a key request is never refused,
+so a held line can always be handed back.
 
 Escape is left alone, which is not the compromise an earlier version of this file claimed
 it was: Claude Code 2.1.278 does not clear its input box on Escape. That was measured, not

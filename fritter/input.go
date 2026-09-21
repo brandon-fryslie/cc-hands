@@ -22,7 +22,6 @@ type effect int
 const (
 	nothing   effect = iota // a report, or a key that leaves the box exactly as it was
 	inserted                // characters went into the box
-	deleted                 // one character came out of it
 	submitted               // Return, which empties the box - unless what it follows says otherwise
 	cancelled               // Ctrl-C, which empties it whatever is in it
 	disturbed               // the box changed by some amount these bytes do not say
@@ -46,6 +45,17 @@ const (
 // Nor is Ctrl-L. The shipped binary binds it to clearInput and pressing it left the box
 // exactly as it was; when the evidence disagrees with itself the honest answer is that
 // this does not know, which is what being absent from here means.
+//
+// Nor, for the same reason as Ctrl-U, is Backspace. It looks like the one key whose
+// effect is a number - one character, every time - and it is not. The child reads
+//
+//	backspace(){if(this.isAtStart())return this;return this.left().modifyText(this)}
+//
+// so a Backspace with the cursor at the start of the box takes nothing out of it. The
+// cursor is not something stdin says, so `x`, Ctrl-A, Backspace leaves `x` in the box,
+// and holding Backspace down past the start of a line - an autorepeat, not a corner -
+// leaves as much as the user had moved the cursor over. Counted, every one of those
+// presses spends a character the box still has.
 var cursorOnly = map[byte]bool{
 	0x01: true, // Ctrl-A, to the start of the line
 	0x02: true, // Ctrl-B, back one character
@@ -181,10 +191,7 @@ func (r *reader) read(chunk []byte) []press {
 		case b == ctrlC:
 			out = append(out, press{does: cancelled})
 			scan = scan[1:]
-		case b == del || b == backspace:
-			out = append(out, press{does: deleted})
-			scan = scan[1:]
-		case b < 0x20:
+		case b < 0x20 || b == del:
 			out = append(out, press{does: chord(b)})
 			scan = scan[1:]
 		default:
