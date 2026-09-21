@@ -2,6 +2,15 @@ package main
 
 import "sync"
 
+// How much of the end of the input box is remembered.
+//
+// One character would answer the only question asked of it - whether the box ends in a
+// backslash - but backspacing over the end of a line would then leave the answer unknown,
+// and an unknown answer has to be the one that holds the line. A short run keeps the
+// ordinary "type it, take some back, submit it" known, and anything longer is a line held
+// until the user types again, which is the recoverable direction.
+const remembered = 16
+
 // lineOwner answers the one question about the input box that only fritter can answer:
 // has the person at the keyboard put characters in it that they have not yet sent?
 //
@@ -24,6 +33,19 @@ type lineOwner struct {
 	mu    sync.Mutex
 	stdin reader
 	chars int
+	// What the box ends with, as far as the bytes say, and whether that is known at all.
+	//
+	// It exists for one rule in the child. Claude Code 2.1.278 reads a Return that follows
+	// a backslash as "keep typing": the backslash becomes a newline and everything already
+	// typed stays in the box. Measured against the running program, not assumed - and
+	// without it a Return there empties a count that is not empty and hands writes its
+	// words into the middle of someone's sentence.
+	//
+	// Where the cursor is, is not modelled, the same way Ctrl-W's word is not. Moving it
+	// and then pressing Return can submit a line this holds, which costs a refusal the
+	// user can clear.
+	tail  []rune
+	murky bool
 	// The parser ended a read still holding bytes that might be characters in the box.
 	// Kept here rather than asked of the parser, because emptying the box settles it
 	// whatever the parser was in the middle of: whatever those bytes were, they are not
@@ -75,19 +97,68 @@ func (l *lineOwner) fold(presses []press) (emptiedIt bool) {
 	for _, p := range presses {
 		switch p.does {
 		case inserted:
-			l.chars += p.count
+			for _, r := range string(p.text) {
+				l.chars++
+				l.tail = append(l.tail, r)
+				// Whatever had been forgotten, the box ends with this now.
+				l.murky = false
+			}
+			if len(l.tail) > remembered {
+				l.tail = append(l.tail[:0], l.tail[len(l.tail)-remembered:]...)
+			}
 		case deleted:
-			l.chars = max(l.chars-p.count, 0)
-		case emptied:
-			l.chars = 0
-			// An empty box is empty however unsure the parser was a moment ago. Without
-			// this the ctrl_u sent to free a held line frees the count and leaves the
-			// doubt, and the line stays held by the very request sent to clear it.
-			l.unsure = false
+			l.chars = max(l.chars-1, 0)
+			if len(l.tail) > 0 {
+				l.tail = l.tail[:len(l.tail)-1]
+			} else {
+				l.murky = true
+			}
+			if l.chars == 0 {
+				l.empty()
+			}
+		case submitted:
+			if l.continued() {
+				continue
+			}
+			l.empty()
+			emptiedIt = true
+		case cancelled:
+			// Ctrl-C and Ctrl-U empty the box whatever is in it, which is why they and not
+			// Enter are the way back from a line nothing else can settle.
+			l.empty()
 			emptiedIt = true
 		}
 	}
 	return emptiedIt
+}
+
+// continued reports whether this Return went on with the line instead of sending it.
+func (l *lineOwner) continued() bool {
+	if l.murky {
+		// More came out of the box than was being remembered, so what it ends with is not
+		// known. A Return that might be a continuation is read as one: a line held after a
+		// submit costs a refusal the user's next Enter clears, and a line freed after a
+		// continuation is hands typing into a sentence somebody is still writing.
+		return true
+	}
+	if n := len(l.tail); n > 0 && l.tail[n-1] == '\\' {
+		// The backslash became the newline. The box is one character different and is not
+		// any emptier than it was.
+		l.tail[n-1] = '\n'
+		return true
+	}
+	return false
+}
+
+// empty records that there is nothing in the box.
+func (l *lineOwner) empty() {
+	l.chars = 0
+	l.tail = l.tail[:0]
+	l.murky = false
+	// An empty box is empty however unsure the parser was a moment ago. Without this the
+	// ctrl_u sent to free a held line frees the count and leaves the doubt, and the line
+	// stays held by the very request sent to clear it.
+	l.unsure = false
 }
 
 // free reports whether the input box is clear of the user's own unsent characters.

@@ -95,7 +95,13 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		// count stays at zero and the line reads free while the user's word sits in the box.
 		{"escape, then a character typed", []string{"\x1b", "a"}, false},
 		{"escape, then two typed and one taken back", []string{"\x1b", "ab", "\x7f"}, false},
-		{"alt and a key arrive together and are a chord", []string{"\x1ba"}, true},
+		// Alt and a letter, and the Escape key followed by that letter, are the same two
+		// bytes in the same read - ssh and tmux deliver everything typed within a round
+		// trip together. Read as a chord, the letter is lost off the count.
+		{"alt and a letter arriving together is read as the letter", []string{"\x1ba"}, false},
+		// Except when the second byte is a control byte, where the chord is real and
+		// Option-Enter puts a newline in the box instead of submitting it.
+		{"alt and Enter arriving together do not submit", []string{"abc", "\x1b\r"}, false},
 		// `O` and `[` are ordinary characters as well as the second byte of an arrow key.
 		// Read as the sequence, these count nothing and free a line holding two letters.
 		{"escape, then a word beginning with O", []string{"\x1b", "O", "k"}, false},
@@ -104,6 +110,25 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		// An SS3 that ends on a control byte was never an SS3, and taking three bytes
 		// regardless swallows the Enter that was the third of them.
 		{"a half-read SS3 must not swallow the Enter after it", []string{"a\x1bO", "\r"}, true},
+
+		// Claude Code 2.1.278 reads a Return after a backslash as "keep typing": the
+		// backslash becomes a newline and everything already typed stays in the box.
+		// Measured against the running program. Read as a submit, it empties a count that
+		// is not empty and hands writes into the middle of someone's sentence.
+		{"a backslash and Return continue the line", []string{"please fix the auth bug in \\", "\r"}, false},
+		{"a backslash and Return arriving in one read", []string{"abc\\\r"}, false},
+		{"a line continued and then really submitted", []string{"abc\\", "\r", "def", "\r"}, true},
+		{"ctrl-c empties a continued line, because it empties anything", []string{"abc\\", "\r", "\x03"}, true},
+		{"ctrl-u empties a continued line too", []string{"abc\\", "\r", "\x15"}, true},
+		{"a backslash taken back before Return submits as usual", []string{"abc\\", "\x7f", "\r"}, true},
+		{"a backslash anywhere but the end does not continue anything", []string{"a\\bc", "\r"}, true},
+		{"a pasted line ending in a backslash continues too", []string{"\x1b[200~a\\\x1b[201~", "\r"}, false},
+		// More came out of the box than was being remembered, so what it ends with is not
+		// known, and a Return that might be a continuation is read as one.
+		{"a Return after more was taken back than was remembered holds the line",
+			[]string{strings.Repeat("a", 20), strings.Repeat("\x7f", 18), "\r"}, false},
+		{"and typing again makes the end of the line known", []string{
+			strings.Repeat("a", 20), strings.Repeat("\x7f", 18), "\r", "x", "\r"}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			line := newLineOwner()

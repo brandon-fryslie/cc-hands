@@ -13,17 +13,18 @@ import (
 // bytes: read as characters, "\x1b[<0;45;12M" is a mouse moving and ten keys pressed.
 // So the bytes are turned into presses once, here, and nothing downstream sees a byte.
 type press struct {
-	does  effect
-	count int // inserted and deleted: how many characters
+	does effect
+	text []byte // inserted: the characters that went in, borrowed until the fold reads them
 }
 
 type effect int
 
 const (
-	nothing  effect = iota // a report, or a key that moves the cursor rather than the text
-	inserted               // characters went into the box
-	deleted                // characters came out of it
-	emptied                // the box is empty now: the line was submitted or cancelled
+	nothing   effect = iota // a report, or a key that moves the cursor rather than the text
+	inserted                // characters went into the box
+	deleted                 // one character came out of it
+	submitted               // Return, which empties the box - unless what it follows says otherwise
+	cancelled               // Ctrl-C or Ctrl-U, which empty it whatever is in them
 )
 
 // The bytes that leave the box empty, and the ones that take a character out of it.
@@ -136,11 +137,17 @@ func (r *reader) read(chunk []byte) []press {
 			}
 			out = append(out, did)
 			scan = scan[n:]
-		case b == '\r' || b == '\n' || b == ctrlC || b == ctrlU:
-			out = append(out, press{does: emptied})
+		case b == '\r' || b == '\n':
+			// What a Return does to the box depends on what is in the box, which is not
+			// something the bytes on stdin can say `[LAW:one-source-of-truth]`. The press
+			// names the key and the box decides the effect.
+			out = append(out, press{does: submitted})
+			scan = scan[1:]
+		case b == ctrlC || b == ctrlU:
+			out = append(out, press{does: cancelled})
 			scan = scan[1:]
 		case b == del || b == backspace:
-			out = append(out, press{does: deleted, count: 1})
+			out = append(out, press{does: deleted})
 			scan = scan[1:]
 		case b < 0x20:
 			// Every other control byte is a chord that moves the cursor, the history or a
@@ -148,8 +155,8 @@ func (r *reader) read(chunk []byte) []press {
 			out = append(out, press{does: nothing})
 			scan = scan[1:]
 		default:
-			n, chars, whole := printable(scan)
-			out = append(out, press{does: inserted, count: chars})
+			n, whole := printable(scan)
+			out = append(out, press{does: inserted, text: scan[:n]})
 			if !whole {
 				// A read can end mid-character, and half a character is not one yet.
 				r.unfinished = partial{bytes: append([]byte(nil), scan[n:]...)}
@@ -167,27 +174,28 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 	if len(s) < 2 {
 		return 0, press{}, false
 	}
+	if settling {
+		// This ESC arrived in a read of its own. The bytes of one keypress are written by
+		// the terminal together, so nothing arriving in a later read belongs to it: it was
+		// the Escape key, and what follows is the next thing the user pressed.
+		//
+		// That holds for `[` and `O` too, which are the second byte of an arrow key and
+		// also two characters people type. The bytes cannot say which, so what is chosen
+		// here is the direction to be wrong in. Read as an arrow key, an Escape and a
+		// typed `Ok` leave the count at zero with two characters in the box, free reports
+		// the line clear, and hands writes over the user's words - nothing undoes that.
+		// Read as typing, an arrow key whose sequence really was split counts two
+		// characters that are not there and holds a line that is empty, which the user's
+		// next Enter clears and which hands can clear itself with a ctrl_u, because a key
+		// is never refused. One of those is recoverable.
+		return 1, press{}, true
+	}
 	switch next := s[1]; {
 	case next == esc:
 		// Two escapes running are not one sequence. Taking both would throw away the
 		// introducer of whatever the second one begins and leave its parameters to be
 		// read as typing - which is how a mouse report becomes ten keypresses. Take
 		// the first alone; the second starts again from here.
-		return 1, press{}, true
-	case settling:
-		// This ESC arrived in a read of its own. The bytes of one keypress are written by
-		// the terminal together, so nothing arriving in a later read belongs to it: it was
-		// the Escape key, and this byte is the next thing the user pressed.
-		//
-		// That holds for `[` and `O` too, which are the second byte of an arrow key and
-		// also two characters people type. The bytes cannot say which, so what is being
-		// chosen here is the direction to be wrong in. Read as an arrow key, an Escape
-		// and a typed `Ok` leave the count at zero with two characters in the box, free
-		// reports the line clear, and hands writes over the user's words - nothing undoes
-		// that. Read as typing, an arrow key whose sequence really was split counts two
-		// characters that are not there and holds a line that is empty, which the user's
-		// next Enter clears and which hands can clear itself with a ctrl_u, because a key
-		// is never refused. One of those is recoverable.
 		return 1, press{}, true
 	case next == '[':
 		return r.csi(s)
@@ -232,12 +240,21 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 			}
 		}
 		return unterminated(s)
-	default:
-		// ESC and one more byte, arriving together, is a meta chord - Alt and a key. It
-		// is a command rather than a character, except for the Option-Enter that puts a
-		// newline in the box; counting that as nothing leaves the line held, which is the
-		// safe direction, and the user's next Enter clears it.
+	case next < 0x20 || next == del:
+		// ESC and a control byte together is a meta chord, and Option-Enter is the one
+		// that matters: it puts a newline in the box instead of submitting. Reading its
+		// Return on its own would empty a count that is not empty and free a line still
+		// being written. Taking the pair as nothing leaves the line held, and the user's
+		// next real Enter clears it.
 		return 2, press{}, true
+	default:
+		// ESC and an ordinary character together: Alt and a letter, or the Escape key and
+		// the letter after it. One read is no proof of one keypress - over ssh or through
+		// tmux, everything typed within a round trip arrives together - so this is the
+		// same ambiguity as above and gets the same answer. A chord read as two keypresses
+		// holds a line that may be empty; two keypresses read as a chord lose a character
+		// off the count and free a line holding one.
+		return 1, press{}, true
 	}
 }
 
@@ -284,35 +301,34 @@ func (r *reader) csi(s []byte) (n int, did press, complete bool) {
 func (r *reader) inPaste(s []byte) (n int, did press, ended bool) {
 	if end := bytes.Index(s, pasteEnd); end >= 0 {
 		r.paste.on = false
-		return end + len(pasteEnd), press{does: inserted, count: utf8.RuneCount(s[:end])}, true
+		return end + len(pasteEnd), press{does: inserted, text: s[:end]}, true
 	}
 	// The end marker can straddle a read, so a tail that could be its beginning is held
 	// back rather than counted as text.
 	held := beginningOf(s, pasteEnd)
 	r.paste.tail = append([]byte(nil), s[len(s)-held:]...)
-	return len(s), press{does: inserted, count: utf8.RuneCount(s[:len(s)-held])}, false
+	return len(s), press{does: inserted, text: s[:len(s)-held]}, false
 }
 
 // printable measures the run of characters at the front of s, stopping at anything that
-// is not one. It reports the bytes consumed, the characters they spell, and whether the
-// run ended on a whole character.
-func printable(s []byte) (n, chars int, whole bool) {
+// is not one. It reports the bytes consumed and whether the run ended on a whole
+// character. What those bytes spell is the box's business, not this function's.
+func printable(s []byte) (n int, whole bool) {
 	for n < len(s) {
 		switch b := s[n]; {
 		case b < 0x20 || b == del:
-			return n, chars, true
+			return n, true
 		case b < utf8.RuneSelf:
 			n++
 		default:
 			if !utf8.FullRune(s[n:]) {
-				return n, chars, false
+				return n, false
 			}
 			_, size := utf8.DecodeRune(s[n:])
 			n += size
 		}
-		chars++
 	}
-	return n, chars, true
+	return n, true
 }
 
 // undecided reports whether the parser is holding bytes that could be characters the user

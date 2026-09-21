@@ -150,11 +150,24 @@ The owner then counts characters rather than raising a flag, because a text box 
 of characters. Backspacing back to an empty box hands the line back; a flag could never be
 told that, and a fact that can only ever become true is not a fact about the box.
 
-Enter, Ctrl-C and Ctrl-U empty the box; backspace takes one character out of it. Ctrl-W
-takes the last word, and how many characters that is depends on what the word was, so it
-is not counted: the line stays held until the user submits or cancels, or a `key` request
-clears it. That is the safe direction to be wrong in — a refused write is loud and
-recoverable, a write into a half-typed line is a garbled prompt nobody can attribute.
+Ctrl-C and Ctrl-U empty the box; backspace takes one character out of it. Ctrl-W takes the
+last word, and how many characters that is depends on what the word was, so it is not
+counted: the line stays held until the user submits or cancels, or a `key` request clears
+it. That is the safe direction to be wrong in — a refused write is loud and recoverable, a
+write into a half-typed line is a garbled prompt nobody can attribute.
+
+Enter usually empties the box, and the exception is the reason the owner keeps the end of
+the line rather than only a count. Claude Code reads a Return that follows a backslash as
+*keep typing*: the backslash becomes a newline and everything already typed stays where it
+is. That is how anyone writes a multi-line prompt by hand, so it is not a corner — and read
+as a submit it empties a count that is not empty and hands writes into the middle of
+somebody's sentence. Sixteen characters of the line's end are remembered, enough that
+taking a few back and then submitting is still answered from what is known rather than
+guessed at. Past that the end is unknown, and an unknown end holds the line.
+
+Where the cursor is, is not tracked, the same way Ctrl-W's word is not. Moving it and then
+pressing Return can leave a line held that was really sent, which the user's next Enter
+clears.
 
 Escape is left alone, which is not the compromise an earlier version of this file claimed
 it was: Claude Code 2.1.278 does not clear its input box on Escape. That was measured, not
@@ -212,6 +225,10 @@ statement in `main`. A guarantee that sometimes deadlocks is worse than one not 
 - Ctrl-C and Ctrl-U each empty the input box. Escape does not touch it. Ctrl-W takes the
   last word. Backspacing to empty hands the line back, and a `ctrl_u` sent while the user
   holds the line clears it and leaves the session running.
+- A Return pressed straight after a backslash does **not** submit. The backslash is
+  replaced by a newline and the prompt stays in the box, which is how a multi-line prompt
+  is written by hand. Measured by typing `please fix the auth bug in \` and pressing
+  Return: the box kept the words and grew a line.
 - A two-line prompt sent with the display asleep arrived as one message and was answered.
 - A pty in raw mode — which is what the child puts its side into — blocks a write at 1024
   bytes when nothing is reading. A cooked one takes 300 KB without blocking, which is why
