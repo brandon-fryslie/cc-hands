@@ -196,6 +196,24 @@ async def test_a_line_that_is_not_a_record_is_said_and_skipped_and_the_rest_of_t
     assert errors and "could not be read, so it is not told" in errors[0]
 
 
+async def test_a_record_whose_message_is_not_an_object_is_skipped_and_the_rest_of_its_reading_is_still_told(tmp_path: Path) -> None:
+    """Whole JSON can still be no record. It is refused where a line becomes a record, so that reading a turn out
+    of it cannot raise part-way through a record already half consumed — which stops the daemon on a transcript
+    launchd would then start it again to read."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, '{"type":"assistant","message":"oops"}', DONE))
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR", filter="hands")
+    try:
+        # The catch-up reads it too, and the loop it runs in is what a raise here would stop.
+        tails = await following(transcript)
+        telling = await tails.tell(SID, None)
+    finally:
+        logger.remove(sink)
+    assert telling is not None and telling.turn == Turn(Asked("first"), (Said(None, "Done."),))
+    assert errors and "should be an object" in errors[0]
+
+
 async def test_a_reading_picks_up_after_the_steps_already_told(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(PROMPT, DONE))

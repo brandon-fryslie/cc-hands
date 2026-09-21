@@ -48,7 +48,9 @@ RUNNERS: tuple[Runner, ...] = (
     Runner(
         name="go",
         # `--- FAIL: TestDivides (0.00s)`, then `FAIL\tsample\t0.005s`. `go test` counts nothing without -v.
-        mark=re.compile(r"(?m)^(?:--- FAIL: |ok\s+\S+\s|FAIL\s+\S+\s)"),
+        # A package line counts only with the time it took: `FAIL\tsample [build failed]` counted nothing because
+        # nothing ran, and a run that counted nothing must never be spoken as a run that nothing failed.
+        mark=re.compile(r"(?m)^(?:--- FAIL: |(?:ok|FAIL)\s+\S+\s+(?:\d+(?:\.\d+)?s|\(cached\))\s*$)"),
         passed=None,
         failed=None,
         failing=re.compile(r"(?m)^\s*--- FAIL: (\S+)"),
@@ -80,14 +82,20 @@ def report_of(output: str) -> Report | None:
     """
     text = _ANSI.sub("", output)
     for runner in RUNNERS:
-        if runner.mark.search(text) is None:
+        # [LAW:one-source-of-truth] a run is counted by the summaries its mark found and by nothing else in the
+        # scrollback: a workspace writes one summary per binary, and the line above them counts files, not tests.
+        summaries = tuple(line for line in text.splitlines() if runner.mark.search(line))
+        if not summaries:
             continue
         failing = tuple(match.group(1) for match in runner.failing.finditer(text))
-        counted = _count(runner.failed, text)
-        return Report(runner.name, _count(runner.passed, text), len(failing) if counted is None else counted, failing)
+        counted = _count(runner.failed, summaries)
+        return Report(runner.name, _count(runner.passed, summaries), len(failing) if counted is None else counted, failing)
     return None
 
 
-def _count(pattern: re.Pattern[str] | None, text: str) -> int | None:
-    match = None if pattern is None else pattern.search(text)
-    return None if match is None else int(match.group(1))
+def _count(pattern: re.Pattern[str] | None, summaries: tuple[str, ...]) -> int | None:
+    """What every summary line counted, added up; None where this runner's output never says that number."""
+    if pattern is None:
+        return None
+    found = [int(match.group(1)) for line in summaries if (match := pattern.search(line)) is not None]
+    return sum(found) if found else None

@@ -153,6 +153,39 @@ def test_a_run_that_only_passed_is_still_a_test_run_and_output_that_is_not_one_i
     assert report_of("hello, nothing here\n") is None
 
 
+def test_a_run_is_counted_by_its_own_summaries_and_not_by_a_number_printed_anywhere_above_them() -> None:
+    """A cargo workspace writes one summary per test binary, and vitest counts its files on the line above its tests."""
+    workspace = report_of(
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+        "---- tests::divides stdout ----\n"
+        "test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n"
+    )
+    assert workspace is not None and workspace.passed == 2 and workspace.failed == 2
+    files = report_of(" Test Files  1 failed | 1 passed (2)\n      Tests  3 failed | 5 passed (8)\n")
+    assert files is not None and files.passed == 5 and files.failed == 3
+
+
+def test_output_that_counted_nothing_because_nothing_ran_is_no_test_run() -> None:
+    """`go test` writes the same FAIL line for a package that never built, with the reason where the time goes.
+    Read as a run, it would be spoken as a suite where nothing failed, which is the opposite of what happened."""
+    assert report_of("./main.go:5:2: undefined: foo\nFAIL\tsample [build failed]\n") is None
+    # `ok` and a word is how another format entirely starts each line it writes.
+    assert report_of("ok 1 - adds\nnot ok 2 - divides\n") is None
+    passed = report_of("ok  \tsample\t0.005s\n")
+    assert passed is not None and passed.runner == "go" and passed.failed == 0
+
+
+def test_a_command_that_did_more_than_run_a_suite_is_told_as_the_command_it_was() -> None:
+    """`Tested` is its counts and nothing else, so a call whose counts are not the whole story stays a `Ran`."""
+    deployed = recognise(Call(None, "Bash", {"command": "pytest && ./deploy.sh"}, Result("2 passed in 0.1s\ndeploy.sh: not found", None, True)))
+    assert isinstance(deployed, Ran) and deployed.failed and "not found" in deployed.output
+    committing = Result("2 passed in 0.1s", {"gitOperation": {"commit": {"sha": "f0f9776"}}}, False)
+    committed = recognise(Call(None, "Bash", {"command": "git commit -am x"}, committing))
+    assert isinstance(committed, Ran) and committed.git == (Committed("f0f9776", "committed"),)
+    # A suite that really did fail is still a run: what the command said and what the runner counted agree.
+    assert recognise(Call(None, "Bash", {"command": "pytest"}, Result("1 failed, 2 passed in 0.1s", None, True))) == Tested(None, "pytest", 2, 1, ())
+
+
 def test_a_call_no_result_has_come_back_for_is_told_as_having_none() -> None:
     step = recognise(Call(None, "Bash", {"command": "sleep 60"}, None))
     assert step == Ran(None, "sleep 60", None, failed=False, output="(no result)", git=())

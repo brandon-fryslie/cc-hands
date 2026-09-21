@@ -50,6 +50,9 @@ def turn_record(line: bytes) -> Payload | None:
     if fields.get("type") not in ("user", "assistant") or fields.get("isSidechain") is True:
         # A subagent's own records are its transcript's, and are narrated there.
         return None
+    # [LAW:parse-dont-validate] the message is shaped here, at the one place a line becomes a record, so that
+    # reading a turn out of it cannot raise halfway through a record its reader has already begun to consume.
+    message(record)
     return record
 
 

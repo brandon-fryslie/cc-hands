@@ -26,10 +26,10 @@ from hands.core.turn import (
 ROOMY = Budget(opening=10_000, said=10_000, input=10_000, result=10_000, steps=100)
 
 
-def rendered(*steps: object) -> str:
+def rendered(*steps: object, budget: Budget = ROOMY) -> str:
     """Everything after the opening, which every case below shares."""
     turn = Turn(Asked("fix the test"), tuple(steps))  # pyright: ignore[reportArgumentType]
-    return render(turn, ROOMY).removeprefix("The user asked:\nfix the test\n\n")
+    return render(turn, budget).removeprefix("The user asked:\nfix the test\n\n")
 
 
 def test_a_notification_is_rendered_as_what_reported_rather_than_as_something_the_user_asked() -> None:
@@ -81,6 +81,15 @@ def test_a_question_reads_as_asked_with_what_was_offered_and_what_was_chosen() -
     assert rendered(Questioned(None, (answered, unanswered))) == (
         "Claude asked the user: Which one?\nOptions: This, That\nThe user chose: That\n"
         "Claude asked the user: And this?\nUnanswered."
+    )
+
+
+def test_a_suite_that_failed_whole_has_its_names_cut_to_budget_like_every_other_part() -> None:
+    """Hundreds of failing names is exactly what a bad refactor prints, and exactly when one step could fill
+    the whole prompt of a model asked for two sentences."""
+    failing = tuple(f"test_{n}" for n in range(200))
+    assert rendered(Tested(None, "pytest", 0, 200, failing), budget=Budget(opening=100, said=100, input=100, result=30, steps=10)) == (
+        "Claude ran the pytest tests: 200 failed, 0 passed\n  test_0\n  test_1\n  test_2\n  test_3\n  te" + CUT
     )
 
 

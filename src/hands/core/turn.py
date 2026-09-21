@@ -212,7 +212,8 @@ def _step(step: Step, budget: Budget) -> str:
             return f"{ran}{'' if purpose is None else f' ({purpose})'}\n{'Output (exit code not zero)' if failed else 'Output'}: {_cut(output, budget.result)}{did}"
         case Tested(runner=runner, passed=passed, failed=failed, failing=failing):
             counted = f"{failed} failed" + ("" if passed is None else f", {passed} passed")
-            named = "".join(f"\n  {name}" for name in failing)
+            # A suite that fails whole names hundreds of tests, so the names are one more part cut to its budget.
+            named = "".join(f"\n  {line}" for line in _cut("\n".join(failing), budget.result).splitlines())
             return f"Claude ran the {runner} tests: {counted}{named}"
         case Looked(tool=tool, target=target, found=found):
             return f"Claude used {tool} on {_cut(target, budget.input)}\nFound: {_cut(found, budget.result)}"

@@ -68,12 +68,15 @@ def _ran(call: Call) -> Step | None:
     if command is None:
         return None
     printed = _printed(call.result)
-    report = report_of(printed)
-    if report is not None:
-        # A test run's result is its counts and its failing names; its scrollback is the least of it.
-        return Tested(call.ref, report.runner, report.passed, report.failed, report.failing)
     failed = call.result is not None and call.result.failed
-    return Ran(call.ref, command, _text(call.input.get("description")), failed, printed, _git(call.result))
+    git = _git(call.result)
+    report = report_of(printed)
+    # A test run's result is its counts and its failing names; its scrollback is the least of it. It is claimed
+    # only where those counts are the whole story: a command that failed while nothing is counted failing, or one
+    # that changed the repository on its way, did more than run a suite, and only its own output says what.
+    if report is not None and not git and not (failed and report.failed == 0):
+        return Tested(call.ref, report.runner, report.passed, report.failed, report.failing)
+    return Ran(call.ref, command, _text(call.input.get("description")), failed, printed, git)
 
 
 def _edited(call: Call) -> Step | None:
