@@ -16,8 +16,9 @@ Instant = float  # monotonic seconds
 
 # Prompt text that holds no control characters, so typing it into a session
 # cannot press a key the text does not name. Made only where the model's words are parsed.
-# A newline and a tab are not control characters here: they are text a paste carries,
-# and it is the carriage return that would submit a half-written message.
+# A newline is not a control character here: bracketing carries it into the message, and it
+# is the carriage return that would submit a half-written one. A tab is, because nothing
+# carries a tab - it is in the Keystroke vocabulary below and is sent by name.
 PromptText = NewType("PromptText", str)
 
 # The named chords a session can be sent, as distinct from text. Which bytes each one is

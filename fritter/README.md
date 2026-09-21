@@ -129,7 +129,7 @@ work, and it fails silently. A terminal in raw mode also carries its answers to 
 child's own questions: Claude Code turns on focus reporting and mouse reporting, so
 `ESC [ O` arrives every time you tab away and mouse reports arrive as you move the
 pointer. None of them holds an Enter, and all of them are full of printable bytes — read
-as characters, `ESC [ <0;45;12M` is a pointer moving and twelve keys pressed. Tab away
+as characters, `ESC [ <0;45;12M` is a pointer moving and ten keys pressed. Tab away
 once and every send afterwards is refused into an empty box, for as long as the session
 lives.
 

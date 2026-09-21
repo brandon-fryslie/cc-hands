@@ -185,20 +185,14 @@ func (w *Wrapped) typeText(asked request) response {
 	if !bracketed && strings.Contains(asked.Text, "\n") {
 		return response{OK: false, Reason: "this session has not turned bracketed paste on, so the newlines in this text would submit it as several separate prompts"}
 	}
-	if landed, err := w.send(encoded); err != nil {
-		// [LAW:no-silent-failure] A write that failed partway left bytes in the input box,
-		// and "nothing was typed" would send a caller to retype a message half of which
-		// is already there.
-		if landed > 0 {
-			return response{OK: false, Reason: fmt.Sprintf("%d of %d bytes reached the input box before the write failed, so what is there is a fragment; clear the line before sending anything else: %v", landed, len(encoded), err)}
-		}
-		return response{OK: false, Reason: fmt.Sprintf("nothing was typed: %v", err)}
+	if wrong, bad := w.send(encoded).wrong(); bad {
+		return response{OK: false, Reason: wrong}
 	}
 	if asked.Submit {
-		if _, err := w.send(keystrokes["enter"]); err != nil {
+		if wrong, bad := w.send(keystrokes["enter"]).wrong(); bad {
 			// A submit is two writes, and the caller has to be able to tell which one
 			// failed: retyping text that is already sitting in the box doubles it.
-			return response{OK: false, Reason: fmt.Sprintf("the text was typed and is sitting unsent in the input box, but Enter did not land, so do not send it again: %v", err)}
+			return response{OK: false, Reason: fmt.Sprintf("the text was typed and is sitting unsent in the input box, but Enter did not land, so do not send it again: %s", wrong)}
 		}
 	}
 	return response{OK: true}
@@ -228,24 +222,65 @@ func (w *Wrapped) pressKey(asked request) response {
 	if !known {
 		return response{OK: false, Reason: fmt.Sprintf("no key named %q", asked.Key)}
 	}
-	landed, err := w.send(chord)
-	if err != nil {
-		return response{OK: false, Reason: err.Error()}
+	if wrong, bad := w.send(chord).wrong(); bad {
+		// Recorded only for a chord that went out whole: half of one is not a chord the
+		// child acted on, and crediting it would free a line that is still held.
+		return response{OK: false, Reason: wrong}
 	}
-	// Recorded only for what actually went out: a chord half-written is not a chord the
-	// child acted on, and crediting it would free a line that is still held.
-	w.line.sent(chord[:landed])
+	w.line.sent(chord)
 	return response{OK: true}
 }
 
-// send writes to the child and reports how much of it landed.
+// landing is how a write into the session ended.
+type landing int
+
+const (
+	arrived    landing = iota // every byte reached the input box
+	partway                   // the write came back with an error, so how much landed is known
+	unknowable                // the write never came back, so how much landed cannot be known
+)
+
+// delivery is what became of one write into the session.
+//
+// [LAW:types-are-the-program] A count and an error cannot say "unknown", and a write that
+// had to be given up on is exactly that: the bytes sit in a queue the child has not read,
+// and nothing on this side can see how far down they went. Forced into a count it comes
+// out zero, and zero is rendered "nothing was typed" - the one thing that must never be
+// said about a message half of which is already in front of the user.
+type delivery struct {
+	how    landing
+	landed int   // how many bytes are known to have reached the box
+	of     int   // how many were asked for
+	why    error // nil only when how is arrived
+}
+
+// wrong says what to tell the caller about a write, and reports false when there is
+// nothing to tell because it landed.
+//
+// [LAW:one-source-of-truth] Every refusal about a write is worded here, so a text request
+// and a key request cannot describe the same outcome in two different ways, and no caller
+// can reach for "nothing was typed" over an outcome that does not know.
+func (d delivery) wrong() (string, bool) {
+	switch d.how {
+	case arrived:
+		return "", false
+	case partway:
+		// [LAW:no-silent-failure] A write that failed after some bytes left them in the
+		// input box, and "nothing was typed" would send a caller to retype a message half
+		// of which is already there.
+		if d.landed == 0 {
+			return fmt.Sprintf("nothing was typed: %v", d.why), true
+		}
+		return fmt.Sprintf("%d of %d bytes reached the input box before the write failed, so what is there is a fragment; clear the line before sending anything else: %v", d.landed, d.of, d.why), true
+	default:
+		return d.why.Error(), true
+	}
+}
+
+// send writes to the child and reports what became of it.
 //
 // It does not touch the line owner: these bytes are not the user's, and counting them as
 // typing would make fritter refuse its own next write.
-//
-// [LAW:types-are-the-program] The result of a write is a count and an error, not an
-// error. Discarding the count is what lets a caller be told nothing was typed while a
-// kilobyte of its message sits in the input box.
 //
 // The write runs on a goroutine because a pty write has no deadline to set: a pty master
 // is not a file the runtime can poll, so SetWriteDeadline answers "file type does not
@@ -253,9 +288,9 @@ func (w *Wrapped) pressKey(asked request) response {
 // not cancelled - it cannot be - so while one is outstanding nothing else may write, or
 // two half-written messages interleave into one nobody can attribute. It clears itself
 // the moment the child starts reading again.
-func (w *Wrapped) send(keys []byte) (int, error) {
+func (w *Wrapped) send(keys []byte) delivery {
 	if w.stuck.Load() {
-		return 0, fmt.Errorf("an earlier write to this session has not finished, so the child is not reading its input; nothing was typed")
+		return delivery{how: partway, of: len(keys), why: errors.New("an earlier write to this session has not finished, so the child is not reading its input")}
 	}
 	type written struct {
 		n   int
@@ -271,11 +306,11 @@ func (w *Wrapped) send(keys []byte) (int, error) {
 	select {
 	case landed := <-done:
 		if landed.err != nil {
-			return landed.n, fmt.Errorf("cannot write to the session: %w", landed.err)
+			return delivery{how: partway, landed: landed.n, of: len(keys), why: fmt.Errorf("cannot write to the session: %w", landed.err)}
 		}
-		return landed.n, nil
+		return delivery{how: arrived, landed: landed.n, of: len(keys)}
 	case <-time.After(writeGrace):
-		return 0, fmt.Errorf("the session did not take this within %s, so it is not reading its input; how much of it landed is not known", writeGrace)
+		return delivery{how: unknowable, of: len(keys), why: fmt.Errorf("the session did not take this within %s, so it is not reading its input; how much of it landed is not known", writeGrace)}
 	}
 }
 

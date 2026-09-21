@@ -84,6 +84,14 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"typed, escape, then backspaced back to empty", []string{"ab", "\x1b", "\x7f\x7f"}, true},
 		{"an answer longer than any key holds the line rather than freeing it", []string{"\x1b]" + strings.Repeat("A", 4095), "BBB\x07"}, false},
 		{"a terminal answer split across reads is still not typing", []string{"\x1b]11;rgb:1b1b/", "1b1b/1b1b\x07"}, true},
+		{"a terminal answer split at its terminator is still not typing", []string{"\x1b]11;rgb:1b1b/1b1b/1b1b\x1b", "\\"}, true},
+
+		// An ESC that arrived alone was the Escape key, so the next read is a new keypress
+		// rather than the rest of a chord. Fusing them swallows the character silently: the
+		// count stays at zero and the line reads free while the user's word sits in the box.
+		{"escape, then a character typed", []string{"\x1b", "a"}, false},
+		{"escape, then two typed and one taken back", []string{"\x1b", "ab", "\x7f"}, false},
+		{"alt and a key arrive together and are a chord", []string{"\x1ba"}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			line := newLineOwner()
@@ -139,6 +147,25 @@ func TestAKeyThatEmptiesTheBoxSettlesTheLineEvenMidSequence(t *testing.T) {
 	line.sent(keystrokes["ctrl_u"])
 	if !line.free() {
 		t.Fatal("the box was emptied and the line is still held; nothing can recover it")
+	}
+}
+
+func TestAKeyDoesNotTakeThePasteItDidNotEnd(t *testing.T) {
+	// Emptying the box settles what the parser was in the middle of reading, because those
+	// bytes are not in the box any more. It settles nothing about a paste the user is still
+	// making at their own keyboard: the terminal is going to send the rest of it either
+	// way, and read outside its brackets the newlines in it are Enter presses. Each one
+	// would empty a count that is not empty, and the line would read free with the tail of
+	// someone's paste sitting in the box.
+	line := newLineOwner()
+	line.typed([]byte("\x1b[200~line one"))
+	if line.free() {
+		t.Fatal("a paste in progress is characters in the box")
+	}
+	line.sent(keystrokes["ctrl_u"])
+	line.typed([]byte("\nline two\n\x1b[201~"))
+	if line.free() {
+		t.Fatal("the rest of the paste was read as typing and its newlines freed the line")
 	}
 }
 
@@ -543,6 +570,12 @@ func TestASessionThatIsNotReadingItsInputIsSaidSoRatherThanWaitedOn(t *testing.T
 	}
 	if !strings.Contains(stuck.Reason, "not reading its input") {
 		t.Fatalf("the reason must say the session is not reading, got %q", stuck.Reason)
+	}
+	// The write went into a kilobyte-deep queue before it blocked, so part of the message
+	// is in front of the user. "Nothing was typed" reads as "send it again", which doubles
+	// the half that is already there.
+	if strings.Contains(stuck.Reason, "nothing was typed") {
+		t.Fatalf("a write that may have landed partly was reported as landing not at all: %q", stuck.Reason)
 	}
 
 	// The write is still out there and cannot be taken back, so the next request is

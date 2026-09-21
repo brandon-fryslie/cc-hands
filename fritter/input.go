@@ -66,9 +66,22 @@ const sequenceLimit = 64
 // end in the middle of an escape sequence, and a paste the user made at their own
 // keyboard can run across many of them.
 type reader struct {
-	pending []byte // an unfinished sequence, waiting for the rest of itself
-	alone   bool   // the pending bytes are an ESC that arrived with nothing after it
-	pasting bool   // inside a paste the user began at their own keyboard
+	unfinished partial // a sequence that has not finished arriving
+	pasting    bool    // inside a paste the user began at their own keyboard
+}
+
+// partial is a sequence a read ended in the middle of.
+//
+// [LAW:types-are-the-program] It is a value of its own because emptying the input box
+// invalidates exactly this much and no more. Those bytes are not in the box any longer,
+// whatever they were going to turn out to be - but a paste the user is still making at
+// their own keyboard is not over, and the terminal will send the rest of it either way.
+// Flat in the reader, "forget the sequence" and "forget the paste" are one assignment,
+// and the second of them is wrong: outside its brackets the rest of a paste is read as
+// typing and the newlines in it empty a count that is not empty.
+type partial struct {
+	bytes []byte // what has arrived of it
+	alone bool   // it is a single ESC, which arrived with nothing after it
 }
 
 // read measures one slice of stdin.
@@ -79,11 +92,10 @@ func (r *reader) read(chunk []byte) []press {
 	// follows in this read belongs to a new keypress. That is the only evidence there is
 	// for telling an Escape the user pressed from the ESC of a sequence a read happened
 	// to cut in half, and settling says which sequence gets to use it.
-	settling := r.alone
-	if len(r.pending) > 0 {
-		scan = append(append([]byte(nil), r.pending...), chunk...)
-		r.pending = nil
-		r.alone = false
+	settling := r.unfinished.alone
+	if len(r.unfinished.bytes) > 0 {
+		scan = append(append([]byte(nil), r.unfinished.bytes...), chunk...)
+		r.unfinished = partial{}
 	}
 
 	var out []press
@@ -105,8 +117,7 @@ func (r *reader) read(chunk []byte) []press {
 				// The rest of it has not arrived. It is held rather than guessed at, and
 				// undecided below is what the line owner reads while it waits - these
 				// bytes may yet turn out to be the user's.
-				r.pending = append([]byte(nil), scan...)
-				r.alone = len(scan) == 1
+				r.unfinished = partial{bytes: append([]byte(nil), scan...), alone: len(scan) == 1}
 				return out
 			}
 			out = append(out, did)
@@ -127,7 +138,7 @@ func (r *reader) read(chunk []byte) []press {
 			out = append(out, press{does: inserted, count: chars})
 			if !whole {
 				// A read can end mid-character, and half a character is not one yet.
-				r.pending = append([]byte(nil), scan[n:]...)
+				r.unfinished = partial{bytes: append([]byte(nil), scan[n:]...)}
 				return out
 			}
 			scan = scan[n:]
@@ -170,8 +181,19 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 			if s[i] == 0x07 {
 				return i + 1, press{}, true
 			}
-			if s[i] == esc && i+1 < len(s) && s[i+1] == '\\' {
-				return i + 2, press{}, true
+			if s[i] == esc {
+				// The ESC of the ST terminator, decided before the control-byte rule
+				// below can mistake it for one. A DCS reply is always ST-terminated -
+				// BEL is not legal for it - so reading the ESC as proof the sequence
+				// never was one would read every answer to XTGETTCAP as typing.
+				if i+1 >= len(s) {
+					// ST cut in half by the end of the read. The rest is coming.
+					return unterminated(s)
+				}
+				if s[i+1] == '\\' {
+					return i + 2, press{}, true
+				}
+				return 1, press{}, true
 			}
 			// A terminal's answer is a printable payload. A control byte inside one says
 			// this was never a sequence, and waiting for a terminator that is not coming
@@ -181,6 +203,16 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 			}
 		}
 		return unterminated(s)
+	case settling:
+		// The ESC came in a read of its own, so it was the Escape key, and this byte is
+		// the next thing the user pressed rather than the other half of a chord. Taking
+		// both would drop the character silently: the count stays where it was and the
+		// line reads free with their word in the box.
+		//
+		// Only here. A split arrow key really does arrive as ESC then "[A", so the cases
+		// above keep reading across the join; what separates them is that no sequence
+		// begins with an ordinary character.
+		return 1, press{}, true
 	default:
 		// ESC and one more byte, arriving together, is a meta chord - Alt and a key. It
 		// is a command rather than a character, except for the Option-Enter that puts a
@@ -238,7 +270,7 @@ func (r *reader) inPaste(s []byte) (n int, did press, ended bool) {
 	// The end marker can straddle a read, so a tail that could be its beginning is held
 	// back rather than counted as text.
 	held := beginningOf(s, pasteEnd)
-	r.pending = append([]byte(nil), s[len(s)-held:]...)
+	r.unfinished = partial{bytes: append([]byte(nil), s[len(s)-held:]...)}
 	return len(s), press{does: inserted, count: utf8.RuneCount(s[:len(s)-held])}, false
 }
 
@@ -276,7 +308,7 @@ func printable(s []byte) (n, chars int, whole bool) {
 // [LAW:no-silent-failure] An ambiguity the bytes cannot settle is reported as one rather
 // than guessed at. It settles itself on the next read, or at sequenceLimit.
 func (r *reader) undecided() bool {
-	return len(r.pending) > 1
+	return len(r.unfinished.bytes) > 1
 }
 
 // beginningOf reports how many bytes at the end of s could be the start of marker.

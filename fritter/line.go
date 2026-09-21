@@ -56,11 +56,15 @@ func (l *lineOwner) sent(keys []byte) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.fold(chord.read(keys)) {
-		// The box is empty, so whatever the stdin parser was still holding is not in it.
-		// Kept, those bytes would be read as typing later, and worse, a scan still looking
-		// for a terminator would swallow the next Enter along with everything else - so
-		// the request sent to free the line would be the reason it stayed held.
-		l.stdin = reader{}
+		// The box is empty, so a sequence the stdin parser had not finished reading is not
+		// in it. Kept, those bytes would be read as typing later, and worse, a scan still
+		// looking for a terminator would swallow the next Enter along with everything else
+		// - so the request sent to free the line would be the reason it stayed held.
+		//
+		// The sequence only. A paste the user is still making at their own keyboard did
+		// not end because the box was emptied, and read outside its brackets the rest of
+		// it is typing whose newlines empty a count that is not empty.
+		l.stdin.unfinished = partial{}
 	}
 }
 

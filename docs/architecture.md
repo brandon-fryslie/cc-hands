@@ -235,7 +235,7 @@ adapter that fails raises; the supervisor logs it and the failure is spoken thro
 the system channel. Nothing is retried silently and nothing falls back
 `[LAW:no-silent-failure]`.
 
-That block is the design, not the code. `core/effects.py` has six of those ten today -
+That block is the design, not the code. `core/effects.py` has five of those ten today -
 `Audit`, `Reply`, `Speak`, `Narrate`, `Summarise` - plus `SessionGone`, which the block
 above leaves out. `Type`, `Note`, `Play`, `Snapshot` and `Launch` are declared and unbuilt,
 and their adapters are named here in a tense the code has not earned yet. `Type` is the
