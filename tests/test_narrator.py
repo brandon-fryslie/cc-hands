@@ -40,7 +40,7 @@ async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_d
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0))
-        await sessions.apply(Stopped(SID))
+        await sessions.apply(Stopped(SID, None))
         spoken = await asyncio.wait_for(frames.get(), 5.0)
     finally:
         narrating.cancel()
@@ -67,7 +67,7 @@ async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_aft
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0))
-        await sessions.apply(Stopped(SID))
+        await sessions.apply(Stopped(SID, None))
         # `claude -p` exits the moment its turn stops, so the end lands while the model is still summarising.
         await sessions.apply(Ended(SID, "other"))
         with pytest.raises(asyncio.TimeoutError):
@@ -82,6 +82,44 @@ async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_aft
     ]
 
 
+async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells_only_what_is_new(tmp_path: Path) -> None:
+    transcript = tmp_path / "s1.jsonl"
+    prompt = '{"type":"user","uuid":"u1","message":{"role":"user","content":"fix it"}}'
+    looked = '{"type":"assistant","uuid":"u2","message":{"content":[{"type":"text","text":"Looked."}]}}'
+    call = '{"type":"assistant","uuid":"u3","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest"}}]}}'
+    result = '{"type":"user","uuid":"u4","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"1 passed"}]}}'
+    fixed = '{"type":"assistant","uuid":"u5","message":{"content":[{"type":"text","text":"Fixed."}]}}'
+    transcript.write_text(f"{prompt}\n{looked}\n")
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    shown: list[str] = []
+
+    async def summarise(turn: str) -> str:
+        shown.append(turn)
+        return f"summary {len(shown)}"
+
+    frames: asyncio.Queue[Frame] = asyncio.Queue()
+    narrating = asyncio.create_task(narrate(sessions, summarise, frames.put, lambda _: None, BUDGET))
+    try:
+        await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
+        await sessions.apply(Prompted(SID, at=1.0))
+        await sessions.apply(Stopped(SID, "Looked."))
+        await asyncio.wait_for(frames.get(), 5.0)
+        with transcript.open("a") as more:
+            more.write(f"{call}\n{result}\n{fixed}\n")
+        await sessions.apply(Stopped(SID, "Fixed."))
+        await asyncio.wait_for(frames.get(), 5.0)
+        # A third Stop with nothing written since is not a turn to tell.
+        await sessions.apply(Stopped(SID, "Fixed."))
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(frames.get(), 0.2)
+    finally:
+        narrating.cancel()
+    assert shown == [
+        "The user asked:\nfix it\n\nClaude said:\nLooked.",
+        "The user asked:\nfix it\n\nClaude used Bash: pytest\nResult: 1 passed\n\nClaude said:\nFixed.",
+    ]
+
+
 async def test_a_turn_that_cannot_be_summarised_is_said_to_have_failed_and_logged(tmp_path: Path) -> None:
     recorded: list[Entry] = []
 
@@ -89,7 +127,7 @@ async def test_a_turn_that_cannot_be_summarised_is_said_to_have_failed_and_logge
     unreachable = summariser(OpenAICompatibleBackend(base_url="http://127.0.0.1:9/v1", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
-        spoken = await recount(Summarise(SID, FIXTURE), "cc-hands", unreachable, recorded.append, BUDGET)
+        spoken, _ = await recount(Summarise(SID, FIXTURE, None), None, "cc-hands", unreachable, recorded.append, BUDGET)
     finally:
         logger.remove(sink)
     assert isinstance(spoken, TTSSpeakFrame)
@@ -103,7 +141,7 @@ async def test_a_missing_transcript_is_said_to_have_failed_too(tmp_path: Path) -
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    spoken = await recount(Summarise(SID, tmp_path / "gone.jsonl"), "cc-hands", never, lambda _: None, BUDGET)
+    spoken, _ = await recount(Summarise(SID, tmp_path / "gone.jsonl", None), None, "cc-hands", never, lambda _: None, BUDGET)
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands finished a turn, and I could not summarise it."
 
 
@@ -114,7 +152,7 @@ async def test_a_session_that_stops_before_any_prompt_says_nothing(tmp_path: Pat
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    assert await recount(Summarise(SID, transcript), "cc-hands", never, lambda _: None, BUDGET) is None
+    assert await recount(Summarise(SID, transcript, None), None, "cc-hands", never, lambda _: None, BUDGET) == (None, None)
 
 
 async def openai_server(content: str | None) -> tuple[web.AppRunner, str, list[dict[str, object]]]:

@@ -38,7 +38,10 @@ writes the session file at `SessionStart`.
 Need 4, and the precomputing half of need 7. How Claude's results reach the ear.
 Nothing here reads text verbatim, and tool calls are content, not noise to filter.
 The first eight tickets are the first working version; progress while working and
-subagent narration follow it.
+subagent narration follow it. A first slice of them runs today: each turn a session
+finishes is summarised in one to three sentences and spoken with the session's name,
+and a session's end is spoken after its last turn. The notes on the items below say
+what each has and what remains.
 
 - **Transcript tail and step recognisers.** While a session is registered, the
   adapter follows its JSONL from the watermark, and one table of recognisers turns
@@ -47,7 +50,10 @@ subagent narration follow it.
   searches, git operations, todo and task updates, `Agent` dispatches with their
   reports, and `AskUserQuestion`. An unrecognised tool is named and summarised,
   never dropped. Done by fixture tests on real JSONL slices, and by a measurement
-  of the lag from a record's `timestamp` to its `Step`.
+  of the lag from a record's `timestamp` to its `Step`. Built: at `Stop`, `read_turn`
+  reads the newest turn from the whole transcript into two step kinds, text and tool
+  calls matched to their results, skipping subagent records. Remaining: the tail from
+  the watermark, the recogniser table and its typed steps, and the lag measurement.
 - **The turn's git delta.** At `UserPromptSubmit` the daemon records the target's
   git baseline without touching the working tree; at `Stop` it computes the files
   changed, the commits made, new untracked files, and the diff. Changes made by any
@@ -70,12 +76,18 @@ subagent narration follow it.
   sentence and is expected to change as soon as it is heard. Done by an eval
   script over real turn fixtures that checks the steps' facts are present, no
   identifier or code is spoken, and the length holds, and by first audio after
-  `Stop` measured on inferno.
+  `Stop` measured on inferno. Built: a stateless summary of each finished turn, one to
+  three sentences, spoken with the session's name, with a spoken sentence when it
+  fails; first audio came 1.36 s after `Stop` on inferno. Remaining: the tree of
+  segments, step summaries built as steps arrive, the git delta, the length as a config
+  number, and the eval script.
 - **Question detection.** Questions in the final text, and choices Claude offered,
   become question segments that play at every length, ahead of the sections; a
   turn that ends on one makes the idle nudge say the session has a question. Done
   by fixtures of real turns that do and do not end on a question, with the eval
-  reporting misses and false alarms.
+  reporting misses and false alarms. Built: the summary instruction ends a turn's
+  summary on the question it asked. Remaining: question segments, the idle nudge, and
+  the fixtures and eval.
 - **The intermediary's prompt.** The conversational model's own deliverable,
   separate from the summariser's: titles for sessions and no ids aloud, replies in
   spoken form, "speak what changed" for readbacks, calling `expand`, `resume`,

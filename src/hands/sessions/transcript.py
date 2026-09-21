@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -38,8 +39,19 @@ def ai_title(transcript: Path) -> str | None:
 _TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"')
 
 
-def read_turn(transcript: Path) -> Turn | None:
-    """The newest turn: what last opened one, and everything Claude said and used after it. None before anything has."""
+@dataclass(frozen=True)
+class Reading:
+    """The newest turn's untold part, and the record it was read through, which is where the next reading of the same turn picks up."""
+
+    turn: Turn
+    through: str | None
+
+
+def read_turn(transcript: Path, told: str | None, closing: str | None) -> Reading | None:
+    """What last opened a turn, and what Claude said and used after it and after the record `told`. None before anything has.
+
+    `closing` is the reply the Stop hook says the turn closed with; it ends the steps when the transcript does not yet hold it.
+    """
     *complete, _unfinished = transcript.read_bytes().split(b"\n")
     records = [Payload.parse(line) for line in complete if any(marker in line for marker in _TURN_RECORDS)]
     turn = [record for record in records if record.fields.get("type") in ("user", "assistant") and record.fields.get("isSidechain") is not True]
@@ -47,7 +59,27 @@ def read_turn(transcript: Path) -> Turn | None:
     if not openings:
         return None
     start, opening = openings[-1]
-    return Turn(opening=opening, steps=tuple(_steps(turn[start + 1 :])))
+    # A Stop another hook blocked lets the same turn go on to a later Stop; what the first one told is not told again.
+    told_at = next((index for index, record in enumerate(turn) if index > start and told is not None and record.fields.get("uuid") == told), start)
+    steps = _steps(turn[told_at + 1 :])
+    # [LAW:no-ambient-temporal-coupling] Claude Code writes the transcript on its own schedule, so the hook's copy of the
+    # closing reply stands in for a last record not yet written.
+    if closing is not None and closing.strip() and closing.strip() != _last_said(turn[start + 1 :]):
+        steps.append(Said(closing))
+    last = turn[-1].fields.get("uuid") if len(turn) > start + 1 else None
+    return Reading(Turn(opening=opening, steps=tuple(steps)), last if isinstance(last, str) else told)
+
+
+def _last_said(records: list[Payload]) -> str | None:
+    for record in reversed(records):
+        if record.fields.get("type") == "assistant":
+            for block in reversed(_blocks(record)):
+                match block:
+                    case {"type": "text", "text": str() as text} if text.strip():
+                        return text.strip()
+                    case _:
+                        pass
+    return None
 
 
 def _opening(record: Payload, previous: Payload | None) -> Opening | None:
@@ -63,8 +95,8 @@ def _opening(record: Payload, previous: Payload | None) -> Opening | None:
     match _message(record).get("content"):
         case str() as text:
             pass
-        case list() if blocks and all(block.get("type") in ("text", "image") for block in blocks):
-            # A prompt with an image attached, or one sent through the SDK.
+        case list() if blocks and not any(block.get("type") == "tool_result" for block in blocks):
+            # A prompt with an image or a document attached, or one sent through the SDK.
             text = _result_text(blocks)
         case _:
             return None
@@ -140,6 +172,8 @@ def _result_text(content: object) -> str:
                         parts.append(text)
                     case {"type": "image"}:
                         parts.append("[an image]")
+                    case {"type": "document"}:
+                        parts.append("[a document]")
                     case _:
                         parts.append(json.dumps(block, ensure_ascii=False))
             return "\n".join(parts)

@@ -67,8 +67,8 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _ended_unheard(registry, membership, [])
         case Prompted(at=at):
             return _enter(registry, event, lambda _: Working(since=at))
-        case Stopped(session=session):
-            return _enter(registry, event, lambda _: Idle(), lambda membership: [Summarise(session, membership.transcript)])
+        case Stopped(session=session, closing=closing):
+            return _enter(registry, event, lambda _: Idle(), lambda membership: [Summarise(session, membership.transcript, closing)])
         case PermissionRequested(at=at, request=request, permission=permission):
             deadline = at + registry.permission_deadline
             return _enter(registry, event, lambda _: Blocked(on=permission, request=request, deadline=deadline, warned=False))

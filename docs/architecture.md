@@ -190,6 +190,13 @@ Draft = NoDraft | Staged
 class Staged:   text: str; resolutions: Sequence[Resolution]
 ```
 
+The block above is the target. `hands.core.effects` defines less today:
+`Effect = Audit | Reply | Heard | Story`, where `Heard = Speak | Narrate` carries
+permission announcements and requests and `Story = Summarise | SessionGone` carries
+finished turns and sessions gone. Today's `Summarise` holds a session and its
+transcript path, not a narration id and steps. `Type`, `Note`, `Play`, `Snapshot`, and
+`Launch`, and the segment, narration, and playback types, are planned.
+
 Two things are deliberately absent. There is no `Session.last_seen` timestamp,
 because silence measures nothing; liveness is the pid. And there is no queue of unsent
 inputs, because Claude Code has its own input queue and the daemon must not keep a
@@ -207,7 +214,9 @@ playback reports from the output transport, and liveness reports. The reducer is
 pure function `[LAW:effects-at-boundaries]`: it never reads a file, checks a process,
 or looks at a clock. When it needs the time it has already been handed one in a
 `Tick`. When it needs a summary it emits `Summarise` and receives the segments back as
-an event.
+an event. Today nothing comes back: `Summarise` is emitted for a live session's `Stop`,
+and the narrator reads, summarises, and speaks the turn without returning to the
+reducer.
 
 The adapters live in `sessions` and `voice` and each performs one effect kind: `Type`
 becomes synthetic keystrokes from the planned virtual keyboard, `Reply` writes to the
@@ -233,6 +242,7 @@ Each timing fact has one owner.
 | When a user turn starts and ends | the gate, through the key position |
 | Which utterance plays next, and that two never overlap | Pipecat's output transport |
 | Where a narration resumes after you cut in | the player's bookmark stack, from the segment the output transport was playing |
+| That a session's end is heard after its last turn | the story queue: `Summarise` and `SessionGone` wait in one queue, and the narrator tells each in turn |
 | When a permission deadline warns and expires | the reducer, from `Blocked.deadline`, driven by one `Tick` source |
 | Whether text typed mid-turn is queued or lost | Claude Code's own input queue, measured to queue it |
 | When the daemon is up, and restarting it | launchd, with `KeepAlive` |
@@ -281,6 +291,14 @@ chosen by a table, not by code that looks at the event `[LAW:dataflow-not-contro
 - **Note.** Appended with `run_llm` off. The model knows, and says nothing until
   asked. Used for context that changes what a later answer should say: a focus
   change, a subagent finishing, a session going idle.
+
+Today no table chooses; two queues stand in for it. `Heard` carries permission
+announcements as `Speak` and permission requests as `Narrate`, relayed as soon as the
+reducer emits them. `Story` carries finished turns and sessions gone in one ordered
+queue, because a summary takes seconds, and an end spoken at once was heard before the
+last turn it ended. A turn's summary reaches TTS as one `TTSSpeakFrame`, with no player
+and no segments. The player, `Note`, the routing table, the overlays, the priority
+queue, and `coalesce` below are planned.
 
 The routing table is a value in `core`:
 
@@ -408,7 +426,11 @@ block, each written once when the block finishes. While this design was written,
 seconds old in the middle of a turn. So the daemon reads transcripts continuously, not
 only when a turn stops.
 
-**The tail.** From the moment a session registers, the adapter follows its JSONL from
+**The tail** is planned; no tail runs today. At `Stop` the narrator reads the newest turn
+from the whole file with `read_turn`, described under Summaries, into a smaller
+`Step = Said | Used` that the recognisers below will split. That union's `Asked` is
+the prompt that opened the turn, not the `AskUserQuestion` step named below. From the
+moment a session registers, the adapter follows its JSONL from
 the watermark and hands each new record to a pure `recognise`, which turns records into
 `Step`s through one table of recognisers `[LAW:one-type-per-behavior]`. The reducer
 receives steps as events and asks for their summaries as they arrive, so by the time
@@ -492,6 +514,37 @@ race is still an `Edited` step.
 Nothing is read verbatim. Claude writes for a screen, and markdown, code, tables, paths,
 and hashes cannot be heard as written, so every word that reaches the speaker is
 summarised or transformed first.
+
+**What runs today** is the first slice: each finished turn becomes one to three spoken
+sentences, with no tree. When a live session's `Stop` arrives, the reducer emits
+`Summarise(session, transcript)`, and `narrate` in `hands.voice.narrator` reads the
+newest turn with `read_turn`. A turn opens at the last user record that is not
+`isMeta`, not `isCompactSummary`, holds a string or text and image blocks, and does not
+follow a tool call or tool result: a message sent while a tool runs belongs to the turn
+under way. The opening is `Asked`, or `Notified` when its `origin.kind` is
+`task-notification`. The steps are assistant text (`Said`) and tool calls matched to
+their results by id (`Used`, failed when the result `is_error`); subagent records are
+skipped.
+
+`render(turn, budget)` in `core` writes the turn as the summariser's message
+under `TURN_BUDGET`: 600 characters of the opening, 1,500 of each text block, 200 of
+each tool input, 400 of each result, and 40 steps, where a longer turn keeps its head
+and tail and says how many steps in the middle were left out. The summariser is a
+stateless call on the configured backend, OpenAI-compatible or Anthropic, capped at 200
+tokens, with a 30-second timeout and no retries; an empty answer is a failure. Its
+instruction asks for results rather than a play-by-play, no code names, paths, or
+hashes, and an ending that asks the turn's question with the session as "it". The
+narrator speaks the summary after the session's name, keeps it in the intermediary's
+context, and writes it to the audit log as `Recounted`. When reading or summarising
+fails, it says "cc-hands finished a turn, and I could not summarise it." without the model and
+out of the context, and logs the reason, which is a `Failure` line. Measured live
+against a real `claude -p` session, with Qwen3-30B-A3B on inferno: the summary was ready
+1.3 s after `Stop` and first audio came at 1.36 s, and the session's end was heard
+after its summary.
+
+The rest of this section is planned: spoken form as its own pass, step summaries built
+as steps arrive, the git delta, the narration tree, and streaming. Until spoken form
+exists, the summary instruction is the only thing keeping code names out of speech.
 
 **Spoken form** is a pure function in `core` from text to speakable text, installed as
 the TTS service's text transform so there is one place it is enforced
@@ -774,7 +827,8 @@ thing that failed `[LAW:no-silent-failure]`:
    `EffectFailed` for every other effect. One wrapper writes every tool call as
    `Called` with its arguments and the result the model was handed; the context
    aggregators write each user turn as `Transcribed` and each reply as `Replied`;
-   the system channel writes `Announced` with whether it spoke or posted; and a
+   the system channel writes `Announced` with whether it spoke or posted; the narrator
+   writes each turn summary it speaks as `Recounted`; and a
    loguru sink turns every error a `hands` module logs into a `Failure`. A dictation is
    traced from the words to the readback: `Transcribed`, `Called stage_draft`,
    `Replied`. The log watches

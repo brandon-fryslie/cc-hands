@@ -111,6 +111,7 @@ class Summarise:
 
     session: SessionId
     transcript: Path
+    closing: str | None
 
 
 @dataclass(frozen=True)

@@ -47,6 +47,7 @@ class Prompted:
 @dataclass(frozen=True)
 class Stopped:
     session: SessionId
+    closing: str | None  # the reply the turn closed with, as the Stop hook carries it; None when there was none
 
 
 @dataclass(frozen=True)

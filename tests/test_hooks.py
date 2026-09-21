@@ -48,7 +48,7 @@ def test_the_turn_hooks(home: Home) -> None:
     stop = body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message="ok", background_tasks=[])
     end = body(hook_event_name="SessionEnd", reason="other")
     assert parse(home, prompt) == Prompted(SID, at=12.5)
-    assert parse(home, stop) == Stopped(SID)
+    assert parse(home, stop) == Stopped(SID, "ok")
     assert parse(home, end) == Ended(SID, "other")
 
 

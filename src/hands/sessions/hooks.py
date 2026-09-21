@@ -23,7 +23,7 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
         case "UserPromptSubmit":
             return Prompted(session, at)
         case "Stop":
-            return Stopped(session)
+            return Stopped(session, payload.optional_text("last_assistant_message"))
         case "PermissionRequest":
             permission = Permission(tool=payload.text("tool_name"), input=payload.mapping("tool_input"))
             return PermissionRequested(session, at, request, permission)
