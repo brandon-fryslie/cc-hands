@@ -128,6 +128,14 @@ func (l *lineOwner) fold(presses []press) (emptiedIt bool) {
 			// One Ctrl-C empties the box however many lines are in it. Measured, and it is
 			// why this and not Ctrl-U is the way back from a line nothing else settles.
 			// The second press in a row quits the session, so it is sent once.
+			//
+			// It is also the one thing left here that is trusted and should not be. That
+			// measurement was taken on an idle child; a Ctrl-C while the child is working
+			// interrupts the work and leaves the box exactly as it was, so this empties a
+			// box that still holds the user's next prompt. Tracked as
+			// hands-harness-5nb.dh7. Whether the child is working is not on stdin - the
+			// Return that starts it is seen and its end never is - so it wants a second
+			// source of truth rather than another rule in here.
 			l.empty()
 			emptiedIt = true
 		case disturbed:

@@ -166,8 +166,15 @@ counted box reaches zero with the character still in it. Hold the key down past 
 of a line — an autorepeat, not a corner — and it reaches zero with a whole line still in
 it. A count that only ever rises is a flag that has learnt to add, so it is a flag.
 
-Ctrl-C empties the box. That, and the characters themselves, is the whole of what is
-known.
+Ctrl-C empties the box when the child is idle. That, and the characters themselves, is
+the whole of what is known — and the qualification is load-bearing, because it is not yet
+honoured. When the child is *working*, the same key interrupts the work and does not touch
+the box at all: the user's half-typed next prompt is still sitting there afterwards, and
+this reads the box as empty and hands the line back. Measured, and tracked as
+`hands-harness-5nb.dh7`. Whether the child is working is not something stdin says — this
+sees the Return that starts the work and never sees it end — so closing it needs a second
+source of truth rather than another rule here, and that is a design change, not a parser
+fix.
 
 Everything else that is not a character is read as having changed the box by some amount
 the bytes do not say, and that holds the line until the box is proved empty. Backspace
