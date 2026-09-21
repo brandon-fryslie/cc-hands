@@ -40,9 +40,10 @@ var keystrokes = map[string][]byte{
 	"escape": {0x1b},
 	"enter":  {'\r'},
 	"ctrl_c": {0x03},
-	// Ctrl-U empties the input box without interrupting, which Ctrl-C only does on the
-	// first press - a second press quits the session. It is the chord to reach for when
-	// the line has to be cleared and nothing else should happen.
+	// Ctrl-U kills the line the cursor is on rather than the box, so it clears a one-line
+	// box and leaves a longer one standing. Measured. Ctrl-C is the chord that empties the
+	// box whatever is in it, and the one to reach for when a line has to be cleared - but
+	// only once, because a second press in a row quits the session.
 	"ctrl_u":    {0x15},
 	"up":        []byte("\x1b[A"),
 	"down":      []byte("\x1b[B"),
@@ -224,7 +225,7 @@ func controlByte(text string) (byte, int) {
 //
 // A keystroke cannot interleave with anything: it does exactly what it would do if the
 // user had pressed it themselves, and they see the result. Gating it on a free line would
-// also be a door locked from the inside - Enter, Ctrl-C and Ctrl-U are the very keys that
+// also be a door locked from the inside - Enter and Ctrl-C are the very keys that
 // free a line, so a session whose line is held would have no way back except a human at
 // the physical keyboard, which is the case this whole program exists to avoid.
 func (w *Wrapped) pressKey(asked request) response {

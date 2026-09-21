@@ -87,8 +87,10 @@ under an `ok`. Send a `key` request for a keystroke.
 
 The keys are `escape`, `enter`, `ctrl_c`, `ctrl_u`, `up`, `down`, `tab` and `shift_tab`.
 Which bytes each one is, is terminal knowledge, so that table lives here rather than in
-the caller. `ctrl_u` is the one to reach for to empty the input box: `ctrl_c` empties it
-too, but only on the first press — a second quits the session.
+the caller. `ctrl_c` is the one to reach for to empty the input box, and it empties it
+however many lines are in it — but send it once, because a second press in a row quits the
+session. `ctrl_u` kills only the line the cursor is on, so it clears a one-line box and
+leaves a longer one standing.
 
 ## Multi-line text
 
@@ -120,7 +122,7 @@ interleaves: dropped into a half-written line it makes one prompt out of two peo
 words, and afterwards nobody can pull them apart. A keystroke does exactly what it would
 have done had the user pressed it, and the user sees the result.
 
-It is also the way back. Enter, Ctrl-C and Ctrl-U are the keys that empty the box, so
+It is also the way back. Enter and Ctrl-C are the keys that empty the box, so
 refusing them would lock the door from the inside — a session whose line was held would be
 reachable only by a human at the physical keyboard, which is the situation this program
 exists to remove. A key that empties the box tells the line owner so, read by the same
@@ -150,18 +152,38 @@ The owner then counts characters rather than raising a flag, because a text box 
 of characters. Backspacing back to an empty box hands the line back; a flag could never be
 told that, and a fact that can only ever become true is not a fact about the box.
 
-Ctrl-C and Ctrl-U empty the box; backspace takes one character out of it. Ctrl-W takes the
-last word, and how many characters that is depends on what the word was, so it is not
-counted: the line stays held until the user submits or cancels, or a `key` request clears
-it. That is the safe direction to be wrong in — a refused write is loud and recoverable, a
-write into a half-typed line is a garbled prompt nobody can attribute.
+Ctrl-C empties the box; backspace takes one character out of it. Those, and the characters
+themselves, are the whole of what can be counted.
 
-Enter usually empties the box, and the exception is the reason the owner keeps the end of
-the line rather than only a count. Claude Code reads a Return that follows a backslash as
-*keep typing*: the backslash becomes a newline and everything already typed stays where it
-is. That is how anyone writes a multi-line prompt by hand, so it is not a corner — and read
-as a submit it empties a count that is not empty and hands writes into the middle of
-somebody's sentence. Sixteen characters of the line's end are remembered, enough that
+Everything else that is not a character is read as having changed the box by some amount
+the bytes do not say, and that holds the line until the box is proved empty. Ctrl-W takes
+a word; Ctrl-U takes the line the cursor is on, which clears a one-line box and leaves a
+longer one standing; Ctrl-Y pastes back whatever was last killed; Tab completes a path in;
+Up and Down pull a whole previous prompt into a box nothing was typed into. Only five
+chords are listed as leaving the box alone — Ctrl-A, Ctrl-B, Ctrl-E, Ctrl-F and Ctrl-L —
+along with the sequences that are the terminal answering a question, and the cursor keys
+that only move sideways.
+
+Listing the harmless ones and holding the line for everything else is the only arrangement
+that does not need the list to be complete, and it will never be complete: the ways to
+edit a text box belong to the child. Successive reviews of this file each found another
+one that had been assumed harmless and was not. That is the safe direction to be wrong in
+— a refused write is loud and recoverable, a write into a half-typed line is a garbled
+prompt nobody can attribute.
+
+Enter usually empties the box, and the exceptions are the two ways a multi-line prompt
+gets written by hand — so they are not corners, and read as submits each one empties a
+count that is not empty and lets hands write into the middle of somebody's sentence.
+
+Claude Code reads a Return that follows a backslash as *keep typing*: the backslash
+becomes a newline and everything already typed stays where it is. And Ctrl-J, which the
+child offers in its own footer, is a different key from Return — it arrives as a bare
+`0x0A` where Return arrives as `0x0D`, and it puts a newline in the box and sends nothing.
+Both were measured against the running program by typing a prompt, pressing the key, and
+watching the words stay.
+
+The backslash rule is the reason the owner keeps the end of the line rather than only a
+count. Sixteen characters of the line's end are remembered, enough that
 taking a few back and then submitting is still answered from what is known rather than
 guessed at. Past that the end is unknown, and an unknown end holds the line.
 
@@ -197,7 +219,7 @@ says so.
 A write into the session gives up after a second. A pty in raw mode holds a kilobyte of
 input and a write that fills it blocks until the child reads, which a running session does
 at once and a stopped one never does. Waiting there with no bound hangs the request and
-everything behind it — including the `ctrl_u` that was meant to be the way back. The write
+everything behind it — including the `ctrl_c` that was meant to be the way back. The write
 cannot be taken back, so while one is outstanding every other is refused rather than queued
 behind it, and it clears itself the moment the child starts reading again. What landed is
 always reported: a write that failed partway says how many bytes reached the box, because
@@ -222,13 +244,22 @@ statement in `main`. A guarantee that sometimes deadlocks is worse than one not 
   `?1002h`, `?1003h`, `?1006h` — which is why stdin carries far more than keypresses and
   why it is parsed rather than scanned. With those reports arriving on stdin, a send is
   still accepted; before this was parsed, one was enough to refuse every send afterwards.
-- Ctrl-C and Ctrl-U each empty the input box. Escape does not touch it. Ctrl-W takes the
-  last word. Backspacing to empty hands the line back, and a `ctrl_u` sent while the user
-  holds the line clears it and leaves the session running.
+- One Ctrl-C empties the input box however many lines are in it, and leaves the session
+  running. A second press in a row quits it.
+- Ctrl-U does **not** empty the box. It kills the line the cursor is on: a box holding
+  `aaa`, `bbb`, `ccc` took four presses and still had `aaa` in it. On a one-line box it
+  does clear it, which is why an earlier version of this file said it cleared the box.
+- Escape does not touch the box. Ctrl-W takes the last word. Backspacing to empty hands
+  the line back.
+- Up pulls the previous prompt into an empty box. Nothing was typed and the box filled,
+  which is why a history key holds the line.
 - A Return pressed straight after a backslash does **not** submit. The backslash is
   replaced by a newline and the prompt stays in the box, which is how a multi-line prompt
   is written by hand. Measured by typing `please fix the auth bug in \` and pressing
   Return: the box kept the words and grew a line.
+- Ctrl-J does not submit either. It is a bare `0x0A`, a different key from Return's
+  `0x0D`, and it is the multi-line prompt for any terminal that cannot send Shift-Enter.
+  Measured the same way: the prompt stayed and the box grew a line.
 - A two-line prompt sent with the display asleep arrived as one message and was answered.
 - A pty in raw mode — which is what the child puts its side into — blocks a write at 1024
   bytes when nothing is reading. A cooked one takes 300 KB without blocking, which is why

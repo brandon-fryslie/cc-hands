@@ -20,20 +20,39 @@ type press struct {
 type effect int
 
 const (
-	nothing   effect = iota // a report, or a key that moves the cursor rather than the text
+	nothing   effect = iota // a report, or a key that leaves the box exactly as it was
 	inserted                // characters went into the box
 	deleted                 // one character came out of it
 	submitted               // Return, which empties the box - unless what it follows says otherwise
-	cancelled               // Ctrl-C or Ctrl-U, which empty it whatever is in them
+	cancelled               // Ctrl-C, which empties it whatever is in it
+	killed                  // Ctrl-U, which empties the line the cursor is on and not the box
+	disturbed               // the box changed by some amount these bytes do not say
 )
+
+// The chords that leave the box exactly as it was.
+//
+// [LAW:parse-dont-validate] Everything else that is not a character is read as disturbed,
+// and this list is short on purpose. The ways to edit a text box are many and belong to
+// the child rather than to fritter - Ctrl-Y pastes back whatever was last killed, Ctrl-R
+// searches the history into the box, Tab completes a path into it, Ctrl-G opens an editor
+// on it - and every one of them that is guessed harmless and is not frees a line that is
+// not free. Listing the harmless ones and disturbing by default is the only way round
+// that does not need the list to be complete.
+var cursorOnly = map[byte]bool{
+	0x01: true, // Ctrl-A, to the start of the line
+	0x02: true, // Ctrl-B, back one character
+	0x05: true, // Ctrl-E, to the end of the line
+	0x06: true, // Ctrl-F, forward one character
+	0x0c: true, // Ctrl-L, redraw
+}
 
 // The bytes that leave the box empty, and the ones that take a character out of it.
 //
-// Measured against Claude Code 2.1.278 rather than assumed: Ctrl-C and Ctrl-U both empty
-// the box and Escape does not touch it, which is the opposite of what this file used to
-// say. Ctrl-W takes the last word and is not here, because how many characters that is
-// depends on what the word was - it leaves the count standing, which holds the line and
-// is the safe direction.
+// Measured against Claude Code 2.1.278 rather than assumed, and more than once, because
+// the first measurements were wrong. One Ctrl-C empties the box however many lines are in
+// it. Ctrl-U does not: it kills the line the cursor is on, so a box of three lines took
+// four presses and still had its first line. Escape does not touch the box at all.
+// Ctrl-W takes the last word, and how many characters that is depends on the word.
 const (
 	esc       = 0x1b
 	ctrlC     = 0x03
@@ -137,22 +156,36 @@ func (r *reader) read(chunk []byte) []press {
 			}
 			out = append(out, did)
 			scan = scan[n:]
-		case b == '\r' || b == '\n':
+		case b == '\r':
 			// What a Return does to the box depends on what is in the box, which is not
 			// something the bytes on stdin can say `[LAW:one-source-of-truth]`. The press
 			// names the key and the box decides the effect.
 			out = append(out, press{does: submitted})
 			scan = scan[1:]
-		case b == ctrlC || b == ctrlU:
+		case b == '\n':
+			// Not the same key, and not the same thing. A bare 0x0A is Ctrl-J, which
+			// Claude Code's own footer offers as the way to put a newline in a prompt -
+			// it is the multi-line prompt for every terminal that cannot send Shift-Enter.
+			// The character goes into the box and nothing is sent. Measured: after Ctrl-J
+			// the prompt was still there and a send landed underneath it.
+			//
+			// Return reaches a raw terminal as 0x0D, so nothing here loses a submit.
+			out = append(out, press{does: inserted, text: scan[:1]})
+			scan = scan[1:]
+		case b == ctrlC:
 			out = append(out, press{does: cancelled})
+			scan = scan[1:]
+		case b == ctrlU:
+			// Not the same as Ctrl-C. Measured: on a box of three lines it took four
+			// presses and the first line was still there, because it kills the line the
+			// cursor is on rather than the box. The box says what that came to.
+			out = append(out, press{does: killed})
 			scan = scan[1:]
 		case b == del || b == backspace:
 			out = append(out, press{does: deleted})
 			scan = scan[1:]
 		case b < 0x20:
-			// Every other control byte is a chord that moves the cursor, the history or a
-			// word, not one that puts a character in the box.
-			out = append(out, press{does: nothing})
+			out = append(out, press{does: chord(b)})
 			scan = scan[1:]
 		default:
 			n, whole := printable(scan)
@@ -186,7 +219,7 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 		// the line clear, and hands writes over the user's words - nothing undoes that.
 		// Read as typing, an arrow key whose sequence really was split counts two
 		// characters that are not there and holds a line that is empty, which the user's
-		// next Enter clears and which hands can clear itself with a ctrl_u, because a key
+		// next Enter clears and which hands can clear itself with a ctrl_c, because a key
 		// is never refused. One of those is recoverable.
 		return 1, press{}, true
 	}
@@ -210,7 +243,7 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 			// Enter the user just pressed.
 			return 1, press{}, true
 		}
-		return 3, press{}, true
+		return 3, press{does: cursorKey(s[2])}, true
 	case next == ']' || next == 'P' || next == '^' || next == '_':
 		// A string sequence, which is how a terminal answers a question at length: the
 		// clipboard, its name, its colours. It ends at BEL or at ESC \.
@@ -241,12 +274,11 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 		}
 		return unterminated(s)
 	case next < 0x20 || next == del:
-		// ESC and a control byte together is a meta chord, and Option-Enter is the one
-		// that matters: it puts a newline in the box instead of submitting. Reading its
-		// Return on its own would empty a count that is not empty and free a line still
-		// being written. Taking the pair as nothing leaves the line held, and the user's
-		// next real Enter clears it.
-		return 2, press{}, true
+		// ESC and a control byte together is a meta chord, and the ones that matter change
+		// the box by amounts these two bytes do not say: Option-Enter puts a newline in it,
+		// Option-Backspace takes a word out. Reading the second byte on its own would be
+		// worse still - the Return of an Option-Enter would empty a count that is not empty.
+		return 2, press{does: disturbed}, true
 	default:
 		// ESC and an ordinary character together: Alt and a letter, or the Escape key and
 		// the letter after it. One read is no proof of one keypress - over ssh or through
@@ -256,6 +288,29 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 		// off the count and free a line holding one.
 		return 1, press{}, true
 	}
+}
+
+// chord says what a control byte did to the box.
+func chord(b byte) effect {
+	if cursorOnly[b] {
+		return nothing
+	}
+	return disturbed
+}
+
+// cursorKey says what a sequence ending in this byte did to the box.
+//
+// Almost every one of them is the terminal answering a question or the cursor moving, and
+// neither touches the text: focus reports end in I or O, mouse reports in M or m, a cursor
+// position in R, a device attributes reply in c. The ones that do touch it are the history
+// keys - Up and Down pull a whole previous prompt in, which is how an empty box fills
+// while nothing is typed - and the `~` forms, Delete among them.
+func cursorKey(final byte) effect {
+	switch final {
+	case 'A', 'B', '~':
+		return disturbed
+	}
+	return nothing
 }
 
 // unterminated is what to do with a sequence that has not ended yet: wait for the rest of
@@ -286,7 +341,7 @@ func (r *reader) csi(s []byte) (n int, did press, complete bool) {
 	// are printable, so a control byte here says this was never a sequence either.
 	for i := 2; i < len(s) && i < sequenceLimit; i++ {
 		if s[i] >= 0x40 && s[i] <= 0x7e {
-			return i + 1, press{}, true
+			return i + 1, press{does: cursorKey(s[i])}, true
 		}
 		if s[i] < 0x20 || s[i] == del {
 			return 1, press{}, true

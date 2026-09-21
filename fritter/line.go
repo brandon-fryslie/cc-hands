@@ -24,11 +24,13 @@ const remembered = 16
 // it would stay set - and a fact that can only ever become true is not a fact about the
 // box, it is a one-way door.
 //
-// What it cannot see: Ctrl-W and the other chords that take a word or the rest of a line,
-// because how many characters they take depends on what was there. Those leave the count
-// standing and the line held until the user submits or cancels, or until a key request
-// clears it. That is the safe direction to be wrong in - a refused write is loud and
-// recoverable, a write into a half-typed line is a garbled prompt nobody can attribute.
+// What it cannot see it says it cannot see. Ctrl-W takes a word, Ctrl-U takes a line,
+// Ctrl-Y pastes back what was last killed, Tab completes a path, and Up pulls a whole
+// previous prompt into a box nothing was typed into - and how much any of that came to is
+// not in the bytes. All of them leave the line held until the box is proved empty by a
+// Ctrl-C or a Return that really sent. That is the safe direction to be wrong in: a
+// refused write is loud and recoverable, a write into a half-typed line is a garbled
+// prompt nobody can attribute.
 type lineOwner struct {
 	mu    sync.Mutex
 	stdin reader
@@ -46,6 +48,16 @@ type lineOwner struct {
 	// user can clear.
 	tail  []rune
 	murky bool
+	// A newline is known to be in the box, so Ctrl-U cannot empty it in one press.
+	multi bool
+	// Something changed the box by an amount the bytes did not say: a chord that is not
+	// one of the few known to leave it alone, or a history key, which pulls a whole
+	// previous prompt into a box that nothing was typed into.
+	//
+	// Only a box proved empty clears this - a Ctrl-C, or a Return that really did send.
+	// [LAW:no-silent-failure] A count that is known to be incomplete is not a count, and
+	// reporting it as one is the answer that cannot be taken back.
+	disturbed bool
 	// The parser ended a read still holding bytes that might be characters in the box.
 	// Kept here rather than asked of the parser, because emptying the box settles it
 	// whatever the parser was in the middle of: whatever those bytes were, they are not
@@ -99,6 +111,9 @@ func (l *lineOwner) fold(presses []press) (emptiedIt bool) {
 		case inserted:
 			for _, r := range string(p.text) {
 				l.chars++
+				if r == '\n' {
+					l.multi = true
+				}
 				l.tail = append(l.tail, r)
 				// Whatever had been forgotten, the box ends with this now.
 				l.murky = false
@@ -113,20 +128,35 @@ func (l *lineOwner) fold(presses []press) (emptiedIt bool) {
 			} else {
 				l.murky = true
 			}
-			if l.chars == 0 {
+			if l.chars == 0 && !l.disturbed {
 				l.empty()
 			}
 		case submitted:
 			if l.continued() {
 				continue
 			}
+			// A Return sends whatever is in the box, counted or not, so this is the one
+			// thing besides Ctrl-C that settles a box nothing could account for.
 			l.empty()
 			emptiedIt = true
 		case cancelled:
-			// Ctrl-C and Ctrl-U empty the box whatever is in it, which is why they and not
-			// Enter are the way back from a line nothing else can settle.
+			// One Ctrl-C empties the box however many lines are in it. Measured, and it is
+			// why this and not Ctrl-U is the way back from a line nothing else settles.
+			// The second press in a row quits the session, so it is sent once.
 			l.empty()
 			emptiedIt = true
+		case killed:
+			if l.multi || l.disturbed {
+				// Ctrl-U took a line out of something with more than one line in it, or
+				// out of a box that was already past accounting for. Either way what is
+				// left is unknown, and unknown holds the line.
+				l.disturbed = true
+				continue
+			}
+			l.empty()
+			emptiedIt = true
+		case disturbed:
+			l.disturbed = true
 		}
 	}
 	return emptiedIt
@@ -153,6 +183,8 @@ func (l *lineOwner) continued() bool {
 // empty records that there is nothing in the box.
 func (l *lineOwner) empty() {
 	l.chars = 0
+	l.multi = false
+	l.disturbed = false
 	l.tail = l.tail[:0]
 	l.murky = false
 	// An empty box is empty however unsure the parser was a moment ago. Without this the
@@ -169,5 +201,5 @@ func (l *lineOwner) empty() {
 func (l *lineOwner) free() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.chars == 0 && !l.unsure
+	return l.chars == 0 && !l.unsure && !l.disturbed
 }

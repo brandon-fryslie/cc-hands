@@ -41,9 +41,18 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"typed and submitted in one read", []string{"hello\r"}, true},
 		{"cleared with ctrl-c", []string{"oops", "\x03"}, true},
 		{"cleared with ctrl-u", []string{"oops", "\x15"}, true},
+		// Ctrl-U kills the line the cursor is on, not the box. Measured: three lines took
+		// four presses and the first was still there. Ctrl-C takes the lot in one.
+		{"ctrl-u does not clear a box with more than one line in it", []string{"aaa", "\n", "bbb", "\x15"}, false},
+		{"ctrl-c does", []string{"aaa", "\n", "bbb", "\x03"}, true},
+		{"nor does ctrl-u clear a box it could not account for", []string{"\x1b[A", "\x15"}, false},
 		{"escape leaves the box alone", []string{"oops", "\x1b"}, false},
 		{"a word killed leaves the count standing", []string{"alpha beta", "\x17"}, false},
-		{"newline submits too", []string{"hello", "\n"}, true},
+		// A bare newline is Ctrl-J, which puts one in the box rather than sending it.
+		{"ctrl-j is a newline in the box, not a submit", []string{"hello", "\n"}, false},
+		{"ctrl-j then a real Return sends it", []string{"hello", "\n", "world", "\r"}, true},
+		{"ctrl-j into an empty box puts a character in it", []string{"\n"}, false},
+		{"ctrl-j and a Return arriving in one read", []string{"hello\nworld\r"}, true},
 		{"an empty read changes nothing", []string{"half", ""}, false},
 		{"backspaced back to empty", []string{"abc", "\x7f\x7f\x7f"}, true},
 		{"backspaced most of the way", []string{"abc", "\x7f\x7f"}, false},
@@ -63,7 +72,20 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		// holds a line that is empty, which an Enter or a ctrl_u clears. The other way
 		// round frees a line that is not empty, and nothing clears that.
 		{"an escape split from what might be its sequence", []string{"\x1b", "[A"}, false},
-		{"arrow keys move without typing", []string{"\x1b[A", "\x1b[B", "\x1bOC"}, true},
+		// Up and Down are the history keys: they pull a whole previous prompt into the box,
+		// so an empty box fills without a character being typed. Left and Right only move.
+		{"the history keys fill the box", []string{"\x1b[A"}, false},
+		{"down fills it too", []string{"\x1b[B"}, false},
+		{"and so does up in application mode", []string{"\x1bOA"}, false},
+		{"sideways is only the cursor", []string{"\x1b[C", "\x1b[D", "\x1bOC"}, true},
+		{"home and end are only the cursor", []string{"\x1b[H", "\x1b[F"}, true},
+		// Everything that is not a character and is not known to leave the box alone is
+		// read as having changed it by some amount: Ctrl-Y pastes back what was killed,
+		// Tab completes a path in, Delete takes one out.
+		{"ctrl-y pastes back whatever was last killed", []string{"\x19"}, false},
+		{"tab can complete a path into the box", []string{"\t"}, false},
+		{"the delete key takes a character out", []string{"\x1b[3~"}, false},
+		{"but ctrl-a and ctrl-e only move", []string{"\x01", "\x05"}, true},
 		{"escape alone is not a character", []string{"\x1b"}, true},
 
 		{"a pasted line is characters in the box", []string{"\x1b[200~hello\nworld\x1b[201~"}, false},
@@ -81,8 +103,10 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"escape, then a message that opens like a string sequence", []string{"\x1b", "P", "l", "e", "a", "s", "e"}, false},
 		{"escape, then a message that opens like another one", []string{"\x1b", "]drop the table"}, false},
 		{"escape, then the pointer moves", []string{"\x1b", "\x1b[<0;45;12M"}, true},
+		{"a box proved empty by a Return is accounted for again", []string{"\x1b[A", "\r"}, true},
+		{"and one proved empty by ctrl-c is too", []string{"\x1b[A", "\x03"}, true},
 		{"escape, then the window loses focus", []string{"\x1b", "\x1b[O"}, true},
-		{"alt-up arrives as two escapes and a sequence", []string{"\x1b\x1b[A"}, true},
+		{"alt-up arrives as two escapes and a history key", []string{"\x1b\x1b[A"}, false},
 		{"typed, escape, then submitted", []string{"hello", "\x1b", "\r"}, true},
 		{"typed, escape, then cleared", []string{"hello", "\x1b", "\x15"}, true},
 		{"typed, escape, then backspaced back to empty", []string{"ab", "\x1b", "\x7f\x7f"}, true},
