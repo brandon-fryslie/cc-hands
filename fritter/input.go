@@ -26,9 +26,17 @@ const (
 	emptied                // the box is empty now: the line was submitted or cancelled
 )
 
+// The bytes that leave the box empty, and the ones that take a character out of it.
+//
+// Measured against Claude Code 2.1.278 rather than assumed: Ctrl-C and Ctrl-U both empty
+// the box and Escape does not touch it, which is the opposite of what this file used to
+// say. Ctrl-W takes the last word and is not here, because how many characters that is
+// depends on what the word was - it leaves the count standing, which holds the line and
+// is the safe direction.
 const (
 	esc       = 0x1b
 	ctrlC     = 0x03
+	ctrlU     = 0x15
 	backspace = 0x08
 	del       = 0x7f
 )
@@ -84,15 +92,15 @@ func (r *reader) read(chunk []byte) []press {
 			}
 			out = append(out, did)
 			scan = scan[n:]
-		case b == '\r' || b == '\n' || b == ctrlC:
+		case b == '\r' || b == '\n' || b == ctrlC || b == ctrlU:
 			out = append(out, press{does: emptied})
 			scan = scan[1:]
 		case b == del || b == backspace:
 			out = append(out, press{does: deleted, count: 1})
 			scan = scan[1:]
 		case b < 0x20:
-			// Every other control byte is a chord that moves the cursor or the history,
-			// not one that puts a character in the box.
+			// Every other control byte is a chord that moves the cursor, the history or a
+			// word, not one that puts a character in the box.
 			out = append(out, press{does: nothing})
 			scan = scan[1:]
 		default:

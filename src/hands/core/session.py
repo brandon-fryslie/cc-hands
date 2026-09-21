@@ -22,7 +22,7 @@ PromptText = NewType("PromptText", str)
 
 # The named chords a session can be sent, as distinct from text. Which bytes each one is
 # belongs to whatever does the typing, not here; this is the vocabulary hands speaks.
-Keystroke = Literal["escape", "enter", "ctrl_c", "up", "down", "tab", "shift_tab"]
+Keystroke = Literal["escape", "enter", "ctrl_c", "ctrl_u", "up", "down", "tab", "shift_tab"]
 
 
 @dataclass(frozen=True)

@@ -66,9 +66,10 @@ goroutine for the rest of the session.
 program underneath — that belongs to the caller, and in hands it is already settled
 before anything reaches here. `submit` presses Enter afterwards.
 
-The keys are `escape`, `enter`, `ctrl_c`, `up`, `down`, `tab` and `shift_tab`. Which
-bytes each one is, is terminal knowledge, so that table lives here rather than in the
-caller.
+The keys are `escape`, `enter`, `ctrl_c`, `ctrl_u`, `up`, `down`, `tab` and `shift_tab`.
+Which bytes each one is, is terminal knowledge, so that table lives here rather than in
+the caller. `ctrl_u` is the one to reach for to empty the input box: `ctrl_c` empties it
+too, but only on the first press — a second quits the session.
 
 ## Multi-line text
 
@@ -130,11 +131,15 @@ The owner then counts characters rather than raising a flag, because a text box 
 of characters. Backspacing back to an empty box hands the line back; a flag could never be
 told that, and a fact that can only ever become true is not a fact about the box.
 
-Two things it cannot see: Escape, which clears Claude Code's box, and the chords that kill
-a line or a word. Both leave the count standing and the line held until the user submits,
-cancels, or a `key` request clears it. That is the safe direction to be wrong in — a
-refused write is loud and recoverable, a write into a half-typed line is a garbled prompt
-nobody can attribute.
+Enter, Ctrl-C and Ctrl-U empty the box; backspace takes one character out of it. Ctrl-W
+takes the last word, and how many characters that is depends on what the word was, so it
+is not counted: the line stays held until the user submits or cancels, or a `key` request
+clears it. That is the safe direction to be wrong in — a refused write is loud and
+recoverable, a write into a half-typed line is a garbled prompt nobody can attribute.
+
+Escape is left alone, which is not the compromise an earlier version of this file claimed
+it was: Claude Code 2.1.278 does not clear its input box on Escape. That was measured, not
+assumed, and it is why the key is in the table but changes nothing here.
 
 ## What run promises, and what it does not
 
@@ -169,7 +174,12 @@ must not close stdin before its process ends, which for fritter is the next stat
   so there is no timing bet in the send path.
 - The child also turns on focus reporting and mouse reporting — `ESC [ ?1000h`,
   `?1002h`, `?1003h`, `?1006h` — which is why stdin carries far more than keypresses and
-  why it is parsed rather than scanned.
+  why it is parsed rather than scanned. With those reports arriving on stdin, a send is
+  still accepted; before this was parsed, one was enough to refuse every send afterwards.
+- Ctrl-C and Ctrl-U each empty the input box. Escape does not touch it. Ctrl-W takes the
+  last word. Backspacing to empty hands the line back, and a `ctrl_u` sent while the user
+  holds the line clears it and leaves the session running.
+- A two-line prompt sent with the display asleep arrived as one message and was answered.
 - A process the child spawns sees `FRITTER_SOCKET`.
 - The workspace-trust dialog swallows a paste, the same way `docs/architecture.md` records
   permission dialogs doing. A session sitting at a dialog is not one to type text into.

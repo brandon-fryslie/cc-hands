@@ -15,11 +15,11 @@ import "sync"
 // it would stay set - and a fact that can only ever become true is not a fact about the
 // box, it is a one-way door.
 //
-// What it cannot see: Escape, which clears Claude Code's box, and every chord that kills
-// a line or a word. Those leave the count standing and the line held until the user
-// submits or cancels, or until a key request clears it. That is the safe direction to be
-// wrong in - a refused write is loud and recoverable, a write into a half-typed line is
-// a garbled prompt nobody can attribute.
+// What it cannot see: Ctrl-W and the other chords that take a word or the rest of a line,
+// because how many characters they take depends on what was there. Those leave the count
+// standing and the line held until the user submits or cancels, or until a key request
+// clears it. That is the safe direction to be wrong in - a refused write is loud and
+// recoverable, a write into a half-typed line is a garbled prompt nobody can attribute.
 type lineOwner struct {
 	mu    sync.Mutex
 	stdin reader

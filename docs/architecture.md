@@ -136,7 +136,7 @@ class Plan:       text: str             # a finished ExitPlanMode is PlanApprove
 # so there is no "if it starts with a slash" anywhere: Text always escapes a leading sigil,
 # Command never does, Key is a named chord and carries no text at all.
 Input = Text | Command | Key
-Keystroke = Literal["escape", "enter", "ctrl_c", "up", "down", "tab", "shift_tab"]
+Keystroke = Literal["escape", "enter", "ctrl_c", "ctrl_u", "up", "down", "tab", "shift_tab"]
 
 # The reducer's whole vocabulary of effects. Adapters perform these and nothing else.
 Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | Audit

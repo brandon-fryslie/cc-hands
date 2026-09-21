@@ -36,9 +36,13 @@ type response struct {
 // caller's domain, and fritter types the text it is given without re-deciding it
 // `[LAW:single-enforcer]`.
 var keystrokes = map[string][]byte{
-	"escape":    {0x1b},
-	"enter":     {'\r'},
-	"ctrl_c":    {0x03},
+	"escape": {0x1b},
+	"enter":  {'\r'},
+	"ctrl_c": {0x03},
+	// Ctrl-U empties the input box without interrupting, which Ctrl-C only does on the
+	// first press - a second press quits the session. It is the chord to reach for when
+	// the line has to be cleared and nothing else should happen.
+	"ctrl_u":    {0x15},
 	"up":        []byte("\x1b[A"),
 	"down":      []byte("\x1b[B"),
 	"tab":       {'\t'},

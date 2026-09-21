@@ -37,6 +37,9 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"typed again after submitting", []string{"hello\r", "more"}, false},
 		{"typed and submitted in one read", []string{"hello\r"}, true},
 		{"cleared with ctrl-c", []string{"oops", "\x03"}, true},
+		{"cleared with ctrl-u", []string{"oops", "\x15"}, true},
+		{"escape leaves the box alone", []string{"oops", "\x1b"}, false},
+		{"a word killed leaves the count standing", []string{"alpha beta", "\x17"}, false},
 		{"newline submits too", []string{"hello", "\n"}, true},
 		{"an empty read changes nothing", []string{"half", ""}, false},
 		{"backspaced back to empty", []string{"abc", "\x7f\x7f\x7f"}, true},
@@ -85,6 +88,8 @@ func TestAChordFritterSendsMeansWhatTheSameChordMeansTyped(t *testing.T) {
 	}{
 		{"enter submits the held line", "enter", true},
 		{"ctrl-c throws it away", "ctrl_c", true},
+		{"ctrl-u clears it without interrupting", "ctrl_u", true},
+		{"escape does not touch it", "escape", false},
 		{"an arrow key leaves it where it is", "up", false},
 		{"tab leaves it where it is", "tab", false},
 	} {
