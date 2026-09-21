@@ -265,3 +265,32 @@ async def test_a_reading_that_fails_outright_still_lets_the_turn_be_told(tmp_pat
     await sessions.apply(Stopped(SID, "Done."))
     story = await asyncio.wait_for(sessions.story(), 2.0)
     assert isinstance(story, Summarise) and story.session == SID
+
+
+async def test_a_repository_with_no_commit_yet_still_says_what_the_turn_did(tmp_path: Path) -> None:
+    """`git init` and a first prompt: there is no commit to be on, so there is no `HEAD` to compare against.
+
+    The tree is still a tree, and the first commit a turn makes is still reachable from where it ended.
+    """
+    root = tmp_path / "fresh"
+    root.mkdir()
+    git(root, "init", "-q")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "Test")
+
+    def first() -> None:
+        (root / "first.py").write_text("hello\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "the very first commit")
+
+    delta = await turn(root, first)
+    assert [file.path for file in delta.files] == ["first.py"]
+    assert [commit.subject for commit in delta.commits] == ["the very first commit"]
+
+
+async def test_a_detached_head_is_read_like_any_other(tmp_path: Path) -> None:
+    """What a bisect or a checkout of a bare sha leaves behind, which is a working state and not a broken one."""
+    root = repo(tmp_path)
+    git(root, "checkout", "-q", "--detach")
+    delta = await turn(root, lambda: (root / "b.py").write_text("y = 2\n"))
+    assert [file.path for file in delta.files] == ["b.py"]
