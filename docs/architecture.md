@@ -786,14 +786,19 @@ characters: its closing run must be its own character and at least as long, beca
 four-backtick block is how a model quotes a three-backtick one, and a length-blind
 closer ended the outer block at the inner opening and read the quoted code out loud.
 
-Two limits of the seam rather than of the function, both from the streaming path, where Pipecat hands
-the filter one aggregated sentence at a time. A list the intermediary streams is seen an item at a
-time and so is not counted aloud as a sequence, where the same list inside a summary is. And a fenced
-block spanning chunks is only seen in the chunk its fence lands in; the rest arrives carrying no fence
-and is read out as the ordinary text it then resembles. Neither is fixable by holding state in the
-filter — one that kept half an utterance across calls would be waiting for a second half that a
-barge-in never sends — so closing the second means skipping the block at the aggregator, before it is
-broken up. Every rule that makes text sayable at all still applies to every chunk.
+On the streaming path Pipecat hands the filter one aggregated sentence at a time, and the filter
+therefore remembers exactly one thing between calls: the fence a chunk ended inside. A fenced block
+streamed a sentence at a time opens in one chunk and continues in the next, and a continuation carrying
+no fence of its own would be read out as the ordinary text it then resembles — announced once and spoken
+anyway. The carry is a value `spoken` returns rather than state it keeps, so the parsing stays in one
+pure place, and holding it is safe because Pipecat calls `handle_interruption` on every filter when an
+interruption frame arrives: a barge-in mid-block clears the carry instead of leaving the next reply
+suppressed behind a fence nobody closed.
+
+One limit remains, and it is of the seam rather than the function: a list the intermediary streams is
+seen an item at a time and so is not counted aloud as a sequence, where the same list inside a summary
+is. Counting needs the whole list in one piece. Every rule that makes text sayable at all applies to
+each chunk regardless.
 
 The filtered text is also what the intermediary remembers, because Pipecat builds the frame it appends
 to the assistant context out of what a filter returned. That is intended: of the five places a
