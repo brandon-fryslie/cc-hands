@@ -25,15 +25,22 @@ def member(transcript: Path) -> Membership:
 
 @dataclass
 class Registry:
-    """As much of the session registry as the tail asks about."""
+    """As much of the session registry as the tail asks about.
+
+    A session it has heard of keeps its membership after it stops being live, which is what the real registry
+    does, and what a `claude -p` session — gone the moment its turn stops — depends on to be told at all.
+    """
 
     members: list[Membership]
+
+    def __post_init__(self) -> None:
+        self.heard = list(self.members)
 
     def live_members(self) -> list[Membership]:
         return self.members
 
     def membership(self, session: SessionId) -> Membership | None:
-        return next((member for member in self.members if member.id == session), None)
+        return next((member for member in self.heard if member.id == session), None)
 
 
 async def following(transcript: Path) -> Tails:
@@ -298,18 +305,40 @@ async def test_a_turn_told_while_the_next_one_opened_marks_nothing_of_the_next(t
     assert second is not None and second.turn == Turn(Asked("second"), (RAN, Said(None, "Done.")))
 
 
-async def test_a_session_the_registry_stops_listing_is_forgotten_with_what_it_was_told(tmp_path: Path) -> None:
+async def test_a_session_the_registry_stops_listing_is_let_go_of_with_the_turn_it_was_holding(tmp_path: Path) -> None:
+    """What the catch-up holds is bounded by the sessions that are live, so an ended session's turn — every byte
+    of output it printed — is not held for as long as the daemon runs.
+
+    A Stop that arrives afterwards is still told, from the transcript read again: that is what a `claude -p`
+    session, gone the moment its turn stops, depends on. The turn it is told is that transcript's last, whether
+    or not the session heard it before — a repeat, where letting the turn go the other way round would be a
+    silence, and the same turn twice is the one of those two the user can do something about.
+    """
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(PROMPT, DONE))
+    transcript.write_text(lines(PROMPT, CALL, RESULT, DONE))
     registry = Registry([member(transcript)])
     tails = Tails(registry)
     await tails.catch_up()
     told = await tails.tell(SID, None)
-    assert told is not None
+    assert told is not None and told.turn == Turn(Asked("first"), (RAN, Said(None, "Done.")))
     tails.spoken(told)
     registry.members.clear()
     await tails.catch_up()
-    assert await tails.tell(SID, None) is None
+    again = await tails.tell(SID, None)
+    assert again is not None and again.turn == Turn(Asked("first"), (RAN, Said(None, "Done.")))
+
+
+async def test_a_session_that_exits_before_its_turn_is_told_is_still_told_all_of_it(tmp_path: Path) -> None:
+    """`claude -p` is gone the moment its turn stops, and the tail has read that turn long before the Stop."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, CALL, RESULT, DONE))
+    registry = Registry([member(transcript)])
+    tails = Tails(registry)
+    await tails.catch_up()
+    registry.members.clear()
+    await tails.catch_up()
+    telling = await tails.tell(SID, None)
+    assert telling is not None and telling.turn == Turn(Asked("first"), (RAN, Said(None, "Done.")))
 
 
 async def test_how_far_behind_the_newest_record_was_when_it_was_read_is_measured(tmp_path: Path) -> None:
