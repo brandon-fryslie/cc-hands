@@ -124,6 +124,24 @@ func TestAChordFritterSendsMeansWhatTheSameChordMeansTyped(t *testing.T) {
 	}
 }
 
+func TestAKeyThatEmptiesTheBoxSettlesTheLineEvenMidSequence(t *testing.T) {
+	// The line has to be recoverable from a held state, and the held state that matters is
+	// the one the parser cannot resolve: an Escape, then a message that opens like a
+	// terminal answer, leaves it holding bytes it cannot yet call typing. Freeing the
+	// count alone is not enough - the doubt has to go with it, or the ctrl_u sent to
+	// clear the line leaves the line held by the very request sent to clear it.
+	line := newLineOwner()
+	line.typed([]byte("\x1b"))
+	line.typed([]byte("Please fix the auth bug"))
+	if line.free() {
+		t.Fatal("the user is typing and the parser cannot yet see it; the line is not free")
+	}
+	line.sent(keystrokes["ctrl_u"])
+	if !line.free() {
+		t.Fatal("the box was emptied and the line is still held; nothing can recover it")
+	}
+}
+
 func TestPasteModeReadsWhatTheChildAnnounced(t *testing.T) {
 	mode := newPasteMode()
 	if mode.enabled() {

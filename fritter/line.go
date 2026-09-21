@@ -24,6 +24,11 @@ type lineOwner struct {
 	mu    sync.Mutex
 	stdin reader
 	chars int
+	// The parser ended a read still holding bytes that might be characters in the box.
+	// Kept here rather than asked of the parser, because emptying the box settles it
+	// whatever the parser was in the middle of: whatever those bytes were, they are not
+	// in the box now.
+	unsure bool
 }
 
 func newLineOwner() *lineOwner {
@@ -35,6 +40,9 @@ func (l *lineOwner) typed(input []byte) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.fold(l.stdin.read(input))
+	// After the fold, not before: bytes left unresolved at the end of this read may be
+	// characters typed after anything in it that emptied the box.
+	l.unsure = l.stdin.undecided()
 }
 
 // sent records what fritter itself put into the box.
@@ -47,13 +55,19 @@ func (l *lineOwner) sent(keys []byte) {
 	var chord reader
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.fold(chord.read(keys))
+	if l.fold(chord.read(keys)) {
+		// The box is empty, so whatever the stdin parser was still holding is not in it.
+		// Kept, those bytes would be read as typing later, and worse, a scan still looking
+		// for a terminator would swallow the next Enter along with everything else - so
+		// the request sent to free the line would be the reason it stayed held.
+		l.stdin = reader{}
+	}
 }
 
 // [LAW:dataflow-not-control-flow] Every press runs the same fold. Where it came from -
 // the keyboard or a control request - was decided by which reader produced it, and is not
 // a branch here.
-func (l *lineOwner) fold(presses []press) {
+func (l *lineOwner) fold(presses []press) (emptiedIt bool) {
 	for _, p := range presses {
 		switch p.does {
 		case inserted:
@@ -62,8 +76,14 @@ func (l *lineOwner) fold(presses []press) {
 			l.chars = max(l.chars-p.count, 0)
 		case emptied:
 			l.chars = 0
+			// An empty box is empty however unsure the parser was a moment ago. Without
+			// this the ctrl_u sent to free a held line frees the count and leaves the
+			// doubt, and the line stays held by the very request sent to clear it.
+			l.unsure = false
+			emptiedIt = true
 		}
 	}
+	return emptiedIt
 }
 
 // free reports whether the input box is clear of the user's own unsent characters.
@@ -74,5 +94,5 @@ func (l *lineOwner) fold(presses []press) {
 func (l *lineOwner) free() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.chars == 0 && !l.stdin.undecided()
+	return l.chars == 0 && !l.unsure
 }

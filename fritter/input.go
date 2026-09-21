@@ -173,6 +173,12 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 			if s[i] == esc && i+1 < len(s) && s[i+1] == '\\' {
 				return i + 2, press{}, true
 			}
+			// A terminal's answer is a printable payload. A control byte inside one says
+			// this was never a sequence, and waiting for a terminator that is not coming
+			// would swallow the Enter the user just pressed along with everything else.
+			if s[i] < 0x20 || s[i] == del {
+				return 1, press{}, true
+			}
 		}
 		return unterminated(s)
 	default:
@@ -207,11 +213,15 @@ func (r *reader) csi(s []byte) (n int, did press, complete bool) {
 		}
 		return len(x10Mouse) + 3, press{}, true
 	}
-	// Everything else ends at its first final byte, and the parameters before it are
-	// skipped rather than read - that skipping is the whole job.
+	// Everything else ends at its first final byte, and the parameters and intermediates
+	// before it are skipped rather than read - that skipping is the whole job. All of them
+	// are printable, so a control byte here says this was never a sequence either.
 	for i := 2; i < len(s) && i < sequenceLimit; i++ {
 		if s[i] >= 0x40 && s[i] <= 0x7e {
 			return i + 1, press{}, true
+		}
+		if s[i] < 0x20 || s[i] == del {
+			return 1, press{}, true
 		}
 	}
 	return unterminated(s)
