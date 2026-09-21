@@ -87,20 +87,22 @@ def read_session_tool(sessions: Sessions) -> Tool:
         """What a session has done, in the order it did it, from the point you last read to.
 
         Call this when the user asks what a session has been doing, or to catch up on one that was already
-        running before you attached. When `more` comes back true there is more after what you were given: call
-        again with `since` set to `more_since`. When `working` comes back true the session is in the middle of
-        a call that has not come back; what it did is read on the next call, so read on again later, not now.
+        running before you attached. When `more` comes back true there is history after what you were given:
+        ask the user whether to hear it, and call again with `since` set to `more_since` if they want it. When
+        `working` comes back true the session is in the middle of a call that has not come back; say what it is
+        in the middle of, and read on later rather than now, when what it did will be there.
 
         Args:
             session: The session's id, from list_sessions.
             since: The record id you last read to, from an earlier call's `more_since`. Empty reads from the start.
         """
-        membership = sessions.membership(SessionId(session))
-        if membership is None:
+        listing = sessions.listing(SessionId(session))
+        if listing is None:
             await params.result_callback({"error": f"there is no session {session}"})
             return
+        transcript = listing.session.membership.transcript
         try:
-            reading = await asyncio.to_thread(read_since, membership.transcript, Ref(since) if since else None)
+            reading = await asyncio.to_thread(read_since, transcript, Ref(since) if since else None)
         except Unseen:
             # [LAW:no-silent-failure] a mark from another session, or from a transcript since rewritten, is said
             # rather than read as "from the start", which would narrate the whole session over again unasked.
@@ -108,7 +110,7 @@ def read_session_tool(sessions: Sessions) -> Tool:
             return
         except OSError as error:
             # [LAW:no-silent-failure] the model is told why it got nothing, rather than being handed nothing.
-            logger.error(f"cannot read what session {session} did from {membership.transcript}: {error}")
+            logger.error(f"cannot read what session {session} did from {transcript}: {error}")
             await params.result_callback({"error": f"the transcript of session {session} could not be read"})
             return
         # The earliest of what it has not had, not the newest: read on from `more_since` and a session is
@@ -116,7 +118,11 @@ def read_session_tool(sessions: Sessions) -> Tool:
         shown = _page(reading.happenings)
         # A call the session is still waiting on is shown but never marked as read, so its result is told once
         # it lands rather than falling into the gap between one reading and the next.
-        settled = shown[: min(reading.settled, len(shown))]
+        # [LAW:one-source-of-truth] whether a session can still answer a call is the registry's to say, not the
+        # file's. One that has ended will never write the result of the call it was killed inside, and a mark
+        # held behind that call would leave the intermediary saying a dead session is still running something.
+        ended = isinstance(listing.session.state, Gone)
+        settled = shown if ended else shown[: min(reading.settled, len(shown))]
         # [LAW:one-source-of-truth] the mark names a record, and one record can carry both a settled happening
         # and the call the session is still inside — the text and the call it introduces are written together.
         # Marking that record would go on from after the whole of it, losing the very result the mark is held

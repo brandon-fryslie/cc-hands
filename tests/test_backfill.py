@@ -119,6 +119,30 @@ def test_a_call_id_that_comes_round_again_does_not_take_the_first_call_with_it(t
     assert isinstance(second, Ran) and second.command == "pytest -q" and second.output == "all good"
 
 
+def test_a_call_still_out_while_another_answers_holds_the_mark_where_it_is(tmp_path: Path) -> None:
+    """Calls run several at a time and their results land in any order: 138 of them did so on this machine.
+
+    Marking past a call because a later one came back first puts its result behind the mark, where the fold
+    reads it correctly and the cut then throws it away — the suite reported as run and never as failed.
+    """
+    calls = (
+        PROMPT,
+        CALL,
+        '{"uuid":"u3","type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}]}}',
+        '{"uuid":"u4","type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"a.py"}]}}',
+    )
+    out = read_since(written(tmp_path / "out.jsonl", *calls), None)
+    assert [type(happening).__name__ for happening in out.happenings] == ["Asked", "Ran", "Ran"]
+    # The second call came back; the first is still out, so the mark stays behind it.
+    assert out.settled == 1
+
+    landed = read_since(written(tmp_path / "landed.jsonl", *calls, RESULT), Ref("u1"))
+    assert [(step.command, step.output) for step in landed.happenings if isinstance(step, Ran)] == [
+        ("pytest", "3 tests did not pass"),
+        ("ls", "a.py"),
+    ]
+
+
 def test_a_mark_this_transcript_never_held_is_said_rather_than_read_as_the_start(tmp_path: Path) -> None:
     """[LAW:no-silent-failure] otherwise a mark from another session re-tells this one from the top as if new."""
     transcript = written(tmp_path / "s.jsonl", PROMPT, CALL, RESULT, DONE)

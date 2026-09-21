@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.events import Joined
+from hands.core.events import Ended, Joined
 from hands.core.session import Membership, SessionId
 from hands.sessions.registry import Sessions
 from hands.voice.tools import READBACK_COUNT, read_session_tool
@@ -200,6 +200,26 @@ async def test_a_record_that_names_no_id_is_never_the_mark_handed_back(tmp_path:
     answer = await read(await joined(transcript))
     assert [happening["record"] for happening in answer["happened"]] == ["u1", None]
     assert answer["more_since"] == "u1"
+
+
+async def test_a_session_that_has_ended_is_never_said_to_be_in_the_middle_of_something(tmp_path: Path) -> None:
+    """A session killed inside a call will never write its result [LAW:one-source-of-truth].
+
+    Whether one can still answer is the registry's to say, not the file's: held to the file alone, the mark
+    would sit behind that call for ever and the intermediary would keep calling a dead session busy.
+    """
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text(
+        '{"uuid":"u1","type":"user","message":{"role":"user","content":"run the suite"}}\n'
+        '{"uuid":"u2","type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest"}}]}}\n'
+    )
+    sessions = await joined(transcript)
+    assert (await read(sessions))["working"] is True
+
+    await sessions.apply(Ended(SID, "other"))
+    ended = await read(sessions)
+    assert ended["working"] is False
+    assert ended["more_since"] == "u2"
 
 
 async def test_a_mark_this_session_never_held_is_said_rather_than_read_as_the_start(tmp_path: Path) -> None:

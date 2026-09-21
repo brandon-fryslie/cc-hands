@@ -10,7 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from hands.core.turn import Happening, Opening, Ref, Step
+from hands.core.turn import Asked, Happening, Notified, Opening, Ref, Said, Step
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import ref_of, turn_record
 from hands.sessions.turning import Turning
@@ -93,16 +93,25 @@ def _waiting(turning: Turning, places: list[int]) -> set[int]:
     return {places[place] for place in turning.places.values() if isinstance(turning.slots[place], str)}
 
 
-def _settled(happenings: list[Happening], waiting: set[int]) -> int:
-    """How much of a reading is finished business, which is all of it up to the calls it ends on.
+# What proves a session moved on from a call it never answered: Claude writes no word and is asked nothing
+# new until every outstanding result is in, so either of these after an open call means nothing is coming.
+_MOVED_ON = (Said, Asked, Notified)
 
-    Only the calls it *ends* on: a call with work after it is one the session moved on from, whose result is
-    never coming, and holding the mark behind it would re-read the rest of the session for ever after.
+
+def _settled(happenings: list[Happening], waiting: set[int]) -> int:
+    """How much of a reading is finished business: all of it up to the first call that may still be answered.
+
+    Not only the calls a reading *ends* on. Several run at once and their results land in any order, so a call
+    can be open with another call's result already written after it; marking past it puts its result behind the
+    mark, where it is read correctly and then cut off, and the suite is reported as run and never as failed.
+
+    Except a call the session has already moved on from, which no mark may wait on for ever. Of the 32 open
+    calls in the transcripts on this machine, 10 have a reply or a new request after them — interrupted, or
+    killed mid-tool — and nothing will ever answer those; the other 22 have only calls and results after them,
+    and are the ones still running.
     """
-    settled = len(happenings)
-    while settled > 0 and settled - 1 in waiting:
-        settled -= 1
-    return settled
+    moved_on = max((index for index, happening in enumerate(happenings) if isinstance(happening, _MOVED_ON)), default=-1)
+    return min((index for index in waiting if index > moved_on), default=len(happenings))
 
 
 def _in_order(steps: list[Step], openings: list[_Opened]) -> tuple[list[Happening], list[int]]:

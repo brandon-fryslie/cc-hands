@@ -508,6 +508,14 @@ class Questioned: ref: Ref | None; questions: tuple[Question, ...]   # AskUserQu
 class Other:      ref: Ref | None; tool: str; input: str; result: str; failed: bool  # named and summarised, never dropped
 
 GitChange = Committed | Pushed | Branched | PullRequested   # what a command did to the repository
+
+@dataclass(frozen=True)
+class Asked:      ref: Ref | None; text: str    # the user's own prompt, typed or sent through the SDK
+@dataclass(frozen=True)
+class Notified:   ref: Ref | None; text: str    # a background task's report, handed over as the next prompt
+
+Opening = Asked | Notified          # who opened the turn, so a notification is never told as something asked
+Happening = Opening | Step          # what a reading of a session is made of; an opening is markable like a step
 ```
 
 **What the records really say**, read out of 900 transcripts on 2026-09-21, against which
