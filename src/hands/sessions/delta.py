@@ -11,6 +11,8 @@ import asyncio
 import os
 import shutil
 import tempfile
+import time
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,10 +22,24 @@ from loguru import logger
 
 from hands.core.delta import Changed, Commit, Delta
 from hands.core.session import SessionId
+from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 
-# How long one git command is given before the turn is told without its delta. Generous: the snapshot is taken
-# while a prompt's hook waits, and a repository slow enough to pass this is one something else is wrong with.
-PATIENCE = 20.0
+# What a mark may spend, all its git commands together. It is taken while a prompt's hook waits on the daemon,
+# and the shim gives up after POST_TIMEOUT_SECONDS and prints that it cannot reach the daemon — so a mark that
+# costs more than the hook can afford is worse than no mark at all, and the half second is the rest of the
+# round trip [LAW:carrying-cost]. A repository too slow for this has its turn told by its steps alone.
+MARKING = POST_TIMEOUT_SECONDS - 0.5
+
+# What reading a delta may spend. Nothing holds a hook open for this: it runs on its own once the turn has
+# stopped, and the only thing waiting is a narrator about to spend seconds on a model.
+READING = 20.0
+
+# How long the narrator waits for a reading still going before it tells the turn without it.
+PATIENCE = 3.0
+
+# Readings held for a narrator that has not taken them. One per turn; a daemon whose voice never loaded has
+# no narrator at all, and must not grow a patch per turn for one that is never coming.
+HELD = 8
 
 # The most of a patch kept in memory until it is told. The summariser's budget cuts it again and much smaller;
 # this only stops a formatter's rewrite of a whole repository from sitting here until someone asks.
@@ -46,7 +62,7 @@ class Changes(Protocol):
 
     async def compare(self, session: SessionId) -> None: ...
 
-    def taken(self, session: SessionId) -> Delta: ...
+    async def taken(self, session: SessionId) -> Delta: ...
 
 
 class NoChanges:
@@ -56,22 +72,32 @@ class NoChanges:
 
     async def compare(self, session: SessionId) -> None: ...
 
-    def taken(self, session: SessionId) -> Delta:
+    async def taken(self, session: SessionId) -> Delta:
         return Delta()
 
 
 class Deltas:
     """Where each session's repository stood when its turn began, so what the turn changed can be read at its end."""
 
-    def __init__(self, patience: float = PATIENCE) -> None:
+    def __init__(self, marking: float = MARKING, reading: float = READING, patience: float = PATIENCE) -> None:
+        self._marking = marking
+        self._reading = reading
         self._patience = patience
+        # Bounded by the sessions the registry itself keeps, which holds every session it has heard of.
         self._marks: dict[SessionId, Mark] = {}
-        self._taken: dict[SessionId, Delta] = {}
+        # One reading per turn that stopped, oldest first, so a session that stops twice while the narrator is
+        # busy has each turn told with its own delta rather than the newer one told as both.
+        self._readings: dict[SessionId, deque[asyncio.Future[Delta]]] = {}
+        self._running: set[asyncio.Task[None]] = set()
 
     async def snapshot(self, session: SessionId, cwd: Path) -> None:
-        """Mark where the repository stands, before the turn has had the chance to change anything in it."""
+        """Mark where the repository stands, before the turn has had the chance to change anything in it.
+
+        Awaited while the prompt's hook waits, which is what makes it a mark of the turn's beginning rather
+        than of some moment inside it — and why all of it together is given less than that hook can afford.
+        """
         self._marks.pop(session, None)
-        mark = await self._mark(cwd)
+        mark = await self._mark(cwd, time.monotonic() + self._marking)
         if mark is None:
             # Not a repository, or one that cannot be read: the turn is told by its steps, which is most of it.
             logger.debug(f"nothing to compare a turn of session {session} against in {cwd}")
@@ -79,54 +105,90 @@ class Deltas:
         self._marks[session] = mark
 
     async def compare(self, session: SessionId) -> None:
-        """Read what the turn changed against the mark its start took, and hold it until it is told.
+        """Take the turn's place in the order and start reading what it changed. Waits for none of it.
 
-        Read when the turn stops, not when its summary is made: summaries are made one at a time and take
+        Started when the turn stops, not when its summary is made: summaries are made one at a time and take
         seconds, by which time the session may have begun another turn and changed more, and the delta would
         then hold two turns' work and be told as one [LAW:no-ambient-temporal-coupling].
+
+        Nothing is awaited here, and that is the point: this runs while a Stop hook waits on the daemon, and
+        the effect queued after it is the one that has the turn spoken at all. A reading that is slow, that
+        fails, or whose hook gives up and has its handler cancelled must cost the turn its delta and never
+        its telling [LAW:no-silent-failure].
         """
+        pending: asyncio.Future[Delta] = asyncio.get_running_loop().create_future()
+        held = self._readings.setdefault(session, deque(maxlen=HELD))
+        if len(held) == held.maxlen:
+            logger.warning(f"{HELD} deltas of session {session} have gone untold, so the oldest is dropped")
+        held.append(pending)
         mark = self._marks.pop(session, None)
         if mark is None:
+            pending.set_result(Delta())
             return
-        delta = await self._between(mark)
-        if delta:
-            self._taken[session] = delta
+        task = asyncio.create_task(self._read(pending, mark), name=f"what a turn of session {session} changed")
+        # Held, because the loop keeps only a weak reference and would collect a task nobody is awaiting.
+        self._running.add(task)
+        task.add_done_callback(self._running.discard)
 
-    def taken(self, session: SessionId) -> Delta:
-        """What this session's last turn changed, and nothing twice: a delta told is a delta spent."""
-        return self._taken.pop(session, Delta())
+    async def taken(self, session: SessionId) -> Delta:
+        """What the turn that stopped changed, waited for while its reading is still going. Taken once.
 
-    async def _mark(self, cwd: Path) -> Mark | None:
-        root = await self._git(cwd, "rev-parse", "--show-toplevel")
+        Spent whatever becomes of the turn it belongs to, including a summary that fails. One reading is made
+        for every turn that stops and one telling is made for every turn that stops, so each telling takes
+        exactly one, and that is the whole of what keeps the two in step. Held back for a turn whose summary
+        failed, this reading would be taken by the next turn's telling and that turn would be told the turn
+        before's changes — and a listener can do something about changes they did not hear, and nothing about
+        changes attributed to the wrong turn [LAW:no-ambient-temporal-coupling].
+        """
+        held = self._readings.get(session)
+        if not held:
+            return Delta()
+        reading = held.popleft()
+        try:
+            return await asyncio.wait_for(asyncio.shield(reading), self._patience)
+        except TimeoutError:
+            logger.info(f"what a turn of session {session} changed is still being read, so the turn is told without it")
+            return Delta()
+
+    async def _read(self, pending: asyncio.Future[Delta], mark: Mark) -> None:
+        """[LAW:no-silent-failure] whatever happens here, whoever is waiting is answered rather than left."""
+        try:
+            delta = await self._between(mark, time.monotonic() + self._reading)
+        except Exception as error:
+            logger.error(f"what a turn changed in {mark.root} could not be read: {type(error).__name__}: {error}")
+            delta = Delta()
+        if not pending.done():
+            pending.set_result(delta)
+
+    async def _mark(self, cwd: Path, deadline: float) -> Mark | None:
+        root = await self._git(cwd, "rev-parse", "--show-toplevel", deadline=deadline)
         if not root:
             return None
-        tree = await self._tree(Path(root))
-        return None if tree is None else Mark(Path(root), await self._git(Path(root), "rev-parse", "HEAD"), tree)
+        tree = await self._tree(Path(root), deadline)
+        return None if tree is None else Mark(Path(root), await self._git(Path(root), "rev-parse", "HEAD", deadline=deadline), tree)
 
-    async def _between(self, mark: Mark) -> Delta:
-        tree = await self._tree(mark.root)
+    async def _between(self, mark: Mark, deadline: float) -> Delta:
+        tree = await self._tree(mark.root, deadline)
         if tree is None:
             return Delta()
-        commits = await self._commits(mark)
+        commits = await self._commits(mark, deadline)
         if tree == mark.tree:
             # The working tree came back to where it started, which a commit and nothing else does.
             return Delta(commits=commits)
-        return Delta(_files(await self._git(mark.root, "diff", "--numstat", mark.tree, tree)), commits, await self._patch(mark.root, mark.tree, tree))
+        files = _files(await self._git(mark.root, "diff", "--numstat", mark.tree, tree, deadline=deadline))
+        patch = await self._git(mark.root, "diff", mark.tree, tree, deadline=deadline)
+        return Delta(files, commits, "" if patch is None else patch[:MOST])
 
-    async def _commits(self, mark: Mark) -> tuple[Commit, ...]:
-        head = await self._git(mark.root, "rev-parse", "HEAD")
+    async def _commits(self, mark: Mark, deadline: float) -> tuple[Commit, ...]:
+        head = await self._git(mark.root, "rev-parse", "HEAD", deadline=deadline)
         if head is None or head == mark.head:
             return ()
         # What is reachable from where the turn ended and not from where it began, which is what the turn
         # added however it got there — a merge, a rebase, or an amend that rewrote the commit before it.
-        listed = await self._git(mark.root, "log", "--format=%h%x1f%s", f"{mark.head}..{head}" if mark.head else head)
+        listed = await self._git(mark.root, "log", "--format=%h%x1f%s", f"{mark.head}..{head}" if mark.head else head, deadline=deadline)
         return () if not listed else tuple(Commit(*line.split("\x1f", 1)) for line in listed.splitlines() if "\x1f" in line)
 
-    async def _patch(self, root: Path, before: str, after: str) -> str:
-        patch = await self._git(root, "diff", before, after)
-        return "" if patch is None else patch[:MOST]
-
-    async def _tree(self, root: Path) -> str | None:
+    async def _tree(self, root: Path, deadline: float) -> str | None:
         """Everything git would keep, as one tree object, through an index of this daemon's own.
 
         The repository's own index is copied rather than started from nothing, and only copied: it carries what
@@ -136,7 +198,7 @@ class Deltas:
         """
         with tempfile.TemporaryDirectory(prefix="hands-index-") as scratch:
             index = Path(scratch) / "index"
-            known = await self._git(root, "rev-parse", "--git-path", "index")
+            known = await self._git(root, "rev-parse", "--git-path", "index", deadline=deadline)
             if known is not None:
                 try:
                     shutil.copyfile(Path(known) if Path(known).is_absolute() else root / known, index)
@@ -144,16 +206,22 @@ class Deltas:
                     # Missing before a first commit, or being rewritten as this read it: start from nothing.
                     logger.debug(f"the index of {root} could not be copied, so the snapshot reads every file: {error}")
             env = {"GIT_INDEX_FILE": str(index)}
-            if await self._git(root, "add", "-A", env=env) is None:
+            if await self._git(root, "add", "-A", env=env, deadline=deadline) is None:
                 return None
-            return await self._git(root, "write-tree", env=env)
+            return await self._git(root, "write-tree", env=env, deadline=deadline)
 
-    async def _git(self, cwd: Path, *args: str, env: Mapping[str, str] | None = None) -> str | None:
-        """What one git command said, or None where git could not answer.
+    async def _git(self, cwd: Path, *args: str, env: Mapping[str, str] | None = None, deadline: float) -> str | None:
+        """What one git command said, or None where git could not answer inside what is left of the deadline.
 
         [LAW:no-silent-failure] a repository that cannot be read leaves the turn told without its delta and
-        says why in the log, rather than failing the summary of a turn that mostly happened elsewhere.
+        says why in the log, rather than failing the summary of a turn that mostly happened elsewhere. The
+        deadline is the whole reading's, not this command's: five commands that each take a second are as
+        late as one that takes five, and it is the total a hook or a listener is waiting through.
         """
+        left = deadline - time.monotonic()
+        if left <= 0:
+            logger.warning(f"there was no time left to run git {args[0]} in {cwd}, so the turn is told without it")
+            return None
         try:
             process = await asyncio.create_subprocess_exec(
                 "git",
@@ -169,10 +237,12 @@ class Deltas:
             logger.error(f"cannot run git in {cwd}: {error}")
             return None
         try:
-            out, err = await asyncio.wait_for(process.communicate(), self._patience)
+            out, err = await asyncio.wait_for(process.communicate(), left)
         except TimeoutError:
             process.kill()
-            logger.error(f"git {args[0]} in {cwd} did not answer in {self._patience}s, so the turn is told without it")
+            # Reaped here rather than left to the loop, which would report it as a subprocess still running.
+            await process.wait()
+            logger.error(f"git {args[0]} in {cwd} did not answer in {left:.1f}s, so the turn is told without it")
             return None
         if process.returncode != 0:
             logger.debug(f"git {args[0]} in {cwd}: {err.decode(errors='replace').strip()}")

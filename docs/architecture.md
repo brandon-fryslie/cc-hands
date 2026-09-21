@@ -619,9 +619,23 @@ few unreferenced objects, which git's own housekeeping collects.
 `Compare` is its own effect, emitted before `Summarise` and performed before it, rather
 than read when the summary is made: summaries are made one at a time and take seconds,
 and by then the session may have begun another turn, whose changes would be told as
-part of the one before it `[LAW:no-ambient-temporal-coupling]`. The snapshot races the
-agent's first edit by however long the model takes to start, which is seconds, and an
-edit that wins the race is still an `Edited` step.
+part of the one before it `[LAW:no-ambient-temporal-coupling]`. It starts the reading
+and waits for none of it. Both hooks are blocking ones and the shim gives up after
+`POST_TIMEOUT_SECONDS`, after which it prints that it cannot reach the daemon; the
+effect queued after `Compare` is the one that has the turn spoken at all, so a reading
+that is slow, that fails, or whose handler is cancelled must cost the turn its delta
+and never its telling `[LAW:no-silent-failure]`. Measured: the stop hook waits 0 ms,
+and the prompt hook 40 ms here and 145 ms on 20,000 files, against a mark's whole
+budget of `POST_TIMEOUT_SECONDS - 0.5`.
+
+One reading is made for every turn that stops, held in the order the turns stopped, and
+every telling takes exactly one — including a telling whose summary failed. That is the
+whole of what keeps readings and tellings in step. Held back for a turn that could not
+be summarised, a reading would be taken by the next turn's telling, and a listener can
+do something about changes they did not hear and nothing about changes attributed to
+the wrong turn. The snapshot races the agent's first edit by however long the model
+takes to start, which is seconds, and an edit that wins the race is still an `Edited`
+step.
 
 ## Summaries: spoken form, and the narration tree
 

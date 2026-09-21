@@ -42,7 +42,7 @@ async def narrate(
         name = spoken_name(sessions, story.session)
         match story:
             case Summarise(session=session, closing=closing):
-                spoken = await recount(tails, session, closing, name, summarise, record, budget, read.taken(session))
+                spoken = await recount(tails, session, closing, name, summarise, record, budget, await read.taken(session))
             case SessionGone():
                 spoken = TTSSpeakFrame(f"The session {name} is gone.")
         if spoken is not None:

@@ -167,8 +167,12 @@ class Sessions:
             case Snapshot(session=session, cwd=cwd):
                 await self._changes.snapshot(session, cwd)
             case Compare(session=session):
-                # Awaited here, so the delta is read and waiting before the Summarise after it is ever queued.
-                await self._changes.compare(session)
+                # [LAW:no-silent-failure] reading what a turn changed is best effort, and may never cost the
+                # turn its telling: the Summarise queued after this is what has the turn spoken at all.
+                try:
+                    await self._changes.compare(session)
+                except Exception as error:
+                    logger.error(f"what the turn of session {session} changed could not be read: {type(error).__name__}: {error}")
 
     def _reply(self, session: SessionId, request: RequestId, reply: HookReply) -> None:
         waiting = self._waiting.get(request)

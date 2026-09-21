@@ -39,5 +39,10 @@ class Delta:
     patch: str = ""
 
     def __bool__(self) -> bool:
-        """Whether there is anything here to tell. The patch alone is never enough: it names no file."""
-        return bool(self.files or self.commits)
+        """Whether there is anything here to tell.
+
+        The patch counts, even alone. It names no file, and a patch with no files is git answering one
+        question and not the next — but a repository that demonstrably moved is news, and telling it badly
+        beats telling the listener nothing at all [LAW:no-silent-failure].
+        """
+        return bool(self.files or self.commits or self.patch)

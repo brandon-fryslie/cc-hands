@@ -1,6 +1,7 @@
 """What a turn changed in the repository it ran in, read from git without disturbing it."""
 
 import subprocess
+import time
 from pathlib import Path
 
 from hands.core.delta import Delta
@@ -33,7 +34,7 @@ async def turn(root: Path, work: object = None) -> Delta:
     if callable(work):
         work()
     await deltas.compare(SID)
-    return deltas.taken(SID)
+    return await deltas.taken(SID)
 
 
 async def test_a_turn_whose_only_change_came_from_a_shell_command_names_the_file_it_changed(tmp_path: Path) -> None:
@@ -124,7 +125,7 @@ async def test_a_turn_stopping_with_no_mark_before_it_reads_nothing(tmp_path: Pa
     """The daemon started in the middle of a turn: there is no beginning to compare against, so there is no delta."""
     deltas = Deltas()
     await deltas.compare(SID)
-    assert not deltas.taken(SID)
+    assert not await deltas.taken(SID)
 
 
 async def test_a_delta_is_told_once_and_never_twice(tmp_path: Path) -> None:
@@ -134,8 +135,8 @@ async def test_a_delta_is_told_once_and_never_twice(tmp_path: Path) -> None:
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("x = 3\n")
     await deltas.compare(SID)
-    assert deltas.taken(SID)
-    assert not deltas.taken(SID)
+    assert await deltas.taken(SID)
+    assert not await deltas.taken(SID)
 
 
 async def test_a_new_turn_reads_against_its_own_beginning_and_not_the_one_before(tmp_path: Path) -> None:
@@ -144,12 +145,12 @@ async def test_a_new_turn_reads_against_its_own_beginning_and_not_the_one_before
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("first turn\n")
     await deltas.compare(SID)
-    assert [file.path for file in deltas.taken(SID).files] == ["a.py"]
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["a.py"]
 
     await deltas.snapshot(SID, root)
     (root / "b.py").write_text("second turn\n")
     await deltas.compare(SID)
-    assert [file.path for file in deltas.taken(SID).files] == ["b.py"]
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["b.py"]
 
 
 async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed(tmp_path: Path) -> None:
@@ -174,6 +175,93 @@ async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed
     # The story is queued, and by the time anyone takes it the delta is already read and waiting.
     story = await sessions.story()
     assert story.session == SID
-    delta = deltas.taken(SID)
+    delta = await deltas.taken(SID)
     assert [(file.path, file.added, file.removed) for file in delta.files] == [("a.py", 1, 1)]
     assert "x = 99" in delta.patch
+
+
+async def test_a_mark_that_would_cost_more_than_the_hook_can_afford_is_not_taken(tmp_path: Path) -> None:
+    """A prompt's hook waits on this one, and the shim gives up after two seconds and says it cannot reach
+    the daemon — on every prompt and every stop. A repository too slow to mark has its turn told without."""
+    root = repo(tmp_path)
+    deltas = Deltas(marking=0.0)
+    await deltas.snapshot(SID, root)
+    (root / "a.py").write_text("changed\n")
+    await deltas.compare(SID)
+    assert not await deltas.taken(SID)
+
+
+async def test_a_stop_waits_for_none_of_the_reading_it_starts(tmp_path: Path) -> None:
+    """The turn's telling is queued right after this, and a reading that is slow, that fails, or whose hook
+    gives up must cost the turn its delta and never its telling."""
+    root = repo(tmp_path)
+    deltas = Deltas()
+    await deltas.snapshot(SID, root)
+    (root / "a.py").write_text("changed by something\n")
+    start = time.perf_counter()
+    await deltas.compare(SID)
+    assert time.perf_counter() - start < 0.01, "the stop path waited for git"
+    # And the reading still arrives, for whoever comes to take it.
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["a.py"]
+
+
+async def test_two_turns_that_stop_before_either_is_told_keep_their_own_changes(tmp_path: Path) -> None:
+    """The narrator summarises one turn at a time and takes seconds over each, so a session can stop twice
+    before the first is told. Told the newer delta, the first turn would be given results it never had."""
+    root = repo(tmp_path)
+    deltas = Deltas()
+
+    await deltas.snapshot(SID, root)
+    (root / "first.py").write_text("turn one\n")
+    await deltas.compare(SID)
+
+    await deltas.snapshot(SID, root)
+    (root / "second.py").write_text("turn two\n")
+    await deltas.compare(SID)
+
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
+
+
+async def test_a_turn_that_stops_with_nothing_to_read_still_takes_its_place_in_the_order(tmp_path: Path) -> None:
+    """One reading is made for every turn that stops, so every telling takes exactly one and the two stay in
+    step. A stop that reads nothing must still leave something to take, or every later turn is told the one
+    before's changes."""
+    root = repo(tmp_path)
+    deltas = Deltas()
+    await deltas.compare(SID)  # no mark: the daemon started in the middle of this turn
+
+    await deltas.snapshot(SID, root)
+    (root / "later.py").write_text("a later turn\n")
+    await deltas.compare(SID)
+
+    assert not await deltas.taken(SID)
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["later.py"]
+
+
+async def test_a_reading_that_fails_outright_still_lets_the_turn_be_told(tmp_path: Path) -> None:
+    """[LAW:no-silent-failure] the effect queued after the reading is the one that has the turn spoken at all.
+
+    Without this the turn is never told and nothing says why: the user simply stops hearing about a session.
+    """
+    import asyncio
+
+    from hands.core.effects import Summarise
+    from hands.core.events import Joined, Stopped
+    from hands.core.session import Membership
+    from hands.sessions.registry import Sessions
+
+    class Breaks:
+        async def snapshot(self, session: SessionId, cwd: Path) -> None: ...
+
+        async def compare(self, session: SessionId) -> None:
+            raise RuntimeError("git is on fire")
+
+        async def taken(self, session: SessionId) -> Delta:
+            return Delta()
+
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=Breaks())
+    await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
+    await sessions.apply(Stopped(SID, "Done."))
+    story = await asyncio.wait_for(sessions.story(), 2.0)
+    assert isinstance(story, Summarise) and story.session == SID
