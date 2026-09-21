@@ -94,24 +94,28 @@ class Tails:
         # [LAW:one-source-of-truth] where a session's transcript is, is the registry's to say, not this one's to keep.
         self._known = known
         self._following: dict[SessionId, Following] = {}
+        # [LAW:no-ambient-temporal-coupling] reading happens off the loop in a thread, and a Stop reads the same
+        # transcript the catch-up is reading. One reader at a time, so no two threads are ever inside one Following.
+        self._reading = asyncio.Lock()
         # How far behind the newest record read was when it was read, in seconds.
         self.lag: float | None = None
 
     async def catch_up(self) -> None:
         """Read what has been appended to every live session's transcript, and forget the sessions that are gone."""
-        members = self._known.live_members()
-        live = {member.id for member in members}
-        self._following = {session: following for session, following in self._following.items() if session in live}
-        for member in members:
-            following = self._following.setdefault(member.id, Following(member.transcript))
-            try:
-                await asyncio.to_thread(self._read, member.id, following)
-            except FileNotFoundError:
-                # Claude Code creates the transcript with its first record, which a session may not have written yet.
-                logger.debug(f"session {member.id} has not written {following.path} yet")
-            except OSError as error:
-                # [LAW:no-silent-failure] the offset does not move, so the same bytes are read again at the next catch-up.
-                logger.error(f"cannot read the transcript of session {member.id} from {following.path}: {error}")
+        async with self._reading:
+            members = self._known.live_members()
+            live = {member.id for member in members}
+            self._following = {session: following for session, following in self._following.items() if session in live}
+            for member in members:
+                following = self._following.setdefault(member.id, Following(member.transcript))
+                try:
+                    await asyncio.to_thread(self._read, member.id, following)
+                except FileNotFoundError:
+                    # Claude Code creates the transcript with its first record, which a session may not have written yet.
+                    logger.debug(f"session {member.id} has not written {following.path} yet")
+                except OSError as error:
+                    # [LAW:no-silent-failure] the offset does not move, so the same bytes are read again at the next catch-up.
+                    logger.error(f"cannot read the transcript of session {member.id} from {following.path}: {error}")
 
     async def tell(self, session: SessionId, closing: str | None) -> Telling | None:
         """What the session has not been told of its turn, or None before anything has opened one.
@@ -119,26 +123,27 @@ class Tails:
         `closing` is the reply the Stop hook carries. Measured over twelve live turns, Claude Code writes that
         reply's own record 46 to 77 ms after the hook fires, so the hook's copy stands in until the record lands.
         """
-        following = self._follow(session)
-        if following is None:
-            # A Stop from a session the registry does not list: there is no transcript to tell it from.
-            return None
-        # The turn stopped a moment ago, so the last records of it may not have been read by the loop yet.
-        # A transcript that cannot be read raises here, where the narrator says so rather than saying nothing.
-        await asyncio.to_thread(self._read, session, following)
-        if following.opening is None:
-            return None
-        steps = following.settled()
-        # Claude Code only ever appends, so the record of a stand-in that has since been written is the first step
-        # after what was heard; counting it heard too is how the stand-in gives way without the reply being told twice.
-        heard = following.told + (1 if following.stood_in is not None and _said_at(steps, following.told) == following.stood_in else 0)
-        # [LAW:one-source-of-truth] the transcript is the record of what Claude said; the hook's copy stands in only
-        # while the turn does not yet end on it. Both are read the same way, so a record padded with whitespace
-        # neither misses its stand-in nor hides behind one.
-        reply = _spoken(closing)
-        stand_in = None if reply == _said_at(steps, len(steps) - 1) else reply
-        shown = steps[heard:] if stand_in is None else [*steps[heard:], Said(None, stand_in)]
-        return Telling(session, Turn(following.opening, tuple(shown)), following.number, len(steps), stand_in)
+        async with self._reading:
+            following = self._follow(session)
+            if following is None:
+                # A Stop from a session the registry does not list: there is no transcript to tell it from.
+                return None
+            # The turn stopped a moment ago, so the last records of it may not have been read by the loop yet.
+            # A transcript that cannot be read raises here, where the narrator says so rather than saying nothing.
+            await asyncio.to_thread(self._read, session, following)
+            if following.opening is None:
+                return None
+            steps = following.settled()
+            # Claude Code only ever appends, so the record of a stand-in that has since been written is the first step
+            # after what was heard; counting it heard too is how the stand-in gives way without the reply being told twice.
+            heard = following.told + (1 if following.stood_in is not None and _said_at(steps, following.told) == following.stood_in else 0)
+            # [LAW:one-source-of-truth] the transcript is the record of what Claude said; the hook's copy stands in only
+            # while the turn does not yet end on it. Both are read the same way, so a record padded with whitespace
+            # neither misses its stand-in nor hides behind one.
+            reply = _spoken(closing)
+            stand_in = None if reply == _said_at(steps, len(steps) - 1) else reply
+            shown = steps[heard:] if stand_in is None else [*steps[heard:], Said(None, stand_in)]
+            return Telling(session, Turn(following.opening, tuple(shown)), following.number, len(steps), stand_in)
 
     def spoken(self, telling: Telling) -> None:
         """Mark what a telling held as told. A telling of a turn that has since been replaced marks nothing."""

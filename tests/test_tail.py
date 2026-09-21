@@ -1,5 +1,6 @@
 """A session's transcript, followed as Claude Code writes it, and the turn it is read into."""
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -303,3 +304,15 @@ async def test_how_far_behind_the_newest_record_was_when_it_was_read_is_measured
     transcript.write_text(lines(PROMPT, stamped, DONE))
     await tails.catch_up()
     assert tails.lag is None
+
+
+async def test_the_catch_up_and_a_stop_never_read_the_same_bytes_twice(tmp_path: Path) -> None:
+    """Both read off the loop in a thread, and a Stop reads the transcript the catch-up is already reading."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, CALL, RESULT, DONE))
+    tails = Tails(Registry([member(transcript)]))
+    await asyncio.gather(*(tails.catch_up() for _ in range(8)), tails.tell(SID, None), tails.tell(SID, None))
+    telling = await tails.tell(SID, None)
+    # Read twice, every step would be here twice over.
+    assert telling is not None
+    assert telling.turn == Turn(Asked("first"), (Said(None, "Done."), RAN, Said(None, "Done.")))
