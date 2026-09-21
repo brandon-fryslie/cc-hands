@@ -513,10 +513,17 @@ three lines of the design above were wrong:
 table — what proves it ran, how it counts what passed and what failed, and how it names a
 failure — fitted to output captured from pytest, vitest, cargo test and go test, passing and
 failing, and kept in `tests/fixtures/testruns/`. `go test` counts nothing it did not fail, so
-`Tested.passed` is None there and a run's failures are counted by the names it printed. A
-command is a test run because its output is a runner's, never because of how the command was
-spelled, so `make test` and a script reach the same table. Questions asked in plain text
-rather than through `AskUserQuestion` are found when the turn is summarised.
+`Tested.passed` is None there and a run's failures are counted by the names it printed. A run
+is counted by the summary lines its mark found and by nothing else in the scrollback, added up
+across them: a workspace prints one summary per test binary, and vitest counts its files on the
+line above the one that counts its tests. A command is a test run because its output is a
+runner's, never because of how the command was spelled, so `make test` and a script reach the
+same table — and `Tested` is claimed only where those counts are the whole story. A command
+that failed while nothing is counted failing did more than run a suite, and so did one that
+committed on its way; both stay the `Ran` that carries the output saying what else happened.
+`go test` writes its package line the same way for a package that never built, with the reason
+where the time goes, so a package line counts only when it carries the time it took. Questions
+asked in plain text rather than through `AskUserQuestion` are found when the turn is summarised.
 
 Record shapes worth knowing, observed in transcripts on 2026-09-14:
 
