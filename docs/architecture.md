@@ -585,16 +585,17 @@ Verified live on 2026-09-21 with a second `Stop` hook that blocks once: the firs
 heard as what the turn had done, and the second as `echo second` and nothing before it,
 1.41 s and 1.21 s from `Stop` to the spoken summary.
 
-`Told.closing` is there because the hook and the transcript disagree for a moment:
+The stand-in reply is kept because the hook and the transcript disagree for a moment:
 measured over twelve live turns, the reply `Stop` carries is never yet in the
 transcript when the hook fires, and its record lands 46 to 77 ms later. So the hook's
 copy stands in as the turn's last step while the record is missing, and gives way to
 the record — never telling the reply twice — because Claude Code only appends, which
 puts that record first among the steps not yet told `[LAW:one-source-of-truth]`. What
-is *not* covered: a tool result written after the reading is never told, because its
+is *not* covered: a tool result written after a turn was told is never told, because its
 call was already told as having none. Every call was paired with its result at `Stop`
-in all twelve turns, so this is out of reach until the tail reads mid-turn, where the
-tail ticket owns it.
+in all twelve turns, so this is out of reach at a `Stop`. The tail can complete a call it
+has already told — the slot is still there — but a completed step told out of order only
+makes sense once steps are told as they arrive, so the progress ticket owns it.
 
 `render(turn, budget)` in `core` writes the turn as the summariser's message
 under `TURN_BUDGET`: 600 characters of the opening, 1,500 of each text block, 200 of
