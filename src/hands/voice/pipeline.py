@@ -33,6 +33,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport, Speaker
 from hands.voice.ptt import KeyVAD, PushToTalk
+from hands.voice.spoken import SpokenForm
 from hands.voice.tools import Tool
 from hands.voice.whisper import Whisper
 
@@ -145,7 +146,10 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
     llm = build_llm(
         config.llm, instruction=SPOKEN_REPLY_INSTRUCTION, max_tokens=config.max_reply_tokens
     )
-    tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice))
+    # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
+    # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
+    # own reply alike, so this is the one place all of them meet before they are heard.
+    tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice), text_filters=[SpokenForm()])
 
     turns = UserTurnStrategies(
         start=[VADUserTurnStartStrategy()],

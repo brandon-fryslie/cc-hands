@@ -743,20 +743,46 @@ blocked: 1.22 s to the summary and 1.29 s to first audio, then 0.93 s and 1.00 s
 the second stop of the same turn, which was heard as what the turn did after the
 first — nothing of it twice.
 
-The rest of this section is planned: spoken form as its own pass, step summaries built
-as steps arrive, the git delta, the narration tree, and streaming. Until spoken form
-exists, the summary instruction is the only thing keeping code names out of speech.
+The rest of this section is planned: step summaries built as steps arrive, the
+narration tree, and streaming.
 
-**Spoken form** is a pure function in `core` from text to speakable text, installed as
-the TTS service's text transform so there is one place it is enforced
-`[LAW:single-enforcer]`. It applies to summaries, to the intermediary's replies, and to
-system speech alike. Headings become section cues and lists become counted sequences.
-Identifiers are split into words, so `authMiddleware` is "auth middleware". A path
-becomes its file name, with its directory only when two files share the name. Flags
-become their names, and hashes, ids, and URLs are named by what they point at or
-dropped. Code blocks, diffs, and tables never reach it as text, because they are
-summarised first; one that leaks through is replaced by its kind and length, and the
-leak is logged.
+**Spoken form.** Built: `core/spoken.py` is a pure function from text to speakable
+text, installed as the TTS service's one text filter `[LAW:single-enforcer]`. Pipecat
+applies a TTS service's filters to the text of a `TTSSpeakFrame` and to each aggregated
+sentence of a model's streamed reply alike, so summaries, announcements, system speech
+and the intermediary's own words all meet there, and text that has not been through it
+cannot reach the speaker at all. That last part is why the filter goes here rather than
+at each place a frame is built: there are four of those and the intermediary's own reply
+is not one of them, so four enforcers would still have left the largest source unpoliced.
+Asking a model for spoken form does not settle it either — that is a rule held as an
+instruction, obeyed or not, checked by nobody, and it had already been heard saying a
+bare file name while session titles never passed through it at all.
+
+Headings become section cues and lists become counted sequences. Identifiers are split
+into words, so `authMiddleware` is "auth middleware". A path becomes its file name, with
+its directory only when two files in the same breath share it. Flags become their names,
+and hashes, ids, and URLs are named by what they point at or dropped. Code blocks,
+diffs, and tables never reach it as text, because they are summarised first; one that
+leaks through is replaced by its kind and length, and the leak is logged.
+
+Two things the rules are shaped by. Each asks for a tell that ordinary English does not
+have — a diff must announce itself with `@@` or `diff --git`, a table must be two rows
+rather than one line with a pipe in it, a hash must carry a digit, and a bare file name
+must end in an extension on a closed list — because a rule that mangles a sentence costs
+more than the code name it fixes `[LAW:carrying-cost]`. And the last step drops every
+mark left over, unconditionally, which is what makes "no backtick, no pipe table, no
+fence reaches the speaker" a property of the function rather than a hope about the rules
+above it `[LAW:parse-dont-validate]`.
+
+The function is pure and stdlib-only because it is the domain — what a developer who is
+not looking can hear — and it therefore cannot log. A leak is returned rather than
+logged, and the voice edge logs it, because logging is an effect and `core` is not the
+edge `[LAW:effects-at-boundaries]`. The filter is stateless, so a barge-in mid-sentence
+leaves nothing to reset.
+
+The summary instruction still asks for spoken form, and that is not duplication: the
+model does what only the model can, turning `created_at` into "the creation date" rather
+than "created at". The filter guarantees the floor beneath it.
 
 **The summariser** is a stateless call on the configured backend, separate from the
 conversational context. It takes steps, the turn's final text, and the git delta, and
