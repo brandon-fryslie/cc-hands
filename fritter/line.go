@@ -1,56 +1,74 @@
 package main
 
-import (
-	"bytes"
-	"sync"
-)
-
-// Bytes that leave the child's input box empty again: the two that submit a line, and
-// the Ctrl-C that clears it.
-//
-// Escape also clears the box, and is deliberately not here: it is equally the first byte
-// of every arrow key, so treating it as a clear would free the line every time the user
-// pressed Up. The cost of leaving it out is that a user who presses Escape and walks away
-// keeps the line held until they press Enter or Ctrl-C. That is the safe direction to be
-// wrong in - a refused write is loud and recoverable, a write into a half-typed line is
-// a garbled prompt nobody can attribute.
-var lineCleared = []byte{'\r', '\n', 0x03}
+import "sync"
 
 // lineOwner answers the one question about the input box that only fritter can answer:
-// has the person at the keyboard typed something they have not yet submitted?
+// has the person at the keyboard put characters in it that they have not yet sent?
 //
 // hands knows whether a session is Idle, Working or Blocked and decides from that whether
 // a send is allowed at all `[LAW:single-enforcer]`. It cannot know this, because the
 // keystrokes never reach it. So this is the only input-box fact fritter owns, and it owns
 // exactly this much.
+//
+// It is a count of characters rather than a flag, because a text box is a count of
+// characters. A flag cannot be told that the user backspaced their way back to empty, so
+// it would stay set - and a fact that can only ever become true is not a fact about the
+// box, it is a one-way door.
+//
+// What it cannot see: Escape, which clears Claude Code's box, and every chord that kills
+// a line or a word. Those leave the count standing and the line held until the user
+// submits or cancels, or until a key request clears it. That is the safe direction to be
+// wrong in - a refused write is loud and recoverable, a write into a half-typed line is
+// a garbled prompt nobody can attribute.
 type lineOwner struct {
-	mu   sync.Mutex
-	held bool
+	mu    sync.Mutex
+	stdin reader
+	chars int
 }
 
 func newLineOwner() *lineOwner {
 	return &lineOwner{}
 }
 
-// typed records what the person at the keyboard just sent.
-func (l *lineOwner) typed(keystrokes []byte) {
-	if len(keystrokes) == 0 {
-		return
-	}
+// typed records a slice of the user's stdin, whatever it turns out to hold.
+func (l *lineOwner) typed(input []byte) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	// The last clearing byte in the slice decides: a line typed and submitted inside one
-	// read leaves the box empty, and one submitted and then typed into again leaves it held.
-	if last := bytes.LastIndexAny(keystrokes, string(lineCleared)); last >= 0 {
-		l.held = last != len(keystrokes)-1
-		return
-	}
-	l.held = true
+	l.fold(l.stdin.read(input))
 }
 
-// free reports whether the input box is clear of the user's own unsent text.
+// sent records what fritter itself put into the box.
+//
+// A chord fritter sends means what the same chord means when the user presses it - an
+// Enter empties the box, an arrow key does not - so it is read by the same parser
+// `[LAW:one-source-of-truth]`. It gets a reader of its own because the half-finished
+// sequences in the user's stream belong to the user's stream.
+func (l *lineOwner) sent(keys []byte) {
+	var chord reader
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.fold(chord.read(keys))
+}
+
+// [LAW:dataflow-not-control-flow] Every press runs the same fold. Where it came from -
+// the keyboard or a control request - was decided by which reader produced it, and is not
+// a branch here.
+func (l *lineOwner) fold(presses []press) {
+	for _, p := range presses {
+		switch p.does {
+		case inserted:
+			l.chars += p.count
+		case deleted:
+			l.chars = max(l.chars-p.count, 0)
+		case emptied:
+			l.chars = 0
+		}
+	}
+}
+
+// free reports whether the input box is clear of the user's own unsent characters.
 func (l *lineOwner) free() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return !l.held
+	return l.chars == 0
 }

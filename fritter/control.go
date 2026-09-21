@@ -4,8 +4,12 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 )
 
 // What a caller may ask fritter to put into the child's input.
@@ -41,6 +45,17 @@ var keystrokes = map[string][]byte{
 	"shift_tab": []byte("\x1b[Z"),
 }
 
+// How long one caller may take over the whole of its request and its answer, and the
+// most it may send.
+//
+// [LAW:no-silent-failure] Without a bound, a client that connects and never finishes its
+// line holds a goroutine for the rest of the session's life, and the socket is reachable
+// by anything running as this user.
+const (
+	askDeadline = 5 * time.Second
+	askLimit    = 64 * 1024
+)
+
 // serve answers control connections until the listener is closed.
 func (w *Wrapped) serve(listener net.Listener) {
 	for {
@@ -55,7 +70,10 @@ func (w *Wrapped) serve(listener net.Listener) {
 
 func (w *Wrapped) answer(connection net.Conn) {
 	defer connection.Close()
-	reader := bufio.NewReader(connection)
+	if err := connection.SetDeadline(time.Now().Add(askDeadline)); err != nil {
+		warn("cannot put a deadline on a control connection: %v", err)
+	}
+	reader := bufio.NewReader(io.LimitReader(connection, askLimit))
 	body, err := reader.ReadBytes('\n')
 	if err != nil && len(body) == 0 {
 		warn("control connection closed before it asked for anything: %v", err)
@@ -91,37 +109,59 @@ func (w *Wrapped) inject(asked request) response {
 	w.injecting.Lock()
 	defer w.injecting.Unlock()
 
-	// The person at the keyboard outranks hands, for every kind of input alike: typing
-	// into their half-written line garbles it, and Up or Ctrl-C would throw it away.
-	if !w.line.free() {
-		return response{OK: false, Reason: "the user has unsent text in this session's input; it is theirs until they press Enter or Ctrl-C"}
-	}
-
 	switch asked.Kind {
 	case "text":
-		// Bracketed when the child asked for bracketing, so a newline inside the text is
-		// a newline in the message and not the Enter that submits a half-written one.
-		if err := w.send(w.paste.encode(asked.Text)); err != nil {
-			return response{OK: false, Reason: err.Error()}
-		}
-		if asked.Submit {
-			if err := w.send(keystrokes["enter"]); err != nil {
-				return response{OK: false, Reason: err.Error()}
-			}
-		}
-		return response{OK: true}
+		return w.typeText(asked)
 	case "key":
-		chord, known := keystrokes[asked.Key]
-		if !known {
-			return response{OK: false, Reason: fmt.Sprintf("no key named %q", asked.Key)}
-		}
-		if err := w.send(chord); err != nil {
-			return response{OK: false, Reason: err.Error()}
-		}
-		return response{OK: true}
+		return w.pressKey(asked)
 	default:
 		return response{OK: false, Reason: fmt.Sprintf("no request kind named %q", asked.Kind)}
 	}
+}
+
+// typeText is the one request that yields to the person at the keyboard. Text is the only
+// thing that can interleave: dropped into a half-written line it produces one prompt made
+// of two people's words, which nobody afterwards can pull apart.
+func (w *Wrapped) typeText(asked request) response {
+	if !w.line.free() {
+		return response{OK: false, Reason: "the user has unsent text in this session's input; it is theirs until they submit or cancel it, or until a key request clears the line"}
+	}
+	// [LAW:no-silent-failure] Bare newlines go to the child as Enter presses, so without
+	// bracketing a multi-line draft arrives as several separate submitted prompts. Saying
+	// ok to that would tell hands one message was sent when several were.
+	if strings.ContainsAny(asked.Text, "\r\n") && !w.paste.enabled() {
+		return response{OK: false, Reason: "this session has not turned bracketed paste on, so the newlines in this text would submit it as several separate prompts"}
+	}
+	if err := w.send(w.paste.encode(asked.Text)); err != nil {
+		return response{OK: false, Reason: fmt.Sprintf("nothing was typed: %v", err)}
+	}
+	if asked.Submit {
+		if err := w.send(keystrokes["enter"]); err != nil {
+			// A submit is two writes, and the caller has to be able to tell which one
+			// failed: retyping text that is already sitting in the box doubles it.
+			return response{OK: false, Reason: fmt.Sprintf("the text was typed and is sitting unsent in the input box, but Enter did not land, so do not send it again: %v", err)}
+		}
+	}
+	return response{OK: true}
+}
+
+// pressKey sends one chord, and does not yield to the person at the keyboard.
+//
+// A keystroke cannot interleave with anything: it does exactly what it would do if the
+// user had pressed it themselves, and they see the result. Gating it on a free line would
+// also be a door locked from the inside - Enter and Ctrl-C are the very keys that free a
+// line, so a session whose line is held would have no way back except a human at the
+// physical keyboard, which is the case this whole program exists to avoid.
+func (w *Wrapped) pressKey(asked request) response {
+	chord, known := keystrokes[asked.Key]
+	if !known {
+		return response{OK: false, Reason: fmt.Sprintf("no key named %q", asked.Key)}
+	}
+	if err := w.send(chord); err != nil {
+		return response{OK: false, Reason: err.Error()}
+	}
+	w.line.sent(chord)
+	return response{OK: true}
 }
 
 // send writes to the child without touching the line owner: these bytes are not the
@@ -133,27 +173,56 @@ func (w *Wrapped) send(keys []byte) error {
 	return nil
 }
 
-// listen opens the control socket in dir and returns it with the address to publish.
-func listen(dir string) (net.Listener, string, error) {
-	socket, err := os.CreateTemp(dir, "fritter-*.sock")
+// control is the socket callers reach this session through, and the private directory it
+// lives in.
+//
+// [LAW:types-are-the-program] The address exists only alongside the listener and the
+// directory that holds it, so there is no way to publish an address that nothing is
+// listening on and no way to close the socket while leaving its directory behind.
+type control struct {
+	listener net.Listener
+	address  string
+	dir      string
+}
+
+// listen opens a session's control socket in a directory of its own under parent.
+//
+// The directory is the session's alone at 0700 and the socket inside it is 0600. Both are
+// needed: parent defaults to whatever TMPDIR names, which is private for a login shell but
+// is the world-writable /tmp under launchd and cron, and a socket anyone may dial is a
+// socket anyone may type `!rm -rf ~` into.
+func listen(parent string) (*control, error) {
+	dir, err := os.MkdirTemp(parent, "fritter-")
 	if err != nil {
-		return nil, "", fmt.Errorf("cannot make a socket path in %s: %w", dir, err)
+		return nil, fmt.Errorf("cannot make a socket directory in %s: %w", parent, err)
 	}
-	address := socket.Name()
-	socket.Close()
-	// CreateTemp made the path to reserve the name; the listener needs it free.
-	if err := os.Remove(address); err != nil {
-		return nil, "", fmt.Errorf("cannot clear the socket path %s: %w", address, err)
-	}
+	address := filepath.Join(dir, "session.sock")
 	// [LAW:no-silent-failure] macOS refuses a unix socket path over 104 bytes with a
 	// bind error that names nothing useful, so the length is checked where the path is
 	// chosen and reported with the path that was too long.
 	if len(address) >= 104 {
-		return nil, "", fmt.Errorf("the socket path is %d bytes, over the 104 macOS allows: %s", len(address), address)
+		os.RemoveAll(dir)
+		return nil, fmt.Errorf("the socket path is %d bytes, over the 104 macOS allows: %s", len(address), address)
 	}
 	listener, err := net.Listen("unix", address)
 	if err != nil {
-		return nil, "", fmt.Errorf("cannot listen on %s: %w", address, err)
+		os.RemoveAll(dir)
+		return nil, fmt.Errorf("cannot listen on %s: %w", address, err)
 	}
-	return listener, address, nil
+	if err := os.Chmod(address, 0o600); err != nil {
+		listener.Close()
+		os.RemoveAll(dir)
+		return nil, fmt.Errorf("cannot make the socket %s private: %w", address, err)
+	}
+	return &control{listener: listener, address: address, dir: dir}, nil
+}
+
+// close stops answering and takes the socket and its directory away with it. A socket
+// left behind outlives the session it addressed, and the next caller to dial it reaches
+// nothing while believing it reached a session.
+func (c *control) close() {
+	c.listener.Close()
+	if err := os.RemoveAll(c.dir); err != nil {
+		warn("cannot remove the socket directory %s: %v", c.dir, err)
+	}
 }

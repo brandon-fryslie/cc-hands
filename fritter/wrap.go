@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/term"
@@ -64,8 +65,25 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer) (int, error) {
 
 	// The child's output is read here rather than copied blind, because the mode it
 	// announces - bracketed paste on or off - is carried in it and nothing else reports it.
+	drained := make(chan struct{})
 	go func() {
+		defer close(drained)
 		_, _ = io.Copy(io.MultiWriter(stdout, w.paste), w.master)
+	}()
+	// [LAW:no-silent-failure] cmd.Wait returns the moment the child is reaped, which is
+	// before the last of what it printed has been copied out - `fritter -- sh -c 'echo
+	// done'` can otherwise print nothing at all. Waiting here, on every path out and
+	// before the terminal is restored under the copy, is what makes the output whole.
+	//
+	// The wait is bounded because the pty can be held open by something the child left
+	// running, and an unbounded wait would keep fritter alive after its session ended.
+	// Reaching the bound means output really was lost, so it is said out loud.
+	defer func() {
+		select {
+		case <-drained:
+		case <-time.After(drainGrace):
+			warn("the session's output was still arriving %s after it exited; the end of it is lost", drainGrace)
+		}
 	}()
 	// This read outlives run, and deliberately so. A read already blocked on a terminal
 	// cannot be interrupted portably: SetReadDeadline answers "file type does not support
@@ -108,11 +126,18 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer) (int, error) {
 	return 0, nil
 }
 
-// Write forwards the user's own keystrokes to the child and notes that they now hold a
-// partly-typed line, which is the one fact about the input box that only fritter knows.
-func (w *Wrapped) Write(keystrokes []byte) (int, error) {
-	w.line.typed(keystrokes)
-	return w.master.Write(keystrokes)
+// How long run waits for the child's last output after the child is gone.
+const drainGrace = 2 * time.Second
+
+// Write forwards what arrived on the user's stdin to the child, and lets the line owner
+// read it for the one fact about the input box that only fritter knows.
+//
+// Not everything here is typing. A terminal in raw mode also answers the child's own
+// questions on this same stream, so the line owner parses rather than counts - see
+// input.go, which exists because counting was wrong.
+func (w *Wrapped) Write(input []byte) (int, error) {
+	w.line.typed(input)
+	return w.master.Write(input)
 }
 
 // attach puts the real terminal into raw mode, matches the pty's window to it, and keeps

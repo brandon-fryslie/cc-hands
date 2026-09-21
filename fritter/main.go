@@ -41,20 +41,19 @@ func run(args []string) int {
 		return misuse
 	}
 
-	listener, address, err := listen(dir)
+	socket, err := listen(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fritter: %v\n", err)
 		return failed
 	}
-	defer os.Remove(address)
-	defer listener.Close()
+	defer socket.close()
 
-	wrapped, err := start(argv, []string{"FRITTER_SOCKET=" + address})
+	wrapped, err := start(argv, []string{"FRITTER_SOCKET=" + socket.address})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fritter: %v\n", err)
 		return failed
 	}
-	go wrapped.serve(listener)
+	go wrapped.serve(socket.listener)
 
 	code, err := wrapped.run(os.Stdin, os.Stdout)
 	if err != nil {
