@@ -52,6 +52,12 @@ def test_the_turn_hooks(home: Home) -> None:
     assert parse(home, end) == Ended(SID, "other")
 
 
+def test_a_stop_is_still_the_end_of_a_turn_when_the_reply_it_carries_is_not_a_string(home: Home) -> None:
+    """The turn is what the hook says; the reply is how it is narrated. A session stuck working is the worse wrong."""
+    assert parse(home, body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message={"text": "ok"})) == Stopped(SID, None)
+    assert parse(home, body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message=None)) == Stopped(SID, None)
+
+
 def test_a_permission_request_carries_the_tool_and_its_input(home: Home) -> None:
     raw = body(hook_event_name="PermissionRequest", tool_name="Bash", tool_input={"command": "rm -r build"}, permission_suggestions=[])
     permission = Permission(tool="Bash", input={"command": "rm -r build"})

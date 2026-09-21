@@ -2,6 +2,8 @@
 
 from collections.abc import Mapping
 
+from loguru import logger
+
 from hands.core.effects import Allow, Deny, HookReply, Withdraw
 from hands.core.events import Ended, EndReason, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished
 from hands.core.session import Instant, Permission, RequestId
@@ -23,7 +25,7 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
         case "UserPromptSubmit":
             return Prompted(session, at)
         case "Stop":
-            return Stopped(session, payload.optional_text("last_assistant_message"))
+            return Stopped(session, _closing(payload))
         case "PermissionRequest":
             permission = Permission(tool=payload.text("tool_name"), input=payload.mapping("tool_input"))
             return PermissionRequested(session, at, request, permission)
@@ -33,6 +35,21 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
             return Ended(session, _end_reason(payload.text("reason")))
         case other:
             raise Rejected(f"hook event {other!r} is not one hands handles")
+
+
+def _closing(payload: Payload) -> str | None:
+    """The reply the turn closed with, as the Stop hook carries it, and None when it carries none."""
+    match payload.fields.get("last_assistant_message"):
+        case str() as text:
+            return text
+        case None:
+            return None
+        case other:
+            # Not refused, as an unknown start is: a turn is what the Stop hook says, and the reply it carries is how
+            # that turn is narrated. Refusing the hook over the narration would leave the session working with nothing
+            # left to stop it, so the turn is taken and the loud line says why it will be told without its last reply.
+            logger.error(f"Stop carried last_assistant_message as {type(other).__name__}, not a string, so the turn is told without its closing reply")
+            return None
 
 
 def _start_source(source: str) -> StartSource:

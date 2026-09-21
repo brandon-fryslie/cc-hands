@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from hands.core.turn import CUT, Asked, Budget, Notified, Said, Turn, Used, render
-from hands.sessions.transcript import Reading, read_turn
+from hands.sessions.transcript import UNTOLD, Reading, Told, read_turn
 
 # Real records from this repository's own sessions: an earlier /clear prompt, the prompt that starts the turn,
 # attachments, modes, a title, thinking, text, three Bash calls with their results (the last failed),
@@ -33,7 +33,7 @@ def test_the_turn_is_everything_said_and_used_after_the_last_prompt_in_order() -
     assert isinstance(final, Said) and final.text.startswith("API Error: Unable to connect to API")
 
 
-def turn_of(transcript: Path, told: str | None = None, closing: str | None = None) -> Turn | None:
+def turn_of(transcript: Path, told: Told = UNTOLD, closing: str | None = None) -> Turn | None:
     reading = read_turn(transcript, told, closing)
     return None if reading is None else reading.turn
 
@@ -89,16 +89,19 @@ def test_a_prompt_with_a_document_attached_opens_the_turn_and_names_the_document
     assert turn_of(transcript) == Turn(Asked("[a document]\nread this"), ())
 
 
-def test_a_reading_picks_up_after_the_record_already_told_and_says_where_it_ended(tmp_path: Path) -> None:
+def test_a_reading_picks_up_after_the_steps_already_told_and_says_what_is_told_now(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
+    opened = '{"type":"user","uuid":"u1","message":{"role":"user","content":"first"}}'
     looked = '{"type":"assistant","uuid":"u2","message":{"content":[{"type":"text","text":"Looked."}]}}'
     call = '{"type":"assistant","uuid":"u3","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest"}}]}}'
     result = '{"type":"user","uuid":"u4","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"1 passed"}]}}'
-    transcript.write_text(lines(PROMPT, looked, call, result))
-    assert read_turn(transcript, "u2", None) == Reading(Turn(Asked("first"), (Used("Bash", None, "pytest", "1 passed", False),)), "u4")
-    assert read_turn(transcript, "u4", None) == Reading(Turn(Asked("first"), ()), "u4")
-    # A told record from an earlier turn is not in this one, so the whole turn is untold.
-    assert turn_of(transcript, told="elsewhere") == Turn(Asked("first"), (Said("Looked."), Used("Bash", None, "pytest", "1 passed", False)))
+    transcript.write_text(lines(opened, looked, call, result))
+    ran = Used("Bash", None, "pytest", "1 passed", False)
+    assert read_turn(transcript, UNTOLD, None) == Reading(Turn(Asked("first"), (Said("Looked."), ran)), Told("u1", 2, None))
+    assert read_turn(transcript, Told("u1", 1, None), None) == Reading(Turn(Asked("first"), (ran,)), Told("u1", 2, None))
+    assert read_turn(transcript, Told("u1", 2, None), None) == Reading(Turn(Asked("first"), ()), Told("u1", 2, None))
+    # What was told of another turn says nothing about this one, so all of it is still to tell.
+    assert turn_of(transcript, told=Told("elsewhere", 2, None)) == Turn(Asked("first"), (Said("Looked."), ran))
 
 
 def test_the_hooks_closing_reply_ends_a_turn_whose_transcript_does_not_hold_it_yet_and_is_not_doubled_when_it_does(tmp_path: Path) -> None:
@@ -110,10 +113,30 @@ def test_the_hooks_closing_reply_ends_a_turn_whose_transcript_does_not_hold_it_y
     assert turn_of(transcript, closing="Done.") == Turn(Asked("first"), (ran, Said("Done.")))
 
 
+def test_a_closing_reply_told_before_its_record_was_written_is_not_told_again_once_it_is(tmp_path: Path) -> None:
+    """The stand-in is told once: the record Claude Code writes moments later gives way to it, whatever follows."""
+    transcript = tmp_path / "t.jsonl"
+    opened = '{"type":"user","uuid":"u1","message":{"role":"user","content":"first"}}'
+    call = '{"type":"assistant","uuid":"u2","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest"}}]}}'
+    result = '{"type":"user","uuid":"u3","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"1 passed"}]}}'
+    fixed = '{"type":"assistant","uuid":"u4","message":{"content":[{"type":"text","text":"Fixed."}]}}'
+    listed = '{"type":"assistant","uuid":"u5","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}]}}'
+    files = '{"type":"user","uuid":"u6","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"a.py"}]}}'
+    transcript.write_text(lines(opened, call, result))
+    first = read_turn(transcript, UNTOLD, "Fixed.")
+    assert first == Reading(Turn(Asked("first"), (Used("Bash", None, "pytest", "1 passed", False), Said("Fixed."))), Told("u1", 1, "Fixed."))
+    # The Stop was blocked by another hook, so the same turn runs on, and by now Claude Code has written "Fixed." itself.
+    transcript.write_text(lines(opened, call, result, fixed, listed, files))
+    assert first is not None
+    assert read_turn(transcript, first.told, "Done.") == Reading(
+        Turn(Asked("first"), (Used("Bash", None, "ls", "a.py", False), Said("Done."))), Told("u1", 3, "Done.")
+    )
+
+
 def test_a_transcript_with_no_prompt_yet_has_no_turn(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text('{"type":"ai-title","aiTitle":"x"}\n{"type":"user","isMeta":true,"message":{"role":"user","content":"injected"}}\n')
-    assert read_turn(transcript, None, None) is None
+    assert read_turn(transcript, UNTOLD, None) is None
 
 
 def test_a_prompt_with_nothing_after_it_is_a_turn_with_no_steps(tmp_path: Path) -> None:

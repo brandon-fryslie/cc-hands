@@ -193,8 +193,8 @@ class Staged:   text: str; resolutions: Sequence[Resolution]
 The block above is the target. `hands.core.effects` defines less today:
 `Effect = Audit | Reply | Heard | Story`, where `Heard = Speak | Narrate` carries
 permission announcements and requests and `Story = Summarise | SessionGone` carries
-finished turns and sessions gone. Today's `Summarise` holds a session and its
-transcript path, not a narration id and steps. `Type`, `Note`, `Play`, `Snapshot`, and
+finished turns and sessions gone. Today's `Summarise` holds a session, its transcript
+path, and the reply its `Stop` hook carried, not a narration id and steps. `Type`, `Note`, `Play`, `Snapshot`, and
 `Launch`, and the segment, narration, and playback types, are planned.
 
 Two things are deliberately absent. There is no `Session.last_seen` timestamp,
@@ -517,14 +517,32 @@ summarised or transformed first.
 
 **What runs today** is the first slice: each finished turn becomes one to three spoken
 sentences, with no tree. When a live session's `Stop` arrives, the reducer emits
-`Summarise(session, transcript)`, and `narrate` in `hands.voice.narrator` reads the
-newest turn with `read_turn`. A turn opens at the last user record that is not
-`isMeta`, not `isCompactSummary`, holds a string or text and image blocks, and does not
-follow a tool call or tool result: a message sent while a tool runs belongs to the turn
-under way. The opening is `Asked`, or `Notified` when its `origin.kind` is
-`task-notification`. The steps are assistant text (`Said`) and tool calls matched to
-their results by id (`Used`, failed when the result `is_error`); subagent records are
-skipped.
+`Summarise(session, transcript, closing)`, and `narrate` in `hands.voice.narrator`
+reads the newest turn with `read_turn`. A turn opens at the last user record that is
+not `isMeta`, not `isCompactSummary`, whose content is a string or a block list with no
+tool result in it, and that does not follow a tool call or tool result: a message sent
+while a tool runs belongs to the turn under way, and an image or document attached to a
+prompt is named rather than read. The opening is `Asked`, or `Notified` when its
+`origin.kind` is `task-notification`. The steps are assistant text (`Said`) and tool
+calls matched to their results by id (`Used`, failed when the result `is_error`);
+subagent records are skipped.
+
+**A turn can stop twice.** Another hook may block a `Stop`, and the same turn then runs
+on to a later one. So the narrator keeps a `Told` per session — which record opened the
+turn, how many of its steps were told, and a closing reply told before its record
+existed — and each reading tells only the steps beyond it, which is why the first half
+of a long turn is not heard twice. A session gone forgets its `Told`.
+
+`Told.closing` is there because the hook and the transcript disagree for a moment:
+measured over twelve live turns, the reply `Stop` carries is never yet in the
+transcript when the hook fires, and its record lands 46 to 77 ms later. So the hook's
+copy stands in as the turn's last step while the record is missing, and gives way to
+the record — never telling the reply twice — because Claude Code only appends, which
+puts that record first among the steps not yet told `[LAW:one-source-of-truth]`. What
+is *not* covered: a tool result written after the reading is never told, because its
+call was already told as having none. Every call was paired with its result at `Stop`
+in all twelve turns, so this is out of reach until the tail reads mid-turn, where the
+tail ticket owns it.
 
 `render(turn, budget)` in `core` writes the turn as the summariser's message
 under `TURN_BUDGET`: 600 characters of the opening, 1,500 of each text block, 200 of
@@ -540,7 +558,10 @@ fails, it says "cc-hands finished a turn, and I could not summarise it." without
 out of the context, and logs the reason, which is a `Failure` line. Measured live
 against a real `claude -p` session, with Qwen3-30B-A3B on inferno: the summary was ready
 1.3 s after `Stop` and first audio came at 1.36 s, and the session's end was heard
-after its summary.
+after its summary. Measured again against a session whose first `Stop` another hook
+blocked: 1.22 s to the summary and 1.29 s to first audio, then 0.93 s and 1.00 s for
+the second stop of the same turn, which was heard as what the turn did after the
+first — nothing of it twice.
 
 The rest of this section is planned: spoken form as its own pass, step summaries built
 as steps arrive, the git delta, the narration tree, and streaming. Until spoken form

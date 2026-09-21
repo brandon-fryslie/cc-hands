@@ -15,6 +15,7 @@ from hands.core.session import Membership, SessionId
 from hands.core.turn import Budget
 from hands.sessions.audit import Entry, Failure, Recounted, failures_to
 from hands.sessions.registry import Sessions
+from hands.sessions.transcript import UNTOLD
 from hands.voice.narrator import narrate, recount
 from hands.voice.pipeline import OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
@@ -127,7 +128,7 @@ async def test_a_turn_that_cannot_be_summarised_is_said_to_have_failed_and_logge
     unreachable = summariser(OpenAICompatibleBackend(base_url="http://127.0.0.1:9/v1", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
-        spoken, _ = await recount(Summarise(SID, FIXTURE, None), None, "cc-hands", unreachable, recorded.append, BUDGET)
+        spoken, _ = await recount(Summarise(SID, FIXTURE, None), UNTOLD, "cc-hands", unreachable, recorded.append, BUDGET)
     finally:
         logger.remove(sink)
     assert isinstance(spoken, TTSSpeakFrame)
@@ -141,7 +142,7 @@ async def test_a_missing_transcript_is_said_to_have_failed_too(tmp_path: Path) -
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    spoken, _ = await recount(Summarise(SID, tmp_path / "gone.jsonl", None), None, "cc-hands", never, lambda _: None, BUDGET)
+    spoken, _ = await recount(Summarise(SID, tmp_path / "gone.jsonl", None), UNTOLD, "cc-hands", never, lambda _: None, BUDGET)
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands finished a turn, and I could not summarise it."
 
 
@@ -152,7 +153,7 @@ async def test_a_session_that_stops_before_any_prompt_says_nothing(tmp_path: Pat
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    assert await recount(Summarise(SID, transcript, None), None, "cc-hands", never, lambda _: None, BUDGET) == (None, None)
+    assert await recount(Summarise(SID, transcript, None), UNTOLD, "cc-hands", never, lambda _: None, BUDGET) == (None, UNTOLD)
 
 
 async def openai_server(content: str | None) -> tuple[web.AppRunner, str, list[dict[str, object]]]:

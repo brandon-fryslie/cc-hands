@@ -40,17 +40,32 @@ _TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"')
 
 
 @dataclass(frozen=True)
+class Told:
+    """How much of a turn a session has been told: which record opened it, how many of its recorded steps were told,
+    and a closing reply told from the Stop hook before Claude Code had written the record of it."""
+
+    opening: str | None
+    steps: int
+    closing: str | None
+
+
+# Before a session has been told anything.
+UNTOLD = Told(opening=None, steps=0, closing=None)
+
+
+@dataclass(frozen=True)
 class Reading:
-    """The newest turn's untold part, and the record it was read through, which is where the next reading of the same turn picks up."""
+    """The part of the newest turn a session has not been told, and what it will have been told once that part is."""
 
     turn: Turn
-    through: str | None
+    told: Told
 
 
-def read_turn(transcript: Path, told: str | None, closing: str | None) -> Reading | None:
-    """What last opened a turn, and what Claude said and used after it and after the record `told`. None before anything has.
+def read_turn(transcript: Path, told: Told, closing: str | None) -> Reading | None:
+    """What last opened a turn, and the steps after it that `told` does not cover. None before anything has opened one.
 
-    `closing` is the reply the Stop hook says the turn closed with; it ends the steps when the transcript does not yet hold it.
+    `closing` is the reply the Stop hook carries. Measured over twelve live turns, Claude Code writes that reply's own
+    record 46 to 77 ms after the hook fires, so the hook's copy stands in until the record lands and gives way when it does.
     """
     *complete, _unfinished = transcript.read_bytes().split(b"\n")
     records = [Payload.parse(line) for line in complete if any(marker in line for marker in _TURN_RECORDS)]
@@ -59,27 +74,34 @@ def read_turn(transcript: Path, told: str | None, closing: str | None) -> Readin
     if not openings:
         return None
     start, opening = openings[-1]
-    # A Stop another hook blocked lets the same turn go on to a later Stop; what the first one told is not told again.
-    told_at = next((index for index, record in enumerate(turn) if index > start and told is not None and record.fields.get("uuid") == told), start)
-    steps = _steps(turn[told_at + 1 :])
-    # [LAW:no-ambient-temporal-coupling] Claude Code writes the transcript on its own schedule, so the hook's copy of the
-    # closing reply stands in for a last record not yet written.
-    if closing is not None and closing.strip() and closing.strip() != _last_said(turn[start + 1 :]):
-        steps.append(Said(closing))
-    last = turn[-1].fields.get("uuid") if len(turn) > start + 1 else None
-    return Reading(Turn(opening=opening, steps=tuple(steps)), last if isinstance(last, str) else told)
+    # A Stop another hook blocked lets the same turn go on to a later Stop, which tells the steps the first one did not.
+    recorded = _steps(turn[start + 1 :])
+    began = _uuid(turn[start])
+    heard = told.steps if told.opening == began else 0
+    # Claude Code only ever appends, so the record of a stand-in that has since been written is the first step after what
+    # was heard; counting it heard too is how the stand-in gives way to its record without the reply being told twice.
+    heard += 1 if told.closing is not None and recorded[heard : heard + 1] == [Said(told.closing)] else 0
+    stand_in = _stand_in(closing, recorded)
+    steps = recorded[heard:] if stand_in is None else [*recorded[heard:], Said(stand_in)]
+    return Reading(Turn(opening=opening, steps=tuple(steps)), Told(opening=began, steps=len(recorded), closing=stand_in))
 
 
-def _last_said(records: list[Payload]) -> str | None:
-    for record in reversed(records):
-        if record.fields.get("type") == "assistant":
-            for block in reversed(_blocks(record)):
-                match block:
-                    case {"type": "text", "text": str() as text} if text.strip():
-                        return text.strip()
-                    case _:
-                        pass
-    return None
+def _stand_in(closing: str | None, recorded: list[Step]) -> str | None:
+    """The hook's copy of the closing reply, while the transcript holds no record of it; None once it does.
+
+    [LAW:one-source-of-truth] the transcript is the record of what Claude said, and the copy stands in only until it is written.
+    """
+    return None if closing is None or closing.strip() in ("", _last_said(recorded)) else closing
+
+
+def _last_said(steps: list[Step]) -> str | None:
+    """The last text Claude wrote among these steps, as the closing reply the Stop hook carries would read."""
+    return next((step.text.strip() for step in reversed(steps) if isinstance(step, Said) and step.text.strip()), None)
+
+
+def _uuid(record: Payload) -> str | None:
+    value = record.fields.get("uuid")
+    return value if isinstance(value, str) else None
 
 
 def _opening(record: Payload, previous: Payload | None) -> Opening | None:

@@ -14,7 +14,7 @@ from hands.core.turn import Budget, render
 from hands.sessions.audit import Recounted, Record
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
-from hands.sessions.transcript import read_turn
+from hands.sessions.transcript import UNTOLD, Told, read_turn
 from hands.voice.readback import spoken_name
 from hands.voice.summary import Summariser, SummaryFailed
 
@@ -29,14 +29,14 @@ async def narrate(
     sessions: Sessions, summarise: Summariser, queue_frame: Callable[[Frame], Awaitable[None]], record: Record, budget: Budget = TURN_BUDGET
 ) -> None:
     """Speak each finished turn and each session gone, in the order they happened, until cancelled."""
-    # The last transcript record each session's summaries have covered. Only this loop reads or writes it.
-    told: dict[SessionId, str | None] = {}
+    # How much of its newest turn each session has been told. Only this loop reads or writes it.
+    told: dict[SessionId, Told] = {}
     while True:
         story = await sessions.story()
         name = spoken_name(sessions, story.session)
         match story:
             case Summarise(session=session):
-                spoken, told[session] = await recount(story, told.get(session), name, summarise, record, budget)
+                spoken, told[session] = await recount(story, told.get(session, UNTOLD), name, summarise, record, budget)
             case SessionGone(session=session):
                 told.pop(session, None)
                 spoken = TTSSpeakFrame(f"The session {name} is gone.")
@@ -45,15 +45,15 @@ async def narrate(
 
 
 async def recount(
-    finished: Summarise, told: str | None, name: str, summarise: Summariser, record: Record, budget: Budget
-) -> tuple[Frame | None, str | None]:
-    """The frame that tells the user what the turn did since `told`, or None when there is nothing new; and the record now told through."""
+    finished: Summarise, told: Told, name: str, summarise: Summariser, record: Record, budget: Budget
+) -> tuple[Frame | None, Told]:
+    """The frame that tells the user what the turn did beyond `told`, or None when there is nothing new; and what it has been told once it is spoken."""
     try:
         # Off the loop: a long session's transcript is tens of megabytes.
         reading = await asyncio.to_thread(read_turn, finished.transcript, told, finished.closing)
         if reading is None or not reading.turn.steps:
             logger.info(f"session {finished.session} stopped with no untold turn in {finished.transcript}, so there is nothing to tell")
-            return None, told if reading is None else reading.through
+            return None, UNTOLD if reading is None else reading.told
         summary = await summarise(render(reading.turn, budget))
     except _FAILURES as error:
         # [LAW:no-silent-failure] said without the model, as a system fact is, and logged with the reason, which is an audit line.
@@ -62,4 +62,4 @@ async def recount(
         return TTSSpeakFrame(f"{name} finished a turn, and I could not summarise it.", append_to_context=False), told
     record(Recounted(finished.session, summary))
     # Kept in the intermediary's context, so it can answer about what the user heard.
-    return TTSSpeakFrame(f"{name}: {summary}"), reading.through
+    return TTSSpeakFrame(f"{name}: {summary}"), reading.told
