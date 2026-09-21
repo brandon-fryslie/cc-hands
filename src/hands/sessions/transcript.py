@@ -2,11 +2,12 @@
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
-from hands.core.turn import Asked, Notified, Opening, Said, Step, Turn, Used
+from hands.core.steps import Call, Result, recognise
+from hands.core.turn import Asked, Notified, Opening, Ref, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
 
 # Records are written without spaces, so this finds every title record cheaply.
@@ -44,7 +45,7 @@ class Told:
     """How much of a turn a session has been told: which record opened it, how many of its recorded steps were told,
     and a closing reply told from the Stop hook before Claude Code had written the record of it."""
 
-    opening: str | None
+    opening: Ref | None
     steps: int
     closing: str | None
 
@@ -91,7 +92,7 @@ def read_turn(transcript: Path, told: Told, closing: str | None) -> Reading | No
     # are read the same way, so a record padded with whitespace neither misses its stand-in nor hides behind one.
     reply = _spoken(closing)
     stand_in = None if reply == _said_at(recorded, len(recorded) - 1) else reply
-    steps = recorded[heard:] if stand_in is None else [*recorded[heard:], Said(stand_in)]
+    steps = recorded[heard:] if stand_in is None else [*recorded[heard:], Said(None, stand_in)]
     return Reading(Turn(opening=opening, steps=tuple(steps)), Told(opening=began, steps=len(recorded), closing=stand_in))
 
 
@@ -106,9 +107,9 @@ def _spoken(text: str | None) -> str | None:
     return None if text is None or not text.strip() else text.strip()
 
 
-def _uuid(record: Payload) -> str | None:
+def _uuid(record: Payload) -> Ref | None:
     value = record.fields.get("uuid")
-    return value if isinstance(value, str) else None
+    return Ref(value) if isinstance(value, str) else None
 
 
 def _opening(record: Payload, previous: Payload | None) -> Opening | None:
@@ -140,36 +141,33 @@ def _opening(record: Payload, previous: Payload | None) -> Opening | None:
 
 
 def _steps(records: list[Payload]) -> list[Step]:
-    # A call's result arrives in a later record; the step keeps the call's place in the order.
+    # A call's result arrives in a later record; the id holds the call's place in the order until it does.
     steps: list[Step | str] = []
-    calls: dict[str, tuple[int, str, Mapping[str, object]]] = {}
-    results: dict[str, tuple[str, bool]] = {}
+    calls: dict[str, Call] = {}
+    results: dict[str, Result] = {}
     for record in records:
+        ref = _uuid(record)
+        # Claude Code writes the structured result beside the record, not inside the block, and writes none at all
+        # for an error or for a result its own harness handled, which is why a recogniser may only prefer it.
+        structured = _fields(record.fields.get("toolUseResult"))
         for block in _blocks(record):
             match block:
                 case {"type": "text", "text": str() as text} if record.fields.get("type") == "assistant" and text.strip():
-                    steps.append(Said(text))
+                    steps.append(Said(ref, text))
                 case {"type": "tool_use", "id": str() as id, "name": str() as name, "input": dict()}:
-                    calls[id] = (len(steps), name, cast(dict[str, object], block["input"]))
+                    calls[id] = Call(ref, name, cast(dict[str, object], block["input"]), None)
                     steps.append(id)
                 case {"type": "tool_result", "tool_use_id": str() as id}:
-                    results[id] = (_result_text(block.get("content")), block.get("is_error") is True)
+                    results[id] = Result(_result_text(block.get("content")), structured, block.get("is_error") is True)
                 case _:
+                    # Thinking is how Claude got to a result, not a result; the summariser is shown what a turn did.
                     pass
-    return [step if not isinstance(step, str) else _used(calls[step][1], calls[step][2], results.get(step)) for step in steps]
-
-
-def _used(tool: str, input: Mapping[str, object], result: tuple[str, bool] | None) -> Used:
-    purpose = input.get("description")
-    shown = {key: value for key, value in input.items() if key != "description"}
-    match shown:
-        case {"command": str() as command} if len(shown) == 1:
-            text = command
-        case _:
-            text = json.dumps(shown, ensure_ascii=False)
     # A call with no result was interrupted, or the turn stopped before its result was written.
-    output, failed = result if result is not None else ("(no result)", False)
-    return Used(tool=tool, purpose=purpose if isinstance(purpose, str) else None, input=text, result=output, failed=failed)
+    return [step if not isinstance(step, str) else recognise(replace(calls[step], result=results.get(step))) for step in steps]
+
+
+def _fields(value: object) -> Mapping[str, object] | None:
+    return cast(Mapping[str, object], value) if isinstance(value, Mapping) else None
 
 
 def _message(record: Payload) -> Mapping[str, object]:

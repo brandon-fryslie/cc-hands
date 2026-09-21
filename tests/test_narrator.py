@@ -49,7 +49,7 @@ async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_d
     assert spoken.text == "Hands-free interactive coding agent architecture: Loaded the repo conventions and hit an API error."
     assert spoken.append_to_context
     [turn] = shown
-    assert turn.startswith("The user asked:\nI'd like you to go a bit further") and "Claude used Bash (Inspect repo layout and remotes)" in turn
+    assert turn.startswith("The user asked:\nI'd like you to go a bit further") and "(Inspect repo layout and remotes)" in turn
     assert Recounted(SID, "Loaded the repo conventions and hit an API error.") in recorded
 
 
@@ -117,7 +117,7 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
         narrating.cancel()
     assert shown == [
         "The user asked:\nfix it\n\nClaude said:\nLooked.",
-        "The user asked:\nfix it\n\nClaude used Bash: pytest\nResult: 1 passed\n\nClaude said:\nFixed.",
+        "The user asked:\nfix it\n\nClaude ran pytest\nOutput: 1 passed\n\nClaude said:\nFixed.",
     ]
 
 

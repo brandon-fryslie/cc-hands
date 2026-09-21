@@ -1,0 +1,50 @@
+
+ RUN  v2.1.9 /private/tmp/hands-tail/runners/ts
+
+ ❯ src/sample.test.ts (4 tests | 2 failed) 5ms
+   × divides 3ms
+     → expected 0.5 to be 1 // Object.is equality
+   × names 1ms
+     → expected 'A' to be 'B' // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/sample.test.ts > divides
+AssertionError: expected 0.5 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0.5
+
+ ❯ src/sample.test.ts:5:39
+      3| test("adds", () => { expect(1 + 1).toBe(2); });
+      4| test("subtracts", () => { expect(3 - 1).toBe(2); });
+      5| test("divides", () => { expect(1 / 2).toBe(1); });
+       |                                       ^
+      6| test("names", () => { expect("a".toUpperCase()).toBe("B"); });
+      7| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/sample.test.ts > names
+AssertionError: expected 'A' to be 'B' // Object.is equality
+
+Expected: "B"
+Received: "A"
+
+ ❯ src/sample.test.ts:6:49
+      4| test("subtracts", () => { expect(3 - 1).toBe(2); });
+      5| test("divides", () => { expect(1 / 2).toBe(1); });
+      6| test("names", () => { expect("a".toUpperCase()).toBe("B"); });
+       |                                                 ^
+      7| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 2 passed (4)
+   Start at  04:59:06
+   Duration  203ms (transform 22ms, setup 0ms, collect 18ms, tests 5ms, environment 0ms, prepare 42ms)
+

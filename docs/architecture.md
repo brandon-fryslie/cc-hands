@@ -426,13 +426,18 @@ block, each written once when the block finishes. While this design was written,
 seconds old in the middle of a turn. So the daemon reads transcripts continuously, not
 only when a turn stops.
 
+**The recognisers** run today. `hands.core.steps.recognise` takes one `Call` — a tool
+call, the record it was written in, and the result that came back — and gives the `Step`
+it is, through one table keyed by tool name `[LAW:one-type-per-behavior]`. A recogniser
+claims a call only when the record carries what its step asserts, so failure needs no
+case anywhere: a failed edit records no patch, and is therefore an `Other` rather than an
+`Edited`. `hands.core.turn.Opening` stays `Asked | Notified`, the prompt that opened the
+turn; a question Claude put to the user is the `Questioned` step.
+
 **The tail** is planned; no tail runs today. At `Stop` the narrator reads the newest turn
-from the whole file with `read_turn`, described under Summaries, into a smaller
-`Step = Said | Used` that the recognisers below will split. That union's `Asked` is
-the prompt that opened the turn, not the `AskUserQuestion` step named below. From the
-moment a session registers, the adapter follows its JSONL from
-the watermark and hands each new record to a pure `recognise`, which turns records into
-`Step`s through one table of recognisers `[LAW:one-type-per-behavior]`. The reducer
+from the whole file with `read_turn`, described under Summaries, through those same
+recognisers. From the moment a session registers, the adapter follows its JSONL from
+the watermark and hands each new record to them. The reducer
 receives steps as events and asks for their summaries as they arrive, so by the time
 `Stop` fires most of the turn's summary is built.
 
@@ -441,34 +446,63 @@ hour, `read_session(session, since)` reads the same file from an earlier point t
 the same recognisers.
 
 ```python
-# One variant per kind of thing a turn does. Every step names the record it came from.
-Step = Said | Edited | Ran | Tested | Looked | Committed | Planned | Delegated | Asked | Other
+# One variant per kind of thing a turn does. Every step names the record it came from, except
+# where there is no record to name: one that carries no uuid, and the closing reply the Stop hook
+# hands over before Claude Code has written it.
+Step = Said | Edited | Ran | Tested | Looked | Planned | Delegated | Questioned | Other
 
 @dataclass(frozen=True)
-class Said:      ref: Uuid; markdown: str                  # assistant text; never spoken as is
+class Said:       ref: Ref | None; text: str                 # assistant text; never spoken as is
 @dataclass(frozen=True)
-class Edited:    ref: Uuid; path: Path; patch: Patch       # Edit, Write, MultiEdit, NotebookEdit
+class Edited:     ref: Ref | None; path: str; created: bool; change: str   # Edit, Write, MultiEdit, NotebookEdit
 @dataclass(frozen=True)
-class Ran:       ref: Uuid; command: str; purpose: str | None; failed: bool; output: str
+class Ran:        ref: Ref | None; command: str; purpose: str | None; failed: bool; output: str; git: tuple[GitChange, ...]
 @dataclass(frozen=True)
-class Tested:    ref: Uuid; runner: str; passed: int; failed: int; failing: Sequence[str]
+class Tested:     ref: Ref | None; runner: str; passed: int | None; failed: int; failing: tuple[str, ...]
 @dataclass(frozen=True)
-class Looked:    ref: Uuid; tool: str; target: str; found: str   # Read, Grep, Glob, web tools
+class Looked:     ref: Ref | None; tool: str; target: str; found: str   # Read, Grep, Glob, web tools
 @dataclass(frozen=True)
-class Committed: ref: Uuid; operation: GitOperation        # commit, push, branch, pull request
+class Planned:    ref: Ref | None; task: str; change: str    # TaskCreate, TaskUpdate
 @dataclass(frozen=True)
-class Planned:   ref: Uuid; items: Sequence[TodoItem]      # TodoWrite and the task tools
+class Delegated:  ref: Ref | None; agent: str | None; description: str; report: str | None
 @dataclass(frozen=True)
-class Delegated: ref: Uuid; agent_type: str; description: str; report: str | None
+class Questioned: ref: Ref | None; questions: tuple[Question, ...]   # AskUserQuestion
 @dataclass(frozen=True)
-class Asked:     ref: Uuid; questions: Sequence[AskedQuestion]    # AskUserQuestion
-@dataclass(frozen=True)
-class Other:     ref: Uuid; tool: str; input: str; result: str    # named and summarised, never dropped
+class Other:      ref: Ref | None; tool: str; input: str; result: str; failed: bool  # named and summarised, never dropped
+
+GitChange = Committed | Pushed | Branched | PullRequested   # what a command did to the repository
 ```
 
-`Tested` is a `Ran` whose output a test-runner parser accepts: pytest, vitest, cargo
-test, go test. Questions asked in plain text rather than through `AskUserQuestion` are
-found when the turn is summarised.
+**What the records really say**, read out of 900 transcripts on 2026-09-21, against which
+three lines of the design above were wrong:
+
+- `toolUseResult` is *absent* from about one result in five — every error writes a string
+  there instead of an object, and so does every result Claude Code's own harness handled,
+  such as output too large to inline. The `tool_result` block's content is the only part
+  always present, so a recogniser may prefer the structured record and never require it.
+- A command that fails is marked by `is_error` on the block, not by the `Error: Exit code N`
+  prefix this document used to claim: one result in 15,098 began with `Error:`, while 448
+  were `is_error`. A failing test run is `is_error` too, which is why `Ran.failed` is the
+  command's exit status and not a reason to stop recognising the run.
+- `gitOperation` is a *set* of operations, not one: of 850 sampled, 70 commit and push
+  together and 30 open a pull request and push. So there is no `Committed` step — a commit
+  is a `Ran` that names what it did to the repository, and one record stays one step.
+- This Claude Code has no `TodoWrite` and no `Task` at all (zero calls in the sample); it
+  plans with `TaskCreate` and `TaskUpdate` and delegates with `Agent`. An update records the
+  task's id and its new status and never its subject again, so `Planned` is one task and
+  what happened to it.
+- A file written from nothing records an empty hunk list and its text in `content`, because
+  there was nothing to diff it against. `Edited.change` is therefore the hunks for an edit
+  and the whole file for a create.
+
+`Tested` is a `Ran` whose output a test runner wrote. Each runner is four patterns in one
+table — what proves it ran, how it counts what passed and what failed, and how it names a
+failure — fitted to output captured from pytest, vitest, cargo test and go test, passing and
+failing, and kept in `tests/fixtures/testruns/`. `go test` counts nothing it did not fail, so
+`Tested.passed` is None there and a run's failures are counted by the names it printed. A
+command is a test run because its output is a runner's, never because of how the command was
+spelled, so `make test` and a script reach the same table. Questions asked in plain text
+rather than through `AskUserQuestion` are found when the turn is summarised.
 
 Record shapes worth knowing, observed in transcripts on 2026-09-14:
 
@@ -524,8 +558,9 @@ tool result in it, and that does not follow a tool call or tool result: a messag
 while a tool runs belongs to the turn under way, and an image or document attached to a
 prompt is named rather than read. The opening is `Asked`, or `Notified` when its
 `origin.kind` is `task-notification`. The steps are assistant text (`Said`) and tool
-calls matched to their results by id (`Used`, failed when the result `is_error`);
-subagent records are skipped.
+calls matched to their results by id, each handed to `recognise`; subagent records and
+thinking blocks are skipped, thinking because it is how Claude reached a result rather
+than a result.
 
 **A turn can stop twice.** Another hook may block a `Stop`, and the same turn then runs
 on to a later one. So the narrator keeps a `Told` per session — which record opened the

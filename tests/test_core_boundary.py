@@ -5,7 +5,11 @@ from pathlib import Path
 
 import hands.core
 
-ALLOWED = ("collections.abc", "dataclasses", "pathlib", "typing", "hands.core")
+# An allow-list rather than a list of the four names the architecture calls out, so a module that reaches the
+# world is caught the first time one is imported rather than the first time someone remembers to name it.
+# `json` and `re` are here because they only transform values: a step's input is rendered as JSON, and a test
+# runner's output is read by pattern.
+ALLOWED = ("collections.abc", "dataclasses", "json", "pathlib", "re", "typing", "hands.core")
 
 
 def imported(source: str) -> set[str]:

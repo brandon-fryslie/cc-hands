@@ -46,15 +46,17 @@ what each has and what remains.
 - **Transcript tail and step recognisers.** While a session is registered, the
   adapter follows its JSONL from the watermark, and one table of recognisers turns
   records into typed `Step`s: text, edits with their patches, commands with their
-  purpose, output, and failure, test runs with the failing names, reads and
-  searches, git operations, todo and task updates, `Agent` dispatches with their
+  purpose, output, failure, and what they did to the repository, test runs with the
+  failing names, reads and searches, task updates, `Agent` dispatches with their
   reports, and `AskUserQuestion`. An unrecognised tool is named and summarised,
   never dropped. Done by fixture tests on real JSONL slices, and by a measurement
-  of the lag from a record's `timestamp` to its `Step`. Built: at `Stop`, `read_turn`
-  reads the newest turn from the whole transcript into two step kinds, text and tool
-  calls matched to their results, skipping subagent records, and a turn that stops
-  twice is told only the steps the first stop did not tell. Remaining: the tail from
-  the watermark, the recogniser table and its typed steps, and the lag measurement.
+  of the lag from a record's `timestamp` to its `Step`. Built: the recogniser table
+  and its nine typed steps, fitted to shapes read out of 900 real transcripts and
+  tested against fourteen real call-and-result pairs and the output four real test
+  runners write; at `Stop`, `read_turn` reads the newest turn from the whole
+  transcript through them, skipping subagent records, and a turn that stops twice is
+  told only the steps the first stop did not tell. Remaining: the tail that follows
+  each live transcript from the watermark, and the lag measurement.
 - **The turn's git delta.** At `UserPromptSubmit` the daemon records the target's
   git baseline without touching the working tree; at `Stop` it computes the files
   changed, the commits made, new untracked files, and the diff. Changes made by any
