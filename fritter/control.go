@@ -153,9 +153,9 @@ func (w *Wrapped) typeText(asked request) response {
 //
 // A keystroke cannot interleave with anything: it does exactly what it would do if the
 // user had pressed it themselves, and they see the result. Gating it on a free line would
-// also be a door locked from the inside - Enter and Ctrl-C are the very keys that free a
-// line, so a session whose line is held would have no way back except a human at the
-// physical keyboard, which is the case this whole program exists to avoid.
+// also be a door locked from the inside - Enter, Ctrl-C and Ctrl-U are the very keys that
+// free a line, so a session whose line is held would have no way back except a human at
+// the physical keyboard, which is the case this whole program exists to avoid.
 func (w *Wrapped) pressKey(asked request) response {
 	chord, known := keystrokes[asked.Key]
 	if !known {

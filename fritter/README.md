@@ -101,8 +101,8 @@ interleaves: dropped into a half-written line it makes one prompt out of two peo
 words, and afterwards nobody can pull them apart. A keystroke does exactly what it would
 have done had the user pressed it, and the user sees the result.
 
-It is also the way back. Enter and Ctrl-C are the keys that empty the box, so refusing
-them would lock the door from the inside — a session whose line was held would be
+It is also the way back. Enter, Ctrl-C and Ctrl-U are the keys that empty the box, so
+refusing them would lock the door from the inside — a session whose line was held would be
 reachable only by a human at the physical keyboard, which is the situation this program
 exists to remove. A key that empties the box tells the line owner so, read by the same
 parser that reads the keyboard, so there is one account of what those bytes mean and not
