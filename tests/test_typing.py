@@ -198,3 +198,62 @@ def test_an_answer_that_runs_past_its_size_is_cut_off(short_dir: Path, monkeypat
     # Cut off at the cap rather than read to the end of whatever the session felt like
     # sending, which is what the elapsed time is here to distinguish.
     assert waited < 2.0, f"the cap is {typing.ANSWER_LIMIT} bytes and the read took {waited:.1f}s"
+
+
+class MuteFritter:
+    """A fritter that takes the request and then says nothing."""
+
+    def __init__(self, path: Path, hold: float) -> None:
+        self._hold = hold
+        self.asked: bytes | None = None
+        self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._listener.bind(str(path))
+        self._listener.listen(1)
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        try:
+            connection, _ = self._listener.accept()
+        except OSError:
+            return
+        with connection:
+            self.asked = connection.recv(65536)
+            time.sleep(self._hold)
+
+    def close(self) -> None:
+        self._listener.close()
+        self._thread.join(timeout=8)
+
+
+def test_a_request_that_landed_but_went_unanswered_says_not_to_send_it_again(
+    short_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # fritter writes to the pty before it answers, so a deadline reached after the request
+    # went out does not mean the text did not land - it means nobody knows. Told "cannot
+    # reach it", a caller retypes, and retyping a draft that did land sends it twice.
+    monkeypatch.setattr(typing, "ANSWER_TIMEOUT", 0.3)
+    path = short_dir / "mute.sock"
+    fritter = MuteFritter(path, hold=3.0)
+    try:
+        with pytest.raises(Untyped) as refused:
+            Typist.of(wrapped(path)).type(PromptText("fix the auth middleware"), submit=True)
+    finally:
+        fritter.close()
+    assert fritter.asked is not None, "the request never reached the fake fritter, so this tests nothing"
+    assert "may already be in the input box" in str(refused.value)
+    assert "do not send it again" in str(refused.value)
+
+
+def test_a_fritter_that_hangs_up_without_answering_says_that_and_not_that_it_answered_badly(short_dir: Path) -> None:
+    # A closed connection and a garbled reply both arrive at json.loads as empty bytes.
+    # Calling that "not JSON" sends someone looking for an answer that was never sent.
+    path = short_dir / "hangup.sock"
+    fritter = MuteFritter(path, hold=0.0)
+    try:
+        with pytest.raises(Untyped) as refused:
+            Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
+    finally:
+        fritter.close()
+    assert "closed the connection without answering" in str(refused.value)
+    assert "not JSON" not in str(refused.value)

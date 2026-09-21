@@ -58,13 +58,27 @@ went wrong, because a write that was refused and a write that landed must never 
 alike to the caller. When the text lands but the Enter after it does not, the reason says
 so in those words — retyping text that is already sitting in the box would double it.
 
-A caller has five seconds and 64 KB for its request, after which the connection is
-dropped. Without a bound, one client that connects and never finishes its line holds a
-goroutine for the rest of the session.
+A caller has three seconds and 64 KB for its request. Past the size it is refused with a
+reason that says so; past the time the connection is dropped, because a client that
+connects and never finishes its line would otherwise hold a goroutine for the rest of the
+session.
+
+Three deadlines nest, and the order is the whole of what makes a refusal arrive instead of
+a silence — a write into the session gives up after **one** second so its reason has time
+to be written, the connection gives up after **three** so a caller that waits is answered
+rather than dropped, and hands allows **five** so what it hears is fritter's reason and not
+its own timer. Widen any one without the others and a wedged session stops being able to
+say that it is wedged.
 
 `text` is typed literally. fritter does not decide what a leading `/` or `@` means to the
 program underneath — that belongs to the caller, and in hands it is already settled
 before anything reaches here. `submit` presses Enter afterwards.
+
+`text` is characters and newlines, and a control byte in it is refused by name. A control
+byte there is a keystroke in text's clothing: an `ESC` ends the bracketing early, so
+everything after it is typed and submitted on its own, and a `0x03` is a Ctrl-C. Sent as
+text they would turn one message into several, or into something nobody asked to send,
+under an `ok`. Send a `key` request for a keystroke.
 
 The keys are `escape`, `enter`, `ctrl_c`, `ctrl_u`, `up`, `down`, `tab` and `shift_tab`.
 Which bytes each one is, is terminal knowledge, so that table lives here rather than in
@@ -153,18 +167,32 @@ exit code of its own, and passing on Go's -1 would exit 255 and leave a caller u
 tell that from a program that really did exit 255.
 
 `run` waits for the child's last output before returning. `cmd.Wait` comes back when the
-child is reaped, which is before what it printed has finished arriving through the pty, so
-without the wait `fritter -- sh -c 'echo done'` can print nothing at all. The wait stops
-after two seconds, because something the child left running can hold the pty open and an
-unbounded wait would keep fritter alive after its session ended. Reaching that bound means
-output really was lost, and fritter says so.
+child is reaped, and there is no ordering at all between that and the copy of what it
+printed finishing. Returning there hands the caller a finished session whose last words
+are still going out — and the caller's next move is to exit. Against a stdout that takes
+its time the gap is plainly visible; against a fast one it is a race you win almost every
+time, which is the worse kind. The wait stops after two seconds, because something the
+child left running can hold the pty open and an unbounded wait would keep fritter alive
+after its session ended. Reaching that bound means output really was lost, and fritter
+says so.
 
-The goroutine reading your stdin outlives `run`. A read already blocked on a terminal
-cannot be interrupted portably — `SetReadDeadline` answers *"file type does not support
-deadline"* for a pty slave on macOS, and where it returns nil it does not reliably unblock
-a read in flight — so joining on it would hang the exit rather than hurry it. The caller
-must not close stdin before its process ends, which for fritter is the next statement in
-`main`. A guarantee that sometimes deadlocks is worse than one not made.
+A write into the session gives up after a second. A pty in raw mode holds a kilobyte of
+input and a write that fills it blocks until the child reads, which a running session does
+at once and a stopped one never does. Waiting there with no bound hangs the request and
+everything behind it — including the `ctrl_u` that was meant to be the way back. The write
+cannot be taken back, so while one is outstanding every other is refused rather than queued
+behind it, and it clears itself the moment the child starts reading again. What landed is
+always reported: a write that failed partway says how many bytes reached the box, because
+"nothing was typed" would send a caller to retype a message half of which is already there.
+
+The goroutine reading your stdin outlives `run`. `main` hands it `os.Stdin`, and a read
+already blocked there cannot be interrupted — `SetReadDeadline` answers *"file type does
+not support deadline"* for a terminal — so joining on it would hang the exit rather than
+hurry it. (Measured, because an earlier version of this file had it backwards: a pty slave
+*does* take a deadline and *does* unblock a read in flight. That is the shape the tests run
+in, not the shape a session runs in, and a contract that holds only under test is not one.)
+The caller must not close stdin before its process ends, which for fritter is the next
+statement in `main`. A guarantee that sometimes deadlocks is worse than one not made.
 
 ## Measured against Claude Code 2.1.278
 
@@ -180,6 +208,9 @@ must not close stdin before its process ends, which for fritter is the next stat
   last word. Backspacing to empty hands the line back, and a `ctrl_u` sent while the user
   holds the line clears it and leaves the session running.
 - A two-line prompt sent with the display asleep arrived as one message and was answered.
+- A pty in raw mode — which is what the child puts its side into — blocks a write at 1024
+  bytes when nothing is reading. A cooked one takes 300 KB without blocking, which is why
+  a test against a shell proves nothing here unless it makes the pty raw first.
 - A process the child spawns sees `FRITTER_SOCKET`.
 - The workspace-trust dialog swallows a paste, the same way `docs/architecture.md` records
   permission dialogs doing. A session sitting at a dialog is not one to type text into.

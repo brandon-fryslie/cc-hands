@@ -17,7 +17,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 const usage = "usage: fritter [--socket-dir DIR] -- COMMAND [ARGS...]"
@@ -31,10 +34,25 @@ const (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:]))
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout))
 }
 
-func run(args []string) int {
+// run is fritter, with the terminal it uses passed in rather than reached for, so the
+// whole of it - the socket taken away on the way out, the child's last output written
+// before the process ends - can be run under test as it actually runs.
+func run(args []string, stdin *os.File, stdout io.Writer) int {
+	// [LAW:no-silent-failure] Armed before there is anything to undo, because the window
+	// between creating the socket and forwarding signals is one a termination signal can
+	// land in: at its default disposition it kills fritter outright, with the socket left
+	// for the next caller to dial into nothing and the user's terminal left in raw mode.
+	// A signal arriving before the child exists waits in here and reaches it as soon as
+	// the forwarding starts.
+	killed := make(chan os.Signal, 1)
+	signal.Notify(killed, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	// Stopped last of all, so forwarding still covers the drain, the terminal being put
+	// back, and the socket being removed.
+	defer signal.Stop(killed)
+
 	dir, argv, err := parse(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fritter: %v\n%s\n", err, usage)
@@ -55,7 +73,7 @@ func run(args []string) int {
 	}
 	go wrapped.serve(socket.listener)
 
-	code, err := wrapped.run(os.Stdin, os.Stdout)
+	code, err := wrapped.run(stdin, stdout, killed)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fritter: %v\n", err)
 		return failed
@@ -95,5 +113,8 @@ func parse(args []string) (dir string, argv []string, err error) {
 // wrapper that failed quietly would leave the caller believing text was typed that
 // never was `[LAW:no-silent-failure]`.
 func warn(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "fritter: "+format+"\n", args...)
+	// A carriage return as well as a line feed, because the terminal this goes to is one
+	// fritter put into raw mode, where a bare line feed drops a line without returning to
+	// the left margin and every warning after it staircases across the child's interface.
+	fmt.Fprintf(os.Stderr, "fritter: "+format+"\r\n", args...)
 }

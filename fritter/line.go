@@ -67,8 +67,12 @@ func (l *lineOwner) fold(presses []press) {
 }
 
 // free reports whether the input box is clear of the user's own unsent characters.
+//
+// A parser that has not finished reading what arrived counts as not clear, because the
+// bytes it is still holding may be characters the user typed. Saying yes on a maybe is
+// the answer that cannot be taken back.
 func (l *lineOwner) free() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.chars == 0
+	return l.chars == 0 && !l.stdin.undecided()
 }

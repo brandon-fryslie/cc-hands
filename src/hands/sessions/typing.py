@@ -2,7 +2,9 @@
 
 fritter runs a session's `claude` on a pseudo-terminal and listens on a unix socket
 beside it; anything asked for there is typed into that session's input. This is the
-client side of that socket, and the whole of hands' dependence on fritter.
+client side of that socket. The other half of hands' dependence on fritter is the name
+`FRITTER_SOCKET`, which `hands.sessions.shim` reads out of a wrapped session's
+environment; between them they are all of it.
 
 It decides nothing about *what* to type. Whether a draft is ready, whether a session's
 state allows a send, and what a leading slash means are all settled before anything
@@ -17,10 +19,14 @@ from pathlib import Path
 
 from hands.core.session import Keystroke, Membership, PromptText, SessionId
 
-# How long the whole exchange may take, and the most an answer may run to. fritter
-# answers as soon as it has written to the pty, so this bounds a fritter that is wedged
-# rather than one that is busy; long enough to be certain of that, short enough that the
-# daemon is not held by it.
+# How long the whole exchange may take, and the most an answer may run to.
+#
+# This is the longest of three nested deadlines and must stay that way: fritter stops
+# waiting on a write into the session after one second, drops the connection after three,
+# and so always has time to answer with a reason. Shorten this below fritter's own and
+# hands hears its own timer instead of what fritter had to say. Reaching it at all means
+# fritter itself is stuck, which is why a deadline reached after the request went out says
+# something different from one reached before: see _ask.
 ANSWER_TIMEOUT = 5.0
 ANSWER_LIMIT = 64 * 1024
 
@@ -69,14 +75,25 @@ class Typist:
         # bound each call and not the exchange, so a fritter dribbling a byte every four
         # seconds would hold the daemon forever without once timing out.
         deadline = time.monotonic() + ANSWER_TIMEOUT
+        # [LAW:no-silent-failure] fritter writes to the pty before it answers, so once the
+        # request has gone out a failure here no longer means the text did not land - it
+        # means nobody knows. A caller told "cannot reach it" retypes, and retyping a
+        # draft that did land sends it twice.
+        delivered = False
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(_left(deadline))
                 connection.connect(str(self.socket))
                 connection.settimeout(_left(deadline))
                 connection.sendall(body)
+                delivered = True
                 answer = _read_line(connection, deadline)
         except OSError as error:
+            if delivered:
+                raise Untyped(
+                    f"the request reached the fritter for session {self.session} at {self.socket} but it never"
+                    f" answered, so the text may already be in the input box - do not send it again: {error}"
+                ) from error
             # A session whose process is gone leaves a socket nobody is listening on, and
             # that is the common case here rather than an exotic one.
             raise Untyped(f"cannot reach the fritter for session {self.session} at {self.socket}: {error}") from error
@@ -112,6 +129,10 @@ def _read_line(connection: socket.socket, deadline: float) -> bytes:
 
 
 def _raise_if_refused(session: SessionId, answer: bytes) -> None:
+    if not answer:
+        # A closed connection and a malformed reply both reach json.loads, and the second
+        # message would send someone looking for a garbled answer that was never sent.
+        raise Untyped(f"fritter for session {session} closed the connection without answering")
     try:
         decoded = json.loads(answer)
     except (json.JSONDecodeError, UnicodeDecodeError) as error:

@@ -1,17 +1,20 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/term"
 )
 
 func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
@@ -64,6 +67,23 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"a paste spanning reads", []string{"\x1b[200~a\nb", "c\x1b[201~"}, false},
 		{"a paste whose end marker straddles a read", []string{"\x1b[200~ab\x1b[20", "1~"}, false},
 		{"a paste then submitted", []string{"\x1b[200~a\nb\x1b[201~", "\r"}, true},
+
+		// An ESC is both the Escape key and the first byte of every sequence, and the
+		// bytes alone do not say which. Guessing "sequence" lets a scan looking for a
+		// terminator swallow whatever the user types next and report an empty box while
+		// their words sit in it - the one mistake with no recovery. Guessing "Escape key"
+		// counts the sequence that follows as typing and holds an empty line for good.
+		// These are the cases that catch each guess.
+		{"escape, then a message that opens like a string sequence", []string{"\x1b", "P", "l", "e", "a", "s", "e"}, false},
+		{"escape, then a message that opens like another one", []string{"\x1b", "]drop the table"}, false},
+		{"escape, then the pointer moves", []string{"\x1b", "\x1b[<0;45;12M"}, true},
+		{"escape, then the window loses focus", []string{"\x1b", "\x1b[O"}, true},
+		{"alt-up arrives as two escapes and a sequence", []string{"\x1b\x1b[A"}, true},
+		{"typed, escape, then submitted", []string{"hello", "\x1b", "\r"}, true},
+		{"typed, escape, then cleared", []string{"hello", "\x1b", "\x15"}, true},
+		{"typed, escape, then backspaced back to empty", []string{"ab", "\x1b", "\x7f\x7f"}, true},
+		{"an answer longer than any key holds the line rather than freeing it", []string{"\x1b]" + strings.Repeat("A", 4095), "BBB\x07"}, false},
+		{"a terminal answer split across reads is still not typing", []string{"\x1b]11;rgb:1b1b/", "1b1b/1b1b\x07"}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			line := newLineOwner()
@@ -131,14 +151,49 @@ func TestPasteModeSurvivesASequenceSplitAcrossReads(t *testing.T) {
 	}
 }
 
-func TestEncodeBracketsOnlyWhenTheChildAcceptsIt(t *testing.T) {
+func TestEncodeBracketsOnlyWhenTheChildAcceptsItAndSaysWhichItDid(t *testing.T) {
+	// The caller needs the same reading of the mode that the bytes were made with. Asked
+	// twice - once to decide whether multi-line text is safe, once to encode it - the
+	// child can turn bracketing off in between, and a message accepted as one paste goes
+	// as several submitted prompts under an ok.
 	mode := newPasteMode()
-	if got := string(mode.encode("a\nb")); got != "a\nb" {
-		t.Fatalf("with paste off, text must go as it is, got %q", got)
+	got, bracketed := mode.encode("a\nb")
+	if string(got) != "a\nb" || bracketed {
+		t.Fatalf("with paste off, text must go as it is and say so, got %q bracketed=%v", got, bracketed)
 	}
 	mode.Write([]byte("\x1b[?2004h"))
-	if got := string(mode.encode("a\nb")); got != "\x1b[200~a\nb\x1b[201~" {
-		t.Fatalf("with paste on, text must be bracketed, got %q", got)
+	got, bracketed = mode.encode("a\nb")
+	if string(got) != "\x1b[200~a\nb\x1b[201~" || !bracketed {
+		t.Fatalf("with paste on, text must be bracketed and say so, got %q bracketed=%v", got, bracketed)
+	}
+}
+
+func TestTheModeIsReadFromCommandsAndNotFromWhatTheChildPrints(t *testing.T) {
+	// A string sequence - a window title, a tmux passthrough - carries text the terminal
+	// shows or forwards, not commands it obeys. Matching the mode bytes inside one lets a
+	// title turn bracketing off on a session that still has it on, and a passthrough turn
+	// it on where nothing did - after which an injection puts a literal ESC[200~ into the
+	// input box.
+	for _, c := range []struct {
+		name   string
+		writes []string
+		on     bool
+	}{
+		{"the child turns it on", []string{"\x1b[?2004h"}, true},
+		{"a title that happens to contain the off sequence", []string{"\x1b[?2004h", "\x1b]0;claude \x1b[?2004l here\x07"}, true},
+		{"a tmux passthrough that contains the on sequence", []string{"\x1bPtmux;\x1b\x1b[?2004h\x1b\\"}, false},
+		{"a title split across two writes", []string{"\x1b[?2004h", "\x1b]0;claude \x1b[?20", "04l here\x07"}, true},
+		{"the child really does turn it off after a title", []string{"\x1b[?2004h", "\x1b]0;claude\x07", "\x1b[?2004l"}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			mode := newPasteMode()
+			for _, w := range c.writes {
+				mode.Write([]byte(w))
+			}
+			if mode.enabled() != c.on {
+				t.Fatalf("after %q: enabled=%v, want %v", c.writes, mode.enabled(), c.on)
+			}
+		})
 	}
 }
 
@@ -186,7 +241,7 @@ func wrapOnto(t *testing.T, stdout io.Writer, argv ...string) (*Wrapped, func(st
 		// The child's output goes nowhere the test reads back into fritter's stdin: a
 		// real terminal does not hand back what was printed to it, and a harness that
 		// does would count the child's own output as the user typing.
-		code, err := wrapped.run(terminalSlave, stdout)
+		code, err := wrapped.run(terminalSlave, stdout, make(chan os.Signal))
 		if err != nil {
 			t.Errorf("run: %v", err)
 		}
@@ -246,20 +301,93 @@ func TestAChildKilledByASignalIsReportedAsOne(t *testing.T) {
 	}
 }
 
-func TestTheChildsLastOutputIsWrittenBeforeRunReturns(t *testing.T) {
-	// cmd.Wait returns when the child is reaped, which is before the last of what it
-	// printed has come back through the pty. A run that returned there would let the
-	// caller exit with the output still in flight, so the shortest possible session -
-	// print one word and quit - would print nothing.
-	var printed bytes.Buffer
-	_, _, exited := wrapOnto(t, &printed, "sh", "-c", "echo done")
+// unhurried is a stdout that takes its time, which is the case the drain exists for: the
+// child is reaped the moment it exits, and whether what it printed has finished being
+// written out is a separate question with no ordering between them.
+type unhurried struct {
+	mu  sync.Mutex
+	got []byte
+}
+
+func (u *unhurried) Write(p []byte) (int, error) {
+	time.Sleep(100 * time.Millisecond)
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.got = append(u.got, p...)
+	return len(p), nil
+}
+
+func (u *unhurried) written() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return string(u.got)
+}
+
+func TestRunReturnsOnlyOnceTheChildsOutputHasBeenWritten(t *testing.T) {
+	// cmd.Wait comes back when the child is reaped, which says nothing about the copy
+	// still in flight behind it. Returning there hands the caller a finished session
+	// whose last words have not been written yet - and the caller's next move is to exit.
+	slow := &unhurried{}
+	_, _, exited := wrapOnto(t, slow, "sh", "-c", "echo done")
 	select {
 	case <-exited:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the child never exited")
 	}
-	if !strings.Contains(printed.String(), "done") {
-		t.Fatalf("the child printed \"done\" and run returned with %q", printed.String())
+	if !strings.Contains(slow.written(), "done") {
+		t.Fatalf("run returned with the output still going out; stdout had %q", slow.written())
+	}
+}
+
+// TestHelperFritter is not a test. It is fritter's own main, run as a subprocess by the
+// test below, because the two things that test asserts - that the last of the child's
+// output is written, and that the socket goes with the process - are properties of the
+// program ending, and nothing that keeps running can demonstrate them.
+func TestHelperFritter(t *testing.T) {
+	if os.Getenv("FRITTER_HELPER") != "1" {
+		t.Skip("not a test: run as a subprocess by TestTheProgramPrintsTheLastWordAndTakesItsSocketWithIt")
+	}
+	os.Exit(run(strings.Split(os.Getenv("FRITTER_HELPER_ARGS"), "\x1f"), os.Stdin, os.Stdout))
+}
+
+func TestTheProgramPrintsTheLastWordAndTakesItsSocketWithIt(t *testing.T) {
+	// cmd.Wait returns when the child is reaped, which is before the last of what it
+	// printed has come back through the pty, so without the drain the shortest possible
+	// session - print one word and quit - prints nothing at all. The process has to
+	// actually exit for that to show: a harness that keeps running keeps the copier
+	// running too, and the copier finishes either way.
+	dir := shortTempDir(t)
+	fritter := exec.Command(os.Args[0], "-test.run=TestHelperFritter")
+	fritter.Env = append(os.Environ(),
+		"FRITTER_HELPER=1",
+		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--\x1fsh\x1f-c\x1fecho done; exit 3",
+	)
+	terminal, err := pty.Start(fritter)
+	if err != nil {
+		t.Fatalf("cannot start fritter on a terminal: %v", err)
+	}
+	defer terminal.Close()
+
+	printed, _ := io.ReadAll(terminal)
+	err = fritter.Wait()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("fritter should have carried its child's exit code out; got %v", err)
+	}
+	if code := exitCode(exit); code != 3 {
+		t.Errorf("exit code %d, want the child's own 3", code)
+	}
+	if !strings.Contains(string(printed), "done") {
+		t.Errorf("the child printed \"done\" and the terminal saw %q", printed)
+	}
+	// A socket left behind outlives the session it addressed, and the next caller to dial
+	// it reaches nothing while believing it reached a session.
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("cannot read %s: %v", dir, err)
+	}
+	if len(left) != 0 {
+		t.Errorf("fritter left %d entries in %s behind it", len(left), dir)
 	}
 }
 
@@ -339,6 +467,82 @@ func TestMultiLineTextIsRefusedWhenTheSessionWillNotBracketIt(t *testing.T) {
 	}
 }
 
+func TestTextThatIsNotCharactersIsRefusedRatherThanTyped(t *testing.T) {
+	// text is characters and newlines. A control byte in it is a keystroke in text's
+	// clothes: an ESC ends the bracketing early, so everything after it is typed and
+	// submitted on its own, and a 0x03 is a Ctrl-C. Answered ok, one message would arrive
+	// as several, or as something nobody asked to send.
+	_, ask, _ := wrap(t, "sh", "-c", "IFS= read -r a; exit 0")
+
+	for _, c := range []struct{ name, body string }{
+		{"the marker that ends a paste", `{"kind":"text","text":"look at \u001b[201~ this","submit":true}`},
+		{"an interrupt", `{"kind":"text","text":"a\u0003b","submit":true}`},
+		{"a carriage return, which submits", `{"kind":"text","text":"first\rsecond","submit":true}`},
+		{"a tab, which is a key", `{"kind":"text","text":"a\tb","submit":true}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			answer := ask(c.body)
+			if answer.OK {
+				t.Fatal("this was accepted as text and sent to the session")
+			}
+			if !strings.Contains(answer.Reason, "control byte") {
+				t.Fatalf("the reason must say what it found, got %q", answer.Reason)
+			}
+		})
+	}
+	if answer := ask(`{"kind":"text","text":"ordinary words","submit":true}`); !answer.OK {
+		t.Fatalf("the child could not be let go: %s", answer.Reason)
+	}
+}
+
+func TestASessionThatIsNotReadingItsInputIsSaidSoRatherThanWaitedOn(t *testing.T) {
+	// A pty in raw mode holds a kilobyte of input, and a write that fills it blocks until
+	// the child reads - which a stopped or wedged session never does. Waiting there with
+	// no bound hangs the request and everything behind it: the next caller in is hands
+	// sending the ctrl_u that was supposed to be the way back.
+	//
+	// Measured on macOS: a cooked pty takes 300 KB without blocking, a raw one blocks at
+	// 1024 bytes. Claude Code runs raw, so raw is the configuration this has to hold in,
+	// and the test puts the pty there rather than testing the one that cannot fail.
+	wrapped, ask, exited := wrap(t, "sh", "-c", "sleep 30")
+	if _, err := term.MakeRaw(int(wrapped.master.Fd())); err != nil {
+		t.Fatalf("cannot put the session's terminal into raw mode: %v", err)
+	}
+	// The child is killed at the end whatever happens: it reads nothing on purpose, so
+	// nothing else will ever end it, and run would still hold the test's terminal.
+	defer func() {
+		_ = wrapped.cmd.Process.Kill()
+		select {
+		case <-exited:
+		case <-time.After(10 * time.Second):
+			t.Error("the child outlived being killed")
+		}
+	}()
+
+	stuck := ask(`{"kind":"text","text":"` + strings.Repeat("x", 2000) + `","submit":false}`)
+	if stuck.OK {
+		t.Fatal("a session that reads nothing took two kilobytes")
+	}
+	if !strings.Contains(stuck.Reason, "not reading its input") {
+		t.Fatalf("the reason must say the session is not reading, got %q", stuck.Reason)
+	}
+
+	// The write is still out there and cannot be taken back, so the next request is
+	// refused at once rather than queued behind it - queued it would wait just as long,
+	// and two half-written messages interleave into one nobody can attribute.
+	started := time.Now()
+	behind := ask(`{"kind":"key","key":"ctrl_u"}`)
+	if behind.OK {
+		t.Fatal("a chord was reported as delivered while a write was still stuck")
+	}
+	if waited := time.Since(started); waited > writeGrace {
+		t.Fatalf("the next request waited %s behind the stuck one", waited)
+	}
+	if !strings.Contains(behind.Reason, "has not finished") {
+		t.Fatalf("the reason must say what it is behind, got %q", behind.Reason)
+	}
+}
+
 func TestRequestsThatNameNothingRealAreRefusedWithAReason(t *testing.T) {
 	_, ask, _ := wrap(t, "sh", "-c", "read line; exit 0")
 
@@ -392,9 +596,9 @@ func TestTheControlSocketIsTheUsersAlone(t *testing.T) {
 	}
 }
 
-func TestTheSocketIsGoneWhenTheCommandIsOver(t *testing.T) {
-	// A socket left behind outlives the session it addressed, and the next caller to
-	// dial it reaches nothing while believing it reached a session.
+func TestClosingTheControlSocketTakesItsDirectoryToo(t *testing.T) {
+	// That the program does this on its way out is the test above; this is the piece it
+	// calls, which must leave nothing behind for the next caller to dial into.
 	socket, err := listen(shortTempDir(t))
 	if err != nil {
 		t.Fatalf("cannot listen: %v", err)

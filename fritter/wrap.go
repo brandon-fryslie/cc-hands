@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -27,6 +28,9 @@ type Wrapped struct {
 	// One injection at a time: a request is a check and one or two writes, and two
 	// interleaving would put half of each into the input box.
 	injecting sync.Mutex
+	// A write that fritter stopped waiting on and cannot take back. Until it finishes,
+	// every other write is refused rather than queued behind it - see send.
+	stuck atomic.Bool
 }
 
 // start runs argv on a new pty, with env added to the child's environment.
@@ -53,7 +57,7 @@ func start(argv []string, env []string) (*Wrapped, error) {
 // [LAW:dataflow-not-control-flow] Both directions run the same copy every iteration.
 // Where a byte came from - the user's keyboard or the control socket - is a value the
 // writer carries, never a branch in the pump.
-func (w *Wrapped) run(stdin *os.File, stdout io.Writer) (int, error) {
+func (w *Wrapped) run(stdin *os.File, stdout io.Writer, killed <-chan os.Signal) (int, error) {
 	restore, err := w.attach(stdin)
 	if err != nil {
 		return 0, err
@@ -85,11 +89,14 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer) (int, error) {
 			warn("the session's output was still arriving %s after it exited; the end of it is lost", drainGrace)
 		}
 	}()
-	// This read outlives run, and deliberately so. A read already blocked on a terminal
-	// cannot be interrupted portably: SetReadDeadline answers "file type does not support
-	// deadline" for a pty slave on macOS, and where it does answer nil it does not reliably
-	// unblock a read already in flight, so joining on it would hang the exit instead of
-	// hurrying it. [LAW:no-silent-failure] A guarantee that deadlocks is worse than one
+	// This read outlives run, and deliberately so. main hands it os.Stdin, and a read
+	// already blocked there cannot be interrupted: SetReadDeadline answers "file type does
+	// not support deadline" for a terminal, so joining on it would hang the exit instead of
+	// hurrying it. Measured, because an earlier version of this comment had it backwards: a
+	// pty slave does take a deadline and it does unblock a read in flight; os.Stdin, /dev/tty
+	// and the pty master do not. The slave is the shape the tests run in, not the shape a
+	// session runs in, and a contract that holds only under test is not one.
+	// [LAW:no-silent-failure] A guarantee that deadlocks is worse than one
 	// not made, so the contract is stated rather than faked: run returns when the child
 	// exits, this goroutine may still be blocked reading stdin, and it touches nothing
 	// but stdin and the pty. The caller must not close stdin before its process ends -
@@ -103,11 +110,11 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer) (int, error) {
 	// the user's terminal left in raw mode. Forwarding instead ends the child, which ends
 	// the wait below, which runs every cleanup on the ordinary path out.
 	//
+	// The channel is armed by the caller, before the socket or the raw terminal exist, so
+	// that the window before this goroutine starts is covered too.
+	//
 	// Ctrl-C at the keyboard never arrives here: in raw mode it is byte 0x03 travelling to
 	// the child through the pty, which is what makes it the child's interrupt and not ours.
-	killed := make(chan os.Signal, 1)
-	signal.Notify(killed, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
-	defer signal.Stop(killed)
 	go func() {
 		for received := range killed {
 			if err := w.cmd.Process.Signal(received); err != nil {

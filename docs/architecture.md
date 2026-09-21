@@ -235,9 +235,13 @@ adapter that fails raises; the supervisor logs it and the failure is spoken thro
 the system channel. Nothing is retried silently and nothing falls back
 `[LAW:no-silent-failure]`.
 
-There is no `Type` effect yet. What it will call is built and measured -
-`hands.sessions.typing.Typist` types into a session's fritter - but the effect itself and
-its place in the reducer are `hands-keyboard-gxr.i5n`.
+That block is the design, not the code. `core/effects.py` has six of those ten today -
+`Audit`, `Reply`, `Speak`, `Narrate`, `Summarise` - plus `SessionGone`, which the block
+above leaves out. `Type`, `Note`, `Play`, `Snapshot` and `Launch` are declared and unbuilt,
+and their adapters are named here in a tense the code has not earned yet. `Type` is the
+nearest: what it will call is built and measured - `hands.sessions.typing.Typist` types
+into a session's fritter - and only the effect and its place in the reducer are left, in
+`hands-keyboard-gxr.i5n`.
 
 Because every transition is `reduce` on values, the test suite for the session
 lifecycle is a table: state before, event, state after, effects. There is no pipeline,
@@ -281,8 +285,13 @@ session and submitted lands in that queue and runs when the turn ends, so a send
 working target is an ordinary send and the daemon holds nothing. A permission dialog
 is the exception: it swallows pasted text and takes the Enter as "Yes". So when the
 drafts are sent, a send to a `Blocked` target is refused, the draft stays staged, and
-the user hears why. Measured again on 2.1.278, the workspace-trust dialog swallows a
-paste the same way, which is the same rule and not a second one.
+the user hears why.
+
+The workspace-trust dialog swallows a paste the same way, measured on 2.1.278, and that
+rule does **not** reach it. `Blocked` has one producer, the `PermissionRequest` hook, and
+no hook fires for a trust prompt: the session reads as `Idle`, fritter sees an empty input
+box and types into it, and the send is answered `ok` while the draft vanishes. It is a
+second rule and it is unbuilt — `hands-harness-5nb.xw8`.
 
 ### Typing into a session
 

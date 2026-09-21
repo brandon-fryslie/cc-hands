@@ -10,7 +10,7 @@ import (
 // [LAW:parse-dont-validate] The bytes arriving on stdin are not a stream of characters.
 // A terminal in raw mode also sends the child's own questions back answered - focus
 // reports, mouse reports, cursor positions - and those answers are full of printable
-// bytes: read as characters, "\x1b[<0;45;12M" is a mouse moving and twelve keys pressed.
+// bytes: read as characters, "\x1b[<0;45;12M" is a mouse moving and ten keys pressed.
 // So the bytes are turned into presses once, here, and nothing downstream sees a byte.
 type press struct {
 	does  effect
@@ -45,9 +45,20 @@ const (
 // which can be a printable character.
 var x10Mouse = []byte("\x1b[M")
 
-// The most bytes held waiting for a sequence to finish. Past this it is not a key: it is
-// something answering at length, and none of it is typing.
-const carry = 4096
+// The most bytes a sequence may run to before the parser stops believing it is one.
+//
+// This bound is what stands between a lone Escape and the rest of the session. An ESC is
+// both the Escape key and the first byte of every arrow key, mouse report and terminal
+// answer, and the bytes alone do not say which. Press Escape and then type `Please fix
+// it` and those bytes read as the opening of a device control string: unbounded, the scan
+// for its terminator swallows every character the user types and never finds one. Past
+// the bound the ESC is taken for the Escape key it was and what follows is read as what
+// it is, so the parser always comes back into step on its own.
+//
+// It is small on purpose. Every real sequence a terminal sends in answer is well inside
+// it - the longest measured here is a colour reply at 27 bytes - and the cost of a bound
+// too large is a line held until the user's next Enter.
+const sequenceLimit = 64
 
 // reader turns the raw bytes arriving on the user's stdin into presses.
 //
@@ -56,15 +67,23 @@ const carry = 4096
 // keyboard can run across many of them.
 type reader struct {
 	pending []byte // an unfinished sequence, waiting for the rest of itself
+	alone   bool   // the pending bytes are an ESC that arrived with nothing after it
 	pasting bool   // inside a paste the user began at their own keyboard
 }
 
 // read measures one slice of stdin.
 func (r *reader) read(chunk []byte) []press {
 	scan := chunk
+	// An ESC held over from the last read arrived with nothing after it. The bytes of one
+	// keypress are written by the terminal together and arrive together, so whatever
+	// follows in this read belongs to a new keypress. That is the only evidence there is
+	// for telling an Escape the user pressed from the ESC of a sequence a read happened
+	// to cut in half, and settling says which sequence gets to use it.
+	settling := r.alone
 	if len(r.pending) > 0 {
 		scan = append(append([]byte(nil), r.pending...), chunk...)
 		r.pending = nil
+		r.alone = false
 	}
 
 	var out []press
@@ -80,14 +99,14 @@ func (r *reader) read(chunk []byte) []press {
 		}
 		switch b := scan[0]; {
 		case b == esc:
-			n, did, complete := r.escape(scan)
+			n, did, complete := r.escape(scan, settling)
+			settling = false
 			if !complete {
-				if len(scan) <= carry {
-					r.pending = append([]byte(nil), scan...)
-				}
-				// Over the limit the bytes are dropped rather than carried or counted.
-				// Counted as characters they would hold the line for good, which is the
-				// failure this parser exists to end.
+				// The rest of it has not arrived. It is held rather than guessed at, and
+				// undecided below is what the line owner reads while it waits - these
+				// bytes may yet turn out to be the user's.
+				r.pending = append([]byte(nil), scan...)
+				r.alone = len(scan) == 1
 				return out
 			}
 			out = append(out, did)
@@ -119,23 +138,35 @@ func (r *reader) read(chunk []byte) []press {
 
 // escape measures the sequence at the front of s and says what it did to the box. It
 // reports false when s ends before the sequence does.
-func (r *reader) escape(s []byte) (n int, did press, complete bool) {
+func (r *reader) escape(s []byte, settling bool) (n int, did press, complete bool) {
 	if len(s) < 2 {
 		return 0, press{}, false
 	}
-	switch s[1] {
-	case '[':
+	switch next := s[1]; {
+	case next == esc:
+		// Two escapes running are not one sequence. Taking both would throw away the
+		// introducer of whatever the second one begins and leave its parameters to be
+		// read as typing - which is how a mouse report becomes twelve keypresses. Take
+		// the first alone; the second starts again from here.
+		return 1, press{}, true
+	case settling && (next < 0x20 || next == del):
+		// No sequence has a control byte in second place, and this ESC came in a read of
+		// its own, so it was the Escape key and this is the next thing the user pressed.
+		// Take the ESC alone and read on: what follows may be the Enter that empties the
+		// box, and swallowing it would hold a line that is no longer there.
+		return 1, press{}, true
+	case next == '[':
 		return r.csi(s)
-	case 'O':
+	case next == 'O':
 		// SS3: one byte follows. Arrow keys in application mode, and F1 to F4.
 		if len(s) < 3 {
 			return 0, press{}, false
 		}
 		return 3, press{}, true
-	case ']', 'P', '^', '_':
+	case next == ']' || next == 'P' || next == '^' || next == '_':
 		// A string sequence, which is how a terminal answers a question at length: the
 		// clipboard, its name, its colours. It ends at BEL or at ESC \.
-		for i := 2; i < len(s); i++ {
+		for i := 2; i < len(s) && i < sequenceLimit; i++ {
 			if s[i] == 0x07 {
 				return i + 1, press{}, true
 			}
@@ -143,14 +174,24 @@ func (r *reader) escape(s []byte) (n int, did press, complete bool) {
 				return i + 2, press{}, true
 			}
 		}
-		return 0, press{}, false
+		return unterminated(s)
 	default:
-		// ESC and one more byte is a meta chord, which is a command rather than a
-		// character. A lone Escape reaches here only with something after it; by itself
-		// it is held as unfinished above, and holding it costs nothing because Escape
-		// does not count as a character either way.
+		// ESC and one more byte, arriving together, is a meta chord - Alt and a key. It
+		// is a command rather than a character, except for the Option-Enter that puts a
+		// newline in the box; counting that as nothing leaves the line held, which is the
+		// safe direction, and the user's next Enter clears it.
 		return 2, press{}, true
 	}
+}
+
+// unterminated is what to do with a sequence that has not ended yet: wait for the rest of
+// it, or, past the bound, decide it was never a sequence and give back the ESC alone so
+// the loop reads the rest as ordinary input.
+func unterminated(s []byte) (n int, did press, complete bool) {
+	if len(s) >= sequenceLimit {
+		return 1, press{}, true
+	}
+	return 0, press{}, false
 }
 
 func (r *reader) csi(s []byte) (n int, did press, complete bool) {
@@ -168,12 +209,12 @@ func (r *reader) csi(s []byte) (n int, did press, complete bool) {
 	}
 	// Everything else ends at its first final byte, and the parameters before it are
 	// skipped rather than read - that skipping is the whole job.
-	for i := 2; i < len(s); i++ {
+	for i := 2; i < len(s) && i < sequenceLimit; i++ {
 		if s[i] >= 0x40 && s[i] <= 0x7e {
 			return i + 1, press{}, true
 		}
 	}
-	return 0, press{}, false
+	return unterminated(s)
 }
 
 // inPaste measures the part of s inside a paste the user began at their own keyboard.
@@ -211,6 +252,21 @@ func printable(s []byte) (n, chars int, whole bool) {
 		chars++
 	}
 	return n, chars, true
+}
+
+// undecided reports whether the parser is holding bytes that could be characters the user
+// has put in the box.
+//
+// A lone ESC is not. Whether it opened a sequence or was the Escape key, it puts nothing
+// in the box, and the next read says which it was. From the second byte on the answer is
+// yes: a scan still looking for its terminator is holding bytes that may turn out to be
+// typing, and reporting an empty box while it does is the one mistake with no recovery -
+// hands writes its own words into a line that already has the user's.
+//
+// [LAW:no-silent-failure] An ambiguity the bytes cannot settle is reported as one rather
+// than guessed at. It settles itself on the next read, or at sequenceLimit.
+func (r *reader) undecided() bool {
+	return len(r.pending) > 1
 }
 
 // beginningOf reports how many bytes at the end of s could be the start of marker.
