@@ -536,8 +536,8 @@ Record shapes worth knowing, observed in transcripts on 2026-09-14:
   `tool_result`; `isMeta: true` marks injected reminders. The record's top-level
   `toolUseResult` holds the structured result: `structuredPatch` for edits and writes;
   `stdout`, `stderr`, and `interrupted` for commands; `gitOperation` for a commit, a
-  push, a branch change, or a pull request. A failed command's result is a string that
-  begins `Error: Exit code N`.
+  push, a branch change, or a pull request. It describes one call, so it says which call it
+  belongs to only where the record carries a single result.
 - `permission-mode` → live session mode.
 - Every record: `uuid`, `parentUuid`, `timestamp`, `cwd`, `gitBranch`, `sessionId`.
 
