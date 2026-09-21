@@ -47,6 +47,10 @@ HELD = 8
 # this only stops a formatter's rewrite of a whole repository from sitting here until someone asks.
 MOST = 40_000
 
+# The most changed lines a turn can have and still have its patch read. Counted from the numstat, which is
+# one line a file, before the diff itself is ever asked for: see _between.
+MOST_LINES = 20_000
+
 # The most commits kept from one turn. A turn that makes them one at a time makes a handful; past this it
 # pulled or rebased a history, and how many there were is the story where which ones they were is not.
 MOST_COMMITS = 500
@@ -124,12 +128,18 @@ class Deltas:
         fails, or whose hook gives up and has its handler cancelled must cost the turn its delta and never
         its telling [LAW:no-silent-failure].
         """
-        pending: asyncio.Future[Delta] = asyncio.get_running_loop().create_future()
-        held = self._readings.setdefault(session, deque(maxlen=HELD))
-        if len(held) == held.maxlen:
-            logger.warning(f"{HELD} deltas of session {session} have gone untold, so the oldest is dropped")
-        held.append(pending)
+        held = self._readings.setdefault(session, deque())
         mark = self._marks.pop(session, None)
+        if len(held) >= HELD:
+            # Dropped from the back, never the front, and that is the whole of what keeps the two sides in
+            # step. A telling takes the oldest reading, and tellings are not dropped alongside readings —
+            # they queue unbounded — so evicting the front would hand every telling after it the delta of
+            # the turn after its own, which is the one thing `taken` exists to prevent. Dropped from the
+            # back, every turn that has a delta has its own [LAW:no-ambient-temporal-coupling].
+            logger.warning(f"{HELD} deltas of session {session} are already waiting to be told, so this turn is told without one")
+            return
+        pending: asyncio.Future[Delta] = asyncio.get_running_loop().create_future()
+        held.append(pending)
         if mark is None:
             pending.set_result(Delta())
             return
@@ -176,25 +186,44 @@ class Deltas:
         if tree is None:
             return None
         head = await self._git(Path(root), "rev-parse", "--verify", "--quiet", "HEAD", deadline=deadline)
-        if head is None and time.monotonic() >= deadline:
-            # [LAW:parse-dont-validate] git answers nothing for a repository with no commit yet and nothing for
-            # one it ran out of time on, and the deadline is what tells them apart — every other way git can
-            # refuse leaves time on it. Read as no commit, a mark that merely ran late has _commits list the
-            # whole history, and the turn is told as having made all of it. What is not known is refused where
-            # a mark is built, so no reading downstream can be handed one that does not know where it stands.
-            logger.warning(f"there was no time left to read where {root} stands, so the turn is told without its delta")
+        if head is None and not await self._unborn(Path(root), deadline):
+            # [LAW:parse-dont-validate] read as a repository with no commit, a mark that is really one git
+            # could not answer for compares against no commit at all: every commit ever made in it is then
+            # reachable from where the turn ended and not from where it began, and the turn is spoken as
+            # having made all of them. What is not known is refused where a mark is built, so no reading
+            # downstream can be handed one that does not know where it stands.
+            logger.warning(f"where {root} stands could not be read, so the turn is told without its delta")
             return None
         return Mark(Path(root), head, tree)
 
+    async def _unborn(self, root: Path, deadline: float) -> bool:
+        """Whether a repository that would not say where it stands has nowhere to stand yet.
+
+        HEAD naming a branch that no commit is on is what every repository looks like between `git init` and
+        its first commit, and asking for it is a positive answer where the absence of one is not: a HEAD
+        being rewritten by a checkout in the next terminal along, a ref that cannot be read, and a deadline
+        with nothing left on it all leave the same silence, and none of them means there is no commit.
+        """
+        return await self._git(root, "symbolic-ref", "--quiet", "HEAD", deadline=deadline) is not None
+
     async def _between(self, mark: Mark, deadline: float) -> Delta:
-        tree = await self._tree(mark.root, deadline)
-        if tree is None:
-            return Delta()
+        # Read before the tree, because they are two fast commands where the tree is the slow one: a turn
+        # whose commit is the one thing worth saying about it should not lose that because `git add -A` took
+        # longer than a reading is given, or failed for a reason that has nothing to do with the commit.
         commits = await self._commits(mark, deadline)
-        if tree == mark.tree:
-            # The working tree came back to where it started, which a commit and nothing else does.
+        tree = await self._tree(mark.root, deadline)
+        if tree is None or tree == mark.tree:
+            # Unreadable, or the working tree came back to where it started — which a commit and nothing else does.
             return Delta(commits=commits)
         files = _files(await self._git(mark.root, "diff", "--numstat", mark.tree, tree, deadline=deadline))
+        counted = sum((file.added or 0) + (file.removed or 0) for file in files)
+        if counted > MOST_LINES:
+            # git hands back a whole diff before a character of it is cut, so a turn that wrote a million-line
+            # file inside the repository would have all of it here at once. The counts cost one line a file and
+            # are already in hand, so they are what says no — and what is left, the files and their counts, is
+            # all of a diff that size that would have survived the summariser's budget anyway.
+            logger.info(f"a turn changed {counted} lines in {mark.root}, too many to keep the patch of, so its files are told instead")
+            return Delta(files, commits)
         patch = await self._git(mark.root, "diff", mark.tree, tree, deadline=deadline)
         return Delta(files, commits, "" if patch is None else patch[:MOST])
 

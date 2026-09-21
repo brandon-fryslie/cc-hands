@@ -611,12 +611,16 @@ a `Stop` the daemon never heard leaves a session working as far as the registry 
 marked again at either, a turn would be compared against the middle of its own work and
 everything it changed before that second prompt would be missing from the one telling
 that names it `[LAW:no-ambient-temporal-coupling]`. A mark whose `HEAD` could not be
-read is no mark at all, and that is a distinction the deadline has to make: `rev-parse`
-says nothing both for a repository with no commit yet and for one it ran out of time on,
-and only the second leaves no time on the clock. Read as the first, a mark that merely
-ran late compares against no commit, so every commit ever made in that repository is
-reachable from where the turn ended and not from where it began — and the turn is
-spoken as having made all of them `[LAW:parse-dont-validate]`.
+read is no mark at all. `rev-parse` says nothing both for a repository with no commit
+yet and for one it could not answer for, and silence has more causes than a clock can
+account for — a `HEAD` caught mid-rewrite by a checkout in the next terminal along, a
+ref that cannot be read, a deadline with nothing left on it. So unbornness is asked for
+rather than inferred: `symbolic-ref` answering means `HEAD` names a branch that no
+commit is on, which is what every repository looks like between `git init` and its first
+commit, and nothing else counts. Read as unborn, a mark that is really unreadable
+compares against no commit, so every commit ever made in that repository is reachable
+from where the turn ended and not from where it began — and the turn is spoken as having
+made all of them `[LAW:parse-dont-validate]`.
 
 The tree is written through an index of the daemon's own — the repository's index
 copied to a scratch file, `git add -A`, `git write-tree` — so nothing is staged,
@@ -650,7 +654,24 @@ waiting on it, and a reading may not cost the turn the `Summarise` queued behind
 Everything the summariser is shown of a delta is bounded by the `Budget`, commits
 included: a turn that pulls or rebases brings them by the hundred, and the count is the
 story where the subjects are not. The reader keeps no more than `MOST_COMMITS` of them
-for the same reason it keeps no more than `MOST` characters of patch.
+for the same reason it keeps no more than `MOST` characters of patch — and asks for no
+patch at all past `MOST_LINES`, because git hands back a whole diff before a character
+of it is cut, and a turn that generated a million-line file inside the repository would
+otherwise have all of it in the daemon at once. The numstat counts that decide this cost
+one line a file and are already in hand, and what is left when the patch is refused —
+the files and their counts — is all of a diff that size that would have survived the
+budget anyway.
+
+A reading is held for every turn that stopped, and past `HELD` of them the *newest* is
+the one dropped. Readings are bounded and the `Summarise` effects they pair with are
+not, so the two stay in step by position alone; dropping the oldest would hand every
+telling after it the delta of the turn after its own, which is the one thing this
+pairing exists to prevent. Dropped from the back, the turns past the bound are told by
+their steps and every turn handed a delta is handed its own.
+
+Within a reading the commits are read before the tree, because they are two fast
+commands where `git add -A` is the slow one: a turn whose commit is the one thing worth
+saying about it should not lose that because the tree ran past the reading's deadline.
 
 One reading is made for every turn that stops, held in the order the turns stopped, and
 every telling takes exactly one — including a telling whose summary failed. That is the

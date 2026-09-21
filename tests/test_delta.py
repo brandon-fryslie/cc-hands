@@ -9,7 +9,7 @@ from hands.core.delta import Delta
 from hands.core.effects import Summarise
 from hands.core.events import Joined, Prompted, Stopped
 from hands.core.session import Membership, SessionId, Working
-from hands.sessions.delta import MOST_COMMITS, Deltas
+from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Deltas
 from hands.sessions.registry import Sessions
 
 SID = SessionId("s1")
@@ -372,3 +372,100 @@ async def test_a_turn_that_pulled_a_history_keeps_no_more_of_it_than_it_could_ev
     root = repo(tmp_path)
     delta = await turn(root, lambda: piled(root, MOST_COMMITS + 5))
     assert len(delta.commits) == MOST_COMMITS
+
+
+async def test_more_turns_than_can_be_held_lose_the_newest_deltas_and_never_the_pairing(tmp_path: Path) -> None:
+    """The bound drops readings; nothing drops the tellings they belong to, which queue unbounded beside them.
+
+    Dropped from the front, every telling from the first on would be handed the delta of the turn after its
+    own — a listener can do something about changes they did not hear, and nothing about changes attributed
+    to the wrong turn. So the turns past the bound are the ones told without a delta, and every turn that is
+    handed one is handed its own.
+    """
+    root = repo(tmp_path)
+    deltas = Deltas()
+    for n in range(HELD + 2):
+        await deltas.snapshot(SID, root)
+        (root / f"turn{n}.py").write_text(f"turn {n}\n")
+        await deltas.compare(SID)
+
+    told = [await deltas.taken(SID) for _ in range(HELD + 2)]
+    assert [[file.path for file in delta.files] for delta in told[:HELD]] == [[f"turn{n}.py"] for n in range(HELD)]
+    assert told[HELD:] == [Delta(), Delta()]
+
+
+class Torn(Deltas):
+    """A repository whose HEAD cannot be read in the moment the mark asks for it.
+
+    A `git checkout` in the next terminal along, landing between two of the mark's own commands. There is
+    time left on the clock, so nothing about the deadline says anything about this one way or the other.
+    """
+
+    marking = True
+
+    async def _tree(self, root: Path, deadline: float) -> str | None:
+        tree = await super()._tree(root, deadline)
+        if self.marking:
+            self.marking = False
+            # A torn write, which is what a HEAD caught mid-rewrite is. A bogus-but-well-formed sha would
+            # not do: `rev-parse --verify` answers a forty-character hex string without checking anything
+            # is there. Only the mark is torn — git calls a directory with an unreadable HEAD no repository
+            # at all, so tearing the reading too would end in an empty delta for that reason and not this one.
+            (root / ".git" / "HEAD").write_text("a HEAD caught halfway through being rewritten\n")
+        return tree
+
+
+async def test_a_head_that_could_not_be_read_is_no_more_a_repository_with_no_commit_than_a_slow_one_is(tmp_path: Path) -> None:
+    """Silence has several causes and only one of them means there is no commit, so unbornness is asked for.
+
+    Inferred instead from a deadline with time left on it, a HEAD that merely could not be read is taken for
+    a repository that has no commit to be on — and the whole history before the turn is told as the turn's.
+    """
+    root = repo(tmp_path)
+    for n in range(3):
+        git(root, "commit", "-q", "--allow-empty", "-m", f"made long before this turn {n}")
+    stood = (root / ".git" / "HEAD").read_text()
+
+    deltas = Torn()
+    await deltas.snapshot(SID, root)
+    (root / ".git" / "HEAD").write_text(stood)  # the checkout finished, and the repository reads again
+    (root / "during.py").write_text("the turn's own work\n")
+    await deltas.compare(SID)
+    assert await deltas.taken(SID) == Delta()
+
+
+async def test_a_turn_that_changed_more_lines_than_can_be_kept_is_told_by_its_files(tmp_path: Path) -> None:
+    """git hands back a whole diff before a character of it is cut, and a generated file has no other bound."""
+    root = repo(tmp_path)
+    delta = await turn(root, lambda: (root / "generated.csv").write_text("n,x\n" * (MOST_LINES + 10)))
+    assert [file.path for file in delta.files] == ["generated.csv"]
+    assert not delta.patch
+
+
+class Blind(Deltas):
+    """A repository whose tree can be marked but not read again, which a slow enough `git add -A` does."""
+
+    marking = True
+
+    async def _tree(self, root: Path, deadline: float) -> str | None:
+        if not self.marking:
+            return None
+        self.marking = False
+        return await super()._tree(root, deadline)
+
+
+async def test_a_commit_is_still_told_when_the_tree_it_left_behind_cannot_be_read(tmp_path: Path) -> None:
+    """Two fast commands and one slow one, and the slow one held the fast ones' answer hostage.
+
+    What a turn committed is the most narratable thing about it, and reading the tree is what runs out of a
+    reading's deadline on a large repository — so the commits are read first and kept whatever the tree does.
+    """
+    root = repo(tmp_path)
+    deltas = Blind()
+    await deltas.snapshot(SID, root)
+    (root / "b.py").write_text("y = 2\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "the one thing worth saying about this turn")
+    await deltas.compare(SID)
+    delta = await deltas.taken(SID)
+    assert [commit.subject for commit in delta.commits] == ["the one thing worth saying about this turn"]
