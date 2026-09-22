@@ -1067,11 +1067,18 @@ thing that failed `[LAW:no-silent-failure]`:
    under UNKNOWN, so "unreachable" is recognised from the exception type. Pipecat drops
    a turn Whisper transcribed to nothing without a word, so a thin `Whisper` subclass
    reports it as the transcription ends, rather than after the user turn's 5-second
-   stop timeout. The LLM clients do not retry: against inferno, the SDK's two retries
-   stretched a refused connection into 4.6 s of silence. Measured against a refused
-   port on inferno, the failure is heard 1.75 s after the key release. The pipeline's
-   start is spoken too: "hands is up", or "hands is back after a crash" when the last
-   heartbeat names a pid that is gone without having said `stopped`.
+   stop timeout. The channel says transitions and not states: a fact identical to the
+   last one it said is logged and not spoken again until something else has been. A
+   fault that recurs recurs in bursts, and on 2026-09-22 a held key queued hundreds of
+   empty turns whose reports went out every 0.43 s for as long as they drained — which
+   is not a loud failure but a jammed one, because nothing else could have been heard
+   while it ran. The saying is dropped there, never the knowing: every occurrence is
+   still a log line, and `Announced` is written only where something was. The LLM
+   clients do not retry: against inferno, the SDK's two retries stretched a refused
+   connection into 4.6 s of silence. Measured against a refused port on inferno, the
+   failure is heard 1.75 s after the key release. The pipeline's start is spoken too:
+   "hands is up", or "hands is back after a crash" when the last heartbeat names a
+   pid that is gone without having said `stopped`.
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, and the count of live sessions. `hands
    status` prints it. When TTS itself is down, a macOS notification is posted through

@@ -113,16 +113,30 @@ Notify = Callable[[str], Awaitable[None]]
 
 
 class SystemChannel:
-    """Says each fact through text-to-speech alone, and posts it to the screen when speech cannot."""
+    """Says each fact through text-to-speech alone, and posts it to the screen when speech cannot.
+
+    It says transitions, not states. A fact identical to the last one said is logged and not spoken again until
+    something else has been, because this is the one channel that reports the daemon's own faults and a fault
+    that recurs recurs in bursts: a key held down on 2026-09-22 queued hundreds of empty turns, and the channel
+    said "Whisper returned nothing for that turn." every 0.43 s for as long as they drained, which is not a loud
+    failure but a jammed one — the user could not have been told anything else while it ran.
+    """
 
     def __init__(self, tts: FrameProcessor, notify: Notify, record: Record) -> None:
         self._tts = tts
         self._notify = notify
         self._record = record
+        # The last fact that reached the user, so the next identical one is a state and not news.
+        self._last: SystemFact | None = None
 
     async def say(self, fact: SystemFact) -> None:
         text = system_text(fact)
         logger.info(f"system: {text}")
+        if fact == self._last:
+            # [LAW:no-silent-failure] still on the record, in the log line above: what is dropped is the saying,
+            # never the knowing, and the audit says a thing was announced only where it was.
+            return
+        self._last = fact
         if self._tts.is_usable:
             # [LAW:effects-at-boundaries] queued at the TTS, past the model, because this channel reports the model's own failures;
             # kept out of the model's context too, where it would read as a reply the model gave.

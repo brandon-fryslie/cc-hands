@@ -102,6 +102,53 @@ async def test_a_fact_goes_to_speech_while_it_works_and_to_the_screen_when_it_do
     assert recorded == [Announced("The language model is unreachable.", "speech"), Announced("Whisper returned nothing for that turn.", "screen")]
 
 
+async def test_a_fact_repeated_before_anything_else_is_said_is_said_once() -> None:
+    """A key held down on 2026-09-22 queued hundreds of empty turns, and this channel said "Whisper returned
+    nothing for that turn." every 0.43 s for as long as they drained. A fault that recurs recurs in bursts, and a
+    burst that fills the only channel the daemon has is not a loud failure but a jammed one."""
+    tts, recorded = Recorder(), list[Entry]()
+
+    async def notify(_text: str) -> None:
+        raise AssertionError("speech works, so nothing goes to the screen")
+
+    channel = SystemChannel(tts, notify, recorded.append)
+    for _ in range(200):
+        await channel.say(NothingTranscribed())
+    assert [getattr(frame, "text", None) for frame in tts.frames] == ["Whisper returned nothing for that turn."]
+    # The audit says a thing was announced only where it was: what was dropped is the saying, not the knowing.
+    assert recorded == [Announced("Whisper returned nothing for that turn.", "speech")]
+
+
+async def test_a_fact_is_news_again_once_a_different_one_has_been_said() -> None:
+    """Transitions, not states: the burst ends when something else happens, and the next one is worth hearing."""
+    tts, recorded = Recorder(), list[Entry]()
+
+    async def notify(_text: str) -> None:
+        raise AssertionError("speech works, so nothing goes to the screen")
+
+    channel = SystemChannel(tts, notify, recorded.append)
+    for fact in (NothingTranscribed(), NothingTranscribed(), TranscriptionFailed(), NothingTranscribed()):
+        await channel.say(fact)
+    assert [getattr(frame, "text", None) for frame in tts.frames] == [
+        "Whisper returned nothing for that turn.",
+        "Speech recognition failed for that turn.",
+        "Whisper returned nothing for that turn.",
+    ]
+
+
+async def test_two_model_failures_of_different_kinds_are_both_heard() -> None:
+    """The facts carry what differs, so sameness is the type's answer and not a comparison of sentences."""
+    tts = Recorder()
+
+    async def notify(_text: str) -> None:
+        raise AssertionError("speech works, so nothing goes to the screen")
+
+    channel = SystemChannel(tts, notify, lambda _: None)
+    for fact in (ModelFailed(ErrorCategory.CONNECTIVITY), ModelFailed(ErrorCategory.CONNECTIVITY), ModelFailed(ErrorCategory.RATE_LIMIT)):
+        await channel.say(fact)
+    assert len(tts.frames) == 2
+
+
 async def test_whisper_reports_a_turn_it_transcribed_to_nothing_and_only_that(monkeypatch: pytest.MonkeyPatch) -> None:
     yielded: list[Frame] = []
 
