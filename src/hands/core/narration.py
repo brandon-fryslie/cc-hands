@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 
 from hands.core.delta import Delta
-from hands.core.spoken import spoken_ref
+from hands.core.spoken import spoken_count, spoken_ref
 from hands.core.turn import (
     Branched,
     Budget,
@@ -274,7 +274,12 @@ def _asked(question: Question, step: Questioned) -> Segment:
 
 
 def _counted(many: int, thing: str) -> str:
-    return f"{many} {thing}{'' if many == 1 else 's'}"
+    """A count and the thing counted, with the number as the word the instruction asks the model for.
+
+    No filter downstream turns a digit back into a word, and these clauses are the ones no model wrote, so a
+    digit written here is a digit the listener gets in the middle of a sentence of words.
+    """
+    return f"{spoken_count(many)} {thing}{'' if many == 1 else 's'}"
 
 
 def _listed(parts: list[str]) -> str:

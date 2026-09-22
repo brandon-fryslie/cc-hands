@@ -94,7 +94,11 @@ class LatencyObserver(BaseObserver):
             self._turn.released = now
             return
         mark = _MILESTONES.get(type(frame))
-        if mark is not None and mark not in self._turn.marks:
+        # After a release, which is what these marks are measured from and what the table above already says.
+        # Without it, one utterance's trailing started-speaking pushes land on a turn the user opened by barging
+        # in over that very utterance: `first audio` is marked before the reply exists, and the stop that ends
+        # the utterance then closes the turn and drops the reply's whole measurement.
+        if mark is not None and self._turn.released is not None and mark not in self._turn.marks:
             self._turn.marks[mark] = now
             logger.info(f"latency: {mark} {_fmt(self._turn.since_release(mark))} after key release")
 

@@ -20,6 +20,21 @@ _KINDS = {"code": ("a block of code", "line"), "diff": ("a diff", "line"), "tabl
 # Counted sequences, because a list read as a run-on sentence is heard as one thing.
 _ORDINALS = ("First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth", "Ninth", "Tenth")
 
+# Small counts as the words a listener hears. Past the end of this a digit is read correctly and read shorter,
+# and "forty-seven files" buys nothing over "47 files".
+_CARDINALS = ("no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve")
+
+
+def spoken_count(many: int) -> str:
+    """A count said the way the instruction asks the model to say one: small numbers as words.
+
+    Here rather than beside that instruction because the narration counts things too — how many files a turn
+    left different, how many edits a section holds — and those clauses are written by code, which no filter
+    downstream turns back into words. One table, so the sentence a model wrote and the sentence beside it count
+    the same way [LAW:one-source-of-truth].
+    """
+    return _CARDINALS[many] if 0 <= many < len(_CARDINALS) else str(many)
+
 # Each rule asks for a tell that ordinary English does not have, because a rule that mangles a sentence
 # costs more than the code name it fixes [LAW:carrying-cost]. That is why a diff must announce itself, a
 # table must be two rows rather than one line with a pipe in it, and a hash must carry a digit and a letter

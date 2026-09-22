@@ -49,12 +49,12 @@ def test_each_kind_of_step_is_its_own_section_in_the_order_the_kinds_first_appea
 def test_a_section_counts_what_it_holds_rather_than_reading_any_of_it() -> None:
     narrated = told(Edited(None, "/a/b.py", False, "@@"), Edited(None, "/a/c.py", True, "print(1)"))
     [change] = narrated.sections
-    assert change.text == "The change: 2 edits."
+    assert change.text == "The change: two edits."
 
 
 def test_one_of_a_kind_is_counted_in_the_singular() -> None:
     [change] = told(Edited(None, "/a/b.py", False, "@@")).sections
-    assert change.text == "The change: 1 edit."
+    assert change.text == "The change: one edit."
 
 
 def test_a_command_that_moved_the_repository_is_the_commit_and_one_that_did_not_is_a_command() -> None:
@@ -115,8 +115,8 @@ def test_what_the_repository_did_is_said_from_the_types_and_never_from_the_model
     delta = Delta(files=(Changed("/a/b.py", 3, 1), Changed("/a/c.py", 0, 9)), commits=(Commit("f0f9776", "tidy"),))
     narrated = told(Ran(None, "make fmt", None, False, "", ()), delta=delta, headline="It reformatted the tree.")
     [repository] = narrated.repository
-    assert repository.text == "It committed and left 2 files different."
-    assert narrated.said() == "It reformatted the tree. It committed and left 2 files different."
+    assert repository.text == "It committed and left two files different."
+    assert narrated.said() == "It reformatted the tree. It committed and left two files different."
 
 
 def test_a_commit_both_the_step_and_the_delta_saw_is_said_once() -> None:

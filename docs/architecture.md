@@ -877,12 +877,21 @@ them a word. A ref is therefore said where its type already knows what it is, wi
 separators as spaces and every word kept, because a branch is named so it can be told from
 the others `[LAW:single-enforcer]`.
 
+Only a commit has both sources. A push, a branch, or a pull request is known solely
+from the `gitOperation` Claude Code writes beside the step, because none of them changes a
+file or adds a local commit for the delta to find — so `git commit -m x && git push`, or a
+push inside a heredoc, is heard as a commit and never as a push. The instruction bans the
+model from saying any of the four rather than just commits, which is what makes that gap a
+silence; the trade is kept because the model was measured dropping a commit and reading a
+hash aloud in the same afternoon, and a clause code did not write is a clause nothing can
+hold to `[LAW:no-silent-failure]`. `hands-narration-k08` owns closing it.
+
 What git says is *not* said of a turn told twice. `Compare` pops the mark and only
 `UserPromptSubmit` sets one, so the second telling of a turn whose first `Stop` was blocked
 is handed an empty delta, and a commit made in its second half — a heredoc commit, which no
 step records either — is never spoken at all. The eval's `second-telling` case is given that
 empty delta because it is what production hands it, so the gap is measured rather than
-papered over; closing it is `hands-narration-2mc`'s, not this ticket's.
+papered over, and `hands-narration-k4q` owns closing it.
 
 **The length is a number, and it is enforced rather than requested.**
 `HEADLINE_SENTENCES` lives beside the instruction it rewrites, because changing it means

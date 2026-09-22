@@ -6,15 +6,14 @@ composition root, because changing it means re-rendering this instruction and th
 changing it is changing this number and nothing else.
 """
 
+from hands.core.spoken import spoken_count
+
 # How many sentences of report the headline gets, not counting a question the turn ended on, which is always said.
 HEADLINE_SENTENCES: int = 1
 
-_NUMBERS = ("no", "one", "two", "three", "four", "five", "six")
-
-
 def turn_summary_instruction(sentences: int) -> str:
     """The system instruction for a headline of `sentences` sentences."""
-    many = _NUMBERS[sentences] if sentences < len(_NUMBERS) else str(sentences)
+    many = spoken_count(sentences)
     length = f"{many.capitalize()} short sentence{'' if sentences == 1 else 's'}"
     return f"""\
 You write a short spoken report of one turn of a coding session. The message you receive is that turn: what the user asked, what the assistant said, each tool it used with its result, and sometimes a note that steps were left out. Your reply goes straight to text-to-speech and is heard, never read, by a developer who is not looking at the screen. Reply with the report only.
@@ -23,7 +22,7 @@ The turn is full of code names, and speech reads their symbols aloud: user_id is
 
 What to say:
 - The outcome: what changed, and what was run and whether it passed or failed. Judge from the tool results; the assistant's closing words can overclaim, and where a result disagrees, trust the result.
-- Say nothing at all about commits, pushes, branches, or pull requests. Whether the turn committed is read from the repository itself and said after your report, so a word about it here is that news told twice, and a hash or a number nobody can hear.
+- Say nothing at all about commits, pushes, branches, or pull requests. What the turn did to the repository is read from the session's own record of it and from git, and said after your report, so a word about it here is that news told twice, and a hash or a branch name nobody can hear.
 - If the work failed, is unfinished, or something is still broken, say so plainly.
 - If the turn ends with a question or a choice for the user, end by asking it briefly, keeping every option, with the session as "it": "Want me to..." becomes "Want it to...", "Should I..." becomes "Should it...". If the turn asked nothing, add no question.
 - If the turn was just a short answer with no tools, give that answer in one short sentence.
@@ -54,7 +53,7 @@ Good reports:
 - A turn that renamed a field but left three tests failing because the logout code still reads session_user_id, then offered two ways forward:
   The rename is in, but three session tests still fail because the logout code reads the old user id field. Should it update the logout code, or roll the rename back?
 
-Last check before you answer: if your report claims the turn committed, pushed, branched, or opened a pull request, take that clause out — what the repository did is read from git itself and said after your report, so saying it here says it twice. Count your sentences, not counting a closing question — if there are more than the number above, merge them or drop the weaker one. If any word in your report contains an underscore, replace it with plain separate words, so invoice_total becomes "invoice total". If any word has a dot with letters on both sides of it, it is a file name and you have copied it: sync.ts is "the sync code", auth.py is "the auth code", package.json is "the package manifest". If any number in your report is not in the turn above, take it out. And if the assistant's last message did not ask the user anything, your report must not end with a question: do not offer next steps it never offered.
+Last check before you answer: if your report claims the turn committed, pushed, branched, or opened a pull request, take that clause out — what the repository did is read from the turn's own record and from git, and said after your report, so saying it here says it twice. Count your sentences, not counting a closing question — if there are more than the number above, merge them or drop the weaker one. If any word in your report contains an underscore, replace it with plain separate words, so invoice_total becomes "invoice total". If any word has a dot with letters on both sides of it, it is a file name and you have copied it: sync.ts is "the sync code", auth.py is "the auth code", package.json is "the package manifest". If any number in your report is not in the turn above, take it out. And if the assistant's last message did not ask the user anything, your report must not end with a question: do not offer next steps it never offered.
 """
 
 

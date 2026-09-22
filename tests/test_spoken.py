@@ -11,7 +11,7 @@ from typing import cast
 import pytest
 from loguru import logger
 
-from hands.core.spoken import Leak, spoken, spoken_ref
+from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_since
 from hands.voice.spoken import SpokenForm
@@ -356,3 +356,12 @@ def test_prose_the_ref_rule_would_have_eaten_is_never_shown_to_it() -> None:
     """The filter still sees these, and still leaves them whole, which is the reason `spoken_ref` is separate."""
     for untouched in ("It handled input/output.", "It ran the job 24/7.", "It checked and/or fixed it."):
         assert spoken(untouched).text == untouched
+
+
+def test_a_small_count_is_the_word_a_listener_hears() -> None:
+    """The instruction holds the model to words for small counts, and the narration counts things itself — how
+    many files a turn left different, how many edits a section holds — in clauses no model wrote and no filter
+    downstream converts. One table, so both sides of one sentence count the same way."""
+    assert [spoken_count(n) for n in (0, 1, 2, 12)] == ["no", "one", "two", "twelve"]
+    # Past the table a digit is read correctly and read shorter, and "forty-seven files" buys nothing.
+    assert spoken_count(47) == "47"

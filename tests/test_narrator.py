@@ -200,7 +200,7 @@ async def test_a_turn_that_only_a_shell_command_changed_is_still_told_by_what_th
 
     # What git says is said after the summary and out of the narration's own words: the two files are the whole
     # result of the turn, and no step of it names them.
-    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: it reformatted the whole package. It left 2 files different."
+    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: it reformatted the whole package. It left two files different."
     [rendered] = shown
     assert "src/a.py +12 -9" in rendered and "src/b.py +3 -3" in rendered
 

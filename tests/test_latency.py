@@ -89,3 +89,21 @@ async def test_a_barge_in_keeps_the_turn_it_opened_while_the_speaker_is_stopping
         TranscriptionFrame(text="second", user_id="u", timestamp="t"),
     )
     assert lines[-1].startswith("latency: transcript") and "after key release" in lines[-1]
+
+
+async def test_a_barge_in_over_a_still_pushing_utterance_keeps_its_own_measurement() -> None:
+    """One utterance raises several started-speaking frames. A user barging in between two of them opens a turn
+    that those trailing frames would otherwise mark `first audio` on — before any reply exists and with no
+    release to measure from — and the stop ending that utterance would then close the turn and drop the reply's
+    transcript, first token and first audio together. A milestone belongs to a turn only once it has a release."""
+    lines = await logged(
+        BotStartedSpeakingFrame(),
+        VADUserStartedSpeakingFrame(),
+        BotStartedSpeakingFrame(),
+        BotStoppedSpeakingFrame(),
+        VADUserStoppedSpeakingFrame(),
+        TranscriptionFrame(text="wait", user_id="u", timestamp="t"),
+        BotStartedSpeakingFrame(),
+    )
+    assert [line.split(" ")[1] for line in lines] == ["first", "transcript", "first"]
+    assert all("after key release" in line for line in lines[1:])
