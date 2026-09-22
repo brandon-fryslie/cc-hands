@@ -76,8 +76,9 @@ async def test_a_narration_after_a_user_turn_is_still_measured_as_answering_nobo
 
 
 async def test_a_barge_in_keeps_the_turn_it_opened_while_the_speaker_is_stopping() -> None:
-    """The user interrupting opens the next turn before the speaker's stop arrives, and that turn is waiting for
-    its own first audio — so the stop that belongs to the utterance being cut off must not close it."""
+    """The user interrupting releases the key before the speaker's stop arrives, and the window that release
+    opened is waiting for its own first audio — so the stop belonging to the utterance being cut off leaves it
+    open, and the next turn is still measured."""
     lines = await logged(
         VADUserStartedSpeakingFrame(),
         VADUserStoppedSpeakingFrame(),
@@ -92,10 +93,11 @@ async def test_a_barge_in_keeps_the_turn_it_opened_while_the_speaker_is_stopping
 
 
 async def test_a_barge_in_over_a_still_pushing_utterance_keeps_its_own_measurement() -> None:
-    """One utterance raises several started-speaking frames. A user barging in between two of them opens a turn
-    that those trailing frames would otherwise mark `first audio` on — before any reply exists and with no
-    release to measure from — and the stop ending that utterance would then close the turn and drop the reply's
-    transcript, first token and first audio together. A milestone belongs to a turn only once it has a release."""
+    """One utterance raises several started-speaking frames. A user barging in between two of them has a window
+    opened by their release that those trailing frames would otherwise mark `first audio` on — before any reply
+    exists — and the stop ending the cut-off utterance would then close the window and drop the reply's
+    transcript, first token and first audio together. What marks first audio is the speaker going from silent to
+    sounding, and a trailing push of an utterance already sounding starts nothing."""
     lines = await logged(
         BotStartedSpeakingFrame(),
         VADUserStartedSpeakingFrame(),
@@ -106,4 +108,24 @@ async def test_a_barge_in_over_a_still_pushing_utterance_keeps_its_own_measureme
         BotStartedSpeakingFrame(),
     )
     assert [line.split(" ")[1] for line in lines] == ["first", "transcript", "first"]
+    assert all("after key release" in line for line in lines[1:])
+
+
+async def test_an_announcement_that_starts_while_the_key_is_held_is_still_said() -> None:
+    """The larger half of what this daemon says starts whenever a session stops, including mid-press, and its
+    own time is what a Stop's audit line is subtracted from. A turn opened at the press and waiting for a
+    release used to swallow that announcement: it was logged nowhere, and the trailing push of the very same
+    utterance then marked `first audio` on the release when it came, destroying the reply's measurement."""
+    lines = await logged(
+        VADUserStartedSpeakingFrame(),
+        BotStartedSpeakingFrame(),
+        VADUserStoppedSpeakingFrame(),
+        BotStartedSpeakingFrame(),
+        BotStoppedSpeakingFrame(),
+        TranscriptionFrame(text="held", user_id="u", timestamp="t"),
+        BotStartedSpeakingFrame(),
+    )
+    assert lines[0] == "latency: first audio, answering no user turn"
+    # The reply's own audio is what `first audio` measures, never the announcement still playing at the release.
+    assert [line.split(" ")[1] for line in lines[1:]] == ["transcript", "first"]
     assert all("after key release" in line for line in lines[1:])
