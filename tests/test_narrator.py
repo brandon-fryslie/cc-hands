@@ -259,3 +259,27 @@ async def test_a_summary_with_nothing_in_it_is_a_failure() -> None:
             await summarise("The user asked:\nfix it")
     finally:
         await runner.cleanup()
+
+
+async def test_a_model_that_answers_with_nothing_is_said_to_have_failed_rather_than_spoken_as_a_stop() -> None:
+    """The whole chain, because its two halves were pinned separately and the join between them was not: a
+    model that answers with nothing raises out of the summariser, and `recount` is what catches it.
+
+    Left to reach the narration, an empty reply becomes a headline of no sentences, which is given a stop so it
+    does not run into what git says next — and the turn is spoken as a lone period. The reason that cannot
+    happen is that the summariser refuses empty text at the boundary, so the narration is never handed any
+    [LAW:single-enforcer]. This is the test that says so, rather than a second empty check inland.
+    """
+    runner, url, _ = await openai_server(None)
+    recorded: list[Entry] = []
+    sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
+    try:
+        summarise = summariser(OpenAICompatibleBackend(base_url=url, model="m"), "Summarise.", max_tokens=50, timeout=5.0)
+        spoken = await recount(tailing(FIXTURE), SID, None, "cc-hands", summarise, recorded.append, BUDGET, Delta())
+    finally:
+        logger.remove(sink)
+        await runner.cleanup()
+    assert isinstance(spoken, TTSSpeakFrame)
+    assert spoken.text == "cc-hands finished a turn, and I could not summarise it."
+    [failure] = recorded
+    assert isinstance(failure, Failure) and "SummaryFailed: the model returned no summary" in failure.message
