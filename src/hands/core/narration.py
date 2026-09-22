@@ -152,9 +152,7 @@ class Narration:
         [LAW:one-source-of-truth]. Making a question play at every length is `hands-narration-2mc.4mu`, which
         owns finding them in prose as well and can summarise them once it does.
         """
-        written = sentences_of(self.headline.text)
-        asked = [sentence for sentence in written if sentence.endswith("?")]
-        reported = [sentence for sentence in written if not sentence.endswith("?")]
+        reported, asked = _reported_and_asked(self.headline.text)
         # The question goes last whatever the summariser put where: it is the one sentence the listener answers,
         # and a fact read out after it leaves them holding the answer to something already gone by.
         return " ".join([*reported, *(part.text for part in self.repository), *asked])
@@ -191,9 +189,7 @@ def _headline(said: str, sentences: int) -> str:
     Nothing cut is lost: the sections hold every step the headline was made from, and opening one is what they
     are for.
     """
-    written = sentences_of(said)
-    asked = [sentence for sentence in written if sentence.endswith("?")]
-    reported = [sentence for sentence in written if not sentence.endswith("?")]
+    reported, asked = _reported_and_asked(said)
     kept = " ".join([*reported[:sentences], *asked])
     # A reply that ended without a stop would run into what git says next as one long sentence, and speech has
     # no other way to hear the join.
@@ -201,6 +197,18 @@ def _headline(said: str, sentences: int) -> str:
 
 
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _reported_and_asked(text: str) -> tuple[list[str], list[str]]:
+    """The text's sentences, split into what it told and what it asked.
+
+    One definition, because two places recognise a question and neither may drift from the other: the headline
+    is cut to a length every question survives, and what plays puts the questions after what git says. Question
+    detection growing cleverer than a trailing mark is `hands-narration-2mc.4mu`, and this is the one place it
+    has to land [LAW:one-source-of-truth].
+    """
+    written = sentences_of(text)
+    return [sentence for sentence in written if not sentence.endswith("?")], [sentence for sentence in written if sentence.endswith("?")]
 
 
 def sentences_of(text: str) -> list[str]:
