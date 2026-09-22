@@ -1076,13 +1076,18 @@ thing that failed `[LAW:no-silent-failure]`:
    there is never another one: with the microphone muted, staying quiet until
    something else was said would leave a user pressing the key at a daemon that has
    gone permanently silent. What a burst costs is the saying and never the knowing —
-   every occurrence is still a log line — and `Announced` is written only for what
-   reached the user, so a notification the screen refused is a logged failure rather
-   than an announcement. The LLM clients do not retry: against inferno, the SDK's two
-   retries stretched a refused connection into 4.6 s of silence. Measured against a
-   refused port on inferno, the failure is heard 1.75 s after the key release. The
-   pipeline's start is spoken too: "hands is up", or "hands is back after a crash"
-   when the last heartbeat names a pid that is gone without having said `stopped`.
+   every occurrence is still a log line. `Announced` is written where the sentence
+   was taken, handed to a working TTS or accepted by the screen, so a notification
+   the screen refused is a logged failure rather than an announcement. How often
+   hands tries and what the user was given are two facts and are kept apart: the
+   window is taken when the channel decides to speak and not after it has, because
+   Pipecat dispatches each pipeline error on its own task, so a dead TTS raising once
+   per queued frame puts hundreds of those decisions in flight together. The LLM
+   clients do not retry: against inferno, the SDK's two retries stretched a refused
+   connection into 4.6 s of silence. Measured against a refused port on inferno, the
+   failure is heard 1.75 s after the key release. The pipeline's start is spoken too:
+   "hands is up", or "hands is back after a crash" when the last heartbeat names a
+   pid that is gone without having said `stopped`.
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, and the count of live sessions. `hands
    status` prints it. When TTS itself is down, a macOS notification is posted through

@@ -1,5 +1,6 @@
 """The system channel: what hands says about itself, and where it goes when speech or the model is what failed."""
 
+import asyncio
 import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
@@ -79,6 +80,7 @@ class Recorder(FrameProcessor):
         self.frames: list[Frame] = []
 
     async def queue_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM, callback: object = None) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+        await asyncio.sleep(0)  # a real processor's queue is awaited, and the channel must hold across it
         self.frames.append(frame)
 
 
@@ -202,8 +204,9 @@ async def test_the_screen_is_not_filled_by_a_burst_either() -> None:
 
 
 async def test_a_post_the_screen_refused_is_not_taken_for_one_the_user_saw() -> None:
-    """Under launchd there may be no GUI session to post into. A refusal is not an announcement, so it neither
-    goes on the audit nor keeps the next one quiet."""
+    """Under launchd there may be no GUI session to post into, so osascript refuses every time. The refusal is no
+    announcement and goes on no audit — and it still costs one attempt, because a screen that always says no is
+    the one case where recording only what landed would hammer it at the jammed cadence forever."""
     clock, recorded, attempts = Clock(), list[Entry](), list[str]()
 
     async def notify(text: str) -> bool:
@@ -213,10 +216,29 @@ async def test_a_post_the_screen_refused_is_not_taken_for_one_the_user_saw() -> 
     tts = Recorder()
     await tts.set_usable(False)
     channel = SystemChannel(tts, notify, recorded.append, clock)
-    await channel.say(NothingTranscribed())
-    await channel.say(NothingTranscribed())
-    assert attempts == ["hands cannot speak, so: Whisper returned nothing for that turn."] * 2
+    for _ in range(200):
+        await channel.say(NothingTranscribed())
+        clock.now += 0.43
+    assert attempts == ["hands cannot speak, so: Whisper returned nothing for that turn."] * 9
     assert recorded == []
+
+
+async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
+    """Pipecat registers `on_pipeline_error` async (`sync: bool = False`), so it dispatches each error on its own
+    task and a dead TTS puts one of these in flight per queued frame. A window taken after the delivery rather
+    than at the decision is a window that none of them would have seen, and the jam comes straight back."""
+    posted, tts = list[str](), Recorder()
+
+    async def notify(text: str) -> bool:
+        await asyncio.sleep(0)  # the await they are all in flight across
+        posted.append(text)
+        return True
+
+    channel = SystemChannel(tts, notify, lambda _: None, Clock())
+    await asyncio.gather(*(channel.sound(Post("hands cannot speak: no voice")) for _ in range(200)))
+    assert posted == ["hands cannot speak: no voice"]
+    await asyncio.gather(*(channel.say(NothingTranscribed()) for _ in range(200)))
+    assert said(tts) == ["Whisper returned nothing for that turn."]
 
 
 async def test_whisper_reports_a_turn_it_transcribed_to_nothing_and_only_that(monkeypatch: pytest.MonkeyPatch) -> None:

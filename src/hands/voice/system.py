@@ -7,7 +7,6 @@ screen instead. Every fact is logged as well, which is the path that needs neith
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal
 
 import anthropic
 import openai
@@ -131,7 +130,7 @@ class SystemChannel:
     It says a burst once: a sentence is not said again until `BURST_SECONDS` have passed without it, because this
     is the one channel that reports the daemon's own faults and a fault that recurs recurs in bursts. What a burst
     costs is the saying and never the knowing — every occurrence is still a log line — and `Announced` is written
-    only for what actually reached the user.
+    where the sentence was taken: handed to a working TTS, or accepted by the screen, never where it was refused.
     """
 
     def __init__(
@@ -153,30 +152,34 @@ class SystemChannel:
     async def say(self, fact: SystemFact) -> None:
         text = system_text(fact)
         logger.info(f"system: {text}")
-        if not self._is_news(text):
+        if not self._claim(text):
             # [LAW:no-silent-failure] the log line above is the knowing, which a burst never costs.
             return
         if self._tts.is_usable:
             # [LAW:effects-at-boundaries] queued at the TTS, past the model, because this channel reports the model's own failures;
             # kept out of the model's context too, where it would read as a reply the model gave.
             await self._tts.queue_frame(TTSSpeakFrame(text, append_to_context=False))
-            self._reached(text, "speech")
+            self._record(Announced(text, "speech"))
         elif await self._notify(f"hands cannot speak, so: {text}"):
-            self._reached(text, "screen")
+            self._record(Announced(text, "screen"))
 
-    def _is_news(self, text: str) -> bool:
-        said_at = self._said.get(text)
-        return said_at is None or self._clock() - said_at >= self._burst
+    def _claim(self, text: str) -> bool:
+        """True when this sentence may be said now, taking its window as it answers.
 
-    def _reached(self, text: str, via: Literal["speech", "screen"]) -> None:
-        """What the user was given: onto the audit, and said as of now, so the rest of its burst stays quiet.
-
-        Reached, not attempted: a screen that refused the post leaves the sentence news, so the next one is said.
+        How often hands tries to reach the user and what the user was given are two different facts, kept apart:
+        the window is taken here at the decision, with no await between the asking and the taking, while
+        `Announced` is written below by whichever delivery actually took the sentence. Both halves matter.
+        Pipecat dispatches each pipeline error on its own task, so a dead TTS raising once per queued frame puts
+        hundreds of these in flight together and a window taken on the way out is one that none of them sees; and
+        a screen with no GUI session to post into refuses every time, which must still cost only one attempt.
         """
-        self._record(Announced(text, via))
         now = self._clock()
         # A sentence older than its window can no longer keep anything quiet, so the map holds only those inside one.
-        self._said = {said: at for said, at in self._said.items() if now - at < self._burst} | {text: now}
+        self._said = {said: at for said, at in self._said.items() if now - at < self._burst}
+        if text in self._said:
+            return False
+        self._said[text] = now
+        return True
 
     async def sound(self, alarm: Alarm) -> None:
         match alarm:
@@ -184,10 +187,10 @@ class SystemChannel:
                 await self.say(fact)
             case Post(text=text):
                 logger.error(text)
-                # [LAW:single-enforcer] the same burst rule `say` consults: a TTS that fails fails once per frame
-                # it was handed, and hundreds of notifications fill the screen exactly as hundreds filled the ear.
-                if self._is_news(text) and await self._notify(text):
-                    self._reached(text, "screen")
+                # [LAW:single-enforcer] the same window `say` takes: a TTS that fails fails once per frame it
+                # was handed, and hundreds of notifications fill the screen exactly as hundreds filled the ear.
+                if self._claim(text) and await self._notify(text):
+                    self._record(Announced(text, "screen"))
             case Unrouted(source=source, error=error):
                 # [LAW:no-silent-failure] no sentence fits, so the log carries it.
                 logger.error(f"{source} failed: {error}")
