@@ -19,6 +19,7 @@ from hands.sessions.audit import Announced, Entry
 from hands.daemon.notify import notification_command
 from hands.sessions.home import Home
 from hands.voice.system import (
+    BURST_SECONDS,
     ModelFailed,
     ModelUnreachable,
     NothingTranscribed,
@@ -84,8 +85,9 @@ class Recorder(FrameProcessor):
 async def test_a_fact_goes_to_speech_while_it_works_and_to_the_screen_when_it_does_not() -> None:
     tts, posted = Recorder(), list[str]()
 
-    async def notify(text: str) -> None:
+    async def notify(text: str) -> bool:
         posted.append(text)
+        return True
 
     recorded: list[Entry] = []
     channel = SystemChannel(tts, notify, recorded.append)
@@ -99,54 +101,122 @@ async def test_a_fact_goes_to_speech_while_it_works_and_to_the_screen_when_it_do
     await channel.sound(Post("hands cannot speak: no voice"))
     assert len(tts.frames) == 1
     assert posted == ["hands cannot speak, so: Whisper returned nothing for that turn.", "hands cannot speak: no voice"]
-    assert recorded == [Announced("The language model is unreachable.", "speech"), Announced("Whisper returned nothing for that turn.", "screen")]
+    assert recorded == [
+        Announced("The language model is unreachable.", "speech"),
+        Announced("Whisper returned nothing for that turn.", "screen"),
+        Announced("hands cannot speak: no voice", "screen"),
+    ]
 
 
-async def test_a_fact_repeated_before_anything_else_is_said_is_said_once() -> None:
+class Clock:
+    """A clock the test winds, so crossing a burst window costs no wall time."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def speaking(clock: Clock) -> tuple[Recorder, list[Entry], SystemChannel]:
+    """A channel whose speech works, so nothing it says should reach the screen."""
+    tts, recorded = Recorder(), list[Entry]()
+
+    async def notify(_text: str) -> bool:
+        raise AssertionError("speech works, so nothing goes to the screen")
+
+    return tts, recorded, SystemChannel(tts, notify, recorded.append, clock)
+
+
+def said(tts: Recorder) -> list[str | None]:
+    return [getattr(frame, "text", None) for frame in tts.frames]
+
+
+async def test_a_fact_repeated_through_one_burst_is_said_once() -> None:
     """A key held down on 2026-09-22 queued hundreds of empty turns, and this channel said "Whisper returned
     nothing for that turn." every 0.43 s for as long as they drained. A fault that recurs recurs in bursts, and a
     burst that fills the only channel the daemon has is not a loud failure but a jammed one."""
-    tts, recorded = Recorder(), list[Entry]()
-
-    async def notify(_text: str) -> None:
-        raise AssertionError("speech works, so nothing goes to the screen")
-
-    channel = SystemChannel(tts, notify, recorded.append)
+    clock = Clock()
+    tts, recorded, channel = speaking(clock)
     for _ in range(200):
         await channel.say(NothingTranscribed())
-    assert [getattr(frame, "text", None) for frame in tts.frames] == ["Whisper returned nothing for that turn."]
-    # The audit says a thing was announced only where it was: what was dropped is the saying, not the knowing.
-    assert recorded == [Announced("Whisper returned nothing for that turn.", "speech")]
+        clock.now += 0.43
+    assert said(tts) == ["Whisper returned nothing for that turn."] * 9  # 200 turns over 86 s, not 200 sentences
+    # The audit says a thing was announced only where it was: what a burst costs is the saying, not the knowing.
+    assert recorded == [Announced("Whisper returned nothing for that turn.", "speech")] * 9
 
 
-async def test_a_fact_is_news_again_once_a_different_one_has_been_said() -> None:
-    """Transitions, not states: the burst ends when something else happens, and the next one is worth hearing."""
-    tts, recorded = Recorder(), list[Entry]()
+async def test_a_fault_that_is_still_happening_is_said_again_once_its_burst_has_passed() -> None:
+    """Nothing else is ever said while the microphone is muted, so only time can end the burst. Suppressing until
+    something else was said would leave a user pressing a key at a daemon that has gone permanently silent."""
+    clock = Clock()
+    tts, _, channel = speaking(clock)
+    await channel.say(NothingTranscribed())
+    clock.now += BURST_SECONDS - 0.01
+    await channel.say(NothingTranscribed())
+    assert said(tts) == ["Whisper returned nothing for that turn."]
+    clock.now += 0.01
+    await channel.say(NothingTranscribed())
+    assert said(tts) == ["Whisper returned nothing for that turn."] * 2
 
-    async def notify(_text: str) -> None:
-        raise AssertionError("speech works, so nothing goes to the screen")
 
-    channel = SystemChannel(tts, notify, recorded.append)
-    for fact in (NothingTranscribed(), NothingTranscribed(), TranscriptionFailed(), NothingTranscribed()):
+async def test_two_faults_taking_turns_do_not_between_them_defeat_the_burst() -> None:
+    """The drain interleaves: some queued turns transcribe to nothing and some raise. Were the window one slot
+    wide, each would be news to the other and the pair would speak at the full jammed cadence."""
+    clock = Clock()
+    tts, _, channel = speaking(clock)
+    for fact in (NothingTranscribed(), TranscriptionFailed()) * 20:
         await channel.say(fact)
-    assert [getattr(frame, "text", None) for frame in tts.frames] == [
+        clock.now += 0.43
+    assert said(tts) == [
         "Whisper returned nothing for that turn.",
         "Speech recognition failed for that turn.",
         "Whisper returned nothing for that turn.",
+        "Speech recognition failed for that turn.",
     ]
 
 
 async def test_two_model_failures_of_different_kinds_are_both_heard() -> None:
     """The facts carry what differs, so sameness is the type's answer and not a comparison of sentences."""
-    tts = Recorder()
-
-    async def notify(_text: str) -> None:
-        raise AssertionError("speech works, so nothing goes to the screen")
-
-    channel = SystemChannel(tts, notify, lambda _: None)
+    clock = Clock()
+    tts, _, channel = speaking(clock)
     for fact in (ModelFailed(ErrorCategory.CONNECTIVITY), ModelFailed(ErrorCategory.CONNECTIVITY), ModelFailed(ErrorCategory.RATE_LIMIT)):
         await channel.say(fact)
     assert len(tts.frames) == 2
+
+
+async def test_the_screen_is_not_filled_by_a_burst_either() -> None:
+    """A TTS that fails raises one error frame per frame it was handed, and the screen jams exactly as the ear
+    did — the same rule, consulted from the other path."""
+    clock, posted = Clock(), list[str]()
+
+    async def notify(text: str) -> bool:
+        posted.append(text)
+        return True
+
+    channel = SystemChannel(Recorder(), notify, lambda _: None, clock)
+    for _ in range(200):
+        await channel.sound(Post("hands cannot speak: no voice"))
+        clock.now += 0.43
+    assert posted == ["hands cannot speak: no voice"] * 9
+
+
+async def test_a_post_the_screen_refused_is_not_taken_for_one_the_user_saw() -> None:
+    """Under launchd there may be no GUI session to post into. A refusal is not an announcement, so it neither
+    goes on the audit nor keeps the next one quiet."""
+    clock, recorded, attempts = Clock(), list[Entry](), list[str]()
+
+    async def notify(text: str) -> bool:
+        attempts.append(text)
+        return False
+
+    tts = Recorder()
+    await tts.set_usable(False)
+    channel = SystemChannel(tts, notify, recorded.append, clock)
+    await channel.say(NothingTranscribed())
+    await channel.say(NothingTranscribed())
+    assert attempts == ["hands cannot speak, so: Whisper returned nothing for that turn."] * 2
+    assert recorded == []
 
 
 async def test_whisper_reports_a_turn_it_transcribed_to_nothing_and_only_that(monkeypatch: pytest.MonkeyPatch) -> None:

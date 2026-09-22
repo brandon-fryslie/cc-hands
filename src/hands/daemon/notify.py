@@ -12,8 +12,10 @@ def notification_command(text: str) -> list[str]:
     return ["osascript", *(part for line in _SCRIPT for part in ("-e", line)), "--", text]
 
 
-async def post_notification(text: str) -> None:
-    # [LAW:no-silent-failure] when speech and the screen have both failed, the log is the path left.
+async def post_notification(text: str) -> bool:
+    """True when the screen took it, so a caller records as given only what was given."""
+    # [LAW:no-silent-failure] when speech and the screen have both failed, the log is the path left — and the
+    # refusal is told to the caller as well, because under launchd there may be no GUI session to post into.
     try:
         process = await asyncio.create_subprocess_exec(
             *notification_command(text), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
@@ -21,8 +23,9 @@ async def post_notification(text: str) -> None:
         _, stderr = await process.communicate()
     except OSError as error:
         logger.error(f"cannot run osascript to post {text!r}: {error}")
-        return
+        return False
     if process.returncode != 0:
         logger.error(f"osascript refused to post {text!r} ({process.returncode}): {stderr.decode().strip()}")
-        return
+        return False
     logger.info(f"posted a notification: {text}")
+    return True

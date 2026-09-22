@@ -4,8 +4,10 @@ A failure of the model is spoken without the model, and a failure of speech is p
 screen instead. Every fact is logged as well, which is the path that needs neither.
 """
 
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import anthropic
 import openai
@@ -109,42 +111,72 @@ def model_fact(error: ErrorFrame) -> ModelUnreachable | ModelFailed:
     return ModelFailed(error.category or ErrorCategory.UNKNOWN)
 
 
-Notify = Callable[[str], Awaitable[None]]
+# Posts to the screen. True when the screen took it, so nothing is recorded as given that was not given.
+Notify = Callable[[str], Awaitable[bool]]
+
+BURST_SECONDS = 10.0
+"""How long one sentence stays said.
+
+A fault that recurs recurs in bursts: a key held down on 2026-09-22 queued hundreds of empty turns whose reports
+went out every 0.43 s for as long as they drained, which is not a loud failure but a jammed one, because nothing
+else could have been heard while it ran. Ten seconds is twenty-odd times quieter than that cadence and still
+answers a user who pressed the key again. It is a span of quiet rather than "until something else was said"
+because in the case this exists for — a muted microphone, a model that is down — nothing else ever is.
+"""
 
 
 class SystemChannel:
     """Says each fact through text-to-speech alone, and posts it to the screen when speech cannot.
 
-    It says transitions, not states. A fact identical to the last one said is logged and not spoken again until
-    something else has been, because this is the one channel that reports the daemon's own faults and a fault
-    that recurs recurs in bursts: a key held down on 2026-09-22 queued hundreds of empty turns, and the channel
-    said "Whisper returned nothing for that turn." every 0.43 s for as long as they drained, which is not a loud
-    failure but a jammed one — the user could not have been told anything else while it ran.
+    It says a burst once: a sentence is not said again until `BURST_SECONDS` have passed without it, because this
+    is the one channel that reports the daemon's own faults and a fault that recurs recurs in bursts. What a burst
+    costs is the saying and never the knowing — every occurrence is still a log line — and `Announced` is written
+    only for what actually reached the user.
     """
 
-    def __init__(self, tts: FrameProcessor, notify: Notify, record: Record) -> None:
+    def __init__(
+        self,
+        tts: FrameProcessor,
+        notify: Notify,
+        record: Record,
+        clock: Callable[[], float] = time.monotonic,  # monotonic seconds
+        burst: float = BURST_SECONDS,
+    ) -> None:
         self._tts = tts
         self._notify = notify
         self._record = record
-        # The last fact that reached the user, so the next identical one is a state and not news.
-        self._last: SystemFact | None = None
+        self._clock = clock
+        self._burst = burst
+        # When each sentence last reached the user, so the rest of its burst is logged and not said.
+        self._said: dict[str, float] = {}
 
     async def say(self, fact: SystemFact) -> None:
         text = system_text(fact)
         logger.info(f"system: {text}")
-        if fact == self._last:
-            # [LAW:no-silent-failure] still on the record, in the log line above: what is dropped is the saying,
-            # never the knowing, and the audit says a thing was announced only where it was.
+        if not self._is_news(text):
+            # [LAW:no-silent-failure] the log line above is the knowing, which a burst never costs.
             return
-        self._last = fact
         if self._tts.is_usable:
             # [LAW:effects-at-boundaries] queued at the TTS, past the model, because this channel reports the model's own failures;
             # kept out of the model's context too, where it would read as a reply the model gave.
             await self._tts.queue_frame(TTSSpeakFrame(text, append_to_context=False))
-            self._record(Announced(text, "speech"))
-        else:
-            await self._notify(f"hands cannot speak, so: {text}")
-            self._record(Announced(text, "screen"))
+            self._reached(text, "speech")
+        elif await self._notify(f"hands cannot speak, so: {text}"):
+            self._reached(text, "screen")
+
+    def _is_news(self, text: str) -> bool:
+        said_at = self._said.get(text)
+        return said_at is None or self._clock() - said_at >= self._burst
+
+    def _reached(self, text: str, via: Literal["speech", "screen"]) -> None:
+        """What the user was given: onto the audit, and said as of now, so the rest of its burst stays quiet.
+
+        Reached, not attempted: a screen that refused the post leaves the sentence news, so the next one is said.
+        """
+        self._record(Announced(text, via))
+        now = self._clock()
+        # A sentence older than its window can no longer keep anything quiet, so the map holds only those inside one.
+        self._said = {said: at for said, at in self._said.items() if now - at < self._burst} | {text: now}
 
     async def sound(self, alarm: Alarm) -> None:
         match alarm:
@@ -152,7 +184,10 @@ class SystemChannel:
                 await self.say(fact)
             case Post(text=text):
                 logger.error(text)
-                await self._notify(text)
+                # [LAW:single-enforcer] the same burst rule `say` consults: a TTS that fails fails once per frame
+                # it was handed, and hundreds of notifications fill the screen exactly as hundreds filled the ear.
+                if self._is_news(text) and await self._notify(text):
+                    self._reached(text, "screen")
             case Unrouted(source=source, error=error):
                 # [LAW:no-silent-failure] no sentence fits, so the log carries it.
                 logger.error(f"{source} failed: {error}")
