@@ -129,3 +129,14 @@ async def test_an_announcement_that_starts_while_the_key_is_held_is_still_said()
     # The reply's own audio is what `first audio` measures, never the announcement still playing at the release.
     assert [line.split(" ")[1] for line in lines[1:]] == ["transcript", "first"]
     assert all("after key release" in line for line in lines[1:])
+
+
+async def test_one_release_is_one_window_however_often_it_crosses_a_boundary() -> None:
+    """The stop frame is pushed once per processor boundary, as every other frame here is. A window opened on
+    the frame rather than on the user falling silent would throw away the marks the first push's window took
+    and restart the measurement from a later zero — so a milestone landing between two pushes is said twice,
+    the second time timed from a moment the user had already finished speaking at."""
+    release = VADUserStoppedSpeakingFrame()
+    transcript = TranscriptionFrame(text="once", user_id="u", timestamp="t")
+    lines = await logged(VADUserStartedSpeakingFrame(), release, transcript, release, transcript, BotStartedSpeakingFrame())
+    assert [line.split(" ")[1] for line in lines] == ["transcript", "first"]

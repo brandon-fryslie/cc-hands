@@ -18,6 +18,7 @@ from pipecat.frames.frames import (
     Frame,
     LLMTextFrame,
     TranscriptionFrame,
+    VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.observers.base_observer import BaseObserver, FramePushed
@@ -70,15 +71,28 @@ class LatencyObserver(BaseObserver):
         # Pipecat's observer base takes untyped **kwargs; nothing is passed.
         super().__init__()  # pyright: ignore[reportUnknownMemberType]
         self._window: Window | None = None
-        # Whether the speaker is already sounding, so one utterance is one first audio however often it is announced.
+        # Who is sounding, on each side of the conversation. Every frame below is pushed once per processor
+        # boundary it crosses, so what these two record is the transition, and the transition is the event:
+        # the speaker going from silent to sounding is the first audio, and the user falling silent is the
+        # release [LAW:one-source-of-truth].
         self._speaking = False
+        self._holding = False
 
     async def on_push_frame(self, data: FramePushed) -> None:
         now = time.monotonic()
         frame = data.frame
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._holding = True
+            return
         if isinstance(frame, VADUserStoppedSpeakingFrame):
-            # The release is what the window's numbers are measured from, so it is also what opens the window.
-            self._window = Window(released=now)
+            if self._holding:
+                # The release is what the window's numbers are measured from, so it is also what opens the
+                # window — and what opens it is the user falling silent, not each push of the frame saying so.
+                # Opened on the frame, the second push would throw away the marks the first push's window had
+                # taken and restart the measurement from a later zero, logging a milestone twice and timing it
+                # from a moment the user was already done speaking at.
+                self._window = Window(released=now)
+            self._holding = False
             return
         if isinstance(frame, BotStartedSpeakingFrame):
             if not self._speaking:

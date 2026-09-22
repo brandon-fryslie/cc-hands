@@ -23,7 +23,8 @@ Five checks run on every telling, and a model is stochastic, so every one of the
            reporting "version two point seven point one" for a runner that printed 8.4.1; a number with no
            source in the render is that failure, caught. The headline only: the rest is counted by code.
 
-Exit codes are the contract: 0 every check held, 1 a check failed, 2 the model could not be reached at all.
+Exit codes are the contract: 0 every check held, 1 a check failed, 2 the model could not be reached at all —
+and 2 as well from argparse, for a command line that never starts a run.
 """
 
 import argparse
@@ -263,9 +264,23 @@ def _digits(word: str) -> str:
     return str(_WORDS[word]) if word in _WORDS else word.replace(",", "")
 
 
+def _tellings(value: str) -> int:
+    """How many times each case is told, which is at least once.
+
+    Refused here rather than checked before the timings are reported, so that no run count reaches the summary
+    that it cannot summarise [LAW:parse-dont-validate]. Zero told nothing, and a run that told nothing has no
+    fastest telling, no slowest and no median; the empty `min` that used to end it exits 1, which this script's
+    contract reads as a check having failed, when in truth no check was ever run [LAW:no-silent-failure].
+    """
+    runs = int(value)
+    if runs < 1:
+        raise argparse.ArgumentTypeError(f"each case is told at least once, so {runs} tells nothing")
+    return runs
+
+
 async def main() -> int:
     parsed = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parsed.add_argument("--runs", type=int, default=3, help="tellings of each case; a model is stochastic (default 3)")
+    parsed.add_argument("--runs", type=_tellings, default=3, help="tellings of each case; a model is stochastic (default 3)")
     parsed.add_argument("--only", default="", help="run only the cases whose name holds this")
     parsed.add_argument("--show", action="store_true", help="print every telling, not only the ones that failed")
     args = parsed.parse_args()
