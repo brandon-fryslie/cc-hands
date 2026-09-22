@@ -8,7 +8,7 @@ import pytest
 from loguru import logger
 
 from hands.core.session import Membership, SessionId
-from hands.core.turn import Asked, Notified, Looked, Other, Ran, Said, Turn
+from hands.core.turn import Asked, Continuing, Notified, Looked, Other, Ran, Said, Turn
 from hands.sessions.tail import Tails, Telling
 
 SID = SessionId("bf411065-dc5c-4ec9-8302-61b84bdb5c53")
@@ -159,7 +159,7 @@ async def test_only_what_was_appended_since_the_last_reading_is_read_again(tmp_p
     with transcript.open("a") as more:
         more.write(lines(CALL, RESULT, DONE))
     second = await tails.tell(SID, None)
-    assert second is not None and second.turn == Turn(Asked(None, "first"), (RAN, Said(None, "Done.")))
+    assert second is not None and second.turn == Turn(Asked(None, "first"), (RAN, Said(None, "Done.")), Continuing(1))
 
 
 async def test_a_record_only_half_written_is_not_read_until_the_newline_that_ends_it_is(tmp_path: Path) -> None:
@@ -228,7 +228,7 @@ async def test_a_reading_picks_up_after_the_steps_already_told(tmp_path: Path) -
     first = await tails.tell(SID, None)
     assert first is not None and first == Telling(SID, Turn(Asked(None, "first"), (Said(None, "Done."),)), number=1, through=1, stood_in=None)
     await tails.spoken(first)
-    assert (await tails.tell(SID, None)) == Telling(SID, Turn(Asked(None, "first"), ()), number=1, through=1, stood_in=None)
+    assert (await tails.tell(SID, None)) == Telling(SID, Turn(Asked(None, "first"), (), Continuing(1)), number=1, through=1, stood_in=None)
 
 
 async def test_a_turn_told_but_never_spoken_is_told_again(tmp_path: Path) -> None:
@@ -251,7 +251,7 @@ async def test_the_hooks_closing_reply_ends_a_turn_whose_transcript_does_not_hol
     with transcript.open("a") as more:
         more.write(lines(DONE))
     second = await tails.tell(SID, "Done.")
-    assert second is not None and second.turn == Turn(Asked(None, "first"), ())
+    assert second is not None and second.turn == Turn(Asked(None, "first"), (), Continuing(2))
 
 
 async def test_a_closing_reply_is_matched_to_its_record_however_the_whitespace_around_it_differs(tmp_path: Path) -> None:
@@ -265,7 +265,7 @@ async def test_a_closing_reply_is_matched_to_its_record_however_the_whitespace_a
     with transcript.open("a") as more:
         more.write(lines(padded))
     second = await tails.tell(SID, "Done.")
-    assert second is not None and second.turn == Turn(Asked(None, "first"), ())
+    assert second is not None and second.turn == Turn(Asked(None, "first"), (), Continuing(1))
 
 
 async def test_a_closing_reply_the_turn_said_once_before_still_ends_it(tmp_path: Path) -> None:
@@ -374,7 +374,7 @@ async def test_what_a_turn_was_told_is_marked_only_while_nothing_else_is_reading
         await asyncio.sleep(0)
         assert not marking.done()
     await marking
-    assert (await tails.tell(SID, None)) == Telling(SID, Turn(Asked(None, "first"), ()), number=1, through=1, stood_in=None)
+    assert (await tails.tell(SID, None)) == Telling(SID, Turn(Asked(None, "first"), (), Continuing(1)), number=1, through=1, stood_in=None)
 
 
 async def test_a_session_registered_again_is_told_from_the_transcript_it_has_now(tmp_path: Path) -> None:

@@ -83,7 +83,14 @@ HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run pytest && uv run pyright
+uv run python evals/narration.py       # real turns through the real summariser; needs the model to be up
 ```
+
+`pytest` and `pyright` judge the code. The eval judges what a listener hears: it tells four
+real turns, lifted whole out of real transcripts, and checks that the facts are there, that
+no code name reached the ear, that the headline is within its configured length, and that
+every number said is a number the turn showed. It exits 0 when every check held, 1 when one
+failed, and 2 when the model could not be reached at all.
 
 launchd keeps the daemon up, starting it at login and again whenever it exits:
 

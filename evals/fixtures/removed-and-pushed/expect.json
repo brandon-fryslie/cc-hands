@@ -1,0 +1,25 @@
+{
+  "about": "Asked to remove one entry: it deleted the block, edited the README twice, re-verified, committed and pushed.",
+  "facts": [
+    {
+      "needs": [
+        "remov",
+        "delet",
+        "drop"
+      ],
+      "why": "what the turn was asked to do and did"
+    },
+    {
+      "needs": [
+        "push",
+        "commit"
+      ],
+      "why": "git recorded the push, so the narration says so whatever the model wrote"
+    }
+  ],
+  "never": [
+    "9eed622",
+    "58092fa",
+    ".md"
+  ]
+}

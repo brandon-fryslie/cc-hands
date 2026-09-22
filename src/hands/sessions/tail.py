@@ -16,7 +16,7 @@ from typing import Protocol
 from loguru import logger
 
 from hands.core.session import Membership, SessionId
-from hands.core.turn import Said, Step, Turn
+from hands.core.turn import Answering, Continuing, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.transcript import turn_record
 from hands.sessions.turning import Turning
@@ -143,7 +143,10 @@ class Tails:
             reply = _spoken(closing)
             stand_in = None if reply == _said_at(steps, len(steps) - 1) else reply
             shown = steps[heard:] if stand_in is None else [*steps[heard:], Said(None, stand_in)]
-            return Telling(session, Turn(following.turn.opening, tuple(shown)), following.number, len(steps), stand_in)
+            # [LAW:types-are-the-program] a turn whose earlier steps went out already is a different thing to
+            # report than a fresh one, and saying which it is here is what keeps the opening from being asked twice.
+            standing = Answering() if heard == 0 else Continuing(heard)
+            return Telling(session, Turn(following.turn.opening, tuple(shown), standing), following.number, len(steps), stand_in)
 
     async def spoken(self, telling: Telling) -> None:
         """Mark what a telling held as told. A telling of a turn that has since been replaced marks nothing.

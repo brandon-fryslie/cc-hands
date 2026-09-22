@@ -1,0 +1,8 @@
+{
+  "about": "A background suite reported green, and the turn ends on a four-way choice about merging over a dead review shard.",
+  "facts": [
+    {"needs": ["pass", "green", "clean", "sound"], "why": "the suites passed, which is the result the turn reported"},
+    {"needs": ["?"], "why": "the turn ends on a question, and a question is always said"}
+  ],
+  "never": ["sync.ts", "23e8b7ba", "happy-cli"]
+}

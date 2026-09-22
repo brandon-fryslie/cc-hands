@@ -69,7 +69,9 @@ async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_d
     assert spoken.append_to_context
     [turn] = shown
     assert turn.startswith("The user asked:\nI'd like you to go a bit further") and "(Inspect repo layout and remotes)" in turn
-    assert Recounted(SID, "Loaded the repo conventions and hit an API error.") in recorded
+    # The fixture turn is two blocks of text around three commands, none of which moved the repository, so
+    # the narration leaves those two topics to be opened and plays neither.
+    assert Recounted(SID, "Loaded the repo conventions and hit an API error.", ("what it said", "the commands"), ()) in recorded
 
 
 async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_after_that_turn(tmp_path: Path) -> None:
@@ -134,9 +136,13 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
             await asyncio.wait_for(frames.get(), 0.2)
     finally:
         narrating.cancel()
+    # The second telling carries the opening as context rather than as the request. Handed it as the request,
+    # a small model answers it again: heard live on 2026-09-21 as a second summary restating the first half.
     assert shown == [
         "The user asked:\nfix it\n\nClaude said:\nLooked.",
-        "The user asked:\nfix it\n\nClaude ran pytest\nOutput: 1 passed\n\nClaude said:\nFixed.",
+        "This turn has already been reported once, up to and including its first step, and none of that may be"
+        " reported again. For context only, this is what opened it:\nThe user asked:\nfix it\n"
+        "Report only what it did after that, below.\n\nClaude ran pytest\nOutput: 1 passed\n\nClaude said:\nFixed.",
     ]
 
 
@@ -192,7 +198,9 @@ async def test_a_turn_that_only_a_shell_command_changed_is_still_told_by_what_th
     delta = Delta(files=(Changed("src/a.py", 12, 9), Changed("src/b.py", 3, 3)), commits=(), patch="@@\n-x\n+y\n")
     spoken = await recount(tailing(transcript), SID, None, "cc-hands", summarise, lambda _: None, BUDGET, delta)
 
-    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: it reformatted the whole package"
+    # What git says is said after the summary and out of the narration's own words: the two files are the whole
+    # result of the turn, and no step of it names them.
+    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: it reformatted the whole package. It left 2 files different."
     [rendered] = shown
     assert "src/a.py +12 -9" in rendered and "src/b.py +3 -3" in rendered
 

@@ -7,6 +7,7 @@ from hands.core.turn import (
     Branched,
     Budget,
     Committed,
+    Continuing,
     Delegated,
     Edited,
     Looked,
@@ -150,3 +151,21 @@ def test_a_turn_that_pulled_a_history_is_counted_rather_than_listed() -> None:
 
 def test_a_turn_that_changed_nothing_says_nothing_about_the_repository() -> None:
     assert "repository" not in render(Turn(Asked(None, "think about it"), (Said(None, "Thought."),)), Delta(), ROOMY)
+
+
+def test_a_turn_told_once_already_carries_its_opening_as_context_rather_than_as_the_request() -> None:
+    """Handed the opening as the request twice, a small model answers it twice: heard live on 2026-09-21 as a
+    second summary restating the first half of a turn whose steps held none of it."""
+    turn = Turn(Asked(None, "fix the test"), (Said(None, "Fixed."),), Continuing(3))
+    assert render(turn, Delta(), ROOMY) == (
+        "This turn has already been reported once, up to and including its first 3 steps, and none of that may be"
+        " reported again. For context only, this is what opened it:\n"
+        "The user asked:\nfix the test\n"
+        "Report only what it did after that, below.\n\n"
+        "Claude said:\nFixed."
+    )
+
+
+def test_one_step_already_told_is_said_in_the_singular() -> None:
+    told = render(Turn(Asked(None, "go"), (), Continuing(1)), Delta(), ROOMY)
+    assert "up to and including its first step," in told

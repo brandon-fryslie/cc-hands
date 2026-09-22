@@ -690,8 +690,10 @@ Nothing is read verbatim. Claude writes for a screen, and markdown, code, tables
 and hashes cannot be heard as written, so every word that reaches the speaker is
 summarised or transformed first.
 
-**What runs today** is the first slice: each finished turn becomes one to three spoken
-sentences, with no tree. When a live session's `Stop` arrives, the reducer emits
+**What runs today** is the top level of the tree: each finished turn becomes a headline of
+the configured length, followed by what git says the turn did, followed by the turn's
+question where it ended on one. The sections below the headline are built and not yet
+spoken. When a live session's `Stop` arrives, the reducer emits
 `Summarise(session, closing)`, and `narrate` in `hands.voice.narrator` asks the tail what
 that session has not been told. A turn opens at the last user record that is
 not `isMeta`, not `isCompactSummary`, whose content is a string or a block list with no
@@ -711,6 +713,18 @@ that opens forgets both, and a session the registry stops listing is forgotten w
 Verified live on 2026-09-21 with a second `Stop` hook that blocks once: the first stop was
 heard as what the turn had done, and the second as `echo second` and nothing before it,
 1.41 s and 1.21 s from `Stop` to the spoken summary.
+
+The steps are only half of what a second telling has to get right. The opening belongs to
+the whole turn, so it goes in front of the summariser again — and a small model handed a
+request twice answers it twice, which is what was heard on 2026-09-21: a second summary
+restating the first half, out of an opening naming all three of the original actions, over
+steps that held none of them. So which telling this is, is carried in the turn rather than
+inferred beside it. `Turn.standing` is `Answering` or `Continuing(told)`, `render` matches
+on it, and a continuing telling is shown its opening framed as context, with how many steps
+have already gone out and an instruction to report only what follows
+`[LAW:types-are-the-program]`. A flag beside the turn would have done the same job and left
+the two readings of one opening uncounted by the type checker; an eval case is the same
+real turn told both ways.
 
 The stand-in reply is kept because the hook and the transcript disagree for a moment:
 measured over twelve live turns, the reply `Stop` carries is never yet in the
@@ -743,8 +757,8 @@ blocked: 1.22 s to the summary and 1.29 s to first audio, then 0.93 s and 1.00 s
 the second stop of the same turn, which was heard as what the turn did after the
 first — nothing of it twice.
 
-The rest of this section is planned: step summaries built as steps arrive, the
-narration tree, and streaming.
+The rest of this section is planned: step summaries built as steps arrive, children
+below the top level, and streaming.
 
 **Spoken form.** Built: `core/spoken.py` is a pure function from text to speakable
 text, installed as the TTS service's one text filter `[LAW:single-enforcer]`. Pipecat
@@ -820,19 +834,72 @@ model does what only the model can, turning `created_at` into "the creation date
 than "created at". The filter guarantees the floor beneath it.
 
 **The summariser** is a stateless call on the configured backend, separate from the
-conversational context. It takes steps, the turn's final text, and the git delta, and
-returns segments. Code and diffs are described by what they do: "adds a retry around
-the token refresh, three attempts with backoff," not the lines. Step summaries are
-requested as steps arrive from the tail, and the turn's narration at `Stop` assembles
-them, so first audio does not wait for the whole turn to be read.
+conversational context. It is asked for one thing only — prose about what the turn did —
+because it is the only thing nothing else can supply. Code and diffs are described by what
+they do: "adds a retry around the token refresh, three attempts with backoff," not the
+lines. Step summaries requested as steps arrive, so that first audio does not wait for the
+whole turn to be read, are planned and belong to the progress ticket.
 
-**The narration tree.** A turn's narration plays its top level: a headline, then any
-questions, then one section per topic, such as the change, the tests, and the commit.
-Each segment opens into children when asked, built from its records the first time.
-Questions come from the final text and from choices Claude offered, and they are in the
-top level at every length. The top level's length is a number in the config. It starts
-at one sentence and is expected to change as soon as it is heard, so the eval script
-measures it and changing it is cheap.
+**The narration tree.** `core/narration.py` cuts a finished turn into segments: the
+headline, what the repository did, one segment per question, and one section per topic —
+the change, the tests, the commit, the commands, what it read, the plan, the subagents,
+the other tools, what it said. The topics are not a table of rules written beside the
+steps; they are a match over the `Step` union, which already draws exactly those lines, so
+a new kind of step is a compile error here rather than a result with nowhere to go
+`[LAW:types-are-the-program]`. Every step lands in a section, which is what makes "more on
+that" able to reach anything the turn did. A segment holds the happenings it was cut from,
+so `opened` renders them through the same `body` the whole turn goes through, and its
+`refs` are read off those happenings rather than stored beside them — the record ids a
+segment names are the records it holds, and the two cannot come apart
+`[LAW:one-source-of-truth]`.
+
+Only the headline is prose from a model. Everything else the top level says is arithmetic
+over typed steps, and that is the point rather than an economy: a summariser was measured
+on 2026-09-21 reporting "version two point seven point one" for a runner that printed 8.4.1,
+and a count that is computed cannot be invented. It is also free, so the sections cost
+nothing at the `Stop` that matters.
+
+**What git says is not the model's to say.** Whether a turn committed is recorded twice —
+by the step, when Claude Code writes a `gitOperation`, and by the delta read against where
+the turn began — and each sees what the other misses: a `git commit` inside a heredoc
+carries no operation for a step to hold, and the delta names it anyway. So the narration
+says it, from whichever saw it, in words that carry no hash: "It committed and left five
+files different." Asked for this instead, the model was measured both dropping the commit
+entirely and reading its hash out loud, in the same afternoon. The instruction now asks it
+to leave commits alone; when it says one anyway the listener hears it twice, and that
+redundancy is kept on purpose — dropping git's clause whenever the report claims a commit
+would suppress it in exactly the case it exists for, a commit claimed that never landed
+`[LAW:no-silent-failure]`.
+
+**The length is a number, and it is enforced rather than requested.**
+`HEADLINE_SENTENCES` lives beside the instruction it rewrites, because changing it means
+re-rendering that text and the two cannot be apart. It starts at one. Asked for one
+sentence the local model wrote two in nine tellings out of twelve, so `narration` cuts the
+reply to the number and keeps a closing question whole whatever the number is — the same
+reason the spoken-form filter is a filter and not an instruction: a rule held as an
+instruction is obeyed or not and checked by nobody. Nothing cut is lost, because the
+sections hold every step the headline was made from. The eval reports how often the model
+overran, which is the signal for changing the number.
+
+**A question is in the tree and does not yet play.** Every `AskUserQuestion` becomes its
+own segment, carrying its record id, said as a question and not as a count. It is not
+spoken at `Stop`, for two reasons that both point the same way: the segment still holds
+what Claude typed at a screen — a path, a hash, a "(Recommended)" — and the headline has
+already been asked to end on the turn's question in spoken form, so playing both would say
+it once well and once verbatim. Making questions play at every length, and finding the ones
+Claude asked in prose rather than through the tool, is `hands-narration-2mc.4mu`.
+
+**The eval.** `evals/narration.py` runs real turns, lifted whole out of real transcripts,
+through the daemon's own recognisers, `render`, and summariser, and judges what comes back:
+that the facts a listener must have are in it, that nothing code-shaped reached the ear,
+that the headline is within its number, that every number said is a number the turn showed,
+and that nothing the case forbids was said. The code-shape judge is `core/spoken.py` itself
+rather than a second table of patterns, so the eval cannot drift from what the daemon does.
+It exits 0, 1, or 2 — every check held, a check failed, or the model could not be reached —
+and a model is stochastic, so it tells each case several times and every telling must hold.
+Measured live against `claude -p` sessions on inferno, twice on 2026-09-22: `Stop` to the
+summary 2.01 s and 1.82 s, `Stop` to first audio 2.07 s and 1.88 s, which puts the speech
+leg at 60 ms. The four fixture cases summarise in 0.92 to 2.0 s, median 1.25 s.
 
 **Streaming.** Steps from the tail are events like any other, so a session's progress
 can be played as it happens: "running the tests," "editing the auth middleware." Text

@@ -1,0 +1,59 @@
+{
+  "about": "Took three review findings, replaced the liveness ranking with one rule, went from five failing tests to none, and committed.",
+  "facts": [
+    {
+      "needs": [
+        "pass",
+        "green",
+        "fixed"
+      ],
+      "why": "the suite went from five failing to none, which is the turn's result"
+    },
+    {
+      "needs": [
+        "commit"
+      ],
+      "why": "git recorded the commit, so the narration says so whatever the model wrote"
+    }
+  ],
+  "never": [
+    "db9618c",
+    "test_liveness",
+    "architecture.md"
+  ],
+  "delta": {
+    "files": [
+      [
+        "docs/architecture.md",
+        12,
+        10
+      ],
+      [
+        "src/hands/core/reducer.py",
+        4,
+        4
+      ],
+      [
+        "src/hands/sessions/liveness.py",
+        19,
+        14
+      ],
+      [
+        "tests/test_liveness.py",
+        24,
+        8
+      ],
+      [
+        "tests/test_reducer.py",
+        3,
+        2
+      ]
+    ],
+    "commits": [
+      [
+        "db9618c",
+        "sessions: medium review — a session moved on only when another holds its process, and an end this run never listed is not spoken"
+      ]
+    ]
+  }
+}

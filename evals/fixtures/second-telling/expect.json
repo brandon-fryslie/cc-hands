@@ -1,0 +1,64 @@
+{
+  "about": "The same turn as review-fixes-committed, told a second time because another hook blocked its first Stop: the first two steps went out already, so only the tests that now pass, the commit, and the closing text may be reported.",
+  "transcript": "review-fixes-committed/transcript.jsonl",
+  "told": 2,
+  "facts": [
+    {
+      "needs": [
+        "pass",
+        "green",
+        "clean",
+        "review"
+      ],
+      "why": "the retained half is a suite that now passes and a review started"
+    },
+    {
+      "needs": [
+        "commit"
+      ],
+      "why": "git recorded the commit, so the narration says so whatever the model wrote"
+    }
+  ],
+  "never": [
+    "three problems",
+    "three findings",
+    "three issues",
+    "five tests",
+    "5 failed"
+  ],
+  "delta": {
+    "files": [
+      [
+        "docs/architecture.md",
+        12,
+        10
+      ],
+      [
+        "src/hands/core/reducer.py",
+        4,
+        4
+      ],
+      [
+        "src/hands/sessions/liveness.py",
+        19,
+        14
+      ],
+      [
+        "tests/test_liveness.py",
+        24,
+        8
+      ],
+      [
+        "tests/test_reducer.py",
+        3,
+        2
+      ]
+    ],
+    "commits": [
+      [
+        "db9618c",
+        "sessions: medium review — a session moved on only when another holds its process, and an end this run never listed is not spoken"
+      ]
+    ]
+  }
+}

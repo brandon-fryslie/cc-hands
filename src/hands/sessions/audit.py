@@ -77,10 +77,17 @@ class Announced:
 
 @dataclass(frozen=True)
 class Recounted:
-    """What the user heard about a turn a session finished."""
+    """What the user heard about a turn a session finished, and what the narration left them able to ask for.
+
+    `topics` is every section of the turn's narration that was built and not played, and `questions` is every
+    question it holds. Neither is spoken, so this line is the one place a developer who cannot see the screen
+    can find out what "more on that" has to open and what the session is waiting on an answer to.
+    """
 
     session: str
     summary: str
+    topics: tuple[str, ...]
+    questions: tuple[str, ...]
 
 
 @dataclass(frozen=True)

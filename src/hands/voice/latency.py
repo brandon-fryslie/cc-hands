@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     Frame,
     LLMTextFrame,
     TranscriptionFrame,
@@ -55,12 +56,28 @@ class LatencyObserver(BaseObserver):
         # Pipecat's observer base takes untyped **kwargs; nothing is passed.
         super().__init__()  # pyright: ignore[reportUnknownMemberType]
         self._turn: TurnMarks | None = None
+        # Whether the speaker is already sounding, so one utterance is one line however often it is announced.
+        self._speaking = False
 
     async def on_push_frame(self, data: FramePushed) -> None:
         now = time.monotonic()
         frame = data.frame
+        if isinstance(frame, BotStoppedSpeakingFrame):
+            self._speaking = False
+            return
         if isinstance(frame, VADUserStartedSpeakingFrame):
             self._turn = TurnMarks(pressed=now)
+            return
+        if isinstance(frame, BotStartedSpeakingFrame) and self._turn is None:
+            # Speech nobody asked for out loud — a turn's summary, an announcement — has no release to measure
+            # from, and is the larger half of what this daemon says. Logged with its own time and nothing else,
+            # which is what a Stop's audit line is subtracted from to get how long a turn took to be heard.
+            # What is logged once is the speaking, not the frame: an utterance raised four of these between one
+            # start and one stop, measured live, and four identical lines are four utterances to a reader
+            # [LAW:one-source-of-truth].
+            if not self._speaking:
+                logger.info("latency: first audio, answering no user turn")
+            self._speaking = True
             return
         if self._turn is None:
             return

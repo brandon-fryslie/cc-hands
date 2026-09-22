@@ -1,5 +1,6 @@
 """A turn as the summariser reads it: what opened it, and each thing Claude said or did, in order."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import NewType
 
@@ -174,9 +175,34 @@ Happening = Opening | Step
 
 
 @dataclass(frozen=True)
+class Answering:
+    """This telling is the first of its turn, so its opening is the request the steps below answer."""
+
+
+@dataclass(frozen=True)
+class Continuing:
+    """A later telling of a turn told once already, because another hook blocked its first Stop.
+
+    `told` is how many steps went out in the earlier tellings. Carried so the opening can be shown as context
+    instead of as the request: a small model handed the opening twice answers it twice, which was heard live on
+    2026-09-21 as a second summary restating the first half of the turn.
+    """
+
+    told: int
+
+
+# [LAW:types-are-the-program] whether the opening is still the question being answered is a fact about the
+# telling, not a flag beside it, so the two readings of one opening are variants the render must both handle.
+Standing = Answering | Continuing
+
+
+@dataclass(frozen=True)
 class Turn:
+    """The part of a turn that is to be told now: its opening, the steps not yet told, and which telling this is."""
+
     opening: Opening
     steps: tuple[Step, ...]
+    standing: Standing = Answering()
 
 
 @dataclass(frozen=True)
@@ -202,16 +228,48 @@ def render(turn: Turn, delta: Delta, budget: Budget) -> str:
     The delta is given beside the steps rather than folded into them, because it is the result of all of them
     together and belongs to no one step — and because the file a `sed` changed has no step to belong to.
     """
+    return "\n\n".join([_opening(turn, budget), body(turn.steps, delta, budget)])
+
+
+def body(happenings: Sequence[Happening], delta: Delta, budget: Budget) -> str:
+    """What happened, in order and cut to the budget, and what the repository says after it.
+
+    Shared by the whole turn the summariser is shown and by the slice one segment of the narration opens into,
+    so a segment can never be described by rules the turn it was cut from was not [LAW:one-source-of-truth].
+    """
+    return "\n\n".join([*_shown(happenings, budget), *_changed(delta, budget)])
+
+
+def _shown(happenings: Sequence[Happening], budget: Budget) -> list[str]:
+    """Each happening in words, where a run longer than the budget keeps how it started and how it ended."""
+    if len(happenings) <= budget.steps:
+        return [describe(happening, budget) for happening in happenings]
     head = (budget.steps + 1) // 2
     tail = budget.steps - head
-    steps = turn.steps
-    if len(steps) > budget.steps:
-        shown = [describe(step, budget) for step in steps[:head]]
-        shown.append(f"({len(steps) - budget.steps} steps in the middle are left out)")
-        shown.extend(describe(step, budget) for step in steps[len(steps) - tail :])
-    else:
-        shown = [describe(step, budget) for step in steps]
-    return "\n\n".join([describe(turn.opening, budget), *shown, *_changed(delta, budget)])
+    return [
+        *(describe(happening, budget) for happening in happenings[:head]),
+        f"({len(happenings) - budget.steps} steps in the middle are left out)",
+        *(describe(happening, budget) for happening in happenings[len(happenings) - tail :]),
+    ]
+
+
+def _opening(turn: Turn, budget: Budget) -> str:
+    """The opening, as the request these steps answer or as context for a turn that was reported once already.
+
+    A continuing telling says so in the words around the opening rather than dropping it: the steps below only
+    make sense against what was asked, and a model shown the request alone answers it instead of them.
+    """
+    said = describe(turn.opening, budget)
+    match turn.standing:
+        case Answering():
+            return said
+        case Continuing(told=told):
+            before = "its first step" if told == 1 else f"its first {told} steps"
+            return (
+                f"This turn has already been reported once, up to and including {before}, and none of that"
+                f" may be reported again. For context only, this is what opened it:\n{said}\n"
+                "Report only what it did after that, below."
+            )
 
 
 def _changed(delta: Delta, budget: Budget) -> list[str]:

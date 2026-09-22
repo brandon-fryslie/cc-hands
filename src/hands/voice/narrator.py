@@ -1,5 +1,6 @@
 """Sessions' stories, heard: each turn a session finishes is told from the tail, summarised, and spoken with its name, and each session gone is said after its last turn."""
 
+import time
 from collections.abc import Awaitable, Callable
 
 import anthropic
@@ -9,6 +10,7 @@ from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core.delta import Delta
 from hands.core.effects import SessionGone, Summarise
+from hands.core.narration import narration
 from hands.core.session import SessionId
 from hands.core.turn import Budget, render
 from hands.sessions.audit import Recounted, Record
@@ -18,6 +20,7 @@ from hands.sessions.registry import Sessions
 from hands.sessions.tail import Tails
 from hands.voice.readback import spoken_name
 from hands.voice.summary import Summariser, SummaryFailed
+from hands.voice.summary_instruction import HEADLINE_SENTENCES
 
 # How much of a turn the summariser is shown: enough to name its results, few enough tokens for a local model to answer in seconds.
 TURN_BUDGET = Budget(opening=600, said=1500, input=200, result=400, steps=40, files=25, commits=10, changes=2000)
@@ -63,13 +66,23 @@ async def recount(
         if telling is None or not (telling.turn.steps or delta):
             logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")
             return None
-        summary = await summarise(render(telling.turn, delta, budget))
+        began = time.monotonic()
+        headline = await summarise(render(telling.turn, delta, budget))
+        # The number this whole epic turns on, and until now invisible: how long a finished turn waited on the
+        # model before it could be spoken at all.
+        logger.info(f"session {session} was summarised in {time.monotonic() - began:.2f} s")
     except _FAILURES as error:
         # [LAW:no-silent-failure] said without the model, as a system fact is, and logged with the reason, which is an audit line.
         # Nothing is marked told, so what could not be summarised is told again at the next Stop, which may summarise it.
         logger.error(f"cannot summarise the turn session {session} finished: {type(error).__name__}: {error}")
         return TTSSpeakFrame(f"{name} finished a turn, and I could not summarise it.", append_to_context=False)
-    record(Recounted(session, summary))
+    # The tree is cut from the turn after the headline comes back, so the sections cost nothing at the Stop that
+    # matters: the counts are arithmetic over steps already read, and only the headline waits on a model.
+    told = narration(headline, telling.turn, delta, HEADLINE_SENTENCES)
+    spoken = told.said()
+    record(
+        Recounted(session, spoken, tuple(section.topic.name for section in told.sections), tuple(question.text for question in told.questions))
+    )
     await tails.spoken(telling)
     # Kept in the intermediary's context, so it can answer about what the user heard.
-    return TTSSpeakFrame(f"{name}: {summary}")
+    return TTSSpeakFrame(f"{name}: {spoken}")
