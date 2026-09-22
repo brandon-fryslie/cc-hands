@@ -11,7 +11,7 @@ from typing import cast
 import pytest
 from loguru import logger
 
-from hands.core.spoken import Leak, spoken
+from hands.core.spoken import Leak, spoken, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_since
 from hands.voice.spoken import SpokenForm
@@ -333,3 +333,26 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
     )
     filters = given["text_filters"]
     assert isinstance(filters, list) and [type(one) for one in cast(list[object], filters)] == [SpokenForm]
+
+
+def test_a_ref_is_said_by_the_caller_that_knows_it_is_one() -> None:
+    """`_PATH` will not read a bare `feature/narration-tree` as a path, and must not: a rule loose enough to
+    catch it also catches "and/or", "24/7" and "input/output", and costs every one of them a word. So a ref is
+    said where its type already says what it is, and every word of it is kept — a branch is named so it can be
+    told from the others, and "release/1.2" heard as "1.2" is the one thing it is not."""
+    assert spoken_ref("feature/narration-tree") == "feature narration tree"
+    assert spoken_ref("release/1.2") == "release 1.2"
+    assert spoken_ref("fix_the_thing") == "fix the thing"
+    assert spoken_ref("main") == "main"
+
+
+def test_a_ref_said_that_way_is_left_alone_by_the_filter_in_front_of_the_speaker() -> None:
+    said = spoken_ref("feature/narration-tree")
+    heard = spoken(f"It pushed {said}.")
+    assert heard.text == f"It pushed {said}." and heard.leaks == ()
+
+
+def test_prose_the_ref_rule_would_have_eaten_is_never_shown_to_it() -> None:
+    """The filter still sees these, and still leaves them whole, which is the reason `spoken_ref` is separate."""
+    for untouched in ("It handled input/output.", "It ran the job 24/7.", "It checked and/or fixed it."):
+        assert spoken(untouched).text == untouched

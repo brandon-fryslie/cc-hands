@@ -55,3 +55,37 @@ async def test_speech_that_answers_a_user_turn_is_measured_from_the_release_inst
 async def test_nothing_is_measured_from_a_release_that_never_happened(frame: Frame) -> None:
     """A transcript with no user turn open has no release to be late from, so it is not reported as instant."""
     assert all("after key release" not in line for line in await logged(frame))
+
+
+async def test_a_narration_after_a_user_turn_is_still_measured_as_answering_nobody() -> None:
+    """The turn a user opened has to close when the audio it was waiting for finishes. Left open, the first user
+    turn of a session stays open for the rest of it, every later narration finds `first audio` already marked,
+    and the line this observer exists for is written nowhere — while the numbers in docs/architecture.md come
+    from exactly that line."""
+    lines = await logged(
+        VADUserStartedSpeakingFrame(),
+        VADUserStoppedSpeakingFrame(),
+        TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
+        BotStartedSpeakingFrame(),
+        BotStoppedSpeakingFrame(),
+        BotStartedSpeakingFrame(),
+        BotStoppedSpeakingFrame(),
+        BotStartedSpeakingFrame(),
+    )
+    assert lines[-2:] == ["latency: first audio, answering no user turn"] * 2
+
+
+async def test_a_barge_in_keeps_the_turn_it_opened_while_the_speaker_is_stopping() -> None:
+    """The user interrupting opens the next turn before the speaker's stop arrives, and that turn is waiting for
+    its own first audio — so the stop that belongs to the utterance being cut off must not close it."""
+    lines = await logged(
+        VADUserStartedSpeakingFrame(),
+        VADUserStoppedSpeakingFrame(),
+        TranscriptionFrame(text="first", user_id="u", timestamp="t"),
+        BotStartedSpeakingFrame(),
+        VADUserStartedSpeakingFrame(),
+        BotStoppedSpeakingFrame(),
+        VADUserStoppedSpeakingFrame(),
+        TranscriptionFrame(text="second", user_id="u", timestamp="t"),
+    )
+    assert lines[-1].startswith("latency: transcript") and "after key release" in lines[-1]

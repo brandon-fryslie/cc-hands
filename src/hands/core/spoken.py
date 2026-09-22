@@ -115,6 +115,22 @@ class Spoken:
     leaks: tuple[Leak, ...] = ()
 
 
+# A ref's separators, none of which can be heard: "feature/narration-tree" is four words and three noises.
+_REF_SEPARATORS = str.maketrans("/-_", "   ")
+
+
+def spoken_ref(ref: str) -> str:
+    """A git ref said out loud, for a caller whose type already knows it is one.
+
+    `_PATH` deliberately will not read `feature/narration-tree` as a path: a rule loose enough to catch it also
+    catches "and/or", "24/7" and "input/output", and costs every one of them a word. So a bare ref is recognised
+    only where something already knows what it is — a `Pushed` or a `Branched`, never a guess made from prose —
+    and saying it is then just a matter of the separators [LAW:single-enforcer]. Every word is kept: a branch is
+    named so it can be told from the others, and "release/1.2" heard as "1.2" is the one thing it is not.
+    """
+    return " ".join(ref.translate(_REF_SEPARATORS).split())
+
+
 def spoken(text: str) -> Spoken:
     """`text` in a form that can be spoken: the one conversion every utterance goes through.
 

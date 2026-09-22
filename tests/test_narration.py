@@ -2,8 +2,10 @@
 
 from hands.core.delta import Changed, Commit, Delta
 from hands.core.narration import Narration, narration, opened
+from hands.core.spoken import spoken
 from hands.core.turn import (
     Asked,
+    Branched,
     Budget,
     Committed,
     Delegated,
@@ -205,3 +207,37 @@ def test_the_question_is_said_last_whatever_the_summariser_put_where() -> None:
     pushed = Ran(None, "git push", None, False, "", (Pushed("main"),))
     narrated = told(pushed, headline="The entry is gone. Want it to carry on?", sentences=1)
     assert narrated.said() == "The entry is gone. It pushed main. Want it to carry on?"
+
+
+def test_every_question_survives_the_cut_and_not_only_the_last_of_them() -> None:
+    """A small model routinely splits one choice over two sentences. Keeping the last alone leaves a listener a
+    dangling alternative with the question that gave it meaning deleted, and a turn waiting on an answer it
+    never asked for is the one failure the cut exists to avoid."""
+    split = "The rename is in. Should it update the logout code? Or roll the rename back?"
+    assert told(headline=split, sentences=1).headline.text == "The rename is in. Should it update the logout code? Or roll the rename back?"
+
+
+def test_a_question_still_outlives_the_report_it_came_with() -> None:
+    long = "It did one thing. It did a second thing. Shall it go on?"
+    assert told(headline=long, sentences=1).headline.text == "It did one thing. Shall it go on?"
+
+
+def test_a_branch_is_said_in_words_because_the_speaker_reads_a_slash_aloud() -> None:
+    """This clause is the one part of the top level no model wrote, so the instruction cannot cover it, and the
+    filter in front of the speaker will not read a bare `feature/x` as a path — by its own deliberate choice,
+    because a rule loose enough to catch it also eats "and/or" and "24/7"."""
+    pushed = Ran(None, "git push", None, False, "", (Pushed("feature/narration-tree"),))
+    [repository] = told(pushed).repository
+    assert repository.text == "It pushed feature narration tree."
+    # Every word is kept: a branch is named so it can be told from the others.
+    moved = Ran(None, "git switch", None, False, "", (Branched("release/1.2", "moved to"),))
+    [where] = told(moved).repository
+    assert where.text == "It moved to release 1.2."
+
+
+def test_nothing_the_repository_clause_says_is_rewritten_by_the_filter_in_front_of_the_speaker() -> None:
+    """[LAW:one-source-of-truth] `core.spoken` is what code-shaped means here, so it is what judges this."""
+    pushed = Ran(None, "git push", None, False, "", (Pushed("feature/narration-tree"), Branched("release/1.2", "moved to")))
+    [repository] = told(pushed, delta=Delta(commits=(Commit("f0f9776", "tidy"),))).repository
+    heard = spoken(repository.text)
+    assert heard.text == repository.text and heard.leaks == ()

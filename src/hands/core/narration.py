@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 
 from hands.core.delta import Delta
+from hands.core.spoken import spoken_ref
 from hands.core.turn import (
     Branched,
     Budget,
@@ -182,8 +183,10 @@ def _headline(said: str, sentences: int) -> str:
     The length is held here and not by the instruction alone, for the reason the spoken-form filter is held in
     one place: a rule a model is asked to follow is obeyed or not and checked by nobody. Asked for one sentence,
     the local model wrote two in six of eight tellings on 2026-09-22, and each extra sentence is seconds a
-    listener cannot skip. A question is kept whatever the number, because a turn waiting on an answer that never
-    asks is worse than a long one [LAW:single-enforcer].
+    listener cannot skip. Every question is kept, whatever the number and however many there are, because a turn
+    waiting on an answer that never asks is worse than a long one [LAW:single-enforcer]. All of them and not the
+    last: a small model routinely splits one choice over two sentences, and keeping only the last leaves the
+    listener a dangling alternative with the question that gave it meaning deleted.
 
     Nothing cut is lost: the sections hold every step the headline was made from, and opening one is what they
     are for.
@@ -191,7 +194,7 @@ def _headline(said: str, sentences: int) -> str:
     written = sentences_of(said)
     asked = [sentence for sentence in written if sentence.endswith("?")]
     reported = [sentence for sentence in written if not sentence.endswith("?")]
-    kept = " ".join([*reported[:sentences], *asked[-1:]])
+    kept = " ".join([*reported[:sentences], *asked])
     # A reply that ended without a stop would run into what git says next as one long sentence, and speech has
     # no other way to hear the join.
     return kept if kept.endswith((".", "!", "?")) else f"{kept}."
@@ -242,14 +245,19 @@ def _repository(delta: Delta, changes: tuple[GitChange, ...]) -> tuple[Segment, 
 
 
 def _action(change: GitChange) -> str:
-    """What one recorded git operation is called out loud. Never the hash or the number, which cannot be heard."""
+    """What one recorded git operation is called out loud. Never the hash or the number, which cannot be heard.
+
+    A ref is said by `spoken_ref` and not copied: this clause is the one part of the top level no model wrote, so
+    the instruction cannot cover it, and the filter in front of the speaker will not read a bare `feature/x` as a
+    path for reasons of its own. Copied through, TTS reads the slash aloud.
+    """
     match change:
         case Committed():
             return "committed"
         case Pushed(branch=branch):
-            return f"pushed {branch}"
+            return f"pushed {spoken_ref(branch)}"
         case Branched(ref=ref, action=action):
-            return f"{action} {ref}"
+            return f"{action} {spoken_ref(ref)}"
         case PullRequested(action=action):
             return f"{action} a pull request"
 

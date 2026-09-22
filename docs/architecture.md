@@ -869,7 +869,20 @@ entirely and reading its hash out loud, in the same afternoon. The instruction n
 to leave commits alone; when it says one anyway the listener hears it twice, and that
 redundancy is kept on purpose — dropping git's clause whenever the report claims a commit
 would suppress it in exactly the case it exists for, a commit claimed that never landed
-`[LAW:no-silent-failure]`.
+`[LAW:no-silent-failure]`. A branch is said by `spoken_ref` rather than copied: this is the
+one clause of the top level no model wrote, so the instruction cannot reach it, and the
+filter in front of the speaker deliberately will not read a bare `feature/narration-tree`
+as a path — a rule loose enough to catch it also eats "and/or" and "24/7" and costs each of
+them a word. A ref is therefore said where its type already knows what it is, with its
+separators as spaces and every word kept, because a branch is named so it can be told from
+the others `[LAW:single-enforcer]`.
+
+What git says is *not* said of a turn told twice. `Compare` pops the mark and only
+`UserPromptSubmit` sets one, so the second telling of a turn whose first `Stop` was blocked
+is handed an empty delta, and a commit made in its second half — a heredoc commit, which no
+step records either — is never spoken at all. The eval's `second-telling` case is given that
+empty delta because it is what production hands it, so the gap is measured rather than
+papered over; closing it is `hands-narration-2mc`'s, not this ticket's.
 
 **The length is a number, and it is enforced rather than requested.**
 `HEADLINE_SENTENCES` lives beside the instruction it rewrites, because changing it means

@@ -16,11 +16,12 @@ Five checks run on every telling, and a model is stochastic, so every one of the
   facts    every fact the case demands is in what was said, under one of its wordings.
   spoken   nothing code-shaped reached the ear. The judge is `core.spoken`, the very filter that stands in
            front of the speaker, so this check cannot drift from what the daemon actually does.
-  length   the headline is no longer than the configured number of sentences, not counting a question, which
-           is always said whatever the length.
-  numbers  every number said is a number the turn showed. A local model was heard on 2026-09-21 reporting
-           "version two point seven point one" for a runner that printed 8.4.1; a number with no source in the
-           render is that failure, caught.
+  length   what is spoken is no longer than the configured number of sentences, not counting a question, which
+           is always said whatever the length. This one guards the code that does the cutting rather than the
+           model, which overruns freely; how often it overran is its own line under the summary.
+  numbers  every number the model said is a number the turn showed. A local model was heard on 2026-09-21
+           reporting "version two point seven point one" for a runner that printed 8.4.1; a number with no
+           source in the render is that failure, caught. The headline only: the rest is counted by code.
 
 Exit codes are the contract: 0 every check held, 1 a check failed, 2 the model could not be reached at all.
 """
@@ -154,7 +155,7 @@ async def tell(case: Case, summarise: Summariser, budget: Budget) -> Telling:
     seconds = time.monotonic() - began
     told = narration(headline, case.turn, case.delta, HEADLINE_SENTENCES)
     said = told.said()
-    checks = (_facts(case, said), _spoken(said), _length(told), _numbers(said, shown), _never(case, said))
+    checks = (_facts(case, said), _spoken(said), _length(told), _numbers(told.headline.text, shown), _never(case, said))
     return Telling(said, headline, seconds, checks, _also_claimed(told))
 
 
@@ -178,7 +179,14 @@ def _spoken(said: str) -> Check:
 
 
 def _length(told: Narration) -> Check:
-    """The headline is within its number of sentences. A question is always said, so it is not counted."""
+    """What is spoken is within its number of sentences. A question is always said, so it is not counted.
+
+    This judges the narration and not the model, and cannot be read as judging the model: `_headline` cuts to
+    the number before this sees it, so the check holds by construction and fails only if that cut regresses,
+    which is what it is here to catch. What the model did with the instruction is the `overran` line in `main`,
+    counted off the reply as it arrived — and on 2026-09-22 it overran in nine of twelve tellings, which is
+    exactly why the number is kept by code and this check guards the code that keeps it.
+    """
     reported = [sentence for sentence in sentences_of(told.headline.text) if not sentence.endswith("?")]
     return Check(
         "length",
@@ -187,9 +195,14 @@ def _length(told: Narration) -> Check:
     )
 
 
-def _numbers(said: str, shown: str) -> Check:
-    """Every number said is a number the turn showed, in digits or in the word the report used for it."""
-    invented = [number for number in _said_numbers(said) if number not in shown and number.lower() not in shown.lower()]
+def _numbers(headline: str, shown: str) -> Check:
+    """Every number the model said is a number the turn showed, in digits or in the word the report used for it.
+
+    The headline alone, because it is the only part a model wrote. The rest of the narration counts things
+    itself — "left 6 files different" is arithmetic over the delta, and the render lists those files without
+    ever printing their number — so judging the whole of it would fail a true count and blame the model for it.
+    """
+    invented = [number for number in _said_numbers(headline) if number not in shown and number.lower() not in shown.lower()]
     return Check("numbers", not invented, f"nothing in the turn holds {invented}")
 
 

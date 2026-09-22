@@ -41,11 +41,13 @@ class TurnMarks:
         return at - self.released
 
 
+FIRST_AUDIO: Mark = "first audio"
+
 # The first arrival of each of these frame types after a release is a mark.
 _MILESTONES: dict[type[Frame], Mark] = {
     TranscriptionFrame: "transcript",
     LLMTextFrame: "first LLM token",
-    BotStartedSpeakingFrame: "first audio",
+    BotStartedSpeakingFrame: FIRST_AUDIO,
 }
 
 
@@ -64,6 +66,13 @@ class LatencyObserver(BaseObserver):
         frame = data.frame
         if isinstance(frame, BotStoppedSpeakingFrame):
             self._speaking = False
+            if self._turn is not None and FIRST_AUDIO in self._turn.marks:
+                # The turn closes when the audio it was waiting for has finished, so the next utterance with no
+                # user behind it is recognised as one. Left open, the first user turn of a session stays open for
+                # the rest of it: every later narration finds `first audio` already marked and is logged nowhere,
+                # which is the measurement this observer exists for. A barge-in opens its own turn before this
+                # frame arrives and that turn has no first audio yet, so it is not closed here.
+                self._turn = None
             return
         if isinstance(frame, VADUserStartedSpeakingFrame):
             self._turn = TurnMarks(pressed=now)
