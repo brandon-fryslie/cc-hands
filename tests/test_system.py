@@ -70,7 +70,7 @@ def test_an_error_is_told_by_the_processor_that_raised_it() -> None:
     assert services.alarm(ErrorFrame("timed out", processor=services.llm, category=ErrorCategory.CONNECTIVITY)) == Say(ModelUnreachable())
     assert services.alarm(ErrorFrame("bad key", processor=services.llm, category=ErrorCategory.AUTHENTICATION)) == Say(ModelFailed(ErrorCategory.AUTHENTICATION))
     assert services.alarm(ErrorFrame("boom", processor=services.stt)) == Say(TranscriptionFailed())
-    assert services.alarm(ErrorFrame("no voice", processor=services.tts)) == Post("hands cannot speak: no voice")
+    assert services.alarm(ErrorFrame("no voice", processor=services.tts)) == Post("no voice")
     assert services.alarm(ErrorFrame("device gone", processor=services.transport)) == Unrouted(str(services.transport), "device gone")
 
 
@@ -100,7 +100,7 @@ async def test_a_fact_goes_to_speech_while_it_works_and_to_the_screen_when_it_do
     ]
     await tts.set_usable(False)
     await channel.say(NothingTranscribed())
-    await channel.sound(Post("hands cannot speak: no voice"))
+    await channel.sound(Post("no voice"))
     assert len(tts.frames) == 1
     assert posted == ["hands cannot speak, so: Whisper returned nothing for that turn.", "hands cannot speak: no voice"]
     assert recorded == [
@@ -189,7 +189,8 @@ async def test_two_model_failures_of_different_kinds_are_both_heard() -> None:
 
 async def test_the_screen_is_not_filled_by_a_burst_either() -> None:
     """A TTS that fails raises one error frame per frame it was handed, and the screen jams exactly as the ear
-    did — the same rule, consulted from the other path."""
+    did — the same window, taken from the other path. Pipecat's text for a silent utterance carries a fresh
+    context id each time, so a window taken on the sentence rather than on the fault would never once close."""
     clock, posted = Clock(), list[str]()
 
     async def notify(text: str) -> bool:
@@ -197,10 +198,11 @@ async def test_the_screen_is_not_filled_by_a_burst_either() -> None:
         return True
 
     channel = SystemChannel(Recorder(), notify, lambda _: None, clock)
-    for _ in range(200):
-        await channel.sound(Post("hands cannot speak: no voice"))
+    for turn in range(200):
+        await channel.sound(Post(f"TTS context 0000-{turn:04d} completed with no audio"))
         clock.now += 0.43
-    assert posted == ["hands cannot speak: no voice"] * 9
+    assert len(posted) == 9  # 200 turns over 86 s, not 200 notifications
+    assert posted[0] == "hands cannot speak: TTS context 0000-0000 completed with no audio"
 
 
 async def test_a_post_the_screen_refused_is_not_taken_for_one_the_user_saw() -> None:
@@ -235,8 +237,8 @@ async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
         return True
 
     channel = SystemChannel(tts, notify, lambda _: None, Clock())
-    await asyncio.gather(*(channel.sound(Post("hands cannot speak: no voice")) for _ in range(200)))
-    assert posted == ["hands cannot speak: no voice"]
+    await asyncio.gather(*(channel.sound(Post(f"TTS context 0000-{turn:04d} completed with no audio")) for turn in range(200)))
+    assert posted == ["hands cannot speak: TTS context 0000-0000 completed with no audio"]
     await asyncio.gather(*(channel.say(NothingTranscribed()) for _ in range(200)))
     assert said(tts) == ["Whisper returned nothing for that turn."]
 

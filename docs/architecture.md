@@ -1067,27 +1067,31 @@ thing that failed `[LAW:no-silent-failure]`:
    under UNKNOWN, so "unreachable" is recognised from the exception type. Pipecat drops
    a turn Whisper transcribed to nothing without a word, so a thin `Whisper` subclass
    reports it as the transcription ends, rather than after the user turn's 5-second
-   stop timeout. The channel says a burst once: a sentence is not said again until
-   ten seconds have passed without it. A fault that recurs recurs in bursts, and on
-   2026-09-22 a held key queued hundreds of empty turns whose reports went out every
-   0.43 s for as long as they drained — which is not a loud failure but a jammed one,
-   because nothing else could have been heard while it ran. What ends a burst is a
-   span of quiet and not some other announcement, because in the case this exists for
-   there is never another one: with the microphone muted, staying quiet until
-   something else was said would leave a user pressing the key at a daemon that has
-   gone permanently silent. What a burst costs is the saying and never the knowing —
-   every occurrence is still a log line. `Announced` is written where the sentence
-   was taken, handed to a working TTS or accepted by the screen, so a notification
-   the screen refused is a logged failure rather than an announcement. How often
-   hands tries and what the user was given are two facts and are kept apart: the
-   window is taken when the channel decides to speak and not after it has, because
-   Pipecat dispatches each pipeline error on its own task, so a dead TTS raising once
-   per queued frame puts hundreds of those decisions in flight together. The LLM
-   clients do not retry: against inferno, the SDK's two retries stretched a refused
-   connection into 4.6 s of silence. Measured against a refused port on inferno, the
-   failure is heard 1.75 s after the key release. The pipeline's start is spoken too:
-   "hands is up", or "hands is back after a crash" when the last heartbeat names a
-   pid that is gone without having said `stopped`.
+   stop timeout. The channel says a burst once: a fault is not said again until ten
+   seconds have passed since it last was. A fault that recurs recurs in bursts, and
+   on 2026-09-22 a held key queued hundreds of empty turns whose reports went out
+   every 0.43 s for as long as they drained — which is not a loud failure but a
+   jammed one, because nothing else could have been heard while it ran. What ends a
+   burst is a span of quiet and not some other announcement, because in the case this
+   exists for there is never another one: with the microphone muted, staying quiet
+   until something else was said would leave a user pressing the key at a daemon that
+   has gone permanently silent. What a burst costs is the saying and never the
+   knowing — every occurrence is still a log line. `Announced` is written where the
+   sentence was taken, handed to a working TTS or accepted by the screen, so a
+   notification the screen refused is a logged failure rather than an announcement.
+   How often hands tries and what the user was given are two facts and are kept
+   apart: the window is taken when the channel decides to speak and not after it has,
+   because Pipecat dispatches each pipeline error on its own task, so a dead TTS
+   raising once per queued frame puts hundreds of those decisions in flight together.
+   The window is taken on the fault and never on the sentence: Pipecat's text for a
+   silent utterance carries a fresh context id every time, so `Post` holds that text
+   as what varies and the fault it reports as what recurs, and only a closed set — a
+   `SystemFact`'s own sentence, or that fault — is ever a key. The LLM clients do not
+   retry: against inferno, the SDK's two retries stretched a refused connection into
+   4.6 s of silence. Measured against a refused port on inferno, the failure is heard
+   1.75 s after the key release. The pipeline's start is spoken too: "hands is up",
+   or "hands is back after a crash" when the last heartbeat names a pid that is gone
+   without having said `stopped`.
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, and the count of live sessions. `hands
    status` prints it. When TTS itself is down, a macOS notification is posted through

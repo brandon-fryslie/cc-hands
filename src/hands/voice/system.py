@@ -7,6 +7,7 @@ screen instead. Every fact is logged as well, which is the path that needs neith
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import ClassVar
 
 import anthropic
 import openai
@@ -72,9 +73,20 @@ class Say:
 
 @dataclass(frozen=True)
 class Post:
-    """For the screen: speech is what failed."""
+    """For the screen: speech is what failed.
 
-    text: str
+    `fault` is what recurs and `error` is what varies. Pipecat's own text for a silent utterance carries a fresh
+    context id every time — `TTS context {uuid} completed with no audio`, pushed without costing the service its
+    usability — so the sentence is never twice the same and cannot be what a burst is measured by. The fault it
+    reports can, and this whole type reports one fault.
+    """
+
+    error: str
+    fault: ClassVar[str] = "hands cannot speak"
+
+    @property
+    def text(self) -> str:
+        return f"{self.fault}: {self.error}"
 
 
 @dataclass(frozen=True)
@@ -95,7 +107,7 @@ def alarm(error: ErrorFrame, *, stt: FrameProcessor, llm: FrameProcessor, tts: F
     """What the user is told about a pipeline error, decided by the processor that raised it."""
     match error.processor:
         case processor if processor is tts:
-            return Post(f"hands cannot speak: {error.error}")
+            return Post(error.error)
         case processor if processor is llm:
             return Say(model_fact(error))
         case processor if processor is stt:
@@ -114,7 +126,7 @@ def model_fact(error: ErrorFrame) -> ModelUnreachable | ModelFailed:
 Notify = Callable[[str], Awaitable[bool]]
 
 BURST_SECONDS = 10.0
-"""How long one sentence stays said.
+"""How long a fault stays said, counted from the last time it was said and not from its last occurrence.
 
 A fault that recurs recurs in bursts: a key held down on 2026-09-22 queued hundreds of empty turns whose reports
 went out every 0.43 s for as long as they drained, which is not a loud failure but a jammed one, because nothing
@@ -127,7 +139,7 @@ because in the case this exists for — a muted microphone, a model that is down
 class SystemChannel:
     """Says each fact through text-to-speech alone, and posts it to the screen when speech cannot.
 
-    It says a burst once: a sentence is not said again until `BURST_SECONDS` have passed without it, because this
+    It says a burst once: a sentence is not said again until `BURST_SECONDS` have passed since it last was, because
     is the one channel that reports the daemon's own faults and a fault that recurs recurs in bursts. What a burst
     costs is the saying and never the knowing — every occurrence is still a log line — and `Announced` is written
     where the sentence was taken: handed to a working TTS, or accepted by the screen, never where it was refused.
@@ -163,8 +175,12 @@ class SystemChannel:
         elif await self._notify(f"hands cannot speak, so: {text}"):
             self._record(Announced(text, "screen"))
 
-    def _claim(self, text: str) -> bool:
-        """True when this sentence may be said now, taking its window as it answers.
+    def _claim(self, fault: str) -> bool:
+        """True when this fault may be said now, taking its window as it answers.
+
+        The fault is what recurs, and it comes from a closed set by construction — a sentence `system_text` built
+        from the `SystemFact` union, or `Post.fault` — never text from outside. Keyed on a sentence carrying a
+        Pipecat error verbatim, this window would be taken afresh by every occurrence and would never once close.
 
         How often hands tries to reach the user and what the user was given are two different facts, kept apart:
         the window is taken here at the decision, with no await between the asking and the taking, while
@@ -174,23 +190,23 @@ class SystemChannel:
         a screen with no GUI session to post into refuses every time, which must still cost only one attempt.
         """
         now = self._clock()
-        # A sentence older than its window can no longer keep anything quiet, so the map holds only those inside one.
+        # A fault older than its window can no longer keep anything quiet, so the map holds only those inside one.
         self._said = {said: at for said, at in self._said.items() if now - at < self._burst}
-        if text in self._said:
+        if fault in self._said:
             return False
-        self._said[text] = now
+        self._said[fault] = now
         return True
 
     async def sound(self, alarm: Alarm) -> None:
         match alarm:
             case Say(fact=fact):
                 await self.say(fact)
-            case Post(text=text):
-                logger.error(text)
+            case Post() as post:
+                logger.error(post.text)
                 # [LAW:single-enforcer] the same window `say` takes: a TTS that fails fails once per frame it
                 # was handed, and hundreds of notifications fill the screen exactly as hundreds filled the ear.
-                if self._claim(text) and await self._notify(text):
-                    self._record(Announced(text, "screen"))
+                if self._claim(post.fault) and await self._notify(post.text):
+                    self._record(Announced(post.text, "screen"))
             case Unrouted(source=source, error=error):
                 # [LAW:no-silent-failure] no sentence fits, so the log carries it.
                 logger.error(f"{source} failed: {error}")
