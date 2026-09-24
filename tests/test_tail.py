@@ -414,18 +414,6 @@ async def test_a_session_registered_again_is_told_from_the_transcript_it_has_now
     assert telling is not None and telling.turn == Turn(Asked(None, "again"), (Said(None, "Done."),))
 
 
-async def test_how_far_behind_the_newest_record_was_when_it_was_read_is_measured(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    stamped = '{"type":"assistant","timestamp":"2026-09-01T12:00:00.000Z","message":{"content":[{"type":"text","text":"Done."}]}}'
-    transcript.write_text(lines(PROMPT, stamped))
-    tails = await following(transcript)
-    assert tails.lag is not None and tails.lag > 0
-    # A record with no timestamp to compare against is read without one, rather than with a made-up one.
-    transcript.write_text(lines(PROMPT, stamped, DONE))
-    await tails.catch_up()
-    assert tails.lag is None
-
-
 async def test_the_catch_up_and_a_stop_never_read_the_same_bytes_twice(tmp_path: Path) -> None:
     """Both read off the loop in a thread, and a Stop reads the transcript the catch-up is already reading."""
     transcript = tmp_path / "t.jsonl"
@@ -454,7 +442,7 @@ async def test_a_turn_cut_off_while_claude_wrote_is_heard_as_interrupted_and_tol
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING, CUT_OFF))
     tails = Tails(Registry([member(transcript)]))
-    assert await tails.catch_up() == [Taken(SID, PromptId("p1")), Interrupted(SID, PromptId("p1"), at=7.0)]
+    assert await tails.catch_up() == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
     telling = await tails.tell(SID, None, None)
     # The record of the interrupt is written as a user's message, and is not read as the next thing asked.
     assert telling is not None and telling.turn == Turn(Asked(None, "Write an essay about rivers."), (Said(None, "# Rivers"), Interruption(Ref("u9"))))
@@ -464,7 +452,7 @@ async def test_a_turn_cut_off_while_a_tool_ran_is_heard_as_interrupted(tmp_path:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, LOOPING, REJECTED, CUT_OFF_MID_TOOL))
     tails = Tails(Registry([member(transcript)]))
-    assert await tails.catch_up() == [Taken(SID, PromptId("p1")), Interrupted(SID, PromptId("p1"), at=7.0)]
+    assert await tails.catch_up() == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
     telling = await tails.tell(SID, None, None)
     assert telling is not None and telling.turn.steps[-1] == Interruption(Ref("u9"))
 
@@ -480,9 +468,34 @@ async def test_a_prompt_that_only_mentions_an_interrupt_is_a_prompt(tmp_path: Pa
     quoting = '{"type":"user","promptId":"p1","message":{"role":"user","content":"Why did I see [Request interrupted by user] there?"}}'
     transcript.write_text(lines(quoting))
     tails = Tails(Registry([member(transcript)]))
-    assert await tails.catch_up() == [Taken(SID, PromptId("p1"))]
+    assert await tails.catch_up() == [Taken(SID, PromptId("p1"), None, 7.0)]
     telling = await tails.tell(SID, None, None)
     assert telling is not None and telling.turn.opening == Asked(None, "Why did I see [Request interrupted by user] there?")
+
+
+@pytest.mark.parametrize(("stamp", "written"), [('"2026-09-24T17:48:23.455Z"', Stamp(1790272103455)), (None, None)])
+async def test_a_prompt_is_taken_with_when_claude_code_wrote_it(tmp_path: Path, stamp: str | None, written: Stamp | None) -> None:
+    """On the clock Claude Code stamps a status with, so an idle it set after the record can be told from one before."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED if stamp is None else ASKED.replace('"promptId"', f'"timestamp":{stamp},"promptId"')))
+    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1"), written, 7.0)]
+
+
+@pytest.mark.parametrize("stamp", ['"yesterday"', '"2026-09-24T17:48:23.455"', "1790272103455"])
+async def test_a_record_whose_time_cannot_be_read_is_said_read_as_having_none_and_still_told(tmp_path: Path, stamp: str) -> None:
+    """A time with no zone would be read as this machine's, hours off the epoch Claude Code stamps a status in."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED.replace('"promptId"', f'"timestamp":{stamp},"promptId"'), WRITING))
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR", filter="hands")
+    try:
+        tails = Tails(Registry([member(transcript)]))
+        assert await tails.catch_up() == [Taken(SID, PromptId("p1"), None, 7.0)]
+    finally:
+        logger.remove(sink)
+    assert len(errors) == 1 and "has a time that cannot be read" in errors[0]
+    telling = await tails.tell(SID, None, None)
+    assert telling is not None and telling.turn == Turn(Asked(None, "Write an essay about rivers."), (Said(None, "# Rivers"),))
 
 
 async def test_an_interrupt_the_stops_own_reading_found_is_still_handed_out_at_the_next_catch_up(tmp_path: Path) -> None:
@@ -502,7 +515,7 @@ async def test_an_interrupt_whose_record_names_no_turn_is_said_and_ends_nothing(
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR", filter="hands")
     try:
-        assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1"))]
+        assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1"), None, 7.0)]
     finally:
         logger.remove(sink)
     assert errors == [f"session {SID} was interrupted, but the record of it names no prompt, so its turn is told without it"]
@@ -511,7 +524,7 @@ async def test_an_interrupt_whose_record_names_no_turn_is_said_and_ends_nothing(
 async def test_the_older_record_of_an_interrupt_written_as_a_plain_string_is_one_too(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING, '{"type":"user","promptId":"p1","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}'))
-    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1")), Interrupted(SID, PromptId("p1"), at=7.0)]
+    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
 
 
 # A message queued while the loop ran, flushed by Escape, as captured live on 2.1.281: the cancelled call's result and the
@@ -526,7 +539,7 @@ async def test_a_turn_that_goes_on_under_a_queued_prompt_is_heard_to_after_the_i
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, LOOPING, FLUSHED, FLUSHING, QUEUED, BANANA))
     tails = Tails(Registry([member(transcript)]))
-    assert await tails.catch_up() == [Taken(SID, PromptId("p1")), Taken(SID, PromptId("p2")), Interrupted(SID, PromptId("p2"), at=7.0), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
+    assert await tails.catch_up() == [Taken(SID, PromptId("p1"), None, 7.0), Taken(SID, PromptId("p2"), None, 7.0), Interrupted(SID, PromptId("p2"), at=7.0), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
 
 
 async def test_a_queued_command_taken_in_mid_turn_is_heard_from_the_results_claude_answers(tmp_path: Path) -> None:
@@ -534,7 +547,7 @@ async def test_a_queued_command_taken_in_mid_turn_is_heard_from_the_results_clau
     transcript = tmp_path / "t.jsonl"
     ran = '{"type":"user","promptId":"p2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"done"}]}}'
     transcript.write_text(lines(ASKED, LOOPING, ran, WRITING))
-    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1")), Taken(SID, PromptId("p2")), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
+    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1"), None, 7.0), Taken(SID, PromptId("p2"), None, 7.0), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
 
 
 async def test_an_escape_in_the_turn_a_queued_prompt_went_on_as_leaves_the_session_idle(tmp_path: Path) -> None:
@@ -572,7 +585,7 @@ async def test_a_record_that_names_no_prompt_does_not_lose_the_turn_claude_is_an
     unnamed = '{"type":"user","isMeta":true,"message":{"role":"user","content":"injected"}}'
     ran = '{"type":"user","promptId":"p2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"done"}]}}'
     transcript.write_text(lines(ASKED, WRITING, unnamed, LOOPING, ran, WRITING))
-    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1")), Taken(SID, PromptId("p2")), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
+    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1"), None, 7.0), Taken(SID, PromptId("p2"), None, 7.0), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
 
 
 async def test_a_prompt_cancelled_while_its_hooks_ran_never_makes_the_session_working_and_the_one_resent_does(tmp_path: Path) -> None:
@@ -602,7 +615,7 @@ async def test_a_prompt_cancelled_while_its_hooks_ran_never_makes_the_session_wo
 async def test_a_prompt_whose_first_record_is_its_interrupt_is_heard_taken_before_it_is_heard_stopped(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(CUT_OFF))
-    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1")), Interrupted(SID, PromptId("p1"), at=7.0)]
+    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
 
 
 async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_which_tells_the_turn_claude_code_said_is_over(tmp_path: Path) -> None:

@@ -7,10 +7,8 @@ about where the turn started or what of it was heard.
 
 import asyncio
 import os
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -18,9 +16,10 @@ from loguru import logger
 
 from hands.core.events import Continued, Interrupted, Taken, Transcribed
 from hands.core.session import Instant, Membership, PromptId, SessionId
+from hands.core.status import Stamp
 from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.transcript import prompt_of, turn_record
+from hands.sessions.transcript import prompt_of, turn_record, written_of
 from hands.sessions.turning import Turning
 
 
@@ -104,14 +103,14 @@ class Following:
     def numbered(self, number: int) -> Reading | None:
         return next((reading for reading in [self.reading, *self.ended] if reading.number == number), None)
 
-    def prompted(self, session: SessionId, record: Payload) -> Taken | Continued | None:
+    def prompted(self, session: SessionId, record: Payload, at: Instant) -> Taken | Continued | None:
         """What this record says of the prompt the session is on: the first record under a prompt's id is Claude Code
         taking it, and Claude answering under an id it was not answering under before is its turn going on under that one."""
         match record.fields.get("type"):
             case "user":
                 # A record that names no prompt says nothing of which one Claude is answering.
                 was, self.asked = self.asked, prompt_of(record) or self.asked
-                return None if self.asked is None or self.asked == was else Taken(session, self.asked)
+                return None if self.asked is None or self.asked == was else Taken(session, self.asked, _written(session, record), at)
             case _:
                 # An assistant record: Claude answering whatever the user's side last carried.
                 was, self.answering = self.answering, self.asked
@@ -147,10 +146,6 @@ class Tails:
         # transcript the catch-up is reading. [LAW:single-enforcer] everything that touches a Following waits on
         # this, the marking of what was told included, so no two threads are ever inside one Following.
         self._reading = asyncio.Lock()
-        # How far behind the newest record read was when it was read, in seconds, of whichever transcript the
-        # last reading touched: it measures this loop keeping up, which is the loop's property and not a
-        # session's. None where that record carried no timestamp, because then nothing measured it.
-        self.lag: float | None = None
         # Everything read of a turn that no hook says and not yet handed out, in the order it was read, by whichever
         # reading found it: a Stop's reading can be the one that reads it. Touched only under the lock.
         self._transcribed: list[Transcribed] = []
@@ -279,12 +274,12 @@ class Tails:
                 continue
             if record is not None:
                 # The prompt first: a prompt's first record can be the one that interrupts it, and it was taken to be.
-                prompted = following.prompted(session, record)
+                # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
+                prompted = following.prompted(session, record, self._known.now())
                 if prompted is not None:
                     self._transcribed.append(prompted)
                 if following.consume(record) is not None:
                     self._interrupt(session, record)
-                self.lag = _lag(record)
 
     def _interrupt(self, session: SessionId, record: Payload) -> None:
         prompt = prompt_of(record)
@@ -310,6 +305,17 @@ async def keep_tailing(tails: Tails, period: float, apply: Callable[[Transcribed
         await asyncio.sleep(period)
 
 
+def _written(session: SessionId, record: Payload) -> Stamp | None:
+    """When Claude Code wrote the record; None, and said, for a time that cannot be read, which costs the record nothing
+    but that: its turn is still told, and only a turn no hook opened goes unopened for want of it."""
+    try:
+        return written_of(record)
+    except Rejected as error:
+        # [LAW:no-silent-failure] said, and read as no time, which opens nothing.
+        logger.error(f"a record in the transcript of session {session} has a time that cannot be read, so it is read as having none: {error}")
+        return None
+
+
 def _said_at(steps: list[Step], index: int) -> str | None:
     """What Claude said in the step at this place; None where the turn has no such step, or used a tool there."""
     step = steps[index] if 0 <= index < len(steps) else None
@@ -319,15 +325,3 @@ def _said_at(steps: list[Step], index: int) -> str | None:
 def _spoken(text: str | None) -> str | None:
     """A reply as it is compared and told: what Claude wrote without the whitespace around it, and nothing for an empty one."""
     return None if text is None or not text.strip() else text.strip()
-
-
-def _lag(record: Payload) -> float | None:
-    """How long ago Claude Code wrote this record, by its own timestamp; None for a record that carries none."""
-    stamp = record.fields.get("timestamp")
-    if not isinstance(stamp, str):
-        return None
-    try:
-        written = datetime.fromisoformat(stamp)
-    except ValueError:
-        return None
-    return time.time() - written.timestamp()

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from hands.core.session import Blocker, Instant, Membership, FinishedCall, Mode, PromptId, RequestId, SessionId
-from hands.core.status import Report
+from hands.core.status import Report, Stamp
 
 
 StartSource = Literal["startup", "resume", "clear", "compact"]
@@ -77,10 +77,19 @@ class Interrupted:
 @dataclass(frozen=True)
 class Taken:
     """Claude Code took the prompt: the transcript holds a record of its turn, which it writes only once the prompt's
-    hooks are done and it was not cancelled."""
+    hooks are done and it was not cancelled.
+
+    At the prompt it is a turn no hook opened, running as Claude Code says: a message queued while a turn ran, taken
+    once that turn's Stop lands; a `!` command, which Claude answers once it has run; a command such as /compact
+    (2.1.282). What happened in it is what is told, which for a command is nothing."""
 
     session: SessionId
     prompt: PromptId
+    # When Claude Code wrote the record, on the clock it stamps a status with, so an idle it set after it can be told
+    # from one it set before. None when the record carried no time, which 2.1.282's always do, or one the tail could not
+    # read and said so: either way it opens nothing.
+    written: Stamp | None
+    at: Instant  # when the record was read
 
 
 @dataclass(frozen=True)

@@ -48,7 +48,7 @@ from hands.core.events import (
 )
 from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Mode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, Submitted, UnknownMode, Untold, Working
 from hands.core import status
-from hands.core.status import Report
+from hands.core.status import Report, Stamp
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
@@ -88,19 +88,24 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             # The user moved the process on at the keyboard, so there is nothing to tell them.
             return _ended_unheard(registry, membership, [])
         case Prompted(session=session, at=at, prompt=prompt):
-            # A turn opens from the prompt and nowhere else: a prompt heard while a turn runs is in that turn, as a queued
-            # message's hook names it (2.1.281), and marks nothing, or the mark would move into the middle of the work it
-            # is there to measure [LAW:no-ambient-temporal-coupling].
+            # A turn opens at the prompt: a prompt heard while a turn runs is in that turn, as a queued message's hook names
+            # it (2.1.281), and marks nothing, or the mark would move into the middle of the work it is there to measure
+            # [LAW:no-ambient-temporal-coupling]. That message's own turn opens when it is taken: see _opens.
             return _enter(registry, event, lambda state: _prompted(state, prompt, at), _marked)
         case Taken(session=session, prompt=prompt) if (held := _running(registry, session)) is not None:
             # The record names the turn Claude Code runs; it ends none. Only whether it is the one sent says anything.
             return _enter(registry, event, lambda state: _taken(state, _names(held, prompt)))
+        case Taken(session=session, at=at) if _opens(registry.sessions.get(session), event):
+            # A turn no hook opened: named, so its Stop ends it. Not marked here, where a mark could land after Claude has
+            # begun changing the repository: a message queued behind a turn was marked while that turn's Stop hook held
+            # Claude Code (see _following), and one nothing was queued for, as a `!` command's answer, is told by its steps.
+            return _enter(registry, event, lambda _: Working(since=at))
         case Taken():
-            # Read after its turn ended, or of one this registry never heard open: nothing to move.
+            # Read after its turn ended, before any status was read, or of one Claude Code said was over since: nothing to move.
             return registry, []
         case Stopped(session=session, closing=closing, prompt=stopped) if _ends(registry.sessions.get(session), stopped):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
-            return _enter(registry, event, lambda _: Idle(), lambda _was: [Compare(session), Summarise(session, stopped, closing)])
+            return _enter(registry, event, lambda _: Idle(), lambda was: [Compare(session), Summarise(session, stopped, closing), *_following(was)])
         case Stopped():
             # The Stop of a turn already over: told now if its telling waited for it (see _untold), and otherwise one
             # applied after the next turn's prompt, which ending would idle that turn and spend its mark.
@@ -161,11 +166,11 @@ def _started(membership: Membership, source: StartSource, previous: Session | No
     match (source, previous):
         case ("compact", Session(state=Submitted() | Working() | Blocked() | AtDialog()) as previous):
             return replace(previous, membership=membership)
-        case ("compact", Session(state=Idle(due=due), mode=mode, report=report, untold=untold)):
+        case ("compact", Session(state=Idle(due=due), mode=mode, report=report, idled=idled, untold=untold)):
             # A new idle period, which a nudge hands was timing for still has to come from hands.
-            return Session(membership, Idle(due=due), mode, turn=None, report=report, untold=untold)
-        case ("compact", Session(mode=mode, report=report, untold=untold)):
-            return Session(membership, Idle(), mode, turn=None, report=report, untold=untold)
+            return Session(membership, Idle(due=due), mode, turn=None, report=report, idled=idled, untold=untold)
+        case ("compact", Session(mode=mode, report=report, idled=idled, untold=untold)):
+            return Session(membership, Idle(), mode, turn=None, report=report, idled=idled, untold=untold)
         case (_, Session(untold=untold)):
             # A turn ended before the restart is still told.
             return Session(membership, Idle(), mode=None, turn=None, untold=untold)
@@ -220,7 +225,9 @@ def _enter(
             turn, taken = _named(event, was)
             untold, telling = _untold(event, was)
             # A turn left untold is told before what the event calls for, so before a prompt marks the next one.
-            return registry.put(replace(was, state=after, mode=mode, turn=turn, taken=taken, report=_report(event, was), untold=untold)), [
+            report = _report(event, was)
+            queued = _queued(event, was, after)
+            return registry.put(replace(was, state=after, mode=mode, turn=turn, taken=taken, report=report, idled=_idled(report, was), queued=queued, untold=untold)), [
                 *_remoded(membership.id, held, mode),
                 *_transition(membership.id, before, after),
                 *telling,
@@ -246,6 +253,44 @@ def _report(event: SessionEvent, was: Session) -> Report | None:
             return was.report
 
 
+def _idled(report: Report | None, was: Session) -> Stamp | None:
+    """When Claude Code last set the session idle, with the report the event leaves it."""
+    match report:
+        case Report(status=status.Idle(), stamp=stamp):
+            return stamp
+        case Report(stamp=stamp) if was.report is None:
+            # The first status read, with no idle read yet, as when hands attaches mid-turn: a record written before Claude
+            # Code set it is of a turn begun by then, and one queued behind the running turn is written after it.
+            return stamp
+        case _:
+            return was.idled
+
+
+def _queued(event: SessionEvent, was: Session, after: SessionState) -> bool:
+    """Whether a message the user sent while the turn ran still waits behind it after the event."""
+    match event:
+        case Prompted() if _busy(was.state):
+            # Its hook fires as it is sent, under the running turn's id (2.1.282).
+            return True
+        case Taken(prompt=prompt) if not _names(was, prompt):
+            # Taken into the running turn, as 2.1.281 took a queued message, or opening a turn of its own: either way
+            # nothing waits behind the turn now running.
+            return False
+        case _:
+            return was.queued and _busy(after)
+
+
+def _following(was: Session) -> list[Effect]:
+    """The turn queued behind the one a Stop ends is marked while the Stop hook holds Claude Code, which runs it only once
+    that hook returns: so before it can have changed anything [LAW:no-ambient-temporal-coupling]. After the Summarise,
+    so a mark that fails or is cut short never costs the turn before its telling."""
+    match was:
+        case Session(queued=True, membership=membership):
+            return [Snapshot(membership.id, membership.cwd)]
+        case _:
+            return []
+
+
 def _untold(event: SessionEvent, was: Session) -> tuple[Untold | None, list[Effect]]:
     """The turn left untold after the event, and the telling of the one before if the event is what it waited for."""
     match event:
@@ -256,9 +301,9 @@ def _untold(event: SessionEvent, was: Session) -> tuple[Untold | None, list[Effe
             return None, _telling(was, closing)
         case Interrupted(prompt=prompt) if _awaiting(was) and _names(was, prompt):
             return None, _telling(was, None)
-        case Ended() | Prompted():
-            # Told before a session is said to be gone, and before a prompt marks the turn after it, so it is compared
-            # against its own mark: in the order they happened.
+        case Ended() | Prompted() | Taken():
+            # Told before a session is said to be gone, and before the turn after it opens, so it is compared against its
+            # own mark: in the order they happened. A Taken reaches here only opening a turn, or inside one.
             return None, _telling(was, None)
         case _:
             return was.untold, []
@@ -275,7 +320,11 @@ def _telling(was: Session, closing: str | None) -> list[Effect]:
 def _named(event: SessionEvent, was: Session) -> tuple[PromptId | None, frozenset[PromptId]]:
     """The turn the session is in after the event, and the other ids it has gone on under."""
     match event:
-        case Prompted(prompt=prompt) if isinstance(was.state, Idle):
+        case Prompted(prompt=prompt) | Taken(prompt=prompt) if isinstance(was.state, Idle):
+            return prompt, frozenset()
+        case Stopped(prompt=str() as prompt) if isinstance(was.state, Idle) and _ends(was, prompt):
+            # A turn hands never had running, as a queued one whose Stop is applied before its record is read: named as
+            # told, so that record, read after, opens nothing.
             return prompt, frozenset()
         case Prompted(prompt=str() as prompt) | Taken(prompt=prompt) if _busy(was.state) and not _names(was, prompt):
             # A flush's id, taken seconds before Claude answers under it, which a message queued in between carries
@@ -301,6 +350,20 @@ def _busy(state: SessionState) -> bool:
 def _names(session: Session, prompt: PromptId | None) -> bool:
     """Whether the id is one the session's turn goes by."""
     return prompt == session.turn or prompt in session.taken
+
+
+def _opens(session: Session | None, taken: Taken) -> bool:
+    """Whether a prompt taken at the prompt opens a turn no hook opened: under an id the session does not go by
+    already, written since Claude Code last said the session is idle."""
+    match session:
+        case Session(state=Idle(), idled=int() as idled) if not _names(session, taken.prompt):
+            # [LAW:one-source-of-truth] Claude Code's own two clocks, never the order hands read them in: an idle set after
+            # the record was written is that turn over, stopped before any of it was read. It sets idle for ~3 ms between
+            # a turn and the message queued behind it (2.1.282), which a read can land on, and which came first.
+            return taken.written is not None and taken.written >= idled
+        case _:
+            # Running already, or with no idle read since hands began following it: a transcript read from its start.
+            return False
 
 
 def _awaiting(session: Session | None) -> bool:
