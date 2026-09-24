@@ -857,3 +857,29 @@ def test_a_single_escape_that_flushes_a_queued_message_leaves_the_turn_running_o
     state, tellings = told([Taken(ONE.id, NEXT, opens=False), busy, Continued(ONE.id, was=TURN, now=NEXT), Stopped(ONE.id, "done", mode=None, prompt=NEXT), said_idle(at=20.0), Tick(30.0)])
     assert tellings == [Compare(ONE.id), Summarise(ONE.id, NEXT, "done")]
     assert state.sessions[ONE.id].state == Idle()
+
+
+@pytest.mark.parametrize("end", [Ended(ONE.id, "other"), Ended(ONE.id, "prompt_input_exit"), Died(ONE), MovedOn(ONE)])
+def test_a_turn_left_untold_is_told_before_its_session_is_said_to_be_gone(end: Event) -> None:
+    state, _ = told([said_idle()])
+    state, effects = reduce(state, end)
+    tellings = [effect for effect in effects if isinstance(effect, Compare | Summarise | SessionGone)]
+    assert tellings[:2] == TOLD and all(isinstance(e, SessionGone) for e in tellings[2:])
+    assert reduce(state, Tick(20.0))[1] == []
+
+
+def test_a_stop_that_names_no_turn_while_a_telling_waits_tells_it_once_and_keeps_its_nudge() -> None:
+    state, tellings = told([said_idle(at=10.0), Stopped(ONE.id, "done", mode=None, prompt=None), Tick(20.0)])
+    assert tellings == [Compare(ONE.id), Summarise(ONE.id, TURN, "done")]
+    assert state.sessions[ONE.id].state == Idle(due=10.0 + IDLE_NUDGE_SECONDS)
+
+
+@pytest.mark.parametrize("source", ["compact", "resume"])
+def test_a_restart_while_a_telling_waits_keeps_the_turns_late_stop_ending_nothing_but_the_telling(source: StartSource) -> None:
+    _, tellings = told([said_idle(), Joined(ONE, source), STOP, Tick(20.0)])
+    assert tellings == [Compare(ONE.id), Summarise(ONE.id, TURN, "done")]
+
+
+def test_a_late_interrupt_of_a_session_gone_is_not_audited_as_after_its_end() -> None:
+    state, _ = told([said_idle(), Ended(ONE.id, "prompt_input_exit")])
+    assert reduce(state, INTERRUPT) == (state, [])

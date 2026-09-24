@@ -123,7 +123,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
                 case _:
                     # A turn under way going on under a queued prompt, or one read after it ended: nothing to move.
                     return registry, []
-        case Stopped(prompt=str() as stopped) if _ended_already(registry.sessions.get(event.session), stopped):
+        case Stopped(prompt=stopped) if _ended_already(registry.sessions.get(event.session), stopped):
             # [LAW:no-ambient-temporal-coupling] the Stop of a turn a later prompt or turn already ended, applied after
             # it: it was told there, or is told now if its telling waited for it (see _untold), and ending the turn now
             # running would idle it and spend its mark.
@@ -141,7 +141,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             # so there is no closing reply to stand in for one. Claude Code sends no idle_prompt after an interrupt
             # (2.1.281, none in 126 s), so the nudge is timed here, from when the interrupt was read.
             return _enter(registry, event, lambda _: Idle(due=at + IDLE_NUDGE_SECONDS), lambda _was: [Compare(session), Summarise(session, prompt, None)])
-        case Interrupted(session=session, prompt=prompt) if _ended_already(registry.sessions.get(session), prompt):
+        case Interrupted(session=session, prompt=prompt) if _ended_already(held := registry.sessions.get(session), prompt) and held is not None and held.untold is not None:
             # The record of how a turn Claude Code already said is over ended: what its telling waits for, if it does.
             return _enter(registry, event, lambda state: state)
         case Interrupted():
@@ -196,14 +196,14 @@ def _started(membership: Membership, source: StartSource, previous: Session | No
     match (source, previous):
         case ("compact", Session(state=Submitted() | Working() | Blocked() | AtDialog()) as previous):
             return replace(previous, membership=membership)
-        case ("compact", Session(state=Idle(due=due), mode=mode, report=report, untold=untold)):
+        case ("compact", Session(state=Idle(due=due), mode=mode, report=report, ended=ended, untold=untold)):
             # A new idle period, which a nudge hands was timing for still has to come from hands.
-            return Session(membership, Idle(due=due), mode, turn=None, report=report, untold=untold)
-        case ("compact", Session(mode=mode, report=report, untold=untold)):
-            return Session(membership, Idle(), mode, turn=None, report=report, untold=untold)
-        case (_, Session(untold=untold)):
-            # A turn ended before the restart is still told.
-            return Session(membership, Idle(), mode=None, turn=None, untold=untold)
+            return Session(membership, Idle(due=due), mode, turn=None, ended=ended, report=report, untold=untold)
+        case ("compact", Session(mode=mode, report=report, ended=ended, untold=untold)):
+            return Session(membership, Idle(), mode, turn=None, ended=ended, report=report, untold=untold)
+        case (_, Session(ended=ended, untold=untold)):
+            # A turn ended before the restart is still told, and its late Stop or interrupt still ends nothing.
+            return Session(membership, Idle(), mode=None, turn=None, ended=ended, untold=untold)
         case _:
             return Session(membership, Idle(), mode=None, turn=None)
 
@@ -224,7 +224,8 @@ def _ended_unheard(registry: Registry, membership: Membership, said: list[Effect
             # Started again in a new process since the sweep looked; what it saw ending is not this session.
             return registry, []
         case Session(state=before) as was:
-            return registry.put(replace(was, membership=membership, state=Gone())), [*_transition(membership.id, before, Gone()), *said]
+            # A turn ended and not told yet is told before the session is said to be gone: it happened first.
+            return registry.put(replace(was, membership=membership, state=Gone(), untold=None)), [*_transition(membership.id, before, Gone()), *_telling(was, None), *said]
 
 
 def _enter(
@@ -285,10 +286,13 @@ def _untold(event: SessionEvent, was: Session) -> tuple[Untold | None, list[Effe
     match event:
         case StatusReported(report=Report(status=status.Idle()), at=at) if _running(was.state):
             return Untold(was.turn, at + UNTOLD_SECONDS), _telling(was, None)
-        case Stopped(closing=closing, prompt=str() as prompt) if prompt in was.ended:
+        case Stopped(closing=closing, prompt=prompt) if _ended_already(was, prompt):
             # Its Stop fired after Claude Code set idle, as an Escape's can: told with the reply it carries.
             return None, _telling(was, closing)
-        case Interrupted(prompt=prompt) if prompt in was.ended:
+        case Interrupted(prompt=prompt) if _ended_already(was, prompt):
+            return None, _telling(was, None)
+        case Ended():
+            # Told before the session is said to be gone, in the order they happened.
             return None, _telling(was, None)
         case Prompted(prompt=prompt) | Taken(prompt=prompt) if prompt not in was.ended:
             # A turn after it opens: it is told before the new turn is marked, so it is compared against its own mark.
@@ -344,10 +348,11 @@ def _running_in(session: Session | None) -> bool:
     return session is not None and _running(session.state)
 
 
-def _ended_already(session: Session | None, prompt: PromptId) -> bool:
-    """Whether a Stop names the turn hands already ended, and told, when a later prompt or turn showed it over. Only what
-    is known to have ended is: a Stop naming an id not heard of yet ends its turn as any Stop does."""
-    return session is not None and prompt in session.ended
+def _ended_already(session: Session | None, prompt: PromptId | None) -> bool:
+    """Whether a Stop or an interrupt is the late end of a turn hands already ended: one it names among those a later
+    prompt, a later turn, or Claude Code's idle showed over, or, whatever it names, the one an idle session's telling
+    waits for. Only what is known to have ended is: a Stop naming an id not heard of yet ends its turn as any Stop does."""
+    return session is not None and (prompt in session.ended or (session.untold is not None and isinstance(session.state, Idle)))
 
 
 def _sent_over(session: Session | None, prompt: PromptId) -> Submitted | None:
