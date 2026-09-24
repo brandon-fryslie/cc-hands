@@ -89,6 +89,22 @@ class NoInput:
         pass
 
 
+@dataclass(frozen=True)
+class Output:
+    """A speaker stream as opened, with the name of the device it was opened on."""
+
+    stream: Playback
+    device: str
+
+
+@dataclass(frozen=True)
+class Input:
+    """A microphone stream as opened, with the name of its device; no name, and a NoInput stream, when there is none."""
+
+    stream: Stream
+    device: str | None
+
+
 class PortAudio(Protocol):
     """What is used of PyAudio itself, which is untyped."""
 
@@ -119,6 +135,8 @@ class Speaker(LocalAudioOutputTransport):
         # [LAW:single-enforcer] every write to the stream goes through this one thread, in place of Pipecat's executor,
         # whose thread the interpreter waits for at exit: a write blocked on a lost device would hold the process open.
         self._writes = SerialThread("speaker writes")
+        # What the attached stream was opened on; None until setup opens the first.
+        self.opened: Output | None = None
         # Set while a stream is attached; a write waits on it through a reopen.
         self._attached = asyncio.Event()
 
@@ -129,18 +147,23 @@ class Speaker(LocalAudioOutputTransport):
         py_audio = cast(PortAudio, self._py_audio)
         self.attach(py_audio, self.open_stream(py_audio))
 
-    def open_stream(self, py_audio: PortAudio) -> Playback:
+    def open_stream(self, py_audio: PortAudio) -> Output:
         """A new stream on the default output, not yet the speaker's. Blocking: PortAudio talks to the device."""
-        return py_audio.open(
+        stream = py_audio.open(
             format=py_audio.get_format_from_width(2),
             channels=self._params.audio_out_channels,
             rate=self.sample_rate,
             output=True,
             output_device_index=self._params.output_device_index,
         )
+        # [LAW:one-source-of-truth] the name is read from the same live PortAudio the stream was opened on, as it opens;
+        # asked later, an instance that has since been ended answers "no device" whatever is plugged in.
+        return Output(stream, _name(py_audio.get_default_output_device_info()))
 
-    def attach(self, py_audio: PortAudio, stream: Playback) -> None:
+    def attach(self, py_audio: PortAudio, opened: Output) -> None:
         self._py_audio = cast(pyaudio.PyAudio, py_audio)
+        self.opened = opened
+        stream = opened.stream
         self._out_stream = stream
         # [LAW:one-source-of-truth] the output buffer's share of the fade is read from the open stream,
         # so a speaker with a longer buffer keeps the microphone shut for longer.
@@ -198,6 +221,8 @@ class KeyedMicrophone(LocalAudioInputTransport):
         self._key = key
         self._speaker = speaker
         self._clock = clock
+        # What the attached stream was opened on; None until setup opens the first.
+        self.opened: Input | None = None
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         # As for the speaker: the base's setup, then the one way the stream is opened.
@@ -205,13 +230,13 @@ class KeyedMicrophone(LocalAudioInputTransport):
         py_audio = cast(PortAudio, self._py_audio)
         self.attach(py_audio, self.open_stream(py_audio))
 
-    def open_stream(self, py_audio: PortAudio) -> Stream:
+    def open_stream(self, py_audio: PortAudio) -> Input:
         """A new stream on the default input, not yet the microphone's. Blocking: PortAudio talks to the device."""
         match default_input(py_audio):
             case None:
-                return NoInput()
-            case _:
-                return self._open(py_audio)
+                return Input(NoInput(), None)
+            case device:
+                return Input(self._open(py_audio), device)
 
     def _open(self, py_audio: PortAudio) -> Stream:
         return py_audio.open(
@@ -224,9 +249,10 @@ class KeyedMicrophone(LocalAudioInputTransport):
             input_device_index=self._params.input_device_index,
         )
 
-    def attach(self, py_audio: PortAudio, stream: Stream) -> None:
+    def attach(self, py_audio: PortAudio, opened: Input) -> None:
         self._py_audio = cast(pyaudio.PyAudio, py_audio)
-        self._in_stream = stream
+        self.opened = opened
+        self._in_stream = opened.stream
 
     def detach(self) -> Stream:
         stream: Stream | None = self._in_stream
@@ -339,8 +365,12 @@ class KeyedAudioTransport(LocalAudioTransport):
 
     @property
     def devices(self) -> Devices:
-        """The devices the streams are open on: the defaults as PortAudio listed them when it started."""
-        return Devices(default_input(self._audio_now()), _name(self._audio_now().get_default_output_device_info()))
+        """The devices the streams are open on, as each was named when it was opened."""
+        match (self._microphone.opened, self._speaker.opened):
+            case (Input(device=heard), Output(device=played)):
+                return Devices(heard, played)
+            case _:
+                raise AssertionError("the devices are known once the pipeline has set up its streams")
 
     def _audio_now(self) -> PortAudio:
         return cast(PortAudio, self._pyaudio)
@@ -350,8 +380,8 @@ class KeyedAudioTransport(LocalAudioTransport):
         defaults = self._defaults()
         portaudio = self._portaudio()
         speaker, microphone = self._speaker.open_stream(portaudio), self._microphone.open_stream(portaudio)
-        speaker.start_stream()
-        microphone.start_stream()
+        speaker.stream.start_stream()
+        microphone.stream.start_stream()
         return _Started(defaults, portaudio, speaker, microphone)
 
 
@@ -361,8 +391,8 @@ class _Started:
 
     defaults: DefaultDevices
     portaudio: PortAudio
-    speaker: Playback
-    microphone: Stream
+    speaker: Output
+    microphone: Input
 
 
 def _letting_go(step: Callable[[], None]) -> None:
@@ -389,9 +419,16 @@ def default_input(py_audio: PortAudio) -> str | None:
     # [LAW:parse-dont-validate] PortAudio says there is no default input by raising; here that becomes a typed absence.
     try:
         info = py_audio.get_default_input_device_info()
-    except OSError:
+    except OSError as error:
+        # Asked only of a PortAudio that is running: an ended one says the same words whatever is plugged in.
+        if error.args != (_NO_DEFAULT_INPUT,):
+            raise
         return None
     return _name(info)
+
+
+# PyAudio's words when PortAudio lists no default input, raised with no errno to tell it by.
+_NO_DEFAULT_INPUT = "No Default Input Device Available"
 
 
 def _name(info: object) -> str:

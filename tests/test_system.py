@@ -20,6 +20,8 @@ from hands.sessions.audit import Announced, Entry
 from hands.daemon.notify import notification_command
 from hands.sessions.home import Home
 from hands.voice.system import (
+    NoMicrophone,
+    empty_turn,
     AudioMoved,
     BURST_SECONDS,
     ModelFailed,
@@ -51,6 +53,7 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
         (Started(after_crash=False, devices=DEAF), "hands is up, but there is no microphone, so it cannot hear you."),
         (Started(after_crash=True, devices=DEAF), "hands is back after a crash, but there is no microphone, so it cannot hear you."),
         (AudioMoved(DEAF), "No microphone: hands cannot hear you. Speaking on Mac mini Speakers."),
+        (NoMicrophone(), "Nothing was heard: there is no microphone."),
         (ModelUnreachable(), "The language model is unreachable."),
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
         (TranscriptionFailed(), "Speech recognition failed for that turn."),
@@ -59,6 +62,11 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
 )
 def test_each_fact_is_said_from_its_template(fact: SystemFact, said: str) -> None:
     assert system_text(fact) == said
+
+
+def test_an_empty_turn_with_no_microphone_is_not_blamed_on_the_recogniser() -> None:
+    assert empty_turn(DEAF) == NoMicrophone()
+    assert empty_turn(BUILT_IN) == NothingTranscribed()
 
 
 class Services:
