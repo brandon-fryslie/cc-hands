@@ -57,6 +57,9 @@ class Stopped:
     closing: str | None  # the reply the turn closed with, as the Stop hook carries it; None when there was none
     # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
     mode: Mode | None
+    # The prompt_id of the turn that stopped: the id it last went on under, and a turn a background task's notification
+    # opened has its own, which its UserPromptSubmit carried too (2.1.281). None only when the hook carried none.
+    prompt: PromptId | None
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,9 @@ class Taken:
 
     session: SessionId
     prompt: PromptId
+    # Whether the record opens a turn of its own, as a prompt's first record does, rather than going on in the one
+    # running, as a flushed or a mid-turn notification's does: the two are told apart only by where they are written.
+    opens: bool
 
 
 @dataclass(frozen=True)

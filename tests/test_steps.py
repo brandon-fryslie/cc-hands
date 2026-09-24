@@ -44,7 +44,7 @@ async def steps(tmp_path: Path) -> tuple[Step, ...]:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(f"{OPENING}\n{(FIXTURES / 'steps.jsonl').read_text()}")
     tails = Tails(Registry(Membership(SID, pid=4242, cwd=tmp_path, transcript=transcript)))
-    telling = await tails.tell(SID, None)
+    telling = await tails.tell(SID, None, None)
     assert telling is not None and telling.turn.opening == Asked(Ref("open-1"), "do everything")
     return telling.turn.steps
 

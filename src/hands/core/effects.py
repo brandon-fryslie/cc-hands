@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from hands.core.events import SessionEvent
-from hands.core.session import Blocker, Mode, RequestId, SessionId
+from hands.core.session import Blocker, Mode, PromptId, RequestId, SessionId
 
 
 @dataclass(frozen=True)
@@ -171,6 +171,10 @@ class Summarise:
     """
 
     session: SessionId
+    # [LAW:no-ambient-temporal-coupling] the turn that ended, by any prompt id its records carry: the tail may have read
+    # the next prompt by the time this is told, and the turn it is on then is not this one. None where nothing named
+    # it, and the tail tells the turn it is on.
+    turn: PromptId | None
     closing: str | None
 
 
