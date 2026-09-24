@@ -20,6 +20,7 @@ from hands.sessions.audit import Announced, Entry
 from hands.daemon.notify import notification_command
 from hands.sessions.home import Home
 from hands.voice.system import (
+    AudioMoved,
     BURST_SECONDS,
     ModelFailed,
     ModelUnreachable,
@@ -34,14 +35,22 @@ from hands.voice.system import (
     alarm,
     system_text,
 )
+from hands.voice.microphone import Devices
 from hands.voice.whisper import NOTHING_TRANSCRIBED, Whisper
+
+
+BUILT_IN = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
+DEAF = Devices(input=None, output="Mac mini Speakers")
 
 
 @pytest.mark.parametrize(
     ("fact", "said"),
     [
-        (Started(after_crash=False), "hands is up."),
-        (Started(after_crash=True), "hands is back after a crash."),
+        (Started(after_crash=False, devices=BUILT_IN), "hands is up."),
+        (Started(after_crash=True, devices=BUILT_IN), "hands is back after a crash."),
+        (Started(after_crash=False, devices=DEAF), "hands is up, but there is no microphone, so it cannot hear you."),
+        (Started(after_crash=True, devices=DEAF), "hands is back after a crash, but there is no microphone, so it cannot hear you."),
+        (AudioMoved(DEAF), "No microphone: hands cannot hear you. Speaking on Mac mini Speakers."),
         (ModelUnreachable(), "The language model is unreachable."),
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
         (TranscriptionFailed(), "Speech recognition failed for that turn."),

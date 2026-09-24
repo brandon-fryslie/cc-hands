@@ -57,7 +57,7 @@ from hands.voice.speech import relay
 from hands.voice.summary import Summariser, summariser
 from hands.voice.summary_instruction import TURN_SUMMARY_INSTRUCTION
 from hands.voice.conversation import record_turns
-from hands.voice.system import Started, SystemChannel, listen
+from hands.voice.system import SystemChannel, listen
 from hands.voice.threads import off_loop
 from hands.voice.tools import audited, draft_tools, list_sessions_tool, permission_tools, read_session_tool
 
@@ -128,7 +128,7 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash:
         voice = await load(config, sessions, heart, quit_event, audit.record)
         if voice is not None:
             summarise = summariser(config.llm, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
-            await converse(voice, home, sessions, summarise, heart, quit_event, Started(after_crash), audit.record, deltas)
+            await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -167,7 +167,7 @@ async def converse(
     summarise: Summariser,
     heart: status.Heart,
     quit_event: asyncio.Event,
-    started: Started,
+    after_crash: bool,
     record: Record,
     deltas: Deltas,
 ) -> None:
@@ -175,7 +175,7 @@ async def converse(
     pipeline = PipelineWatch(voice.worker)
     tails = Tails(sessions)
     channel = SystemChannel(voice.tts, post_notification, record)
-    listen(voice, channel, started)
+    listen(voice, channel, after_crash)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     failures: list[BaseException] = []
 

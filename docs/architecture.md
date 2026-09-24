@@ -1158,7 +1158,15 @@ gone takes 3 to 4 s, so the whole move took about 5.5 s from unplug to the sente
 The next turn ran end to end on the built-in devices. Every step that touches a device runs off the event loop.
 A reopen that takes longer than 10 s, or one that fails, stops the run, and launchd's restart opens on whatever
 devices there are. The same path follows a headset plugged in, or a default changed in
-Control Center.
+Control Center. A Mac with no built-in microphone (a mini, a Studio) can
+lose its only input device. Then the microphone holds a stream of nothing (`NoInput`),
+which is opened, started, stopped, and closed like any other. The move is said as
+`No microphone: hands cannot hear you. Speaking on …`. A daemon that starts that way
+says `hands is up, but there is no microphone, so it cannot hear you.` instead of
+failing its setup and crash-looping under launchd. A microphone plugged in later
+changes the default input, so the follower opens it like any other move. This is
+tested against a PortAudio that lists no default input. A MacBook cannot be put in
+that state, since macOS always falls back to the built-in microphone.
 
 **The gate has one owner and several edges.** `PushToTalk` holds the key position;
 whatever reads the physical world calls `move_key`. The edges are variants of one
