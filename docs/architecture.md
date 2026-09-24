@@ -376,13 +376,38 @@ finishes (checked on 2026-09-14), while `MessageDisplay` fires with each batch o
 finished lines as the text streams. It is dispatched synchronously for every batch,
 even to a hook that declares itself async, so it is installed as an HTTP hook, which
 Claude Code 2.1.270 supports: the event is POSTed to the daemon with no process
-spawned, under a short timeout. Its cost per batch and Claude's behaviour when the
-daemon is down are measured before it is relied on. The tail, not a hook, is how
+spawned, under a short timeout. Measured on 2.1.280 on 2026-09-24, with a 40-line
+reply:
+
+- An interactive session fired 35 to 40 batches, one per finished line or two,
+  0.1 to 0.5 s apart. `claude -p` fired one final batch holding the whole text.
+- At most one batch is in flight. Against an endpoint that took 1 s to answer, 16
+  batches arrived, each carrying every line since the last, and the last one came
+  4.8 s after the turn had ended.
+- The turn itself took the same time against a fast endpoint, a 1-second one, a
+  refused port, and a port that accepts and never answers: 11.3 to 12.6 s every
+  time. A daemon that is slow, down, or hung costs narration lines, never the
+  agent's speed. The tail, not a hook, is how
 the daemon reads tool calls and their results. `PostToolUse` and `PostToolUseFailure`
 are subscribed for one fact the tail would give too late to use: that a tool the
 daemon is still waiting on a permission for has run, because its dialog was answered
 at the keyboard. They are declared `async`, so the shim they spawn on every tool call
 never holds the agent up.
+
+**Installing the hooks.** `hands install-hooks` merges the entries `hookconfig`
+declares into a Claude Code settings file (`~/.claude/settings.json` unless
+`--settings` names another). It keeps no list of its own. It takes out every entry
+that is hands' and puts the declared ones in. An entry is hands' when it runs exactly
+`<python> -m hands.sessions.shim <home>`, which is the command `hookconfig` builds.
+So a second run changes nothing, a moved venv or home replaces the old command, and
+an event hands stops subscribing to loses its entry. A wrapped or compound command
+that mentions the shim is someone else's and is left alone, like every entry that
+is not hands'. The file is replaced whole, through any symlink to the file it points
+at, keeping its permissions, and the change is printed as a diff. A file that does
+not parse is refused and left as it was. Measured with the daemon stopped, a
+streaming turn under the installed shims took 12.4 s against 11.5 s without them:
+each shim fails at once, and Claude Code shows `cannot reach the hands daemon` in
+the session as a non-blocking hook error.
 
 **The shims.** Each is a two-line script in the target session's hook config: POST
 stdin to the daemon socket, exit. At `SessionStart` the shim also writes

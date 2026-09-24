@@ -1,4 +1,4 @@
-"""`hands`: run the daemon, ask whether it is up, show it in the menu bar, print their LaunchAgents."""
+"""`hands`: run the daemon, ask whether it is up, show it in the menu bar, print their LaunchAgents, install its hooks."""
 
 import argparse
 import asyncio
@@ -12,6 +12,8 @@ from pathlib import Path
 from hands.daemon import launchd, status
 from hands.sessions import audit
 from hands.sessions.home import Home, default_home
+from hands.sessions.install import install
+from hands.sessions.payload import Rejected
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -23,6 +25,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("indicator", help="show the daemon's verdict in the menu bar and post a notification when it stops being up")
     agents = commands.add_parser("launchd", help="print the LaunchAgent property list that keeps the daemon or the indicator up")
     agents.add_argument("agent", choices=sorted(launchd.AGENTS), help="which process the agent keeps up")
+    installing = commands.add_parser("install-hooks", help="merge hands' hook entries into a Claude Code settings file; running it again changes nothing")
+    installing.add_argument("--settings", type=Path, default=Path.home() / ".claude" / "settings.json", help="the settings file to merge into")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
     arguments = parser.parse_args(argv)
@@ -44,6 +48,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return report(home)
         case "log":
             return tail_log(home, arguments.lines)
+        case "install-hooks":
+            return install_hooks(arguments.settings, home)
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
             from hands.daemon.menubar import show
@@ -69,6 +75,18 @@ def report(home: Home) -> int:
             out, code = sys.stderr, 2
     print(status.describe(verdict, now), file=out)
     return code
+
+
+def install_hooks(settings: Path, home: Home) -> int:
+    try:
+        installed = install(settings, Path(sys.executable), home)
+    except Rejected as error:
+        print(f"hands install-hooks: {error}", file=sys.stderr)
+        return 2
+    # The diff is the output, so it can be read or piped; the one-line verdict goes to stderr beside it.
+    sys.stdout.write(installed.diff)
+    print(f"hands install-hooks: {'updated' if installed.diff else 'already current'}: {installed.path}", file=sys.stderr)
+    return 0
 
 
 # How often `hands log` looks for new lines.
