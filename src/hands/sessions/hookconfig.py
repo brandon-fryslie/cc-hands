@@ -48,6 +48,17 @@ def hook_settings(python: Path, home: Home) -> dict[str, object]:
     return {"hooks": {event: [{"hooks": [{"type": "command", "command": command, **_declared(event)}]}] for event in SUBSCRIBED}}
 
 
+def runs_the_shim(command: str) -> bool:
+    """Whether a hook command runs hands' shim, as hook_settings builds it or as any earlier or hand-edited version did."""
+    # [LAW:one-source-of-truth] beside the builder, and keyed on the one thing every version of it shares, so that
+    # a change to how the command is built never leaves the entries it built looking like somebody else's.
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    return any(argv[at : at + 2] == ["-m", SHIM_MODULE] for at in range(len(argv) - 1))
+
+
 def _declared(event: str) -> dict[str, object]:
     timeout = _DECLARED_TIMEOUTS.get(event)
     return {**({} if timeout is None else {"timeout": timeout}), **({"async": True} if event in _IN_BACKGROUND else {})}

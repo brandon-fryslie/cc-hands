@@ -10,7 +10,7 @@ import pytest
 from hands.daemon.cli import main
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import SUBSCRIBED, hook_settings
-from hands.sessions.install import install, is_hands_entry, merged
+from hands.sessions.install import default_settings, install, is_hands_entry, merged
 from hands.sessions.payload import Rejected
 
 PYTHON = Path("/venv/bin/python")
@@ -37,9 +37,10 @@ def declared() -> dict[str, list[object]]:
         ({"type": "command", "command": SHIM}, True),
         ({"type": "command", "command": SHIM, "timeout": 90, "async": True}, True),
         ({"type": "command", "command": "/old/venv/bin/python -m hands.sessions.shim '/Users/me/my hands'"}, True),
-        ({"type": "command", "command": f"env X=1 {SHIM}"}, False),  # wrapped: its pid would not be the session's
-        ({"type": "command", "command": f"{SHIM}; echo done"}, False),  # compound
-        ({"type": "command", "command": f"{SHIM} --verbose"}, False),
+        # Hand-wrapped or extended, it still runs the shim, and is replaced by the simple command liveness needs.
+        ({"type": "command", "command": f"env X=1 {SHIM}"}, True),
+        ({"type": "command", "command": f"{SHIM}; echo done"}, True),
+        ({"type": "command", "command": f"/venv/bin/python -I -m hands.sessions.shim /Users/me/.hands --verbose"}, True),
         ({"type": "command", "command": "/venv/bin/python -m hands.sessions.shimmer /Users/me/.hands"}, False),
         ({"type": "command", "command": "python -m 'unbalanced"}, False),
         ({"type": "http", "url": "http://127.0.0.1:1/hook"}, False),
@@ -48,7 +49,7 @@ def declared() -> dict[str, list[object]]:
         (THEIRS, False),
     ],
 )
-def test_an_entry_is_hands_only_when_it_is_the_shim_run_as_hookconfig_builds_it(entry: object, ours: bool) -> None:
+def test_an_entry_is_hands_when_its_command_runs_the_shim(entry: object, ours: bool) -> None:
     assert is_hands_entry(entry) is ours
 
 
@@ -133,3 +134,51 @@ def test_the_command_prints_the_diff_then_nothing(tmp_path: Path, capsys: pytest
     assert main(["--home", str(tmp_path / "hands"), "install-hooks", "--settings", str(settings)]) == 2
     assert "not JSON" in capsys.readouterr().err
     assert os.path.getsize(settings) == 1
+
+
+def test_every_command_hookconfig_builds_is_one_it_recognises() -> None:
+    for groups in declared().values():
+        for group in groups:
+            assert isinstance(group, dict)
+            assert all(is_hands_entry(entry) for entry in group["hooks"])  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+
+
+def test_a_relative_home_is_written_absolute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    settings = tmp_path / "settings.json"
+    install(settings, PYTHON, Home(Path(".hands-dev")))
+    command = json.loads(settings.read_text())["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert command.endswith(str(tmp_path.resolve() / ".hands-dev"))
+
+
+def test_the_default_settings_are_the_ones_claude_code_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "alt"))
+    assert default_settings() == tmp_path / "alt" / "settings.json"
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    assert default_settings() == Path.home() / ".claude" / "settings.json"
+
+
+def test_a_file_without_a_final_newline_diffs_as_patch_expects(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text('{"model": "opus"}')
+    diff = install(settings, PYTHON, HOME).diff
+    assert '-{"model": "opus"}\n\\ No newline at end of file\n+{' in diff
+
+
+def test_a_write_that_fails_leaves_the_file_and_nothing_else(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}\n")
+
+    def refuse(*_: object) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    with pytest.raises(OSError, match="No space"):
+        install(settings, PYTHON, HOME)
+    assert [path.name for path in tmp_path.iterdir()] == ["settings.json"]
+    assert settings.read_text() == "{}\n"
+
+
+def test_a_settings_path_that_cannot_be_read_is_said_in_one_line(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--home", str(tmp_path), "install-hooks", "--settings", str(tmp_path)]) == 2
+    assert capsys.readouterr().err.startswith("hands install-hooks: ")

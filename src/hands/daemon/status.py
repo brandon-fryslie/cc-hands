@@ -6,12 +6,12 @@ so there is one clock that says whether hands is up.
 
 import json
 import os
-import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+from hands.sessions.files import replace_whole
 from hands.sessions.payload import Payload, Rejected
 
 # Starting until Pipecat reports the pipeline started; stopped only in the last heartbeat of a run told to stop.
@@ -71,11 +71,7 @@ def parse(raw: bytes) -> Status:
 
 def write(path: Path, status: Status) -> None:
     """Replace the heartbeat file whole: a reader sees the last heartbeat or this one, never half of either."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".status-", suffix=".json")
-    with os.fdopen(handle, "w") as out:
-        out.write(encode(status))
-    os.replace(temporary, path)
+    replace_whole(path, encode(status), 0o600)
 
 
 @dataclass(frozen=True)

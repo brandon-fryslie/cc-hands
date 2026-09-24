@@ -12,7 +12,7 @@ from pathlib import Path
 from hands.daemon import launchd, status
 from hands.sessions import audit
 from hands.sessions.home import Home, default_home
-from hands.sessions.install import install
+from hands.sessions.install import default_settings, install
 from hands.sessions.payload import Rejected
 
 
@@ -26,7 +26,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     agents = commands.add_parser("launchd", help="print the LaunchAgent property list that keeps the daemon or the indicator up")
     agents.add_argument("agent", choices=sorted(launchd.AGENTS), help="which process the agent keeps up")
     installing = commands.add_parser("install-hooks", help="merge hands' hook entries into a Claude Code settings file; running it again changes nothing")
-    installing.add_argument("--settings", type=Path, default=Path.home() / ".claude" / "settings.json", help="the settings file to merge into")
+    installing.add_argument("--settings", type=Path, default=default_settings(), help="the settings file to merge into (default: the one Claude Code reads)")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
     arguments = parser.parse_args(argv)
@@ -80,7 +80,8 @@ def report(home: Home) -> int:
 def install_hooks(settings: Path, home: Home) -> int:
     try:
         installed = install(settings, Path(sys.executable), home)
-    except Rejected as error:
+    except (Rejected, OSError, UnicodeError) as error:
+        # [LAW:no-silent-failure] a file that cannot be read, parsed, or written is said in one line, and left as it was.
         print(f"hands install-hooks: {error}", file=sys.stderr)
         return 2
     # The diff is the output, so it can be read or piped; the one-line verdict goes to stderr beside it.

@@ -387,7 +387,9 @@ reply:
 - The turn itself took the same time against a fast endpoint, a 1-second one, a
   refused port, and a port that accepts and never answers: 11.3 to 12.6 s every
   time. A daemon that is slow, down, or hung costs narration lines, never the
-  agent's speed. The tail, not a hook, is how
+  agent's speed.
+
+The tail, not a hook, is how
 the daemon reads tool calls and their results. `PostToolUse` and `PostToolUseFailure`
 are subscribed for one fact the tail would give too late to use: that a tool the
 daemon is still waiting on a permission for has run, because its dialog was answered
@@ -395,14 +397,16 @@ at the keyboard. They are declared `async`, so the shim they spawn on every tool
 never holds the agent up.
 
 **Installing the hooks.** `hands install-hooks` merges the entries `hookconfig`
-declares into a Claude Code settings file (`~/.claude/settings.json` unless
-`--settings` names another). It keeps no list of its own. It takes out every entry
-that is hands' and puts the declared ones in. An entry is hands' when it runs exactly
-`<python> -m hands.sessions.shim <home>`, which is the command `hookconfig` builds.
-So a second run changes nothing, a moved venv or home replaces the old command, and
-an event hands stops subscribing to loses its entry. A wrapped or compound command
-that mentions the shim is someone else's and is left alone, like every entry that
-is not hands'. The file is replaced whole, through any symlink to the file it points
+declares into a Claude Code settings file. That is the one Claude Code reads,
+`$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json`, unless `--settings`
+names another. It keeps no list of its own. It takes out every entry that runs
+hands' shim (`-m hands.sessions.shim` anywhere in its command, as `hookconfig`
+recognises it beside the builder) and puts the declared ones in. So a second run
+changes nothing, a moved venv or home replaces the old command, a hand-wrapped shim
+is replaced by the simple command liveness needs, and an event hands stops
+subscribing to loses its entry. Every entry that does not run the shim is left
+alone. The home is written absolute, because a hook runs from its session's
+directory. The file is replaced whole, through any symlink to the file it points
 at, keeping its permissions, and the change is printed as a diff. A file that does
 not parse is refused and left as it was. Measured with the daemon stopped, a
 streaming turn under the installed shims took 12.4 s against 11.5 s without them:
