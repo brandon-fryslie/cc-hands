@@ -22,7 +22,6 @@ change, which macOS does the moment the default device disappears.
 import asyncio
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Protocol, cast
@@ -41,7 +40,7 @@ from pipecat.transports.local.audio import (
 )
 
 from hands.voice.ptt import Gate, PushToTalk
-from hands.voice.threads import off_loop
+from hands.voice.threads import SerialThread, off_loop
 
 Instant = float  # seconds on the monotonic clock
 
@@ -60,6 +59,7 @@ CLOSE_DEADLINE = timedelta(seconds=10)
 class Stream(Protocol):
     """What is used of a PyAudio stream, which is untyped."""
 
+    def write(self, audio: bytes) -> None: ...
     def start_stream(self) -> None: ...
     def stop_stream(self) -> None: ...
     def close(self) -> None: ...
@@ -92,6 +92,9 @@ class Speaker(LocalAudioOutputTransport):
         self.quiet_at: Instant = 0.0
         # When sound was last handed to the speaker, for the heartbeat; None before the first.
         self.sounded_at: Instant | None = None
+        # [LAW:single-enforcer] every write to the stream goes through this one thread, in place of Pipecat's executor,
+        # whose thread the interpreter waits for at exit: a write blocked on a lost device would hold the process open.
+        self._writes = SerialThread("speaker writes")
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         # [LAW:one-source-of-truth] Pipecat's local setup is only the base's and an open; the open is open_stream's, so
@@ -100,6 +103,7 @@ class Speaker(LocalAudioOutputTransport):
         self.open_stream(cast(PortAudio, self._py_audio))
 
     def open_stream(self, py_audio: PortAudio) -> Stream:
+        self._py_audio = cast(pyaudio.PyAudio, py_audio)
         stream = py_audio.open(
             format=py_audio.get_format_from_width(2),
             channels=self._params.audio_out_channels,
@@ -118,19 +122,30 @@ class Speaker(LocalAudioOutputTransport):
         stream: Stream | None = self._out_stream
         assert stream is not None, "the speaker stream opens in setup"
         self._out_stream = None
-        # A write stuck on a lost device holds Pipecat's one writer thread, so the writes after it get a new one.
-        self._executor.shutdown(wait=False)
-        self._executor = ThreadPoolExecutor(max_workers=1)
         return stream
 
+    async def let_go(self, stream: Stream) -> None:
+        """Stop a detached stream, wait out the writes already given to it, then close it."""
+        # [LAW:no-ambient-temporal-coupling] closing frees the stream, so it waits until no write is inside it.
+        # Stopping is what releases a write blocked on a lost device, and every write handed over before the
+        # detach has returned once the writer thread reaches the empty work queued behind them.
+        await off_loop(lambda: _letting_go(stream.stop_stream), "stopping the speaker")
+        await self._writes.run(lambda: None)
+        await off_loop(lambda: _letting_go(stream.close), "closing the speaker")
+
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
+        stream: Stream | None = self._out_stream
+        if stream is None:
+            # Detached while the transport reopens: the frame is not played, so it is reported unwritten and holds nothing shut.
+            return False
         if frame.audio.count(0) != len(frame.audio):
             # [LAW:no-ambient-temporal-coupling] recorded before the write is awaited: an interruption cancels
             # the await, but the chunk already handed to PortAudio's thread plays out all the same.
             # Silence padding makes no sound, so it holds nothing shut.
             self.sounded_at = self._clock()
             self.quiet_at = self.sounded_at + _duration(frame) + self._fade
-        return await super().write_audio_frame(frame)
+        await self._writes.run(lambda: stream.write(frame.audio))
+        return True
 
 
 def _duration(frame: OutputAudioRawFrame) -> float:
@@ -153,6 +168,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
         self.open_stream(cast(PortAudio, self._py_audio))
 
     def open_stream(self, py_audio: PortAudio) -> Stream:
+        self._py_audio = cast(pyaudio.PyAudio, py_audio)
         stream = py_audio.open(
             format=py_audio.get_format_from_width(2),
             channels=self._params.audio_in_channels,
@@ -170,6 +186,15 @@ class KeyedMicrophone(LocalAudioInputTransport):
         assert stream is not None, "the microphone stream opens in setup"
         self._in_stream = None
         return stream
+
+    async def let_go(self, stream: Stream) -> None:
+        """Stop and close a detached stream. Measured at 2.7 to 3.7 s when its device is gone."""
+
+        def stop_and_close() -> None:
+            _letting_go(stream.stop_stream)
+            _letting_go(stream.close)
+
+        await off_loop(stop_and_close, "closing the microphone")
 
     def _audio_in_callback(self, in_data: bytes, frame_count: int, time_info: object, status: int) -> tuple[None, int]:
         # [LAW:no-ambient-temporal-coupling] decided on the audio thread, not when the event loop gets to the
@@ -221,8 +246,6 @@ class KeyedAudioTransport(LocalAudioTransport):
         self._speaker = Speaker(self._pyaudio, params, clock)
         self._microphone = KeyedMicrophone(self._pyaudio, params, key, self._speaker, clock)
         self._portaudio = portaudio
-        # The PortAudio instance both streams are open on. Pipecat's own handle is only ever given to setup.
-        self._audio = cast(PortAudio, self._pyaudio)
 
     def input(self) -> KeyedMicrophone:
         return self._microphone
@@ -233,15 +256,18 @@ class KeyedAudioTransport(LocalAudioTransport):
     async def reopen(self) -> Devices:
         """Close both streams and PortAudio itself, and open them again on the system's default devices as they are now."""
         # [LAW:no-ambient-temporal-coupling] the order is the mechanism. Detached first, so a write that comes
-        # meanwhile finds no stream rather than the lost one. The speaker is closed before the microphone, because
-        # closing it is what releases a write blocked on a lost device. PortAudio is ended before it is started
-        # again, because it lists the devices only when it starts, and while one instance lives a new one still
-        # sees the device that is gone. Nothing is opened until then.
-        closing = (self._speaker.detach(), self._microphone.detach())
-        ending = self._audio
-        await asyncio.wait_for(off_loop(lambda: _close(closing, ending), "closing the audio streams"), CLOSE_DEADLINE.total_seconds())
+        # meanwhile finds no stream rather than the lost one. The speaker is let go of before the microphone,
+        # because stopping it is what releases a write blocked on a lost device. PortAudio is ended before it is
+        # started again, because it lists the devices only when it starts, and while one instance lives a new one
+        # still sees the device that is gone. Nothing is opened until then.
+        speaker, microphone, ending = self._speaker.detach(), self._microphone.detach(), cast(PortAudio, self._pyaudio)
+        async with asyncio.timeout(CLOSE_DEADLINE.total_seconds()):
+            await self._speaker.let_go(speaker)
+            await self._microphone.let_go(microphone)
+            await off_loop(ending.terminate, "ending PortAudio")
         portaudio = self._portaudio()
-        self._audio = portaudio
+        # [LAW:one-source-of-truth] one PortAudio handle, shared by the transport and both sides; the ended one is dropped everywhere.
+        self._pyaudio = cast(pyaudio.PyAudio, portaudio)
         for side in (self._speaker, self._microphone):
             side.open_stream(portaudio).start_stream()
         # A write that timed out on the lost device cost the speaker its usability; the new device has it back.
@@ -249,15 +275,12 @@ class KeyedAudioTransport(LocalAudioTransport):
         return Devices(_name(portaudio.get_default_input_device_info()), _name(portaudio.get_default_output_device_info()))
 
 
-def _close(streams: tuple[Stream, ...], portaudio: PortAudio) -> None:
-    for stream in streams:
-        for step in (stream.stop_stream, stream.close):
-            try:
-                step()
-            except OSError as error:
-                # A stream on a device that is gone refuses to stop cleanly; it is let go all the same, and said.
-                logger.warning(f"letting go of an audio stream whose device is gone: {error}")
-    portaudio.terminate()
+def _letting_go(step: Callable[[], None]) -> None:
+    try:
+        step()
+    except OSError as error:
+        # A stream on a device that is gone refuses to stop or close cleanly; it is let go of all the same, and said.
+        logger.warning(f"letting go of an audio stream whose device is gone: {error}")
 
 
 def _name(info: object) -> str:

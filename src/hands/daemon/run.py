@@ -199,8 +199,9 @@ async def converse(
         asyncio.create_task(relay(sessions, voice.worker.queue_frame), name="the session speech relay"),
         asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
-        asyncio.create_task(follow_default_devices(pipeline.started, voice.audio.reopen, channel.say), name="the audio device follower"),
     ]
+    following = asyncio.create_task(follow_default_devices(pipeline.started, voice.audio.reopen, channel.say), name="the audio device follower")
+    background.append(following)
     for task in background:
         task.add_done_callback(stop_if_failed)
 
@@ -217,6 +218,10 @@ async def converse(
     quitting = asyncio.create_task(quit_event.wait())
     try:
         await asyncio.wait({pipeline_run, quitting}, return_when=asyncio.FIRST_COMPLETED)
+        # [LAW:no-ambient-temporal-coupling] the follower holds the streams while it reopens them, and Pipecat's
+        # cleanup closes them; the follower is done before the cleanup starts, so the two never hold them at once.
+        following.cancel()
+        await asyncio.wait({following})
         await runner.cancel("quit")
         await pipeline_run
     finally:

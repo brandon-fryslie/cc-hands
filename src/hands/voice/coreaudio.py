@@ -1,14 +1,59 @@
 # pyright: basic, reportAttributeAccessIssue=false
 # PyObjC ships no type stubs and loads its names lazily, so a static check cannot see them; this file is the only one
 # that touches CoreAudio.
-"""Word from CoreAudio when the system's default input or output device changes."""
+"""The system's default audio devices, from CoreAudio, and word when they change."""
 
+import itertools
+import struct
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 import CoreAudio
+import objc
 
-_DEFAULTS = (CoreAudio.kAudioHardwarePropertyDefaultInputDevice, CoreAudio.kAudioHardwarePropertyDefaultOutputDevice)
+_SYSTEM = CoreAudio.kAudioObjectSystemObject
+
+
+@dataclass(frozen=True)
+class DefaultDevices:
+    """CoreAudio's ids for the default input and output devices."""
+
+    input: int
+    output: int
+
+
+def _address(selector: int) -> object:
+    return CoreAudio.AudioObjectPropertyAddress(selector, CoreAudio.kAudioObjectPropertyScopeGlobal, CoreAudio.kAudioObjectPropertyElementMain)
+
+
+_INPUT = _address(CoreAudio.kAudioHardwarePropertyDefaultInputDevice)
+_OUTPUT = _address(CoreAudio.kAudioHardwarePropertyDefaultOutputDevice)
+
+
+def default_devices() -> DefaultDevices:
+    return DefaultDevices(_device(_INPUT), _device(_OUTPUT))
+
+
+def _device(address: object) -> int:
+    status, _size, data = CoreAudio.AudioObjectGetPropertyData(_SYSTEM, address, 0, b"", 4, None)
+    _check(status, "say which device is the default")
+    return struct.unpack("I", data)[0]
+
+
+# [LAW:no-shared-mutable-globals] owned by default_device_changes alone, which adds a target when it registers its
+# listener and deletes it after the listener is removed, so the listener never looks up a token that is gone.
+# CoreAudio carries only an integer to the listener, so the token is how a call finds its target.
+_targets: dict[int, Callable[[], object]] = {}
+_tokens = itertools.count(1)
+
+
+@objc.callbackFor(CoreAudio.AudioObjectAddPropertyListener)
+def _listener(_object: int, _count: int, _addresses: object, token: int) -> int:
+    # A module-level function and not a block: PyObjC makes a new block for every call it is passed to, so a
+    # block cannot be removed again (measured: it went on being called after its removal returned 0).
+    _targets[token]()
+    return 0
 
 
 @contextmanager
@@ -18,24 +63,19 @@ def default_device_changes(changed: Callable[[], object]) -> Iterator[None]:
     It is called on a CoreAudio thread, within milliseconds: measured at 17 ms from an aggregate device being
     destroyed to the call, once for the input and once for the output.
     """
-
-    def listener(_count: int, _addresses: object) -> None:
-        changed()
-
-    addresses = [
-        CoreAudio.AudioObjectPropertyAddress(selector, CoreAudio.kAudioObjectPropertyScopeGlobal, CoreAudio.kAudioObjectPropertyElementMain)
-        for selector in _DEFAULTS
-    ]
-    for address in addresses:
-        _check(CoreAudio.AudioObjectAddPropertyListenerBlock(CoreAudio.kAudioObjectSystemObject, address, None, listener), "listen for")
+    token = next(_tokens)
+    _targets[token] = changed
     try:
+        for address in (_INPUT, _OUTPUT):
+            _check(CoreAudio.AudioObjectAddPropertyListener(_SYSTEM, address, _listener, token), "listen for changes to the default device")
         yield
     finally:
-        for address in addresses:
-            _check(CoreAudio.AudioObjectRemovePropertyListenerBlock(CoreAudio.kAudioObjectSystemObject, address, None, listener), "stop listening for")
+        for address in (_INPUT, _OUTPUT):
+            _check(CoreAudio.AudioObjectRemovePropertyListener(_SYSTEM, address, _listener, token), "stop listening for changes to the default device")
+        del _targets[token]
 
 
 def _check(status: int, doing: str) -> None:
     # [LAW:no-silent-failure] a listener CoreAudio refused is a device loss nobody would hear about.
     if status != 0:
-        raise OSError(f"CoreAudio would not {doing} default device changes: OSStatus {status}")
+        raise OSError(f"CoreAudio would not {doing}: OSStatus {status}")
