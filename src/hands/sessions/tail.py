@@ -10,7 +10,6 @@ import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -18,9 +17,10 @@ from loguru import logger
 
 from hands.core.events import Continued, Interrupted, Taken, Transcribed
 from hands.core.session import Instant, Membership, PromptId, SessionId
+from hands.core.status import Stamp
 from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.transcript import prompt_of, turn_record
+from hands.sessions.transcript import prompt_of, turn_record, written_of
 from hands.sessions.turning import Turning
 
 
@@ -104,14 +104,14 @@ class Following:
     def numbered(self, number: int) -> Reading | None:
         return next((reading for reading in [self.reading, *self.ended] if reading.number == number), None)
 
-    def prompted(self, session: SessionId, record: Payload) -> Taken | Continued | None:
+    def prompted(self, session: SessionId, record: Payload, written: Stamp | None, at: Instant) -> Taken | Continued | None:
         """What this record says of the prompt the session is on: the first record under a prompt's id is Claude Code
         taking it, and Claude answering under an id it was not answering under before is its turn going on under that one."""
         match record.fields.get("type"):
             case "user":
                 # A record that names no prompt says nothing of which one Claude is answering.
                 was, self.asked = self.asked, prompt_of(record) or self.asked
-                return None if self.asked is None or self.asked == was else Taken(session, self.asked)
+                return None if self.asked is None or self.asked == was else Taken(session, self.asked, written, at)
             case _:
                 # An assistant record: Claude answering whatever the user's side last carried.
                 was, self.answering = self.answering, self.asked
@@ -273,18 +273,20 @@ class Tails:
         for line in complete:
             try:
                 record = turn_record(line)
+                written = None if record is None else written_of(record)
             except Rejected as error:
                 # [LAW:no-silent-failure] one unreadable line is skipped and said; the rest of the turn is still told.
                 logger.error(f"a record in the transcript of session {session} could not be read, so it is not told: {error}")
                 continue
             if record is not None:
                 # The prompt first: a prompt's first record can be the one that interrupts it, and it was taken to be.
-                prompted = following.prompted(session, record)
+                # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
+                prompted = following.prompted(session, record, written, self._known.now())
                 if prompted is not None:
                     self._transcribed.append(prompted)
                 if following.consume(record) is not None:
                     self._interrupt(session, record)
-                self.lag = _lag(record)
+                self.lag = None if written is None else time.time() - written / 1000
 
     def _interrupt(self, session: SessionId, record: Payload) -> None:
         prompt = prompt_of(record)
@@ -319,15 +321,3 @@ def _said_at(steps: list[Step], index: int) -> str | None:
 def _spoken(text: str | None) -> str | None:
     """A reply as it is compared and told: what Claude wrote without the whitespace around it, and nothing for an empty one."""
     return None if text is None or not text.strip() else text.strip()
-
-
-def _lag(record: Payload) -> float | None:
-    """How long ago Claude Code wrote this record, by its own timestamp; None for a record that carries none."""
-    stamp = record.fields.get("timestamp")
-    if not isinstance(stamp, str):
-        return None
-    try:
-        written = datetime.fromisoformat(stamp)
-    except ValueError:
-        return None
-    return time.time() - written.timestamp()

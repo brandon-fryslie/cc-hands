@@ -2,10 +2,12 @@
 
 import json
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
 from hands.core.session import PromptId
+from hands.core.status import Stamp
 from hands.core.turn import Asked, Interruption, Notified, Opening, Ref
 from hands.sessions.payload import Payload, Rejected
 
@@ -81,6 +83,23 @@ def prompt_of(record: Payload) -> PromptId | None:
     """The prompt_id of the turn a record belongs to, which Claude Code writes on the user's side of it."""
     value = record.fields.get("promptId")
     return PromptId(value) if isinstance(value, str) else None
+
+
+def written_of(record: Payload) -> Stamp | None:
+    """When Claude Code wrote the record, in the epoch milliseconds it stamps a status with; None for a record with no time.
+
+    Raises Rejected for a time that cannot be read.
+    """
+    match record.fields.get("timestamp"):
+        case None:
+            return None
+        case str() as stamp:
+            try:
+                return Stamp(round(datetime.fromisoformat(stamp).timestamp() * 1000))
+            except ValueError as error:
+                raise Rejected(f"a transcript record's timestamp {stamp!r} is not a time: {error}") from error
+        case other:
+            raise Rejected(f"a transcript record's timestamp should be a string, got {type(other).__name__}")
 
 
 def _opening_of(record: Payload, mid_tool: bool) -> Opening | None:
