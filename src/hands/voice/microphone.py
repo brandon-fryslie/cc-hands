@@ -21,7 +21,7 @@ change, which macOS does the moment the default device disappears.
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Protocol, cast
@@ -32,6 +32,7 @@ from pipecat.frames.frames import OutputAudioRawFrame
 from pipecat.processors.frame_processor import FrameProcessorSetup
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
+from pipecat.transports.base_transport import BaseTransport
 from pipecat.transports.local.audio import (
     LocalAudioInputTransport,
     LocalAudioOutputTransport,
@@ -96,6 +97,8 @@ class Speaker(LocalAudioOutputTransport):
         # [LAW:single-enforcer] every write to the stream goes through this one thread, in place of Pipecat's executor,
         # whose thread the interpreter waits for at exit: a write blocked on a lost device would hold the process open.
         self._writes = SerialThread("speaker writes")
+        # Set while a stream is attached; a write waits on it through a reopen.
+        self._attached = asyncio.Event()
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         # [LAW:one-source-of-truth] Pipecat's local setup is only the base's and an open; the open is open_stream's, so
@@ -120,11 +123,13 @@ class Speaker(LocalAudioOutputTransport):
         # [LAW:one-source-of-truth] the output buffer's share of the fade is read from the open stream,
         # so a speaker with a longer buffer keeps the microphone shut for longer.
         self._fade = _output_stream(self).get_output_latency() + ECHO_PATH_SECS
+        self._attached.set()
 
     def detach(self) -> Stream:
-        """Take the stream away: a write from here on finds none and reports the frame unwritten."""
+        """Take the stream away: a write from here on waits for the next one to be attached."""
         stream: Stream | None = self._out_stream
         assert stream is not None, "the speaker stream opens in setup"
+        self._attached.clear()
         self._out_stream = None
         return stream
 
@@ -135,13 +140,19 @@ class Speaker(LocalAudioOutputTransport):
         # detach has returned once the writer thread reaches the empty work queued behind them.
         await off_loop(lambda: _letting_go(stream.stop_stream), "stopping the speaker")
         await self._writes.run(lambda: None)
-        await off_loop(lambda: _letting_go(stream.close), "closing the speaker")
+        await off_loop(stream.close, "closing the speaker")
+
+    async def cleanup(self) -> None:
+        # Pipecat's local cleanup stops and closes the stream on the loop, under a write that may still be running;
+        # the stream is let go of here the one way a reopen does it, off the loop.
+        await BaseOutputTransport.cleanup(self)
+        await _let_go_at_cleanup(self._out_stream, self.let_go, self._attached.clear)
 
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
-        stream: Stream | None = self._out_stream
-        if stream is None:
-            # Detached while the transport reopens: the frame is not played, so it is reported unwritten and holds nothing shut.
-            return False
+        # [LAW:dataflow-not-control-flow] every frame is written; one that comes while the transport reopens waits for
+        # the new stream, so a reply carries on over the move instead of losing its middle.
+        await self._attached.wait()
+        stream = cast(Stream, self._out_stream)
         if frame.audio.count(0) != len(frame.audio):
             # [LAW:no-ambient-temporal-coupling] recorded before the write is awaited: an interruption cancels
             # the await, but the chunk already handed to PortAudio's thread plays out all the same.
@@ -199,9 +210,14 @@ class KeyedMicrophone(LocalAudioInputTransport):
 
         def stop_and_close() -> None:
             _letting_go(stream.stop_stream)
-            _letting_go(stream.close)
+            stream.close()
 
         await off_loop(stop_and_close, "closing the microphone")
+
+    async def cleanup(self) -> None:
+        # As for the speaker: off the loop, where closing a microphone whose device is gone takes seconds.
+        await BaseInputTransport.cleanup(self)
+        await _let_go_at_cleanup(self._in_stream, self.let_go, lambda: None)
 
     def _audio_in_callback(self, in_data: bytes, frame_count: int, time_info: object, status: int) -> tuple[None, int]:
         # [LAW:no-ambient-temporal-coupling] decided on the audio thread, not when the event loop gets to the
@@ -252,9 +268,12 @@ class KeyedAudioTransport(LocalAudioTransport):
         # [LAW:one-source-of-truth] which defaults the streams are on is read where PortAudio lists them, just before
         # it does, here and at every reopen; a change after the read is one the follower sees. Read any later, it
         # would miss an unplug during the model load between this and the pipeline's start.
-        opened_on = defaults()
-        super().__init__(params)
-        self.opened_on = opened_on
+        self.opened_on = defaults()
+        # [LAW:single-enforcer] PortAudio is started by the one factory, here and at every reopen. LocalAudioTransport's
+        # own init would start an instance of its own, and while two are alive, ending one lists no devices anew.
+        BaseTransport.__init__(self)
+        self._params = params
+        self._pyaudio = cast(pyaudio.PyAudio, portaudio())
         # [LAW:effects-at-boundaries] the speaker's writes and the microphone's captures are stamped from one clock.
         self._speaker = Speaker(self._pyaudio, params, clock)
         self._microphone = KeyedMicrophone(self._pyaudio, params, key, self._speaker, clock)
@@ -315,8 +334,19 @@ def _letting_go(step: Callable[[], None]) -> None:
     try:
         step()
     except OSError as error:
-        # A stream on a device that is gone refuses to stop or close cleanly; it is let go of all the same, and said.
+        # A stream on a device that is gone refuses to stop cleanly; it is let go of all the same, and said.
         logger.warning(f"letting go of an audio stream whose device is gone: {error}")
+
+
+async def _let_go_at_cleanup(held: Stream | None, let_go: Callable[[Stream], Awaitable[None]], detached: Callable[[], None]) -> None:
+    match held:
+        case None:
+            # Nothing is held: a reopen that failed part way through let go of the old stream and attached no new one.
+            pass
+        case stream:
+            detached()
+            async with asyncio.timeout(REOPEN_DEADLINE.total_seconds()):
+                await let_go(stream)
 
 
 def _name(info: object) -> str:

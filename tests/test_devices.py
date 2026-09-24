@@ -29,8 +29,11 @@ class Follower:
         await self.release.wait()
         return self.opened.pop(0)
 
+    async def current(self) -> DefaultDevices:
+        return self.defaults
+
     def follow(self) -> "asyncio.Task[None]":
-        return asyncio.create_task(follow(self.changes, lambda: self.defaults, lambda: self.opened_on, self.reopen, self.say))
+        return asyncio.create_task(follow(self.changes, self.current, lambda: self.opened_on, self.reopen, self.say))
 
     async def say(self, fact: SystemFact) -> None:
         self.said.append(fact)
@@ -88,3 +91,21 @@ async def test_a_headset_unplugged_before_the_pipeline_started_is_followed_once_
     await asyncio.sleep(0.01)
     following.cancel()
     assert follower.said == [AudioMoved(BUILT_IN)]
+
+
+async def test_a_follower_stopped_during_a_reopen_waits_for_it_to_finish() -> None:
+    follower = Follower(BUILT_IN)
+    follower.release.clear()
+    following = follower.follow()
+    await asyncio.sleep(0.01)
+    follower.defaults = DefaultDevices(input=2, output=2)
+    follower.changes.set()
+    await asyncio.sleep(0.01)
+    following.cancel()
+    await asyncio.sleep(0.01)
+    assert not following.done()  # the reopen holds the streams, so the stop waits for it
+    follower.release.set()
+    await asyncio.wait({following})
+    assert following.cancelled()
+    assert follower.opened == []  # the reopen ran to its end
+    assert follower.said == []  # and nothing was said by a follower told to stop

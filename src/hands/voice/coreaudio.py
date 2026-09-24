@@ -53,7 +53,12 @@ _tokens = itertools.count(1)
 def _listener(_object: int, _count: int, _addresses: object, token: int) -> int:
     # A module-level function and not a block: PyObjC makes a new block for every call it is passed to, so a
     # block cannot be removed again (measured: it went on being called after its removal returned 0).
-    _targets[token]()
+    try:
+        _targets[token]()
+    except Exception:
+        # [LAW:no-silent-failure] this runs on CoreAudio's thread, under C frames an exception must not cross: a notice
+        # already in flight when listening stopped, or one after the loop closed, is logged where it happened.
+        logger.exception("a default device change could not be passed on")
     return 0
 
 

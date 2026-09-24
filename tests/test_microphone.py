@@ -16,7 +16,7 @@ from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
 from hands.voice.coreaudio import DefaultDevices
-from hands.voice.microphone import ECHO_PATH_SECS, Devices, KeyedAudioTransport, buffer_age, heard
+from hands.voice.microphone import ECHO_PATH_SECS, Devices, KeyedAudioTransport, PortAudio, buffer_age, heard
 from hands.voice.ptt import Gate, PushToTalk
 
 LOUD = b"\x7f\x7f" * 320
@@ -44,7 +44,7 @@ class Rig:
         self.microphone = self.transport.input()
         self.microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
         self.stream = SimpleStream()
-        setattr(self.speaker, "_out_stream", self.stream)  # PyAudio's stream, which the speaker only writes to
+        self.speaker.attach(cast(PortAudio, SimpleNamespace()), self.stream)  # as setup attaches the stream it opened
 
         async def push_audio_frame(frame: InputAudioRawFrame) -> None:
             self.pushed.append(frame.audio)
@@ -67,11 +67,20 @@ class Rig:
 class SimpleStream:
     def __init__(self) -> None:
         self.blocking = False
+        self.written: list[bytes] = []
 
     def write(self, audio: bytes) -> None:
         # A blocking write returns when the device has taken the chunk, about when it has played.
         while self.blocking:
             time.sleep(0.001)
+        self.written.append(audio)
+
+    def get_output_latency(self) -> float:
+        return 0.0
+
+    def start_stream(self) -> None: ...
+    def stop_stream(self) -> None: ...
+    def close(self) -> None: ...
 
 
 async def test_the_reply_already_given_to_the_speaker_is_not_heard_after_a_press() -> None:
@@ -183,9 +192,9 @@ def lost_transport(log: list[str]) -> KeyedAudioTransport:
     speaker.get_event_loop = asyncio.get_running_loop
     microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     speaker._sample_rate = 24000  # pyright: ignore[reportPrivateUsage]
-    setattr(speaker, "_out_stream", LostStream(log, "old speaker"))
-    setattr(microphone, "_in_stream", LostStream(log, "old microphone"))
-    setattr(transport, "_pyaudio", SimpleNamespace(terminate=lambda: log.append("end portaudio")))
+    speaker.attach(cast(PortAudio, SimpleNamespace()), LostStream(log, "old speaker"))
+    microphone.attach(cast(PortAudio, SimpleNamespace()), LostStream(log, "old microphone"))
+    log.clear()  # the first PortAudio, started by the same factory as every later one
     return transport
 
 
@@ -213,12 +222,19 @@ async def test_reopening_lets_go_of_the_lost_devices_and_opens_on_the_defaults_a
     assert speaker._fade == 0.2 + ECHO_PATH_SECS  # pyright: ignore[reportPrivateUsage]  (read from the new stream)
 
 
-async def test_a_frame_given_while_the_transport_reopens_is_reported_unwritten_and_holds_nothing_shut() -> None:
+async def test_a_frame_given_while_the_transport_reopens_waits_and_plays_on_the_new_stream() -> None:
     rig = Rig()
     rig.speaker.detach()
     rig.now = 1.0
-    assert await rig.speaker.write_audio_frame(OutputAudioRawFrame(audio=LOUD, sample_rate=16000, num_channels=1)) is False
-    assert (rig.speaker.quiet_at, rig.speaker.sounded_at) == (0.0, None)
+    writing = asyncio.create_task(rig.speaker.write_audio_frame(OutputAudioRawFrame(audio=LOUD, sample_rate=16000, num_channels=1)))
+    await asyncio.sleep(0.01)
+    assert not writing.done()
+    assert (rig.speaker.quiet_at, rig.speaker.sounded_at) == (0.0, None)  # nothing has sounded yet
+    reopened = SimpleStream()
+    rig.speaker.attach(cast(PortAudio, SimpleNamespace()), reopened)
+    assert await writing is True
+    assert reopened.written == [LOUD]
+    assert rig.speaker.sounded_at == 1.0
 
 
 async def test_the_streams_are_opened_as_pipecat_opens_them() -> None:
