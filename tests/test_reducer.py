@@ -322,10 +322,16 @@ def test_a_closed_terminal_after_the_sweep_found_the_session_dead_says_nothing_m
 NUDGE = Speak(WaitingForYou(ONE.id))
 
 
-@pytest.mark.parametrize("before", [Idle(), Working(since=1.0)])
-def test_a_session_left_at_its_prompt_is_said_to_be_waiting(before: SessionState) -> None:
-    # A session held as working stopped without a Stop hook, as an interrupt at the keyboard ends a turn.
-    assert reduce(holding(before), Waited(ONE.id)) == (holding(Idle(nudged=True)), [NUDGE])
+def test_a_session_left_at_its_prompt_is_said_to_be_waiting() -> None:
+    assert reduce(holding(Idle()), Waited(ONE.id)) == (holding(Idle(nudged=True)), [NUDGE])
+
+
+def test_an_idle_notification_that_lands_after_the_prompt_it_raced_leaves_the_turn_working() -> None:
+    assert reduce(holding(Working(since=5.0)), Waited(ONE.id)) == (holding(Working(since=5.0)), [])
+
+
+def test_a_nudged_session_prompted_again_marks_the_repository_its_turn_starts_from() -> None:
+    assert reduce(holding(Idle(nudged=True)), Prompted(ONE.id, at=5.0)) == (holding(Working(since=5.0)), [Snapshot(ONE.id, ONE.cwd)])
 
 
 def test_one_idle_period_is_nudged_once() -> None:

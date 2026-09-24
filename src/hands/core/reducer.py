@@ -84,8 +84,8 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case Stopped(session=session, closing=closing):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
             return _enter(registry, event, lambda _: Idle(), lambda _was: [Compare(session), Summarise(session, closing)])
-        case Waited(session=session):
-            return _enter(registry, event, _waited, lambda was: _nudge(session, was.state))
+        case Waited():
+            return _enter(registry, event, _waited)
         case PermissionRequested(at=at, request=request, permission=permission):
             deadline = at + registry.permission_deadline
             return _enter(registry, event, lambda _: Blocked(on=permission, request=request, deadline=deadline, warned=False))
@@ -178,22 +178,13 @@ def _finished(state: SessionState, call: Permission, at: Instant) -> SessionStat
 
 def _waited(state: SessionState) -> SessionState:
     match state:
-        case Idle() | Working():
-            # A session the registry holds as working has stopped all the same: an interrupt at the keyboard ends a
-            # turn with no Stop hook, and Claude Code, which is the one that knows, says it sits at its prompt.
+        case Idle():
             return Idle(nudged=True)
         case _:
-            # A session blocked on a permission is already asked about aloud, and its deadline is spoken; the hook
-            # it holds stays held.
+            # [LAW:no-ambient-temporal-coupling] each hook posts from its own process, so an idle_prompt sent as the
+            # user typed can land after the prompt it raced: a working session stays working, and is not nudged.
+            # A blocked one is already asked about aloud, and its deadline is spoken.
             return state
-
-
-def _nudge(session: SessionId, before: SessionState) -> list[Effect]:
-    match before:
-        case Idle(nudged=False) | Working():
-            return [Speak(WaitingForYou(session))]
-        case _:
-            return []
 
 
 def _abandoned(registry: Registry, session: SessionId, request: RequestId, at: Instant) -> Registry:
@@ -220,6 +211,8 @@ def _transition(session: SessionId, before: SessionState | None, after: SessionS
             return [Reply(session, held, Withdraw())]
         case (_, Blocked(request=asked, on=permission)):
             return [Narrate(PermissionAsked(session, asked, permission))]
+        case (Idle(nudged=False), Idle(nudged=True)):
+            return [Speak(WaitingForYou(session))]
         case _:
             return []
 
