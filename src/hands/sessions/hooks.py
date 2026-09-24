@@ -1,12 +1,13 @@
 """A hook's POST body, parsed once into a core event, and the reply a blocking hook prints."""
 
 from collections.abc import Mapping
+from typing import get_args
 
 from loguru import logger
 
 from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
 from hands.core.events import Ended, EndReason, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished, Waited
-from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, Permission, Plan, PlanApproved, Question, FinishedCall, RequestId, SessionId, UnknownMode
+from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership
 from hands.sessions.payload import Payload, Rejected
@@ -109,22 +110,25 @@ def _mode(payload: Payload) -> Mode | None:
     """The session's permission mode as the hook reports it, which every hook hands reads a mode from carries (2.1.281)."""
     # Not refused when it is missing or strange, as an unknown start is: the hook's event is what moves the session,
     # and refusing a Stop over its mode would leave the session working with nothing left to stop it.
-    match payload.fields.get("permission_mode"):
-        case str() as name:
-            return _named_mode(name)
-        case other:
-            # [LAW:no-silent-failure] the session keeps the mode it last reported, and the log says why it did not move.
-            logger.error(f"{payload.fields.get('hook_event_name')} carried permission_mode as {type(other).__name__}, not a string, so the session keeps the mode it last reported")
+    # [LAW:no-silent-failure] a hook with no mode, or a strange one, leaves the session in the mode it last reported, and the log says why.
+    event = payload.fields.get("hook_event_name")
+    match (payload.fields.get("agent_id"), payload.fields.get("permission_mode")):
+        case (str(), _):
+            # Fired inside a subagent, which runs in its own mode (2.1.281): that mode is not the session's.
+            return None
+        case (_, str() as name):
+            # An unknown mode is not logged: it is said by its name wherever the mode is, which is louder.
+            return _KNOWN_MODES.get(name) or UnknownMode(name)
+        case (_, None):
+            logger.error(f"{event} carried no permission_mode, so the session keeps the mode it last reported")
+            return None
+        case (_, other):
+            logger.error(f"{event} carried permission_mode as {type(other).__name__}, not a string, so the session keeps the mode it last reported")
             return None
 
 
-def _named_mode(name: str) -> Mode:
-    match name:
-        case "default" | "acceptEdits" | "plan" | "auto" | "dontAsk" | "bypassPermissions":
-            return name
-        case _:
-            logger.warning(f"permission_mode {name!r} is not one hands knows, so it is said by its name")
-            return UnknownMode(name)
+# [LAW:one-source-of-truth] the modes hands knows are the type's, read off it rather than listed again.
+_KNOWN_MODES: Mapping[str, PermissionMode] = {mode: mode for mode in get_args(PermissionMode)}
 
 
 def _start_source(source: str) -> StartSource:

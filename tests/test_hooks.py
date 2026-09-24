@@ -86,6 +86,12 @@ def test_a_mode_hands_does_not_know_is_kept_by_its_name(home: Home) -> None:
     assert parse(home, body(hook_event_name="UserPromptSubmit", prompt="hi", permission_mode="ultraplan")) == Prompted(SID, at=12.5, mode=UnknownMode("ultraplan"))
 
 
+def test_a_hook_fired_inside_a_subagent_reports_no_mode_for_the_session(home: Home) -> None:
+    """A subagent runs in its own mode; taking it would flip the session's mode for as long as the subagent works."""
+    raw = body(hook_event_name="PostToolUse", agent_id="a1", permission_mode="bypassPermissions", tool_name="Bash", tool_input={}, tool_use_id="t", tool_response={})
+    assert parse(home, raw) == ToolFinished(SID, at=12.5, call=Permission("Bash", {}), mode=None)
+
+
 @pytest.mark.parametrize("fields", [{}, {"permission_mode": None}, {"permission_mode": 3}])
 def test_a_hook_whose_mode_is_missing_or_not_a_string_still_moves_the_session(home: Home, fields: dict[str, object]) -> None:
     """The stop is what matters; refusing it over its mode would leave the session working forever."""

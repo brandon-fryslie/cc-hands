@@ -338,11 +338,12 @@ the blocking one is the only way to answer a permission. What a turn did, with t
 record id of each step, is in the transcript, which Claude Code appends to while the
 turn runs, so the daemon tails it rather than hooking every tool call. Every hook
 input carries `session_id`, `transcript_path`, `cwd`, and `hook_event_name`. Of the
-events hands subscribes to, `UserPromptSubmit`, `Stop`, `PermissionRequest`, and
-`PostToolUse` carry `permission_mode` as well, and `SessionStart`, `Notification`, and
+events hands subscribes to, `UserPromptSubmit`, `Stop`, `PermissionRequest`,
+`PostToolUse`, and `PostToolUseFailure` carry `permission_mode` as well, and `SessionStart`, `Notification`, and
 `SessionEnd` do not (verified live on 2.1.281). That mode is the session's mode: each
 hook that carries one sets it, `list_sessions` says it, and a change reaches the
-intermediary as a `Note`. Shift-tab fires no hook, and the transcript writes its
+intermediary as a `Note`. A hook fired inside a subagent carries the subagent's mode
+and an `agent_id`, and sets nothing. Shift-tab fires no hook, and the transcript writes its
 `permission-mode` record only as a prompt is sent, so a mode changed at an idle
 prompt is heard at the session's next prompt, and one changed mid-turn at its next
 tool call. The

@@ -165,7 +165,8 @@ def _enter(
             # [LAW:dataflow-not-control-flow] every hook that carries a mode sets it, so a mode changed at the keyboard
             # is heard at the session's next hook, whatever that hook moves the session to.
             mode = held if reported is None else reported
-            return registry.put(Session(membership, after, mode)), [*_transition(membership.id, before, after), *_remoded(membership.id, held, mode), *also(was)]
+            # The mode is noted before the transition's effects, so a request it narrates is explained knowing the mode it was asked in.
+            return registry.put(Session(membership, after, mode)), [*_remoded(membership.id, held, mode), *_transition(membership.id, before, after), *also(was)]
 
 
 def _reported(event: SessionEvent) -> Mode | None:
@@ -178,13 +179,13 @@ def _reported(event: SessionEvent) -> Mode | None:
 
 
 def _remoded(session: SessionId, before: Mode | None, after: Mode | None) -> list[Effect]:
-    match (before, after):
-        case (str() | UnknownMode(), str() | UnknownMode() as now) if before != now:
-            # The model is told, and says nothing: a mode the user set at the keyboard is not news to them, and one
-            # an approved plan set was said in the approval's readback.
-            return [Note(ModeChanged(session, now))]
+    match after:
+        case str() | UnknownMode() if after != before:
+            # Noted from no mode too: a session resumed in a new process may be in another mode than the model was
+            # last told. The model is told, and says nothing: a mode the user set at the keyboard is not news to
+            # them, and one an approved plan set was said in the approval's readback.
+            return [Note(ModeChanged(session, after))]
         case _:
-            # Unchanged, or reported for the first time: there is nothing the model was told that is now wrong.
             return []
 
 

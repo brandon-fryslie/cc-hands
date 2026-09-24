@@ -77,8 +77,9 @@ def list_sessions_tool(sessions: Sessions) -> Tool:
 
         Call this when the user asks what is running, what sessions exist, what
         Claude is working on, or what mode a session is in. A session's mode is the
-        one it had at its last prompt or tool call: one changed at its keyboard since
-        is seen when the session next does something.
+        one it reported when it last did something: a mode changed at its keyboard
+        while it sits at its prompt is seen when it is next prompted, and one changed
+        in the middle of a turn at its next tool call.
         """
         await params.result_callback({"sessions": [describe_listing(listing) for listing in sessions.live()]})
 

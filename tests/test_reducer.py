@@ -410,10 +410,15 @@ def test_a_mode_reported_again_unchanged_is_not_noted() -> None:
     assert not [effect for effect in effects if isinstance(effect, Note)]
 
 
-def test_a_mode_reported_for_the_first_time_is_not_noted() -> None:
+def test_a_mode_reported_for_the_first_time_is_noted_because_a_resumed_session_may_be_in_another_mode() -> None:
     after, effects = reduce(moded(Idle(), None), Prompted(ONE.id, at=5.0, mode="auto"))
     assert after.sessions[ONE.id].mode == "auto"
-    assert not [effect for effect in effects if isinstance(effect, Note)]
+    assert Note(ModeChanged(ONE.id, "auto")) in effects
+
+
+def test_a_request_is_narrated_after_the_mode_it_was_asked_in_is_noted() -> None:
+    _, effects = reduce(moded(Working(since=1.0), "default"), PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode="acceptEdits"))
+    assert effects == [Note(ModeChanged(ONE.id, "acceptEdits")), Narrate(Asking(ONE.id, RequestId("r1"), BASH))]
 
 
 def test_a_mode_hands_does_not_know_is_noted_like_any_other() -> None:

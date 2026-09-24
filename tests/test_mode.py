@@ -1,14 +1,14 @@
 """Mode readback: the permission_mode each hook reports is the session's mode, list_sessions says it, and a change reaches the intermediary unspoken."""
 
 from pathlib import Path
-from typing import cast
+from typing import cast, get_args
 
 import pytest
 from pipecat.frames.frames import LLMMessagesAppendFrame
 
 from hands.core.effects import Allow, ModeChanged, Note
 from hands.core.events import Joined, PermissionRequested, Prompted, Stopped
-from hands.core.session import Membership, Mode, Permission, RequestId, SessionId, UnknownMode
+from hands.core.session import Membership, Mode, Permission, PermissionMode, RequestId, SessionId, UnknownMode
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode
 from hands.voice.speech import frame
@@ -34,6 +34,10 @@ def test_each_mode_is_said_as_the_sessions_own_footer_names_it(mode: Mode, said:
     assert spoken_mode(mode) == said
 
 
+def test_every_mode_claude_code_has_is_said_by_name() -> None:
+    assert all(spoken_mode(mode) for mode in get_args(PermissionMode))
+
+
 def test_a_mode_change_is_put_in_the_context_without_asking_the_model_to_speak() -> None:
     noted = frame(Note(ModeChanged(SID, "acceptEdits")), names=lambda _: "auth refactor")
     assert isinstance(noted, LLMMessagesAppendFrame) and noted.run_llm is False
@@ -48,6 +52,7 @@ async def test_a_mode_changed_at_the_keyboard_is_listed_and_noted_at_the_session
     await sessions.apply(Prompted(SID, at=1.0, mode="default"))
     await sessions.apply(Stopped(SID, "ok", mode="default"))
     assert describe_listing(sessions.live()[0])["mode"] == "manual mode"
+    assert await sessions.heard() == Note(ModeChanged(SID, "default"))
     # Shift-tab at the prompt fires no hook; the next prompt reports where it landed.
     await sessions.apply(Prompted(SID, at=2.0, mode="acceptEdits"))
     assert describe_listing(sessions.live()[0])["mode"] == "accept edits mode"
