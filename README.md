@@ -83,6 +83,7 @@ HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands indicator                  # the daemon's verdict in the menu bar; launchd runs it this way
+uv run hands install-hooks              # merge hands' hooks into ~/.claude/settings.json; again changes nothing
 uv run pytest && uv run pyright
 uv run python evals/narration.py       # real turns through the real summariser; needs the model to be up
 ```

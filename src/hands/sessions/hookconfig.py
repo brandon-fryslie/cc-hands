@@ -1,11 +1,13 @@
 """The hook settings a Claude Code session runs hands with, and the one number every permission time comes from.
 
     <hands python> -m hands.sessions.hookconfig     # prints the settings JSON
+    hands install-hooks                             # merges them into ~/.claude/settings.json
 
 It is imported by the shim, so it holds only the standard library and hands' data modules.
 """
 
 import json
+import re
 import shlex
 import sys
 from collections.abc import Mapping
@@ -24,6 +26,9 @@ PERMISSION_DEADLINE_SECONDS = float(PERMISSION_HOOK_TIMEOUT_SECONDS - REPLY_MARG
 # Every other hook posts and returns, so a daemon slower than this is reported as unreachable.
 POST_TIMEOUT_SECONDS = 2.0
 
+# [LAW:one-source-of-truth] the module every hook command runs, and the installer's mark of an entry that is hands'.
+SHIM_MODULE = "hands.sessions.shim"
+
 SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd")
 
 # [LAW:dataflow-not-control-flow] what each hook declares beyond its command, as a table; the rest take Claude Code's defaults.
@@ -40,8 +45,20 @@ def post_timeout(event: str) -> float:
 
 def hook_settings(python: Path, home: Home) -> dict[str, object]:
     # A single simple command, so the hook's shell execs it and the shim's parent is the claude process.
-    command = shlex.join([str(python), "-m", "hands.sessions.shim", str(home.root)])
+    command = shlex.join([str(python), "-m", SHIM_MODULE, str(home.root)])
     return {"hooks": {event: [{"hooks": [{"type": "command", "command": command, **_declared(event)}]}] for event in SUBSCRIBED}}
+
+
+def runs_the_shim(command: str) -> bool:
+    """Whether a hook command runs hands' shim, as hook_settings builds it or as any earlier or hand-edited version did."""
+    # [LAW:one-source-of-truth] beside the builder, and keyed on the one thing every version of it shares: the shim's
+    # module, named whole. It is found inside `sh -c '...'` and in `-mhands.sessions.shim` alike, so a change to how
+    # the command is built, or a user's wrapping of it, never leaves an entry looking like somebody else's and doubled.
+    return _SHIM_NAMED.search(command) is not None
+
+
+# Named whole: not inside a longer dotted name, though it may be joined to its -m.
+_SHIM_NAMED = re.compile(rf"(?:(?<=-m)|(?<![\w.])){re.escape(SHIM_MODULE)}(?![\w.])")
 
 
 def _declared(event: str) -> dict[str, object]:
