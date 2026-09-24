@@ -111,11 +111,11 @@ class Following:
             case "user":
                 # A record that names no prompt says nothing of which one Claude is answering.
                 was, self.asked = self.asked, prompt_of(record) or self.asked
-                return None if self.asked is None or self.asked == was else Taken(session, self.asked)
+                return None if self.asked is None or self.asked == was else Taken(session, self.asked, written, at)
             case _:
                 # An assistant record: Claude answering whatever the user's side last carried.
                 was, self.answering = self.answering, self.asked
-                return None if was is None or self.answering is None or was == self.answering else Continued(session, was, self.answering, written, at)
+                return None if was is None or self.answering is None or was == self.answering else Continued(session, was, self.answering)
 
     def restart(self) -> None:
         """Read this file again from its start: nothing read of the file it was says anything about the file it is."""

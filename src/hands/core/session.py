@@ -172,7 +172,7 @@ class Session:
     taken: frozenset[PromptId] = frozenset()
     # [LAW:one-source-of-truth] what Claude Code last said the session is doing, as it said it. None until it is read.
     report: Report | None = None
-    # When Claude Code last set the session idle, of the statuses read: what Claude answers under an id no hook named is a
+    # When Claude Code last set the session idle, of the statuses read: a prompt taken under an id no hook named opens a
     # turn only when written since. None until an idle is read, so a transcript read from its start opens nothing.
     idled: Stamp | None = None
     # [LAW:no-ambient-temporal-coupling] the one wait on the transcript, as a value the clock settles: None when every

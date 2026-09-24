@@ -99,7 +99,7 @@ class Deltas:
         self._marking = marking
         self._reading = reading
         self._patience = patience
-        # The mark each session's last snapshot took, or is taking: held from the moment the snapshot starts, so a
+        # The mark each session's last snapshot took, or is taking, or where its last turn compared ended: held from the moment it starts, so a
         # reading that needs it waits for it rather than mistaking one not taken yet for one that could not be.
         # Bounded by the sessions the registry itself keeps, which holds every session it has heard of.
         self._marks: dict[SessionId, Marking] = {}
@@ -140,6 +140,11 @@ class Deltas:
         """
         held = self._readings.setdefault(session, deque())
         start = self._marks.pop(session, None)
+        # Where the repository stands at the end of this turn is where the next one begins, whatever opens it: a
+        # message queued behind this turn runs as soon as its Stop hook returns, and no prompt of its own marks it
+        # (2.1.282). A prompt that does comes later, and marks again [LAW:one-source-of-truth].
+        following: Marking = asyncio.get_running_loop().create_future()
+        self._marks[session] = following
         if len(held) >= HELD:
             # Dropped from the back, never the front, and that is the whole of what keeps the two sides in
             # step. A telling takes the oldest reading, and tellings are not dropped alongside readings —
@@ -147,13 +152,15 @@ class Deltas:
             # the turn after its own, which is the one thing `taken` exists to prevent. Dropped from the
             # back, every turn that has a delta has its own [LAW:no-ambient-temporal-coupling].
             logger.warning(f"{HELD} deltas of session {session} are already waiting to be told, so this turn is told without one")
+            following.set_result(None)
             return
         pending: asyncio.Future[Delta] = asyncio.get_running_loop().create_future()
         held.append(pending)
         if start is None:
             pending.set_result(Delta())
+            following.set_result(None)
             return
-        task = asyncio.create_task(self._read(pending, start), name=f"what a turn of session {session} changed")
+        task = asyncio.create_task(self._read(pending, following, start), name=f"what a turn of session {session} changed")
         # Held, because the loop keeps only a weak reference and would collect a task nobody is awaiting.
         self._running.add(task)
         task.add_done_callback(self._running.discard)
@@ -178,16 +185,20 @@ class Deltas:
             logger.info(f"what a turn of session {session} changed is still being read, so the turn is told without it")
             return Delta()
 
-    async def _read(self, pending: asyncio.Future[Delta], start: Marking) -> None:
-        """[LAW:no-silent-failure] whatever happens here, whoever is waiting is answered rather than left."""
+    async def _read(self, pending: asyncio.Future[Delta], following: Marking, start: Marking) -> None:
+        """[LAW:no-silent-failure] whatever happens here, whoever is waiting is answered rather than left: the telling
+        with the delta, and the turn after with where this one ended."""
+        delta, end = Delta(), None
         try:
             mark = await start
-            delta = Delta() if mark is None else await self._between(mark, time.monotonic() + self._reading)
+            if mark is not None:
+                delta, end = await self._between(mark, time.monotonic() + self._reading)
         except Exception as error:
             logger.error(f"what a turn changed could not be read: {type(error).__name__}: {error}")
-            delta = Delta()
         if not pending.done():
             pending.set_result(delta)
+        if not following.done():
+            following.set_result(end)
 
     async def _mark(self, cwd: Path, deadline: float) -> Mark | None:
         root = await self._git(cwd, "rev-parse", "--show-toplevel", deadline=deadline)
@@ -217,14 +228,20 @@ class Deltas:
         """
         return await self._git(root, "symbolic-ref", "--quiet", "HEAD", deadline=deadline) is not None
 
-    async def _between(self, mark: Mark, deadline: float) -> Delta:
-        """What changed from the mark to where the repository stands now."""
+    async def _between(self, mark: Mark, deadline: float) -> tuple[Delta, Mark | None]:
+        """What changed from the mark to where the repository stands now, and where that is: None where git could not
+        say, so a repository with no commit yet leaves no end to begin the next turn from."""
         # Read before the tree, because they are two fast commands where the tree is the slow one: a turn
         # whose commit is the one thing worth saying about it should not lose that because `git add -A` took
         # longer than a reading is given, or failed for a reason that has nothing to do with the commit.
         head = await self._git(mark.root, "rev-parse", "HEAD", deadline=deadline)
         commits = await self._commits(mark, head, deadline)
         tree = await self._tree(mark.root, deadline)
+        end = None if head is None or tree is None else Mark(mark.root, head, tree)
+        return await self._changed(mark, commits, tree, deadline), end
+
+    async def _changed(self, mark: Mark, commits: tuple[Commit, ...], tree: str | None, deadline: float) -> Delta:
+        """What the tree the turn left says it changed, with the commits it made."""
         if tree is None or tree == mark.tree:
             # Unreadable, or the working tree came back to where it started — which a commit and nothing else does.
             return Delta(commits=commits)

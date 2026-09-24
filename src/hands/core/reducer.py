@@ -90,14 +90,17 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case Prompted(session=session, at=at, prompt=prompt):
             # A turn opens at the prompt: a prompt heard while a turn runs is in that turn, as a queued message's hook names
             # it (2.1.281), and marks nothing, or the mark would move into the middle of the work it is there to measure
-            # [LAW:no-ambient-temporal-coupling]. That message's own turn opens when Claude answers it: see _opens.
+            # [LAW:no-ambient-temporal-coupling]. That message's own turn opens when it is taken: see _opens.
             return _enter(registry, event, lambda state: _prompted(state, prompt, at), _marked)
         case Taken(session=session, prompt=prompt) if (held := _running(registry, session)) is not None:
             # The record names the turn Claude Code runs; it ends none. Only whether it is the one sent says anything.
             return _enter(registry, event, lambda state: _taken(state, _names(held, prompt)))
+        case Taken(session=session, at=at) if _opens(registry.sessions.get(session), event):
+            # A turn no hook opened: named, so its Stop ends it. Not marked: it began where the turn before it ended, which
+            # that turn's Compare marks, and a mark taken now could land after Claude has begun changing the repository.
+            return _enter(registry, event, lambda _: Working(since=at))
         case Taken():
-            # Read after its turn ended, or of one this registry never heard open: nothing to move. A command such as
-            # /compact is taken at the prompt too, and is no turn; Claude answering is what opens one: see _opens.
+            # Read after its turn ended, before any idle was read, or of one Claude Code said was over since: nothing to move.
             return registry, []
         case Stopped(session=session, closing=closing, prompt=stopped) if _ends(registry.sessions.get(session), stopped):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
@@ -116,9 +119,6 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case Continued(session=session, was=was) if (held := _running(registry, session)) is not None and _names(held, was):
             # Still working, now on the queued message: the turn goes by its id, so the Stop that ends it names it.
             return _enter(registry, event, lambda state: state)
-        case Continued(session=session, at=at) if _opens(registry.sessions.get(session), event):
-            # A turn no hook opened: marked as a prompt's is, and named, so its Stop ends it and its delta is its own.
-            return _enter(registry, event, lambda _: Working(since=at), _marked)
         case Continued():
             # Read after the turn it went on in had ended, or of one this registry never heard open: nothing to move.
             return registry, []
@@ -270,9 +270,9 @@ def _untold(event: SessionEvent, was: Session) -> tuple[Untold | None, list[Effe
             return None, _telling(was, closing)
         case Interrupted(prompt=prompt) if _awaiting(was) and _names(was, prompt):
             return None, _telling(was, None)
-        case Ended() | Prompted() | Continued():
-            # Told before a session is said to be gone, and before a prompt or an answer marks the turn after it, so it is
-            # compared against its own mark: in the order they happened.
+        case Ended() | Prompted() | Taken():
+            # Told before a session is said to be gone, and before the turn after it opens, so it is compared against its
+            # own mark: in the order they happened. A Taken reaches here only opening a turn, or inside one.
             return None, _telling(was, None)
         case _:
             return was.untold, []
@@ -289,7 +289,7 @@ def _telling(was: Session, closing: str | None) -> list[Effect]:
 def _named(event: SessionEvent, was: Session) -> tuple[PromptId | None, frozenset[PromptId]]:
     """The turn the session is in after the event, and the other ids it has gone on under."""
     match event:
-        case Prompted(prompt=prompt) | Continued(now=prompt) if isinstance(was.state, Idle):
+        case Prompted(prompt=prompt) | Taken(prompt=prompt) if isinstance(was.state, Idle):
             return prompt, frozenset()
         case Stopped(prompt=str() as prompt) if isinstance(was.state, Idle) and _ends(was, prompt):
             # A turn hands never had running, as a queued one whose Stop is applied before its record is read: named as
@@ -321,15 +321,15 @@ def _names(session: Session, prompt: PromptId | None) -> bool:
     return prompt == session.turn or prompt in session.taken
 
 
-def _opens(session: Session | None, answered: Continued) -> bool:
-    """Whether Claude answering at the prompt opens a turn no hook opened: under an id the session does not go by
+def _opens(session: Session | None, taken: Taken) -> bool:
+    """Whether a prompt taken at the prompt opens a turn no hook opened: under an id the session does not go by
     already, written since Claude Code last said the session is idle."""
     match session:
-        case Session(state=Idle(), idled=int() as idled) if not _names(session, answered.now):
+        case Session(state=Idle(), idled=int() as idled) if not _names(session, taken.prompt):
             # [LAW:one-source-of-truth] Claude Code's own two clocks, never the order hands read them in: an idle set after
-            # the answer was written is that turn over, stopped before any of it was read. It sets idle for ~3 ms between
+            # the record was written is that turn over, stopped before any of it was read. It sets idle for ~3 ms between
             # a turn and the message queued behind it (2.1.282), which a read can land on, and which came first.
-            return answered.written is not None and answered.written >= idled
+            return taken.written is not None and taken.written >= idled
         case _:
             # Running already, or with no idle read since hands began following it: a transcript read from its start.
             return False
