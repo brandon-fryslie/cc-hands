@@ -738,7 +738,7 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
         more.write(lines(CUT_OFF, NEXT_ASKED, DONE))
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
-    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2")))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False))
 
     ended = await asyncio.wait_for(sessions.story(), 2.0)
     assert ended == Summarise(SID, PromptId("p1"), None)
@@ -775,7 +775,7 @@ async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_
     transcript.write_text(lines(ASKED, WRITING, CUT_OFF, NEXT_ASKED, DONE))
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
-    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2")))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False))
     # Both readings are taken before anything is asserted, so a failure leaves no git command running.
     changed = [[file.path for file in (await deltas.taken(SID)).files] for _ in range(2)]
 

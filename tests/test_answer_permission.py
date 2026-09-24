@@ -30,7 +30,8 @@ SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000002")
 COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/code/cc-hands"}
 START = {**COMMON, "hook_event_name": "SessionStart", "source": "startup"}
 ASK: dict[str, object] = {**COMMON, "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "rm -r build"}, "permission_suggestions": []}
-STOP = {**COMMON, "hook_event_name": "Stop", "stop_hook_active": False}
+PROMPT = {**COMMON, "hook_event_name": "UserPromptSubmit", "prompt": "clean the build", "prompt_id": "p"}
+STOP = {**COMMON, "hook_event_name": "Stop", "stop_hook_active": False, "prompt_id": "p"}
 DEADLINE = 30.0
 WAIT_SECONDS = 5.0
 
@@ -105,6 +106,8 @@ PLAN: dict[str, object] = {**ASK, "tool_name": "ExitPlanMode", "tool_input": {"p
 
 async def asked(home: Home, sessions: Sessions, payload: Mapping[str, object] = ASK) -> tuple[Shim, Asking]:
     assert await (await Shim.run(home, START)).finished() == (0, "", "")
+    # A request is asked inside the turn a prompt opened, and the Stop that ends that turn names it.
+    assert await (await Shim.run(home, PROMPT)).finished() == (0, "", "")
     shim = await Shim.run(home, payload)
     heard = await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
     assert isinstance(heard, Narrate)

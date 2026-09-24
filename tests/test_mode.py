@@ -8,7 +8,7 @@ from pipecat.frames.frames import LLMMessagesAppendFrame
 
 from hands.core.effects import Allow, ModeChanged, Note
 from hands.core.events import Joined, PermissionRequested, Prompted, Stopped
-from hands.core.session import Membership, Mode, Permission, PermissionMode, RequestId, SessionId, UnknownMode
+from hands.core.session import Membership, Mode, PromptId, Permission, PermissionMode, RequestId, SessionId, UnknownMode
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode
 from hands.voice.speech import frame
@@ -49,12 +49,12 @@ async def test_a_mode_changed_at_the_keyboard_is_listed_and_noted_at_the_session
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(ONE, "startup"))
     assert describe_listing(sessions.live()[0])["mode"] == "not reported yet"
-    await sessions.apply(Prompted(SID, at=1.0, mode="default", prompt=None))
-    await sessions.apply(Stopped(SID, "ok", mode="default", prompt=None))
+    await sessions.apply(Prompted(SID, at=1.0, mode="default", prompt=PromptId("p1")))
+    await sessions.apply(Stopped(SID, "ok", mode="default", prompt=PromptId("p1"), again=False))
     assert describe_listing(sessions.live()[0])["mode"] == "manual mode"
     assert await sessions.heard() == Note(ModeChanged(SID, "default"))
     # Shift-tab at the prompt fires no hook; the next prompt reports where it landed.
-    await sessions.apply(Prompted(SID, at=2.0, mode="acceptEdits", prompt=None))
+    await sessions.apply(Prompted(SID, at=2.0, mode="acceptEdits", prompt=PromptId("p1")))
     assert describe_listing(sessions.live()[0])["mode"] == "accept edits mode"
     assert await sessions.heard() == Note(ModeChanged(SID, "acceptEdits"))
 
@@ -62,7 +62,7 @@ async def test_a_mode_changed_at_the_keyboard_is_listed_and_noted_at_the_session
 async def test_a_voice_answer_keeps_the_mode_the_session_reported() -> None:
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(ONE, "startup"))
-    await sessions.apply(Prompted(SID, at=1.0, mode="plan", prompt=None))
+    await sessions.apply(Prompted(SID, at=1.0, mode="plan", prompt=PromptId("p1")))
     request = PermissionRequested(SID, at=2.0, request=RequestId("r1"), on=Permission("Bash", {}), mode="plan")
     await sessions.apply(request)
     await sessions.answer(RequestId("r1"), Allow())

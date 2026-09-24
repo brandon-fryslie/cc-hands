@@ -48,8 +48,7 @@ class Prompted:
     # [LAW:no-ambient-temporal-coupling] the prompt_id that names the turn this prompt opens. Only the opening names the
     # turn: every hook of a background subagent carries the prompt_id of the turn that started it, even after that
     # turn stopped and another opened (2.1.281), so a turn read off any later hook could be one already over.
-    # None only when the hook carried none, which 2.1.281's never do.
-    prompt: PromptId | None
+    prompt: PromptId
 
 
 @dataclass(frozen=True)
@@ -59,8 +58,11 @@ class Stopped:
     # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
     mode: Mode | None
     # The prompt_id of the turn that stopped: the id it last went on under, and a turn a background task's notification
-    # opened has its own, which its UserPromptSubmit carried too (2.1.281). None only when the hook carried none.
-    prompt: PromptId | None
+    # opened has its own, which its UserPromptSubmit carried too (2.1.281).
+    prompt: PromptId
+    # Whether this is the turn stopping again: another Stop hook blocked its last Stop, so Claude went on in it under the
+    # same id (stop_hook_active, verified live on 2.1.282). The one Stop that ends a turn already told.
+    again: bool
 
 
 @dataclass(frozen=True)

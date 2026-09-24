@@ -211,6 +211,9 @@ class Compare:
     """
 
     session: SessionId
+    # Whether this is the turn going on after another Stop hook blocked its Stop (Stopped.again): read against where
+    # the reading of its last Stop found the repository, since no prompt marked where the part going on began.
+    again: bool
 
 
 # What a turn did to the repository it ran in, which no record of the session need name: a formatter, a code

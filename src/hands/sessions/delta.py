@@ -76,7 +76,7 @@ class Changes(Protocol):
 
     async def snapshot(self, session: SessionId, cwd: Path) -> None: ...
 
-    async def compare(self, session: SessionId) -> None: ...
+    async def compare(self, session: SessionId, again: bool) -> None: ...
 
     async def taken(self, session: SessionId) -> Delta: ...
 
@@ -86,7 +86,7 @@ class NoChanges:
 
     async def snapshot(self, session: SessionId, cwd: Path) -> None: ...
 
-    async def compare(self, session: SessionId) -> None: ...
+    async def compare(self, session: SessionId, again: bool) -> None: ...
 
     async def taken(self, session: SessionId) -> Delta:
         return Delta()
@@ -103,6 +103,10 @@ class Deltas:
         # reading that needs it waits for it rather than mistaking one not taken yet for one that could not be.
         # Bounded by the sessions the registry itself keeps, which holds every session it has heard of.
         self._marks: dict[SessionId, Marking] = {}
+        # Where each session's last reading found the repository: the mark of a turn going on after another Stop hook
+        # blocked its Stop, which no prompt marked. Kept apart from _marks, so no other turn is read against it, and
+        # replaced by the next reading. Bounded as _marks is.
+        self._reached: dict[SessionId, Marking] = {}
         # One reading per turn that stopped, oldest first, so a session that stops twice while the narrator is
         # busy has each turn told with its own delta rather than the newer one told as both.
         self._readings: dict[SessionId, deque[asyncio.Future[Delta]]] = {}
@@ -126,7 +130,7 @@ class Deltas:
             # Not a repository, or one that cannot be read: the turn is told by its steps, which is most of it.
             logger.debug(f"nothing to compare a turn of session {session} against in {cwd}")
 
-    async def compare(self, session: SessionId) -> None:
+    async def compare(self, session: SessionId, again: bool) -> None:
         """Take the turn's place in the order and start reading what it changed. Waits for none of it.
 
         Started when the turn stops, not when its summary is made: summaries are made one at a time and take
@@ -139,7 +143,12 @@ class Deltas:
         its telling [LAW:no-silent-failure].
         """
         held = self._readings.setdefault(session, deque())
-        start = self._marks.pop(session, None)
+        start = (self._reached if again else self._marks).pop(session, None)
+        # [LAW:no-ambient-temporal-coupling] where this reading finds the repository is where the turn goes on from if
+        # another Stop hook blocked its Stop: the part going on is read against it, so a file changed after the first
+        # Stop is told with the second, however the reading and the work interleave.
+        end: Marking = asyncio.get_running_loop().create_future()
+        self._reached[session] = end
         if len(held) >= HELD:
             # Dropped from the back, never the front, and that is the whole of what keeps the two sides in
             # step. A telling takes the oldest reading, and tellings are not dropped alongside readings —
@@ -147,13 +156,15 @@ class Deltas:
             # the turn after its own, which is the one thing `taken` exists to prevent. Dropped from the
             # back, every turn that has a delta has its own [LAW:no-ambient-temporal-coupling].
             logger.warning(f"{HELD} deltas of session {session} are already waiting to be told, so this turn is told without one")
+            end.set_result(None)
             return
         pending: asyncio.Future[Delta] = asyncio.get_running_loop().create_future()
         held.append(pending)
         if start is None:
             pending.set_result(Delta())
+            end.set_result(None)
             return
-        task = asyncio.create_task(self._read(pending, start), name=f"what a turn of session {session} changed")
+        task = asyncio.create_task(self._read(pending, start, end), name=f"what a turn of session {session} changed")
         # Held, because the loop keeps only a weak reference and would collect a task nobody is awaiting.
         self._running.add(task)
         task.add_done_callback(self._running.discard)
@@ -178,14 +189,18 @@ class Deltas:
             logger.info(f"what a turn of session {session} changed is still being read, so the turn is told without it")
             return Delta()
 
-    async def _read(self, pending: asyncio.Future[Delta], start: Marking) -> None:
+    async def _read(self, pending: asyncio.Future[Delta], start: Marking, end: Marking) -> None:
         """[LAW:no-silent-failure] whatever happens here, whoever is waiting is answered rather than left."""
+        delta, reached = Delta(), None
         try:
             mark = await start
-            delta = Delta() if mark is None else await self._between(mark, time.monotonic() + self._reading)
+            if mark is not None:
+                delta, reached = await self._between(mark, time.monotonic() + self._reading)
         except Exception as error:
             logger.error(f"what a turn changed could not be read: {type(error).__name__}: {error}")
-            delta = Delta()
+        finally:
+            # Answered however this ends, a cancelled reading included, so the part going on never waits on it for ever.
+            end.set_result(reached)
         if not pending.done():
             pending.set_result(delta)
 
@@ -217,17 +232,20 @@ class Deltas:
         """
         return await self._git(root, "symbolic-ref", "--quiet", "HEAD", deadline=deadline) is not None
 
-    async def _between(self, mark: Mark, deadline: float) -> Delta:
-        """What changed from the mark to where the repository stands now."""
+    async def _between(self, mark: Mark, deadline: float) -> tuple[Delta, Mark | None]:
+        """What changed from the mark to where the repository stands now, and that place as a mark, when it was read."""
         # Read before the tree, because they are two fast commands where the tree is the slow one: a turn
         # whose commit is the one thing worth saying about it should not lose that because `git add -A` took
         # longer than a reading is given, or failed for a reason that has nothing to do with the commit.
         head = await self._git(mark.root, "rev-parse", "HEAD", deadline=deadline)
         commits = await self._commits(mark, head, deadline)
         tree = await self._tree(mark.root, deadline)
+        # [LAW:parse-dont-validate] as in _mark: where the repository stands is known only if both were read, and a HEAD
+        # that would not answer is no commit only where git says there is none yet.
+        reached = None if tree is None or (head is None and not await self._unborn(mark.root, deadline)) else Mark(mark.root, head, tree)
         if tree is None or tree == mark.tree:
             # Unreadable, or the working tree came back to where it started — which a commit and nothing else does.
-            return Delta(commits=commits)
+            return Delta(commits=commits), reached
         numstat = await self._git(mark.root, "diff", "--numstat", mark.tree, tree, deadline=deadline)
         if numstat is None:
             # [LAW:no-silent-failure] git not answering is not git saying nothing changed. Counted as the
@@ -235,7 +253,7 @@ class Deltas:
             # are here to enforce is not enforced at all — on the diff most likely to have been what stopped
             # the counting. What the turn committed is known either way, so that much is still told.
             logger.info(f"what a turn changed in {mark.root} could not be counted, so its patch is not read")
-            return Delta(commits=commits)
+            return Delta(commits=commits), reached
         files = _files(numstat)
         counted = sum((file.added or 0) + (file.removed or 0) for file in files)
         if counted > MOST_LINES:
@@ -244,9 +262,9 @@ class Deltas:
             # are already in hand, so they are what says no — and what is left, the files and their counts, is
             # all of a diff that size that would have survived the summariser's budget anyway.
             logger.info(f"a turn changed {counted} lines in {mark.root}, too many to keep the patch of, so its files are told instead")
-            return Delta(files, commits)
+            return Delta(files, commits), reached
         patch = await self._git(mark.root, "diff", mark.tree, tree, deadline=deadline)
-        return Delta(files, commits, "" if patch is None else patch[:MOST])
+        return Delta(files, commits, "" if patch is None else patch[:MOST]), reached
 
     async def _commits(self, mark: Mark, head: str | None, deadline: float) -> tuple[Commit, ...]:
         if head is None or head == mark.head:

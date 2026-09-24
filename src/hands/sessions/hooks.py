@@ -24,9 +24,9 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
             source = _start_source(payload.text("source"))
             return Joined(read_membership(home, session), source)
         case "UserPromptSubmit":
-            return Prompted(session, at, _mode(payload), _prompt(payload, "UserPromptSubmit"))
+            return Prompted(session, at, _mode(payload), _prompt(payload))
         case "Stop":
-            return Stopped(session, _closing(payload), _mode(payload), _prompt(payload, "Stop"))
+            return Stopped(session, _closing(payload), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"))
         case "Notification":
             return _notified(session, payload.text("notification_type"))
         case "PermissionRequest":
@@ -99,17 +99,17 @@ def _closing(payload: Payload) -> str | None:
         case None:
             return None
         case other:
-            # Not refused, as an unknown start is: a turn is what the Stop hook says, and the reply it carries is how
-            # that turn is narrated. Refusing the hook over the narration would leave the session working with nothing
-            # left to stop it, so the turn is taken and the loud line says why it will be told without its last reply.
+            # Not refused, as a Stop that names no turn is: the prompt_id says which turn stopped, and the reply only
+            # how that turn is narrated. Refusing the hook over the narration would lose the turn's telling, so the turn
+            # is taken and the loud line says why it will be told without its last reply.
             logger.error(f"Stop carried last_assistant_message as {type(other).__name__}, not a string, so the turn is told without its closing reply")
             return None
 
 
 def _mode(payload: Payload) -> Mode | None:
     """The session's permission mode as the hook reports it, which every hook hands reads a mode from carries (2.1.281)."""
-    # Not refused when it is missing or strange, as an unknown start is: the hook's event is what moves the session,
-    # and refusing a Stop over its mode would leave the session working with nothing left to stop it.
+    # Not refused when it is missing or strange, as a hook that names no turn is: the hook's event and its turn are what
+    # move the session, and refusing a Stop over its mode would lose that turn's telling.
     # [LAW:no-silent-failure] a hook with no mode, or a strange one, leaves the session in the mode it last reported, and the log says why.
     event = payload.fields.get("hook_event_name")
     match (payload.fields.get("agent_id"), payload.fields.get("permission_mode")):
@@ -127,17 +127,12 @@ def _mode(payload: Payload) -> Mode | None:
             return None
 
 
-def _prompt(payload: Payload, event: str) -> PromptId | None:
-    """The prompt_id that names the turn a prompt opens or a Stop ends, which every one of them carries (2.1.281)."""
-    # Not refused when it is missing, as the mode is not: a prompt is what moves the session to working, and a Stop
-    # what has its turn told.
-    # [LAW:no-silent-failure] a turn with no name cannot be matched to its records, and the log says so.
-    match payload.fields.get("prompt_id"):
-        case str() as prompt:
-            return PromptId(prompt)
-        case other:
-            logger.error(f"{event} carried prompt_id as {other!r}, so its turn cannot be matched to its records")
-            return None
+def _prompt(payload: Payload) -> PromptId:
+    """The prompt_id that names the turn a prompt opens or a Stop ends, which every one of them carries (2.1.281).
+
+    Raises Rejected for a hook that names no turn: nothing inland could match it to its records or its Stop.
+    """
+    return PromptId(payload.text("prompt_id"))
 
 
 # [LAW:one-source-of-truth] the modes hands knows are the type's, read off it rather than listed again.
