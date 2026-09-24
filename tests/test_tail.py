@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from hands.core.events import Interrupted
+from hands.core.events import Continued, Interrupted
 from hands.core.session import Membership, PromptId, SessionId
 from hands.core.turn import Asked, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Turn
 from hands.core.effects import Summarise
@@ -503,6 +503,46 @@ async def test_the_older_record_of_an_interrupt_written_as_a_plain_string_is_one
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING, '{"type":"user","promptId":"p1","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}'))
     assert await Tails(Registry([member(transcript)])).catch_up() == [Interrupted(SID, PromptId("p1"), at=7.0)]
+
+
+# A message queued while the loop ran, flushed by Escape, as captured live on 2.1.281: the cancelled call's result and the
+# interrupt already carry the queued message's own new id, and so does everything Claude answers after it.
+FLUSHED = REJECTED.replace('"p1"', '"p2"')
+FLUSHING = CUT_OFF_MID_TOOL.replace('"p1"', '"p2"')
+QUEUED = '{"type":"user","promptId":"p2","message":{"role":"user","content":"also say banana"}}'
+BANANA = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"banana"}]}}'
+
+
+async def test_a_turn_that_goes_on_under_a_queued_prompt_is_heard_to_after_the_interrupt_that_flushed_it(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, LOOPING, FLUSHED, FLUSHING, QUEUED, BANANA))
+    tails = Tails(Registry([member(transcript)]))
+    assert await tails.catch_up() == [Interrupted(SID, PromptId("p2"), at=7.0), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
+
+
+async def test_a_queued_command_taken_in_mid_turn_is_heard_from_the_results_claude_answers(tmp_path: Path) -> None:
+    """As in a transcript on this machine: a queued /rate-limit-options writes no prompt, and the turn goes on under its id."""
+    transcript = tmp_path / "t.jsonl"
+    ran = '{"type":"user","promptId":"p2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"done"}]}}'
+    transcript.write_text(lines(ASKED, LOOPING, ran, WRITING))
+    assert await Tails(Registry([member(transcript)])).catch_up() == [Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
+
+
+async def test_an_escape_in_the_turn_a_queued_prompt_went_on_as_leaves_the_session_idle(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, LOOPING))
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member(transcript), "startup"))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    tailing = asyncio.create_task(keep_tailing(Tails(sessions), 0.01, sessions.apply))
+    try:
+        with transcript.open("a") as more:
+            more.write(lines(FLUSHED, FLUSHING, QUEUED, LOOPING, REJECTED.replace('"p1"', '"p2"'), CUT_OFF_MID_TOOL.replace('"p1"', '"p2"')))
+        assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, None)
+    finally:
+        tailing.cancel()
+    listing = sessions.listing(SID)
+    assert listing is not None and isinstance(listing.session.state, Idle)
 
 
 async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_and_the_session_is_idle(tmp_path: Path) -> None:

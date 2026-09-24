@@ -16,8 +16,8 @@ from typing import Protocol
 
 from loguru import logger
 
-from hands.core.events import Interrupted
-from hands.core.session import Instant, Membership, SessionId
+from hands.core.events import Continued, Interrupted, Transcribed
+from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.transcript import prompt_of, turn_record
@@ -49,6 +49,10 @@ class Following:
     turn: Turning = field(default_factory=Turning)
     told: int = 0
     stood_in: str | None = None
+    # The prompt_id on the user's side of the last record read, and the one Claude last answered under: the turn it is
+    # in goes by the second, which a queued message changes mid-turn with no hook to say so.
+    asked: PromptId | None = None
+    answering: PromptId | None = None
 
     def consume(self, record: Payload) -> Interruption | None:
         """Read one record into the turn, letting go of the turn before it where this record opens a new one, and
@@ -61,11 +65,23 @@ class Following:
             case edge:
                 return edge
 
+    def answered(self, record: Payload) -> tuple[PromptId, PromptId] | None:
+        """The ids Claude was answering under and is now, where this record is it answering under a new one."""
+        match record.fields.get("type"):
+            case "user":
+                self.asked = prompt_of(record)
+                return None
+            case _:
+                # An assistant record: Claude answering whatever the user's side last carried.
+                was, self.answering = self.answering, self.asked
+                return None if was is None or self.answering is None or was == self.answering else (was, self.answering)
+
     def restart(self) -> None:
         """Read this file again from its start: nothing read of the file it was says anything about the file it is."""
         self.forget()
         self.offset = 0
         self.turn.mid_tool = False
+        self.asked = self.answering = None
 
     def forget(self) -> None:
         """Nothing told of the turn that was counts for the turn that is."""
@@ -101,14 +117,15 @@ class Tails:
         # last reading touched: it measures this loop keeping up, which is the loop's property and not a
         # session's. None where that record carried no timestamp, because then nothing measured it.
         self.lag: float | None = None
-        # Every interruption read and not yet handed out, by whichever reading found it: a Stop's reading can be the one
-        # that reads it. Touched only under the lock.
-        self._interrupted: list[Interrupted] = []
+        # Everything read of a turn that no hook says and not yet handed out, in the order it was read, by whichever
+        # reading found it: a Stop's reading can be the one that reads it. Touched only under the lock.
+        self._transcribed: list[Transcribed] = []
 
-    async def catch_up(self) -> list[Interrupted]:
+    async def catch_up(self) -> list[Transcribed]:
         """Read what has been appended to every live session's transcript, and forget the sessions that are gone.
 
-        Returns the turns read as interrupted since the last catch-up, in the order they were read, which no hook says.
+        Returns what was read of each turn since the last catch-up that no hook says — where it was interrupted, and
+        where it went on under a queued message's id — in the order it was read.
         """
         async with self._reading:
             members = self._known.live_members()
@@ -130,8 +147,8 @@ class Tails:
                 except OSError as error:
                     # [LAW:no-silent-failure] the offset does not move, so the same bytes are read again at the next catch-up.
                     logger.error(f"cannot read the transcript of session {member.id} from {following.path}: {error}")
-            interrupted, self._interrupted = self._interrupted, []
-            return interrupted
+            transcribed, self._transcribed = self._transcribed, []
+            return transcribed
 
     async def tell(self, session: SessionId, closing: str | None) -> Telling | None:
         """What the session has not been told of its turn, or None before anything has opened one.
@@ -215,6 +232,9 @@ class Tails:
             if record is not None:
                 if following.consume(record) is not None:
                     self._interrupt(session, record)
+                moved = following.answered(record)
+                if moved is not None:
+                    self._transcribed.append(Continued(session, *moved))
                 self.lag = _lag(record)
 
     def _interrupt(self, session: SessionId, record: Payload) -> None:
@@ -224,19 +244,19 @@ class Tails:
             logger.error(f"session {session} was interrupted, but the record of it names no prompt, so its turn cannot be ended")
             return
         # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
-        self._interrupted.append(Interrupted(session, prompt, self._known.now()))
+        self._transcribed.append(Interrupted(session, prompt, self._known.now()))
 
 
-async def keep_tailing(tails: Tails, period: float, apply: Callable[[Interrupted], Awaitable[None]]) -> None:
-    """Read what every live transcript has gained, once a period, and apply each interruption it held, until cancelled.
+async def keep_tailing(tails: Tails, period: float, apply: Callable[[Transcribed], Awaitable[None]]) -> None:
+    """Read what every live transcript has gained, once a period, and apply what it held that no hook says, until cancelled.
 
     The period is how late a record can be turned into a step, which is what a turn narrated while it runs waits on,
     and how late a turn the user stopped is heard to have stopped.
     """
     while True:
         # Applied outside the reading: an interruption is told as a stopped turn is, and the telling reads the tail.
-        for interrupted in await tails.catch_up():
-            await apply(interrupted)
+        for transcribed in await tails.catch_up():
+            await apply(transcribed)
         await asyncio.sleep(period)
 
 

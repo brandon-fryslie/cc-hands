@@ -340,7 +340,7 @@ def describe(happening: Happening, budget: Budget) -> str:
         case Other(tool=tool, input=input, result=result, failed=failed):
             return f"Claude used {tool}: {_cut(input, budget.input)}\n{'Result (failed)' if failed else 'Result'}: {_cut(result, budget.result)}"
         case Interruption():
-            return "The user interrupted Claude here, so the turn did not finish."
+            return "The user interrupted Claude here."
 
 
 def _question(question: Question, budget: Budget) -> str:

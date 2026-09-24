@@ -33,6 +33,7 @@ from hands.core.events import (
     MovedOn,
     Event,
     Interrupted,
+    Continued,
     Joined,
     PermissionRequested,
     Prompted,
@@ -102,6 +103,12 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case Interrupted():
             # A turn that already ended — its Stop was heard, or the next prompt has opened another — or one this
             # registry never heard open: there is nothing left running for the interrupt to stop.
+            return registry, []
+        case Continued(session=session, was=was) if _in_turn(registry.sessions.get(session), was):
+            # Still working, now on the queued message: the turn goes by its id, so the Escape that stops it is heard.
+            return _enter(registry, event, lambda state: state)
+        case Continued():
+            # Read after the turn it went on in had ended, or of one this registry never heard open: nothing to move.
             return registry, []
         case Waited():
             return _enter(registry, event, _waited)
@@ -196,16 +203,18 @@ def _reported(event: SessionEvent) -> Mode | None:
     match event:
         case Prompted(mode=mode) | Stopped(mode=mode) | PermissionRequested(mode=mode) | ToolFinished(mode=mode):
             return mode
-        case Interrupted() | Waited() | Ended():
+        case Interrupted() | Continued() | Waited() | Ended():
             return None
 
 
 def _turn(event: SessionEvent, held: PromptId | None) -> PromptId | None:
-    """The turn the session is in after the event: the one a prompt opens, or the one it was in."""
+    """The turn the session is in after the event: the one a prompt opens, the id it went on under, or the one it was in."""
     match event:
         case Prompted(prompt=prompt):
             # Even a prompt that names no turn opens one, so an interrupt read late for the turn before it matches nothing.
             return prompt
+        case Continued(now=now):
+            return now
         case _:
             return held
 

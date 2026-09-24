@@ -26,7 +26,7 @@ from hands.core.effects import (
     WaitingForYou,
     Withdraw,
 )
-from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, MovedOn, Event, Interrupted, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished, Waited
+from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished, Waited
 from hands.core.reducer import EXPIRED_MESSAGE, IDLE_NUDGE_SECONDS, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
     AskedQuestion,
@@ -548,3 +548,17 @@ def test_a_queued_prompt_does_not_let_the_interrupt_that_flushes_it_end_the_turn
     for event in [Prompted(ONE.id, at=2.0, mode=None, prompt=TURN), Interrupted(ONE.id, NEXT, at=3.0)]:
         state, _ = reduce(state, event)
     assert isinstance(state.sessions[ONE.id].state, Working)
+
+
+def test_the_turn_a_queued_prompt_goes_on_as_is_ended_by_the_escape_that_stops_it() -> None:
+    """No hook names the queued prompt's id: the transcript does, once Claude answers under it."""
+    state = in_turn(Working(since=1.0))
+    for event in [Interrupted(ONE.id, NEXT, at=3.0), Continued(ONE.id, was=TURN, now=NEXT)]:
+        state, _ = reduce(state, event)
+    assert state == in_turn(Working(since=1.0), turn=NEXT)
+    assert reduce(state, Interrupted(ONE.id, NEXT, at=9.0))[0] == in_turn(Idle(due=9.0 + IDLE_NUDGE_SECONDS), turn=NEXT)
+
+
+@pytest.mark.parametrize("session", [in_turn(Working(since=1.0), turn=PromptId("p3")), in_turn(Idle())])
+def test_a_turn_read_to_have_gone_on_after_it_ended_moves_nothing(session: Registry) -> None:
+    assert reduce(session, Continued(ONE.id, was=TURN, now=NEXT)) == (session, [])

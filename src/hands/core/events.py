@@ -71,6 +71,18 @@ class Interrupted:
 
 
 @dataclass(frozen=True)
+class Continued:
+    """Claude went on answering under another prompt's id without the turn ending: a queued message taken in mid-turn,
+    or flushed by an Escape, carries its own new id from then on, and no hook ever names it (2.1.281). Read from the
+    transcript, where the user's side of every record Claude answers carries the id it answers under."""
+
+    session: SessionId
+    # The id it was answering under, so a record read after the next prompt opened moves nothing.
+    was: PromptId
+    now: PromptId
+
+
+@dataclass(frozen=True)
 class Waited:
     """Claude Code says the session has sat at its prompt since its turn ended, and nobody has typed: idle_prompt."""
 
@@ -121,7 +133,9 @@ class Tick:
 
 
 # Events about a session the registry must already know; a join is how it comes to.
-SessionEvent = Prompted | Stopped | Interrupted | Waited | PermissionRequested | ToolFinished | Ended
+SessionEvent = Prompted | Stopped | Interrupted | Continued | Waited | PermissionRequested | ToolFinished | Ended
+# What a session's transcript says of its turn that none of its hooks do.
+Transcribed = Interrupted | Continued
 # What the liveness sweep saw in one membership file.
 Observed = Attached | Died | MovedOn
 Event = Joined | Observed | SessionEvent | Abandoned | Tick
