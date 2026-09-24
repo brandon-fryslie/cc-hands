@@ -517,6 +517,23 @@ def test_the_interrupt_of_a_turn_ended_unheard_read_after_the_next_prompt_moves_
     assert reduce(state, Taken(ONE.id, NEXT))[0] == in_turn(Working(since=9.0), turn=NEXT)
 
 
+def test_a_message_queued_under_a_flushed_id_before_claude_answers_under_it_is_queued_into_the_turn() -> None:
+    """The flush's records carry its new id at once, and Claude's first answer under it — the Continued — comes seconds
+    later. A message queued in between carries the new id (2.1.281), and is queued, not the turn ended."""
+    flushed = PromptId("q")
+    state, effects = reduce(in_turn(Working(since=1.0)), Taken(ONE.id, flushed))
+    assert effects == [] and state.sessions[ONE.id].taken == {flushed}
+    state, effects = reduce(state, Prompted(ONE.id, at=9.0, mode=None, prompt=flushed))
+    assert effects == [] and state.sessions[ONE.id].state == Working(since=9.0) and state.sessions[ONE.id].turn == TURN
+    assert reduce(state, Prompted(ONE.id, at=12.0, mode=None, prompt=NEXT))[1] == [Compare(ONE.id), Summarise(ONE.id, TURN, None), Snapshot(ONE.id, ONE.cwd)]
+    assert reduce(state, Interrupted(ONE.id, TURN, at=12.0))[0].sessions[ONE.id].state == Idle(due=12.0 + IDLE_NUDGE_SECONDS)
+
+
+def test_a_turn_a_prompt_opens_has_gone_on_under_no_other_id_yet() -> None:
+    state, _ = reduce(in_turn(Working(since=1.0)), Taken(ONE.id, PromptId("q")))
+    assert reduce(state, Prompted(ONE.id, at=9.0, mode=None, prompt=NEXT))[0].sessions[ONE.id].taken == frozenset()
+
+
 @pytest.mark.parametrize(("turn", "prompt"), [(TURN, TURN), (TURN, None), (None, NEXT)])
 def test_a_prompt_that_cannot_be_told_from_one_queued_into_the_running_turn_is_queued_into_it(turn: PromptId | None, prompt: PromptId | None) -> None:
     """The running turn's own id is a queued prompt; with no id on either side, nothing says which turn it is."""

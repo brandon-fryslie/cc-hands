@@ -14,7 +14,7 @@ from hands.core.effects import Summarise
 from hands.core.events import Joined, Prompted, Stopped
 from hands.core.session import Idle, Submitted, Working
 from hands.sessions.registry import Sessions
-from hands.sessions.tail import Tails, Telling, keep_tailing
+from hands.sessions.tail import KEPT, Tails, Telling, keep_tailing
 
 SID = SessionId("bf411065-dc5c-4ec9-8302-61b84bdb5c53")
 
@@ -629,8 +629,9 @@ async def test_a_stopped_turn_is_told_as_itself_after_the_next_prompt_was_read(t
     assert telling is not None and telling.turn == Turn(Asked(None, "Write an essay about rivers."), (Said(None, "# Rivers"),))
 
 
-async def test_a_turn_told_after_the_next_opened_is_marked_told_on_itself(tmp_path: Path) -> None:
-    """The mark lands on the turn the telling was made of: told again, it has nothing new, and the turn after it is whole."""
+async def test_a_turn_told_after_the_next_opened_is_marked_told_on_itself_and_let_go(tmp_path: Path) -> None:
+    """The mark lands on the turn the telling was made of, which has no more records coming, so it is let go of; the
+    turn after it is still whole."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING, CUT_OFF))
     tails = await following(transcript)
@@ -640,10 +641,29 @@ async def test_a_turn_told_after_the_next_opened_is_marked_told_on_itself(tmp_pa
         more.write(lines(NEXT_ASKED, DONE))
     await tails.catch_up()
     await tails.spoken(first)
-    again = await tails.tell(SID, PromptId("p1"), None)
-    assert again is not None and again.turn.steps == ()
+    assert await tails.tell(SID, PromptId("p1"), None) is None
     after = await tails.tell(SID, PromptId("p2"), None)
     assert after is not None and after.turn == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
+
+
+async def test_an_ended_turn_whose_summary_failed_is_told_whole_again(tmp_path: Path) -> None:
+    """Nothing marked it told, and telling it let go of nothing but the turns before it."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, WRITING, CUT_OFF, NEXT_ASKED, DONE))
+    tails = await following(transcript)
+    first = await tails.tell(SID, PromptId("p1"), None)
+    assert first is not None and first == await tails.tell(SID, PromptId("p1"), None)
+
+
+async def test_only_the_last_turns_that_ended_are_kept(tmp_path: Path) -> None:
+    """Read from its start, a transcript ends every turn before the daemon attached untold."""
+    transcript = tmp_path / "t.jsonl"
+    asked = [f'{{"type":"user","promptId":"q{n}","message":{{"role":"user","content":"turn {n}"}}}}' for n in range(KEPT + 3)]
+    transcript.write_text(lines(*asked))
+    tails = await following(transcript)
+    assert await tails.tell(SID, PromptId("q1"), None) is None
+    kept = await tails.tell(SID, PromptId("q3"), None)
+    assert kept is not None and kept.turn.opening == Asked(None, "turn 3")
 
 
 async def test_a_turn_is_named_by_the_id_it_went_on_under_after_a_flush(tmp_path: Path) -> None:
@@ -655,18 +675,18 @@ async def test_a_turn_is_named_by_the_id_it_went_on_under_after_a_flush(tmp_path
     assert by_opening is not None and by_opening == by_flush
 
 
-async def test_a_turn_no_record_names_is_told_as_the_one_open_and_said(tmp_path: Path) -> None:
+async def test_a_turn_no_record_names_is_not_told_and_said(tmp_path: Path) -> None:
+    """Another turn told in its place would be the very thing a named turn is for; nothing is told instead."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING, CUT_OFF, NEXT_ASKED, DONE))
     tails = await following(transcript)
     warnings: list[str] = []
     sink = logger.add(lambda message: warnings.append(message.record["message"]), level="WARNING", filter="hands")
     try:
-        telling = await tails.tell(SID, PromptId("p9"), None)
+        assert await tails.tell(SID, PromptId("p9"), None) is None
     finally:
         logger.remove(sink)
-    assert telling is not None and telling.turn.opening == Asked(None, "Shorter.")
-    assert warnings == [f"no turn read from {transcript} carries prompt p9, so the turn open in it is told"]
+    assert warnings == [f"no turn kept from {transcript} carries prompt p9, so there is nothing to tell of it"]
 
 
 async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_and_its_records_arrive_in(tmp_path: Path) -> None:

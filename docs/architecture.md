@@ -385,7 +385,10 @@ A message queued into a running turn fires `UserPromptSubmit` with the running t
 naming any other id was sent from the prompt, and the turn the registry still has running
 ended without its `Stop` or its interrupt read yet: the reducer ends it there, compared
 before the new turn is marked, and told as itself. A `Stop` carries the `prompt_id` of the
-turn it ends, which is how that turn is found in the tail.
+turn it ends, which is how that turn is found in the tail. A turn a background task's
+notification opens fires `UserPromptSubmit` with an id of its own, as a typed prompt does.
+Until Claude answers under a flushed message's id, the registry keeps that id beside the turn's
+own, because a message queued in that window carries it.
 
 The reply a `PermissionRequest` hook may give is printed on its stdout as
 `{"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": ...}}`,
@@ -520,9 +523,10 @@ turn; a question Claude put to the user is the `Questioned` step.
 session, `keep_tailing` reads what that session's JSONL has gained, ten times a second,
 and hands each new record to the recognisers. Nothing re-reads the file from its start:
 one `Following` per session holds the byte offset, the turn that is open in it, the steps
-recognised so far, and how many of them the session has been told. It also keeps the turns
-that ended before it until a later telling passes them, each with every prompt id its records
-carry, because the narrator can be seconds behind. Measured live on
+recognised so far, and how many of them the session has been told. It also keeps up to eight
+turns that ended before it, each with every prompt id its records carry, because the narrator
+can be seconds behind. A turn that ended is let go of once it is told, or once a later turn
+is told. A prompt id that no kept turn carries tells nothing, rather than telling another turn. Measured live on
 2026-09-21, a record becomes a step 96 to 305 ms after Claude Code wrote it, median 160 ms
 — the poll period plus the read, which is what sets how late a turn narrated *while it
 runs* can be. A `Stop` does not wait for that poll: `tell` reads the rest of its own

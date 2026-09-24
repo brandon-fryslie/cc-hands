@@ -154,6 +154,9 @@ class Session:
     # working or blocked session is in. What ends a turn from outside its hooks names the turn it ends, so it can never
     # end the one after it, however late it is read. None until a prompt is heard.
     turn: PromptId | None
+    # Every other id the running turn has been read going on under: a flush's is taken seconds before Claude answers
+    # under it and the turn is moved to it, and a message queued in between carries it (2.1.281).
+    taken: frozenset[PromptId] = frozenset()
 
 
 @dataclass(frozen=True)

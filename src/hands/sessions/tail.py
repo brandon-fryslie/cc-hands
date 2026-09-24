@@ -39,6 +39,11 @@ class Telling:
     stood_in: str | None
 
 
+# How many turns that ended are kept for their tellings: a narrator that many turns behind on one session is not behind,
+# it is stuck.
+KEPT = 8
+
+
 @dataclass
 class Reading:
     """One turn as far as it has been read, how much of it was told, and every prompt id its records carry."""
@@ -63,7 +68,7 @@ class Following:
     reading: Reading = field(default_factory=lambda: Reading(0))
     # [LAW:no-ambient-temporal-coupling] turns that ended, kept past the next prompt's record: the narrator can be
     # seconds behind, and a turn is told as itself however much has been read since it ended. Oldest first; let go of
-    # once a telling of a later turn shows their own tellings are behind them.
+    # once told, once a telling of a later turn shows their own is behind them, and past the last KEPT.
     ended: list[Reading] = field(default_factory=list[Reading])
     # The prompt_id on the user's side of the last record read, and the one Claude last answered under: the turn it is
     # in goes by the second, which a queued message changes mid-turn with no hook to say so.
@@ -85,20 +90,16 @@ class Following:
     def open(self, opening: Asked | Notified) -> None:
         """A turn opened: the one before it is set aside until it is told, and nothing read of it counts for this one."""
         if self.reading.turn.opening is not None:
-            self.ended.append(self.reading)
+            # Bounded: a transcript is read from its start, and every turn before the daemon attached ends here untold.
+            self.ended = [*self.ended, self.reading][-KEPT:]
         self.reading = Reading(self.reading.number + 1, Turning(mid_tool=self.reading.turn.mid_tool))
         self.reading.turn.begin(opening)
 
-    def find(self, turn: PromptId | None) -> Reading:
-        """The turn a prompt id names; the one open, for no id, or one no record read so far carries."""
+    def find(self, turn: PromptId | None) -> Reading | None:
+        """The turn a prompt id names, newest first; the one open, for no id; None where no record read carries it."""
         if turn is None:
             return self.reading
-        named = next((reading for reading in [self.reading, *reversed(self.ended)] if turn in reading.ids), None)
-        if named is None:
-            # [LAW:no-silent-failure] told as it was before turns were named, and said to be.
-            logger.warning(f"no turn read from {self.path} carries prompt {turn}, so the turn open in it is told")
-            return self.reading
-        return named
+        return next((reading for reading in [self.reading, *reversed(self.ended)] if turn in reading.ids), None)
 
     def numbered(self, number: int) -> Reading | None:
         return next((reading for reading in [self.reading, *self.ended] if reading.number == number), None)
@@ -199,10 +200,15 @@ class Tails:
             # A transcript that cannot be read raises here, where the narrator says so rather than saying nothing.
             await asyncio.to_thread(self._read, session, following)
             reading = following.find(turn)
+            if reading is None:
+                # [LAW:no-silent-failure] the whole transcript was just read, so its turn is not in it: read again from
+                # the start of another file since, or let go of after its telling. Nothing is told rather than another turn.
+                logger.warning(f"no turn kept from {following.path} carries prompt {turn}, so there is nothing to tell of it")
+                return None
             if reading.turn.opening is None:
                 return None
             # Tellings are made in the order their turns ended, so the turns before this one have had theirs.
-            following.ended = [held for held in following.ended if held.number > reading.number]
+            following.ended = [held for held in following.ended if held.number >= reading.number]
             steps = reading.turn.steps()
             # Claude Code only ever appends, so the record of a stand-in that has since been written is the first step
             # after what was heard; counting it heard too is how the stand-in gives way without the reply being told twice.
@@ -228,11 +234,13 @@ class Tails:
         async with self._reading:
             following = self._following.get(telling.session)
             reading = None if following is None else following.numbered(telling.number)
-            if reading is None:
+            if following is None or reading is None:
                 # Its transcript was read again from the start since, or the session is gone: there is nothing left to mark.
                 return
             reading.told = telling.through
             reading.stood_in = telling.stood_in
+            # A turn that ended has no more records coming, so told is all of it.
+            following.ended = [held for held in following.ended if held is not reading]
 
     def _follow(self, session: SessionId) -> Following | None:
         """The session's transcript, followed from now if the catch-up has not reached it yet.
