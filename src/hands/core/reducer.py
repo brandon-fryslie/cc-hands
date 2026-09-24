@@ -289,11 +289,8 @@ def _named(event: SessionEvent, was: Session) -> tuple[PromptId | None, frozense
 
 def _running(registry: Registry, session: SessionId) -> Session | None:
     """The session, if Claude Code has it busy with a turn."""
-    match registry.sessions.get(session):
-        case Session(state=state) as held if _busy(state):
-            return held
-        case _:
-            return None
+    held = registry.sessions.get(session)
+    return held if held is not None and _busy(held.state) else None
 
 
 def _busy(state: SessionState) -> bool:
