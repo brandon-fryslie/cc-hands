@@ -1,6 +1,6 @@
 """The heartbeat file: what the daemon last said about itself, and what a reader can conclude from it.
 
-The daemon is the file's only writer; `hands status` only reads it,
+The daemon is the file's only writer; `hands status` and the menu-bar indicator only read it,
 so there is one clock that says whether hands is up.
 """
 
@@ -21,6 +21,10 @@ PipelineState = Literal["starting", "running", "stopped"]
 HEARTBEAT = timedelta(seconds=2)
 # A reader that has missed this many heartbeats in a row calls the daemon unresponsive.
 MISSED_BEATS = 3
+# The pids a process can have: kill(2) takes a pid_t, and reads 0 and every negative number as a process group.
+PIDS = range(1, 2**31)
+# The heartbeat periods a reader believes, in milliseconds: anything past an hour would say nothing about liveness.
+PERIODS_MS = range(1, 3_600_001)
 
 
 @dataclass(frozen=True)
@@ -55,10 +59,10 @@ def parse(raw: bytes) -> Status:
     fields = Payload.parse(raw)
     last_audio_out = fields.optional_text("last_audio_out")
     return Status(
-        pid=fields.integer("pid"),
+        pid=_pid(fields.integer("pid")),
         started_at=_instant(fields.text("started_at")),
         written_at=_instant(fields.text("written_at")),
-        heartbeat=timedelta(milliseconds=fields.integer("heartbeat_ms")),
+        heartbeat=_period(fields.integer("heartbeat_ms")),
         pipeline=_pipeline(fields.text("pipeline")),
         last_audio_out=None if last_audio_out is None else _instant(last_audio_out),
         live_sessions=fields.integer("live_sessions"),
@@ -97,6 +101,17 @@ def read(path: Path) -> Status | None:
         return None
 
 
+def pid_alive(pid: int) -> bool:
+    """Liveness from the OS: signal 0 checks that the process exists without touching it."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # it exists; it belongs to someone else
+    return True
+
+
 @dataclass(frozen=True)
 class NeverRan:
     path: Path
@@ -126,7 +141,26 @@ class Stopped:
     status: Status
 
 
-Verdict = NeverRan | Up | Unresponsive | Down | Stopped
+@dataclass(frozen=True)
+class Unreadable:
+    """There is a heartbeat file, but it cannot be read or does not parse: nothing can be said of the daemon."""
+
+    path: Path
+    reason: str
+
+
+Verdict = NeverRan | Up | Unresponsive | Down | Stopped | Unreadable
+
+
+def look(path: Path, now: datetime) -> Verdict:
+    """What the heartbeat file says of the daemon now: the one way anything outside the daemon learns whether it is up."""
+    # [LAW:single-enforcer] `hands status`, the crash check at start, and the menu-bar indicator all judge through here.
+    try:
+        last = read(path)
+    except (Rejected, OSError) as error:
+        # [LAW:no-silent-failure] an unreadable heartbeat is its own verdict, never taken for "not running".
+        return Unreadable(path, str(error))
+    return judge(path, last, now, alive=last is not None and pid_alive(last.pid))
 
 
 def judge(path: Path, status: Status | None, now: datetime, alive: bool) -> Verdict:
@@ -147,6 +181,8 @@ def judge(path: Path, status: Status | None, now: datetime, alive: bool) -> Verd
 
 def describe(verdict: Verdict, now: datetime) -> str:
     match verdict:
+        case Unreadable(path=path, reason=reason):
+            return f"hands is unknown: its heartbeat at {path} cannot be read: {reason}"
         case NeverRan(path=path):
             return f"hands has not run: there is no heartbeat at {path}"
         case Down(status=status):
@@ -182,6 +218,18 @@ def _instant(text: str) -> datetime:
     if instant.tzinfo is None:
         raise Rejected(f"a heartbeat time carries its zone: {text!r}")
     return instant
+
+
+def _pid(number: int) -> int:
+    if number not in PIDS:
+        raise Rejected(f"pid {number} is not a process id")
+    return number
+
+
+def _period(milliseconds: int) -> timedelta:
+    if milliseconds not in PERIODS_MS:
+        raise Rejected(f"heartbeat_ms {milliseconds} is not a heartbeat period")
+    return timedelta(milliseconds=milliseconds)
 
 
 def _pipeline(text: str) -> PipelineState:
