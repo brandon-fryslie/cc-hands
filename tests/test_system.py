@@ -1,9 +1,8 @@
 """The system channel: what hands says about itself, and where it goes when speech or the model is what failed."""
 
 import asyncio
-import subprocess
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -273,13 +272,7 @@ def test_the_notification_text_is_an_argument_not_part_of_the_script() -> None:
     assert all('"hi"' not in part for part in command[:-1])
 
 
-def dead_pid() -> int:
-    process = subprocess.Popen(["true"])
-    process.wait()
-    return process.pid
-
-
-GONE = dead_pid()
+GONE = "a pid no process holds"
 
 
 @pytest.mark.parametrize(
@@ -294,12 +287,12 @@ GONE = dead_pid()
     ],
 )
 def test_a_run_crashed_when_its_last_heartbeat_was_not_a_stop_and_it_is_not_beating(
-    pipeline: status.PipelineState | None, pid: int, written_ago: int, crashed: bool, tmp_path: Path
+    pipeline: status.PipelineState | None, pid: int | str, written_ago: int, crashed: bool, tmp_path: Path, dead_pid: Callable[[], int]
 ) -> None:
     home = Home(tmp_path)
     now = datetime.now(UTC)
     if pipeline is not None:
-        status.write(home.status, status.Status(pid, now, now - timedelta(seconds=written_ago), status.HEARTBEAT, pipeline, None, 0))
+        status.write(home.status, status.Status(dead_pid() if pid == GONE else int(pid), now, now - timedelta(seconds=written_ago), status.HEARTBEAT, pipeline, None, 0))
     assert crashed_before(home) is crashed
 
 

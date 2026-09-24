@@ -12,7 +12,7 @@ from typing import Literal
 
 from hands.sessions.files import replace_whole
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.processes import process_starts_now, still_running
+from hands.sessions.processes import parse_pid, process_starts, still_running
 
 # Starting until Pipecat reports the pipeline started; stopped only in the last heartbeat of a run told to stop.
 PipelineState = Literal["starting", "running", "stopped"]
@@ -21,9 +21,6 @@ PipelineState = Literal["starting", "running", "stopped"]
 HEARTBEAT = timedelta(seconds=2)
 # A reader that has missed this many heartbeats in a row calls the daemon unresponsive.
 MISSED_BEATS = 3
-# The pids a process can have on macOS, whose PID_MAX is 99999. ps refuses a larger one outright, and kill(2) reads 0
-# and every negative number as a process group, so a heartbeat naming any other number names no process.
-PIDS = range(1, 100_000)
 # The heartbeat periods a reader believes, in milliseconds: anything past an hour would say nothing about liveness.
 PERIODS_MS = range(1, 3_600_001)
 
@@ -60,7 +57,7 @@ def parse(raw: bytes) -> Status:
     fields = Payload.parse(raw)
     last_audio_out = fields.optional_text("last_audio_out")
     return Status(
-        pid=_pid(fields.integer("pid")),
+        pid=parse_pid(fields.integer("pid")),
         started_at=_instant(fields.text("started_at")),
         written_at=_instant(fields.text("written_at")),
         heartbeat=_period(fields.integer("heartbeat_ms")),
@@ -153,7 +150,7 @@ def running(status: Status) -> bool:
     """Whether the process that wrote the heartbeat is still running: its pid is, and not as a later process."""
     # [LAW:single-enforcer] the session sweep's own test for a reused pid. Asked of kill(pid, 0) alone, a pid that
     # went to another process after a crash or a reboot read as a daemon that had stopped responding.
-    return still_running(status.pid, status.started_at.timestamp(), process_starts_now({status.pid}))
+    return still_running(status.pid, status.started_at.timestamp(), process_starts({status.pid}))
 
 
 def judge(path: Path, status: Status | None, now: datetime, alive: bool) -> Verdict:
@@ -211,12 +208,6 @@ def _instant(text: str) -> datetime:
     if instant.tzinfo is None:
         raise Rejected(f"a heartbeat time carries its zone: {text!r}")
     return instant
-
-
-def _pid(number: int) -> int:
-    if number not in PIDS:
-        raise Rejected(f"pid {number} is not a process id")
-    return number
 
 
 def _period(milliseconds: int) -> timedelta:

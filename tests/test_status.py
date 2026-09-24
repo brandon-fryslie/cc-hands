@@ -6,7 +6,7 @@ import plistlib
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,12 +21,6 @@ from hands.sessions.payload import Rejected
 
 NOW = datetime(2026, 9, 14, 12, 0, 0, tzinfo=UTC)
 BEAT = timedelta(seconds=2)
-
-
-def dead_pid() -> int:
-    process = subprocess.Popen(["true"])
-    process.wait()
-    return process.pid
 
 
 def beat(**changes: object) -> status.Status:
@@ -121,7 +115,7 @@ def test_each_verdict_is_said_plainly(tmp_path: Path) -> None:
     )
 
 
-def test_looking_at_the_heartbeat_judges_it_against_the_process_table(tmp_path: Path) -> None:
+def test_looking_at_the_heartbeat_judges_it_against_the_process_table(dead_pid: Callable[[], int], tmp_path: Path) -> None:
     path = tmp_path / "status.json"
     now = datetime.now(UTC)
     assert status.look(path, now) == status.NeverRan(path)
@@ -158,10 +152,10 @@ def test_hands_status_exits_zero_only_when_the_daemon_is_up(tmp_path: Path, caps
     assert "not a process id" in capsys.readouterr().err
 
 
-def test_the_daemon_is_running_only_if_its_pid_is_held_by_the_process_that_started_then() -> None:
+def test_the_daemon_is_running_only_if_its_pid_is_held_by_the_process_that_started_then(dead_pid: Callable[[], int]) -> None:
     now = datetime.now(UTC)
     assert status.running(beat(pid=os.getpid(), started_at=now))
-    assert status.running(beat(pid=1, started_at=now))  # launchd: running, and not ours to signal
+    assert not status.running(beat(pid=1, started_at=now))  # launchd, root's: running, but never one of hands' processes
     assert not status.running(beat(pid=dead_pid(), started_at=now))
     # This process holds the pid, but it started long after the heartbeat's daemon did: the number was reused.
     assert not status.running(beat(pid=os.getpid(), started_at=now - timedelta(days=3)))

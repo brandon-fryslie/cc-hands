@@ -15,6 +15,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.processes import process_starts, still_running
 from hands.sessions.registry import Sessions
 
+
 @dataclass(frozen=True)
 class Recorded:
     membership: Membership
@@ -31,7 +32,7 @@ async def sweep(home: Home, sessions: Sessions, unfiled_before: Unfiled) -> Unfi
     # has written its file, so one that joins while the sweep runs is never taken for a session whose file is gone.
     listed = sessions.live_members()
     records = recorded(home)
-    started = await process_starts({record.membership.pid for record in records})
+    started = process_starts({record.membership.pid for record in records})
     seen_all, unfiled = observations(listed, records, started, unfiled_before)
     for seen in seen_all:
         await sessions.apply(seen)
