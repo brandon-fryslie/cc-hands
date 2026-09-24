@@ -74,6 +74,7 @@ class Payload:
         return [] if self.fields.get(key) is None else self.items(key)
 
     def flag(self, key: str) -> bool:
+        """A flag that must be there: left out, it would be read as whichever answer the caller guessed."""
         match self._field(key):
             case bool() as value:
                 return value
@@ -82,13 +83,7 @@ class Payload:
 
     def optional_flag(self, key: str) -> bool:
         """A flag that may be left out, which is the same as false."""
-        match self.fields.get(key):
-            case None:
-                return False
-            case bool() as value:
-                return value
-            case other:
-                raise self._wrong(key, "a boolean or null", other)
+        return self.fields.get(key) is not None and self.flag(key)
 
     @classmethod
     def of(cls, value: object, what: str) -> Self:

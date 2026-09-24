@@ -191,8 +191,8 @@ class Sessions:
         match effect:
             case Snapshot(session=session, cwd=cwd):
                 await self._changes.snapshot(session, cwd)
-            case Compare(session=session):
-                await self._changes.compare(session)
+            case Compare(session=session, again=again):
+                await self._changes.compare(session, again)
 
     def _reply(self, session: SessionId, request: RequestId, reply: HookReply) -> None:
         waiting = self._waiting.get(request)

@@ -98,15 +98,14 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case Taken(session=session, at=at) if _opens(registry.sessions.get(session), event):
             # A turn no hook opened: named, so its Stop ends it. Not marked here, where a mark could land after Claude has
             # begun changing the repository: a message queued behind a turn was marked while that turn's Stop hook held
-            # Claude Code (see _following), and one nothing was queued for, as a `!` command's answer, is compared against
-            # where the last turn's reading found the repository (see Deltas.compare).
+            # Claude Code (see _following), and one nothing was queued for, as a `!` command's answer, is told by its steps.
             return _enter(registry, event, lambda _: Working(since=at))
         case Taken():
             # Read after its turn ended, before any status was read, or of one Claude Code said was over since: nothing to move.
             return registry, []
-        case Stopped(session=session, closing=closing, prompt=stopped) if _ends(registry.sessions.get(session), event):
+        case Stopped(session=session, closing=closing, prompt=stopped, again=again) if _ends(registry.sessions.get(session), event):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
-            return _enter(registry, event, lambda _: Idle(), lambda was: [Compare(session), Summarise(session, stopped, closing), *_following(was)])
+            return _enter(registry, event, lambda _: Idle(), lambda was: [Compare(session, again), Summarise(session, stopped, closing), *_following(was)])
         case Stopped():
             # The Stop of a turn already over: told now if its telling waited for it (see _untold), and otherwise one
             # applied after the next turn's prompt, which ending would idle that turn and spend its mark.
@@ -315,7 +314,7 @@ def _telling(was: Session, closing: str | None) -> list[Effect]:
         case None:
             return []
         case Untold(turn=turn):
-            return [Compare(was.membership.id), Summarise(was.membership.id, turn, closing)]
+            return [Compare(was.membership.id, again=False), Summarise(was.membership.id, turn, closing)]
 
 
 def _named(event: SessionEvent, was: Session) -> tuple[PromptId | None, frozenset[PromptId]]:
