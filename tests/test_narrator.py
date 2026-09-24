@@ -12,7 +12,7 @@ from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core.delta import Changed, Delta
 from hands.core.events import Ended, Joined, Prompted, Stopped
-from hands.core.session import Membership, SessionId
+from hands.core.session import Membership, PromptId, SessionId
 from hands.core.turn import Budget
 from hands.sessions.audit import Entry, Failure, Recounted, failures_to
 from hands.sessions.registry import Sessions
@@ -42,6 +42,10 @@ class Registry:
         return self.member if session == self.member.id else None
 
 
+# The prompt id the captured turn's records carry.
+TURN = PromptId("1dd65461-0644-432f-88e5-42aaeb27cbde")
+
+
 def tailing(transcript: Path) -> Tails:
     """A tail following one session, as the daemon's does from the registry."""
     return Tails(Registry(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript)))
@@ -62,8 +66,8 @@ async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_d
     narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, recorded.append, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
-        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=None))
-        await sessions.apply(Stopped(SID, None, mode=None, prompt=None))
+        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
+        await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN))
         spoken = await asyncio.wait_for(frames.get(), 5.0)
     finally:
         narrating.cancel()
@@ -91,8 +95,8 @@ async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_aft
     narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, lambda _: None, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
-        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=None))
-        await sessions.apply(Stopped(SID, None, mode=None, prompt=None))
+        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
+        await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN))
         # `claude -p` exits the moment its turn stops, so the end lands while the model is still summarising.
         await sessions.apply(Ended(SID, "other"))
         with pytest.raises(asyncio.TimeoutError):
@@ -109,10 +113,10 @@ async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_aft
 
 async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells_only_what_is_new(tmp_path: Path) -> None:
     transcript = tmp_path / "s1.jsonl"
-    prompt = '{"type":"user","uuid":"u1","message":{"role":"user","content":"fix it"}}'
+    prompt = '{"type":"user","uuid":"u1","promptId":"p1","message":{"role":"user","content":"fix it"}}'
     looked = '{"type":"assistant","uuid":"u2","message":{"content":[{"type":"text","text":"Looked."}]}}'
     call = '{"type":"assistant","uuid":"u3","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest"}}]}}'
-    result = '{"type":"user","uuid":"u4","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"1 passed"}]}}'
+    result = '{"type":"user","uuid":"u4","promptId":"p1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"1 passed"}]}}'
     fixed = '{"type":"assistant","uuid":"u5","message":{"content":[{"type":"text","text":"Fixed."}]}}'
     transcript.write_text(f"{prompt}\n{looked}\n")
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
@@ -126,15 +130,15 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
     narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, lambda _: None, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
-        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=None))
-        await sessions.apply(Stopped(SID, "Looked.", mode=None, prompt=None))
+        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+        await sessions.apply(Stopped(SID, "Looked.", mode=None, prompt=PromptId("p1")))
         await asyncio.wait_for(frames.get(), 5.0)
         with transcript.open("a") as more:
             more.write(f"{call}\n{result}\n{fixed}\n")
-        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=None))
+        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1")))
         await asyncio.wait_for(frames.get(), 5.0)
         # A third Stop with nothing written since is not a turn to tell.
-        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=None))
+        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1")))
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(frames.get(), 0.2)
     finally:

@@ -164,8 +164,9 @@ class Session:
     # SessionStart, idle_prompt, and SessionEnd carry none (verified live on 2.1.281).
     mode: Mode | None
     # [LAW:no-ambient-temporal-coupling] the id the session's last turn goes by: its prompt's, or the one Claude went on
-    # answering under, which names the turn a busy session is in. A Stop ends only the turn it names, so one applied late never ends the turn after it.
-    # None until a prompt is heard.
+    # answering under, which names the turn a busy session is in. A Stop ends a busy session's turn only when it names
+    # it, so one applied late never ends the turn after it; at the prompt, a Stop tells the turn it names, whatever hands
+    # heard of that turn (see _ends). None until a prompt is heard.
     turn: PromptId | None
     # Every other id the running turn has been read going on under: a flush's is taken seconds before Claude answers
     # under it and the turn is moved to it, and a message queued in between carries it (2.1.281).
