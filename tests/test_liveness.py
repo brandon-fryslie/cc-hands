@@ -12,7 +12,8 @@ from hands.core.effects import SessionGone
 from hands.core.events import Attached, Died, Joined, MovedOn, Observed
 from hands.core.session import Gone, Idle, Membership, SessionId
 from hands.sessions.home import Home
-from hands.sessions.liveness import START_SLACK_SECONDS, Recorded, elapsed_seconds, observations, process_starts, recorded, sweep
+from hands.sessions.liveness import Recorded, observations, recorded, sweep
+from hands.sessions.processes import START_SLACK_SECONDS, elapsed_seconds, process_starts, process_starts_now
 from hands.sessions.membership import remove_ended_membership, write_membership
 from hands.sessions.registry import Sessions
 
@@ -85,6 +86,14 @@ async def test_ps_says_when_a_running_process_started_and_leaves_out_a_dead_one(
 
 async def test_no_pids_asks_ps_nothing() -> None:
     assert await process_starts(set()) == {}
+    assert process_starts_now(set()) == {}
+
+
+def test_ps_is_read_the_same_way_without_a_loop() -> None:
+    gone = dead_pid()
+    starts = process_starts_now({os.getpid(), gone})
+    assert set(starts) == {os.getpid()}
+    assert starts[os.getpid()] <= time.time()
 
 
 def test_an_unreadable_file_is_removed_and_a_staging_file_is_not_read(tmp_path: Path) -> None:

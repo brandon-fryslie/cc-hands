@@ -23,6 +23,12 @@ NOW = datetime(2026, 9, 14, 12, 0, 0, tzinfo=UTC)
 BEAT = timedelta(seconds=2)
 
 
+def dead_pid() -> int:
+    process = subprocess.Popen(["true"])
+    process.wait()
+    return process.pid
+
+
 def beat(**changes: object) -> status.Status:
     fields: dict[str, object] = {
         "pid": 4242,
@@ -69,6 +75,7 @@ def test_no_file_is_a_daemon_that_never_ran(tmp_path: Path) -> None:
         (status.encode(beat()).replace("+00:00", "").encode(), "carries its zone"),
         (status.encode(beat(pid=2**63)).encode(), "not a process id"),
         (status.encode(beat(pid=2**31)).encode(), "not a process id"),
+        (status.encode(beat(pid=100_000)).encode(), "not a process id"),  # past macOS's PID_MAX, which ps refuses
         (status.encode(beat(pid=0)).encode(), "not a process id"),  # kill(0, 0) asks after our own process group
         (status.encode(beat(pid=-1)).encode(), "not a process id"),
         (status.encode(beat()).replace('"heartbeat_ms": 2000', '"heartbeat_ms": 100000000000000000000').encode(), "not a heartbeat period"),
@@ -103,7 +110,7 @@ def test_each_verdict_is_said_plainly(tmp_path: Path) -> None:
     assert status.describe(status.Up(beat(last_audio_out=None, live_sessions=1, started_at=NOW - timedelta(hours=2))), NOW) == (
         "hands is up: pid 4242, up 2h 0m 0s, pipeline running, last audio out never, 1 live session"
     )
-    assert status.describe(status.Down(beat()), NOW) == "hands is down: pid 4242 is not running; its last heartbeat was 1s ago"
+    assert status.describe(status.Down(beat()), NOW) == "hands is down: its process, pid 4242, is gone; its last heartbeat was 1s ago"
     assert status.describe(status.Unresponsive(beat(written_at=NOW - timedelta(minutes=3))), NOW) == (
         "hands is not responding: pid 4242 is running, pipeline running, but its last heartbeat was 3m 0s ago"
     )
@@ -118,9 +125,9 @@ def test_looking_at_the_heartbeat_judges_it_against_the_process_table(tmp_path: 
     path = tmp_path / "status.json"
     now = datetime.now(UTC)
     assert status.look(path, now) == status.NeverRan(path)
-    status.write(path, beat(pid=os.getpid(), written_at=now))
+    status.write(path, beat(pid=os.getpid(), started_at=now, written_at=now))
     assert isinstance(status.look(path, now), status.Up)
-    status.write(path, beat(pid=2**22 + 12345, written_at=now))
+    status.write(path, beat(pid=dead_pid(), started_at=now, written_at=now))
     assert isinstance(status.look(path, now), status.Down)
 
 
@@ -140,7 +147,7 @@ def test_hands_status_exits_zero_only_when_the_daemon_is_up(tmp_path: Path, caps
     home = Home(tmp_path)
     assert main(["--home", str(tmp_path), "status"]) == 1
     assert "has not run" in capsys.readouterr().out
-    status.write(home.status, beat(pid=os.getpid(), written_at=datetime.now(UTC)))
+    status.write(home.status, beat(pid=os.getpid(), started_at=datetime.now(UTC), written_at=datetime.now(UTC)))
     assert main(["--home", str(tmp_path), "status"]) == 0
     assert capsys.readouterr().out.startswith(f"hands is up: pid {os.getpid()}")
     home.status.write_text("{")
@@ -151,10 +158,21 @@ def test_hands_status_exits_zero_only_when_the_daemon_is_up(tmp_path: Path, caps
     assert "not a process id" in capsys.readouterr().err
 
 
-def test_liveness_comes_from_the_os() -> None:
-    assert status.pid_alive(os.getpid())
-    assert status.pid_alive(1)  # launchd: alive, and not ours to signal
-    assert not status.pid_alive(2**22 + 12345)
+def test_the_daemon_is_running_only_if_its_pid_is_held_by_the_process_that_started_then() -> None:
+    now = datetime.now(UTC)
+    assert status.running(beat(pid=os.getpid(), started_at=now))
+    assert status.running(beat(pid=1, started_at=now))  # launchd: running, and not ours to signal
+    assert not status.running(beat(pid=dead_pid(), started_at=now))
+    # This process holds the pid, but it started long after the heartbeat's daemon did: the number was reused.
+    assert not status.running(beat(pid=os.getpid(), started_at=now - timedelta(days=3)))
+
+
+def test_a_heartbeat_whose_pid_went_to_a_later_process_reads_as_down(tmp_path: Path) -> None:
+    path = tmp_path / "status.json"
+    now = datetime.now(UTC)
+    # After a reboot: the old heartbeat, still on disk, names a pid some new process now holds.
+    status.write(path, beat(pid=os.getpid(), started_at=now - timedelta(days=3), written_at=now - timedelta(days=3)))
+    assert isinstance(status.look(path, now), status.Down)
 
 
 async def test_the_heartbeat_is_rewritten_every_period() -> None:

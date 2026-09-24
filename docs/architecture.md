@@ -1244,8 +1244,12 @@ thing that failed `[LAW:no-silent-failure]`:
    crashes on every start is not announced on every restart. A departure inside that
    minute is held, and posted when the minute is up if hands is still not up. A daemon it finds already
    down on its first look is shown but not announced. A heartbeat whose pid is outside
-   `1..2**31-1` does not parse: `kill` would overflow on it, or read 0 and negative
-   numbers as process groups.
+   macOS's `1..99999` does not parse: `ps` refuses a larger one, and `kill` reads 0 and
+   negative numbers as process groups. A pid counts as the daemon only while the process
+   holding it started no later than the heartbeat's `started_at`, give or take `ps`'s
+   2-second rounding. That is the rule the session sweep uses, from
+   `hands.sessions.processes`. A pid that a later process took, after a crash or a
+   reboot, reads as down rather than as not responding.
 3. **Log.** Every effect and every failure is one line in `~/.hands/audit.jsonl`,
    written by the daemon alone (`hands.sessions.audit`). `hands log` prints the
    newest lines and follows the file. Each line is a value encoded one way: its type

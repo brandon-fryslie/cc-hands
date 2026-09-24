@@ -5,7 +5,6 @@ so there is one clock that says whether hands is up.
 """
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,6 +12,7 @@ from typing import Literal
 
 from hands.sessions.files import replace_whole
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.processes import process_starts_now, still_running
 
 # Starting until Pipecat reports the pipeline started; stopped only in the last heartbeat of a run told to stop.
 PipelineState = Literal["starting", "running", "stopped"]
@@ -21,8 +21,9 @@ PipelineState = Literal["starting", "running", "stopped"]
 HEARTBEAT = timedelta(seconds=2)
 # A reader that has missed this many heartbeats in a row calls the daemon unresponsive.
 MISSED_BEATS = 3
-# The pids a process can have: kill(2) takes a pid_t, and reads 0 and every negative number as a process group.
-PIDS = range(1, 2**31)
+# The pids a process can have on macOS, whose PID_MAX is 99999. ps refuses a larger one outright, and kill(2) reads 0
+# and every negative number as a process group, so a heartbeat naming any other number names no process.
+PIDS = range(1, 100_000)
 # The heartbeat periods a reader believes, in milliseconds: anything past an hour would say nothing about liveness.
 PERIODS_MS = range(1, 3_600_001)
 
@@ -97,17 +98,6 @@ def read(path: Path) -> Status | None:
         return None
 
 
-def pid_alive(pid: int) -> bool:
-    """Liveness from the OS: signal 0 checks that the process exists without touching it."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # it exists; it belongs to someone else
-    return True
-
-
 @dataclass(frozen=True)
 class NeverRan:
     path: Path
@@ -156,7 +146,14 @@ def look(path: Path, now: datetime) -> Verdict:
     except (Rejected, OSError) as error:
         # [LAW:no-silent-failure] an unreadable heartbeat is its own verdict, never taken for "not running".
         return Unreadable(path, str(error))
-    return judge(path, last, now, alive=last is not None and pid_alive(last.pid))
+    return judge(path, last, now, alive=last is not None and running(last))
+
+
+def running(status: Status) -> bool:
+    """Whether the process that wrote the heartbeat is still running: its pid is, and not as a later process."""
+    # [LAW:single-enforcer] the session sweep's own test for a reused pid. Asked of kill(pid, 0) alone, a pid that
+    # went to another process after a crash or a reboot read as a daemon that had stopped responding.
+    return still_running(status.pid, status.started_at.timestamp(), process_starts_now({status.pid}))
 
 
 def judge(path: Path, status: Status | None, now: datetime, alive: bool) -> Verdict:
@@ -182,7 +179,7 @@ def describe(verdict: Verdict, now: datetime) -> str:
         case NeverRan(path=path):
             return f"hands has not run: there is no heartbeat at {path}"
         case Down(status=status):
-            return f"hands is down: pid {status.pid} is not running; its last heartbeat was {_span(now - status.written_at)} ago"
+            return f"hands is down: its process, pid {status.pid}, is gone; its last heartbeat was {_span(now - status.written_at)} ago"
         case Unresponsive(status=status):
             return (
                 f"hands is not responding: pid {status.pid} is running, pipeline {status.pipeline}, "
