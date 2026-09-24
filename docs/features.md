@@ -17,8 +17,7 @@ thing hands does, so the output path comes ahead of anything that types into a
 session. **Loud daemon** follows, ahead of every feature that makes the intermediary
 smarter. After that, the epics are ordered by how soon their absence
 sends you back to the keyboard: interrupt and questions first, then attention across
-sessions, then starting sessions, dictation, the phone, and
-the day-long memory.
+sessions, then dictation, the phone, and the day-long memory.
 
 Nothing in the plan is a flag. Where two behaviours are wanted, they are variants of
 one config value with a declared cap `[LAW:no-mode-explosion]`; where one behaviour
@@ -217,17 +216,13 @@ Need 3. How several sessions share one ear.
   is a note. Done when "be quiet for a while" suppresses `Stop`s and a permission
   request still gets through.
 
-## Sessions by voice (`hands-lifecycle-n1m`)
+## Ending a session by voice (`hands-lifecycle-n1m`)
 
-Need 1, the lifecycle acts.
+Need 1, the lifecycle act. Sessions are started the way they always are, by running
+`claude` in a terminal; hands does not start them.
 
-- **Start a session in a known repo.** Config lists repo roots; the registry scans
-  them for git directories; `start_session(repo, title?)` starts `claude` in that
-  directory, and the shim's `SessionStart` registers it. How the new session gets a
-  window the virtual keyboard can type into is part of that keyboard's open design.
-  Done when "start a session in cc-hands" yields a listed, focused session.
-- **End a session.** `end_session` types `/exit` as a `Command` through the virtual
-  keyboard; the session ending moves it to `Gone` and it is spoken. Done live.
+- **End a session.** `end_session` types `/exit` as a `Command` through fritter; the
+  session ending moves it to `Gone` and it is spoken. Done live.
 
 ## Dictation fidelity (`hands-dictation-vpz`)
 

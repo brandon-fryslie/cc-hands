@@ -1036,7 +1036,6 @@ something I didn't approve" is answered by one file.
 list_sessions()
 read_session(session?, since?)
 focus_session(session)
-start_session(repo, title?)
 end_session(session?)
 interrupt_session(session?)
 send_command(session?, command, args?)
@@ -1247,8 +1246,8 @@ transcripts governs the intermediary's own past.
 
 `~/.config/hands/config.toml` is read by `daemon` at startup and parsed into a frozen
 `Config` whose fields are the variants above: the LLM backend, the transport, the
-gate edge, the Whisper model, the voice, the policy overrides, the repo roots, and the
-permission timeout. Secrets come from the environment and nothing else does. The
+gate edge, the Whisper model, the voice, the policy overrides, and the permission
+timeout. Secrets come from the environment and nothing else does. The
 spike's environment variables are deleted when the file arrives, so there is one
 source `[LAW:one-source-of-truth]`.
 

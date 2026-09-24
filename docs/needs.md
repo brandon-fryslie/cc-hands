@@ -15,7 +15,7 @@ the bar is not "voice is possible" but "the keyboard is never required."
 ## 1. Every keyboard act has a spoken equivalent
 
 At the keyboard you prompt, interrupt, answer a question, approve a tool, accept a
-plan, pick an option, run `/compact`, start a session in another repo, and close one.
+plan, pick an option, run `/compact`, and close a session.
 If any of those has no spoken form, the first time you need it you go back to the
 desk. Completeness is the need, and it is checked by enumeration: the list of acts is
 finite and each one is either reachable or it is a known gap.
