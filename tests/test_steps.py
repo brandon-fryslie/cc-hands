@@ -32,6 +32,9 @@ class Registry:
     def live_members(self) -> list[Membership]:
         return [self.member]
 
+    def now(self) -> float:
+        return 0.0
+
     def membership(self, session: SessionId) -> Membership | None:
         return self.member if session == self.member.id else None
 

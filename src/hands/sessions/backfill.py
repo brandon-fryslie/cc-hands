@@ -10,7 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from hands.core.turn import Asked, Happening, Notified, Opening, Ref, Said, Step
+from hands.core.turn import Asked, Happening, Interruption, Notified, Opening, Ref, Said, Step
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import ref_of, turn_record
 from hands.sessions.turning import Turning
@@ -72,11 +72,14 @@ def read_since(transcript: Path, since: Ref | None) -> Reading:
             continue
         if record is None:
             continue
-        opening = turning.consume(record)
-        if opening is not None:
-            # The tail lets go of the turn before this one; a reading keeps every one of them, each in its place.
-            # What was asked is most of what a session's morning means: the steps alone say how, never what for.
-            openings.append(_Opened(len(turning.slots), opening))
+        match turning.consume(record):
+            case Asked() | Notified() as opening:
+                # The tail lets go of the turn before this one; a reading keeps every one of them, each in its place.
+                # What was asked is most of what a session's morning means: the steps alone say how, never what for.
+                openings.append(_Opened(len(turning.slots), opening))
+            case Interruption() | None:
+                # An interruption is a step, and the turning has already put it in its place.
+                pass
         if since is not None and ref_of(record) == since:
             seen = True
             read = len(turning.slots) + len(openings)
@@ -94,8 +97,9 @@ def _waiting(turning: Turning, places: list[int]) -> set[int]:
 
 
 # What proves a session moved on from a call it never answered: Claude writes no word and is asked nothing
-# new until every outstanding result is in, so either of these after an open call means nothing is coming.
-_MOVED_ON = (Said, Asked, Notified)
+# new until every outstanding result is in, and a turn the user stopped runs nothing more, so any of these after an
+# open call means nothing is coming.
+_MOVED_ON = (Said, Asked, Notified, Interruption)
 
 
 def _settled(happenings: list[Happening], waiting: set[int]) -> int:

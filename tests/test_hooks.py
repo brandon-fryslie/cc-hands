@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from hands.core.events import Ended, Joined, PermissionRequested, Prompted, Stopped, ToolFinished, Waited
-from hands.core.session import AskedQuestion, Membership, Mode, Option, Permission, Plan, PlanApproved, Question, RequestId, SessionId, UnknownMode
+from hands.core.session import AskedQuestion, Membership, Mode, Option, Permission, Plan, PlanApproved, PromptId, Question, RequestId, SessionId, UnknownMode
 from hands.sessions.home import Home
 from hands.sessions.hooks import parse_hook
 from hands.sessions.membership import write_membership
@@ -47,9 +47,14 @@ def test_the_turn_hooks(home: Home) -> None:
     prompt = body(hook_event_name="UserPromptSubmit", prompt="hi", prompt_id="p", permission_mode="default")
     stop = body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message="ok", background_tasks=[], permission_mode="acceptEdits")
     end = body(hook_event_name="SessionEnd", reason="other")
-    assert parse(home, prompt) == Prompted(SID, at=12.5, mode="default")
+    assert parse(home, prompt) == Prompted(SID, at=12.5, mode="default", prompt=PromptId("p"))
     assert parse(home, stop) == Stopped(SID, "ok", mode="acceptEdits")
     assert parse(home, end) == Ended(SID, "other")
+
+
+def test_a_prompt_that_names_no_turn_still_opens_one(home: Home) -> None:
+    """A prompt is what moves a session to working; the prompt_id only lets an interrupt of that turn be matched."""
+    assert parse(home, body(hook_event_name="UserPromptSubmit", prompt="hi", permission_mode="default")) == Prompted(SID, at=12.5, mode="default", prompt=None)
 
 
 def test_a_stop_is_still_the_end_of_a_turn_when_the_reply_it_carries_is_not_a_string(home: Home) -> None:
@@ -74,7 +79,7 @@ def test_a_finished_or_failed_tool_names_its_call_as_a_permission_does(home: Hom
 @pytest.mark.parametrize("mode", ["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"])
 def test_every_hook_that_carries_a_mode_reports_it(home: Home, mode: Mode) -> None:
     call = {"tool_name": "Bash", "tool_input": {"command": "ls"}}
-    assert parse(home, body(hook_event_name="UserPromptSubmit", prompt="hi", permission_mode=mode)) == Prompted(SID, at=12.5, mode=mode)
+    assert parse(home, body(hook_event_name="UserPromptSubmit", prompt="hi", permission_mode=mode)) == Prompted(SID, at=12.5, mode=mode, prompt=None)
     assert parse(home, body(hook_event_name="Stop", last_assistant_message="ok", permission_mode=mode)) == Stopped(SID, "ok", mode=mode)
     requested = parse(home, body(hook_event_name="PermissionRequest", permission_mode=mode, **call))
     assert requested == PermissionRequested(SID, at=12.5, request=REQUEST, on=Permission("Bash", {"command": "ls"}), mode=mode)
@@ -83,7 +88,7 @@ def test_every_hook_that_carries_a_mode_reports_it(home: Home, mode: Mode) -> No
 
 
 def test_a_mode_hands_does_not_know_is_kept_by_its_name(home: Home) -> None:
-    assert parse(home, body(hook_event_name="UserPromptSubmit", prompt="hi", permission_mode="ultraplan")) == Prompted(SID, at=12.5, mode=UnknownMode("ultraplan"))
+    assert parse(home, body(hook_event_name="UserPromptSubmit", prompt="hi", permission_mode="ultraplan")) == Prompted(SID, at=12.5, mode=UnknownMode("ultraplan"), prompt=None)
 
 
 def test_a_hook_fired_inside_a_subagent_reports_no_mode_for_the_session(home: Home) -> None:

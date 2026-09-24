@@ -7,6 +7,9 @@ from typing import Literal, NewType, Self
 
 SessionId = NewType("SessionId", str)
 RequestId = NewType("RequestId", str)
+# Claude Code's prompt_id: every hook of one turn carries the id of the prompt that opened it, and so does every
+# transcript record of that turn, which is how a record read from the file is matched to the turn a hook opened.
+PromptId = NewType("PromptId", str)
 Instant = float  # monotonic seconds
 
 # Prompt text that holds no control characters, so typing it into a session
@@ -97,6 +100,9 @@ class Idle:
     # [LAW:no-ambient-temporal-coupling] one idle period is one Idle value: the nudge is spoken once because speaking
     # it is this value changing, and every way into Idle builds a fresh one, so the next period can be nudged again.
     nudged: bool = False
+    # When hands says the session is waiting on its own clock, for an idle period Claude Code sends no idle_prompt for:
+    # one a turn the user interrupted began (2.1.281). None where idle_prompt will say it, or already has.
+    due: Instant | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +142,10 @@ class Session:
     # [LAW:one-source-of-truth] the permission_mode of the last hook that carried one. None until one does:
     # SessionStart, idle_prompt, and SessionEnd carry none (verified live on 2.1.281).
     mode: Mode | None
+    # [LAW:no-ambient-temporal-coupling] the prompt_id of the last prompt the session was given, which names the turn a
+    # working or blocked session is in. What ends a turn from outside its hooks names the turn it ends, so it can never
+    # end the one after it, however late it is read. None until a prompt is heard.
+    turn: PromptId | None
 
 
 @dataclass(frozen=True)

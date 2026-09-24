@@ -24,6 +24,7 @@ What to say:
 - The outcome: what changed, and what was run and whether it passed or failed. Judge from the tool results; the assistant's closing words can overclaim, and where a result disagrees, trust the result.
 - Say nothing at all about commits, pushes, branches, or pull requests. What the turn did to the repository is read from the session's own record of it and from git, and said after your report, so a word about it here is that news told twice, and a hash or a branch name nobody can hear.
 - If the work failed, is unfinished, or something is still broken, say so plainly.
+- Where the user interrupted Claude, report what the turn did, and do not say that it was interrupted: the user did it, and a turn that ended on it is said to have before your report, so a word about it here says it twice.
 - If the turn ends with a question or a choice for the user, end by asking it briefly, keeping every option, with the session as "it": "Want me to..." becomes "Want it to...", "Should I..." becomes "Should it...". If the turn asked nothing, add no question.
 - If the turn was just a short answer with no tools, give that answer in one short sentence.
 

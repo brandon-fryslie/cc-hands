@@ -24,6 +24,7 @@ from hands.core.turn import (
     Edited,
     Happening,
     GitChange,
+    Interruption,
     Looked,
     Other,
     Planned,
@@ -64,9 +65,10 @@ THE_PLAN = Topic("the plan", "task")
 THE_SUBAGENTS = Topic("the subagents", "subagent")
 THE_OTHER_TOOLS = Topic("the other tools", "tool call")
 THE_REPOSITORY = Topic("the repository", "file")
+THE_INTERRUPTION = Topic("the interruption", "interruption")
 
-# The steps a section is cut from. A question is not one of them: it plays at the top level at every length, so
-# the type that says which steps fall into sections is also the type that says a question never does
+# The steps a section is cut from. A question and an interruption are not among them: each plays at the top level at
+# every length, so the type that says which steps fall into sections is also the type that says they never do
 # [LAW:types-are-the-program]. Without it, `topic_of` would need an arm for a step it can never be handed.
 Sectioned = Said | Edited | Ran | Tested | Looked | Planned | Delegated | Other
 
@@ -131,6 +133,8 @@ class Narration:
     """
 
     headline: Segment
+    # Nothing for a turn that finished, rather than a segment that may be absent, as `repository` is.
+    interrupted: tuple[Segment, ...]
     repository: tuple[Segment, ...]
     questions: tuple[Segment, ...]
     sections: tuple[Segment, ...]
@@ -155,7 +159,8 @@ class Narration:
         reported, asked = _reported_and_asked(self.headline.text)
         # The question goes last whatever the summariser put where: it is the one sentence the listener answers,
         # and a fact read out after it leaves them holding the answer to something already gone by.
-        return " ".join([*reported, *(part.text for part in self.repository), *asked])
+        # That the user stopped it goes first: it is what they are listening for, and it says why what follows is unfinished.
+        return " ".join([*(part.text for part in self.interrupted), *reported, *(part.text for part in self.repository), *asked])
 
 
 def narration(said: str, turn: Turn, delta: Delta, sentences: int) -> Narration:
@@ -165,10 +170,14 @@ def narration(said: str, turn: Turn, delta: Delta, sentences: int) -> Narration:
     files no step reports — so it is in the headline's reach and in a section of its own, and in no other.
     """
     asked = [step for step in turn.steps if isinstance(step, Questioned)]
-    sectioned = [step for step in turn.steps if not isinstance(step, Questioned)]
+    sectioned = [step for step in turn.steps if not isinstance(step, Questioned | Interruption)]
     changes = tuple(change for step in turn.steps if isinstance(step, Ran) for change in step.git)
     return Narration(
         headline=Segment(THE_HEADLINE, _headline(said, sentences), (turn.opening, *turn.steps), delta),
+        # Said by the types and not left to the summariser, for the reason the repository is: whether the turn was
+        # stopped is a fact its record holds, and a model asked for it can drop it [LAW:one-source-of-truth]. Said of a
+        # turn that ends on one: a queued message that cut a tool off mid-turn let the turn go on, and it is a step.
+        interrupted=tuple(Segment(THE_INTERRUPTION, "You interrupted it.", (step,)) for step in turn.steps[-1:] if isinstance(step, Interruption)),
         repository=_repository(delta, changes),
         questions=tuple(_asked(question, step) for step in asked for question in step.questions),
         sections=_sections(sectioned),
@@ -193,7 +202,7 @@ def _headline(said: str, sentences: int) -> str:
     kept = " ".join([*reported[:sentences], *asked])
     # A reply that ended without a stop would run into what git says next as one long sentence, and speech has
     # no other way to hear the join.
-    return kept if kept.endswith((".", "!", "?")) else f"{kept}."
+    return kept if not kept or kept.endswith((".", "!", "?")) else f"{kept}."
 
 
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")

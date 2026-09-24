@@ -7,7 +7,7 @@ from loguru import logger
 
 from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
 from hands.core.events import Ended, EndReason, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished, Waited
-from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, Question, FinishedCall, RequestId, SessionId, UnknownMode
+from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership
 from hands.sessions.payload import Payload, Rejected
@@ -24,7 +24,7 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
             source = _start_source(payload.text("source"))
             return Joined(read_membership(home, session), source)
         case "UserPromptSubmit":
-            return Prompted(session, at, _mode(payload))
+            return Prompted(session, at, _mode(payload), _prompt(payload))
         case "Stop":
             return Stopped(session, _closing(payload), _mode(payload))
         case "Notification":
@@ -124,6 +124,18 @@ def _mode(payload: Payload) -> Mode | None:
             return None
         case (_, other):
             logger.error(f"{event} carried permission_mode as {type(other).__name__}, not a string, so the session keeps the mode it last reported")
+            return None
+
+
+def _prompt(payload: Payload) -> PromptId | None:
+    """The prompt_id that names the turn a prompt opens, which every UserPromptSubmit carries (2.1.281)."""
+    # Not refused when it is missing, as the mode is not: a prompt is what moves the session to working.
+    # [LAW:no-silent-failure] a turn with no name cannot be matched to the record that interrupts it, and the log says so.
+    match payload.fields.get("prompt_id"):
+        case str() as prompt:
+            return PromptId(prompt)
+        case other:
+            logger.error(f"UserPromptSubmit carried prompt_id as {other!r}, so an interrupt of this turn will not be heard")
             return None
 
 

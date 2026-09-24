@@ -196,6 +196,12 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
 - **Waiting-for-you nudge.** The `idle_prompt` notification becomes a `Speak`: "X
   is waiting for you." Done when leaving a session idle triggers exactly one nudge.
   Built: heard live on 2.1.280, once per idle period, 60 s after the turn ended.
+- **An interrupted turn.** Escape or Ctrl-C mid-turn fires no `Stop` and no later
+  `idle_prompt`, so the tail reads the transcript's own record of the interrupt, which
+  names the prompt of the turn it stopped. That turn, and no other, goes idle; it is
+  told as a stopped turn is, opening with "You interrupted it."; and hands times its
+  nudge itself, 60 s on. Built: verified live on 2.1.281 mid-tool, mid-text, at a
+  permission dialog, and by Ctrl-C, each left idle and told, and nudged once.
 
 ## Attention (`hands-attention-ssy`)
 

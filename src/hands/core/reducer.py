@@ -32,6 +32,8 @@ from hands.core.events import (
     Ended,
     MovedOn,
     Event,
+    Interrupted,
+    Continued,
     Joined,
     PermissionRequested,
     Prompted,
@@ -42,10 +44,14 @@ from hands.core.events import (
     ToolFinished,
     Waited,
 )
-from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Mode, Permission, Plan, PlanApproved, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, UnknownMode, Working
+from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Mode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, UnknownMode, Working
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
+
+# How long a session sits at its prompt before it is said to be waiting: Claude Code's own idle_prompt came 61 s after
+# a Stop (2.1.281), so a nudge hands times itself comes when that one would have.
+IDLE_NUDGE_SECONDS = 60.0
 
 # What the agent reads when nobody answered in time.
 EXPIRED_MESSAGE = (
@@ -60,10 +66,10 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
     # inside the registry, so a deadline is arithmetic on values, never a clock read.
     match event:
         case Joined(membership=membership, source=source):
-            return _join(registry, membership, *_started(source, registry.sessions.get(membership.id)))
+            return _join(registry, _started(membership, source, registry.sessions.get(membership.id)))
         case Attached(membership=membership) if membership.id not in registry.sessions:
             # A membership file says nothing of the mode; the session's next hook will.
-            return registry.put(Session(membership, Idle(), mode=None)), []
+            return registry.put(Session(membership, Idle(), mode=None, turn=None)), []
         case Attached():
             # [LAW:no-ambient-temporal-coupling] a session the registry already knows was heard from its hooks, which
             # know more than its file: a sweep that read the file before a hook landed never overwrites it.
@@ -88,6 +94,22 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case Stopped(session=session, closing=closing):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
             return _enter(registry, event, lambda _: Idle(), lambda _was: [Compare(session), Summarise(session, closing)])
+        case Interrupted(session=session, prompt=prompt, at=at) if _in_turn(registry.sessions.get(session), prompt):
+            # Told as a stopped turn is: what it did before it was stopped is still what it did, and the telling says
+            # it was stopped because the transcript's record of the interrupt is one of its steps. No hook carried this,
+            # so there is no closing reply to stand in for one. Claude Code sends no idle_prompt after an interrupt
+            # (2.1.281, none in 126 s), so the nudge is timed here, from when the interrupt was read.
+            return _enter(registry, event, lambda _: Idle(due=at + IDLE_NUDGE_SECONDS), lambda _was: [Compare(session), Summarise(session, None)])
+        case Interrupted():
+            # A turn that already ended — its Stop was heard, or the next prompt has opened another — or one this
+            # registry never heard open: there is nothing left running for the interrupt to stop.
+            return registry, []
+        case Continued(session=session, was=was) if _in_turn(registry.sessions.get(session), was):
+            # Still working, now on the queued message: the turn goes by its id, so the Escape that stops it is heard.
+            return _enter(registry, event, lambda state: state)
+        case Continued():
+            # Read after the turn it went on in had ended, or of one this registry never heard open: nothing to move.
+            return registry, []
         case Waited():
             return _enter(registry, event, _waited)
         case PermissionRequested(at=at, request=request, on=on):
@@ -108,24 +130,27 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _ticked(registry, at)
 
 
-def _started(source: StartSource, previous: Session | None) -> tuple[SessionState, Mode | None]:
+def _started(membership: Membership, source: StartSource, previous: Session | None) -> Session:
     # Compaction starts a session again in the middle of a turn, so what it was
     # doing carries over. Every other start sits at the prompt, whatever the
     # registry last heard: a session resumed after a crash was never told it stopped.
     # SessionStart carries no permission_mode, so only compaction, which keeps its process, keeps the one it had;
     # a session started or resumed in a new process may have been given any mode.
     match (source, previous):
-        case ("compact", Session(state=Working() | Blocked() | AtDialog() as state, mode=mode)):
-            return state, mode
+        case ("compact", Session(state=Working() | Blocked() | AtDialog()) as previous):
+            return replace(previous, membership=membership)
+        case ("compact", Session(state=Idle(due=due), mode=mode)):
+            # A new idle period, which a nudge hands was timing for still has to come from hands.
+            return Session(membership, Idle(due=due), mode, turn=None)
         case ("compact", Session(mode=mode)):
-            return Idle(), mode
+            return Session(membership, Idle(), mode, turn=None)
         case _:
-            return Idle(), None
+            return Session(membership, Idle(), mode=None, turn=None)
 
 
-def _join(registry: Registry, membership: Membership, state: SessionState, mode: Mode | None) -> tuple[Registry, list[Effect]]:
-    previous = registry.sessions.get(membership.id)
-    return registry.put(Session(membership, state, mode)), _transition(membership.id, None if previous is None else previous.state, state)
+def _join(registry: Registry, session: Session) -> tuple[Registry, list[Effect]]:
+    previous = registry.sessions.get(session.membership.id)
+    return registry.put(session), _transition(session.membership.id, None if previous is None else previous.state, session.state)
 
 
 def _ended_unheard(registry: Registry, membership: Membership, said: list[Effect]) -> tuple[Registry, list[Effect]]:
@@ -160,13 +185,17 @@ def _enter(
         case Session(state=Gone()):
             # Ended is final until the session starts again; a hook that lands late cannot revive it.
             return registry, [Audit(AfterEnd(event)), *_unwaited(event)]
-        case Session(membership=membership, state=before, mode=held) as was:
+        case Session(membership=membership, state=before, mode=held, turn=turn) as was:
             after, reported = next(before), _reported(event)
             # [LAW:dataflow-not-control-flow] every hook that carries a mode sets it, so a mode changed at the keyboard
             # is heard at the session's next hook, whatever that hook moves the session to.
             mode = held if reported is None else reported
             # The mode is noted before the transition's effects, so a request it narrates is explained knowing the mode it was asked in.
-            return registry.put(Session(membership, after, mode)), [*_remoded(membership.id, held, mode), *_transition(membership.id, before, after), *also(was)]
+            return registry.put(Session(membership, after, mode, _turn(event, turn))), [
+                *_remoded(membership.id, held, mode),
+                *_transition(membership.id, before, after),
+                *also(was),
+            ]
 
 
 def _reported(event: SessionEvent) -> Mode | None:
@@ -174,8 +203,29 @@ def _reported(event: SessionEvent) -> Mode | None:
     match event:
         case Prompted(mode=mode) | Stopped(mode=mode) | PermissionRequested(mode=mode) | ToolFinished(mode=mode):
             return mode
-        case Waited() | Ended():
+        case Interrupted() | Continued() | Waited() | Ended():
             return None
+
+
+def _turn(event: SessionEvent, held: PromptId | None) -> PromptId | None:
+    """The turn the session is in after the event: the one a prompt opens, the id it went on under, or the one it was in."""
+    match event:
+        case Prompted(prompt=prompt):
+            # Even a prompt that names no turn opens one, so an interrupt read late for the turn before it matches nothing.
+            return prompt
+        case Continued(now=now):
+            return now
+        case _:
+            return held
+
+
+def _in_turn(session: Session | None, prompt: PromptId) -> bool:
+    """Whether the session is in the middle of the turn this prompt opened."""
+    match session:
+        case Session(state=Working() | Blocked() | AtDialog(), turn=turn):
+            return turn == prompt
+        case _:
+            return False
 
 
 def _remoded(session: SessionId, before: Mode | None, after: Mode | None) -> list[Effect]:
@@ -290,5 +340,8 @@ def _deadline(session: SessionId, state: SessionState, at: Instant) -> tuple[Ses
             return after, [Reply(session, request, reply), Speak(Expired(session, on))]
         case Blocked(on=on, deadline=deadline, warned=False) if at >= deadline - WARNING_LEAD_SECONDS:
             return replace(state, warned=True), [Speak(DeadlineNear(session, on, remaining=deadline - at))]
+        case Idle(nudged=False, due=float() as due) if at >= due:
+            # Nudged as an idle_prompt nudges, through the one place a nudge is said.
+            return Idle(nudged=True), _transition(session, state, Idle(nudged=True))
         case _:
             return state, []

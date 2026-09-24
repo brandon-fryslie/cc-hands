@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from hands.core.session import Blocker, Instant, Membership, FinishedCall, Mode, RequestId, SessionId
+from hands.core.session import Blocker, Instant, Membership, FinishedCall, Mode, PromptId, RequestId, SessionId
 
 
 StartSource = Literal["startup", "resume", "clear", "compact"]
@@ -44,6 +44,11 @@ class Prompted:
     at: Instant
     # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
     mode: Mode | None
+    # [LAW:no-ambient-temporal-coupling] the prompt_id that names the turn this prompt opens. Only the opening names the
+    # turn: every hook of a background subagent carries the prompt_id of the turn that started it, even after that
+    # turn stopped and another opened (2.1.281), so a turn read off any later hook could be one already over.
+    # None only when the hook carried none, which 2.1.281's never do.
+    prompt: PromptId | None
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,29 @@ class Stopped:
     closing: str | None  # the reply the turn closed with, as the Stop hook carries it; None when there was none
     # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
     mode: Mode | None
+
+
+@dataclass(frozen=True)
+class Interrupted:
+    """The user stopped the turn at the keyboard, with Escape or Ctrl-C: no Stop hook fires for that, so it is read
+    from the record Claude Code writes in the transcript instead."""
+
+    session: SessionId
+    # The turn the record says it stopped. A record read after the next prompt names the turn before it.
+    prompt: PromptId
+    at: Instant  # when the record was read
+
+
+@dataclass(frozen=True)
+class Continued:
+    """Claude went on answering under another prompt's id without the turn ending: a queued message taken in mid-turn,
+    or flushed by an Escape, carries its own new id from then on, and no hook ever names it (2.1.281). Read from the
+    transcript, where the user's side of every record Claude answers carries the id it answers under."""
+
+    session: SessionId
+    # The id it was answering under, so a record read after the next prompt opened moves nothing.
+    was: PromptId
+    now: PromptId
 
 
 @dataclass(frozen=True)
@@ -105,7 +133,9 @@ class Tick:
 
 
 # Events about a session the registry must already know; a join is how it comes to.
-SessionEvent = Prompted | Stopped | Waited | PermissionRequested | ToolFinished | Ended
+SessionEvent = Prompted | Stopped | Interrupted | Continued | Waited | PermissionRequested | ToolFinished | Ended
+# What a session's transcript says of its turn that none of its hooks do.
+Transcribed = Interrupted | Continued
 # What the liveness sweep saw in one membership file.
 Observed = Attached | Died | MovedOn
 Event = Joined | Observed | SessionEvent | Abandoned | Tick

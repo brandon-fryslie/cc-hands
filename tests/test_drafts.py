@@ -42,7 +42,7 @@ BLOCKED = Blocked(on=Permission(tool="Bash", input={"command": "ls"}), request=R
 
 
 def registry(state: SessionState = Idle(), drafts: dict[SessionId, Staged] | None = None) -> Registry:
-    return Registry(permission_deadline=60.0, sessions={ONE.id: Session(ONE, state, mode=None)}, drafts=drafts or {})
+    return Registry(permission_deadline=60.0, sessions={ONE.id: Session(ONE, state, mode=None, turn=None)}, drafts=drafts or {})
 
 
 def staged(state: SessionState = Idle()) -> Registry:
@@ -84,7 +84,7 @@ def test_a_session_that_never_joined_is_named_unknown(request_: DraftRequest) ->
 def test_a_discard_touches_only_its_own_session() -> None:
     both = Registry(
         permission_deadline=60.0,
-        sessions={ONE.id: Session(ONE, Idle(), mode=None), TWO.id: Session(TWO, Idle(), mode=None)},
+        sessions={ONE.id: Session(ONE, Idle(), mode=None, turn=None), TWO.id: Session(TWO, Idle(), mode=None, turn=None)},
         drafts={ONE.id: FIX, TWO.id: BETTER},
     )
     after, _ = decide(both, DiscardDraft(TWO.id))
