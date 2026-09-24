@@ -5,14 +5,14 @@ asks again whether the file said something this version knows.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, Collection
+from collections.abc import Awaitable, Callable, Collection, Iterator
 from pathlib import Path
 from typing import get_args
 
 from loguru import logger
 
 from hands.core.events import StatusReported
-from hands.core.session import Membership, Session, SessionId
+from hands.core.session import Instant, Membership, Session, SessionId
 from hands.core.status import Busy, Idle, Reason, Report, Shell, Stamp, Status, Unknown, UnknownReason, Waiting
 from hands.sessions.payload import Payload, Rejected
 
@@ -59,13 +59,26 @@ def _status(record: Payload) -> Status:
 class Statuses:
     """Why each live session's status could not be read last time, so a reason is said once, not every read."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], Instant]) -> None:
+        # [LAW:effects-at-boundaries] the registry's one clock, as a hook is stamped from when it arrives.
+        self._clock = clock
         self._unread: dict[SessionId, str] = {}
 
-    def read(self, sessions: Collection[Session]) -> list[StatusReported]:
-        """A report for each session whose status was set since the one the registry holds."""
-        self._unread = {session.membership.id: why for session in sessions if (why := self._unread.get(session.membership.id)) is not None}
-        return [reported for session in sessions if (reported := self._read(session)) is not None]
+    def read(self, live: Collection[SessionId], session: Callable[[SessionId], Session | None]) -> Iterator[StatusReported]:
+        """A report for each live session whose status was set since the one the registry holds.
+
+        [LAW:no-ambient-temporal-coupling] each file is read only as its report is asked for, from the registry as it
+        stands then, so one applied at once is the status the session has now: no hook can be applied between the read
+        and the report, as one could while an earlier session's report is applied.
+        """
+        self._unread = {id: why for id in live if (why := self._unread.get(id)) is not None}
+        for id in live:
+            match session(id):
+                case Session() as now if (reported := self._read(now)) is not None:
+                    yield reported
+                case _:
+                    # Ended while the one before was applied, or with nothing set since.
+                    pass
 
     def _read(self, session: Session) -> StatusReported | None:
         member = session.membership
@@ -83,7 +96,7 @@ class Statuses:
         if session.report is not None and session.report.stamp == report.stamp:
             return None
         _unknown(member, report.status)
-        return StatusReported(member.id, report)
+        return StatusReported(member.id, report, self._clock())
 
     def _said(self, member: Membership, why: str) -> None:
         # [LAW:no-silent-failure] said once each time the reason changes, rather than every read.
@@ -102,14 +115,18 @@ def _unknown(member: Membership, status: Status) -> None:
 
 
 async def keep_reading_statuses(
-    sessions: Callable[[], Collection[Session]], period: float, apply: Callable[[StatusReported], Awaitable[None]]
+    sessions: Callable[[], Collection[SessionId]],
+    session: Callable[[SessionId], Session | None],
+    clock: Callable[[], Instant],
+    period: float,
+    apply: Callable[[StatusReported], Awaitable[None]],
 ) -> None:
     """Read every live session's status once a period, and apply each one set since, until cancelled.
 
     The period is how late a session going idle is heard.
     """
-    statuses = Statuses()
+    statuses = Statuses(clock)
     while True:
-        for reported in statuses.read(sessions()):
+        for reported in statuses.read(sessions(), session):
             await apply(reported)
         await asyncio.sleep(period)

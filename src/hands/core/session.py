@@ -150,6 +150,16 @@ SessionState = Idle | Submitted | Working | Blocked | AtDialog | Gone
 
 
 @dataclass(frozen=True)
+class Untold:
+    """A turn Claude Code said is over and hands has not told yet. Claude Code sets idle before the transcript says how
+    the turn ended (an interrupt's record lands ~100 ms after, 2.1.282), so the turn is told once that record or its Stop
+    is read, or a turn after it opens, or at `by` with what was read by then."""
+
+    turn: PromptId | None
+    by: Instant
+
+
+@dataclass(frozen=True)
 class Session:
     membership: Membership
     state: SessionState
@@ -168,6 +178,9 @@ class Session:
     ended: frozenset[PromptId] = frozenset()
     # [LAW:one-source-of-truth] what Claude Code last said the session is doing, as it said it. None until it is read.
     report: Report | None = None
+    # [LAW:no-ambient-temporal-coupling] the one wait on the transcript, as a value the clock settles: None when every
+    # turn that ended has been told.
+    untold: Untold | None = None
 
 
 @dataclass(frozen=True)
