@@ -37,6 +37,7 @@ from hands.sessions.home import Home
 from hands.sessions.audit import AuditLog, Record, failures_to
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
+from hands.sessions.statusfile import keep_reading_statuses
 from hands.sessions.tail import Tails, keep_tailing
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
@@ -72,6 +73,8 @@ SWEEP_SECONDS = 2.0
 # How late a record Claude Code has written becomes a step of the turn it belongs to. A Stop reads the rest of
 # its own transcript before telling the turn, so this is what a turn narrated while it runs waits on, not a Stop.
 TAIL_SECONDS = 0.1
+# How late Claude Code setting a session's status is heard: the file it rewrites is a few hundred bytes a session.
+STATUS_SECONDS = 0.1
 # A turn's summary is spoken, so it is short; a model that has not answered in this long is said to have failed.
 SUMMARY_MAX_TOKENS = 200
 SUMMARY_TIMEOUT_SECONDS = 30.0
@@ -184,7 +187,7 @@ async def converse(
 
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
-        # session stays listed, without the tail no record becomes a step, without the relay
+        # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
         # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the key edge no turn starts, so any of
         # them failing stops the run where it can be seen, and launchd starts it again.
         if not task.cancelled() and (error := task.exception()) is not None:
@@ -196,6 +199,7 @@ async def converse(
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
+        asyncio.create_task(keep_reading_statuses(sessions.live_sessions, STATUS_SECONDS, sessions.apply), name="the status reader"),
         asyncio.create_task(relay(sessions, voice.worker.queue_frame), name="the session speech relay"),
         asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),

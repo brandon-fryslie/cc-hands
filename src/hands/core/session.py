@@ -5,6 +5,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, NewType, Self
 
+from hands.core.status import Report
+
 SessionId = NewType("SessionId", str)
 RequestId = NewType("RequestId", str)
 # Claude Code's prompt_id: every hook of one turn carries the id of the prompt that opened it, and so does every
@@ -164,6 +166,8 @@ class Session:
     # [LAW:no-ambient-temporal-coupling] the ids of the last turn hands ended before its Stop was heard, because a
     # later prompt or a later turn's record showed it over: that Stop, applied late, ends nothing.
     ended: frozenset[PromptId] = frozenset()
+    # [LAW:one-source-of-truth] what Claude Code last said the session is doing, as it said it. None until it is read.
+    report: Report | None = None
 
 
 @dataclass(frozen=True)

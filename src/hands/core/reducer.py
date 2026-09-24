@@ -40,12 +40,14 @@ from hands.core.events import (
     Prompted,
     SessionEvent,
     StartSource,
+    StatusReported,
     Stopped,
     Tick,
     ToolFinished,
     Waited,
 )
 from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Mode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, Submitted, UnknownMode, Working
+from hands.core.status import Report
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
@@ -145,6 +147,9 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return registry, []
         case Waited():
             return _enter(registry, event, _waited)
+        case StatusReported():
+            # Kept as Claude Code said it, for what asks what the session is doing; it moves no state of its own.
+            return _enter(registry, event, lambda state: state)
         case PermissionRequested(at=at, request=request, on=on):
             deadline = at + registry.permission_deadline
             return _enter(registry, event, lambda _: Blocked(on=on, request=request, deadline=deadline, warned=False))
@@ -172,11 +177,11 @@ def _started(membership: Membership, source: StartSource, previous: Session | No
     match (source, previous):
         case ("compact", Session(state=Submitted() | Working() | Blocked() | AtDialog()) as previous):
             return replace(previous, membership=membership)
-        case ("compact", Session(state=Idle(due=due), mode=mode)):
+        case ("compact", Session(state=Idle(due=due), mode=mode, report=report)):
             # A new idle period, which a nudge hands was timing for still has to come from hands.
-            return Session(membership, Idle(due=due), mode, turn=None)
-        case ("compact", Session(mode=mode)):
-            return Session(membership, Idle(), mode, turn=None)
+            return Session(membership, Idle(due=due), mode, turn=None, report=report)
+        case ("compact", Session(mode=mode, report=report)):
+            return Session(membership, Idle(), mode, turn=None, report=report)
         case _:
             return Session(membership, Idle(), mode=None, turn=None)
 
@@ -225,7 +230,7 @@ def _enter(
             mode = held if reported is None else reported
             # The mode is noted before the transition's effects, so a request it narrates is explained knowing the mode it was asked in.
             turn, taken, ended = _named(event, was)
-            return registry.put(replace(was, state=after, mode=mode, turn=turn, taken=taken, ended=ended)), [
+            return registry.put(replace(was, state=after, mode=mode, turn=turn, taken=taken, ended=ended, report=_report(event, was))), [
                 *_remoded(membership.id, held, mode),
                 *_transition(membership.id, before, after),
                 *also(was),
@@ -237,8 +242,17 @@ def _reported(event: SessionEvent) -> Mode | None:
     match event:
         case Prompted(mode=mode) | Stopped(mode=mode) | PermissionRequested(mode=mode) | ToolFinished(mode=mode):
             return mode
-        case Taken() | Interrupted() | Continued() | Waited() | Ended():
+        case Taken() | Interrupted() | Continued() | Waited() | StatusReported() | Ended():
             return None
+
+
+def _report(event: SessionEvent, was: Session) -> Report | None:
+    """What Claude Code says the session is doing after the event: only its own report changes it."""
+    match event:
+        case StatusReported(report=report):
+            return report
+        case _:
+            return was.report
 
 
 def _named(event: SessionEvent, was: Session) -> tuple[PromptId | None, frozenset[PromptId], frozenset[PromptId]]:

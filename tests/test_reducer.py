@@ -26,7 +26,7 @@ from hands.core.effects import (
     WaitingForYou,
     Withdraw,
 )
-from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Taken, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished, Waited
+from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Taken, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, StatusReported, Stopped, Tick, ToolFinished, Waited
 from hands.core.reducer import EXPIRED_MESSAGE, IDLE_NUDGE_SECONDS, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
     AskedQuestion,
@@ -51,6 +51,7 @@ from hands.core.session import (
     UnknownMode,
     Working,
 )
+from hands.core.status import Busy, Report, Stamp
 
 TIMEOUT = 60.0
 ONE = Membership(SessionId("s1"), pid=4242, cwd=Path("/code/a"), transcript=Path("/t/s1.jsonl"))
@@ -70,6 +71,7 @@ SESSION_EVENTS: list[SessionEvent] = [
     ToolFinished(ONE.id, at=5.0, call=BASH, mode=None),
     Ended(ONE.id, "prompt_input_exit"),
     Waited(ONE.id),
+    StatusReported(ONE.id, Report(Busy(), Stamp(1000))),
 ]
 
 
@@ -99,6 +101,12 @@ def test_a_start_registers_the_session_idle() -> None:
 )
 def test_every_state_takes_each_event_to_its_state(before: SessionState, event: Event, after: SessionState) -> None:
     assert reduce(holding(before), event)[0] == holding(after)
+
+
+@pytest.mark.parametrize("before", LIVE)
+def test_claude_codes_status_is_kept_as_it_said_it_and_moves_no_state(before: SessionState) -> None:
+    report = Report(Busy(), Stamp(1000))
+    assert reduce(holding(before), StatusReported(ONE.id, report)) == (registry(Session(ONE, before, mode=None, turn=None, report=report)), [])
 
 
 @pytest.mark.parametrize(("before", "after"), [(Idle(), Submitted(since=5.0)), (Submitted(since=1.0), Submitted(since=5.0)), (Working(since=1.0), Working(since=5.0)), (LIVE[3], Working(since=5.0))])
@@ -235,6 +243,14 @@ def test_a_compacted_session_keeps_its_state_and_takes_the_new_membership(before
 def test_any_start_but_compaction_is_at_the_prompt(before: SessionState, source: StartSource) -> None:
     # a session resumed after a crash never sent the Stop or SessionEnd the registry is still waiting for
     assert reduce(holding(before), Joined(ONE, source))[0] == holding(Idle())
+
+
+@pytest.mark.parametrize("before", [*LIVE, Idle(due=5.0)])
+def test_a_compacted_session_keeps_what_claude_code_last_said_of_it(before: SessionState) -> None:
+    # Compaction keeps its process, whose status file it goes on writing: a report dropped here would not be set again.
+    report = Report(Busy(), Stamp(1000))
+    held = registry(Session(ONE, before, mode=None, turn=None, report=report))
+    assert reduce(held, Joined(ONE, "compact"))[0].sessions[ONE.id].report == report
 
 
 def test_an_ended_session_compacting_is_idle() -> None:
