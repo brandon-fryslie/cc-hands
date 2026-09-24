@@ -1187,8 +1187,9 @@ thing that failed `[LAW:no-silent-failure]`:
    read-and-judge that `hands status` and the crash check at start also use. Its title
    shows one of five lights: up, not responding, down, off (stopped or never ran), and
    unreadable. An unreadable heartbeat is warned of as loudly as a dead daemon. It
-   posts a notification when the light leaves up. A daemon it finds already down on its
-   first look is shown but not announced. A heartbeat whose pid is outside
+   posts a notification when the light leaves up, at most once a minute, so a daemon that
+   crashes on every start is not announced on every restart. A daemon it finds already
+   down on its first look is shown but not announced. A heartbeat whose pid is outside
    `1..2**31-1` does not parse: `kill` would overflow on it, or read 0 and negative
    numbers as process groups.
 3. **Log.** Every effect and every failure is one line in `~/.hands/audit.jsonl`,

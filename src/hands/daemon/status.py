@@ -23,6 +23,8 @@ HEARTBEAT = timedelta(seconds=2)
 MISSED_BEATS = 3
 # The pids a process can have: kill(2) takes a pid_t, and reads 0 and every negative number as a process group.
 PIDS = range(1, 2**31)
+# The heartbeat periods a reader believes, in milliseconds: anything past an hour would say nothing about liveness.
+PERIODS_MS = range(1, 3_600_001)
 
 
 @dataclass(frozen=True)
@@ -60,7 +62,7 @@ def parse(raw: bytes) -> Status:
         pid=_pid(fields.integer("pid")),
         started_at=_instant(fields.text("started_at")),
         written_at=_instant(fields.text("written_at")),
-        heartbeat=timedelta(milliseconds=fields.integer("heartbeat_ms")),
+        heartbeat=_period(fields.integer("heartbeat_ms")),
         pipeline=_pipeline(fields.text("pipeline")),
         last_audio_out=None if last_audio_out is None else _instant(last_audio_out),
         live_sessions=fields.integer("live_sessions"),
@@ -222,6 +224,12 @@ def _pid(number: int) -> int:
     if number not in PIDS:
         raise Rejected(f"pid {number} is not a process id")
     return number
+
+
+def _period(milliseconds: int) -> timedelta:
+    if milliseconds not in PERIODS_MS:
+        raise Rejected(f"heartbeat_ms {milliseconds} is not a heartbeat period")
+    return timedelta(milliseconds=milliseconds)
 
 
 def _pipeline(text: str) -> PipelineState:

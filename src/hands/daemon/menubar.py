@@ -31,20 +31,19 @@ def show(home: Home) -> None:
     # A menu-bar item only: no Dock icon, no menu bar of its own, never the active app.
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
     item = AppKit.NSStatusBar.systemStatusBar().statusItemWithLength_(AppKit.NSVariableStatusItemLength)
+    # No Quit item: launchd keeps the indicator up, and the surface that says hands is down is not one click from gone.
     menu = AppKit.NSMenu.alloc().init()
     verdict_line = menu.addItemWithTitle_action_keyEquivalent_("", None, "")
     verdict_line.setEnabled_(False)
-    menu.addItem_(AppKit.NSMenuItem.separatorItem())
-    menu.addItemWithTitle_action_keyEquivalent_("Quit hands indicator", "terminate:", "")
     item.setMenu_(menu)
-    before: indicator.Light | None = None
+    before: indicator.Shown | None = None
 
     def look(_timer: object) -> None:
         nonlocal before
         try:
             now = datetime.now(UTC)
             seen = indicator.show(before, status.look(home.status, now), now)
-            before = seen.light
+            before = seen
             item.button().setTitle_(seen.title)
             item.button().setToolTip_(seen.text)
             verdict_line.setTitle_(seen.text)

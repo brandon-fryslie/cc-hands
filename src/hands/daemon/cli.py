@@ -61,15 +61,14 @@ def report(home: Home) -> int:
     now = datetime.now(UTC)
     verdict = status.look(home.status, now)
     match verdict:
-        case status.Unreadable():
-            print(status.describe(verdict, now), file=sys.stderr)
-            return 2
         case status.Up():
-            print(status.describe(verdict, now))
-            return 0
+            out, code = sys.stdout, 0
         case status.NeverRan() | status.Unresponsive() | status.Down() | status.Stopped():
-            print(status.describe(verdict, now))
-            return 1
+            out, code = sys.stdout, 1
+        case status.Unreadable():
+            out, code = sys.stderr, 2
+    print(status.describe(verdict, now), file=out)
+    return code
 
 
 # How often `hands log` looks for new lines.

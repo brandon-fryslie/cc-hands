@@ -6,6 +6,7 @@ import plistlib
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -69,6 +70,8 @@ def test_no_file_is_a_daemon_that_never_ran(tmp_path: Path) -> None:
         (status.encode(beat(pid=2**31)).encode(), "not a process id"),
         (status.encode(beat(pid=0)).encode(), "not a process id"),  # kill(0, 0) asks after our own process group
         (status.encode(beat(pid=-1)).encode(), "not a process id"),
+        (status.encode(beat()).replace('"heartbeat_ms": 2000', '"heartbeat_ms": 100000000000000000000').encode(), "not a heartbeat period"),
+        (status.encode(beat(heartbeat=timedelta(0))).encode(), "not a heartbeat period"),
     ],
 )
 def test_a_heartbeat_that_does_not_parse_is_refused(raw: bytes, error: str) -> None:
@@ -120,7 +123,9 @@ def test_looking_at_the_heartbeat_judges_it_against_the_process_table(tmp_path: 
     assert isinstance(status.look(path, now), status.Down)
 
 
-@pytest.mark.parametrize("raw", [b"{", status.encode(beat(pid=2**63)).encode()])
+@pytest.mark.parametrize(
+    "raw", [b"{", status.encode(beat(pid=2**63)).encode(), status.encode(beat()).replace('"heartbeat_ms": 2000', '"heartbeat_ms": 1e400').encode()]
+)
 def test_a_heartbeat_that_cannot_be_read_is_its_own_verdict_and_never_raises(raw: bytes, tmp_path: Path) -> None:
     path = tmp_path / "status.json"
     path.write_bytes(raw)
@@ -220,13 +225,24 @@ def test_each_verdict_has_its_own_light_and_the_broken_ones_warn(tmp_path: Path)
     assert [seen.text for seen in shown] == [status.describe(verdict, NOW) for verdict in verdicts]
 
 
-def test_a_notification_is_posted_when_the_verdict_leaves_up_and_only_then(tmp_path: Path) -> None:
-    down = status.Down(beat())
-    looks: list[status.Verdict] = [down, status.Up(beat()), status.Up(beat()), down, down, status.Unreadable(tmp_path, "x")]
-    before: indicator.Light | None = None
+def shown_over(looks: Sequence[tuple[status.Verdict, datetime]]) -> list[tuple[str, ...]]:
+    before: indicator.Shown | None = None
     posted: list[tuple[str, ...]] = []
-    for verdict in looks:
-        seen = indicator.show(before, verdict, NOW)
-        before = seen.light
-        posted.append(seen.notices)
-    assert posted == [(), (), (), (status.describe(down, NOW),), (), ()]
+    for verdict, at in looks:
+        before = indicator.show(before, verdict, at)
+        posted.append(before.notices)
+    return posted
+
+
+def test_a_notification_is_posted_when_the_verdict_leaves_up_and_only_then(tmp_path: Path) -> None:
+    down, up = status.Down(beat()), status.Up(beat())
+    looks: list[status.Verdict] = [down, up, up, down, down, status.Unreadable(tmp_path, "x")]
+    assert shown_over([(verdict, NOW) for verdict in looks]) == [(), (), (), (status.describe(down, NOW),), (), ()]
+
+
+def test_a_daemon_that_keeps_crashing_is_announced_once_a_quiet_window(tmp_path: Path) -> None:
+    down, up = status.Down(beat()), status.Up(beat())
+    # launchd restarts a daemon that crashes on every start about every ten seconds.
+    looks = [(verdict, NOW + timedelta(seconds=10 * cycle)) for cycle in range(8) for verdict in (up, down)]
+    posted = [at for (_, at), notices in zip(looks, shown_over(looks)) if notices]
+    assert posted == [NOW, NOW + timedelta(seconds=60)]
