@@ -300,4 +300,4 @@ def test_a_heartbeat_that_does_not_parse_is_not_taken_for_a_crash(tmp_path: Path
     home = Home(tmp_path)
     home.status.write_text("{")
     assert crashed_before(home) is False
-    assert "does not parse" in capsys.readouterr().err
+    assert "not counted as a crash" in capsys.readouterr().err

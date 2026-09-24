@@ -1181,9 +1181,16 @@ thing that failed `[LAW:no-silent-failure]`:
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, and the count of live sessions. `hands
    status` prints it. When TTS itself is down, a macOS notification is posted through
-   `osascript`. Planned: a hands menu-bar status item, run by its own launchd agent
-   rather than the daemon, whose icon follows the heartbeat's verdict, with a macOS
-   notification when the daemon stops being up.
+   `osascript`. `hands indicator` is a menu-bar status item in a process of its own,
+   under its own launchd agent (`hands.indicator`), so the daemon dying cannot take it
+   down too. Once a second it judges the heartbeat through `status.look`, the one
+   read-and-judge that `hands status` and the crash check at start also use. Its title
+   shows one of five lights: up, not responding, down, off (stopped or never ran), and
+   unreadable. An unreadable heartbeat is warned of as loudly as a dead daemon. It
+   posts a notification when the light leaves up. A daemon it finds already down on its
+   first look is shown but not announced. A heartbeat whose pid is outside
+   `1..2**31-1` does not parse: `kill` would overflow on it, or read 0 and negative
+   numbers as process groups.
 3. **Log.** Every effect and every failure is one line in `~/.hands/audit.jsonl`,
    written by the daemon alone (`hands.sessions.audit`). `hands log` prints the
    newest lines and follows the file. Each line is a value encoded one way: its type

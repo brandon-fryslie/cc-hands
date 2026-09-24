@@ -82,6 +82,7 @@ uv run hands run                        # in a terminal: space to talk, space ag
 HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
+uv run hands indicator                  # the daemon's verdict in the menu bar; launchd runs it this way
 uv run pytest && uv run pyright
 uv run python evals/narration.py       # real turns through the real summariser; needs the model to be up
 ```
@@ -92,12 +93,20 @@ no code name reached the ear, that what is spoken stays within its configured le
 that every number the model said is a number the turn showed. It exits 0 when every check held, 1 when one
 failed, and 2 when the model could not be reached at all.
 
-launchd keeps the daemon up, starting it at login and again whenever it exits:
+launchd keeps the daemon up, starting it at login and again whenever it exits. The
+menu-bar indicator gets an agent of its own, so it can still show the daemon when the
+daemon is down:
 
 ```
-uv run hands launchd > ~/Library/LaunchAgents/hands.daemon.plist
+uv run hands launchd daemon > ~/Library/LaunchAgents/hands.daemon.plist
+uv run hands launchd indicator > ~/Library/LaunchAgents/hands.indicator.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/hands.daemon.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/hands.indicator.plist
 ```
+
+The indicator's title is ✋ while the daemon is up. It reads "hands stuck", "hands down",
+or "hands unreadable" when something is wrong, and "✋ off" when the daemon was stopped
+or never ran. It posts a notification when the daemon stops being up.
 
 Every heartbeat rewrites `~/.hands/status.json`, every effect and failure is a line
 in `~/.hands/audit.jsonl`, and the daemon's output goes to `~/.hands/daemon.log`. Under launchd there is no terminal, so there is no key edge

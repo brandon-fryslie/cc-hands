@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from hands.daemon import launchd, status
-from hands.daemon.cli import main, pid_alive
+from hands.daemon import indicator, launchd, status
+from hands.daemon.cli import main
 from hands.daemon.run import keep_beating, off_loop
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -65,6 +65,10 @@ def test_no_file_is_a_daemon_that_never_ran(tmp_path: Path) -> None:
         (b'{"pid": 1}', "started_at"),
         (status.encode(beat()).replace("running", "dancing").encode(), "pipeline should be"),
         (status.encode(beat()).replace("+00:00", "").encode(), "carries its zone"),
+        (status.encode(beat(pid=2**63)).encode(), "not a process id"),
+        (status.encode(beat(pid=2**31)).encode(), "not a process id"),
+        (status.encode(beat(pid=0)).encode(), "not a process id"),  # kill(0, 0) asks after our own process group
+        (status.encode(beat(pid=-1)).encode(), "not a process id"),
     ],
 )
 def test_a_heartbeat_that_does_not_parse_is_refused(raw: bytes, error: str) -> None:
@@ -101,6 +105,29 @@ def test_each_verdict_is_said_plainly(tmp_path: Path) -> None:
     )
     assert status.describe(status.Stopped(beat(pipeline="stopped")), NOW) == "hands is stopped: pid 4242 finished its pipeline 1s ago"
     assert status.describe(status.NeverRan(tmp_path), NOW) == f"hands has not run: there is no heartbeat at {tmp_path}"
+    assert status.describe(status.Unreadable(tmp_path, "not JSON"), NOW) == (
+        f"hands is unknown: its heartbeat at {tmp_path} cannot be read: not JSON"
+    )
+
+
+def test_looking_at_the_heartbeat_judges_it_against_the_process_table(tmp_path: Path) -> None:
+    path = tmp_path / "status.json"
+    now = datetime.now(UTC)
+    assert status.look(path, now) == status.NeverRan(path)
+    status.write(path, beat(pid=os.getpid(), written_at=now))
+    assert isinstance(status.look(path, now), status.Up)
+    status.write(path, beat(pid=2**22 + 12345, written_at=now))
+    assert isinstance(status.look(path, now), status.Down)
+
+
+@pytest.mark.parametrize("raw", [b"{", status.encode(beat(pid=2**63)).encode()])
+def test_a_heartbeat_that_cannot_be_read_is_its_own_verdict_and_never_raises(raw: bytes, tmp_path: Path) -> None:
+    path = tmp_path / "status.json"
+    path.write_bytes(raw)
+    assert isinstance(status.look(path, NOW), status.Unreadable)
+    path.unlink()
+    path.mkdir()  # a read that fails in the OS, not in the parse
+    assert isinstance(status.look(path, NOW), status.Unreadable)
 
 
 def test_hands_status_exits_zero_only_when_the_daemon_is_up(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -112,13 +139,16 @@ def test_hands_status_exits_zero_only_when_the_daemon_is_up(tmp_path: Path, caps
     assert capsys.readouterr().out.startswith(f"hands is up: pid {os.getpid()}")
     home.status.write_text("{")
     assert main(["--home", str(tmp_path), "status"]) == 2
-    assert "cannot read" in capsys.readouterr().err
+    assert "cannot be read" in capsys.readouterr().err
+    status.write(home.status, beat(pid=2**63))
+    assert main(["--home", str(tmp_path), "status"]) == 2
+    assert "not a process id" in capsys.readouterr().err
 
 
 def test_liveness_comes_from_the_os() -> None:
-    assert pid_alive(os.getpid())
-    assert pid_alive(1)  # launchd: alive, and not ours to signal
-    assert not pid_alive(2**22 + 12345)
+    assert status.pid_alive(os.getpid())
+    assert status.pid_alive(1)  # launchd: alive, and not ours to signal
+    assert not status.pid_alive(2**22 + 12345)
 
 
 async def test_the_heartbeat_is_rewritten_every_period() -> None:
@@ -152,7 +182,7 @@ def test_a_process_exits_without_waiting_for_work_left_running_off_the_loop(tmp_
 
 def test_the_launch_agent_keeps_the_daemon_up_and_logs_where_status_can_point(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    agent = plistlib.loads(launchd.agent(Path("/venv/bin/python"), home))
+    agent = plistlib.loads(launchd.agent(launchd.DAEMON, Path("/venv/bin/python"), home))
     assert agent == {
         "Label": "hands.daemon",
         "ProgramArguments": ["/venv/bin/python", "-m", "hands.daemon", "--home", str(tmp_path), "run"],
@@ -162,3 +192,41 @@ def test_the_launch_agent_keeps_the_daemon_up_and_logs_where_status_can_point(tm
         "StandardOutPath": str(home.daemon_log),
         "StandardErrorPath": str(home.daemon_log),
     }
+
+
+def test_the_indicator_has_a_launch_agent_of_its_own(tmp_path: Path, capsysbinary: pytest.CaptureFixture[bytes]) -> None:
+    home = Home(tmp_path)
+    assert main(["--home", str(tmp_path), "launchd", "indicator"]) == 0
+    agent = plistlib.loads(capsysbinary.readouterr().out)
+    assert agent["Label"] == "hands.indicator"
+    assert agent["ProgramArguments"][-3:] == ["--home", str(tmp_path), "indicator"]
+    assert agent["KeepAlive"] is True
+    assert agent["StandardErrorPath"] == str(home.indicator_log)
+
+
+def test_each_verdict_has_its_own_light_and_the_broken_ones_warn(tmp_path: Path) -> None:
+    verdicts: list[status.Verdict] = [
+        status.Up(beat()),
+        status.Unresponsive(beat()),
+        status.Down(beat()),
+        status.NeverRan(tmp_path),
+        status.Unreadable(tmp_path, "not JSON"),
+    ]
+    shown = [indicator.show(None, verdict, NOW) for verdict in verdicts]
+    assert [seen.light for seen in shown] == ["up", "not responding", "down", "off", "unreadable"]
+    assert len({seen.title for seen in shown}) == len(shown)
+    assert [seen.title.startswith("⚠︎") for seen in shown] == [False, True, True, False, True]
+    assert indicator.show(None, status.Stopped(beat(pipeline="stopped")), NOW).light == "off"
+    assert [seen.text for seen in shown] == [status.describe(verdict, NOW) for verdict in verdicts]
+
+
+def test_a_notification_is_posted_when_the_verdict_leaves_up_and_only_then(tmp_path: Path) -> None:
+    down = status.Down(beat())
+    looks: list[status.Verdict] = [down, status.Up(beat()), status.Up(beat()), down, down, status.Unreadable(tmp_path, "x")]
+    before: indicator.Light | None = None
+    posted: list[tuple[str, ...]] = []
+    for verdict in looks:
+        seen = indicator.show(before, verdict, NOW)
+        before = seen.light
+        posted.append(seen.notices)
+    assert posted == [(), (), (), (status.describe(down, NOW),), (), ()]
