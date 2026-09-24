@@ -1,6 +1,7 @@
 """A session's transcript, followed as Claude Code writes it, and the turn it is read into."""
 
 import asyncio
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from hands.core.turn import Asked, Continuing, Interruption, Notified, Looked, O
 from hands.core.effects import Summarise
 from hands.core.events import Joined, Prompted, Stopped
 from hands.core.session import Idle, Submitted, Working
+from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.tail import KEPT, Tails, Telling, keep_tailing
 
@@ -716,6 +718,43 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
     assert stopped == Summarise(SID, PromptId("p2"), "Done.")
     second = await tails.tell(SID, PromptId("p2"), "Done.")
     assert second is not None and second.turn == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
+    listing = sessions.listing(SID)
+    assert listing is not None and listing.session.state == Idle()
+
+
+async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_itself_with_its_own_changes(tmp_path: Path) -> None:
+    """hands-keyboard-gxr.90g, end to end: p1 is taken, writes a file, and is interrupted, and p2's hook is applied and
+    marked, all before the tail reads a record of p1. p1's records read after are the proof it ran: it is told as
+    itself, with the file it wrote and not the one p2 goes on to write, and p2 is told after it, with only its own."""
+    root = tmp_path / "work"
+    root.mkdir()
+    for args in (("init", "-q"), ("config", "user.email", "t@example.com"), ("config", "user.name", "Test"), ("commit", "-q", "--allow-empty", "-m", "first")):
+        subprocess.run(("git", "-C", str(root), *args), check=True)
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("")
+    deltas = Deltas()
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None, changes=deltas)
+    await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=transcript), "startup"))
+    tails = Tails(sessions)
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    (root / "rivers.md").write_text("# Rivers\n")
+    await sessions.apply(Prompted(SID, at=5.0, mode=None, prompt=PromptId("p2")))
+    (root / "shorter.md").write_text("Rivers.\n")
+    transcript.write_text(lines(ASKED, WRITING, CUT_OFF, NEXT_ASKED, DONE))
+    for transcribed in await tails.catch_up():
+        await sessions.apply(transcribed)
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2")))
+    # Both readings are taken before anything is asserted, so a failure leaves no git command running.
+    changed = [[file.path for file in (await deltas.taken(SID)).files] for _ in range(2)]
+
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), None)
+    first = await tails.tell(SID, PromptId("p1"), None)
+    assert first is not None and first.turn == RIVERS
+    await tails.spoken(first)
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), "Done.")
+    second = await tails.tell(SID, PromptId("p2"), "Done.")
+    assert second is not None and second.turn == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
+    assert changed == [["rivers.md"], ["shorter.md"]]
     listing = sessions.listing(SID)
     assert listing is not None and listing.session.state == Idle()
 

@@ -111,6 +111,10 @@ class Submitted:
     presses Escape before they finish, which puts it back in the input box with no hook and no record to say so (2.1.281)."""
 
     since: Instant
+    # [LAW:no-ambient-temporal-coupling] the prompt this one was sent over while that one was still Submitted:
+    # cancelled, or taken and ended before any record of it was read. Only its own record can say which, and that is
+    # read after this, so the prompt is kept until then, and a record of it ends it as the turn it was. None where there was none.
+    over: PromptId | None = None
 
 
 @dataclass(frozen=True)
