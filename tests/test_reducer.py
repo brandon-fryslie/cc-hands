@@ -28,7 +28,10 @@ from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, Moved
 from hands.core.reducer import EXPIRED_MESSAGE, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
     AskedQuestion,
+    AtDialog,
     Option,
+    Plan,
+    PlanApproved,
     Question,
     Blocked,
     Gone,
@@ -245,6 +248,12 @@ def test_a_question_answered_at_the_keyboard_comes_back_with_its_answers_and_sti
     waiting = Blocked(on=question, request=RequestId("r0"), deadline=65.0, warned=False)
     after, effects = reduce(holding(waiting), ToolFinished(ONE.id, at=20.0, call=answered))
     assert (after, effects) == (holding(Working(since=20.0)), [Reply(ONE.id, RequestId("r0"), Withdraw())])
+
+
+@pytest.mark.parametrize("before", [Blocked(on=Plan("the plan"), request=RequestId("r0"), deadline=65.0, warned=False), AtDialog(Plan("the plan"))])
+def test_a_plan_approved_at_the_keyboard_releases_the_wait(before: SessionState) -> None:
+    after, _ = reduce(holding(before), ToolFinished(ONE.id, at=20.0, call=PlanApproved()))
+    assert after == holding(Working(since=20.0))
 
 
 @pytest.mark.parametrize("before", [WAITING, Idle(), Working(since=1.0)])

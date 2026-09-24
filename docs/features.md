@@ -183,8 +183,12 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
   options; `answer_question` replies with the answers in `updatedInput`. Done when a
   real `AskUserQuestion` in a target session is answered by voice and the agent
   proceeds with that answer. Built: the hook carries the answer, so no key chords.
-- **Plan approval.** `ExitPlanMode` arrives the same way; the plan text is
-  narrated at summary depth; `answer_permission` accepts or rejects it. Done live.
+- **Plan approval.** `ExitPlanMode` arrives the same way; the `Blocked.on` becomes
+  `Plan`, and the model tells the plan at summary depth. `answer_plan` gives the plan
+  dialog's own three choices: approve with edits auto-accepted, approve with each
+  edit asked about, or keep planning with what to change. Built: verified live on
+  2.1.281, each approval left plan mode for the mode chosen, and a plan sent back
+  stayed in plan mode with the feedback reaching the agent.
 - **Mode readback.** `permission_mode` from every hook payload lands in
   `Session.mode`; `list_sessions` speaks it; a mode change is a `Note`. Done when
   shift-tab in a session is reflected in the next `list_sessions`.

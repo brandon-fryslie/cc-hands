@@ -14,8 +14,8 @@ from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, StageDraft
-from hands.core.effects import Allow, Answers, Decision, Deny
-from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Permission, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Working
+from hands.core.effects import Allow, Answers, Approve, Decision, Deny
+from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Permission, Plan, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Working
 from hands.core.turn import Budget, Happening, Ref, describe
 from hands.sessions.backfill import Unseen, read_since
 from hands.sessions.audit import Called, Record
@@ -201,6 +201,8 @@ def _waiting_on(on: Blocker) -> str:
             return f"waiting for permission to use {tool}"
         case Question():
             return "waiting for the user to answer its question"
+        case Plan():
+            return "waiting for the user to approve its plan"
 
 
 class Resolved(TypedDict):
@@ -262,7 +264,7 @@ async def _answer(
 
 
 def permission_tools(sessions: Sessions) -> list[Tool]:
-    """answer_permission, answer_question: the only ways a voice answer reaches a session waiting on its dialog."""
+    """answer_permission, answer_question, answer_plan: the only ways a voice answer reaches a session waiting on its dialog."""
 
     async def answer_permission(params: FunctionCallParams, request: str, decision: str, message: str = "") -> None:
         """Answer a session's permission request with what the user decided. Call it only after the user has said to allow or deny.
@@ -287,8 +289,20 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
         """
         await _decide(params, sessions, request, lambda: parse_answers(answers))
 
+    async def answer_plan(params: FunctionCallParams, request: str, decision: str, message: str = "") -> None:
+        """Answer a session's plan with what the user decided. Call it only after the user has approved the plan or asked for changes.
+
+        Say the returned readback to the user.
+
+        Args:
+            request: The request id given with the plan.
+            decision: "auto-accept edits" to approve the plan and let the session make its edits without asking, "manually approve edits" to approve it and be asked about each edit, or "keep planning" to send it back.
+            message: Only when it keeps planning: what the user wants changed, in their words.
+        """
+        await _decide(params, sessions, request, lambda: parse_plan_decision(decision, message))
+
     # A barge-in must not cancel an answer part way: the user would never hear whether it went through.
-    return [_uncancelled_by_interruption(tool) for tool in (answer_permission, answer_question)]
+    return [_uncancelled_by_interruption(tool) for tool in (answer_permission, answer_question, answer_plan)]
 
 
 async def _decide(params: FunctionCallParams, sessions: Sessions, request: object, decision: Callable[[], Decision]) -> None:
@@ -310,14 +324,40 @@ def parse_decision(decision: object, message: object) -> Decision:
             return Allow()
         case ("allow", str()):
             raise Rejected("a message goes only with deny; an allow carries none, so nothing was answered")
-        case ("deny", ""):
-            return Deny(DENIED_BY_VOICE)
-        case ("deny", str()):
-            return Deny(message)
-        case ("allow" | "deny", other):
+        case ("allow", other):
             raise Rejected(f"message should be a string, got {type(other).__name__}")
+        case ("deny", _):
+            return _refusal(message)
         case (other, _):
             raise Rejected(f"decision should be 'allow' or 'deny', got {other!r}")
+
+
+def parse_plan_decision(decision: object, message: object) -> Approve | Deny:
+    """The model's answer to a plan, parsed once into the plan dialog's own three choices."""
+    match (decision, message):
+        case ("auto-accept edits", ""):
+            return Approve("acceptEdits")
+        case ("manually approve edits", ""):
+            return Approve("default")
+        case ("auto-accept edits" | "manually approve edits", str()):
+            raise Rejected("a message goes only with keep planning; an approval carries none, so nothing was answered")
+        case ("auto-accept edits" | "manually approve edits", other):
+            raise Rejected(f"message should be a string, got {type(other).__name__}")
+        case ("keep planning", _):
+            # Sent back as any request is refused: the agent reads why, and the tool not running keeps it in plan mode.
+            return _refusal(message)
+        case (other, _):
+            raise Rejected(f"decision should be 'auto-accept edits', 'manually approve edits', or 'keep planning', got {other!r}")
+
+
+def _refusal(message: object) -> Deny:
+    match message:
+        case "":
+            return Deny(DENIED_BY_VOICE)
+        case str():
+            return Deny(message)
+        case other:
+            raise Rejected(f"message should be a string, got {type(other).__name__}")
 
 
 def parse_answers(answers: object) -> Answers:

@@ -124,7 +124,7 @@ class Permission: tool: str; input: Mapping[str, object]; suggestions: Sequence[
 @dataclass(frozen=True)
 class Question:   questions: Sequence[AskedQuestion]
 @dataclass(frozen=True)
-class Plan:       text: str
+class Plan:       text: str             # a finished ExitPlanMode is PlanApproved: its input no longer carries the plan
 
 # What the virtual keyboard types into a session. The variant decides the escaping,
 # so there is no "if it starts with a slash" anywhere: Text always escapes a leading sigil,
@@ -366,8 +366,16 @@ is answered by allowing it with its own input and an `answers` object added, eac
 question's text keying the label chosen or the user's own words, several labels
 joined with ", " — the shape Claude Code's own dialog answers with (read out of the
 2.1.280 bundle, and verified live: the agent went on with the answers given by voice).
-An answer that does not fit what was asked — the wrong number of answers, or a plain
-allow to a question, which would run it unanswered — sends nothing, and the session
+A plan is approved as its own dialog approves it: allow with an empty `updatedInput`,
+so the plan is read from its file as the user left it, and `updatedPermissions`
+holding one `setMode` to `acceptEdits` or `default` for the session. Claude Code
+ignores an allow without `updatedInput` for a tool that asks the user something, and
+shows its dialog instead. Keep planning is a deny, and the agent reads its message
+as the feedback (read out of the 2.1.281 bundle, and verified live). A plan that
+runs comes back through `PostToolUse` without its text, as `PlanApproved`.
+An answer that does not fit what was asked — the wrong number of answers, a plain
+allow to a question, which would run it unanswered, or a plain allow to a plan,
+which would leave plan mode for a mode nobody chose — sends nothing, and the session
 still waits.
 
 The documented nine events are not the real set. There are 33:
