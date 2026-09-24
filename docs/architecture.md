@@ -1163,7 +1163,9 @@ lose its only input device. Then the microphone holds a stream of nothing (`NoIn
 which is opened, started, stopped, and closed like any other. The move is said as
 `No microphone: hands cannot hear you. Speaking on …`. A daemon that starts that way
 says `hands is up, but there is no microphone, so it cannot hear you.` instead of
-failing its setup and crash-looping under launchd. A microphone plugged in later
+failing its setup and crash-looping under launchd. With no stream, no frame reaches the
+VAD and no turn starts, so the key edge answers a press itself:
+`There is no microphone, so hands cannot hear you.` A microphone plugged in later
 changes the default input, so the follower opens it like any other move. This is
 tested against a PortAudio that lists no default input. A MacBook cannot be put in
 that state, since macOS always falls back to the built-in microphone.

@@ -20,6 +20,7 @@ from pipecat.utils.errors import ErrorCategory
 from hands.sessions.audit import Announced, Record
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
+from hands.voice.ptt import Turn
 from hands.voice.whisper import NOTHING_TRANSCRIBED, Whisper
 
 
@@ -53,7 +54,7 @@ class NothingTranscribed:
 
 @dataclass(frozen=True)
 class NoMicrophone:
-    """A turn came back empty because there is no microphone to hear it, not because speech recognition failed."""
+    """The key was pressed to talk, and there is no microphone to hear it."""
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,7 @@ def system_text(fact: SystemFact) -> str:
         case NothingTranscribed():
             return "Whisper returned nothing for that turn."
         case NoMicrophone():
-            return "Nothing was heard: there is no microphone."
+            return "There is no microphone, so hands cannot hear you."
         case AudioMoved(devices=Devices(input=None, output=output)):
             # [LAW:no-silent-failure] said on whatever speaker is left, since nothing will be heard until a microphone is back.
             return f"No microphone: hands cannot hear you. Speaking on {output}."
@@ -234,13 +235,14 @@ class SystemChannel:
                 logger.error(f"{source} failed: {error}")
 
 
-def empty_turn(devices: Devices) -> NothingTranscribed | NoMicrophone:
-    """Why a turn came back empty: with no microphone, not the recogniser's doing, so not said as though it were."""
-    match devices:
-        case Devices(input=None):
-            return NoMicrophone()
-        case Devices():
-            return NothingTranscribed()
+def unheard(turn: Turn, devices: Devices) -> tuple[NoMicrophone, ...]:
+    """What a key press says when nothing will hear it: with no microphone no frame reaches the VAD, so no turn
+    starts and nothing else would answer the press."""
+    match turn, devices:
+        case "start", Devices(input=None):
+            return (NoMicrophone(),)
+        case _:
+            return ()
 
 
 def listen(voice: Voice, channel: SystemChannel, after_crash: bool) -> None:
@@ -257,4 +259,4 @@ def listen(voice: Voice, channel: SystemChannel, after_crash: bool) -> None:
 
     @voice.stt.event_handler(NOTHING_TRANSCRIBED)
     async def empty(_stt: Whisper) -> None:  # pyright: ignore[reportUnusedFunction]
-        await channel.say(empty_turn(voice.audio.devices))
+        await channel.say(NothingTranscribed())

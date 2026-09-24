@@ -57,7 +57,7 @@ from hands.voice.speech import relay
 from hands.voice.summary import Summariser, summariser
 from hands.voice.summary_instruction import TURN_SUMMARY_INSTRUCTION
 from hands.voice.conversation import record_turns
-from hands.voice.system import SystemChannel, listen
+from hands.voice.system import SystemChannel, listen, unheard
 from hands.voice.threads import off_loop
 from hands.voice.tools import audited, draft_tools, list_sessions_tool, permission_tools, read_session_tool
 
@@ -208,6 +208,8 @@ async def converse(
     async def on_key(position: Key) -> None:
         turn = voice.key.move_key(position)
         logger.info(f"key {position}: turn {turn}")
+        for fact in unheard(turn, voice.audio.devices):
+            await channel.say(fact)
 
     if sys.stdin.isatty():
         background.append(asyncio.create_task(drive_key(on_key, quit_event), name="the terminal key edge"))
