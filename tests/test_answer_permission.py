@@ -16,10 +16,10 @@ from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.effects import Allow, Narrate, Withdraw, PermissionAsked, PermissionDeadlineNear, PermissionExpired, Speak
+from hands.core.effects import Allow, Narrate, Withdraw, Asking, DeadlineNear, Expired, Speak
 from hands.core.events import PermissionRequested, Tick, ToolFinished
 from hands.core.reducer import EXPIRED_MESSAGE
-from hands.core.session import Blocked, Permission, RequestId, SessionId, Working
+from hands.core.session import AskedQuestion, AtDialog, Blocked, Option, Permission, Question, RequestId, SessionId, Working
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
@@ -86,22 +86,40 @@ class Shim:
         return self.process.returncode, stdout.decode(), stderr.decode()
 
 
-async def asked(home: Home, sessions: Sessions) -> tuple[Shim, PermissionAsked]:
+QUESTIONS: dict[str, object] = {
+    "questions": [
+        {"question": "Which color?", "header": "Color", "options": [{"label": "red", "description": "warm"}, {"label": "green", "description": "cool"}], "multiSelect": False},
+        {"question": "Which fruits?", "header": "Fruits", "options": [{"label": "pear", "description": ""}, {"label": "plum", "description": ""}], "multiSelect": True},
+    ]
+}
+QUESTION: dict[str, object] = {**ASK, "tool_name": "AskUserQuestion", "tool_input": QUESTIONS}
+QUESTIONS_ASKED = (
+    AskedQuestion("Which color?", (Option("red", "warm"), Option("green", "cool")), several=False),
+    AskedQuestion("Which fruits?", (Option("pear", None), Option("plum", None)), several=True),
+)
+
+
+async def asked(home: Home, sessions: Sessions, payload: Mapping[str, object] = ASK) -> tuple[Shim, Asking]:
     assert await (await Shim.run(home, START)).finished() == (0, "", "")
-    shim = await Shim.run(home, ASK)
+    shim = await Shim.run(home, payload)
     heard = await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
     assert isinstance(heard, Narrate)
     return shim, heard.moment
 
 
-async def call(tools: list[Tool], **arguments: object) -> dict[str, object]:
+def named(sessions: Sessions, name: str) -> Tool:
+    [tool] = [tool for tool in permission_tools(sessions) if tool.__name__ == name]
+    return tool
+
+
+async def call(tool: Tool, **arguments: object) -> dict[str, object]:
     results: list[dict[str, object]] = []
 
     async def capture(result: dict[str, object], **_: object) -> None:
         results.append(result)
 
-    [tool] = tools
-    await DirectFunctionWrapper(tool).invoke(arguments, cast(FunctionCallParams, SimpleNamespace(result_callback=capture)))
+    params = SimpleNamespace(result_callback=capture, function_name=tool.__name__)
+    await DirectFunctionWrapper(tool).invoke(arguments, cast(FunctionCallParams, params))
     [result] = results
     return result
 
@@ -112,23 +130,110 @@ def decision(stdout: str) -> object:
 
 async def test_a_voice_allow_is_what_the_waiting_hook_prints(home: Home, sessions: Sessions) -> None:
     shim, moment = await asked(home, sessions)
-    assert [listing.session.state for listing in sessions.live()] == [Blocked(on=moment.permission, request=moment.request, deadline=DEADLINE, warned=False)]
+    assert [listing.session.state for listing in sessions.live()] == [Blocked(on=moment.on, request=moment.request, deadline=DEADLINE, warned=False)]
     assert shim.process.returncode is None, "the hook returned before anyone answered"
 
-    tools = permission_tools(sessions)
-    assert await call(tools, request=moment.request, decision="allow") == {"readback": "Allowed Bash for untitled, in cc-hands."}
+    tool = named(sessions, "answer_permission")
+    assert await call(tool, request=moment.request, decision="allow") == {"readback": "Allowed Bash for untitled, in cc-hands."}
     code, stdout, _ = await shim.finished()
     assert (code, decision(stdout)) == (0, {"behavior": "allow"})
     assert [listing.session.state for listing in sessions.live()] == [Working(since=0.0)]
-    assert await call(tools, request=moment.request, decision="deny") == {
-        "readback": "That request is no longer waiting: it was already answered, answered at the keyboard, or denied at its deadline."
+    assert await call(tool, request=moment.request, decision="deny") == {
+        "readback": "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
     }
+
+
+async def test_voice_answers_to_a_question_are_what_the_waiting_hook_prints_in_its_input(home: Home, sessions: Sessions) -> None:
+    shim, moment = await asked(home, sessions, QUESTION)
+    assert shim.process.returncode is None, "the hook returned before anyone answered"
+    assert await call(named(sessions, "answer_question"), request=moment.request, answers=["green", "pear, plum"]) == {
+        "readback": "Answered green; pear, plum for untitled, in cc-hands."
+    }
+    code, stdout, _ = await shim.finished()
+    answers = {"Which color?": "green", "Which fruits?": "pear, plum"}
+    assert (code, decision(stdout)) == (0, {"behavior": "allow", "updatedInput": {**QUESTIONS, "answers": answers}})
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments", "readback"),
+    [
+        ("answer_question", {"answers": ["green"]}, "it asked 2 questions and was given 1 answers"),
+        ("answer_permission", {"decision": "allow"}, "that request is a question"),
+    ],
+)
+async def test_an_answer_that_does_not_fit_the_question_sends_nothing_and_it_still_waits(
+    home: Home, sessions: Sessions, tool: str, arguments: dict[str, object], readback: str
+) -> None:
+    shim, moment = await asked(home, sessions, QUESTION)
+    assert readback in str((await call(named(sessions, tool), request=moment.request, **arguments))["readback"])
+    await asyncio.sleep(0.2)
+    assert shim.process.returncode is None, "the hook was answered with something that does not answer it"
+    assert [listing.session.state for listing in sessions.live()] == [Blocked(on=moment.on, request=moment.request, deadline=DEADLINE, warned=False)]
+    await call(named(sessions, "answer_question"), request=moment.request, answers=["red", "pear"])
+    await shim.finished()
+
+
+async def test_a_question_nobody_answers_by_its_deadline_is_left_to_its_dialog_and_said_to_be(home: Home, sessions: Sessions, clock: Clock) -> None:
+    shim, moment = await asked(home, sessions, QUESTION)
+    for clock.now in (DEADLINE - 10.0, DEADLINE):
+        await sessions.apply(Tick(clock.now))
+    code, stdout, _ = await shim.finished()
+    # Printing nothing decides nothing: the dialog, where the user may be answering, stays up.
+    assert (code, stdout) == (0, "")
+    [warning, expiry] = [await sessions.heard(), await sessions.heard()]
+    assert (warning, expiry) == (Speak(DeadlineNear(SID, moment.on, remaining=10.0)), Speak(Expired(SID, moment.on)))
+    spoken = [frame(heard, names=lambda _: "quiz") for heard in (warning, expiry)]
+    assert [cast(TTSSpeakFrame, said).text for said in spoken] == [
+        "10 seconds left to answer quiz about its question.",
+        "Nobody answered quiz about its question in time, so it is left waiting at its dialog.",
+    ]
+    # Still at its dialog, and said to be; a voice answer now is refused out loud rather than sent late.
+    assert [listing.session.state for listing in sessions.live()] == [AtDialog(moment.on)]
+    assert str((await call(named(sessions, "answer_question"), request=moment.request, answers=["red", "pear"]))["readback"]).startswith("That request is no longer waiting")
+    # Answered at the keyboard after all, it comes back through PostToolUse and the session goes on.
+    answered = Question(QUESTIONS_ASKED, {**QUESTIONS, "answers": {"Which color?": "red", "Which fruits?": "pear"}})
+    await sessions.apply(ToolFinished(SID, at=DEADLINE + 5.0, call=answered))
+    assert [listing.session.state for listing in sessions.live()] == [Working(since=DEADLINE + 5.0)]
+
+
+async def test_an_empty_answer_leaves_its_question_unanswered(home: Home, sessions: Sessions) -> None:
+    shim, moment = await asked(home, sessions, QUESTION)
+    assert await call(named(sessions, "answer_question"), request=moment.request, answers=["green", ""]) == {
+        "readback": "Answered green; nothing for untitled, in cc-hands."
+    }
+    _, stdout, _ = await shim.finished()
+    assert decision(stdout) == {"behavior": "allow", "updatedInput": {**QUESTIONS, "answers": {"Which color?": "green", "Which fruits?": ""}}}
+
+
+@pytest.mark.parametrize(
+    ("answers", "error"),
+    [("green", "answers should be a list"), ([3], "each answer should be a string")],
+)
+async def test_answers_that_do_not_parse_are_refused_out_loud(sessions: Sessions, answers: object, error: str) -> None:
+    assert error in str((await call(named(sessions, "answer_question"), request="r", answers=answers))["error"])
+
+
+def test_a_question_reaches_the_model_whole_with_its_options_and_request_id() -> None:
+    long = "a description long enough that the questions together run past what a tool input is shown " * 4
+    asked = (
+        AskedQuestion("Which color?", (Option("red", long), Option("green", None)), several=False),
+        AskedQuestion("Which fruits?", (Option("pear", long), Option("plum", long)), several=True),
+        AskedQuestion("Name it?", (), several=False),
+    )
+    narrated = frame(Narrate(Asking(SID, RequestId("q-7"), Question(asked, {}))), names=lambda id: id)
+    assert isinstance(narrated, LLMMessagesAppendFrame)
+    [message] = narrated.messages
+    content = str(cast(dict[str, object], message)["content"])
+    assert f"1. Which color? Options: red ({long}); green." in content
+    assert f"2. Which fruits? Options: pear ({long}); plum ({long}). More than one may be chosen." in content
+    assert "3. Name it? Answered in the user's own words." in content
+    assert "Request id: q-7" in content and "answer_question" in content and "cut short" not in content
 
 
 @pytest.mark.parametrize(("message", "agent_reads"), [("use git clean instead", "use git clean instead"), ("", DENIED_BY_VOICE)])
 async def test_a_voice_deny_carries_its_message_to_the_agent(home: Home, sessions: Sessions, message: str, agent_reads: str) -> None:
     shim, moment = await asked(home, sessions)
-    assert await call(permission_tools(sessions), request=moment.request, decision="deny", message=message) == {
+    assert await call(named(sessions, "answer_permission"), request=moment.request, decision="deny", message=message) == {
         "readback": "Denied Bash for untitled, in cc-hands."
     }
     code, stdout, _ = await shim.finished()
@@ -143,11 +248,11 @@ async def test_an_unanswered_request_is_denied_at_its_deadline_after_one_warning
     code, stdout, _ = await shim.finished()
     assert (code, decision(stdout)) == (0, {"behavior": "deny", "message": EXPIRED_MESSAGE})
     assert [await sessions.heard(), await sessions.heard()] == [
-        Speak(PermissionDeadlineNear(SID, moment.permission, remaining=10.0)),
-        Speak(PermissionExpired(SID, moment.permission)),
+        Speak(DeadlineNear(SID, moment.on, remaining=10.0)),
+        Speak(Expired(SID, moment.on)),
     ]
-    assert await call(permission_tools(sessions), request=moment.request, decision="allow") == {
-        "readback": "That request is no longer waiting: it was already answered, answered at the keyboard, or denied at its deadline."
+    assert await call(named(sessions, "answer_permission"), request=moment.request, decision="allow") == {
+        "readback": "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
     }
 
 
@@ -180,7 +285,7 @@ async def test_a_reply_decided_as_the_hook_closes_is_logged_as_never_delivered(h
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
     try:
         assert await (await Shim.run(home, START)).finished() == (0, "", "")
-        request = PermissionRequested(SID, at=0.0, request=RequestId("r1"), permission=Permission("Bash", {}))
+        request = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}))
         waiting = asyncio.create_task(sessions.ask(request))
         await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
         await sessions.answer(request.request, Allow())
@@ -204,7 +309,7 @@ async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_
 async def test_a_hook_that_asks_after_shutdown_began_is_let_go_at_once(home: Home, sessions: Sessions) -> None:
     assert await (await Shim.run(home, START)).finished() == (0, "", "")
     sessions.release_waiting()
-    request = PermissionRequested(SID, at=0.0, request=RequestId("late"), permission=Permission("Bash", {}))
+    request = PermissionRequested(SID, at=0.0, request=RequestId("late"), on=Permission("Bash", {}))
     assert await asyncio.wait_for(sessions.ask(request), WAIT_SECONDS) == Withdraw()
 
 
@@ -232,8 +337,8 @@ async def test_a_voice_answer_after_the_hook_went_away_is_told_nothing_was_answe
     await shim.process.wait()
     await asyncio.sleep(0.2)  # the daemon notices the closed connection
     assert [listing.session.state for listing in sessions.live()] == [Working(since=0.0)]
-    assert await call(permission_tools(sessions), request=moment.request, decision="allow") == {
-        "readback": "That request is no longer waiting: it was already answered, answered at the keyboard, or denied at its deadline."
+    assert await call(named(sessions, "answer_permission"), request=moment.request, decision="allow") == {
+        "readback": "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
     }
 
 
@@ -253,14 +358,13 @@ async def test_the_tool_running_after_a_keyboard_answer_lets_the_hook_go(home: H
     ],
 )
 async def test_an_answer_that_does_not_parse_is_refused_out_loud(sessions: Sessions, arguments: dict[str, object], error: str) -> None:
-    assert error in str((await call(permission_tools(sessions), **arguments))["error"])
+    assert error in str((await call(named(sessions, "answer_permission"), **arguments))["error"])
 
 
-def test_the_tool_is_a_valid_direct_function_that_a_barge_in_cannot_cancel(sessions: Sessions) -> None:
-    [tool] = permission_tools(sessions)
-    schema = DirectFunctionWrapper(tool).to_function_schema()
-    assert (schema.name, schema.required) == ("answer_permission", ["request", "decision"])
-    assert getattr(tool, "_pipecat_cancel_on_interruption") is False
+def test_the_tools_are_valid_direct_functions_that_a_barge_in_cannot_cancel(sessions: Sessions) -> None:
+    schemas = [(DirectFunctionWrapper(tool).to_function_schema(), tool) for tool in permission_tools(sessions)]
+    assert [(schema.name, schema.required) for schema, _ in schemas] == [("answer_permission", ["request", "decision"]), ("answer_question", ["request", "answers"])]
+    assert all(getattr(tool, "_pipecat_cancel_on_interruption") is False for _, tool in schemas)
 
 
 async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the_speaker(home: Home, sessions: Sessions, clock: Clock) -> None:
@@ -285,7 +389,7 @@ async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the
 
 
 def test_a_request_reaches_the_model_with_its_tool_input_and_request_id() -> None:
-    moment = PermissionAsked(SID, RequestId("r-42"), Permission("Bash", {"command": "rm -r build"}))
+    moment = Asking(SID, RequestId("r-42"), Permission("Bash", {"command": "rm -r build"}))
     narrated = frame(Narrate(moment), names=lambda id: id)
     assert isinstance(narrated, LLMMessagesAppendFrame) and narrated.run_llm is True
     [message] = narrated.messages

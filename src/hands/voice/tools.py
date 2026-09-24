@@ -14,15 +14,15 @@ from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, StageDraft
-from hands.core.effects import Allow, Decision, Deny
-from hands.core.session import Blocked, Gone, Idle, PromptText, RequestId, Resolution, SessionId, SessionState, Staged, Working
+from hands.core.effects import Allow, Answers, Decision, Deny
+from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Permission, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Working
 from hands.core.turn import Budget, Happening, Ref, describe
 from hands.sessions.backfill import Unseen, read_since
 from hands.sessions.audit import Called, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.registry import Listing, Sessions
 from hands.voice.readback import readback, spoken_name, spoken_title
-from hands.voice.speech import permission_readback
+from hands.voice.speech import answer_readback
 
 # A Pipecat direct function: its signature and docstring are the schema the model sees.
 Tool = DirectFunction
@@ -187,10 +187,20 @@ def _spoken_state(state: SessionState) -> str:
             return "idle"
         case Working():
             return "working"
-        case Blocked(on=permission):
-            return f"waiting for permission to use {permission.tool}"
+        case Blocked(on=on):
+            return _waiting_on(on)
+        case AtDialog(on=on):
+            return f"{_waiting_on(on)} at the keyboard, too late to answer by voice"
         case Gone():
             return "ended"
+
+
+def _waiting_on(on: Blocker) -> str:
+    match on:
+        case Permission(tool=tool):
+            return f"waiting for permission to use {tool}"
+        case Question():
+            return "waiting for the user to answer its question"
 
 
 class Resolved(TypedDict):
@@ -252,7 +262,7 @@ async def _answer(
 
 
 def permission_tools(sessions: Sessions) -> list[Tool]:
-    """answer_permission: the only way a voice answer reaches a session waiting on its permission dialog."""
+    """answer_permission, answer_question: the only ways a voice answer reaches a session waiting on its dialog."""
 
     async def answer_permission(params: FunctionCallParams, request: str, decision: str, message: str = "") -> None:
         """Answer a session's permission request with what the user decided. Call it only after the user has said to allow or deny.
@@ -264,17 +274,32 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
             decision: "allow" to let the tool run, or "deny" to refuse it.
             message: Only when denying: what the user wants the session to know or do instead, in their words.
         """
-        # [LAW:no-silent-failure] the model hears a refused answer and says it; the log keeps it.
-        try:
-            outcome = await sessions.answer(_request_id(request), parse_decision(decision, message))
-        except Rejected as error:
-            logger.error(f"answer_permission refused its arguments: {error}")
-            await params.result_callback({"error": str(error)})
-            return
-        await params.result_callback({"readback": permission_readback(outcome, lambda id: spoken_name(sessions, id))})
+        await _decide(params, sessions, request, lambda: parse_decision(decision, message))
+
+    async def answer_question(params: FunctionCallParams, request: str, answers: list[str]) -> None:
+        """Answer the questions a session asked with what the user chose. Call it only once the user has answered every one.
+
+        Say the returned readback to the user.
+
+        Args:
+            request: The request id given with the questions.
+            answers: One answer per question, in the order they were asked: the label of the option the user chose, or their own words when no option fits. Where more than one may be chosen, join the labels with ", ". An empty answer when the user chose none.
+        """
+        await _decide(params, sessions, request, lambda: parse_answers(answers))
 
     # A barge-in must not cancel an answer part way: the user would never hear whether it went through.
-    return [_uncancelled_by_interruption(answer_permission)]
+    return [_uncancelled_by_interruption(tool) for tool in (answer_permission, answer_question)]
+
+
+async def _decide(params: FunctionCallParams, sessions: Sessions, request: object, decision: Callable[[], Decision]) -> None:
+    # [LAW:no-silent-failure] the model hears a refused answer and says it; the log keeps it.
+    try:
+        outcome = await sessions.answer(_request_id(request), decision())
+    except Rejected as error:
+        logger.error(f"{params.function_name} refused its arguments: {error}")
+        await params.result_callback({"error": str(error)})
+        return
+    await params.result_callback({"readback": answer_readback(outcome, lambda id: spoken_name(sessions, id))})
 
 
 def parse_decision(decision: object, message: object) -> Decision:
@@ -293,6 +318,19 @@ def parse_decision(decision: object, message: object) -> Decision:
             raise Rejected(f"message should be a string, got {type(other).__name__}")
         case (other, _):
             raise Rejected(f"decision should be 'allow' or 'deny', got {other!r}")
+
+
+def parse_answers(answers: object) -> Answers:
+    """The model's answers, parsed once. An empty one leaves its question unanswered, as the dialog's own does."""
+    return Answers(tuple(_answer_text(answer) for answer in _items(answers, "answers")))
+
+
+def _answer_text(answer: object) -> str:
+    match answer:
+        case str():
+            return answer
+        case other:
+            raise Rejected(f"each answer should be a string, got {type(other).__name__}")
 
 
 def _request_id(request: object) -> RequestId:
@@ -314,7 +352,7 @@ def _session_id(session: object) -> SessionId:
 def parse_draft(text: object, resolutions: object) -> Staged:
     """The model's arguments, parsed once into a draft whose text is safe to type."""
     # [LAW:parse-dont-validate] PromptText is made here and nowhere else.
-    return Staged(_prompt_text(text), tuple(_resolution(item) for item in _items(resolutions)))
+    return Staged(_prompt_text(text), tuple(_resolution(item) for item in _items(resolutions, "resolutions")))
 
 
 def _prompt_text(text: object) -> PromptText:
@@ -329,12 +367,12 @@ def _prompt_text(text: object) -> PromptText:
             raise Rejected(f"the draft text should be a string, got {type(other).__name__}")
 
 
-def _items(resolutions: object) -> list[object]:
-    match resolutions:
+def _items(value: object, what: str) -> list[object]:
+    match value:
         case list():
-            return cast(list[object], resolutions)
+            return cast(list[object], value)
         case other:
-            raise Rejected(f"resolutions should be a list, got {type(other).__name__}")
+            raise Rejected(f"{what} should be a list, got {type(other).__name__}")
 
 
 def _resolution(item: object) -> Resolution:

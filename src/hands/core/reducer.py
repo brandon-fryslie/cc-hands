@@ -8,10 +8,11 @@ from hands.core.effects import (
     Audit,
     Deny,
     Effect,
+    HookReply,
     Narrate,
-    PermissionAsked,
-    PermissionDeadlineNear,
-    PermissionExpired,
+    Asking,
+    DeadlineNear,
+    Expired,
     Reply,
     SessionGone,
     Speak,
@@ -39,7 +40,7 @@ from hands.core.events import (
     ToolFinished,
     Waited,
 )
-from hands.core.session import Blocked, Gone, Idle, Instant, Membership, Permission, Registry, RequestId, Session, SessionId, SessionState, Working
+from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Permission, Question, Registry, RequestId, Session, SessionId, SessionState, Working
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
@@ -86,9 +87,9 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _enter(registry, event, lambda _: Idle(), lambda _was: [Compare(session), Summarise(session, closing)])
         case Waited():
             return _enter(registry, event, _waited)
-        case PermissionRequested(at=at, request=request, permission=permission):
+        case PermissionRequested(at=at, request=request, on=on):
             deadline = at + registry.permission_deadline
-            return _enter(registry, event, lambda _: Blocked(on=permission, request=request, deadline=deadline, warned=False))
+            return _enter(registry, event, lambda _: Blocked(on=on, request=request, deadline=deadline, warned=False))
         case ToolFinished(at=at, call=call):
             return _enter(registry, event, lambda state: _finished(state, call, at))
         case Ended(session=session, reason="other") if session in registry.sessions and not isinstance(registry.sessions[session].state, Gone):
@@ -109,7 +110,7 @@ def _started(source: StartSource, previous: Session | None) -> SessionState:
     # doing carries over. Every other start sits at the prompt, whatever the
     # registry last heard: a session resumed after a crash was never told it stopped.
     match (source, previous):
-        case ("compact", Session(state=Working() | Blocked() as state)):
+        case ("compact", Session(state=Working() | Blocked() | AtDialog() as state)):
             return state
         case _:
             return Idle()
@@ -167,13 +168,23 @@ def _unwaited(event: SessionEvent) -> list[Effect]:
             return []
 
 
-def _finished(state: SessionState, call: Permission, at: Instant) -> SessionState:
+def _finished(state: SessionState, call: Blocker, at: Instant) -> SessionState:
     match state:
-        case Blocked(on=asked) if asked == call:
+        case Blocked(on=asked) | AtDialog(on=asked) if _same_call(asked, call):
             # The tool the session was waiting to run has run, so its dialog was answered at the keyboard.
             return Working(since=at)
         case _:
             return state
+
+
+def _same_call(asked: Blocker, call: Blocker) -> bool:
+    match (asked, call):
+        case (Question(asked=questions), Question(asked=answered)):
+            # A question answered at the keyboard comes back with the answers added to its input: it is the same
+            # call when it asks the same questions.
+            return questions == answered
+        case _:
+            return asked == call
 
 
 def _waited(state: SessionState) -> SessionState:
@@ -203,18 +214,30 @@ def _transition(session: SessionId, before: SessionState | None, after: SessionS
         case (Blocked(request=held), Blocked(request=asked)) if held == asked:
             # Compaction kept the session waiting on the same request.
             return []
-        case (Blocked(request=held), Blocked(request=asked, on=permission)):
-            return [Reply(session, held, Withdraw()), Narrate(PermissionAsked(session, asked, permission))]
+        case (Blocked(request=held), Blocked(request=asked, on=on)):
+            return [Reply(session, held, Withdraw()), Narrate(Asking(session, asked, on))]
         case (Blocked(request=held), _):
             # The session moved on without a voice answer: the user answered its dialog at the keyboard
             # and the tool ran, or the turn went on. The waiting hook is let go, deciding nothing.
             return [Reply(session, held, Withdraw())]
-        case (_, Blocked(request=asked, on=permission)):
-            return [Narrate(PermissionAsked(session, asked, permission))]
+        case (_, Blocked(request=asked, on=on)):
+            return [Narrate(Asking(session, asked, on))]
         case (Idle(nudged=False), Idle(nudged=True)):
             return [Speak(WaitingForYou(session))]
         case _:
             return []
+
+
+def _expiry(on: Blocker, at: Instant) -> tuple[SessionState, HookReply]:
+    """Where a request left unanswered at its deadline leaves the session, and what its hook is told."""
+    match on:
+        case Permission():
+            # [LAW:no-silent-failure] silence never approves: an unanswered request is denied, and said to be.
+            return Working(since=at), Deny(EXPIRED_MESSAGE)
+        case Question():
+            # Silence cannot answer a question, so there is nothing to refuse: it is left to its dialog, where the
+            # user may be answering it at the keyboard, rather than closed under them.
+            return AtDialog(on), Withdraw()
 
 
 def _ticked(registry: Registry, at: Instant) -> tuple[Registry, list[Effect]]:
@@ -228,10 +251,10 @@ def _ticked(registry: Registry, at: Instant) -> tuple[Registry, list[Effect]]:
 
 def _deadline(session: SessionId, state: SessionState, at: Instant) -> tuple[SessionState, list[Effect]]:
     match state:
-        case Blocked(on=permission, request=request, deadline=deadline) if at >= deadline:
-            # [LAW:no-silent-failure] silence never approves: an unanswered request is denied, and said to be.
-            return Working(since=at), [Reply(session, request, Deny(EXPIRED_MESSAGE)), Speak(PermissionExpired(session, permission))]
-        case Blocked(on=permission, deadline=deadline, warned=False) if at >= deadline - WARNING_LEAD_SECONDS:
-            return replace(state, warned=True), [Speak(PermissionDeadlineNear(session, permission, remaining=deadline - at))]
+        case Blocked(on=on, request=request, deadline=deadline) if at >= deadline:
+            after, reply = _expiry(on, at)
+            return after, [Reply(session, request, reply), Speak(Expired(session, on))]
+        case Blocked(on=on, deadline=deadline, warned=False) if at >= deadline - WARNING_LEAD_SECONDS:
+            return replace(state, warned=True), [Speak(DeadlineNear(session, on, remaining=deadline - at))]
         case _:
             return state, []

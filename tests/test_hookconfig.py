@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import cast
 
-from hands.core.effects import Allow, Deny, Withdraw
+from hands.core.effects import AllowWith, Allow, Deny, Withdraw
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import (
     PERMISSION_DEADLINE_SECONDS,
@@ -53,3 +53,5 @@ def test_a_reply_is_printed_in_the_shape_claude_code_reads() -> None:
     assert hook_output(Allow()) == {"hookSpecificOutput": {**decided, "decision": {"behavior": "allow"}}}
     assert hook_output(Deny("not on main")) == {"hookSpecificOutput": {**decided, "decision": {"behavior": "deny", "message": "not on main"}}}
     assert hook_output(Withdraw()) is None
+    answered: dict[str, object] = {"questions": [{"question": "Which?", "options": []}], "answers": {"Which?": "this"}}
+    assert hook_output(AllowWith(answered)) == {"hookSpecificOutput": {**decided, "decision": {"behavior": "allow", "updatedInput": answered}}}

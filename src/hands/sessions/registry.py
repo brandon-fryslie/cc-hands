@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from loguru import logger
 
 from hands.core.drafts import DraftOutcome, DraftRequest, decide
-from hands.core.effects import AfterEnd, Allow, Deny, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Narrate, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Unregistered, Withdraw
+from hands.core.effects import AfterEnd, Allow, AllowWith, Deny, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Narrate, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Unregistered, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
-from hands.core.permissions import AnswerPermission, PermissionOutcome, answer
+from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Instant, Membership, Registry, RequestId, Session, SessionId
 from hands.sessions.audit import Applied, EffectFailed, Performed, Record
@@ -25,7 +25,7 @@ class Listing:
 
 
 class Sessions:
-    """Applies events, draft requests, and permission answers through the core, performs their effects, and answers who is running."""
+    """Applies events, draft requests, and answers to waiting sessions through the core, performs their effects, and answers who is running."""
 
     def __init__(self, permission_deadline: float, clock: Callable[[], Instant], record: Record, changes: Changes | None = None) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
@@ -72,7 +72,7 @@ class Sessions:
             # and a voice answer after this is told the request is gone.
             # [LAW:no-silent-failure] a reply decided in the instant before the close was logged as sent; this says it was not.
             match waiting.result() if waiting.done() and not waiting.cancelled() else None:
-                case Allow() | Deny() as decision:
+                case Allow() | AllowWith() | Deny() as decision:
                     lost = f"; its reply {decision} was never delivered"
                 case _:
                     # Nothing was decided, or only a withdrawal, which prints nothing either way.
@@ -91,8 +91,8 @@ class Sessions:
                 logger.info(f"shutting down: request {request} is left to its session's dialog")
                 waiting.set_result(Withdraw())
 
-    async def answer(self, request: RequestId, decision: Decision) -> PermissionOutcome:
-        self._registry, outcome, effects = answer(self._registry, AnswerPermission(request, decision, at=self._clock()))
+    async def answer(self, request: RequestId, decision: Decision) -> Outcome:
+        self._registry, outcome, effects = answer(self._registry, Answer(request, decision, at=self._clock()))
         await self._perform_all(effects)
         return outcome
 

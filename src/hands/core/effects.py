@@ -1,10 +1,11 @@
 """What the reducer asks the edges to do. Adapters perform these and nothing else."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from hands.core.events import SessionEvent
-from hands.core.session import Permission, RequestId, SessionId
+from hands.core.session import Blocker, RequestId, SessionId
 
 
 @dataclass(frozen=True)
@@ -42,14 +43,28 @@ class Deny:
 
 
 @dataclass(frozen=True)
+class Answers:
+    """What the user chose for each question a session asked, in the order it asked them: a label, or their own words."""
+
+    chosen: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AllowWith:
+    """The tool runs with this input in place of the one it asked with: how a question's answers reach it."""
+
+    input: Mapping[str, object]
+
+
+@dataclass(frozen=True)
 class Withdraw:
     """hands lets go of the request without deciding it, so Claude Code's own dialog is the only answer left."""
 
 
-# [LAW:types-are-the-program] what a person can decide is narrower than what the daemon can reply:
-# nothing the user or the model says can produce a Withdraw, and nothing but Allow runs a tool.
-Decision = Allow | Deny
-HookReply = Decision | Withdraw
+# [LAW:types-are-the-program] what a person can decide is not what the daemon replies: nothing the user or the
+# model says can produce a Withdraw, and answers become an AllowWith only against the question they answer.
+Decision = Allow | Deny | Answers
+HookReply = Allow | AllowWith | Deny | Withdraw
 
 
 @dataclass(frozen=True)
@@ -62,27 +77,27 @@ class Reply:
 
 
 @dataclass(frozen=True)
-class PermissionAsked:
-    """A session stopped to ask; the intermediary explains the request and asks the user."""
+class Asking:
+    """A session stopped to ask; the intermediary explains what it asks and puts it to the user."""
 
     session: SessionId
     request: RequestId
-    permission: Permission
+    on: Blocker
 
 
 @dataclass(frozen=True)
-class PermissionDeadlineNear:
+class DeadlineNear:
     session: SessionId
-    permission: Permission
+    on: Blocker
     remaining: float  # seconds
 
 
 @dataclass(frozen=True)
-class PermissionExpired:
-    """Nobody answered by voice in time, so hands replied deny."""
+class Expired:
+    """Nobody answered by voice in time: a permission was denied, a question left to its dialog."""
 
     session: SessionId
-    permission: Permission
+    on: Blocker
 
 
 @dataclass(frozen=True)
@@ -92,7 +107,7 @@ class WaitingForYou:
     session: SessionId
 
 
-Announcement = PermissionDeadlineNear | PermissionExpired | WaitingForYou
+Announcement = DeadlineNear | Expired | WaitingForYou
 
 
 @dataclass(frozen=True)
@@ -106,7 +121,7 @@ class Speak:
 class Narrate:
     """Handed to the intermediary to explain in its own words, and to act on what the user answers."""
 
-    moment: PermissionAsked
+    moment: Asking
 
 
 Heard = Speak | Narrate

@@ -30,6 +30,33 @@ class Permission:
     input: Mapping[str, object]
 
 
+@dataclass(frozen=True)
+class Option:
+    label: str
+    description: str | None
+
+
+@dataclass(frozen=True)
+class AskedQuestion:
+    question: str
+    # Empty for a question that takes the user's own words rather than a choice.
+    options: tuple[Option, ...]
+    several: bool  # more than one option may be chosen
+
+
+@dataclass(frozen=True)
+class Question:
+    """AskUserQuestion, waiting on the user's answers."""
+
+    asked: tuple[AskedQuestion, ...]
+    # The tool input as it was asked, which the answers are written back into.
+    input: Mapping[str, object]
+
+
+# Everything a session stops for arrives through the same PermissionRequest hook.
+Blocker = Permission | Question
+
+
 # [LAW:types-are-the-program] a session is in exactly one of these, and each
 # carries only what is true of that state: a working session has a start, a
 # blocked one has the request it waits on and when that request expires.
@@ -47,7 +74,7 @@ class Working:
 
 @dataclass(frozen=True)
 class Blocked:
-    on: Permission
+    on: Blocker
     request: RequestId
     deadline: Instant
     # [LAW:no-ambient-temporal-coupling] the warning is spoken once because speaking it is this
@@ -56,11 +83,18 @@ class Blocked:
 
 
 @dataclass(frozen=True)
+class AtDialog:
+    """Still at its dialog after hands let go of the hook at the deadline, so only the keyboard can answer it now."""
+
+    on: Blocker
+
+
+@dataclass(frozen=True)
 class Gone:
     pass
 
 
-SessionState = Idle | Working | Blocked | Gone
+SessionState = Idle | Working | Blocked | AtDialog | Gone
 
 
 @dataclass(frozen=True)

@@ -251,7 +251,10 @@ Deadlines are data. The `Blocked` state carries the instant it expires and wheth
 the warning has been spoken. A single ticker sends `Tick(now)` once a second; the
 reducer compares, and emits `Speak("ten seconds on that permission")` exactly once,
 because the transition from `warned=False` to `warned=True` is a state change, not a
-timer callback. At the deadline it emits `Reply(deny)` and says so. The ticker's
+timer callback. At the deadline it emits `Reply(deny)` for a permission and says so;
+a question, which silence cannot answer, is withdrawn instead and left to its dialog,
+where the user may be answering it at the keyboard. The session is then `AtDialog`: still
+waiting, now on the keyboard alone, until the answered call comes back. The ticker's
 period only bounds how late a deadline is heard; no correctness property depends on
 a `sleep`.
 
@@ -358,9 +361,14 @@ where the decision is `{"behavior": "allow", "updatedInput"?: object}` or
 the 2.1.270 bundle, and verified live: an allow runs the tool, and the agent reads a
 deny's message as the tool's error). Permission
 prompts, plan approval, and `AskUserQuestion` all arrive through this one hook, which
-is why `Blocked.on` is a union of three and the answer path is one adapter. Answering
-a question by returning the answers in `updatedInput` is the path the questions
-ticket verifies live.
+is why `Blocked.on` is a union of three and the answer path is one adapter. A question
+is answered by allowing it with its own input and an `answers` object added, each
+question's text keying the label chosen or the user's own words, several labels
+joined with ", " — the shape Claude Code's own dialog answers with (read out of the
+2.1.280 bundle, and verified live: the agent went on with the answers given by voice).
+An answer that does not fit what was asked — the wrong number of answers, or a plain
+allow to a question, which would run it unanswered — sends nothing, and the session
+still waits.
 
 The documented nine events are not the real set. There are 33:
 
@@ -436,15 +444,14 @@ permission dialog at once and runs the `PermissionRequest` hook beside it, and
 whichever answers first decides. An answer typed at the dialog does not end the hook;
 it runs on to its own end and its output is ignored. So the daemon never learns of a
 keyboard answer directly. It learns that the session moved on: the asked-about tool
-finishing (`PostToolUse` or `PostToolUseFailure` with the same tool and input), or the
+finishing (`PostToolUse` or `PostToolUseFailure` with the same tool and input, or for a
+question the same questions, since it comes back with the answers added), or the
 next `UserPromptSubmit`, `Stop`, `SessionEnd`, or `PermissionRequest`, withdraws the
 waiting reply, which prints nothing. A hook whose connection closes first ends the wait with
 no reply at all, so a later voice answer hears that the request is gone rather than
 that it went through. That is how a keyboard refusal arrives: answering No or Esc at
 the dialog fires no post-tool hook and no `Stop`, but Claude Code kills the waiting
-hook, and the closed connection releases the session (measured on 2.1.270). An
-`AskUserQuestion` answered at the keyboard, whose tool input comes back changed, is
-released by the `Stop` that follows. What is left
+hook, and the closed connection releases the session (measured on 2.1.270). What is left
 is a tool approved at the keyboard that is still running at the deadline: its warning
 and its deny, which Claude Code ignores, are still heard, so the expiry is spoken as
 what hands did ("so I told it no"), never as what happened to the tool. A permission

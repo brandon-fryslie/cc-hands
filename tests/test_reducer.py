@@ -11,9 +11,9 @@ from hands.core.effects import (
     Deny,
     Effect,
     Narrate,
-    PermissionAsked,
-    PermissionDeadlineNear,
-    PermissionExpired,
+    Asking,
+    DeadlineNear,
+    Expired,
     Reply,
     SessionGone,
     Speak,
@@ -27,6 +27,9 @@ from hands.core.effects import (
 from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, MovedOn, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished, Waited
 from hands.core.reducer import EXPIRED_MESSAGE, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
+    AskedQuestion,
+    Option,
+    Question,
     Blocked,
     Gone,
     Idle,
@@ -53,7 +56,7 @@ LIVE: list[SessionState] = [
 SESSION_EVENTS: list[SessionEvent] = [
     Prompted(ONE.id, at=5.0),
     Stopped(ONE.id, None),
-    PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), permission=BASH),
+    PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH),
     ToolFinished(ONE.id, at=5.0, call=BASH),
     Ended(ONE.id, "prompt_input_exit"),
     Waited(ONE.id),
@@ -79,7 +82,7 @@ def test_a_start_registers_the_session_idle() -> None:
         (Prompted(ONE.id, at=5.0), Working(since=5.0)),
         (Stopped(ONE.id, None), Idle()),
         (
-            PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), permission=BASH),
+            PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH),
             Blocked(on=BASH, request=RequestId("r1"), deadline=5.0 + TIMEOUT, warned=False),
         ),
         (Ended(ONE.id, "prompt_input_exit"), Gone()),
@@ -103,8 +106,8 @@ def test_moving_between_states_that_wait_on_nothing_asks_for_nothing(before: Ses
 
 @pytest.mark.parametrize("before", [Idle(), Working(since=1.0)])
 def test_a_permission_request_is_handed_to_the_intermediary(before: SessionState) -> None:
-    event = PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), permission=BASH)
-    assert reduce(holding(before), event)[1] == [Narrate(PermissionAsked(ONE.id, RequestId("r1"), BASH))]
+    event = PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH)
+    assert reduce(holding(before), event)[1] == [Narrate(Asking(ONE.id, RequestId("r1"), BASH))]
 
 
 @pytest.mark.parametrize(
@@ -153,9 +156,9 @@ def test_a_prompt_marks_where_the_repository_stands_before_the_turn_can_change_i
 
 def test_a_second_request_while_waiting_lets_the_first_go_and_asks_the_second() -> None:
     edit = Permission(tool="Edit", input={"file_path": "a.py"})
-    after, effects = reduce(holding(WAITING), PermissionRequested(ONE.id, at=7.0, request=RequestId("r1"), permission=edit))
+    after, effects = reduce(holding(WAITING), PermissionRequested(ONE.id, at=7.0, request=RequestId("r1"), on=edit))
     assert after == holding(Blocked(on=edit, request=RequestId("r1"), deadline=7.0 + TIMEOUT, warned=False))
-    assert effects == [Reply(ONE.id, RequestId("r0"), Withdraw()), Narrate(PermissionAsked(ONE.id, RequestId("r1"), edit))]
+    assert effects == [Reply(ONE.id, RequestId("r0"), Withdraw()), Narrate(Asking(ONE.id, RequestId("r1"), edit))]
 
 
 def test_before_the_warning_window_a_tick_changes_nothing() -> None:
@@ -165,7 +168,7 @@ def test_before_the_warning_window_a_tick_changes_nothing() -> None:
 def test_the_warning_is_spoken_once_as_the_deadline_nears() -> None:
     warned, effects = reduce(holding(WAITING), Tick(at=53.0))
     assert warned == holding(replace(WAITING, warned=True))
-    assert effects == [Speak(PermissionDeadlineNear(ONE.id, BASH, remaining=8.0))]
+    assert effects == [Speak(DeadlineNear(ONE.id, BASH, remaining=8.0))]
     assert reduce(warned, Tick(at=54.0)) == (warned, [])
 
 
@@ -173,21 +176,21 @@ def test_the_warning_is_spoken_once_as_the_deadline_nears() -> None:
 def test_at_the_deadline_the_request_is_denied_and_said_to_be(warned: bool) -> None:
     after, effects = reduce(holding(replace(WAITING, warned=warned)), Tick(at=61.0))
     assert after == holding(Working(since=61.0))
-    assert effects == [Reply(ONE.id, RequestId("r0"), Deny(EXPIRED_MESSAGE)), Speak(PermissionExpired(ONE.id, BASH))]
+    assert effects == [Reply(ONE.id, RequestId("r0"), Deny(EXPIRED_MESSAGE)), Speak(Expired(ONE.id, BASH))]
 
 
 def test_ticking_through_a_whole_wait_warns_exactly_once_then_denies_once() -> None:
     state = holding(Idle())
-    state, asked = reduce(state, PermissionRequested(ONE.id, at=0.0, request=RequestId("r"), permission=BASH))
+    state, asked = reduce(state, PermissionRequested(ONE.id, at=0.0, request=RequestId("r"), on=BASH))
     heard: list[Effect] = [*asked]
     for second in range(1, int(TIMEOUT) + 5):
         state, effects = reduce(state, Tick(at=float(second)))
         heard += effects
     assert heard == [
-        Narrate(PermissionAsked(ONE.id, RequestId("r"), BASH)),
-        Speak(PermissionDeadlineNear(ONE.id, BASH, remaining=WARNING_LEAD_SECONDS)),
+        Narrate(Asking(ONE.id, RequestId("r"), BASH)),
+        Speak(DeadlineNear(ONE.id, BASH, remaining=WARNING_LEAD_SECONDS)),
         Reply(ONE.id, RequestId("r"), Deny(EXPIRED_MESSAGE)),
-        Speak(PermissionExpired(ONE.id, BASH)),
+        Speak(Expired(ONE.id, BASH)),
     ]
 
 
@@ -232,6 +235,15 @@ def let_go(event: SessionEvent) -> list[Effect]:
 
 def test_the_tool_a_session_waits_on_finishing_means_its_dialog_was_answered_at_the_keyboard() -> None:
     after, effects = reduce(holding(WAITING), ToolFinished(ONE.id, at=20.0, call=BASH))
+    assert (after, effects) == (holding(Working(since=20.0)), [Reply(ONE.id, RequestId("r0"), Withdraw())])
+
+
+def test_a_question_answered_at_the_keyboard_comes_back_with_its_answers_and_still_releases_the_wait() -> None:
+    asked = {"questions": [{"question": "Which?", "options": [{"label": "this"}]}]}
+    question = Question((AskedQuestion("Which?", (Option("this", None),), several=False),), asked)
+    answered = Question(question.asked, {**asked, "answers": {"Which?": "this"}})
+    waiting = Blocked(on=question, request=RequestId("r0"), deadline=65.0, warned=False)
+    after, effects = reduce(holding(waiting), ToolFinished(ONE.id, at=20.0, call=answered))
     assert (after, effects) == (holding(Working(since=20.0)), [Reply(ONE.id, RequestId("r0"), Withdraw())])
 
 
