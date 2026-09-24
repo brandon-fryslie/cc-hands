@@ -106,7 +106,7 @@ class Live:
         status_file(self.member).write_bytes(raw)
 
     def heard(self, statuses: Statuses) -> list[Report]:
-        heard = statuses.read([self.session])
+        heard = list(statuses.read(lambda: [self.session]))
         assert {reported.session for reported in heard} <= {self.member.id}
         reports = [reported.report for reported in heard]
         for report in reports:
@@ -115,7 +115,7 @@ class Live:
 
 
 def test_each_time_the_stamp_moves_the_status_is_heard_once(tmp_path: Path) -> None:
-    live, statuses = Live(tmp_path), Statuses()
+    live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
     busy = live.sets("busy", 1000)
     assert live.heard(statuses) == [busy]
     assert live.heard(statuses) == []
@@ -125,7 +125,7 @@ def test_each_time_the_stamp_moves_the_status_is_heard_once(tmp_path: Path) -> N
 
 def test_a_status_set_again_to_what_it_was_is_heard_because_its_stamp_moved(tmp_path: Path) -> None:
     # An idle, busy, idle between two reads leaves the file idle as it was, with a later stamp.
-    live, statuses = Live(tmp_path), Statuses()
+    live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
     live.sets("idle", 1000)
     live.heard(statuses)
     again = live.sets("idle", 3000)
@@ -133,7 +133,7 @@ def test_a_status_set_again_to_what_it_was_is_heard_because_its_stamp_moved(tmp_
 
 
 def test_a_report_the_registry_does_not_hold_is_heard_again(tmp_path: Path) -> None:
-    live, statuses = Live(tmp_path), Statuses()
+    live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
     idle = live.sets("idle", 1000)
     live.heard(statuses)
     live.session = replace(live.session, report=None)
@@ -141,7 +141,7 @@ def test_a_report_the_registry_does_not_hold_is_heard_again(tmp_path: Path) -> N
 
 
 def test_a_session_with_no_status_file_is_heard_once_it_has_one(tmp_path: Path) -> None:
-    live, statuses = Live(tmp_path), Statuses()
+    live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
     assert live.heard(statuses) == []
     assert live.heard(statuses) == []
     idle = live.sets("idle", 1000)
@@ -150,13 +150,13 @@ def test_a_session_with_no_status_file_is_heard_once_it_has_one(tmp_path: Path) 
 
 def test_a_transcript_outside_any_config_directory_is_refused_not_raised(tmp_path: Path) -> None:
     session = Session(replace(member_of(written("idle")), transcript=Path("/s.jsonl")), Resting(), mode=None, turn=None)
-    assert Statuses().read([session]) == []
+    assert list(Statuses(clock=lambda: 5.0).read(lambda: [session])) == []
 
 
 def test_an_unreadable_status_file_is_refused_not_raised(tmp_path: Path) -> None:
     live = Live(tmp_path)
     status_file(live.member).mkdir()
-    assert live.heard(Statuses()) == []
+    assert live.heard(Statuses(clock=lambda: 5.0)) == []
 
 
 def logged(read: Callable[[], object]) -> list[str]:
@@ -170,13 +170,13 @@ def logged(read: Callable[[], object]) -> list[str]:
 
 
 def test_why_a_status_cannot_be_read_is_said_once_not_every_read(tmp_path: Path) -> None:
-    live, statuses = Live(tmp_path), Statuses()
+    live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
     warnings = logged(lambda: [live.heard(statuses) for _ in range(3)])
     assert len(warnings) == 1 and "keeps no status" in warnings[0]
 
 
 def test_a_read_that_fails_once_neither_hears_the_status_again_nor_goes_unsaid(tmp_path: Path) -> None:
-    live, statuses = Live(tmp_path), Statuses()
+    live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
     live.sets("busy", 1000)
     live.heard(statuses)
     live.writes(written("busy")[:40])  # caught half rewritten
@@ -187,7 +187,7 @@ def test_a_read_that_fails_once_neither_hears_the_status_again_nor_goes_unsaid(t
 
 
 def test_a_status_this_version_does_not_know_is_passed_on_and_said(tmp_path: Path) -> None:
-    live, statuses = Live(tmp_path), Statuses()
+    live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
     live.sets("idle", 1000, status="dreaming")
     heard: list[Report] = []
     warnings = logged(lambda: heard.extend(live.heard(statuses)))
@@ -196,8 +196,29 @@ def test_a_status_this_version_does_not_know_is_passed_on_and_said(tmp_path: Pat
 
 
 def test_a_file_that_is_refused_is_heard_again_once_it_is_the_sessions(tmp_path: Path) -> None:
-    live, statuses = Live(tmp_path), Statuses()
+    live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
     live.writes(edited("idle", statusUpdatedAt=1000, sessionId="another-session"))
     assert live.heard(statuses) == []
     busy = live.sets("busy", 2000)
     assert live.heard(statuses) == [busy]
+
+
+def test_each_session_is_read_only_once_the_report_before_it_is_applied(tmp_path: Path) -> None:
+    """A hook applied while one session's report is (its turn's Compare awaits git) must not meet another's read before it."""
+    one, two = Live(tmp_path / "one"), Live(tmp_path / "two")
+    two.session = replace(two.session, membership=replace(two.member, id=SessionId("two"), pid=two.member.pid + 1))
+    status_file(two.member).parent.mkdir(parents=True, exist_ok=True)
+    one.sets("idle", 1000)
+    two.writes(edited("idle", statusUpdatedAt=1000, pid=two.member.pid, sessionId="two"))
+    reading = Statuses(clock=lambda: 5.0).read(lambda: [one.session, two.session])
+    assert next(reading).session == one.member.id
+    # Session two's prompt is applied in the meantime: Claude Code set busy before its hook ran.
+    busy = parse_report(two.member, edited("busy", statusUpdatedAt=2000, pid=two.member.pid, sessionId="two"))
+    two.writes(edited("busy", statusUpdatedAt=2000, pid=two.member.pid, sessionId="two"))
+    assert [reported.report for reported in reading] == [busy]
+
+
+def test_a_status_is_stamped_with_when_it_was_read(tmp_path: Path) -> None:
+    live = Live(tmp_path)
+    live.sets("idle", 1000)
+    assert [reported.at for reported in Statuses(clock=lambda: 42.0).read(lambda: [live.session])] == [42.0]

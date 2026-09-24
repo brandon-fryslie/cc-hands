@@ -47,6 +47,7 @@ from hands.core.events import (
     Waited,
 )
 from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Mode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, Submitted, UnknownMode, Working
+from hands.core import status
 from hands.core.status import Report
 
 # How long before a permission's deadline the one warning is spoken.
@@ -147,8 +148,18 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return registry, []
         case Waited():
             return _enter(registry, event, _waited)
+        case StatusReported(session=session, report=Report(status=status.Idle()), at=at) if _running_in(registry.sessions.get(session)):
+            # [LAW:one-source-of-truth] Claude Code says the turn is over, however it was stopped, so it is: told as a
+            # stopped turn is, and nudged on hands' clock, as an interrupted one is (no idle_prompt in 75 s after a
+            # double Escape, 2.1.282). [LAW:no-ambient-temporal-coupling] the status read is the status now, with no
+            # stamp to compare: Claude Code sets idle only once a Stop's hooks have returned, and the shim returns once
+            # the Stop is applied, so a stopped turn is told by its Stop, with its closing reply; and it sets busy before
+            # a prompt's hooks run, so no idle read after a prompt is applied is one from before it. What else ends the
+            # turn later ends nothing: see _named.
+            return _enter(registry, event, lambda _: Idle(due=at + IDLE_NUDGE_SECONDS), lambda was: [Compare(session), Summarise(session, was.turn, None)])
         case StatusReported():
-            # Kept as Claude Code said it, for what asks what the session is doing; it moves no state of its own.
+            # Kept as Claude Code said it, for what asks what the session is doing: a session not running already is
+            # where an idle leaves it, and busy or waiting say nothing a hook has not.
             return _enter(registry, event, lambda state: state)
         case PermissionRequested(at=at, request=request, on=on):
             deadline = at + registry.permission_deadline
@@ -273,6 +284,9 @@ def _named(event: SessionEvent, was: Session) -> tuple[PromptId | None, frozense
             return prompt, was.taken, was.ended
         case Continued(now=now):
             return now, was.taken, was.ended
+        case StatusReported(report=Report(status=status.Idle())) if _running(was.state):
+            # Ended by Claude Code's word: its Stop, its interrupt, and its flushed ids read after this end nothing.
+            return was.turn, was.taken, over
         case Taken(prompt=prompt) | Stopped(prompt=str() as prompt) if _sent_over(was, prompt) is not None:
             # Told now: what else is read of it later ends nothing, and nor does the late Stop of a turn ended before it.
             return was.turn, was.taken, was.ended | {prompt}
@@ -283,6 +297,10 @@ def _named(event: SessionEvent, was: Session) -> tuple[PromptId | None, frozense
 
 def _running(state: SessionState) -> bool:
     return isinstance(state, Working | Blocked | AtDialog)
+
+
+def _running_in(session: Session | None) -> bool:
+    return session is not None and _running(session.state)
 
 
 def _ended_already(session: Session | None, prompt: PromptId) -> bool:

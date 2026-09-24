@@ -51,7 +51,8 @@ from hands.core.session import (
     UnknownMode,
     Working,
 )
-from hands.core.status import Busy, Report, Stamp
+from hands.core.status import Busy, Report, Stamp, Waiting
+from hands.core import status
 
 TIMEOUT = 60.0
 ONE = Membership(SessionId("s1"), pid=4242, cwd=Path("/code/a"), transcript=Path("/t/s1.jsonl"))
@@ -71,7 +72,7 @@ SESSION_EVENTS: list[SessionEvent] = [
     ToolFinished(ONE.id, at=5.0, call=BASH, mode=None),
     Ended(ONE.id, "prompt_input_exit"),
     Waited(ONE.id),
-    StatusReported(ONE.id, Report(Busy(), Stamp(1000))),
+    StatusReported(ONE.id, Report(Busy(), Stamp(1000)), at=5.0),
 ]
 
 
@@ -104,9 +105,9 @@ def test_every_state_takes_each_event_to_its_state(before: SessionState, event: 
 
 
 @pytest.mark.parametrize("before", LIVE)
-def test_claude_codes_status_is_kept_as_it_said_it_and_moves_no_state(before: SessionState) -> None:
+def test_claude_codes_status_is_kept_as_it_said_it_and_busy_moves_no_state(before: SessionState) -> None:
     report = Report(Busy(), Stamp(1000))
-    assert reduce(holding(before), StatusReported(ONE.id, report)) == (registry(Session(ONE, before, mode=None, turn=None, report=report)), [])
+    assert reduce(holding(before), StatusReported(ONE.id, report, at=5.0)) == (registry(Session(ONE, before, mode=None, turn=None, report=report)), [])
 
 
 @pytest.mark.parametrize(("before", "after"), [(Idle(), Submitted(since=5.0)), (Submitted(since=1.0), Submitted(since=5.0)), (Working(since=1.0), Working(since=5.0)), (LIVE[3], Working(since=5.0))])
@@ -742,3 +743,76 @@ def test_the_turn_a_queued_prompt_goes_on_as_is_ended_by_the_escape_that_stops_i
 @pytest.mark.parametrize("session", [in_turn(Working(since=1.0), turn=PromptId("p3")), in_turn(Idle())])
 def test_a_turn_read_to_have_gone_on_after_it_ended_moves_nothing(session: Registry) -> None:
     assert reduce(session, Continued(ONE.id, was=TURN, now=NEXT)) == (session, [])
+
+
+SAID_IDLE = Report(status.Idle(), Stamp(2000))
+
+
+def said_idle(at: float = 10.0) -> StatusReported:
+    return StatusReported(ONE.id, SAID_IDLE, at=at)
+
+
+@pytest.mark.parametrize("state", [Working(since=1.0), WAITING, AtDialog(on=BASH)])
+def test_a_running_turn_claude_code_says_is_idle_is_over_told_and_nudged_on_the_clock(state: SessionState) -> None:
+    """However it was stopped: no Stop, no record, and no idle_prompt follow a double Escape before the flushed message is answered."""
+    after, effects = reduce(in_turn(state), said_idle())
+    assert after == registry(Session(ONE, Idle(due=10.0 + IDLE_NUDGE_SECONDS), mode=None, turn=TURN, ended=frozenset({TURN}), report=SAID_IDLE))
+    assert effects == [*([Reply(ONE.id, RequestId("r0"), Withdraw())] if isinstance(state, Blocked) else []), Compare(ONE.id), Summarise(ONE.id, TURN, None)]
+
+
+@pytest.mark.parametrize("state", [Idle(), Idle(nudged=True), Idle(due=70.0), Submitted(since=1.0)])
+def test_an_idle_said_of_a_session_not_running_is_kept_and_moves_nothing(state: SessionState) -> None:
+    after, effects = reduce(in_turn(state), said_idle())
+    assert (after, effects) == (registry(Session(ONE, state, mode=None, turn=TURN, report=SAID_IDLE)), [])
+
+
+@pytest.mark.parametrize("said", [Report(Busy(), Stamp(2000)), Report(Waiting("permission prompt"), Stamp(2000))])
+def test_busy_or_waiting_said_of_a_running_turn_leaves_it_running(said: Report) -> None:
+    after, effects = reduce(in_turn(Working(since=1.0)), StatusReported(ONE.id, said, at=10.0))
+    assert (after.sessions[ONE.id].state, effects) == (Working(since=1.0), [])
+
+
+def told(events: list[Event], start: Registry | None = None) -> tuple[Registry, list[Summarise]]:
+    state, tellings = start or in_turn(Working(since=1.0)), list[Summarise]()
+    for event in events:
+        state, effects = reduce(state, event)
+        tellings += [effect for effect in effects if isinstance(effect, Summarise)]
+    return state, tellings
+
+
+STOP = Stopped(ONE.id, "done", mode=None, prompt=TURN)
+INTERRUPT = Interrupted(ONE.id, TURN, at=11.0)
+PROMPT = Prompted(ONE.id, at=12.0, mode=None, prompt=NEXT)
+
+
+@pytest.mark.parametrize("ending", [STOP, INTERRUPT])
+@pytest.mark.parametrize("status_first", [True, False])
+def test_a_turn_ended_by_its_status_and_its_stop_or_interrupt_in_either_order_is_told_once(ending: Event, status_first: bool) -> None:
+    state, tellings = told([said_idle(), ending] if status_first else [ending, said_idle()])
+    assert len(tellings) == 1 and tellings[0].turn == TURN
+    assert isinstance(state.sessions[ONE.id].state, Idle)
+
+
+def test_the_stop_that_lands_after_the_status_is_still_heard_for_its_mode_and_changes_no_idle_period() -> None:
+    """An Escape can set idle and then fire the turn's Stop (2.1.282): the idle period is the status's, nudge and all."""
+    state, _ = told([said_idle(at=10.0), Stopped(ONE.id, "done", mode="plan", prompt=TURN)])
+    assert (state.sessions[ONE.id].state, state.sessions[ONE.id].mode) == (Idle(due=10.0 + IDLE_NUDGE_SECONDS), "plan")
+
+
+@pytest.mark.parametrize("status_first", [True, False])
+def test_a_turn_ended_by_its_status_and_the_next_prompt_in_either_order_is_told_once_and_the_next_one_is_sent(status_first: bool) -> None:
+    state, tellings = told([said_idle(), PROMPT] if status_first else [PROMPT, said_idle()])
+    assert [telling.turn for telling in tellings] == [TURN]
+    assert (state.sessions[ONE.id].state, state.sessions[ONE.id].turn) == (Submitted(since=12.0), NEXT)
+
+
+def test_a_double_escape_before_claude_answers_a_flushed_message_leaves_the_session_idle_told_and_nudged() -> None:
+    """hands-keyboard-gxr.07g: the first Escape flushes the queued message, whose id is taken seconds before Claude
+    answers under it; the second stops the turn with no record and no hook. Only the status says so."""
+    heard: list[Effect] = []
+    state = in_turn(Working(since=1.0))
+    for event in [Taken(ONE.id, NEXT, opens=False), said_idle(at=10.0), Tick(69.0), Tick(70.0), Continued(ONE.id, was=TURN, now=NEXT), Interrupted(ONE.id, NEXT, at=71.0)]:
+        state, effects = reduce(state, event)
+        heard += [effect for effect in effects if isinstance(effect, Summarise | Speak)]
+    assert heard == [Summarise(ONE.id, TURN, None), NUDGE]
+    assert state.sessions[ONE.id].state == Idle(nudged=True)

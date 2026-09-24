@@ -1096,7 +1096,18 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   again to what it was, or an idle, busy, idle between two reads, is still heard. A
   status or reason hands does not know arrives as an unknown variant and is logged,
   never read as idle. A file that names another pid or another session is refused. The
-  registry keeps the last one as `Session.report`, and it moves no state of its own yet.
+  registry keeps the last one as `Session.report`. An `idle` applied to a session in
+  `Working`, `Blocked`, or `AtDialog` ends its turn, however the turn was stopped: the
+  session is `Idle` with its nudge timed by hands (no `idle_prompt` follows a double
+  Escape), the turn is compared and told, and its ids join `Session.ended`, so the Stop,
+  interrupt record, or flushed id read after it ends nothing. Which came first is
+  decided by the order they are applied, with no stamp compared against hands' clock.
+  Claude Code sets `idle` only once a Stop's hooks have returned, and the shim returns
+  only once the Stop is applied, so a stopped turn is told by its Stop, with its
+  closing reply. It sets `busy` before a prompt's hooks run, so no `idle` read after a
+  prompt is applied predates it (both seen live on 2.1.282). That holds only if a file
+  is read at the moment its report is applied, so the reader reads each session's file
+  lazily, once the report before it has been applied.
 - **Ends nobody heard.** One process holds one session, so a running process's
   *holder* is the newest file that names it and passes the start-time check. A file
   whose process is not running is `Died`; the holder is `Attached`; any other file on

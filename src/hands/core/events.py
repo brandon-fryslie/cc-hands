@@ -112,6 +112,7 @@ class StatusReported:
 
     session: SessionId
     report: Report
+    at: Instant  # when it was read
 
 
 @dataclass(frozen=True)
