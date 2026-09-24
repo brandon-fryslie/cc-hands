@@ -26,7 +26,7 @@ virtual keyboard, once it is built, is the one that types into sessions.
  │   button · web · wakeword        │  ▼        │                                │
  │  ───────────────────────────────────────────────────────────────────────────  │
  │  sessions                  ┌──────────────────┐                               │
- │  hook socket · session     │  core (pure)     │  procs · repos                │
+ │  hook socket · session     │  core (pure)     │  procs                        │
  │  files · JSONL tail · git  │  types · reducer │  audit log                    │
  │                            │  steps · policy  │                               │
  │                            └──────────────────┘                               │
@@ -53,7 +53,7 @@ mocks.
 
 **`sessions`** is every edge on the Claude Code side: the unix socket the hook shims
 POST to, the session files the shims write, the JSONL tail, the git delta reader, the
-process-liveness check, the repo registry, and the audit log. It
+process-liveness check, and the audit log. It
 parses hook input once at the socket into a `HookEvent` and rejects anything it does
 not recognise with a logged error and a non-2xx reply `[LAW:parse-dont-validate]`. It
 exposes two things upward: an async stream of events, and a small API the tools call.
@@ -154,7 +154,6 @@ class Snapshot: session: SessionId; cwd: Path                # where the turn's 
 class Compare:  session: SessionId                           # what it changed, read when the turn stops
 @dataclass(frozen=True)
 class Audit:    record: AuditRecord
-@dataclass(frozen=True)
 
 Priority = Literal["blocking", "result", "fyi"]
 
