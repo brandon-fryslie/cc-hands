@@ -106,6 +106,14 @@ class Idle:
 
 
 @dataclass(frozen=True)
+class Submitted:
+    """Sent from the prompt while its UserPromptSubmit hooks run: Claude Code has not taken it, and never will if the user
+    presses Escape before they finish, which puts it back in the input box with no hook and no record to say so (2.1.281)."""
+
+    since: Instant
+
+
+@dataclass(frozen=True)
 class Working:
     since: Instant
 
@@ -132,7 +140,7 @@ class Gone:
     pass
 
 
-SessionState = Idle | Working | Blocked | AtDialog | Gone
+SessionState = Idle | Submitted | Working | Blocked | AtDialog | Gone
 
 
 @dataclass(frozen=True)

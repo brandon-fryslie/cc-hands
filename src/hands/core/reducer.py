@@ -34,6 +34,7 @@ from hands.core.events import (
     Event,
     Interrupted,
     Continued,
+    Taken,
     Joined,
     PermissionRequested,
     Prompted,
@@ -44,7 +45,7 @@ from hands.core.events import (
     ToolFinished,
     Waited,
 )
-from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Mode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, UnknownMode, Working
+from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Mode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, Submitted, UnknownMode, Working
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
@@ -79,7 +80,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case MovedOn(membership=membership):
             # The user moved the process on at the keyboard, so there is nothing to tell them.
             return _ended_unheard(registry, membership, [])
-        case Prompted(session=session, at=at):
+        case Prompted(session=session, at=at, prompt=prompt):
             # Marked as the turn opens, so what it changes is read against a repository it has not touched yet.
             # A turn opens from the prompt and nowhere else, so only a session sitting at one is marked: a
             # prompt that lands inside a running turn — one that was queued, or one whose Stop nobody heard —
@@ -88,9 +89,23 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _enter(
                 registry,
                 event,
-                lambda _: Working(since=at),
-                lambda was: [Snapshot(session, was.membership.cwd)] if isinstance(was.state, Idle) else [],
+                lambda state: _prompted(state, registry.sessions[session].turn, prompt, at),
+                # One sitting at its prompt is marked even where its prompt was read as taken before this hook landed:
+                # the turn opened from here all the same, and unmarked it would be compared against the last turn's mark.
+                lambda was: [Snapshot(session, was.membership.cwd)] if isinstance(was.state, Idle) or _opens(was.state, was.turn, prompt) else [],
             )
+        case Taken(session=session, prompt=prompt):
+            match registry.sessions.get(session):
+                case Session(state=Submitted(since=since), turn=turn) if turn == prompt:
+                    # Working from when it was sent: the hooks it waited on are part of its turn.
+                    return _enter(registry, event, lambda _: Working(since=since))
+                case Session(state=Idle()) as was:
+                    # [LAW:no-ambient-temporal-coupling] read before its own hook was applied, as a daemon too slow for the
+                    # shim's timeout lets happen: kept as the turn, so that hook finds its prompt already taken.
+                    return registry.put(replace(was, turn=prompt)), []
+                case _:
+                    # A turn under way going on under a queued prompt, or one read after it ended: nothing to move.
+                    return registry, []
         case Stopped(session=session, closing=closing):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
             return _enter(registry, event, lambda _: Idle(), lambda _was: [Compare(session), Summarise(session, closing)])
@@ -137,7 +152,7 @@ def _started(membership: Membership, source: StartSource, previous: Session | No
     # SessionStart carries no permission_mode, so only compaction, which keeps its process, keeps the one it had;
     # a session started or resumed in a new process may have been given any mode.
     match (source, previous):
-        case ("compact", Session(state=Working() | Blocked() | AtDialog()) as previous):
+        case ("compact", Session(state=Submitted() | Working() | Blocked() | AtDialog()) as previous):
             return replace(previous, membership=membership)
         case ("compact", Session(state=Idle(due=due), mode=mode)):
             # A new idle period, which a nudge hands was timing for still has to come from hands.
@@ -203,7 +218,7 @@ def _reported(event: SessionEvent) -> Mode | None:
     match event:
         case Prompted(mode=mode) | Stopped(mode=mode) | PermissionRequested(mode=mode) | ToolFinished(mode=mode):
             return mode
-        case Interrupted() | Continued() | Waited() | Ended():
+        case Taken() | Interrupted() | Continued() | Waited() | Ended():
             return None
 
 
@@ -269,6 +284,27 @@ def _same_call(asked: Blocker, call: FinishedCall) -> bool:
             return True
         case _:
             return asked == call
+
+
+def _opens(state: SessionState, turn: PromptId | None, prompt: PromptId | None) -> bool:
+    """Whether a prompt opens a turn: sent from the prompt, and not queued into the turn its id already names, which a
+    queued prompt's hook carries (2.1.281)."""
+    return isinstance(state, Idle | Submitted) and (prompt is None or prompt != turn)
+
+
+def _prompted(state: SessionState, turn: PromptId | None, prompt: PromptId | None, at: Instant) -> SessionState:
+    match (state, prompt):
+        case (Submitted(since=since), _) if not _opens(state, turn, prompt):
+            # Queued into the turn it opened, so that one was taken, whether or not its record has been read yet.
+            return Working(since=since)
+        case (_, str()) if _opens(state, turn, prompt):
+            # [LAW:types-are-the-program] not working yet: Claude Code takes a prompt only once its hooks finish, and an
+            # Escape before then cancels it with nothing to say so, so only the record of its turn can make it Working.
+            return Submitted(since=at)
+        case _:
+            # Inside a running turn it is in that turn already; and a prompt with no id can never be matched to its
+            # record, so it is taken on the hook's word, as every prompt was before the record could be read.
+            return Working(since=at)
 
 
 def _waited(state: SessionState) -> SessionState:

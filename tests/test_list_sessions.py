@@ -9,8 +9,8 @@ from typing import cast
 from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.events import Ended, Joined, PermissionRequested, Prompted
-from hands.core.session import Membership, Permission, RequestId, SessionId, Question
+from hands.core.events import Ended, Joined, PermissionRequested, Prompted, Taken
+from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId, Question
 from hands.sessions.registry import Sessions
 from hands.sessions.transcript import ai_title
 from hands.voice.tools import list_sessions_tool
@@ -51,7 +51,8 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     for event in (
         Joined(working, "startup"),
-        Prompted(working.id, at=1.0, mode="acceptEdits", prompt=None),
+        Prompted(working.id, at=1.0, mode="acceptEdits", prompt=PromptId("p1")),
+        Taken(working.id, PromptId("p1")),
         Joined(untitled, "startup"),
         Joined(blocked, "startup"),
         PermissionRequested(blocked.id, at=2.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default"),

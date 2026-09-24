@@ -26,7 +26,7 @@ from hands.core.effects import (
     WaitingForYou,
     Withdraw,
 )
-from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished, Waited
+from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Taken, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished, Waited
 from hands.core.reducer import EXPIRED_MESSAGE, IDLE_NUDGE_SECONDS, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
     AskedQuestion,
@@ -47,6 +47,7 @@ from hands.core.session import (
     Session,
     SessionId,
     SessionState,
+    Submitted,
     UnknownMode,
     Working,
 )
@@ -58,6 +59,7 @@ BASH = Permission(tool="Bash", input={"command": "ls"})
 
 LIVE: list[SessionState] = [
     Idle(),
+    Submitted(since=1.0),
     Working(since=1.0),
     Blocked(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False),
 ]
@@ -87,7 +89,6 @@ def test_a_start_registers_the_session_idle() -> None:
 @pytest.mark.parametrize(
     ("event", "after"),
     [
-        (Prompted(ONE.id, at=5.0, mode=None, prompt=None), Working(since=5.0)),
         (Stopped(ONE.id, None, mode=None), Idle()),
         (
             PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None),
@@ -98,6 +99,21 @@ def test_a_start_registers_the_session_idle() -> None:
 )
 def test_every_state_takes_each_event_to_its_state(before: SessionState, event: Event, after: SessionState) -> None:
     assert reduce(holding(before), event)[0] == holding(after)
+
+
+@pytest.mark.parametrize(("before", "after"), [(Idle(), Submitted(since=5.0)), (Submitted(since=1.0), Submitted(since=5.0)), (Working(since=1.0), Working(since=5.0)), (LIVE[3], Working(since=5.0))])
+def test_a_prompt_from_the_prompt_is_only_sent_and_one_inside_a_turn_is_in_it(before: SessionState, after: SessionState) -> None:
+    assert reduce(holding(before), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN))[0] == registry(Session(ONE, after, mode=None, turn=TURN))
+
+
+def test_a_prompt_whose_hook_names_no_turn_is_working_on_the_hooks_word() -> None:
+    """No record can ever be matched to it, so waiting for one would leave the session not started for its whole turn."""
+    assert reduce(holding(Idle()), Prompted(ONE.id, at=5.0, mode=None, prompt=None)) == (holding(Working(since=5.0)), [Snapshot(ONE.id, ONE.cwd)])
+
+
+def test_a_prompt_queued_into_the_turn_a_sent_one_opened_says_that_one_was_taken() -> None:
+    """A queued prompt's hook carries the running turn's id (2.1.281): the turn is running, though its record is not read yet."""
+    assert reduce(in_turn(Submitted(since=1.0)), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN)) == (in_turn(Working(since=1.0)), [])
 
 
 WAITING = Blocked(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False)
@@ -456,7 +472,34 @@ def in_turn(state: SessionState, turn: PromptId | None = TURN) -> Registry:
 
 def test_a_prompt_names_the_turn_it_opens() -> None:
     after, _ = reduce(in_turn(Idle(), turn=None), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN))
-    assert after == in_turn(Working(since=5.0))
+    assert after == in_turn(Submitted(since=5.0))
+
+
+def test_a_prompt_claude_code_took_is_working_from_when_it_was_sent() -> None:
+    assert reduce(in_turn(Submitted(since=5.0)), Taken(ONE.id, TURN)) == (in_turn(Working(since=5.0)), [])
+
+
+def test_a_prompt_cancelled_while_its_hooks_ran_never_leaves_the_session_working() -> None:
+    """As seen live on 2.1.281: Escape during UserPromptSubmit puts the prompt back in the box, and nothing is written
+    or sent for it after — no Stop, no record, and no idle_prompt in 90 s. Resent, it is a prompt of its own."""
+    state, effects = reduce(in_turn(Idle(), turn=None), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN))
+    assert state == in_turn(Submitted(since=5.0))
+    state, effects = reduce(state, Prompted(ONE.id, at=9.0, mode=None, prompt=NEXT))
+    assert (state, effects) == (in_turn(Submitted(since=9.0), turn=NEXT), [Snapshot(ONE.id, ONE.cwd)])
+    assert reduce(state, Taken(ONE.id, NEXT))[0] == in_turn(Working(since=9.0), turn=NEXT)
+
+
+def test_a_prompt_read_as_taken_before_its_hook_was_applied_is_working_when_the_hook_lands() -> None:
+    """The shim gives up after its timeout and Claude Code takes the prompt; the daemon applies the hook afterwards."""
+    state, effects = reduce(in_turn(Idle(), turn=None), Taken(ONE.id, TURN))
+    assert (state, effects) == (in_turn(Idle()), [])
+    assert reduce(state, Prompted(ONE.id, at=5.0, mode=None, prompt=TURN)) == (in_turn(Working(since=5.0)), [Snapshot(ONE.id, ONE.cwd)])
+
+
+@pytest.mark.parametrize("session", [in_turn(Submitted(since=5.0), turn=NEXT), in_turn(Working(since=5.0))])
+def test_a_prompt_taken_that_is_not_the_one_sent_moves_nothing(session: Registry) -> None:
+    """The first record of a queued prompt's turn, or one read after its turn ended."""
+    assert reduce(session, Taken(ONE.id, TURN)) == (session, [])
 
 
 @pytest.mark.parametrize("event", [

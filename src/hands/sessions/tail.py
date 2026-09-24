@@ -16,7 +16,7 @@ from typing import Protocol
 
 from loguru import logger
 
-from hands.core.events import Continued, Interrupted, Transcribed
+from hands.core.events import Continued, Interrupted, Taken, Transcribed
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
@@ -65,17 +65,18 @@ class Following:
             case edge:
                 return edge
 
-    def answered(self, record: Payload) -> tuple[PromptId, PromptId] | None:
-        """The ids Claude was answering under and is now, where this record is it answering under a new one."""
+    def prompted(self, session: SessionId, record: Payload) -> Taken | Continued | None:
+        """What this record says of the prompt the session is on: the first record under a prompt's id is Claude Code
+        taking it, and Claude answering under an id it was not answering under before is its turn going on under that one."""
         match record.fields.get("type"):
             case "user":
                 # A record that names no prompt says nothing of which one Claude is answering.
-                self.asked = prompt_of(record) or self.asked
-                return None
+                was, self.asked = self.asked, prompt_of(record) or self.asked
+                return None if self.asked is None or self.asked == was else Taken(session, self.asked)
             case _:
                 # An assistant record: Claude answering whatever the user's side last carried.
                 was, self.answering = self.answering, self.asked
-                return None if was is None or self.answering is None or was == self.answering else (was, self.answering)
+                return None if was is None or self.answering is None or was == self.answering else Continued(session, was, self.answering)
 
     def restart(self) -> None:
         """Read this file again from its start: nothing read of the file it was says anything about the file it is."""
@@ -125,8 +126,8 @@ class Tails:
     async def catch_up(self) -> list[Transcribed]:
         """Read what has been appended to every live session's transcript, and forget the sessions that are gone.
 
-        Returns what was read of each turn since the last catch-up that no hook says — where it was interrupted, and
-        where it went on under a queued message's id — in the order it was read.
+        Returns what was read of each turn since the last catch-up that no hook says — where its prompt was taken, where
+        it was interrupted, and where it went on under a queued message's id — in the order it was read.
         """
         async with self._reading:
             members = self._known.live_members()
@@ -231,11 +232,12 @@ class Tails:
                 logger.error(f"a record in the transcript of session {session} could not be read, so it is not told: {error}")
                 continue
             if record is not None:
+                # The prompt first: a prompt's first record can be the one that interrupts it, and it was taken to be.
+                prompted = following.prompted(session, record)
+                if prompted is not None:
+                    self._transcribed.append(prompted)
                 if following.consume(record) is not None:
                     self._interrupt(session, record)
-                moved = following.answered(record)
-                if moved is not None:
-                    self._transcribed.append(Continued(session, *moved))
                 self.lag = _lag(record)
 
     def _interrupt(self, session: SessionId, record: Payload) -> None:
