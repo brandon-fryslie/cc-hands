@@ -1018,7 +1018,7 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   pid no macOS process can have (outside 1 to 99999) is reported and removed as it is
   read, like one that does not parse, so the kernel is never asked about it.
 - **Liveness** comes from the kernel: each file's pid is asked when its process started
-  (`proc_pidinfo`, one syscall of about a microsecond), every sweep. A session waiting for input is silent for hours and alive; a session in a
+  (the `kern.proc.pid` sysctl, about 10 µs a pid), every sweep. A session waiting for input is silent for hours and alive; a session in a
   tool loop is never silent. Silence measures nothing. A process counts as the
   session's only if it started before the file was written, so a pid reused by a later
   process reads as dead. A dead one becomes `Died`: the session is `Gone`, a waiting
@@ -1247,10 +1247,10 @@ thing that failed `[LAW:no-silent-failure]`:
    macOS's `1..99999` does not parse, since no process can have it. A pid counts as the
    daemon only while the process holding it started no later than the heartbeat's
    `started_at`, with a second of slack for a clock stepped back. The start comes from
-   the kernel (`proc_pidinfo`, about a microsecond), and it is the rule the session
-   sweep uses, from `hands.sessions.processes`. A pid that a later process took, after
-   a crash or a reboot, reads as down rather than as not responding. So does one held
-   by another user's process, since hands' processes all run as the user.
+   the kernel (the `kern.proc.pid` sysctl that `ps` itself reads, about 10 µs), and it
+   is the rule the session sweep uses, from `hands.sessions.processes`. A pid that a
+   later process took, after a crash or a reboot, reads as down rather than as not
+   responding.
 3. **Log.** Every effect and every failure is one line in `~/.hands/audit.jsonl`,
    written by the daemon alone (`hands.sessions.audit`). `hands log` prints the
    newest lines and follows the file. Each line is a value encoded one way: its type

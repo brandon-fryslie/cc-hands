@@ -7,7 +7,6 @@ session sweep and the daemon's heartbeat both ask that, and both answer it here.
 
 import ctypes
 import ctypes.util
-import errno
 import os
 from collections.abc import Collection, Mapping
 
@@ -38,40 +37,28 @@ def still_running(pid: int, seen_at: float, starts: Mapping[int, float]) -> bool
 
 
 def process_starts(pids: Collection[int]) -> dict[int, float]:
-    """When each pid's process started, in wall-clock seconds; a pid with no process of this user's is absent.
+    """When each pid's process started, in wall-clock seconds; a pid no process has is absent.
 
-    One syscall a pid, about a microsecond, so it is asked on the event loop and once a second from the menu bar alike.
+    One sysctl a pid, about ten microseconds, so it is asked on the event loop and once a second from the menu bar alike.
     """
     return {pid: start for pid in pids if (start := _process_start(pid)) is not None}
 
 
-class _BSDInfo(ctypes.Structure):
-    """`struct proc_bsdinfo`, from <sys/proc_info.h>: read for the start time at its end."""
-
-    _fields_ = [  # pyright: ignore[reportUnannotatedClassAttribute]
-        *((name, ctypes.c_uint32) for name in ("flags", "status", "xstatus", "pid", "ppid", "uid", "gid", "ruid", "rgid", "svuid", "svgid", "rfu_1")),
-        ("comm", ctypes.c_char * 16),
-        ("name", ctypes.c_char * 32),
-        *((name, ctypes.c_uint32) for name in ("nfiles", "pgid", "pjobc", "e_tdev", "e_tpgid")),
-        ("nice", ctypes.c_int32),
-        ("start_tvsec", ctypes.c_uint64),
-        ("start_tvusec", ctypes.c_uint64),
-    ]
-
-
-_PROC_PIDTBSDINFO = 3
-_libproc = ctypes.CDLL(ctypes.util.find_library("proc"), use_errno=True)
+# kern.proc.pid.<pid>: the kernel's `struct kinfo_proc`, the record ps itself reads. It opens with the process's start,
+# a `struct timeval`: 8 bytes of seconds, then 4 of microseconds.
+_KERN_PROC_PID = (1, 14, 1)  # CTL_KERN, KERN_PROC, KERN_PROC_PID
+_KINFO_PROC_ROOM = 1024  # more than the 648 bytes the record takes, so a larger one in a later macOS still fits
+_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 
 
 def _process_start(pid: int) -> float | None:
-    info = _BSDInfo()
-    if _libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, ctypes.byref(info), ctypes.sizeof(info)) == ctypes.sizeof(info):
-        return float(info.start_tvsec) + float(info.start_tvusec) / 1_000_000
-    match ctypes.get_errno():
-        case errno.ESRCH:
-            return None  # no process has the pid
-        case errno.EPERM:
-            return None  # another user's process has it; hands' own processes all run as this user
-        case other:
-            # [LAW:no-silent-failure] anything else is the kernel refusing a question it always answers.
-            raise OSError(other, f"proc_pidinfo could not say when pid {pid} started: {os.strerror(other)}")
+    mib = (ctypes.c_int * 4)(*_KERN_PROC_PID, pid)
+    record = ctypes.create_string_buffer(_KINFO_PROC_ROOM)
+    size = ctypes.c_size_t(_KINFO_PROC_ROOM)
+    if _libc.sysctl(mib, len(mib), record, ctypes.byref(size), None, 0) != 0:
+        failure = ctypes.get_errno()
+        # [LAW:no-silent-failure] the kernel refusing a question it always answers is raised, never taken for "gone".
+        raise OSError(failure, f"sysctl could not say when pid {pid} started: {os.strerror(failure)}")
+    if size.value == 0:
+        return None  # no process has the pid; the kernel answers with an empty record
+    return ctypes.c_int64.from_buffer(record, 0).value + ctypes.c_int32.from_buffer(record, 8).value / 1_000_000

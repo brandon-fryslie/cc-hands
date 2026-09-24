@@ -155,7 +155,7 @@ def test_hands_status_exits_zero_only_when_the_daemon_is_up(tmp_path: Path, caps
 def test_the_daemon_is_running_only_if_its_pid_is_held_by_the_process_that_started_then(dead_pid: Callable[[], int]) -> None:
     now = datetime.now(UTC)
     assert status.running(beat(pid=os.getpid(), started_at=now))
-    assert not status.running(beat(pid=1, started_at=now))  # launchd, root's: running, but never one of hands' processes
+    assert status.running(beat(pid=1, started_at=now))  # launchd, root's: seen, and it started before now
     assert not status.running(beat(pid=dead_pid(), started_at=now))
     # This process holds the pid, but it started long after the heartbeat's daemon did: the number was reused.
     assert not status.running(beat(pid=os.getpid(), started_at=now - timedelta(days=3)))

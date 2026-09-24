@@ -68,7 +68,7 @@ def test_a_listed_session_whose_file_stayed_gone_moved_on_if_another_session_hol
     assert observations([cleared, dead, current], records, started, unfiled) == ([Attached(current), MovedOn(cleared), Died(dead)], unfiled)
 
 
-def test_the_kernel_says_when_a_running_process_started_and_leaves_out_a_dead_one_and_anothers(dead_pid: Callable[[], int]) -> None:
+def test_the_kernel_says_when_a_running_process_started_whoever_runs_it_and_leaves_out_a_dead_one(dead_pid: Callable[[], int]) -> None:
     before = time.time()
     child = subprocess.Popen(["sleep", "5"])
     try:
@@ -76,8 +76,9 @@ def test_the_kernel_says_when_a_running_process_started_and_leaves_out_a_dead_on
     finally:
         child.kill()
         child.wait()
-    assert set(starts) == {os.getpid(), child.pid}  # pid 1 is launchd's, root's, so never one of hands'
+    assert set(starts) == {os.getpid(), child.pid, 1}  # pid 1 is launchd's, root's: seen all the same
     assert before - 0.1 <= starts[child.pid] <= time.time()
+    assert starts[1] < starts[os.getpid()]
     assert process_starts(set()) == {}
 
 
