@@ -185,7 +185,7 @@ async def converse(
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
         # session stays listed, without the tail no record becomes a step, without the relay
-        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the heartbeat the daemon looks dead while it runs, and without the device follower an unplugged headset leaves it deaf and mute, so any of
+        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the key edge no turn starts, so any of
         # them failing stops the run where it can be seen, and launchd starts it again.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
@@ -211,8 +211,16 @@ async def converse(
         for fact in unheard(turn, voice.audio.devices):
             await channel.say(fact)
 
+    async def drive_key_once_started() -> None:
+        # [LAW:no-ambient-temporal-coupling] a press reads the devices, which are known once the pipeline has opened
+        # its streams; keys typed before then wait in the terminal.
+        await pipeline.started.wait()
+        await drive_key(on_key, quit_event)
+
     if sys.stdin.isatty():
-        background.append(asyncio.create_task(drive_key(on_key, quit_event), name="the terminal key edge"))
+        key_edge = asyncio.create_task(drive_key_once_started(), name="the terminal key edge")
+        key_edge.add_done_callback(stop_if_failed)
+        background.append(key_edge)
         logger.info("space: press to talk, press again to stop. q: quit.")
     # The run's own signal handler stops the pipeline, so Pipecat installs none of its own.
     runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
