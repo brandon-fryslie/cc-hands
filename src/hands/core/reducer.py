@@ -125,7 +125,8 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
                     return registry, []
         case Stopped(prompt=str() as stopped) if _ended_already(registry.sessions.get(event.session), stopped):
             # [LAW:no-ambient-temporal-coupling] the Stop of a turn a later prompt or turn already ended, applied after
-            # it: it was told there, and ending the turn now running would idle it and spend its mark.
+            # it: it was told there, or is told now if its telling waited for it (see _untold), and ending the turn now
+            # running would idle it and spend its mark.
             return _enter(registry, event, lambda state: state)
         case Stopped(session=session, closing=closing, prompt=str() as stopped) if (sent := _sent_over(registry.sessions.get(session), stopped)) is not None:
             # Its hook posts from its own process, so it can land after the next prompt's: it ends the turn it names, as
