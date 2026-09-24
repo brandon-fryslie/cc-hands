@@ -110,13 +110,10 @@ class Idle:
 @dataclass(frozen=True)
 class Submitted:
     """Sent from the prompt while its UserPromptSubmit hooks run: Claude Code has not taken it, and never will if the user
-    presses Escape before they finish, which puts it back in the input box with no hook and no record to say so (2.1.281)."""
+    presses Escape before they finish, which puts it back in the input box with no hook and no record to say so, and sets
+    the session idle (2.1.282)."""
 
     since: Instant
-    # [LAW:no-ambient-temporal-coupling] the prompt this one was sent over while that one was still Submitted:
-    # cancelled, or taken and ended before any record of it was read. Only its own record can say which, and that is
-    # read after this, so the prompt is kept until then, and a record of it ends it as the turn it was. None where there was none.
-    over: PromptId | None = None
 
 
 @dataclass(frozen=True)
@@ -166,16 +163,13 @@ class Session:
     # [LAW:one-source-of-truth] the permission_mode of the last hook that carried one. None until one does:
     # SessionStart, idle_prompt, and SessionEnd carry none (verified live on 2.1.281).
     mode: Mode | None
-    # [LAW:no-ambient-temporal-coupling] the prompt_id of the last prompt the session was given, which names the turn a
-    # working or blocked session is in. What ends a turn from outside its hooks names the turn it ends, so it can never
-    # end the one after it, however late it is read. None until a prompt is heard.
+    # [LAW:no-ambient-temporal-coupling] the id the session's last turn goes by: its prompt's, or the one Claude went on
+    # answering under, which names the turn a busy session is in. A Stop ends only the turn it names, so one applied late never ends the turn after it.
+    # None until a prompt is heard.
     turn: PromptId | None
     # Every other id the running turn has been read going on under: a flush's is taken seconds before Claude answers
     # under it and the turn is moved to it, and a message queued in between carries it (2.1.281).
     taken: frozenset[PromptId] = frozenset()
-    # [LAW:no-ambient-temporal-coupling] the ids of the last turn hands ended before its Stop was heard, because a
-    # later prompt or a later turn's record showed it over: that Stop, applied late, ends nothing.
-    ended: frozenset[PromptId] = frozenset()
     # [LAW:one-source-of-truth] what Claude Code last said the session is doing, as it said it. None until it is read.
     report: Report | None = None
     # [LAW:no-ambient-temporal-coupling] the one wait on the transcript, as a value the clock settles: None when every

@@ -81,9 +81,6 @@ class Taken:
 
     session: SessionId
     prompt: PromptId
-    # Whether the record opens a turn of its own, as a prompt's first record does, rather than going on in the one
-    # running, as a flushed or a mid-turn notification's does: the two are told apart only by where they are written.
-    opens: bool
 
 
 @dataclass(frozen=True)
