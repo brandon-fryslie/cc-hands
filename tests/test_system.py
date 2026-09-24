@@ -2,7 +2,7 @@
 
 import asyncio
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -272,7 +272,7 @@ def test_the_notification_text_is_an_argument_not_part_of_the_script() -> None:
     assert all('"hi"' not in part for part in command[:-1])
 
 
-GONE = 2**22 + 12345
+GONE = "a pid no process holds"
 
 
 @pytest.mark.parametrize(
@@ -287,13 +287,21 @@ GONE = 2**22 + 12345
     ],
 )
 def test_a_run_crashed_when_its_last_heartbeat_was_not_a_stop_and_it_is_not_beating(
-    pipeline: status.PipelineState | None, pid: int, written_ago: int, crashed: bool, tmp_path: Path
+    pipeline: status.PipelineState | None, pid: int | str, written_ago: int, crashed: bool, tmp_path: Path, dead_pid: Callable[[], int]
 ) -> None:
     home = Home(tmp_path)
     now = datetime.now(UTC)
     if pipeline is not None:
-        status.write(home.status, status.Status(pid, now, now - timedelta(seconds=written_ago), status.HEARTBEAT, pipeline, None, 0))
+        status.write(home.status, status.Status(dead_pid() if pid == GONE else int(pid), now, now - timedelta(seconds=written_ago), status.HEARTBEAT, pipeline, None, 0))
     assert crashed_before(home) is crashed
+
+
+def test_a_heartbeat_whose_pid_a_later_process_took_is_a_crash(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    day_ago = datetime.now(UTC) - timedelta(days=1)
+    # This process holds the pid, but it started long after the run that wrote the heartbeat.
+    status.write(home.status, status.Status(os.getpid(), day_ago, day_ago, status.HEARTBEAT, "running", None, 0))
+    assert crashed_before(home) is True
 
 
 def test_a_heartbeat_that_does_not_parse_is_not_taken_for_a_crash(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

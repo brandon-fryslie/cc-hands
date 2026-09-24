@@ -5,7 +5,6 @@ so there is one clock that says whether hands is up.
 """
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,6 +12,7 @@ from typing import Literal
 
 from hands.sessions.files import replace_whole
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.processes import parse_pid, process_starts, still_running
 
 # Starting until Pipecat reports the pipeline started; stopped only in the last heartbeat of a run told to stop.
 PipelineState = Literal["starting", "running", "stopped"]
@@ -21,8 +21,6 @@ PipelineState = Literal["starting", "running", "stopped"]
 HEARTBEAT = timedelta(seconds=2)
 # A reader that has missed this many heartbeats in a row calls the daemon unresponsive.
 MISSED_BEATS = 3
-# The pids a process can have: kill(2) takes a pid_t, and reads 0 and every negative number as a process group.
-PIDS = range(1, 2**31)
 # The heartbeat periods a reader believes, in milliseconds: anything past an hour would say nothing about liveness.
 PERIODS_MS = range(1, 3_600_001)
 
@@ -59,7 +57,7 @@ def parse(raw: bytes) -> Status:
     fields = Payload.parse(raw)
     last_audio_out = fields.optional_text("last_audio_out")
     return Status(
-        pid=_pid(fields.integer("pid")),
+        pid=parse_pid(fields.integer("pid")),
         started_at=_instant(fields.text("started_at")),
         written_at=_instant(fields.text("written_at")),
         heartbeat=_period(fields.integer("heartbeat_ms")),
@@ -95,17 +93,6 @@ def read(path: Path) -> Status | None:
         return parse(path.read_bytes())
     except FileNotFoundError:
         return None
-
-
-def pid_alive(pid: int) -> bool:
-    """Liveness from the OS: signal 0 checks that the process exists without touching it."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # it exists; it belongs to someone else
-    return True
 
 
 @dataclass(frozen=True)
@@ -156,7 +143,14 @@ def look(path: Path, now: datetime) -> Verdict:
     except (Rejected, OSError) as error:
         # [LAW:no-silent-failure] an unreadable heartbeat is its own verdict, never taken for "not running".
         return Unreadable(path, str(error))
-    return judge(path, last, now, alive=last is not None and pid_alive(last.pid))
+    return judge(path, last, now, alive=last is not None and running(last))
+
+
+def running(status: Status) -> bool:
+    """Whether the process that wrote the heartbeat is still running: its pid is, and not as a later process."""
+    # [LAW:single-enforcer] the session sweep's own test for a reused pid. Asked of kill(pid, 0) alone, a pid that
+    # went to another process after a crash or a reboot read as a daemon that had stopped responding.
+    return still_running(status.pid, status.started_at.timestamp(), process_starts({status.pid}))
 
 
 def judge(path: Path, status: Status | None, now: datetime, alive: bool) -> Verdict:
@@ -182,7 +176,7 @@ def describe(verdict: Verdict, now: datetime) -> str:
         case NeverRan(path=path):
             return f"hands has not run: there is no heartbeat at {path}"
         case Down(status=status):
-            return f"hands is down: pid {status.pid} is not running; its last heartbeat was {_span(now - status.written_at)} ago"
+            return f"hands is down: its process, pid {status.pid}, is gone; its last heartbeat was {_span(now - status.written_at)} ago"
         case Unresponsive(status=status):
             return (
                 f"hands is not responding: pid {status.pid} is running, pipeline {status.pipeline}, "
@@ -214,12 +208,6 @@ def _instant(text: str) -> datetime:
     if instant.tzinfo is None:
         raise Rejected(f"a heartbeat time carries its zone: {text!r}")
     return instant
-
-
-def _pid(number: int) -> int:
-    if number not in PIDS:
-        raise Rejected(f"pid {number} is not a process id")
-    return number
 
 
 def _period(milliseconds: int) -> timedelta:

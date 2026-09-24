@@ -1,7 +1,6 @@
 """Which sessions are running, from their membership files and the OS: silence is never evidence."""
 
 import asyncio
-import time
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,10 +12,8 @@ from hands.core.session import Membership, SessionId
 from hands.sessions.home import Home
 from hands.sessions.membership import parse_membership, remove_ended_membership
 from hands.sessions.payload import Rejected
+from hands.sessions.processes import process_starts, still_running
 from hands.sessions.registry import Sessions
-
-# ps reports elapsed time in whole seconds, and it is read a moment after the clock is.
-START_SLACK_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -35,7 +32,7 @@ async def sweep(home: Home, sessions: Sessions, unfiled_before: Unfiled) -> Unfi
     # has written its file, so one that joins while the sweep runs is never taken for a session whose file is gone.
     listed = sessions.live_members()
     records = recorded(home)
-    started = await process_starts({record.membership.pid for record in records})
+    started = process_starts({record.membership.pid for record in records})
     seen_all, unfiled = observations(listed, records, started, unfiled_before)
     for seen in seen_all:
         await sessions.apply(seen)
@@ -74,10 +71,8 @@ def observations(
 
 
 def _running(record: Recorded, started: Mapping[int, float]) -> bool:
-    start = started.get(record.membership.pid)
-    # [LAW:types-are-the-program] a running pid is not enough: a process that started after the file was written
-    # took the number of the one the file names, which is dead.
-    return start is not None and start <= record.written_at + START_SLACK_SECONDS
+    # A running pid is not enough: the process must have been running when the file was written.
+    return still_running(record.membership.pid, record.written_at, started)
 
 
 def _observed(membership: Membership, holder: Membership | None) -> Observed:
@@ -119,32 +114,3 @@ def _remove_unreadable(path: Path, raw: bytes, error: Rejected) -> None:
     # [LAW:no-silent-failure] said once, as it is removed, rather than every sweep.
     logger.error(f"removing the membership file {path}, which names no session hands can attach: {error}")
     path.unlink(missing_ok=True)
-
-
-async def process_starts(pids: Collection[int]) -> dict[int, float]:
-    """When each running pid started, in wall-clock seconds; a pid that is not running is absent."""
-    if not pids:
-        return {}
-    ps = await asyncio.create_subprocess_exec(
-        "ps", "-o", "pid=,etime=", "-p", ",".join(str(pid) for pid in sorted(pids)),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    out, err = await ps.communicate()
-    now = time.time()
-    # ps exits 1, printing nothing, when none of the pids is running.
-    if err or ps.returncode not in (0, 1):
-        raise RuntimeError(f"ps exited {ps.returncode} asking which sessions are running: {err.decode(errors='replace').strip()}")
-    starts: dict[int, float] = {}
-    for line in out.decode().splitlines():
-        pid, etime = line.split()
-        starts[int(pid)] = now - elapsed_seconds(etime)
-    return starts
-
-
-def elapsed_seconds(etime: str) -> int:
-    """ps's elapsed time, [[dd-]hh:]mm:ss, in seconds."""
-    days, _, clock = etime.rpartition("-")
-    seconds = 0
-    for part in clock.split(":"):
-        seconds = seconds * 60 + int(part)
-    return (int(days) if days else 0) * 86400 + seconds

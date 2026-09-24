@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,9 @@ from hands.core.effects import SessionGone
 from hands.core.events import Attached, Died, Joined, MovedOn, Observed
 from hands.core.session import Gone, Idle, Membership, SessionId
 from hands.sessions.home import Home
-from hands.sessions.liveness import START_SLACK_SECONDS, Recorded, elapsed_seconds, observations, process_starts, recorded, sweep
+from hands.sessions.liveness import Recorded, observations, recorded, sweep
+from hands.sessions.payload import Rejected
+from hands.sessions.processes import START_SLACK_SECONDS, parse_pid, process_starts
 from hands.sessions.membership import remove_ended_membership, write_membership
 from hands.sessions.registry import Sessions
 
@@ -21,19 +24,8 @@ def member(name: str, pid: int) -> Membership:
     return Membership(SessionId(name), pid=pid, cwd=Path("/code") / name, transcript=Path("/nowhere") / f"{name}.jsonl")
 
 
-def dead_pid() -> int:
-    process = subprocess.Popen(["true"])
-    process.wait()
-    return process.pid
-
-
 def sessions() -> Sessions:
     return Sessions(permission_deadline=60.0, clock=time.monotonic, record=lambda _: None)
-
-
-@pytest.mark.parametrize(("etime", "seconds"), [("00:07", 7), ("12:34", 754), ("01:02:03", 3723), ("2-01:02:03", 176523), ("10-00:00:00", 864000)])
-def test_ps_elapsed_time_reads_as_seconds(etime: str, seconds: int) -> None:
-    assert elapsed_seconds(etime) == seconds
 
 
 @pytest.mark.parametrize(
@@ -76,15 +68,24 @@ def test_a_listed_session_whose_file_stayed_gone_moved_on_if_another_session_hol
     assert observations([cleared, dead, current], records, started, unfiled) == ([Attached(current), MovedOn(cleared), Died(dead)], unfiled)
 
 
-async def test_ps_says_when_a_running_process_started_and_leaves_out_a_dead_one() -> None:
-    gone = dead_pid()
-    starts = await process_starts({os.getpid(), gone})
-    assert set(starts) == {os.getpid()}
-    assert starts[os.getpid()] <= time.time()
+def test_the_kernel_says_when_a_running_process_started_whoever_runs_it_and_leaves_out_a_dead_one(dead_pid: Callable[[], int]) -> None:
+    before = time.time()
+    child = subprocess.Popen(["sleep", "5"])
+    try:
+        starts = process_starts({os.getpid(), child.pid, dead_pid(), 1})
+    finally:
+        child.kill()
+        child.wait()
+    assert set(starts) == {os.getpid(), child.pid, 1}  # pid 1 is launchd's, root's: seen all the same
+    assert before - 0.1 <= starts[child.pid] <= time.time()
+    assert starts[1] < starts[os.getpid()]
+    assert process_starts(set()) == {}
 
 
-async def test_no_pids_asks_ps_nothing() -> None:
-    assert await process_starts(set()) == {}
+@pytest.mark.parametrize("number", [0, -1, 100_000, 2**63])
+def test_a_number_no_process_can_have_is_not_a_pid(number: int) -> None:
+    with pytest.raises(Rejected, match="not a process id"):
+        parse_pid(number)
 
 
 def test_an_unreadable_file_is_removed_and_a_staging_file_is_not_read(tmp_path: Path) -> None:
@@ -97,7 +98,7 @@ def test_an_unreadable_file_is_removed_and_a_staging_file_is_not_read(tmp_path: 
     assert (home.memberships / "half.tmp").exists()
 
 
-def test_a_dead_sessions_file_is_kept_when_a_new_process_has_rewritten_it(tmp_path: Path) -> None:
+def test_a_dead_sessions_file_is_kept_when_a_new_process_has_rewritten_it(dead_pid: Callable[[], int], tmp_path: Path) -> None:
     home = Home(tmp_path)
     write_membership(home, member("a", os.getpid()))
     remove_ended_membership(home, member("a", dead_pid()))
@@ -106,7 +107,7 @@ def test_a_dead_sessions_file_is_kept_when_a_new_process_has_rewritten_it(tmp_pa
     assert not home.membership(SessionId("a")).exists()
 
 
-async def test_a_sweep_attaches_the_running_ends_the_dead_and_the_reused_and_speaks_each_death_once(tmp_path: Path) -> None:
+async def test_a_sweep_attaches_the_running_ends_the_dead_and_the_reused_and_speaks_each_death_once(dead_pid: Callable[[], int], tmp_path: Path) -> None:
     home = Home(tmp_path)
     running, dead, reused = member("running", os.getpid()), member("dead", dead_pid()), member("reused", os.getppid())
     for membership in (running, dead, reused):
@@ -145,7 +146,7 @@ async def test_a_restart_lists_the_session_a_cleared_process_holds_now_not_the_o
         await asyncio.wait_for(registry.story(), 0.1)
 
 
-async def test_a_session_whose_end_hook_was_lost_after_its_file_went_is_ended_by_the_next_sweep(tmp_path: Path) -> None:
+async def test_a_session_whose_end_hook_was_lost_after_its_file_went_is_ended_by_the_next_sweep(dead_pid: Callable[[], int], tmp_path: Path) -> None:
     home = Home(tmp_path)
     registry = sessions()
     await registry.apply(Joined(member("closed", dead_pid()), "startup"))
@@ -177,7 +178,7 @@ def test_a_file_naming_no_possible_pid_is_removed_before_the_process_table_is_as
     assert not home.membership(SessionId("bad")).exists()
 
 
-async def test_after_a_reboot_the_files_of_sessions_that_did_not_survive_are_removed_without_a_word(tmp_path: Path) -> None:
+async def test_after_a_reboot_the_files_of_sessions_that_did_not_survive_are_removed_without_a_word(dead_pid: Callable[[], int], tmp_path: Path) -> None:
     home = Home(tmp_path)
     for name in ("one", "two", "three"):
         write_membership(home, member(name, dead_pid()))

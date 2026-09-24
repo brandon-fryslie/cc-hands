@@ -9,6 +9,7 @@ from pathlib import Path
 from hands.core.session import Membership, SessionId
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.processes import parse_pid
 
 
 def write_membership(home: Home, membership: Membership) -> None:
@@ -44,10 +45,6 @@ def remove_ended_membership(home: Home, ended: Membership) -> None:
         home.membership(ended.id).unlink(missing_ok=True)
 
 
-# The largest pid macOS hands out; ps refuses to look up anything above it.
-PID_MAX = 99999
-
-
 def read_membership(home: Home, session: SessionId) -> Membership:
     path = home.membership(session)
     try:
@@ -59,13 +56,9 @@ def read_membership(home: Home, session: SessionId) -> Membership:
 
 def parse_membership(session: SessionId, raw: bytes) -> Membership:
     record = Payload.parse(raw)
-    pid = record.integer("pid")
-    # [LAW:parse-dont-validate] a pid no process can have is refused here, so no sweep ever asks the OS about it.
-    if not 0 < pid <= PID_MAX:
-        raise Rejected(f"pid {pid} is not a process id")
     return Membership(
         id=session,
-        pid=pid,
+        pid=parse_pid(record.integer("pid")),
         cwd=Path(record.text("cwd")),
         transcript=Path(record.text("transcript_path")),
     )
