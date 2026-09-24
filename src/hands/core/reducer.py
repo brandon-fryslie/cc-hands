@@ -97,6 +97,10 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
                 case Session(state=Submitted(since=since), turn=turn) if turn == prompt:
                     # Working from when it was sent: the hooks it waited on are part of its turn.
                     return _enter(registry, event, lambda _: Working(since=since))
+                case Session(state=Idle()) as was:
+                    # [LAW:no-ambient-temporal-coupling] read before its own hook was applied, as a daemon too slow for the
+                    # shim's timeout lets happen: kept as the turn, so that hook finds its prompt already taken.
+                    return registry.put(replace(was, turn=prompt)), []
                 case _:
                     # A turn under way going on under a queued prompt, or one read after it ended: nothing to move.
                     return registry, []

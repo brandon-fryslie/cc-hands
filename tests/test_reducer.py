@@ -489,7 +489,14 @@ def test_a_prompt_cancelled_while_its_hooks_ran_never_leaves_the_session_working
     assert reduce(state, Taken(ONE.id, NEXT))[0] == in_turn(Working(since=9.0), turn=NEXT)
 
 
-@pytest.mark.parametrize("session", [in_turn(Submitted(since=5.0), turn=NEXT), in_turn(Working(since=5.0)), in_turn(Idle())])
+def test_a_prompt_read_as_taken_before_its_hook_was_applied_is_working_when_the_hook_lands() -> None:
+    """The shim gives up after its timeout and Claude Code takes the prompt; the daemon applies the hook afterwards."""
+    state, effects = reduce(in_turn(Idle(), turn=None), Taken(ONE.id, TURN))
+    assert (state, effects) == (in_turn(Idle()), [])
+    assert reduce(state, Prompted(ONE.id, at=5.0, mode=None, prompt=TURN))[0] == in_turn(Working(since=5.0))
+
+
+@pytest.mark.parametrize("session", [in_turn(Submitted(since=5.0), turn=NEXT), in_turn(Working(since=5.0))])
 def test_a_prompt_taken_that_is_not_the_one_sent_moves_nothing(session: Registry) -> None:
     """The first record of a queued prompt's turn, or one read after its turn ended."""
     assert reduce(session, Taken(ONE.id, TURN)) == (session, [])
