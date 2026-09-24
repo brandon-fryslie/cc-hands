@@ -754,7 +754,9 @@ A turn found to have run only after the next prompt was marked, the case of `Sub
 above, would lose its mark to that prompt's. So each `Snapshot` sets the mark it replaces aside,
 one per session, and that turn's `Compare` names the mark set aside. It is read up to the mark
 that replaced it, where the turn had already ended, so what the next turn has begun to change
-is not told as part of it. A `Compare` of the last mark spends the one set aside, because every
+is not told as part of it. A mark is held from the moment its snapshot starts, so a reading
+that needs one still being taken waits for it; where it could not be taken at all, the turn
+is told without a delta rather than with the next turn's work. A `Compare` of the last mark spends the one set aside, because every
 turn before the last is over once the last is. Readings stay one per telling, in the order the
 tellings are made.
 

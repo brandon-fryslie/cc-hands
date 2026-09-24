@@ -68,6 +68,10 @@ class Mark:
     tree: str
 
 
+# A mark being taken, or taken: None where it could not be.
+Marking = asyncio.Future[Mark | None]
+
+
 class Changes(Protocol):
     """What the registry and the narrator need of a repository reader, so either can be given one that reads none."""
 
@@ -96,11 +100,13 @@ class Deltas:
         self._marking = marking
         self._reading = reading
         self._patience = patience
+        # The mark each session's last snapshot took, or is taking: held from the moment the snapshot starts, so a
+        # reading that needs it waits for it rather than mistaking one not taken yet for one that could not be.
         # Bounded by the sessions the registry itself keeps, which holds every session it has heard of.
-        self._marks: dict[SessionId, Mark] = {}
+        self._marks: dict[SessionId, Marking] = {}
         # The mark each session's last snapshot replaced, where it had one: that of a prompt the next was sent over
         # before either was taken, which may yet turn out to have run. One a session, so it is gone by the one after.
-        self._set_aside: dict[SessionId, Mark | None] = {}
+        self._set_aside: dict[SessionId, Marking | None] = {}
         # One reading per turn that stopped, oldest first, so a session that stops twice while the narrator is
         # busy has each turn told with its own delta rather than the newer one told as both.
         self._readings: dict[SessionId, deque[asyncio.Future[Delta]]] = {}
@@ -113,12 +119,17 @@ class Deltas:
         than of some moment inside it — and why all of it together is given less than that hook can afford.
         """
         self._set_aside[session] = self._marks.pop(session, None)
-        mark = await self._mark(cwd, time.monotonic() + self._marking)
+        marking: Marking = asyncio.get_running_loop().create_future()
+        self._marks[session] = marking
+        mark = None
+        try:
+            mark = await self._mark(cwd, time.monotonic() + self._marking)
+        finally:
+            # [LAW:no-silent-failure] answered however this ends, a hook that gave up included, so no reading waits on it for ever.
+            marking.set_result(mark)
         if mark is None:
             # Not a repository, or one that cannot be read: the turn is told by its steps, which is most of it.
             logger.debug(f"nothing to compare a turn of session {session} against in {cwd}")
-            return
-        self._marks[session] = mark
 
     async def compare(self, session: SessionId, mark: Marked) -> None:
         """Take the turn's place in the order and start reading what it changed. Waits for none of it.
@@ -181,15 +192,29 @@ class Deltas:
             logger.info(f"what a turn of session {session} changed is still being read, so the turn is told without it")
             return Delta()
 
-    async def _read(self, pending: asyncio.Future[Delta], start: Mark, end: Mark | None) -> None:
+    async def _read(self, pending: asyncio.Future[Delta], start: Marking, end: Marking | None) -> None:
         """[LAW:no-silent-failure] whatever happens here, whoever is waiting is answered rather than left."""
         try:
-            delta = await self._between(start, end, time.monotonic() + self._reading)
+            delta = await self._marked(await start, end, time.monotonic() + self._reading)
         except Exception as error:
-            logger.error(f"what a turn changed in {start.root} could not be read: {type(error).__name__}: {error}")
+            logger.error(f"what a turn changed could not be read: {type(error).__name__}: {error}")
             delta = Delta()
         if not pending.done():
             pending.set_result(delta)
+
+    async def _marked(self, start: Mark | None, end: Marking | None, deadline: float) -> Delta:
+        """What changed from where the turn began, up to where the next began or, with no next, to now."""
+        match (start, end):
+            case (None, _):
+                return Delta()
+            case (Mark(), None):
+                return await self._between(start, None, deadline)
+            case (Mark(), _):
+                # A turn found to have run after the next prompt was marked. Read to now where that mark could not be
+                # taken, it would be told the next turn's work, and a listener can do nothing about changes told as
+                # the wrong turn's: without the next mark it is told without any.
+                ended = await end
+                return Delta() if ended is None else await self._between(start, ended, deadline)
 
     async def _mark(self, cwd: Path, deadline: float) -> Mark | None:
         root = await self._git(cwd, "rev-parse", "--show-toplevel", deadline=deadline)

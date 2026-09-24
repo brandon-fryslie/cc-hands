@@ -558,3 +558,34 @@ async def test_a_prompt_that_never_ran_leaves_nothing_behind_for_the_one_after_i
 
     assert [file.path for file in (await deltas.taken(SID)).files] == ["resent.py"]
     assert not await deltas.taken(SID)
+
+
+async def test_a_turn_found_to_have_run_while_the_next_mark_is_still_being_taken_waits_for_that_mark(tmp_path: Path) -> None:
+    """The record of the turn a prompt was sent over is read while that prompt's snapshot is still running git: the
+    reading waits for the mark rather than reading to whenever it happens to run."""
+    root = repo(tmp_path)
+    deltas = Deltas()
+    await deltas.snapshot(SID, root)
+    (root / "first.py").write_text("turn one\n")
+    marking = asyncio.create_task(deltas.snapshot(SID, root))
+    await asyncio.sleep(0)
+    await deltas.compare(SID, "set_aside")
+    await marking
+    (root / "second.py").write_text("turn two\n")
+    await deltas.compare(SID, "last")
+
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
+
+
+async def test_a_turn_found_to_have_run_after_the_next_mark_failed_is_told_without_the_next_turn_s_work(tmp_path: Path) -> None:
+    """Read to now with no next mark to stop at, the turn would be told the next one's changes as its own."""
+    root = repo(tmp_path)
+    deltas = Deltas()
+    await deltas.snapshot(SID, root)
+    (root / "first.py").write_text("turn one\n")
+    await deltas.snapshot(SID, tmp_path / "not-a-repository")
+    (root / "second.py").write_text("turn two\n")
+    await deltas.compare(SID, "set_aside")
+
+    assert not await deltas.taken(SID)
