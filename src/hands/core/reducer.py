@@ -19,6 +19,7 @@ from hands.core.effects import (
     Snapshot,
     Summarise,
     Unregistered,
+    WaitingForYou,
     Withdraw,
 )
 from hands.core.events import (
@@ -36,6 +37,7 @@ from hands.core.events import (
     Stopped,
     Tick,
     ToolFinished,
+    Waited,
 )
 from hands.core.session import Blocked, Gone, Idle, Instant, Membership, Permission, Registry, RequestId, Session, SessionId, SessionState, Working
 
@@ -82,6 +84,8 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case Stopped(session=session, closing=closing):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
             return _enter(registry, event, lambda _: Idle(), lambda _was: [Compare(session), Summarise(session, closing)])
+        case Waited():
+            return _enter(registry, event, _waited)
         case PermissionRequested(at=at, request=request, permission=permission):
             deadline = at + registry.permission_deadline
             return _enter(registry, event, lambda _: Blocked(on=permission, request=request, deadline=deadline, warned=False))
@@ -172,6 +176,17 @@ def _finished(state: SessionState, call: Permission, at: Instant) -> SessionStat
             return state
 
 
+def _waited(state: SessionState) -> SessionState:
+    match state:
+        case Idle():
+            return Idle(nudged=True)
+        case _:
+            # [LAW:no-ambient-temporal-coupling] each hook posts from its own process, so an idle_prompt sent as the
+            # user typed can land after the prompt it raced: a working session stays working, and is not nudged.
+            # A blocked one is already asked about aloud, and its deadline is spoken.
+            return state
+
+
 def _abandoned(registry: Registry, session: SessionId, request: RequestId, at: Instant) -> Registry:
     match registry.sessions.get(session):
         case Session(membership=membership, state=Blocked(request=held)) if held == request:
@@ -196,6 +211,8 @@ def _transition(session: SessionId, before: SessionState | None, after: SessionS
             return [Reply(session, held, Withdraw())]
         case (_, Blocked(request=asked, on=permission)):
             return [Narrate(PermissionAsked(session, asked, permission))]
+        case (Idle(nudged=False), Idle(nudged=True)):
+            return [Speak(WaitingForYou(session))]
         case _:
             return []
 

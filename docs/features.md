@@ -191,6 +191,7 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
   shift-tab in a session is reflected in the next `list_sessions`.
 - **Waiting-for-you nudge.** The `idle_prompt` notification becomes a `Speak`: "X
   is waiting for you." Done when leaving a session idle triggers exactly one nudge.
+  Built: heard live on 2.1.280, once per idle period, 60 s after the turn ended.
 
 ## Attention (`hands-attention-ssy`)
 

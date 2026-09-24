@@ -20,7 +20,7 @@ from hands.sessions.hookconfig import (
 from hands.sessions.hooks import hook_output
 
 
-def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_and_tool_hooks_run_in_the_background() -> None:
+def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_tool_hooks_run_in_the_background_and_only_idle_notifies() -> None:
     home = Home(Path("/Users/me/my hands"))
     settings = hook_settings(Path("/venv/bin/python"), home)
     hooks = cast(dict[str, object], settings["hooks"])
@@ -33,7 +33,8 @@ def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_and_tool_
             "PostToolUse": {"async": True},
             "PostToolUseFailure": {"async": True},
         }.get(event, {})
-        assert entries == [{"hooks": [{"type": "command", "command": command, **declared}]}]
+        matched = {"matcher": "idle_prompt"} if event == "Notification" else {}
+        assert entries == [{**matched, "hooks": [{"type": "command", "command": command, **declared}]}]
 
 
 def test_the_shim_waits_as_long_as_claude_code_lets_the_hook_and_the_daemon_denies_before_that() -> None:

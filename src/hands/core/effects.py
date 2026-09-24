@@ -85,7 +85,14 @@ class PermissionExpired:
     permission: Permission
 
 
-Announcement = PermissionDeadlineNear | PermissionExpired
+@dataclass(frozen=True)
+class WaitingForYou:
+    """A session finished its turn a while ago and nobody has answered it."""
+
+    session: SessionId
+
+
+Announcement = PermissionDeadlineNear | PermissionExpired | WaitingForYou
 
 
 @dataclass(frozen=True)

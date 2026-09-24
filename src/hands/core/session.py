@@ -35,7 +35,9 @@ class Permission:
 # blocked one has the request it waits on and when that request expires.
 @dataclass(frozen=True)
 class Idle:
-    pass
+    # [LAW:no-ambient-temporal-coupling] one idle period is one Idle value: the nudge is spoken once because speaking
+    # it is this value changing, and every way into Idle builds a fresh one, so the next period can be nudged again.
+    nudged: bool = False
 
 
 @dataclass(frozen=True)

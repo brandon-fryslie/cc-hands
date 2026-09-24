@@ -21,9 +21,10 @@ from hands.core.effects import (
     Snapshot,
     Summarise,
     Unregistered,
+    WaitingForYou,
     Withdraw,
 )
-from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, MovedOn, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished
+from hands.core.events import Abandoned, Attached, Died, Ended, EndReason, MovedOn, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, Tick, ToolFinished, Waited
 from hands.core.reducer import EXPIRED_MESSAGE, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
     Blocked,
@@ -55,6 +56,7 @@ SESSION_EVENTS: list[SessionEvent] = [
     PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), permission=BASH),
     ToolFinished(ONE.id, at=5.0, call=BASH),
     Ended(ONE.id, "prompt_input_exit"),
+    Waited(ONE.id),
 ]
 
 
@@ -315,3 +317,37 @@ def test_a_session_ended_at_the_keyboard_is_not_spoken(reason: EndReason) -> Non
 def test_a_closed_terminal_after_the_sweep_found_the_session_dead_says_nothing_more() -> None:
     event = Ended(ONE.id, "other")
     assert reduce(holding(Gone()), event) == (holding(Gone()), [Audit(AfterEnd(event))])
+
+
+NUDGE = Speak(WaitingForYou(ONE.id))
+
+
+def test_a_session_left_at_its_prompt_is_said_to_be_waiting() -> None:
+    assert reduce(holding(Idle()), Waited(ONE.id)) == (holding(Idle(nudged=True)), [NUDGE])
+
+
+def test_an_idle_notification_that_lands_after_the_prompt_it_raced_leaves_the_turn_working() -> None:
+    assert reduce(holding(Working(since=5.0)), Waited(ONE.id)) == (holding(Working(since=5.0)), [])
+
+
+def test_a_nudged_session_prompted_again_marks_the_repository_its_turn_starts_from() -> None:
+    assert reduce(holding(Idle(nudged=True)), Prompted(ONE.id, at=5.0)) == (holding(Working(since=5.0)), [Snapshot(ONE.id, ONE.cwd)])
+
+
+def test_one_idle_period_is_nudged_once() -> None:
+    nudged = holding(Idle(nudged=True))
+    assert reduce(nudged, Waited(ONE.id)) == (nudged, [])
+
+
+def test_a_session_waiting_on_a_permission_is_not_nudged_and_keeps_its_hook() -> None:
+    assert reduce(holding(WAITING), Waited(ONE.id)) == (holding(WAITING), [])
+
+
+@pytest.mark.parametrize("opened", [Prompted(ONE.id, at=5.0), Joined(ONE, "compact"), Joined(ONE, "resume")])
+def test_a_session_prompted_again_and_left_again_is_nudged_again(opened: Event) -> None:
+    heard: list[Effect] = []
+    state = holding(Idle())
+    for event in [Waited(ONE.id), Waited(ONE.id), opened, Stopped(ONE.id, None), Waited(ONE.id), Waited(ONE.id)]:
+        state, effects = reduce(state, event)
+        heard += [effect for effect in effects if isinstance(effect, Speak)]
+    assert heard == [NUDGE, NUDGE]
