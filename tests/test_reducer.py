@@ -519,6 +519,16 @@ def test_the_stop_of_a_prompt_sent_over_applied_after_the_next_prompt_ends_that_
     assert reduce(state, Taken(ONE.id, TURN, opens=True)) == (state, [])
 
 
+def test_a_turn_told_as_sent_over_keeps_the_turn_ended_unheard_before_it_ended() -> None:
+    """p0 is ended unheard by p1's prompt; p2 is sent over p1, and p1's record read. p0's Stop, landing later still,
+    ends nothing: not p2, which is only sent."""
+    state, _ = reduce(in_turn(Working(since=1.0), turn=PromptId("p0")), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN))
+    state, _ = reduce(state, Prompted(ONE.id, at=6.0, mode=None, prompt=NEXT))
+    state, _ = reduce(state, Taken(ONE.id, TURN, opens=True))
+    assert state.sessions[ONE.id].ended == {PromptId("p0"), TURN}
+    assert reduce(state, Stopped(ONE.id, None, mode=None, prompt=PromptId("p0"))) == (state, [])
+
+
 @pytest.mark.parametrize("over", [None, NEXT])
 def test_a_record_of_another_prompt_than_the_one_sent_over_read_while_sent_ends_nothing(over: PromptId | None) -> None:
     """A transcript read for the first time holds every turn before the daemon attached: only the prompt a sent one

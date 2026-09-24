@@ -260,8 +260,8 @@ def _named(event: SessionEvent, was: Session) -> tuple[PromptId | None, frozense
         case Continued(now=now):
             return now, was.taken, was.ended
         case Taken(prompt=prompt) | Stopped(prompt=str() as prompt) if _sent_over(was, prompt) is not None:
-            # Told now, as the prompt sent over it ended: what else is read of it later ends nothing.
-            return was.turn, was.taken, frozenset({prompt})
+            # Told now: what else is read of it later ends nothing, and nor does the late Stop of a turn ended before it.
+            return was.turn, was.taken, was.ended | {prompt}
         case _:
             # A prompt queued into the running turn leaves it named as it was, so its interrupt is still heard.
             return was.turn, was.taken, was.ended
