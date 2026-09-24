@@ -16,7 +16,7 @@ from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
 from hands.voice.coreaudio import DefaultDevices
-from hands.voice.microphone import ECHO_PATH_SECS, Devices, KeyedAudioTransport, PortAudio, buffer_age, heard
+from hands.voice.microphone import ECHO_PATH_SECS, Devices, Input, KeyedAudioTransport, NoInput, Output, PortAudio, buffer_age, default_input, heard
 from hands.voice.ptt import Gate, PushToTalk
 
 LOUD = b"\x7f\x7f" * 320
@@ -44,7 +44,7 @@ class Rig:
         self.microphone = self.transport.input()
         self.microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
         self.stream = SimpleStream()
-        self.speaker.attach(cast(PortAudio, SimpleNamespace()), self.stream)  # as setup attaches the stream it opened
+        self.speaker.attach(cast(PortAudio, SimpleNamespace()), Output(self.stream, "MacBook Pro Speakers"))  # as setup attaches the stream it opened
 
         async def push_audio_frame(frame: InputAudioRawFrame) -> None:
             self.pushed.append(frame.audio)
@@ -192,8 +192,8 @@ def lost_transport(log: list[str]) -> KeyedAudioTransport:
     speaker.get_event_loop = asyncio.get_running_loop
     microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     speaker._sample_rate = 24000  # pyright: ignore[reportPrivateUsage]
-    speaker.attach(cast(PortAudio, SimpleNamespace()), LostStream(log, "old speaker"))
-    microphone.attach(cast(PortAudio, SimpleNamespace()), LostStream(log, "old microphone"))
+    speaker.attach(cast(PortAudio, SimpleNamespace()), Output(LostStream(log, "old speaker"), "headset"))
+    microphone.attach(cast(PortAudio, SimpleNamespace()), Input(LostStream(log, "old microphone"), "headset"))
     log.clear()  # the first PortAudio, started by the same factory as every later one
     return transport
 
@@ -231,7 +231,7 @@ async def test_a_frame_given_while_the_transport_reopens_waits_and_plays_on_the_
     assert not writing.done()
     assert (rig.speaker.quiet_at, rig.speaker.sounded_at) == (0.0, None)  # nothing has sounded yet
     reopened = SimpleStream()
-    rig.speaker.attach(cast(PortAudio, SimpleNamespace()), reopened)
+    rig.speaker.attach(cast(PortAudio, SimpleNamespace()), Output(reopened, "AirPods"))
     assert await writing is True
     assert reopened.written == [LOUD]
     assert rig.speaker.sounded_at == 1.0
@@ -254,3 +254,49 @@ async def test_the_streams_are_opened_as_pipecat_opens_them() -> None:
     assert [{k: v for k, v in opened.items() if k != "stream_callback"} for opened in ours.opened] == [
         {k: v for k, v in opened.items() if k != "stream_callback"} for opened in pipecats.opened
     ]
+
+
+class DeafPortAudio(FreshPortAudio):
+    """PortAudio on a Mac whose last input device is gone: it lists no default input."""
+
+    def get_default_input_device_info(self) -> object:
+        raise OSError("No Default Input Device Available")  # as PyAudio raises it: the words alone, no errno
+
+
+async def test_with_no_microphone_left_the_transport_reopens_to_speak_and_says_it_cannot_hear() -> None:
+    log: list[str] = []
+    transport = lost_transport(log)
+    setattr(transport, "_portaudio", lambda: DeafPortAudio(log))
+
+    devices = await transport.reopen()
+
+    assert devices == Devices(input=None, output="MacBook Pro Speakers")
+    assert "open microphone" not in log  # nothing to open: the microphone holds a stream of nothing
+    assert "start new speaker" in log
+    assert isinstance(transport.input()._in_stream, NoInput)  # pyright: ignore[reportPrivateUsage]
+
+    # A microphone plugged in again is opened by the next reopen, the same way as any other.
+    setattr(transport, "_portaudio", lambda: FreshPortAudio(log))
+    setattr(transport, "_defaults", lambda: DefaultDevices(input=3, output=2))
+    log.clear()
+    assert (await transport.reopen()).input == "MacBook Pro Microphone"
+    assert "open microphone" in log
+
+
+async def test_a_daemon_started_with_no_microphone_runs_rather_than_failing_its_setup() -> None:
+    params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
+    transport = KeyedAudioTransport(params, PushToTalk(), portaudio=lambda: DeafPortAudio([]), defaults=lambda: DefaultDevices(0, 1))
+    setup = FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=cast(Any, None), audio_in_sample_rate=16000, audio_out_sample_rate=24000)
+    await transport.input().setup(setup)
+    assert isinstance(transport.input()._in_stream, NoInput)  # pyright: ignore[reportPrivateUsage]
+    opened = transport.input().opened
+    assert opened is not None and opened.device is None and isinstance(opened.stream, NoInput)
+    await transport.input().cleanup()  # and lets go of nothing, without complaint
+
+
+
+def test_only_portaudios_own_no_default_input_reads_as_no_microphone() -> None:
+    assert default_input(cast(PortAudio, DeafPortAudio([]))) is None
+    refusing = SimpleNamespace(get_default_input_device_info=lambda: (_ for _ in ()).throw(OSError(-9999, "Unanticipated host error")))
+    with pytest.raises(OSError, match="host error"):
+        default_input(cast(PortAudio, refusing))

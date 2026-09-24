@@ -57,7 +57,7 @@ from hands.voice.speech import relay
 from hands.voice.summary import Summariser, summariser
 from hands.voice.summary_instruction import TURN_SUMMARY_INSTRUCTION
 from hands.voice.conversation import record_turns
-from hands.voice.system import Started, SystemChannel, listen
+from hands.voice.system import SystemChannel, listen, unheard
 from hands.voice.threads import off_loop
 from hands.voice.tools import audited, draft_tools, list_sessions_tool, permission_tools, read_session_tool
 
@@ -128,7 +128,7 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash:
         voice = await load(config, sessions, heart, quit_event, audit.record)
         if voice is not None:
             summarise = summariser(config.llm, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
-            await converse(voice, home, sessions, summarise, heart, quit_event, Started(after_crash), audit.record, deltas)
+            await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -167,7 +167,7 @@ async def converse(
     summarise: Summariser,
     heart: status.Heart,
     quit_event: asyncio.Event,
-    started: Started,
+    after_crash: bool,
     record: Record,
     deltas: Deltas,
 ) -> None:
@@ -175,7 +175,7 @@ async def converse(
     pipeline = PipelineWatch(voice.worker)
     tails = Tails(sessions)
     channel = SystemChannel(voice.tts, post_notification, record)
-    listen(voice, channel, started)
+    listen(voice, channel, after_crash)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     failures: list[BaseException] = []
 
@@ -185,7 +185,7 @@ async def converse(
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
         # session stays listed, without the tail no record becomes a step, without the relay
-        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the heartbeat the daemon looks dead while it runs, and without the device follower an unplugged headset leaves it deaf and mute, so any of
+        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the key edge no turn starts, so any of
         # them failing stops the run where it can be seen, and launchd starts it again.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
@@ -208,9 +208,19 @@ async def converse(
     async def on_key(position: Key) -> None:
         turn = voice.key.move_key(position)
         logger.info(f"key {position}: turn {turn}")
+        for fact in unheard(turn, voice.audio.devices):
+            await channel.say(fact)
+
+    async def drive_key_once_started() -> None:
+        # [LAW:no-ambient-temporal-coupling] a press reads the devices, which are known once the pipeline has opened
+        # its streams; keys typed before then wait in the terminal.
+        await pipeline.started.wait()
+        await drive_key(on_key, quit_event)
 
     if sys.stdin.isatty():
-        background.append(asyncio.create_task(drive_key(on_key, quit_event), name="the terminal key edge"))
+        key_edge = asyncio.create_task(drive_key_once_started(), name="the terminal key edge")
+        key_edge.add_done_callback(stop_if_failed)
+        background.append(key_edge)
         logger.info("space: press to talk, press again to stop. q: quit.")
     # The run's own signal handler stops the pipeline, so Pipecat installs none of its own.
     runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)

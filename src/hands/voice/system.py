@@ -20,14 +20,16 @@ from pipecat.utils.errors import ErrorCategory
 from hands.sessions.audit import Announced, Record
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
+from hands.voice.ptt import Turn
 from hands.voice.whisper import NOTHING_TRANSCRIBED, Whisper
 
 
 @dataclass(frozen=True)
 class Started:
-    """The pipeline is running; after_crash when the run before this one ended without being stopped."""
+    """The pipeline is running on these devices; after_crash when the run before this one ended without being stopped."""
 
     after_crash: bool
+    devices: Devices
 
 
 @dataclass(frozen=True)
@@ -51,19 +53,25 @@ class NothingTranscribed:
 
 
 @dataclass(frozen=True)
+class NoMicrophone:
+    """The key was pressed to talk, and there is no microphone to hear it."""
+
+
+@dataclass(frozen=True)
 class AudioMoved:
     """The system's default devices changed, and the transport was reopened on these."""
 
     devices: Devices
 
 
-SystemFact = Started | ModelUnreachable | ModelFailed | TranscriptionFailed | NothingTranscribed | AudioMoved
+SystemFact = Started | ModelUnreachable | ModelFailed | TranscriptionFailed | NothingTranscribed | NoMicrophone | AudioMoved
 
 
 def system_text(fact: SystemFact) -> str:
     match fact:
-        case Started(after_crash=after_crash):
-            return "hands is back after a crash." if after_crash else "hands is up."
+        case Started(after_crash=after_crash, devices=Devices(input=input_)):
+            up = "hands is back after a crash" if after_crash else "hands is up"
+            return f"{up}." if input_ is not None else f"{up}, but there is no microphone, so it cannot hear you."
         case ModelUnreachable():
             return "The language model is unreachable."
         case ModelFailed(category=category):
@@ -72,8 +80,13 @@ def system_text(fact: SystemFact) -> str:
             return "Speech recognition failed for that turn."
         case NothingTranscribed():
             return "Whisper returned nothing for that turn."
-        case AudioMoved(devices=devices):
-            return f"Audio moved: listening on {devices.input}, speaking on {devices.output}."
+        case NoMicrophone():
+            return "There is no microphone, so hands cannot hear you."
+        case AudioMoved(devices=Devices(input=None, output=output)):
+            # [LAW:no-silent-failure] said on whatever speaker is left, since nothing will be heard until a microphone is back.
+            return f"No microphone: hands cannot hear you. Speaking on {output}."
+        case AudioMoved(devices=Devices(input=input_, output=output)):
+            return f"Audio moved: listening on {input_}, speaking on {output}."
 
 
 @dataclass(frozen=True)
@@ -222,12 +235,23 @@ class SystemChannel:
                 logger.error(f"{source} failed: {error}")
 
 
-def listen(voice: Voice, channel: SystemChannel, started: Started) -> None:
+def unheard(turn: Turn, devices: Devices) -> tuple[NoMicrophone, ...]:
+    """What a key press says when nothing will hear it: with no microphone no frame reaches the VAD, so no turn
+    starts and nothing else would answer the press."""
+    match turn, devices:
+        case "start", Devices(input=None):
+            return (NoMicrophone(),)
+        case _:
+            return ()
+
+
+def listen(voice: Voice, channel: SystemChannel, after_crash: bool) -> None:
     """Connect the pipeline's own reports to the channel: its start, its errors, and a turn with nothing in it."""
 
     @voice.worker.event_handler("on_pipeline_started")
     async def announce(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
-        await channel.say(started)
+        # The devices are read once the pipeline has opened its streams on them.
+        await channel.say(Started(after_crash, voice.audio.devices))
 
     @voice.worker.event_handler("on_pipeline_error")
     async def failed(_worker: PipelineWorker, error: ErrorFrame) -> None:  # pyright: ignore[reportUnusedFunction]
