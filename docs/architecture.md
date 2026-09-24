@@ -400,7 +400,7 @@ never holds the agent up.
 declares into a Claude Code settings file. That is the one Claude Code reads,
 `$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json`, unless `--settings`
 names another. It keeps no list of its own. It takes out every entry that runs
-hands' shim (`-m hands.sessions.shim` anywhere in its command, as `hookconfig`
+hands' shim (`hands.sessions.shim` named anywhere in its command, even inside `sh -c`, as `hookconfig`
 recognises it beside the builder) and puts the declared ones in. So a second run
 changes nothing, a moved venv or home replaces the old command, a hand-wrapped shim
 is replaced by the simple command liveness needs, and an event hands stops

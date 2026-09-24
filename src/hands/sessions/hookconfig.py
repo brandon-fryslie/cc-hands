@@ -7,6 +7,7 @@ It is imported by the shim, so it holds only the standard library and hands' dat
 """
 
 import json
+import re
 import shlex
 import sys
 from collections.abc import Mapping
@@ -50,13 +51,14 @@ def hook_settings(python: Path, home: Home) -> dict[str, object]:
 
 def runs_the_shim(command: str) -> bool:
     """Whether a hook command runs hands' shim, as hook_settings builds it or as any earlier or hand-edited version did."""
-    # [LAW:one-source-of-truth] beside the builder, and keyed on the one thing every version of it shares, so that
-    # a change to how the command is built never leaves the entries it built looking like somebody else's.
-    try:
-        argv = shlex.split(command)
-    except ValueError:
-        return False
-    return any(argv[at : at + 2] == ["-m", SHIM_MODULE] for at in range(len(argv) - 1))
+    # [LAW:one-source-of-truth] beside the builder, and keyed on the one thing every version of it shares: the shim's
+    # module, named whole. It is found inside `sh -c '...'` and in `-mhands.sessions.shim` alike, so a change to how
+    # the command is built, or a user's wrapping of it, never leaves an entry looking like somebody else's and doubled.
+    return _SHIM_NAMED.search(command) is not None
+
+
+# Named whole: not inside a longer dotted name, though it may be joined to its -m.
+_SHIM_NAMED = re.compile(rf"(?:(?<=-m)|(?<![\w.])){re.escape(SHIM_MODULE)}(?![\w.])")
 
 
 def _declared(event: str) -> dict[str, object]:
