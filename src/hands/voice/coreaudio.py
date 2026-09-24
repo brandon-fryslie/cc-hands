@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import CoreAudio
 import objc
+from loguru import logger
 
 _SYSTEM = CoreAudio.kAudioObjectSystemObject
 
@@ -65,14 +66,21 @@ def default_device_changes(changed: Callable[[], object]) -> Iterator[None]:
     """
     token = next(_tokens)
     _targets[token] = changed
+    listening: list[object] = []
     try:
         for address in (_INPUT, _OUTPUT):
             _check(CoreAudio.AudioObjectAddPropertyListener(_SYSTEM, address, _listener, token), "listen for changes to the default device")
+            listening.append(address)
         yield
     finally:
-        for address in (_INPUT, _OUTPUT):
-            _check(CoreAudio.AudioObjectRemovePropertyListener(_SYSTEM, address, _listener, token), "stop listening for changes to the default device")
-        del _targets[token]
+        # Only what was added is removed, so a refused registration is the error that is reported.
+        refused = [CoreAudio.AudioObjectRemovePropertyListener(_SYSTEM, address, _listener, token) for address in listening]
+        if any(refused):
+            # [LAW:no-silent-failure] logged, not raised: raising here would turn a clean stop into a failed run. The
+            # target stays, because a listener CoreAudio kept would otherwise look up a token that is gone.
+            logger.error(f"CoreAudio would not stop listening for changes to the default device: OSStatus {refused}")
+        else:
+            del _targets[token]
 
 
 def _check(status: int, doing: str) -> None:

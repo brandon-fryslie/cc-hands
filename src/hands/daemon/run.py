@@ -200,7 +200,7 @@ async def converse(
         asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
     ]
-    following = asyncio.create_task(follow_default_devices(pipeline.started, voice.audio.reopen, channel.say), name="the audio device follower")
+    following = asyncio.create_task(follow_default_devices(pipeline.started, voice.audio, channel.say), name="the audio device follower")
     background.append(following)
     for task in background:
         task.add_done_callback(stop_if_failed)

@@ -15,6 +15,7 @@ from pipecat.utils.asyncio.task_manager import TaskManager
 from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
+from hands.voice.coreaudio import DefaultDevices
 from hands.voice.microphone import ECHO_PATH_SECS, Devices, KeyedAudioTransport, buffer_age, heard
 from hands.voice.ptt import Gate, PushToTalk
 
@@ -176,7 +177,8 @@ class FreshPortAudio:
 
 def lost_transport(log: list[str]) -> KeyedAudioTransport:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
-    transport = KeyedAudioTransport(params, PushToTalk(), portaudio=lambda: FreshPortAudio(log))
+    defaults = iter([DefaultDevices(input=1, output=1), DefaultDevices(input=2, output=2)])
+    transport = KeyedAudioTransport(params, PushToTalk(), portaudio=lambda: FreshPortAudio(log), defaults=lambda: next(defaults))
     speaker, microphone = transport.output(), transport.input()
     speaker.get_event_loop = asyncio.get_running_loop
     microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
@@ -202,8 +204,9 @@ async def test_reopening_lets_go_of_the_lost_devices_and_opens_on_the_defaults_a
     assert log == [
         "stop old speaker", "write returned from old speaker", "close old speaker",  # closed only once no write is inside it
         "stop old microphone", "close old microphone", "end portaudio",
-        "start portaudio", "open speaker", "start new speaker", "open microphone", "start new microphone",
+        "start portaudio", "open speaker", "open microphone", "start new speaker", "start new microphone",
     ]  # fmt: skip
+    assert transport.opened_on == DefaultDevices(input=2, output=2)  # read again, as PortAudio listed them anew
     with pytest.raises(OSError):
         await stuck
     assert speaker.is_usable

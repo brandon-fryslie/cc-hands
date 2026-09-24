@@ -1126,8 +1126,8 @@ order:
 It then says `Audio moved: listening on …, speaking on …` through the system channel,
 on the new speaker, or posts it if speech is down. Closing a microphone whose device is
 gone takes 3 to 4 s, so the whole move took about 5.5 s from unplug to the sentence.
-The next turn ran end to end on the built-in devices. A close that takes longer than
-10 s, or a reopen that fails, stops the run, and launchd's restart opens on whatever
+The next turn ran end to end on the built-in devices. Every step that touches a device runs off the event loop.
+A reopen that takes longer than 10 s, or one that fails, stops the run, and launchd's restart opens on whatever
 devices there are. The same path follows a headset plugged in, or a default changed in
 Control Center.
 
