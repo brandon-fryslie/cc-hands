@@ -3,7 +3,7 @@
 import asyncio
 import functools
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import TypedDict, cast
 
@@ -14,8 +14,8 @@ from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, StageDraft
-from hands.core.effects import Allow, Answers, Decision, Deny
-from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Permission, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Working
+from hands.core.effects import Allow, Answers, Approve, Decision, Deny, KeepPlanning, ModeAfterPlan
+from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Permission, Plan, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Working
 from hands.core.turn import Budget, Happening, Ref, describe
 from hands.sessions.backfill import Unseen, read_since
 from hands.sessions.audit import Called, Record
@@ -36,6 +36,12 @@ READBACK_COUNT = 40
 
 # What the agent reads when the user says no and gives no reason.
 DENIED_BY_VOICE = "The user denied this by voice."
+
+# What the agent reads when the user sends a plan back without saying what to change.
+SENT_BACK_BY_VOICE = "The user sent the plan back by voice without saying what to change. Ask them what they want different."
+
+# answer_plan's approvals, by the mode each leaves plan mode for.
+_APPROVALS: Mapping[str, ModeAfterPlan] = {"approve": "resume", "auto-accept edits": "acceptEdits", "manually approve edits": "default"}
 
 # Every C0 and C1 control character but newline and tab: each would press a key when the draft is typed.
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -201,6 +207,8 @@ def _waiting_on(on: Blocker) -> str:
             return f"waiting for permission to use {tool}"
         case Question():
             return "waiting for the user to answer its question"
+        case Plan():
+            return "waiting for the user to approve its plan"
 
 
 class Resolved(TypedDict):
@@ -262,7 +270,7 @@ async def _answer(
 
 
 def permission_tools(sessions: Sessions) -> list[Tool]:
-    """answer_permission, answer_question: the only ways a voice answer reaches a session waiting on its dialog."""
+    """answer_permission, answer_question, answer_plan: the only ways a voice answer reaches a session waiting on its dialog."""
 
     async def answer_permission(params: FunctionCallParams, request: str, decision: str, message: str = "") -> None:
         """Answer a session's permission request with what the user decided. Call it only after the user has said to allow or deny.
@@ -287,8 +295,20 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
         """
         await _decide(params, sessions, request, lambda: parse_answers(answers))
 
+    async def answer_plan(params: FunctionCallParams, request: str, decision: str, message: str = "") -> None:
+        """Answer a session's plan with what the user decided. Call it only after the user has approved the plan or asked for changes.
+
+        Say the returned readback to the user.
+
+        Args:
+            request: The request id given with the plan.
+            decision: "approve" to approve the plan and go on in the mode the session had before it planned; "auto-accept edits" or "manually approve edits" only when the user says how edits should go; or "keep planning" to send it back.
+            message: Only when it keeps planning: what the user wants changed, in their words.
+        """
+        await _decide(params, sessions, request, lambda: parse_plan_decision(decision, message))
+
     # A barge-in must not cancel an answer part way: the user would never hear whether it went through.
-    return [_uncancelled_by_interruption(tool) for tool in (answer_permission, answer_question)]
+    return [_uncancelled_by_interruption(tool) for tool in (answer_permission, answer_question, answer_plan)]
 
 
 async def _decide(params: FunctionCallParams, sessions: Sessions, request: object, decision: Callable[[], Decision]) -> None:
@@ -318,6 +338,23 @@ def parse_decision(decision: object, message: object) -> Decision:
             raise Rejected(f"message should be a string, got {type(other).__name__}")
         case (other, _):
             raise Rejected(f"decision should be 'allow' or 'deny', got {other!r}")
+
+
+def parse_plan_decision(decision: object, message: object) -> Approve | KeepPlanning:
+    """The model's answer to a plan, parsed once into an approval for a mode or a plan sent back."""
+    match (decision, message):
+        case ("keep planning", ""):
+            return KeepPlanning(SENT_BACK_BY_VOICE)
+        case ("keep planning", str()):
+            return KeepPlanning(message)
+        case (str() as choice, "") if choice in _APPROVALS:
+            return Approve(_APPROVALS[choice])
+        case (str() as choice, str()) if choice in _APPROVALS:
+            raise Rejected("a message goes only with keep planning; an approval carries none, so nothing was answered")
+        case (str() as choice, other) if choice in _APPROVALS or choice == "keep planning":
+            raise Rejected(f"message should be a string, got {type(other).__name__}")
+        case (other, _):
+            raise Rejected(f"decision should be 'approve', 'auto-accept edits', 'manually approve edits', or 'keep planning', got {other!r}")
 
 
 def parse_answers(answers: object) -> Answers:

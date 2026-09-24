@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.effects import Allow, AllowWith, Answers, Decision, Deny, Reply
+from hands.core.effects import Allow, AllowWith, Answers, Approve, Decision, Deny, KeepPlanning, Reply
 from hands.core.permissions import Answer, Answered, NotWaiting, Unfit, answer
-from hands.core.session import AskedQuestion, Blocked, Blocker, Gone, Idle, Membership, Option, Permission, Question, Registry, RequestId, Session, SessionId, SessionState, Working
+from hands.core.session import AskedQuestion, Blocked, Blocker, Gone, Idle, Membership, Option, Permission, Plan, Question, Registry, RequestId, Session, SessionId, SessionState, Working
 
 ONE = Membership(SessionId("s1"), pid=1, cwd=Path("/code/a"), transcript=Path("/t/s1.jsonl"))
 TWO = Membership(SessionId("s2"), pid=2, cwd=Path("/code/b"), transcript=Path("/t/s2.jsonl"))
@@ -25,6 +25,7 @@ QUESTION = Question(
     ),
     ASKED,
 )
+PLAN = Plan("1. Create hello.txt.\n2. Write hi into it.")
 
 
 def registry(*sessions: Session) -> Registry:
@@ -80,8 +81,33 @@ def test_a_question_can_be_refused_as_a_permission_is() -> None:
         # Allowed with no answers, AskUserQuestion runs as unanswered.
         (QUESTION, Allow()),
         (BASH, Answers(("yes",))),
+        # Allowed as a permission, ExitPlanMode leaves plan mode for a mode nobody chose.
+        (PLAN, Allow()),
+        (PLAN, Answers(("yes",))),
+        (BASH, Approve("acceptEdits")),
+        (QUESTION, Approve("default")),
+        # Feedback on a plan, sent against the wrong request, must not refuse a tool with it.
+        (BASH, KeepPlanning("split step 2")),
+        (QUESTION, KeepPlanning("split step 2")),
     ],
 )
 def test_a_decision_that_does_not_answer_what_was_asked_sends_nothing_and_the_session_still_waits(on: Blocker, decision: Decision) -> None:
     before = waiting_on(on)
     assert answer(before, Answer(REQUEST, decision, at=20.0)) == (before, Unfit(REQUEST, on, decision), [])
+
+
+@pytest.mark.parametrize(
+    ("decision", "reply"),
+    [
+        (Approve("resume"), Approve("resume")),
+        (Approve("acceptEdits"), Approve("acceptEdits")),
+        (KeepPlanning("split step 2 in two"), Deny("split step 2 in two")),
+        (Deny("not now"), Deny("not now")),
+    ],
+)
+def test_a_plan_is_approved_for_the_mode_chosen_or_sent_back_to_planning(decision: Decision, reply: Approve | Deny) -> None:
+    assert answer(waiting_on(PLAN), Answer(REQUEST, decision, at=20.0)) == (
+        registry(Session(ONE, Working(since=20.0))),
+        Answered(ONE.id, PLAN, decision),
+        [Reply(ONE.id, REQUEST, reply)],
+    )

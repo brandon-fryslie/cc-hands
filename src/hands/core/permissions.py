@@ -2,8 +2,8 @@
 
 from dataclasses import dataclass
 
-from hands.core.effects import Allow, AllowWith, Answers, Decision, Deny, Effect, HookReply, Reply
-from hands.core.session import Blocked, Blocker, Instant, Permission, Question, Registry, RequestId, Session, SessionId, Working
+from hands.core.effects import Allow, AllowWith, Answers, Approve, Decision, Deny, Effect, HookReply, KeepPlanning, Reply
+from hands.core.session import Blocked, Blocker, Instant, Permission, Plan, Question, Registry, RequestId, Session, SessionId, Working
 
 
 @dataclass(frozen=True)
@@ -61,8 +61,11 @@ def _reply(on: Blocker, decision: Decision) -> HookReply | None:
     match (on, decision):
         case (_, Deny()):
             return decision
-        case (Permission(), Allow()):
+        case (Permission(), Allow()) | (Plan(), Approve()):
             return decision
+        case (Plan(), KeepPlanning(message=message)):
+            # Refused, so ExitPlanMode never runs and the session stays in plan mode.
+            return Deny(message)
         case (Question(asked=asked, input=input), Answers(chosen=chosen)) if len(chosen) == len(asked):
             # The shape Claude Code's own dialog answers with: each question's text keys the label chosen for it.
             return AllowWith({**input, "answers": {question.question: answer for question, answer in zip(asked, chosen)}})

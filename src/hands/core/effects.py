@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from hands.core.events import SessionEvent
 from hands.core.session import Blocker, RequestId, SessionId
@@ -49,6 +50,26 @@ class Answers:
     chosen: tuple[str, ...]
 
 
+# Where an approved plan leaves plan mode for: back to the mode the session had before it planned, which is what
+# ExitPlanMode does by itself, or one of the two modes named by the plan dialog's "Yes, auto-accept edits" and "Yes,
+# manually approve edits".
+ModeAfterPlan = Literal["resume", "acceptEdits", "default"]
+
+
+@dataclass(frozen=True)
+class Approve:
+    """The plan is approved, and the session leaves plan mode for this mode."""
+
+    mode: ModeAfterPlan
+
+
+@dataclass(frozen=True)
+class KeepPlanning:
+    """The plan is sent back: the agent reads what the user wants changed, and stays in plan mode."""
+
+    message: str
+
+
 @dataclass(frozen=True)
 class AllowWith:
     """The tool runs with this input in place of the one it asked with: how a question's answers reach it."""
@@ -63,8 +84,8 @@ class Withdraw:
 
 # [LAW:types-are-the-program] what a person can decide is not what the daemon replies: nothing the user or the
 # model says can produce a Withdraw, and answers become an AllowWith only against the question they answer.
-Decision = Allow | Deny | Answers
-HookReply = Allow | AllowWith | Deny | Withdraw
+Decision = Allow | Deny | Answers | Approve | KeepPlanning
+HookReply = Allow | AllowWith | Approve | Deny | Withdraw
 
 
 @dataclass(frozen=True)

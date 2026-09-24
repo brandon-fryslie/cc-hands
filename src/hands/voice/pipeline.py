@@ -49,7 +49,8 @@ SPOKEN_REPLY_INSTRUCTION = (
     "with stage_draft and say the readback; if they ask to send it, say that sending is not built yet. "
     "When a session asks permission, explain what it wants and ask; call "
     "answer_permission only with the decision the user gave. When a session asks the user questions, "
-    "put them to the user and call answer_question only with the answers the user gave."
+    "put them to the user and call answer_question only with the answers the user gave. When a session "
+    "puts up a plan, say what it would do and call answer_plan only with what the user decided."
 )
 
 

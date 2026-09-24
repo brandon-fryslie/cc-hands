@@ -53,8 +53,25 @@ class Question:
     input: Mapping[str, object]
 
 
+@dataclass(frozen=True)
+class Plan:
+    """ExitPlanMode, waiting on the user to approve the plan or send it back to be planned again."""
+
+    text: str
+
+
 # Everything a session stops for arrives through the same PermissionRequest hook.
-Blocker = Permission | Question
+Blocker = Permission | Question | Plan
+
+
+@dataclass(frozen=True)
+class PlanApproved:
+    """ExitPlanMode ran, or failed as it ran: either way its plan was approved, at its dialog or by voice, and the dialog
+    is gone. What ran no longer carries the plan."""
+
+
+# A tool call that ran, named as the request to run it was so the two can be matched.
+FinishedCall = Permission | Question | PlanApproved
 
 
 # [LAW:types-are-the-program] a session is in exactly one of these, and each

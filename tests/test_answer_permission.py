@@ -19,12 +19,12 @@ from pipecat.services.llm_service import FunctionCallParams
 from hands.core.effects import Allow, Narrate, Withdraw, Asking, DeadlineNear, Expired, Speak
 from hands.core.events import PermissionRequested, Tick, ToolFinished
 from hands.core.reducer import EXPIRED_MESSAGE
-from hands.core.session import AskedQuestion, AtDialog, Blocked, Option, Permission, Question, RequestId, SessionId, Working
+from hands.core.session import AskedQuestion, AtDialog, Blocked, Option, Permission, Plan, Question, RequestId, SessionId, Working
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
 from hands.voice.speech import frame, relay
-from hands.voice.tools import DENIED_BY_VOICE, Tool, permission_tools
+from hands.voice.tools import DENIED_BY_VOICE, SENT_BACK_BY_VOICE, Tool, permission_tools
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000002")
 COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/code/cc-hands"}
@@ -97,6 +97,10 @@ QUESTIONS_ASKED = (
     AskedQuestion("Which color?", (Option("red", "warm"), Option("green", "cool")), several=False),
     AskedQuestion("Which fruits?", (Option("pear", None), Option("plum", None)), several=True),
 )
+
+
+PLAN_TEXT = "# Plan\n\n1. Create hello.txt.\n2. Write hi into it.\n"
+PLAN: dict[str, object] = {**ASK, "tool_name": "ExitPlanMode", "tool_input": {"plan": PLAN_TEXT, "planFilePath": "/nowhere/plan.md"}}
 
 
 async def asked(home: Home, sessions: Sessions, payload: Mapping[str, object] = ASK) -> tuple[Shim, Asking]:
@@ -363,7 +367,7 @@ async def test_an_answer_that_does_not_parse_is_refused_out_loud(sessions: Sessi
 
 def test_the_tools_are_valid_direct_functions_that_a_barge_in_cannot_cancel(sessions: Sessions) -> None:
     schemas = [(DirectFunctionWrapper(tool).to_function_schema(), tool) for tool in permission_tools(sessions)]
-    assert [(schema.name, schema.required) for schema, _ in schemas] == [("answer_permission", ["request", "decision"]), ("answer_question", ["request", "answers"])]
+    assert [(schema.name, schema.required) for schema, _ in schemas] == [("answer_permission", ["request", "decision"]), ("answer_question", ["request", "answers"]), ("answer_plan", ["request", "decision"])]
     assert all(getattr(tool, "_pipecat_cancel_on_interruption") is False for _, tool in schemas)
 
 
@@ -396,3 +400,90 @@ def test_a_request_reaches_the_model_with_its_tool_input_and_request_id() -> Non
     content = str(cast(dict[str, object], message)["content"])
     assert "session 0f1e2d3c-aaaa-bbbb-cccc-000000000002 is waiting for permission to use Bash" in content
     assert '{"command": "rm -r build"}' in content and "Request id: r-42" in content
+
+
+SET_MODE = [{"type": "setMode", "mode": "acceptEdits", "destination": "session"}], [{"type": "setMode", "mode": "default", "destination": "session"}]
+
+
+@pytest.mark.parametrize(
+    ("choice", "permissions", "readback"),
+    [
+        # No mode set: ExitPlanMode goes back to the mode the session had before it planned, bypass or auto included.
+        ("approve", [], "Approved its plan for untitled, in cc-hands, in the mode it had before planning."),
+        ("auto-accept edits", SET_MODE[0], "Approved its plan for untitled, in cc-hands, with its edits accepted automatically."),
+        ("manually approve edits", SET_MODE[1], "Approved its plan for untitled, in cc-hands, asking you about each edit."),
+    ],
+)
+async def test_a_plan_approved_by_voice_leaves_plan_mode_for_the_mode_chosen(
+    home: Home, sessions: Sessions, choice: str, permissions: list[object], readback: str
+) -> None:
+    shim, moment = await asked(home, sessions, PLAN)
+    assert moment.on == Plan(PLAN_TEXT)
+    assert shim.process.returncode is None, "the hook returned before anyone answered"
+    assert await call(named(sessions, "answer_plan"), request=moment.request, decision=choice) == {"readback": readback}
+    code, stdout, _ = await shim.finished()
+    assert (code, decision(stdout)) == (0, {"behavior": "allow", "updatedInput": {}, "updatedPermissions": permissions})
+
+
+@pytest.mark.parametrize(("message", "agent_reads"), [("split step 2 in two", "split step 2 in two"), ("", SENT_BACK_BY_VOICE)])
+async def test_a_plan_sent_back_by_voice_tells_the_agent_what_to_change(home: Home, sessions: Sessions, message: str, agent_reads: str) -> None:
+    shim, moment = await asked(home, sessions, PLAN)
+    assert await call(named(sessions, "answer_plan"), request=moment.request, decision="keep planning", message=message) == {
+        "readback": "Sent its plan back to keep planning for untitled, in cc-hands."
+    }
+    code, stdout, _ = await shim.finished()
+    assert (code, decision(stdout)) == (0, {"behavior": "deny", "message": agent_reads})
+
+
+async def test_a_plan_allowed_as_a_permission_sends_nothing_and_it_still_waits(home: Home, sessions: Sessions) -> None:
+    shim, moment = await asked(home, sessions, PLAN)
+    assert "that request is a plan" in str((await call(named(sessions, "answer_permission"), request=moment.request, decision="allow"))["readback"])
+    await asyncio.sleep(0.2)
+    assert shim.process.returncode is None, "a plain allow would leave plan mode for a mode nobody chose"
+    await call(named(sessions, "answer_plan"), request=moment.request, decision="keep planning")
+    await shim.finished()
+
+
+async def test_feedback_for_a_plan_sent_to_a_permission_sends_nothing_and_it_still_waits(home: Home, sessions: Sessions) -> None:
+    shim, moment = await asked(home, sessions)
+    assert "that request is a permission" in str((await call(named(sessions, "answer_plan"), request=moment.request, decision="keep planning", message="x"))["readback"])
+    await asyncio.sleep(0.2)
+    assert shim.process.returncode is None, "a tool was refused with feedback meant for a plan"
+    await call(named(sessions, "answer_permission"), request=moment.request, decision="deny")
+    await shim.finished()
+
+
+async def test_a_plan_nobody_answers_by_its_deadline_is_left_to_its_dialog(home: Home, sessions: Sessions, clock: Clock) -> None:
+    shim, moment = await asked(home, sessions, PLAN)
+    for clock.now in (DEADLINE - 10.0, DEADLINE):
+        await sessions.apply(Tick(clock.now))
+    code, stdout, _ = await shim.finished()
+    assert (code, stdout) == (0, "")
+    [warning, expiry] = [await sessions.heard(), await sessions.heard()]
+    assert [cast(TTSSpeakFrame, frame(heard, names=lambda _: "planner")).text for heard in (warning, expiry)] == [
+        "10 seconds left to answer planner about its plan.",
+        "Nobody answered planner about its plan in time, so it is left waiting at its dialog.",
+    ]
+    assert [listing.session.state for listing in sessions.live()] == [AtDialog(moment.on)]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error"),
+    [
+        ({"decision": "yes"}, "decision should be 'approve', 'auto-accept edits', 'manually approve edits', or 'keep planning'"),
+        ({"decision": "approve", "message": "go"}, "a message goes only with keep planning"),
+        ({"decision": "approve", "message": 3}, "message should be a string"),
+        ({"decision": "keep planning", "message": 3}, "message should be a string"),
+    ],
+)
+async def test_plan_answers_that_do_not_parse_are_refused_out_loud(sessions: Sessions, arguments: dict[str, object], error: str) -> None:
+    assert error in str((await call(named(sessions, "answer_plan"), request="r", **arguments))["error"])
+
+
+def test_a_plan_reaches_the_model_whole_with_its_request_id() -> None:
+    long = "\n".join(f"{step}. A step described at length so the plan runs past what a tool input is shown." for step in range(1, 30))
+    narrated = frame(Narrate(Asking(SID, RequestId("p-3"), Plan(long))), names=lambda id: id)
+    assert isinstance(narrated, LLMMessagesAppendFrame)
+    [message] = narrated.messages
+    content = str(cast(dict[str, object], message)["content"])
+    assert long in content and "Request id: p-3" in content and "answer_plan" in content

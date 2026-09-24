@@ -1,13 +1,13 @@
 """What sessions say to the user unasked: announcements spoken as written, moments the intermediary explains."""
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 
-from hands.core.effects import Allow, Announcement, Answers, Asking, DeadlineNear, Decision, Deny, Expired, Heard, Narrate, Speak, WaitingForYou
+from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, Narrate, Speak, WaitingForYou
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
-from hands.core.session import AskedQuestion, Blocker, Permission, Question, SessionId
+from hands.core.session import AskedQuestion, Blocker, Permission, Plan, Question, SessionId
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_name
 
@@ -15,6 +15,13 @@ from hands.voice.readback import spoken_name
 _INPUT_SHOWN = 800
 
 Names = Callable[[SessionId], str]
+
+# How an approved plan goes on, in the words of the choice that approved it.
+_AFTER_PLAN: Mapping[ModeAfterPlan, str] = {
+    "resume": ", in the mode it had before planning",
+    "acceptEdits": ", with its edits accepted automatically",
+    "default": ", asking you about each edit",
+}
 
 
 async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]]) -> None:
@@ -47,6 +54,9 @@ def _asks(on: Blocker) -> str:
         case Question(asked=asked):
             # Shown whole, however long: a question cut short cannot be answered.
             return "is asking the user:\n" + "\n".join(f"{number}. {_question(question)}" for number, question in enumerate(asked, 1))
+        case Plan(text=text):
+            # Shown whole, however long: the model can only summarise what it was given.
+            return f"has a plan for the user to approve:\n{text}\n"
 
 
 def _question(question: AskedQuestion) -> str:
@@ -67,6 +77,11 @@ def _ask_user(on: Blocker) -> str:
                 "Put the questions to the user as a person would, with their options, one at a time. "
                 "When they have answered all of them, call answer_question with that request id."
             )
+        case Plan():
+            return (
+                "Tell the user in a few spoken sentences what the plan would do, not the plan itself, and ask whether to approve it. "
+                "When they decide, call answer_plan with that request id."
+            )
 
 
 def announcement_text(announcement: Announcement, names: Names) -> str:
@@ -83,28 +98,32 @@ def announcement_text(announcement: Announcement, names: Names) -> str:
 def answer_readback(outcome: Outcome, names: Names) -> str:
     match outcome:
         case Answered(session=session, on=on, decision=decision):
-            return f"{_done(decision, _what(on))} for {names(session)}."
+            return f"{_done(decision, _what(on), names(session))}."
         case NotWaiting():
             return "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
         case Unfit(on=on, decision=decision):
             return _unfit(on, decision)
 
 
-def _done(decision: Decision, what: str) -> str:
+def _done(decision: Decision, what: str, name: str) -> str:
     match decision:
         case Deny():
-            return f"Denied {what}"
+            return f"Denied {what} for {name}"
         case Allow():
-            return f"Allowed {what}"
+            return f"Allowed {what} for {name}"
         case Answers(chosen=chosen):
-            return f"Answered {'; '.join(answer or 'nothing' for answer in chosen)}"
+            return f"Answered {'; '.join(answer or 'nothing' for answer in chosen)} for {name}"
+        case Approve(mode=mode):
+            return f"Approved {what} for {name}{_AFTER_PLAN[mode]}"
+        case KeepPlanning():
+            return f"Sent {what} back to keep planning for {name}"
 
 
 def _left(on: Blocker) -> str:
     match on:
         case Permission():
             return "I told it no"
-        case Question():
+        case Question() | Plan():
             return "it is left waiting at its dialog"
 
 
@@ -114,6 +133,8 @@ def _what(on: Blocker) -> str:
             return tool
         case Question():
             return "its question"
+        case Plan():
+            return "its plan"
 
 
 def _unfit(on: Blocker, decision: Decision) -> str:
@@ -123,5 +144,7 @@ def _unfit(on: Blocker, decision: Decision) -> str:
             return f"Nothing was sent: it asked {len(asked)} questions and was given {len(chosen)} answers. Give one answer for each, in the order they were asked."
         case (Question(), _):
             return "Nothing was sent: that request is a question. Answer it with answer_question, or deny it with answer_permission."
+        case (Plan(), _):
+            return "Nothing was sent: that request is a plan. Approve it or send it back to planning with answer_plan."
         case (Permission(), _):
-            return "Nothing was sent: that request is a permission, not a question. Answer it with answer_permission."
+            return "Nothing was sent: that request is a permission. Answer it with answer_permission."
