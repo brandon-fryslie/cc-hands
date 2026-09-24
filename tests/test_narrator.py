@@ -286,3 +286,17 @@ async def test_a_model_that_answers_with_nothing_is_said_to_have_failed_rather_t
     assert spoken.text == "cc-hands finished a turn, and I could not summarise it."
     [failure] = recorded
     assert isinstance(failure, Failure) and "SummaryFailed: the model returned no summary" in failure.message
+
+
+async def test_a_turn_stopped_before_it_did_anything_is_said_to_be_interrupted_without_asking_the_model(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        '{"type":"user","promptId":"p1","message":{"role":"user","content":"Write an essay."}}\n'
+        '{"type":"user","promptId":"p1","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}\n'
+    )
+
+    async def never(turn: str) -> str:
+        raise AssertionError("a model told not to say it was interrupted has nothing else to report")
+
+    spoken = await recount(tailing(transcript), SID, None, "cc-hands", never, lambda _: None, BUDGET, Delta())
+    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: You interrupted it."

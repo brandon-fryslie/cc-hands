@@ -132,6 +132,9 @@ def _started(membership: Membership, source: StartSource, previous: Session | No
     match (source, previous):
         case ("compact", Session(state=Working() | Blocked() | AtDialog()) as previous):
             return replace(previous, membership=membership)
+        case ("compact", Session(state=Idle(due=due), mode=mode)):
+            # A new idle period, which a nudge hands was timing for still has to come from hands.
+            return Session(membership, Idle(due=due), mode, turn=None)
         case ("compact", Session(mode=mode)):
             return Session(membership, Idle(), mode, turn=None)
         case _:

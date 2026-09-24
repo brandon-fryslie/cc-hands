@@ -170,14 +170,14 @@ def narration(said: str, turn: Turn, delta: Delta, sentences: int) -> Narration:
     files no step reports — so it is in the headline's reach and in a section of its own, and in no other.
     """
     asked = [step for step in turn.steps if isinstance(step, Questioned)]
-    stopped = [step for step in turn.steps if isinstance(step, Interruption)]
     sectioned = [step for step in turn.steps if not isinstance(step, Questioned | Interruption)]
     changes = tuple(change for step in turn.steps if isinstance(step, Ran) for change in step.git)
     return Narration(
         headline=Segment(THE_HEADLINE, _headline(said, sentences), (turn.opening, *turn.steps), delta),
         # Said by the types and not left to the summariser, for the reason the repository is: whether the turn was
-        # stopped is a fact its record holds, and a model asked for it can drop it [LAW:one-source-of-truth].
-        interrupted=tuple(Segment(THE_INTERRUPTION, "You interrupted it.", (step,)) for step in stopped),
+        # stopped is a fact its record holds, and a model asked for it can drop it [LAW:one-source-of-truth]. Said of a
+        # turn that ends on one: a queued message that cut a tool off mid-turn let the turn go on, and it is a step.
+        interrupted=tuple(Segment(THE_INTERRUPTION, "You interrupted it.", (step,)) for step in turn.steps[-1:] if isinstance(step, Interruption)),
         repository=_repository(delta, changes),
         questions=tuple(_asked(question, step) for step in asked for question in step.questions),
         sections=_sections(sectioned),
@@ -202,7 +202,7 @@ def _headline(said: str, sentences: int) -> str:
     kept = " ".join([*reported[:sentences], *asked])
     # A reply that ended without a stop would run into what git says next as one long sentence, and speech has
     # no other way to hear the join.
-    return kept if kept.endswith((".", "!", "?")) else f"{kept}."
+    return kept if not kept or kept.endswith((".", "!", "?")) else f"{kept}."
 
 
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")

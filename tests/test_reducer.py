@@ -534,3 +534,17 @@ def test_an_idle_period_after_a_stop_waits_for_claude_codes_idle_prompt_rather_t
 
 def test_compaction_keeps_the_turn_it_happened_in() -> None:
     assert reduce(in_turn(Working(since=1.0)), Joined(ONE, "compact"))[0] == in_turn(Working(since=1.0))
+
+
+def test_compaction_after_an_interrupt_keeps_the_nudge_hands_is_timing() -> None:
+    assert reduce(in_turn(Idle(due=70.0)), Joined(ONE, "compact"))[0].sessions[ONE.id].state == Idle(due=70.0)
+
+
+def test_a_queued_prompt_does_not_let_the_interrupt_that_flushes_it_end_the_turn_it_opens() -> None:
+    """As seen live on 2.1.281: a prompt queued while a tool ran fires UserPromptSubmit at once, with the running turn's
+    prompt_id. Escape then flushes it, and the interrupt record names the queued prompt's own new id, whose turn is
+    already running. That turn's Stop, not the interrupt, is what ends it."""
+    state = in_turn(Working(since=1.0))
+    for event in [Prompted(ONE.id, at=2.0, mode=None, prompt=TURN), Interrupted(ONE.id, NEXT, at=3.0)]:
+        state, _ = reduce(state, event)
+    assert isinstance(state.sessions[ONE.id].state, Working)

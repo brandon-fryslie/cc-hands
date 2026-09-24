@@ -253,3 +253,16 @@ def test_a_turn_the_user_interrupted_says_so_first_from_the_types_and_never_as_a
 
 def test_a_turn_that_finished_says_nothing_of_an_interruption() -> None:
     assert told(Said(None, "Done.")).interrupted == ()
+
+
+def test_a_turn_that_went_on_after_an_interruption_is_not_said_to_be_interrupted() -> None:
+    """A message queued while a tool ran cuts the tool off, and the turn carries on with it."""
+    assert told(Interruption(Ref("u9")), Said(None, "Done.")).interrupted == ()
+
+
+def test_a_turn_with_two_interruptions_says_so_once() -> None:
+    assert told(Interruption(Ref("u8")), Said(None, "On it."), Interruption(Ref("u9")), headline="It had begun.").said() == "You interrupted it. It had begun."
+
+
+def test_a_turn_with_nothing_to_report_is_the_interruption_alone() -> None:
+    assert told(Interruption(Ref("u9")), headline="").said() == "You interrupted it."
