@@ -197,8 +197,8 @@ class Staged:   text: str; resolutions: Sequence[Resolution]
 The block above is the target. `hands.core.effects` defines less today:
 `Effect = Audit | Reply | Heard | Story`, where `Heard = Speak | Narrate` carries
 permission announcements and requests and `Story = Summarise | SessionGone` carries
-finished turns and sessions gone. Today's `Summarise` holds a session, its transcript
-path, and the reply its `Stop` hook carried, not a narration id and steps. `Type`, `Note`, `Play`, and `Snapshot`,
+finished turns and sessions gone. Today's `Summarise` holds a session, the prompt id of
+the turn that ended, and the reply its `Stop` hook carried, not a narration id and steps. `Type`, `Note`, `Play`, and `Snapshot`,
 and the segment, narration, and playback types, are planned.
 
 Two things are deliberately absent. There is no `Session.last_seen` timestamp,
@@ -219,6 +219,7 @@ pure function `[LAW:effects-at-boundaries]`: it never reads a file, checks a pro
 or looks at a clock. When it needs the time it has already been handed one in a
 `Tick`. When it needs a summary it emits `Summarise` and receives the segments back as
 an event. Today nothing comes back: `Summarise` is emitted for a live session's `Stop`,
+for an interrupt, and for a turn that a prompt naming another turn finds still running,
 and the narrator reads, summarises, and speaks the turn without returning to the
 reducer.
 
@@ -361,7 +362,7 @@ event-specific fields below were read out of the 2.1.263 bundle. Payloads captur
 |---|---|
 | `SessionStart` | `source`, `agent_type`, `model` |
 | `UserPromptSubmit` | `prompt`, `prompt_id` |
-| `Stop` | `stop_hook_active`, `last_assistant_message` |
+| `Stop` | `stop_hook_active`, `last_assistant_message`, `prompt_id` |
 | `PermissionRequest` | `tool_name`, `tool_input`, `permission_suggestions` |
 | `PostToolUse`, `PostToolUseFailure` | `tool_name`, `tool_input`, `tool_use_id`, and the response or the error |
 | `Notification` | `message`, `title`, `notification_type` in `permission_prompt`, `idle_prompt`, `auth_success`, `elicitation_dialog` |
@@ -378,6 +379,13 @@ Claude Code writes a user record instead, `[Request interrupted by user]`, or
 the reducer ends the session's turn only when the record names it, so an interrupt
 read after the next prompt ends nothing. Only the prompt names the turn: a background
 subagent's hooks keep the `prompt_id` of the turn that started it after that turn is over.
+
+A message queued into a running turn fires `UserPromptSubmit` with the running turn's
+`prompt_id`, the id that turn went on under after a flush included (2.1.281). So a prompt
+naming any other id was sent from the prompt, and the turn the registry still has running
+ended without its `Stop` or its interrupt read yet: the reducer ends it there, compared
+before the new turn is marked, and told as itself. A `Stop` carries the `prompt_id` of the
+turn it ends, which is how that turn is found in the tail.
 
 The reply a `PermissionRequest` hook may give is printed on its stdout as
 `{"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": ...}}`,
@@ -512,18 +520,21 @@ turn; a question Claude put to the user is the `Questioned` step.
 session, `keep_tailing` reads what that session's JSONL has gained, ten times a second,
 and hands each new record to the recognisers. Nothing re-reads the file from its start:
 one `Following` per session holds the byte offset, the turn that is open in it, the steps
-recognised so far, and how many of them the session has been told. Measured live on
+recognised so far, and how many of them the session has been told. It also keeps the turns
+that ended before it until a later telling passes them, each with every prompt id its records
+carry, because the narrator can be seconds behind. Measured live on
 2026-09-21, a record becomes a step 96 to 305 ms after Claude Code wrote it, median 160 ms
 — the poll period plus the read, which is what sets how late a turn narrated *while it
 runs* can be. A `Stop` does not wait for that poll: `tell` reads the rest of its own
 transcript first, so the turn is told from the whole of what has been written.
 
-`tell` returns a `Telling`, which carries the turn's number as well as its untold steps,
-and marks nothing until the narrator says it was spoken. Two things follow. A summary that
-fails is never marked told, so the turn is told again at the next `Stop`. And a summary
-that took a second to come back cannot mark a turn that opened while the model was
-answering, because the number it was made against is no longer the number of the turn that
-is open `[LAW:no-ambient-temporal-coupling]`.
+`tell` is given the prompt id of the turn that ended and tells that turn, whatever has
+been read since `[LAW:no-ambient-temporal-coupling]`: a `Stop` and the next prompt in quick
+succession, or an interrupt and the next prompt, would otherwise have the new turn told in the
+old one's place. It returns a `Telling`, which carries the turn's number as well as its untold
+steps, and marks nothing until the narrator says it was spoken. A summary that fails is never
+marked told, and the mark a slow summary makes lands on the turn it was made of, found by its
+number, never on one that opened while the model was answering.
 
 The reducer will receive steps as events and ask for their summaries as they arrive, so
 that by the time `Stop` fires most of the turn's summary is built; that is the progress

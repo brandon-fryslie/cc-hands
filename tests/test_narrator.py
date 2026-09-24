@@ -63,7 +63,7 @@ async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_d
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=None))
-        await sessions.apply(Stopped(SID, None, mode=None))
+        await sessions.apply(Stopped(SID, None, mode=None, prompt=None))
         spoken = await asyncio.wait_for(frames.get(), 5.0)
     finally:
         narrating.cancel()
@@ -92,7 +92,7 @@ async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_aft
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=None))
-        await sessions.apply(Stopped(SID, None, mode=None))
+        await sessions.apply(Stopped(SID, None, mode=None, prompt=None))
         # `claude -p` exits the moment its turn stops, so the end lands while the model is still summarising.
         await sessions.apply(Ended(SID, "other"))
         with pytest.raises(asyncio.TimeoutError):
@@ -127,14 +127,14 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=None))
-        await sessions.apply(Stopped(SID, "Looked.", mode=None))
+        await sessions.apply(Stopped(SID, "Looked.", mode=None, prompt=None))
         await asyncio.wait_for(frames.get(), 5.0)
         with transcript.open("a") as more:
             more.write(f"{call}\n{result}\n{fixed}\n")
-        await sessions.apply(Stopped(SID, "Fixed.", mode=None))
+        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=None))
         await asyncio.wait_for(frames.get(), 5.0)
         # A third Stop with nothing written since is not a turn to tell.
-        await sessions.apply(Stopped(SID, "Fixed.", mode=None))
+        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=None))
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(frames.get(), 0.2)
     finally:
@@ -156,7 +156,7 @@ async def test_a_turn_that_cannot_be_summarised_is_said_to_have_failed_and_logge
     unreachable = summariser(OpenAICompatibleBackend(base_url="http://127.0.0.1:9/v1", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
-        spoken = await recount(tailing(FIXTURE), SID, None, "cc-hands", unreachable, recorded.append, BUDGET, Delta())
+        spoken = await recount(tailing(FIXTURE), SID, None, None, "cc-hands", unreachable, recorded.append, BUDGET, Delta())
     finally:
         logger.remove(sink)
     assert isinstance(spoken, TTSSpeakFrame)
@@ -170,7 +170,7 @@ async def test_a_missing_transcript_is_said_to_have_failed_too(tmp_path: Path) -
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    spoken = await recount(tailing(tmp_path / "gone.jsonl"), SID, None, "cc-hands", never, lambda _: None, BUDGET, Delta())
+    spoken = await recount(tailing(tmp_path / "gone.jsonl"), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta())
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands finished a turn, and I could not summarise it."
 
 
@@ -181,7 +181,7 @@ async def test_a_session_that_stops_before_any_prompt_says_nothing(tmp_path: Pat
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    assert await recount(tailing(transcript), SID, None, "cc-hands", never, lambda _: None, BUDGET, Delta()) is None
+    assert await recount(tailing(transcript), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta()) is None
 
 
 async def test_a_turn_that_only_a_shell_command_changed_is_still_told_by_what_the_repository_says(tmp_path: Path) -> None:
@@ -199,7 +199,7 @@ async def test_a_turn_that_only_a_shell_command_changed_is_still_told_by_what_th
         return "it reformatted the whole package"
 
     delta = Delta(files=(Changed("src/a.py", 12, 9), Changed("src/b.py", 3, 3)), commits=(), patch="@@\n-x\n+y\n")
-    spoken = await recount(tailing(transcript), SID, None, "cc-hands", summarise, lambda _: None, BUDGET, delta)
+    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", summarise, lambda _: None, BUDGET, delta)
 
     # What git says is said after the summary and out of the narration's own words: the two files are the whole
     # result of the turn, and no step of it names them.
@@ -216,7 +216,7 @@ async def test_a_turn_that_did_nothing_and_changed_nothing_is_still_silent(tmp_p
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    assert await recount(tailing(transcript), SID, None, "cc-hands", never, lambda _: None, BUDGET, Delta()) is None
+    assert await recount(tailing(transcript), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta()) is None
 
 
 async def openai_server(content: str | None) -> tuple[web.AppRunner, str, list[dict[str, object]]]:
@@ -278,7 +278,7 @@ async def test_a_model_that_answers_with_nothing_is_said_to_have_failed_rather_t
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
         summarise = summariser(OpenAICompatibleBackend(base_url=url, model="m"), "Summarise.", max_tokens=50, timeout=5.0)
-        spoken = await recount(tailing(FIXTURE), SID, None, "cc-hands", summarise, recorded.append, BUDGET, Delta())
+        spoken = await recount(tailing(FIXTURE), SID, None, None, "cc-hands", summarise, recorded.append, BUDGET, Delta())
     finally:
         logger.remove(sink)
         await runner.cleanup()
@@ -298,5 +298,5 @@ async def test_a_turn_stopped_before_it_did_anything_is_said_to_be_interrupted_w
     async def never(turn: str) -> str:
         raise AssertionError("a model told not to say it was interrupted has nothing else to report")
 
-    spoken = await recount(tailing(transcript), SID, None, "cc-hands", never, lambda _: None, BUDGET, Delta())
+    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta())
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: You interrupted it."

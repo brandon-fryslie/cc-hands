@@ -11,7 +11,7 @@ from pipecat.frames.frames import Frame, TTSSpeakFrame
 from hands.core.delta import Delta
 from hands.core.effects import SessionGone, Summarise
 from hands.core.narration import narration
-from hands.core.session import SessionId
+from hands.core.session import PromptId, SessionId
 from hands.core.turn import Budget, Interruption, render
 from hands.sessions.audit import Recounted, Record
 from hands.sessions.delta import Changes, NoChanges
@@ -44,8 +44,8 @@ async def narrate(
         story = await sessions.story()
         name = spoken_name(sessions, story.session)
         match story:
-            case Summarise(session=session, closing=closing):
-                spoken = await recount(tails, session, closing, name, summarise, record, budget, await read.taken(session))
+            case Summarise(session=session, turn=turn, closing=closing):
+                spoken = await recount(tails, session, turn, closing, name, summarise, record, budget, await read.taken(session))
             case SessionGone():
                 spoken = TTSSpeakFrame(f"The session {name} is gone.")
         if spoken is not None:
@@ -53,7 +53,7 @@ async def narrate(
 
 
 async def recount(
-    tails: Tails, session: SessionId, closing: str | None, name: str, summarise: Summariser, record: Record, budget: Budget, delta: Delta
+    tails: Tails, session: SessionId, turn: PromptId | None, closing: str | None, name: str, summarise: Summariser, record: Record, budget: Budget, delta: Delta
 ) -> Frame | None:
     """The frame that tells the user what the turn did beyond what was told before, or None when there is nothing new.
 
@@ -62,7 +62,7 @@ async def recount(
     what it changed is the whole point of reading git at all.
     """
     try:
-        telling = await tails.tell(session, closing)
+        telling = await tails.tell(session, turn, closing)
         if telling is None or not (telling.turn.steps or delta):
             logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")
             return None
@@ -76,7 +76,7 @@ async def recount(
         logger.info(f"session {session} was summarised in {time.monotonic() - began:.2f} s")
     except _FAILURES as error:
         # [LAW:no-silent-failure] said without the model, as a system fact is, and logged with the reason, which is an audit line.
-        # Nothing is marked told, so what could not be summarised is told again at the next Stop, which may summarise it.
+        # Nothing is marked told, so a later telling of the same turn — its Stop after an interrupt was read — tells it whole.
         logger.error(f"cannot summarise the turn session {session} finished: {type(error).__name__}: {error}")
         return TTSSpeakFrame(f"{name} finished a turn, and I could not summarise it.", append_to_context=False)
     # The tree is cut from the turn after the headline comes back, so the sections cost nothing at the Stop that

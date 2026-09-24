@@ -57,6 +57,9 @@ class Stopped:
     closing: str | None  # the reply the turn closed with, as the Stop hook carries it; None when there was none
     # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
     mode: Mode | None
+    # The prompt_id of the turn that stopped: the id it last went on under, which a turn a notification opened has
+    # too, though no hook opened it (2.1.281). None only when the hook carried none.
+    prompt: PromptId | None
 
 
 @dataclass(frozen=True)

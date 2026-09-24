@@ -8,7 +8,7 @@ from pathlib import Path
 
 from hands.core.delta import Delta
 from hands.core.effects import Summarise
-from hands.core.events import Joined, Prompted, Stopped
+from hands.core.events import Joined, Prompted, Stopped, Taken
 from hands.core.session import Membership, PromptId, SessionId, Submitted
 from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Deltas
 from hands.sessions.registry import Sessions
@@ -192,7 +192,7 @@ async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed
 
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=None))
     subprocess.run(("sed", "-i", "", "s/x = 1/x = 99/", str(root / "a.py")), check=True)
-    await sessions.apply(Stopped(SID, "Done.", mode=None))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=None))
 
     # The story is queued, and by the time anyone takes it the delta is already read and waiting.
     story = await sessions.story()
@@ -268,7 +268,7 @@ async def test_a_reading_that_fails_outright_still_lets_the_turn_be_told(tmp_pat
     """
     sessions = attached(tmp_path)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
-    await sessions.apply(Stopped(SID, "Done.", mode=None))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=None))
     story = await asyncio.wait_for(sessions.story(), 2.0)
     assert isinstance(story, Summarise) and story.session == SID
 
@@ -503,3 +503,23 @@ async def test_a_turn_whose_changes_could_not_be_counted_has_its_patch_left_unre
     delta = await deltas.taken(SID)
     assert not delta.patch and not delta.files
     assert [commit.subject for commit in delta.commits] == ["wrote the generated file"]
+
+
+async def test_a_turn_that_ended_unheard_before_the_next_prompt_keeps_its_own_changes(tmp_path: Path) -> None:
+    """The next prompt's hook landed before the record of p1's interrupt was read. p1 is compared there, before p2 is
+    marked, so p2 is told only what p2 changed."""
+    root = repo(tmp_path)
+    deltas = Deltas()
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
+    await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Taken(SID, PromptId("p1")))
+    (root / "first.py").write_text("turn one\n")
+    await sessions.apply(Prompted(SID, at=5.0, mode=None, prompt=PromptId("p2")))
+    (root / "second.py").write_text("turn two\n")
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2")))
+
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), None)
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), "Done.")
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
