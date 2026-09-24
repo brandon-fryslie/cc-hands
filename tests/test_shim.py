@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.session import Idle, Membership, Session, SessionId, Submitted
+from hands.core.session import Idle, Membership, PromptId, Session, SessionId, Submitted
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
@@ -20,7 +20,7 @@ from hands.sessions.server import serve_hooks
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
 COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/code/a"}
 START = {**COMMON, "hook_event_name": "SessionStart", "source": "startup"}
-PROMPT = {**COMMON, "hook_event_name": "UserPromptSubmit", "prompt": "hi"}
+PROMPT = {**COMMON, "hook_event_name": "UserPromptSubmit", "prompt": "hi", "prompt_id": "p1"}
 END = {**COMMON, "hook_event_name": "SessionEnd", "reason": "other"}
 
 
@@ -63,7 +63,7 @@ async def test_a_start_records_membership_and_joins_the_registry(home: Home, ses
     assert await shim(home, START) == (0, "")
     assert await shim(home, PROMPT) == (0, "")
     membership = Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl"))
-    assert [listing.session for listing in sessions.live()] == [Session(membership, Submitted(since=10.0), mode=None, turn=None)]
+    assert [listing.session for listing in sessions.live()] == [Session(membership, Submitted(since=10.0), mode=None, turn=PromptId("p1"))]
     assert home.membership(SID).exists()
 
 

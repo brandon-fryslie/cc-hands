@@ -103,7 +103,17 @@ def test_every_state_takes_each_event_to_its_state(before: SessionState, event: 
 
 @pytest.mark.parametrize(("before", "after"), [(Idle(), Submitted(since=5.0)), (Submitted(since=1.0), Submitted(since=5.0)), (Working(since=1.0), Working(since=5.0)), (LIVE[3], Working(since=5.0))])
 def test_a_prompt_from_the_prompt_is_only_sent_and_one_inside_a_turn_is_in_it(before: SessionState, after: SessionState) -> None:
-    assert reduce(holding(before), Prompted(ONE.id, at=5.0, mode=None, prompt=None))[0] == holding(after)
+    assert reduce(holding(before), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN))[0] == registry(Session(ONE, after, mode=None, turn=TURN))
+
+
+def test_a_prompt_whose_hook_names_no_turn_is_working_on_the_hooks_word() -> None:
+    """No record can ever be matched to it, so waiting for one would leave the session not started for its whole turn."""
+    assert reduce(holding(Idle()), Prompted(ONE.id, at=5.0, mode=None, prompt=None)) == (holding(Working(since=5.0)), [Snapshot(ONE.id, ONE.cwd)])
+
+
+def test_a_prompt_queued_into_the_turn_a_sent_one_opened_says_that_one_was_taken() -> None:
+    """A queued prompt's hook carries the running turn's id (2.1.281): the turn is running, though its record is not read yet."""
+    assert reduce(in_turn(Submitted(since=1.0)), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN)) == (in_turn(Working(since=1.0)), [])
 
 
 WAITING = Blocked(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False)
@@ -286,7 +296,7 @@ def test_an_abandoned_request_the_session_no_longer_waits_on_changes_nothing(bef
 def test_an_event_moves_only_its_own_session() -> None:
     before = registry(Session(ONE, Idle(), mode=None, turn=None), Session(TWO, Idle(), mode=None, turn=None))
     after, _ = reduce(before, Prompted(TWO.id, at=2.0, mode=None, prompt=None))
-    assert after == registry(Session(ONE, Idle(), mode=None, turn=None), Session(TWO, Submitted(since=2.0), mode=None, turn=None))
+    assert after == registry(Session(ONE, Idle(), mode=None, turn=None), Session(TWO, Working(since=2.0), mode=None, turn=None))
 
 
 def test_live_is_every_session_that_has_not_ended() -> None:
@@ -363,7 +373,7 @@ def test_an_idle_notification_that_lands_after_the_prompt_it_raced_leaves_the_tu
 
 
 def test_a_nudged_session_prompted_again_marks_the_repository_its_turn_starts_from() -> None:
-    assert reduce(holding(Idle(nudged=True)), Prompted(ONE.id, at=5.0, mode=None, prompt=None)) == (holding(Submitted(since=5.0)), [Snapshot(ONE.id, ONE.cwd)])
+    assert reduce(holding(Idle(nudged=True)), Prompted(ONE.id, at=5.0, mode=None, prompt=None)) == (holding(Working(since=5.0)), [Snapshot(ONE.id, ONE.cwd)])
 
 
 def test_one_idle_period_is_nudged_once() -> None:

@@ -232,11 +232,12 @@ class Tails:
                 logger.error(f"a record in the transcript of session {session} could not be read, so it is not told: {error}")
                 continue
             if record is not None:
-                if following.consume(record) is not None:
-                    self._interrupt(session, record)
+                # The prompt first: a prompt's first record can be the one that interrupts it, and it was taken to be.
                 prompted = following.prompted(session, record)
                 if prompted is not None:
                     self._transcribed.append(prompted)
+                if following.consume(record) is not None:
+                    self._interrupt(session, record)
                 self.lag = _lag(record)
 
     def _interrupt(self, session: SessionId, record: Payload) -> None:

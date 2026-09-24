@@ -80,7 +80,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case MovedOn(membership=membership):
             # The user moved the process on at the keyboard, so there is nothing to tell them.
             return _ended_unheard(registry, membership, [])
-        case Prompted(session=session, at=at):
+        case Prompted(session=session, at=at, prompt=prompt):
             # Marked as the turn opens, so what it changes is read against a repository it has not touched yet.
             # A turn opens from the prompt and nowhere else, so only a session sitting at one is marked: a
             # prompt that lands inside a running turn — one that was queued, or one whose Stop nobody heard —
@@ -89,8 +89,8 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _enter(
                 registry,
                 event,
-                lambda state: _prompted(state, at),
-                lambda was: [Snapshot(session, was.membership.cwd)] if isinstance(was.state, Idle | Submitted) else [],
+                lambda state: _prompted(state, registry.sessions[session].turn, prompt, at),
+                lambda was: [Snapshot(session, was.membership.cwd)] if _opens(was.state, was.turn, prompt) else [],
             )
         case Taken(session=session, prompt=prompt):
             match registry.sessions.get(session):
@@ -280,14 +280,24 @@ def _same_call(asked: Blocker, call: FinishedCall) -> bool:
             return asked == call
 
 
-def _prompted(state: SessionState, at: Instant) -> SessionState:
-    match state:
-        case Idle() | Submitted():
+def _opens(state: SessionState, turn: PromptId | None, prompt: PromptId | None) -> bool:
+    """Whether a prompt opens a turn: sent from the prompt, and not queued into the turn its id already names, which a
+    queued prompt's hook carries (2.1.281)."""
+    return isinstance(state, Idle | Submitted) and (prompt is None or prompt != turn)
+
+
+def _prompted(state: SessionState, turn: PromptId | None, prompt: PromptId | None, at: Instant) -> SessionState:
+    match (state, prompt):
+        case (Submitted(since=since), _) if not _opens(state, turn, prompt):
+            # Queued into the turn it opened, so that one was taken, whether or not its record has been read yet.
+            return Working(since=since)
+        case (_, str()) if _opens(state, turn, prompt):
             # [LAW:types-are-the-program] not working yet: Claude Code takes a prompt only once its hooks finish, and an
             # Escape before then cancels it with nothing to say so, so only the record of its turn can make it Working.
             return Submitted(since=at)
         case _:
-            # One that lands inside a running turn, queued or after a Stop nobody heard, is in a turn already.
+            # Inside a running turn it is in that turn already; and a prompt with no id can never be matched to its
+            # record, so it is taken on the hook's word, as every prompt was before the record could be read.
             return Working(since=at)
 
 

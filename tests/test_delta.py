@@ -9,7 +9,7 @@ from pathlib import Path
 from hands.core.delta import Delta
 from hands.core.effects import Summarise
 from hands.core.events import Joined, Prompted, Stopped
-from hands.core.session import Membership, SessionId, Submitted
+from hands.core.session import Membership, PromptId, SessionId, Submitted
 from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Deltas
 from hands.sessions.registry import Sessions
 
@@ -282,7 +282,7 @@ async def test_a_mark_that_fails_outright_still_lets_the_prompt_through(tmp_path
     """
     sessions = attached(tmp_path)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
-    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=None))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
     # The mark is gone, the prompt is not: it went through, and the hook that said so was answered.
     assert [listing.session.state for listing in sessions.live()] == [Submitted(since=1.0)]
 

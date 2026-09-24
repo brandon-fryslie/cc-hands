@@ -582,6 +582,12 @@ async def test_a_prompt_cancelled_while_its_hooks_ran_never_makes_the_session_wo
     assert listing is not None and listing.session.state == Working(since=4.0)
 
 
+async def test_a_prompt_whose_first_record_is_its_interrupt_is_heard_taken_before_it_is_heard_stopped(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(CUT_OFF))
+    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1")), Interrupted(SID, PromptId("p1"), at=7.0)]
+
+
 async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_and_the_session_is_idle(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING))
