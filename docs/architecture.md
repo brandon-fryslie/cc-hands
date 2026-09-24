@@ -107,7 +107,7 @@ SessionState = Idle | Submitted | Working | Blocked | AtDialog | Gone
 # Sent, but not taken until its UserPromptSubmit hooks finish; an Escape before then
 # cancels it silently, so only the transcript's record of the turn makes it Working.
 @dataclass(frozen=True)
-class Submitted: since: Instant
+class Submitted: since: Instant; over: PromptId | None   # the prompt it was sent over, still Submitted
 @dataclass(frozen=True)
 class Working:   since: Instant
 @dataclass(frozen=True)
@@ -155,7 +155,7 @@ class Summarise: narration: NarrationId; steps: Sequence[Step]; expand: SegmentI
 @dataclass(frozen=True)
 class Snapshot: session: SessionId; cwd: Path                # where the turn's repository stands as it opens
 @dataclass(frozen=True)
-class Compare:  session: SessionId                           # what it changed, read when the turn stops
+class Compare:  session: SessionId; mark: Marked              # what it changed, read when the turn stops
 @dataclass(frozen=True)
 class Audit:    record: AuditRecord
 
@@ -392,6 +392,15 @@ own, because a message queued in that window carries it. A record that opens a t
 read while the registry still has another running, ends that one too. The registry remembers
 the ids of a turn it ended before its `Stop` was heard, so that `Stop`, applied late, ends
 nothing. A `Stop` naming an id not heard of yet ends its turn as any `Stop` does.
+
+A prompt sent while the one before it is still `Submitted` cannot say which that one was:
+cancelled by an Escape during its hooks, or taken, run, and ended inside one tail period,
+before any record of it was read. So the new `Submitted` keeps the id it was sent `over`,
+until that prompt's own record, or its `Stop` landing after the new prompt's hook, settles it.
+Either one ends that turn and tells it as itself, and leaves the new prompt sent. A record of
+the new prompt, read with none of the old one's before it, settles it the other way: the old
+prompt never ran. Only the id kept in `over` can be ended this way, so the old turns a
+transcript's first reading passes through end nothing.
 
 The reply a `PermissionRequest` hook may give is printed on its stdout as
 `{"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": ...}}`,
@@ -740,6 +749,14 @@ budget of `POST_TIMEOUT_SECONDS - 0.5`. A mark and a reading are both best effor
 neither may cost the turn what it was read for, so both are performed under one guard
 rather than one guard each `[LAW:single-enforcer]`: a mark may not fail the prompt hook
 waiting on it, and a reading may not cost the turn the `Summarise` queued behind it.
+
+A turn found to have run only after the next prompt was marked, the case of `Submitted.over`
+above, would lose its mark to that prompt's. So each `Snapshot` sets the mark it replaces aside,
+one per session, and that turn's `Compare` names the mark set aside. It is read up to the mark
+that replaced it, where the turn had already ended, so what the next turn has begun to change
+is not told as part of it. A `Compare` of the last mark spends the one set aside, because every
+turn before the last is over once the last is. Readings stay one per telling, in the order the
+tellings are made.
 
 Everything the summariser is shown of a delta is bounded by the `Budget`, commits
 included: a turn that pulls or rebases brings them by the hundred, and the count is the

@@ -485,8 +485,46 @@ def test_a_prompt_cancelled_while_its_hooks_ran_never_leaves_the_session_working
     state, effects = reduce(in_turn(Idle(), turn=None), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN))
     assert state == in_turn(Submitted(since=5.0))
     state, effects = reduce(state, Prompted(ONE.id, at=9.0, mode=None, prompt=NEXT))
-    assert (state, effects) == (in_turn(Submitted(since=9.0), turn=NEXT), [Snapshot(ONE.id, ONE.cwd)])
-    assert reduce(state, Taken(ONE.id, NEXT, opens=True))[0].sessions[ONE.id].state == Working(since=9.0)
+    assert (state, effects) == (in_turn(Submitted(since=9.0, over=TURN), turn=NEXT), [Snapshot(ONE.id, ONE.cwd)])
+    # The resent prompt's record, read with none of the cancelled one's before it, says that one never ran.
+    assert reduce(state, Taken(ONE.id, NEXT, opens=True)) == (in_turn(Working(since=9.0), turn=NEXT), [])
+
+
+def test_a_prompt_taken_and_ended_before_any_of_it_was_read_is_told_as_itself_when_its_record_is() -> None:
+    """hands-keyboard-gxr.90g: p1 is taken, runs, and is interrupted, and p2's hook is applied, all inside one tail
+    period, so p2 finds p1 still sent. p1's records, read after, are the proof it ran: it is ended and told as itself,
+    read against the mark p2 set aside, and p2 stays sent until its own record is read."""
+    state, _ = reduce(in_turn(Idle(), turn=None), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN))
+    state, effects = reduce(state, Prompted(ONE.id, at=6.0, mode=None, prompt=NEXT))
+    assert effects == [Snapshot(ONE.id, ONE.cwd)]
+    state, effects = reduce(state, Taken(ONE.id, TURN, opens=True))
+    assert effects == [Compare(ONE.id, "set_aside"), Summarise(ONE.id, TURN, None)]
+    assert state == registry(Session(ONE, Submitted(since=6.0), mode=None, turn=NEXT, ended=frozenset({TURN})))
+    # The rest of p1's records end nothing: not its interrupt, and not a Stop hook that lands late.
+    assert reduce(state, Interrupted(ONE.id, TURN, at=7.0)) == (state, [])
+    assert reduce(state, Stopped(ONE.id, "Done.", mode=None, prompt=TURN)) == (state, [])
+    state, effects = reduce(state, Taken(ONE.id, NEXT, opens=True))
+    assert (state.sessions[ONE.id].state, effects) == (Working(since=6.0), [])
+    assert reduce(state, Stopped(ONE.id, "Next.", mode=None, prompt=NEXT))[1] == [Compare(ONE.id), Summarise(ONE.id, NEXT, "Next.")]
+
+
+def test_the_stop_of_a_prompt_sent_over_applied_after_the_next_prompt_ends_that_one_and_not_the_next() -> None:
+    """Each hook posts from its own process, so p1's Stop can land after p2's prompt hook. It ends p1, told as itself
+    against the mark p2 set aside; p2 stays sent, and p1's records read later end nothing."""
+    state, _ = reduce(in_turn(Idle(), turn=None), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN))
+    state, _ = reduce(state, Prompted(ONE.id, at=6.0, mode=None, prompt=NEXT))
+    state, effects = reduce(state, Stopped(ONE.id, "Done.", mode=None, prompt=TURN))
+    assert effects == [Compare(ONE.id, "set_aside"), Summarise(ONE.id, TURN, "Done.")]
+    assert state == registry(Session(ONE, Submitted(since=6.0), mode=None, turn=NEXT, ended=frozenset({TURN})))
+    assert reduce(state, Taken(ONE.id, TURN, opens=True)) == (state, [])
+
+
+@pytest.mark.parametrize("over", [None, NEXT])
+def test_a_record_of_another_prompt_than_the_one_sent_over_read_while_sent_ends_nothing(over: PromptId | None) -> None:
+    """A transcript read for the first time holds every turn before the daemon attached: only the prompt a sent one
+    was sent over, and only that, can be ended by its record."""
+    sent = registry(Session(ONE, Submitted(since=6.0, over=over), mode=None, turn=PromptId("p3")))
+    assert reduce(sent, Taken(ONE.id, TURN, opens=True)) == (sent, [])
 
 
 def test_a_prompt_read_as_taken_before_its_hook_was_applied_is_working_when_the_hook_lands() -> None:

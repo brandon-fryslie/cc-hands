@@ -202,6 +202,10 @@ class Snapshot:
     cwd: Path
 
 
+# Which of a session's marks a turn began from: see Compare.mark.
+Marked = Literal["last", "set_aside"]
+
+
 @dataclass(frozen=True)
 class Compare:
     """What a session's turn changed, read against the snapshot its start took.
@@ -211,6 +215,10 @@ class Compare:
     """
 
     session: SessionId
+    # [LAW:types-are-the-program] whose snapshot the turn is read against: the one the session's last prompt took, or
+    # the one it set aside, of the prompt it was sent over while that one's hooks ran. That turn is found to have run
+    # only once the next prompt has been marked, so it is read up to that mark, which is where it had ended.
+    mark: Marked = "last"
 
 
 # What a turn did to the repository it ran in, which no record of the session need name: a formatter, a code

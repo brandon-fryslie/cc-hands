@@ -91,6 +91,10 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
                 lambda state: _prompted(state, registry.sessions[session].turn, prompt, _opens(registry.sessions[session], prompt), at),
                 lambda was: _opened(was, _opens(was, prompt)),
             )
+        case Taken(session=session, prompt=prompt) if (sent := _sent_over(registry.sessions.get(session), prompt)) is not None:
+            # [LAW:no-ambient-temporal-coupling] the prompt the one now sent was sent over did run: taken, and ended by a
+            # Stop or an interrupt, all before the tail read any of it. Its record is the positive knowledge that it ran.
+            return _ran_unread(registry, event, sent, prompt, None)
         case Taken(session=session, prompt=prompt, opens=opens):
             match registry.sessions.get(session):
                 case Session(state=Submitted(since=since), turn=turn) if turn == prompt:
@@ -116,6 +120,10 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             # [LAW:no-ambient-temporal-coupling] the Stop of a turn a later prompt or turn already ended, applied after
             # it: it was told there, and ending the turn now running would idle it and spend its mark.
             return _enter(registry, event, lambda state: state)
+        case Stopped(session=session, closing=closing, prompt=str() as stopped) if (sent := _sent_over(registry.sessions.get(session), stopped)) is not None:
+            # Its hook posts from its own process, so it can land after the next prompt's: it ends the turn it names, as
+            # that turn's record would have, and not the prompt sent after it.
+            return _ran_unread(registry, event, sent, stopped, closing)
         case Stopped(session=session, closing=closing, prompt=stopped):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
             return _enter(registry, event, lambda _: Idle(), lambda _was: [Compare(session), Summarise(session, stopped, closing)])
@@ -251,6 +259,9 @@ def _named(event: SessionEvent, was: Session) -> tuple[PromptId | None, frozense
             return prompt, was.taken, was.ended
         case Continued(now=now):
             return now, was.taken, was.ended
+        case Taken(prompt=prompt) | Stopped(prompt=str() as prompt) if _sent_over(was, prompt) is not None:
+            # Told now, as the prompt sent over it ended: what else is read of it later ends nothing.
+            return was.turn, was.taken, frozenset({prompt})
         case _:
             # A prompt queued into the running turn leaves it named as it was, so its interrupt is still heard.
             return was.turn, was.taken, was.ended
@@ -264,6 +275,22 @@ def _ended_already(session: Session | None, prompt: PromptId) -> bool:
     """Whether a Stop names the turn hands already ended, and told, when a later prompt or turn showed it over. Only what
     is known to have ended is: a Stop naming an id not heard of yet ends its turn as any Stop does."""
     return session is not None and prompt in session.ended
+
+
+def _sent_over(session: Session | None, prompt: PromptId) -> Submitted | None:
+    """The prompt sent after the one this id names, where the session holds one: see Submitted.over."""
+    match session:
+        case Session(state=Submitted(over=over) as sent) if prompt == over:
+            return sent
+        case _:
+            return None
+
+
+def _ran_unread(registry: Registry, event: SessionEvent, sent: Submitted, prompt: PromptId, closing: str | None) -> tuple[Registry, list[Effect]]:
+    """A prompt a later one was sent over ran and ended before any of it was read: told as itself, with what it changed
+    read against the mark the later prompt set aside, and the later prompt left sent."""
+    session = event.session
+    return _enter(registry, event, lambda _: Submitted(since=sent.since), lambda _: [Compare(session, "set_aside"), Summarise(session, prompt, closing)])
 
 
 def _in_turn(session: Session | None, prompt: PromptId) -> bool:
@@ -359,6 +386,9 @@ def _prompted(state: SessionState, turn: PromptId | None, prompt: PromptId | Non
         case (Submitted(since=since), False):
             # Queued into the turn it opened, so that one was taken, whether or not its record has been read yet.
             return Working(since=since)
+        case (Submitted(), True) if prompt is not None and prompt != turn:
+            # Sent over one still sent: that one was cancelled, or ran unread. See Submitted.over.
+            return Submitted(since=at, over=turn)
         case (_, True) if prompt is not None and prompt != turn:
             # [LAW:types-are-the-program] not working yet: Claude Code takes a prompt only once its hooks finish, and an
             # Escape before then cancels it with nothing to say so, so only the record of its turn can make it Working.
