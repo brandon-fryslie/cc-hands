@@ -106,7 +106,7 @@ class Live:
         status_file(self.member).write_bytes(raw)
 
     def heard(self, statuses: Statuses) -> list[Report]:
-        heard = list(statuses.read(lambda: [self.session]))
+        heard = list(statuses.read([self.member.id], lambda _: self.session))
         assert {reported.session for reported in heard} <= {self.member.id}
         reports = [reported.report for reported in heard]
         for report in reports:
@@ -150,7 +150,7 @@ def test_a_session_with_no_status_file_is_heard_once_it_has_one(tmp_path: Path) 
 
 def test_a_transcript_outside_any_config_directory_is_refused_not_raised(tmp_path: Path) -> None:
     session = Session(replace(member_of(written("idle")), transcript=Path("/s.jsonl")), Resting(), mode=None, turn=None)
-    assert list(Statuses(clock=lambda: 5.0).read(lambda: [session])) == []
+    assert list(Statuses(clock=lambda: 5.0).read([session.membership.id], lambda _: session)) == []
 
 
 def test_an_unreadable_status_file_is_refused_not_raised(tmp_path: Path) -> None:
@@ -210,7 +210,8 @@ def test_each_session_is_read_only_once_the_report_before_it_is_applied(tmp_path
     status_file(two.member).parent.mkdir(parents=True, exist_ok=True)
     one.sets("idle", 1000)
     two.writes(edited("idle", statusUpdatedAt=1000, pid=two.member.pid, sessionId="two"))
-    reading = Statuses(clock=lambda: 5.0).read(lambda: [one.session, two.session])
+    held = {one.member.id: one.session, two.member.id: two.session}
+    reading = Statuses(clock=lambda: 5.0).read(list(held), held.get)
     assert next(reading).session == one.member.id
     # Session two's prompt is applied in the meantime: Claude Code set busy before its hook ran.
     busy = parse_report(two.member, edited("busy", statusUpdatedAt=2000, pid=two.member.pid, sessionId="two"))
@@ -221,4 +222,10 @@ def test_each_session_is_read_only_once_the_report_before_it_is_applied(tmp_path
 def test_a_status_is_stamped_with_when_it_was_read(tmp_path: Path) -> None:
     live = Live(tmp_path)
     live.sets("idle", 1000)
-    assert [reported.at for reported in Statuses(clock=lambda: 42.0).read(lambda: [live.session])] == [42.0]
+    assert [reported.at for reported in Statuses(clock=lambda: 42.0).read([live.member.id], lambda _: live.session)] == [42.0]
+
+
+def test_a_session_that_ended_while_the_one_before_was_applied_is_not_read(tmp_path: Path) -> None:
+    live = Live(tmp_path)
+    live.sets("idle", 1000)
+    assert list(Statuses(clock=lambda: 5.0).read([live.member.id], lambda _: None)) == []

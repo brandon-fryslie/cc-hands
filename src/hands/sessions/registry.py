@@ -11,7 +11,7 @@ from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, 
 from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
 from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
-from hands.core.session import Instant, Membership, Registry, RequestId, Session, SessionId
+from hands.core.session import Gone, Instant, Membership, Registry, RequestId, Session, SessionId
 from hands.sessions.audit import Applied, EffectFailed, Performed, Record
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.payload import Rejected
@@ -122,9 +122,17 @@ class Sessions:
         """The membership of every session that has not ended, without reading their transcripts."""
         return [session.membership for session in self._registry.live()]
 
-    def live_sessions(self) -> list[Session]:
-        """Every session that has not ended, without reading their transcripts."""
-        return self._registry.live()
+    def live_ids(self) -> list[SessionId]:
+        """Every session that has not ended, by id."""
+        return [session.membership.id for session in self._registry.live()]
+
+    def live_session(self, session: SessionId) -> Session | None:
+        """The session as the registry holds it now, or None once it has ended or if it never joined."""
+        match self._registry.sessions.get(session):
+            case Session(state=Gone()) | None:
+                return None
+            case known:
+                return known
 
     def live(self) -> list[Listing]:
         return [_listing(session) for session in self._registry.live()]

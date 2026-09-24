@@ -64,18 +64,17 @@ class Statuses:
         self._clock = clock
         self._unread: dict[SessionId, str] = {}
 
-    def read(self, sessions: Callable[[], Collection[Session]]) -> Iterator[StatusReported]:
-        """A report for each session whose status was set since the one the registry holds.
+    def read(self, live: Collection[SessionId], session: Callable[[SessionId], Session | None]) -> Iterator[StatusReported]:
+        """A report for each live session whose status was set since the one the registry holds.
 
         [LAW:no-ambient-temporal-coupling] each file is read only as its report is asked for, from the registry as it
         stands then, so one applied at once is the status the session has now: no hook can be applied between the read
         and the report, as one could while an earlier session's report is applied.
         """
-        live = [session.membership.id for session in sessions()]
         self._unread = {id: why for id in live if (why := self._unread.get(id)) is not None}
         for id in live:
-            match [session for session in sessions() if session.membership.id == id]:
-                case [session] if (reported := self._read(session)) is not None:
+            match session(id):
+                case Session() as now if (reported := self._read(now)) is not None:
                     yield reported
                 case _:
                     # Ended while the one before was applied, or with nothing set since.
@@ -116,7 +115,11 @@ def _unknown(member: Membership, status: Status) -> None:
 
 
 async def keep_reading_statuses(
-    sessions: Callable[[], Collection[Session]], clock: Callable[[], Instant], period: float, apply: Callable[[StatusReported], Awaitable[None]]
+    sessions: Callable[[], Collection[SessionId]],
+    session: Callable[[SessionId], Session | None],
+    clock: Callable[[], Instant],
+    period: float,
+    apply: Callable[[StatusReported], Awaitable[None]],
 ) -> None:
     """Read every live session's status once a period, and apply each one set since, until cancelled.
 
@@ -124,6 +127,6 @@ async def keep_reading_statuses(
     """
     statuses = Statuses(clock)
     while True:
-        for reported in statuses.read(sessions):
+        for reported in statuses.read(sessions(), session):
             await apply(reported)
         await asyncio.sleep(period)
