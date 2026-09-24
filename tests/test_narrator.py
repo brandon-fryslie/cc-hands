@@ -67,7 +67,7 @@ async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_d
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
-        await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN))
+        await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN, again=False))
         spoken = await asyncio.wait_for(frames.get(), 5.0)
     finally:
         narrating.cancel()
@@ -96,7 +96,7 @@ async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_aft
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
-        await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN))
+        await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN, again=False))
         # `claude -p` exits the moment its turn stops, so the end lands while the model is still summarising.
         await sessions.apply(Ended(SID, "other"))
         with pytest.raises(asyncio.TimeoutError):
@@ -131,14 +131,14 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
-        await sessions.apply(Stopped(SID, "Looked.", mode=None, prompt=PromptId("p1")))
+        await sessions.apply(Stopped(SID, "Looked.", mode=None, prompt=PromptId("p1"), again=False))
         await asyncio.wait_for(frames.get(), 5.0)
         with transcript.open("a") as more:
             more.write(f"{call}\n{result}\n{fixed}\n")
-        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1")))
+        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1"), again=True))
         await asyncio.wait_for(frames.get(), 5.0)
         # A third Stop with nothing written since is not a turn to tell.
-        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1")))
+        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1"), again=True))
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(frames.get(), 0.2)
     finally:

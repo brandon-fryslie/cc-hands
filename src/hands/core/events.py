@@ -60,6 +60,9 @@ class Stopped:
     # The prompt_id of the turn that stopped: the id it last went on under, and a turn a background task's notification
     # opened has its own, which its UserPromptSubmit carried too (2.1.281).
     prompt: PromptId
+    # Whether this is the turn stopping again: another Stop hook blocked its last Stop, so Claude went on in it under the
+    # same id (stop_hook_active, verified live on 2.1.282). The one Stop that ends a turn already told.
+    again: bool
 
 
 @dataclass(frozen=True)

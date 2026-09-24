@@ -73,6 +73,13 @@ class Payload:
         """A list that may be left out, which is the same as empty."""
         return [] if self.fields.get(key) is None else self.items(key)
 
+    def flag(self, key: str) -> bool:
+        match self._field(key):
+            case bool() as value:
+                return value
+            case other:
+                raise self._wrong(key, "a boolean", other)
+
     def optional_flag(self, key: str) -> bool:
         """A flag that may be left out, which is the same as false."""
         match self.fields.get(key):

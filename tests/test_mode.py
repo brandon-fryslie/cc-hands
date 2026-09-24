@@ -50,7 +50,7 @@ async def test_a_mode_changed_at_the_keyboard_is_listed_and_noted_at_the_session
     await sessions.apply(Joined(ONE, "startup"))
     assert describe_listing(sessions.live()[0])["mode"] == "not reported yet"
     await sessions.apply(Prompted(SID, at=1.0, mode="default", prompt=PromptId("p1")))
-    await sessions.apply(Stopped(SID, "ok", mode="default", prompt=PromptId("p1")))
+    await sessions.apply(Stopped(SID, "ok", mode="default", prompt=PromptId("p1"), again=False))
     assert describe_listing(sessions.live()[0])["mode"] == "manual mode"
     assert await sessions.heard() == Note(ModeChanged(SID, "default"))
     # Shift-tab at the prompt fires no hook; the next prompt reports where it landed.

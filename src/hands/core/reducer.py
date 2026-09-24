@@ -103,9 +103,9 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case Taken():
             # Read after its turn ended, before any status was read, or of one Claude Code said was over since: nothing to move.
             return registry, []
-        case Stopped(session=session, closing=closing, prompt=stopped) if _ends(registry.sessions.get(session), stopped):
+        case Stopped(session=session, closing=closing, prompt=stopped) if _ends(registry.sessions.get(session), event):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
-            return _enter(registry, event, _stopped, lambda was: [Compare(session), Summarise(session, stopped, closing), *_following(was)])
+            return _enter(registry, event, lambda _: Idle(), lambda was: [Compare(session), Summarise(session, stopped, closing), *_following(was)])
         case Stopped():
             # The Stop of a turn already over: told now if its telling waited for it (see _untold), and otherwise one
             # applied after the next turn's prompt, which ending would idle that turn and spend its mark.
@@ -322,7 +322,7 @@ def _named(event: SessionEvent, was: Session) -> tuple[PromptId | None, frozense
     match event:
         case Prompted(prompt=prompt) | Taken(prompt=prompt) if isinstance(was.state, Idle):
             return prompt, frozenset()
-        case Stopped(prompt=prompt) if isinstance(was.state, Idle) and _ends(was, prompt):
+        case Stopped(prompt=prompt) if isinstance(was.state, Idle) and _ends(was, event):
             # A turn hands never had running, as a queued one whose Stop is applied before its record is read: named as
             # told, so that record, read after, opens nothing.
             return prompt, frozenset()
@@ -371,16 +371,16 @@ def _awaiting(session: Session | None) -> bool:
     return session is not None and isinstance(session.state, Idle) and session.untold is not None
 
 
-def _ends(session: Session | None, prompt: PromptId) -> bool:
-    """Whether a Stop ends a turn: the busy one it names, or, at the prompt, the one it names whatever hands heard of it.
-    At the prompt that is a turn hands never had running, such as the one a session was in when it was attached, or the
-    last turn going on after another Stop hook blocked its Stop, which Claude Code stops again under the same id. Its
-    telling holds only what was not told before, so a Stop with nothing new says nothing."""
+def _ends(session: Session | None, stop: Stopped) -> bool:
+    """Whether a Stop ends a turn: the busy one it names, or, at the prompt, one hands never had running, such as the turn
+    a session was in when it was attached, or the last turn stopping again after another Stop hook blocked its Stop. Any
+    other Stop of the last turn ends nothing at the prompt: that turn was told. The telling of a turn stopping again holds
+    only what was not told before."""
     match session:
         case Session(state=state) if _busy(state):
-            return _names(session, prompt)
+            return _names(session, stop.prompt)
         case Session(state=Idle(), untold=None):
-            return True
+            return session.turn is None or not _names(session, stop.prompt) or stop.again
         case _:
             return False
 
@@ -458,16 +458,6 @@ def _taken(state: SessionState, named: bool) -> SessionState:
             return Working(since=since)
         case _:
             return state
-
-
-def _stopped(state: SessionState) -> SessionState:
-    match state:
-        case Idle():
-            # Already at the prompt: the idle period the Stop lands in is the one it stays in, so a nudge hands is timing for
-            # it, as for a turn the user interrupted, still comes.
-            return state
-        case _:
-            return Idle()
 
 
 def _waited(state: SessionState) -> SessionState:

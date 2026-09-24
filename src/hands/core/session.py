@@ -165,8 +165,8 @@ class Session:
     mode: Mode | None
     # [LAW:no-ambient-temporal-coupling] the id the session's last turn goes by: its prompt's, or the one Claude went on
     # answering under, which names the turn a busy session is in. A Stop ends a busy session's turn only when it names
-    # it, so one applied late never ends the turn after it; at the prompt, a Stop tells the turn it names, whatever hands
-    # heard of that turn (see _ends). None until a prompt is heard.
+    # it, so one applied late never ends the turn after it; at the prompt, a Stop of this turn ends it again only when
+    # the turn went on after another Stop hook blocked its Stop (see _ends). None until a prompt is heard.
     turn: PromptId | None
     # Every other id the running turn has been read going on under: a flush's is taken seconds before Claude answers
     # under it and the turn is moved to it, and a message queued in between carries it (2.1.281).
