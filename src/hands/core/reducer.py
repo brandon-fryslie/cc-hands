@@ -9,9 +9,9 @@ from hands.core.effects import (
     Deny,
     Effect,
     Narrate,
-    PermissionAsked,
-    PermissionDeadlineNear,
-    PermissionExpired,
+    Asking,
+    DeadlineNear,
+    Expired,
     Reply,
     SessionGone,
     Speak,
@@ -39,14 +39,14 @@ from hands.core.events import (
     ToolFinished,
     Waited,
 )
-from hands.core.session import Blocked, Gone, Idle, Instant, Membership, Permission, Registry, RequestId, Session, SessionId, SessionState, Working
+from hands.core.session import Blocked, Blocker, Gone, Idle, Instant, Membership, Registry, RequestId, Session, SessionId, SessionState, Working
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
 
 # What the agent reads when nobody answered in time.
 EXPIRED_MESSAGE = (
-    "Nobody answered this permission request by voice before its deadline, so hands denied it. "
+    "Nobody answered this request by voice before its deadline, so hands denied it. "
     "Do not retry it until the user asks."
 )
 
@@ -86,9 +86,9 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _enter(registry, event, lambda _: Idle(), lambda _was: [Compare(session), Summarise(session, closing)])
         case Waited():
             return _enter(registry, event, _waited)
-        case PermissionRequested(at=at, request=request, permission=permission):
+        case PermissionRequested(at=at, request=request, on=on):
             deadline = at + registry.permission_deadline
-            return _enter(registry, event, lambda _: Blocked(on=permission, request=request, deadline=deadline, warned=False))
+            return _enter(registry, event, lambda _: Blocked(on=on, request=request, deadline=deadline, warned=False))
         case ToolFinished(at=at, call=call):
             return _enter(registry, event, lambda state: _finished(state, call, at))
         case Ended(session=session, reason="other") if session in registry.sessions and not isinstance(registry.sessions[session].state, Gone):
@@ -167,10 +167,11 @@ def _unwaited(event: SessionEvent) -> list[Effect]:
             return []
 
 
-def _finished(state: SessionState, call: Permission, at: Instant) -> SessionState:
+def _finished(state: SessionState, call: Blocker, at: Instant) -> SessionState:
     match state:
         case Blocked(on=asked) if asked == call:
-            # The tool the session was waiting to run has run, so its dialog was answered at the keyboard.
+            # The tool the session was waiting to run has run, so its dialog was answered at the keyboard. A question
+            # answered there comes back carrying its answers, and is still the question that was asked.
             return Working(since=at)
         case _:
             return state
@@ -203,14 +204,14 @@ def _transition(session: SessionId, before: SessionState | None, after: SessionS
         case (Blocked(request=held), Blocked(request=asked)) if held == asked:
             # Compaction kept the session waiting on the same request.
             return []
-        case (Blocked(request=held), Blocked(request=asked, on=permission)):
-            return [Reply(session, held, Withdraw()), Narrate(PermissionAsked(session, asked, permission))]
+        case (Blocked(request=held), Blocked(request=asked, on=on)):
+            return [Reply(session, held, Withdraw()), Narrate(Asking(session, asked, on))]
         case (Blocked(request=held), _):
             # The session moved on without a voice answer: the user answered its dialog at the keyboard
             # and the tool ran, or the turn went on. The waiting hook is let go, deciding nothing.
             return [Reply(session, held, Withdraw())]
-        case (_, Blocked(request=asked, on=permission)):
-            return [Narrate(PermissionAsked(session, asked, permission))]
+        case (_, Blocked(request=asked, on=on)):
+            return [Narrate(Asking(session, asked, on))]
         case (Idle(nudged=False), Idle(nudged=True)):
             return [Speak(WaitingForYou(session))]
         case _:
@@ -228,10 +229,10 @@ def _ticked(registry: Registry, at: Instant) -> tuple[Registry, list[Effect]]:
 
 def _deadline(session: SessionId, state: SessionState, at: Instant) -> tuple[SessionState, list[Effect]]:
     match state:
-        case Blocked(on=permission, request=request, deadline=deadline) if at >= deadline:
+        case Blocked(on=on, request=request, deadline=deadline) if at >= deadline:
             # [LAW:no-silent-failure] silence never approves: an unanswered request is denied, and said to be.
-            return Working(since=at), [Reply(session, request, Deny(EXPIRED_MESSAGE)), Speak(PermissionExpired(session, permission))]
-        case Blocked(on=permission, deadline=deadline, warned=False) if at >= deadline - WARNING_LEAD_SECONDS:
-            return replace(state, warned=True), [Speak(PermissionDeadlineNear(session, permission, remaining=deadline - at))]
+            return Working(since=at), [Reply(session, request, Deny(EXPIRED_MESSAGE)), Speak(Expired(session, on))]
+        case Blocked(on=on, deadline=deadline, warned=False) if at >= deadline - WARNING_LEAD_SECONDS:
+            return replace(state, warned=True), [Speak(DeadlineNear(session, on, remaining=deadline - at))]
         case _:
             return state, []

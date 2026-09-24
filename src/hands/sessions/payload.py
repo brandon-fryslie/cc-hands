@@ -26,11 +26,7 @@ class Payload:
             value: object = json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError) as error:
             raise Rejected(f"not JSON: {error}") from error
-        match value:
-            case dict():
-                return cls(cast(dict[str, object], value))
-            case _:
-                raise Rejected(f"expected a JSON object, got {type(value).__name__}")
+        return cls.of(value, "the JSON")
 
     def text(self, key: str) -> str:
         match self._field(key):
@@ -64,6 +60,37 @@ class Payload:
                 return cast(dict[str, object], value)
             case _:
                 raise self._wrong(key, "an object", value)
+
+    def items(self, key: str) -> list[object]:
+        value = self._field(key)
+        match value:
+            case list():
+                return cast(list[object], value)
+            case _:
+                raise self._wrong(key, "a list", value)
+
+    def optional_items(self, key: str) -> list[object]:
+        """A list that may be left out, which is the same as empty."""
+        return [] if self.fields.get(key) is None else self.items(key)
+
+    def optional_flag(self, key: str) -> bool:
+        """A flag that may be left out, which is the same as false."""
+        match self.fields.get(key):
+            case None:
+                return False
+            case bool() as value:
+                return value
+            case other:
+                raise self._wrong(key, "a boolean or null", other)
+
+    @classmethod
+    def of(cls, value: object, what: str) -> Self:
+        """A JSON object found inside another, such as one entry of a list; `what` names it when it is not one."""
+        match value:
+            case dict():
+                return cls(cast(dict[str, object], value))
+            case _:
+                raise Rejected(f"{what} should be a JSON object, got {type(value).__name__}")
 
     def session_id(self) -> SessionId:
         value = self.text("session_id")

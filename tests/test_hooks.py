@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from hands.core.events import Ended, Joined, PermissionRequested, Prompted, Stopped, ToolFinished, Waited
-from hands.core.session import Membership, Permission, RequestId, SessionId
+from hands.core.session import AskedQuestion, Membership, Option, Permission, Question, RequestId, SessionId
 from hands.sessions.home import Home
 from hands.sessions.hooks import parse_hook
 from hands.sessions.membership import write_membership
@@ -61,7 +61,7 @@ def test_a_stop_is_still_the_end_of_a_turn_when_the_reply_it_carries_is_not_a_st
 def test_a_permission_request_carries_the_tool_and_its_input(home: Home) -> None:
     raw = body(hook_event_name="PermissionRequest", tool_name="Bash", tool_input={"command": "rm -r build"}, permission_suggestions=[])
     permission = Permission(tool="Bash", input={"command": "rm -r build"})
-    assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, permission=permission)
+    assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, on=permission)
 
 
 def test_a_finished_or_failed_tool_names_its_call_as_a_permission_does(home: Home) -> None:
@@ -69,6 +69,58 @@ def test_a_finished_or_failed_tool_names_its_call_as_a_permission_does(home: Hom
     failed = body(hook_event_name="PostToolUseFailure", tool_name="Bash", tool_input={"command": "ls"}, tool_use_id="t", error="no")
     call = Permission(tool="Bash", input={"command": "ls"})
     assert parse(home, done) == parse(home, failed) == ToolFinished(SID, at=12.5, call=call)
+
+
+# As Claude Code 2.1.280 posted it, captured live.
+QUESTIONS: dict[str, object] = {
+    "questions": [
+        {"question": "Which color do you prefer?", "header": "Color", "options": [{"label": "red", "description": "The color red"}, {"label": "green", "description": "The color green"}], "multiSelect": False},
+        {"question": "Which fruits do you like?", "header": "Fruits", "options": [{"label": "pear", "description": "A sweet fruit"}, {"label": "plum", "description": "A small stone fruit"}], "multiSelect": True},
+    ]
+}
+
+
+def test_an_ask_user_question_request_is_a_question_carrying_what_it_asks_and_its_input(home: Home) -> None:
+    raw = body(hook_event_name="PermissionRequest", tool_name="AskUserQuestion", tool_input=QUESTIONS, permission_suggestions=[])
+    question = Question(
+        (
+            AskedQuestion("Which color do you prefer?", (Option("red", "The color red"), Option("green", "The color green")), several=False),
+            AskedQuestion("Which fruits do you like?", (Option("pear", "A sweet fruit"), Option("plum", "A small stone fruit")), several=True),
+        ),
+        QUESTIONS,
+    )
+    event = parse(home, raw)
+    assert event == PermissionRequested(SID, at=12.5, request=REQUEST, on=question)
+    assert isinstance(event, PermissionRequested) and isinstance(event.on, Question) and event.on.input == QUESTIONS
+
+
+def test_a_question_answered_at_the_keyboard_finishes_as_the_question_it_was(home: Home) -> None:
+    asked = parse(home, body(hook_event_name="PermissionRequest", tool_name="AskUserQuestion", tool_input=QUESTIONS, permission_suggestions=[]))
+    answered = {**QUESTIONS, "answers": {"Which color do you prefer?": "green", "Which fruits do you like?": "pear, plum"}}
+    finished = parse(home, body(hook_event_name="PostToolUse", tool_name="AskUserQuestion", tool_input=answered, tool_use_id="t", tool_response={}))
+    assert isinstance(asked, PermissionRequested) and isinstance(finished, ToolFinished) and finished.call == asked.on
+
+
+def test_a_question_with_no_options_and_no_descriptions_is_still_a_question(home: Home) -> None:
+    asked = {"questions": [{"question": "Name it?"}, {"question": "Pick", "options": [{"label": "a"}]}]}
+    raw = body(hook_event_name="PermissionRequest", tool_name="AskUserQuestion", tool_input=asked, permission_suggestions=[])
+    on = Question((AskedQuestion("Name it?", (), several=False), AskedQuestion("Pick", (Option("a", None),), several=False)), asked)
+    assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, on=on)
+
+
+@pytest.mark.parametrize(
+    ("asked", "reason"),
+    [
+        ({}, "missing field 'questions'"),
+        ({"questions": "which?"}, "'questions' should be a list"),
+        ({"questions": ["which?"]}, "each question should be a JSON object"),
+        ({"questions": [{"question": "q", "options": ["a"]}]}, "each option should be a JSON object"),
+        ({"questions": [{"question": "q", "multiSelect": "yes"}]}, "'multiSelect' should be a boolean"),
+    ],
+)
+def test_a_question_that_does_not_parse_is_rejected_by_name(home: Home, asked: dict[str, object], reason: str) -> None:
+    with pytest.raises(Rejected, match=reason):
+        parse(home, body(hook_event_name="PermissionRequest", tool_name="AskUserQuestion", tool_input=asked, permission_suggestions=[]))
 
 
 @pytest.mark.parametrize(

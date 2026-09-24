@@ -10,7 +10,7 @@ from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.events import Ended, Joined, PermissionRequested, Prompted
-from hands.core.session import Membership, Permission, RequestId, SessionId
+from hands.core.session import Membership, Permission, RequestId, SessionId, Question
 from hands.sessions.registry import Sessions
 from hands.sessions.transcript import ai_title
 from hands.voice.tools import list_sessions_tool
@@ -44,7 +44,7 @@ async def call(sessions: Sessions) -> object:
 
 
 async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: Path) -> None:
-    working, untitled, blocked, ended = (membership(tmp_path, n) for n in ("working", "untitled", "blocked", "ended"))
+    working, untitled, blocked, asking, ended = (membership(tmp_path, n) for n in ("working", "untitled", "blocked", "asking", "ended"))
     titled(working.transcript, "first guess", "pipeline spike")
     titled(blocked.transcript, "auth refactor")
     titled(ended.transcript, "old work")
@@ -54,7 +54,9 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
         Prompted(working.id, at=1.0),
         Joined(untitled, "startup"),
         Joined(blocked, "startup"),
-        PermissionRequested(blocked.id, at=2.0, request=RequestId("r"), permission=Permission("Bash", {})),
+        PermissionRequested(blocked.id, at=2.0, request=RequestId("r"), on=Permission("Bash", {})),
+        Joined(asking, "startup"),
+        PermissionRequested(asking.id, at=3.0, request=RequestId("q"), on=Question((), {})),
         Joined(ended, "startup"),
         Ended(ended.id, "prompt_input_exit"),
     ):
@@ -65,6 +67,7 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
             {"id": "working", "title": "pipeline spike", "state": "working"},
             {"id": "untitled", "title": "untitled, in untitled", "state": "idle"},
             {"id": "blocked", "title": "auth refactor", "state": "waiting for permission to use Bash"},
+            {"id": "asking", "title": "untitled, in asking", "state": "waiting for the user to answer its question"},
         ]
     }
 

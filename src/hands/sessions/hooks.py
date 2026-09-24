@@ -4,9 +4,9 @@ from collections.abc import Mapping
 
 from loguru import logger
 
-from hands.core.effects import Allow, Deny, HookReply, Withdraw
+from hands.core.effects import Allow, AllowWith, Deny, HookReply, Withdraw
 from hands.core.events import Ended, EndReason, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished, Waited
-from hands.core.session import Instant, Permission, RequestId, SessionId
+from hands.core.session import AskedQuestion, Blocker, Instant, Option, Permission, Question, RequestId, SessionId
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership
 from hands.sessions.payload import Payload, Rejected
@@ -29,14 +29,34 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
         case "Notification":
             return _notified(session, payload.text("notification_type"))
         case "PermissionRequest":
-            permission = Permission(tool=payload.text("tool_name"), input=payload.mapping("tool_input"))
-            return PermissionRequested(session, at, request, permission)
+            return PermissionRequested(session, at, request, _call(payload))
         case "PostToolUse" | "PostToolUseFailure":
-            return ToolFinished(session, at, Permission(tool=payload.text("tool_name"), input=payload.mapping("tool_input")))
+            return ToolFinished(session, at, _call(payload))
         case "SessionEnd":
             return Ended(session, _end_reason(payload.text("reason")))
         case other:
             raise Rejected(f"hook event {other!r} is not one hands handles")
+
+
+def _call(payload: Payload) -> Blocker:
+    """A tool call as its hooks name it: AskUserQuestion is a question put to the user, every other tool a permission to run it."""
+    tool, input = payload.text("tool_name"), payload.mapping("tool_input")
+    match tool:
+        case "AskUserQuestion":
+            return Question(tuple(_asked(block) for block in Payload(input).items("questions")), input)
+        case _:
+            return Permission(tool=tool, input=input)
+
+
+def _asked(block: object) -> AskedQuestion:
+    fields = Payload.of(block, "each question")
+    options = tuple(_option(option) for option in fields.optional_items("options"))
+    return AskedQuestion(fields.text("question"), options, fields.optional_flag("multiSelect"))
+
+
+def _option(option: object) -> Option:
+    fields = Payload.of(option, "each option")
+    return Option(fields.text("label"), fields.optional_text("description"))
 
 
 def _notified(session: SessionId, kind: str) -> Waited:
@@ -88,6 +108,8 @@ def hook_output(reply: HookReply) -> Mapping[str, object] | None:
     match reply:
         case Allow():
             decision: dict[str, object] = {"behavior": "allow"}
+        case AllowWith(input=input):
+            decision = {"behavior": "allow", "updatedInput": dict(input)}
         case Deny(message=message):
             decision = {"behavior": "deny", "message": message}
         case Withdraw():

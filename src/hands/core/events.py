@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from hands.core.session import Instant, Membership, Permission, RequestId, SessionId
+from hands.core.session import Blocker, Instant, Membership, RequestId, SessionId
 
 
 StartSource = Literal["startup", "resume", "clear", "compact"]
@@ -62,16 +62,16 @@ class PermissionRequested:
     session: SessionId
     at: Instant
     request: RequestId
-    permission: Permission
+    on: Blocker
 
 
 @dataclass(frozen=True)
 class ToolFinished:
-    """A tool call ran to its end, or failed. The call is named by its tool and input, as a permission is."""
+    """A tool call ran to its end, or failed. The call is named as the request to run it was, so the two can be matched."""
 
     session: SessionId
     at: Instant
-    call: Permission
+    call: Blocker
 
 
 @dataclass(frozen=True)

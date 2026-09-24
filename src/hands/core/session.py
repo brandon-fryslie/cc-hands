@@ -1,7 +1,7 @@
 """A session's membership and lifecycle state, and the registry that holds them."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NewType, Self
 
@@ -30,6 +30,35 @@ class Permission:
     input: Mapping[str, object]
 
 
+@dataclass(frozen=True)
+class Option:
+    label: str
+    description: str | None
+
+
+@dataclass(frozen=True)
+class AskedQuestion:
+    question: str
+    # Empty for a question that takes the user's own words rather than a choice.
+    options: tuple[Option, ...]
+    several: bool  # more than one option may be chosen
+
+
+@dataclass(frozen=True)
+class Question:
+    """AskUserQuestion, waiting on the user's answers."""
+
+    asked: tuple[AskedQuestion, ...]
+    # The tool input as it was asked, which the answers are written back into.
+    # [LAW:types-are-the-program] a question is what it asks: the input its answered call comes back with carries
+    # the answers too, and is still the same question.
+    input: Mapping[str, object] = field(compare=False)
+
+
+# Everything a session stops for arrives through the same PermissionRequest hook.
+Blocker = Permission | Question
+
+
 # [LAW:types-are-the-program] a session is in exactly one of these, and each
 # carries only what is true of that state: a working session has a start, a
 # blocked one has the request it waits on and when that request expires.
@@ -47,7 +76,7 @@ class Working:
 
 @dataclass(frozen=True)
 class Blocked:
-    on: Permission
+    on: Blocker
     request: RequestId
     deadline: Instant
     # [LAW:no-ambient-temporal-coupling] the warning is spoken once because speaking it is this

@@ -182,8 +182,7 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
   `PermissionRequest`; the `Blocked.on` becomes `Question`; the pipeline reads the
   options; `answer_question` replies with the answers in `updatedInput`. Done when a
   real `AskUserQuestion` in a target session is answered by voice and the agent
-  proceeds with that answer. If the hook cannot carry the answer, the ticket records
-  that and falls back to `Key` chords through the same `Blocked` state.
+  proceeds with that answer. Built: the hook carries the answer, so no key chords.
 - **Plan approval.** `ExitPlanMode` arrives the same way; the plan text is
   narrated at summary depth; `answer_permission` accepts or rejects it. Done live.
 - **Mode readback.** `permission_mode` from every hook payload lands in
