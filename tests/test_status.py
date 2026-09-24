@@ -246,3 +246,17 @@ def test_a_daemon_that_keeps_crashing_is_announced_once_a_quiet_window(tmp_path:
     looks = [(verdict, NOW + timedelta(seconds=10 * cycle)) for cycle in range(8) for verdict in (up, down)]
     posted = [at for (_, at), notices in zip(looks, shown_over(looks)) if notices]
     assert posted == [NOW, NOW + timedelta(seconds=60)]
+
+
+def test_a_death_inside_the_quiet_window_is_announced_when_the_window_closes_if_hands_is_still_down() -> None:
+    down, up = status.Down(beat()), status.Up(beat())
+    at = [NOW + timedelta(seconds=seconds) for seconds in (0, 1, 10, 40, 50, 61, 70)]
+    looks = list(zip([up, down, up, down, down, down, down], at))
+    assert [bool(notices) for notices in shown_over(looks)] == [False, True, False, False, False, True, False]
+
+
+def test_a_death_owed_inside_the_quiet_window_is_dropped_if_hands_comes_back_before_it_closes() -> None:
+    down, up = status.Down(beat()), status.Up(beat())
+    at = [NOW + timedelta(seconds=seconds) for seconds in (0, 1, 10, 40, 55, 70)]
+    looks = list(zip([up, down, up, down, up, up], at))
+    assert not any(shown_over(looks)[2:])

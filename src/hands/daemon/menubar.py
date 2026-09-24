@@ -13,7 +13,7 @@ import threading
 from datetime import UTC, datetime
 
 import AppKit
-from Foundation import NSTimer
+from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
 from loguru import logger
 from PyObjCTools import AppHelper
 
@@ -56,7 +56,9 @@ def show(home: Home) -> None:
             os._exit(1)
 
     look(None)
-    NSTimer.scheduledTimerWithTimeInterval_repeats_block_(LOOK_SECONDS, True, look)
+    timer = NSTimer.timerWithTimeInterval_repeats_block_(LOOK_SECONDS, True, look)
+    # The common modes include the one the run loop is in while the menu is open, so an open menu keeps up too.
+    NSRunLoop.currentRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
     AppHelper.runEventLoop(installInterrupt=True)
 
 

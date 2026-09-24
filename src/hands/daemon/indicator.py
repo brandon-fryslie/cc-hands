@@ -45,6 +45,7 @@ class Shown:
     title: str  # the menu bar's text
     text: str  # the verdict in words, under the title
     notices: tuple[str, ...]  # notifications to post now
+    owed: bool  # hands left up while the quiet window was open, and has not come back since
     posted_at: datetime | None  # when a notice last went out, which opens the quiet window
 
 
@@ -55,8 +56,11 @@ def show(before: Shown | None, verdict: Verdict, now: datetime) -> Shown:
     match before:
         case None:
             # A daemon found already down at the first look is shown, not announced: only a departure from up is news.
-            return Shown(after, TITLES[after], text, (), None)
-        case Shown(light=was, posted_at=posted_at):
+            return Shown(after, TITLES[after], text, (), False, None)
+        case Shown(light=was, owed=owed, posted_at=posted_at):
+            # A departure held back by the quiet window is owed, not dropped: it goes out when the window closes,
+            # unless hands has come back up by then and there is nothing left to tell.
+            owing = after != "up" and (owed or was == "up")
             quiet = posted_at is not None and now - posted_at < QUIET
-            notices = (text,) if was == "up" and after != "up" and not quiet else ()
-            return Shown(after, TITLES[after], text, notices, now if notices else posted_at)
+            notices = (text,) if owing and not quiet else ()
+            return Shown(after, TITLES[after], text, notices, owing and not notices, now if notices else posted_at)
