@@ -195,26 +195,30 @@ class Deltas:
     async def _read(self, pending: asyncio.Future[Delta], start: Marking, end: Marking | None) -> None:
         """[LAW:no-silent-failure] whatever happens here, whoever is waiting is answered rather than left."""
         try:
-            delta = await self._marked(await start, end, time.monotonic() + self._reading)
+            delta = await self._marked(await start, end)
         except Exception as error:
             logger.error(f"what a turn changed could not be read: {type(error).__name__}: {error}")
             delta = Delta()
         if not pending.done():
             pending.set_result(delta)
 
-    async def _marked(self, start: Mark | None, end: Marking | None, deadline: float) -> Delta:
-        """What changed from where the turn began, up to where the next began or, with no next, to now."""
+    async def _marked(self, start: Mark | None, end: Marking | None) -> Delta:
+        """What changed from where the turn began, up to where the next began or, with no next, to now.
+
+        The reading's time is counted from once both marks are in hand: waiting on the next one is the marking's
+        time, spent under its own budget, and not the reading's.
+        """
         match (start, end):
             case (None, _):
                 return Delta()
             case (Mark(), None):
-                return await self._between(start, None, deadline)
+                return await self._between(start, None, time.monotonic() + self._reading)
             case (Mark(), _):
                 # A turn found to have run after the next prompt was marked. Read to now where that mark could not be
                 # taken, it would be told the next turn's work, and a listener can do nothing about changes told as
                 # the wrong turn's: without the next mark it is told without any.
                 ended = await end
-                return Delta() if ended is None else await self._between(start, ended, deadline)
+                return Delta() if ended is None else await self._between(start, ended, time.monotonic() + self._reading)
 
     async def _mark(self, cwd: Path, deadline: float) -> Mark | None:
         root = await self._git(cwd, "rev-parse", "--show-toplevel", deadline=deadline)
