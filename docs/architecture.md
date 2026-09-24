@@ -388,7 +388,10 @@ before the new turn is marked, and told as itself. A `Stop` carries the `prompt_
 turn it ends, which is how that turn is found in the tail. A turn a background task's
 notification opens fires `UserPromptSubmit` with an id of its own, as a typed prompt does.
 Until Claude answers under a flushed message's id, the registry keeps that id beside the turn's
-own, because a message queued in that window carries it.
+own, because a message queued in that window carries it. A record that opens a turn of its own,
+read while the registry still has another running, ends that one too. The registry remembers
+the ids of a turn it ended before its `Stop` was heard, so that `Stop`, applied late, ends
+nothing. A `Stop` naming an id not heard of yet ends its turn as any `Stop` does.
 
 The reply a `PermissionRequest` hook may give is printed on its stdout as
 `{"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": ...}}`,

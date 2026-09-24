@@ -208,8 +208,10 @@ class Tails:
                 return None
             if reading.turn.opening is None:
                 return None
-            # Tellings are made in the order their turns ended, so the turns before this one have had theirs.
-            following.ended = [held for held in following.ended if held.number >= reading.number]
+            if turn is not None:
+                # Tellings are made in the order their turns ended, so the turns before the one named have had theirs.
+                # A telling that names no turn says nothing of which one ended, so it lets go of none.
+                following.ended = [held for held in following.ended if held.number >= reading.number]
             steps = reading.turn.steps()
             # Claude Code only ever appends, so the record of a stand-in that has since been written is the first step
             # after what was heard; counting it heard too is how the stand-in gives way without the reply being told twice.

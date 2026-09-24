@@ -718,3 +718,13 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
     assert second is not None and second.turn == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
     listing = sessions.listing(SID)
     assert listing is not None and listing.session.state == Idle()
+
+
+async def test_a_telling_that_names_no_turn_lets_go_of_none_that_ended(tmp_path: Path) -> None:
+    """A Stop with no prompt_id says nothing of which turn ended, so the turns kept for their tellings stay kept."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, WRITING, CUT_OFF, NEXT_ASKED, DONE))
+    tails = await following(transcript)
+    assert await tails.tell(SID, None, None) is not None
+    kept = await tails.tell(SID, PromptId("p1"), None)
+    assert kept is not None and kept.turn == RIVERS
