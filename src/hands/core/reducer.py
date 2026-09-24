@@ -91,7 +91,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
                 lambda state: _prompted(state, registry.sessions[session].turn, prompt, _opens(registry.sessions[session], prompt), at),
                 lambda was: _opened(was, _opens(was, prompt)),
             )
-        case Taken(session=session, prompt=prompt):
+        case Taken(session=session, prompt=prompt, opens=opens):
             match registry.sessions.get(session):
                 case Session(state=Submitted(since=since), turn=turn) if turn == prompt:
                     # Working from when it was sent: the hooks it waited on are part of its turn.
@@ -100,13 +100,18 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
                     # [LAW:no-ambient-temporal-coupling] read before its own hook was applied, as a daemon too slow for the
                     # shim's timeout lets happen: kept as the turn, so that hook finds its prompt already taken.
                     return registry.put(replace(was, turn=prompt)), []
-                case Session(state=Working() | Blocked() | AtDialog(), turn=turn, taken=taken) as was if prompt != turn:
+                case Session(state=Working() | Blocked() | AtDialog(), turn=turn, taken=taken) as was if prompt != turn and not opens:
                     # The turn going on under a flushed message's id, which Claude has not answered under yet: a message
-                    # queued now carries this id, and is queued into this turn, not opening another.
+                    # queued now carries this id, and is queued into this turn, not opening another. A record that opens
+                    # a turn is that turn's own, read before its hook: its prompt ends this one when it lands.
                     return registry.put(replace(was, taken=taken | {prompt})), []
                 case _:
                     # A turn under way going on under a queued prompt, or one read after it ended: nothing to move.
                     return registry, []
+        case Stopped(prompt=str() as stopped) if _ended_already(registry.sessions.get(event.session), stopped):
+            # [LAW:no-ambient-temporal-coupling] the Stop of a turn a later prompt already ended, applied after that
+            # prompt: it was told there, and ending the turn now running would idle it and spend its mark.
+            return _enter(registry, event, lambda state: state)
         case Stopped(session=session, closing=closing, prompt=stopped):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
             return _enter(registry, event, lambda _: Idle(), lambda _was: [Compare(session), Summarise(session, stopped, closing)])
@@ -246,6 +251,15 @@ def _taken(event: SessionEvent, was: Session) -> frozenset[PromptId]:
             return frozenset()
         case _:
             return was.taken
+
+
+def _ended_already(session: Session | None, prompt: PromptId) -> bool:
+    """Whether a Stop names a turn other than the one the session has running or sent: one a later prompt ended."""
+    match session:
+        case Session(state=Submitted() | Working() | Blocked() | AtDialog(), turn=str() as turn, taken=taken):
+            return prompt != turn and prompt not in taken
+        case _:
+            return False
 
 
 def _in_turn(session: Session | None, prompt: PromptId) -> bool:

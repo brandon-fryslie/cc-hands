@@ -20,7 +20,7 @@ from hands.core.events import Continued, Interrupted, Taken, Transcribed
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.transcript import prompt_of, turn_record
+from hands.sessions.transcript import edge_of, prompt_of, turn_record
 from hands.sessions.turning import Turning
 
 
@@ -111,7 +111,8 @@ class Following:
             case "user":
                 # A record that names no prompt says nothing of which one Claude is answering.
                 was, self.asked = self.asked, prompt_of(record) or self.asked
-                return None if self.asked is None or self.asked == was else Taken(session, self.asked)
+                opens = isinstance(edge_of(record, self.reading.turn.mid_tool), Asked | Notified)
+                return None if self.asked is None or self.asked == was else Taken(session, self.asked, opens)
             case _:
                 # An assistant record: Claude answering whatever the user's side last carried.
                 was, self.answering = self.answering, self.asked

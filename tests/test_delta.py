@@ -513,7 +513,7 @@ async def test_a_turn_that_ended_unheard_before_the_next_prompt_keeps_its_own_ch
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
-    await sessions.apply(Taken(SID, PromptId("p1")))
+    await sessions.apply(Taken(SID, PromptId("p1"), opens=True))
     (root / "first.py").write_text("turn one\n")
     await sessions.apply(Prompted(SID, at=5.0, mode=None, prompt=PromptId("p2")))
     (root / "second.py").write_text("turn two\n")
