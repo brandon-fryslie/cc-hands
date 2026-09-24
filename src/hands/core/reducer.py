@@ -98,7 +98,8 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case Taken(session=session, at=at) if _opens(registry.sessions.get(session), event):
             # A turn no hook opened: named, so its Stop ends it. Not marked here, where a mark could land after Claude has
             # begun changing the repository: a message queued behind a turn was marked while that turn's Stop hook held
-            # Claude Code (see _following), and one nothing was queued for, as a `!` command's answer, is told by its steps.
+            # Claude Code (see _following), and one nothing was queued for, as a `!` command's answer, is compared against
+            # where the last turn's reading found the repository (see Deltas.compare).
             return _enter(registry, event, lambda _: Working(since=at))
         case Taken():
             # Read after its turn ended, before any status was read, or of one Claude Code said was over since: nothing to move.

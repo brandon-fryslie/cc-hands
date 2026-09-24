@@ -177,6 +177,21 @@ async def test_a_new_turn_reads_against_its_own_beginning_and_not_the_one_before
     assert [file.path for file in (await deltas.taken(SID)).files] == ["b.py"]
 
 
+async def test_a_turn_that_stops_again_tells_only_what_it_changed_after_its_first_stop(tmp_path: Path) -> None:
+    """Another Stop hook blocked the first Stop and Claude went on, with no prompt to mark from: the second part is read
+    against where the first part's reading found the repository, so each change is told once."""
+    root = repo(tmp_path)
+    deltas = Deltas()
+    await deltas.snapshot(SID, root)
+    (root / "a.py").write_text("first part\n")
+    await deltas.compare(SID)
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["a.py"]
+
+    (root / "b.py").write_text("second part\n")
+    await deltas.compare(SID)
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["b.py"]
+
+
 async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed(tmp_path: Path) -> None:
     """End to end through the parts that decide it: the reducer emits, the registry performs, in that order.
 
