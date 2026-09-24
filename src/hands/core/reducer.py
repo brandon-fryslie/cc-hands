@@ -90,7 +90,9 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
                 registry,
                 event,
                 lambda state: _prompted(state, registry.sessions[session].turn, prompt, at),
-                lambda was: [Snapshot(session, was.membership.cwd)] if _opens(was.state, was.turn, prompt) else [],
+                # One sitting at its prompt is marked even where its prompt was read as taken before this hook landed:
+                # the turn opened from here all the same, and unmarked it would be compared against the last turn's mark.
+                lambda was: [Snapshot(session, was.membership.cwd)] if isinstance(was.state, Idle) or _opens(was.state, was.turn, prompt) else [],
             )
         case Taken(session=session, prompt=prompt):
             match registry.sessions.get(session):

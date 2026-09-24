@@ -493,7 +493,7 @@ def test_a_prompt_read_as_taken_before_its_hook_was_applied_is_working_when_the_
     """The shim gives up after its timeout and Claude Code takes the prompt; the daemon applies the hook afterwards."""
     state, effects = reduce(in_turn(Idle(), turn=None), Taken(ONE.id, TURN))
     assert (state, effects) == (in_turn(Idle()), [])
-    assert reduce(state, Prompted(ONE.id, at=5.0, mode=None, prompt=TURN))[0] == in_turn(Working(since=5.0))
+    assert reduce(state, Prompted(ONE.id, at=5.0, mode=None, prompt=TURN)) == (in_turn(Working(since=5.0)), [Snapshot(ONE.id, ONE.cwd)])
 
 
 @pytest.mark.parametrize("session", [in_turn(Submitted(since=5.0), turn=NEXT), in_turn(Working(since=5.0))])
