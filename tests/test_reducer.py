@@ -245,6 +245,14 @@ def test_any_start_but_compaction_is_at_the_prompt(before: SessionState, source:
     assert reduce(holding(before), Joined(ONE, source))[0] == holding(Idle())
 
 
+@pytest.mark.parametrize("before", [*LIVE, Idle(due=5.0)])
+def test_a_compacted_session_keeps_what_claude_code_last_said_of_it(before: SessionState) -> None:
+    # Compaction keeps its process, whose status file it goes on writing: a report dropped here would not be set again.
+    report = Report(Busy(), Stamp(1000))
+    held = registry(Session(ONE, before, mode=None, turn=None, report=report))
+    assert reduce(held, Joined(ONE, "compact"))[0].sessions[ONE.id].report == report
+
+
 def test_an_ended_session_compacting_is_idle() -> None:
     assert reduce(holding(Gone()), Joined(ONE, "compact")) == (holding(Idle()), [])
 

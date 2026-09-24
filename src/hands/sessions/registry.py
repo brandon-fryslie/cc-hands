@@ -122,6 +122,10 @@ class Sessions:
         """The membership of every session that has not ended, without reading their transcripts."""
         return [session.membership for session in self._registry.live()]
 
+    def live_sessions(self) -> list[Session]:
+        """Every session that has not ended, without reading their transcripts."""
+        return self._registry.live()
+
     def live(self) -> list[Listing]:
         return [_listing(session) for session in self._registry.live()]
 

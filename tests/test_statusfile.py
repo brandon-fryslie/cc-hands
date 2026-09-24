@@ -4,12 +4,13 @@ The fixtures are status files copied as a live session wrote them, with only the
 """
 
 import json
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from loguru import logger
-from hands.core.events import StatusReported
-from hands.core.session import Membership, SessionId
+from hands.core.session import Idle as Resting, Membership, Session, SessionId
 from hands.core.status import Busy, Idle, Report, Shell, Stamp, Status, Unknown, UnknownReason, Waiting
 from hands.sessions.payload import Rejected
 from hands.sessions.statusfile import Statuses, parse_report, status_file
@@ -84,79 +85,119 @@ def test_the_file_is_found_in_the_config_directory_the_session_keeps_its_transcr
     assert status_file(member) == tmp_path / "claude-other" / "sessions" / f"{member.pid}.json"
 
 
-class Session:
-    """A member whose status file lives under tmp_path, rewritten as Claude Code rewrites it."""
+class Live:
+    """A live session whose status file lives under tmp_path, rewritten as Claude Code rewrites it, and whose registry
+    entry keeps each report it is handed, as the reducer does."""
 
     def __init__(self, tmp_path: Path) -> None:
-        self.member = member_of(written("idle"), tmp_path)
-        status_file(self.member).parent.mkdir(parents=True)
+        self.session = Session(member_of(written("idle"), tmp_path), Resting(), mode=None, turn=None)
+        status_file(self.member).parent.mkdir(parents=True, exist_ok=True)
 
-    def sets(self, name: str, stamp: int) -> Report:
-        raw = edited(name, statusUpdatedAt=stamp)
+    @property
+    def member(self) -> Membership:
+        return self.session.membership
+
+    def sets(self, name: str, stamp: int, **fields: object) -> Report:
+        raw = edited(name, statusUpdatedAt=stamp, **fields)
         status_file(self.member).write_bytes(raw)
         return parse_report(self.member, raw)
 
+    def writes(self, raw: bytes) -> None:
+        status_file(self.member).write_bytes(raw)
+
+    def heard(self, statuses: Statuses) -> list[Report]:
+        heard = statuses.read([self.session])
+        assert {reported.session for reported in heard} <= {self.member.id}
+        reports = [reported.report for reported in heard]
+        for report in reports:
+            self.session = replace(self.session, report=report)
+        return reports
+
 
 def test_each_time_the_stamp_moves_the_status_is_heard_once(tmp_path: Path) -> None:
-    session, statuses = Session(tmp_path), Statuses()
-    busy = session.sets("busy", 1000)
-    assert statuses.read([session.member]) == [StatusReported(session.member.id, busy)]
-    assert statuses.read([session.member]) == []
-    idle = session.sets("idle", 2000)
-    assert statuses.read([session.member]) == [StatusReported(session.member.id, idle)]
+    live, statuses = Live(tmp_path), Statuses()
+    busy = live.sets("busy", 1000)
+    assert live.heard(statuses) == [busy]
+    assert live.heard(statuses) == []
+    idle = live.sets("idle", 2000)
+    assert live.heard(statuses) == [idle]
 
 
 def test_a_status_set_again_to_what_it_was_is_heard_because_its_stamp_moved(tmp_path: Path) -> None:
     # An idle, busy, idle between two reads leaves the file idle as it was, with a later stamp.
-    session, statuses = Session(tmp_path), Statuses()
-    session.sets("idle", 1000)
-    statuses.read([session.member])
-    again = session.sets("idle", 3000)
-    assert statuses.read([session.member]) == [StatusReported(session.member.id, again)]
+    live, statuses = Live(tmp_path), Statuses()
+    live.sets("idle", 1000)
+    live.heard(statuses)
+    again = live.sets("idle", 3000)
+    assert live.heard(statuses) == [again]
+
+
+def test_a_report_the_registry_does_not_hold_is_heard_again(tmp_path: Path) -> None:
+    live, statuses = Live(tmp_path), Statuses()
+    idle = live.sets("idle", 1000)
+    live.heard(statuses)
+    live.session = replace(live.session, report=None)
+    assert live.heard(statuses) == [idle]
 
 
 def test_a_session_with_no_status_file_is_heard_once_it_has_one(tmp_path: Path) -> None:
-    member, statuses = member_of(written("idle"), tmp_path), Statuses()
-    assert statuses.read([member]) == []
-    assert statuses.read([member]) == []
-    session = Session(tmp_path)
-    idle = session.sets("idle", 1000)
-    assert statuses.read([member]) == [StatusReported(member.id, idle)]
+    live, statuses = Live(tmp_path), Statuses()
+    assert live.heard(statuses) == []
+    assert live.heard(statuses) == []
+    idle = live.sets("idle", 1000)
+    assert live.heard(statuses) == [idle]
+
+
+def test_a_transcript_outside_any_config_directory_is_refused_not_raised(tmp_path: Path) -> None:
+    session = Session(replace(member_of(written("idle")), transcript=Path("/s.jsonl")), Resting(), mode=None, turn=None)
+    assert Statuses().read([session]) == []
+
+
+def test_an_unreadable_status_file_is_refused_not_raised(tmp_path: Path) -> None:
+    live = Live(tmp_path)
+    status_file(live.member).mkdir()
+    assert live.heard(Statuses()) == []
+
+
+def logged(read: Callable[[], object]) -> list[str]:
+    warnings = list[str]()
+    sink = logger.add(lambda message: warnings.append(message.record["message"]), level="WARNING", filter="hands")
+    try:
+        read()
+    finally:
+        logger.remove(sink)
+    return warnings
 
 
 def test_why_a_status_cannot_be_read_is_said_once_not_every_read(tmp_path: Path) -> None:
-    member, statuses, warnings = member_of(written("idle"), tmp_path), Statuses(), list[str]()
-    sink = logger.add(lambda message: warnings.append(message.record["message"]), level="WARNING", filter="hands")
-    try:
-        for _ in range(3):
-            statuses.read([member])
-    finally:
-        logger.remove(sink)
+    live, statuses = Live(tmp_path), Statuses()
+    warnings = logged(lambda: [live.heard(statuses) for _ in range(3)])
     assert len(warnings) == 1 and "keeps no status" in warnings[0]
 
 
+def test_a_read_that_fails_once_neither_hears_the_status_again_nor_goes_unsaid(tmp_path: Path) -> None:
+    live, statuses = Live(tmp_path), Statuses()
+    live.sets("busy", 1000)
+    live.heard(statuses)
+    live.writes(written("busy")[:40])  # caught half rewritten
+    warnings = logged(lambda: live.heard(statuses))
+    assert len(warnings) == 1 and "refused" in warnings[0]
+    live.sets("busy", 1000)
+    assert live.heard(statuses) == []
+
+
 def test_a_status_this_version_does_not_know_is_passed_on_and_said(tmp_path: Path) -> None:
-    session, statuses, warnings = Session(tmp_path), Statuses(), list[str]()
-    status_file(session.member).write_bytes(edited("idle", status="dreaming", statusUpdatedAt=1000))
-    sink = logger.add(lambda message: warnings.append(message.record["message"]), level="WARNING", filter="hands")
-    try:
-        assert [reported.report.status for reported in statuses.read([session.member])] == [Unknown("dreaming")]
-    finally:
-        logger.remove(sink)
+    live, statuses = Live(tmp_path), Statuses()
+    live.sets("idle", 1000, status="dreaming")
+    heard: list[Report] = []
+    warnings = logged(lambda: heard.extend(live.heard(statuses)))
+    assert [report.status for report in heard] == [Unknown("dreaming")]
     assert len(warnings) == 1 and "'dreaming'" in warnings[0]
 
 
 def test_a_file_that_is_refused_is_heard_again_once_it_is_the_sessions(tmp_path: Path) -> None:
-    session, statuses = Session(tmp_path), Statuses()
-    status_file(session.member).write_bytes(edited("idle", sessionId="another-session"))
-    assert statuses.read([session.member]) == []
-    busy = session.sets("busy", 1000)
-    assert statuses.read([session.member]) == [StatusReported(session.member.id, busy)]
-
-
-def test_a_session_that_left_and_came_back_is_heard_afresh(tmp_path: Path) -> None:
-    session, statuses = Session(tmp_path), Statuses()
-    idle = session.sets("idle", 1000)
-    statuses.read([session.member])
-    statuses.read([])
-    assert statuses.read([session.member]) == [StatusReported(session.member.id, idle)]
+    live, statuses = Live(tmp_path), Statuses()
+    live.writes(edited("idle", statusUpdatedAt=1000, sessionId="another-session"))
+    assert live.heard(statuses) == []
+    busy = live.sets("busy", 2000)
+    assert live.heard(statuses) == [busy]

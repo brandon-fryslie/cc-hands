@@ -7,22 +7,25 @@ asks again whether the file said something this version knows.
 import asyncio
 from collections.abc import Awaitable, Callable, Collection
 from pathlib import Path
+from typing import get_args
 
 from loguru import logger
 
 from hands.core.events import StatusReported
-from hands.core.session import Membership, SessionId
+from hands.core.session import Membership, Session, SessionId
 from hands.core.status import Busy, Idle, Reason, Report, Shell, Stamp, Status, Unknown, UnknownReason, Waiting
 from hands.sessions.payload import Payload, Rejected
 
 # The waitingFor reasons this version knows, by the name the file gives them.
-_REASONS: dict[str, Reason] = {"permission prompt": "permission prompt", "input needed": "input needed"}
+_REASONS: dict[str, Reason] = {reason: reason for reason in get_args(Reason)}
 
 
 def status_file(membership: Membership) -> Path:
     """Where Claude Code keeps the session's status: `sessions/<pid>.json` in the config directory the session runs
     under, which holds its transcript at `projects/<project>/<session>.jsonl` (2.1.282). Found from the transcript, not
     from this process's CLAUDE_CONFIG_DIR, because each session may have been started under its own."""
+    if len(membership.transcript.parents) < 3:
+        raise Rejected(f"the transcript {membership.transcript} is not in a config directory's projects")
     return membership.transcript.parents[2] / "sessions" / f"{membership.pid}.json"
 
 
@@ -54,37 +57,39 @@ def _status(record: Payload) -> Status:
 
 
 class Statuses:
-    """The stamp last heard of each live session, so a status is heard once each time Claude Code sets it."""
+    """Why each live session's status could not be read last time, so a reason is said once, not every read."""
 
     def __init__(self) -> None:
-        # [LAW:no-ambient-temporal-coupling] edge-triggered on the stamp, not the status: an idle, busy, idle between
-        # two reads is still a status set, and still heard. What could not be read is kept by why, so it is said once.
-        self._last: dict[SessionId, Stamp | str] = {}
+        self._unread: dict[SessionId, str] = {}
 
-    def read(self, members: Collection[Membership]) -> list[StatusReported]:
-        """A report for each member whose status was set since the last read."""
-        self._last = {member.id: last for member in members if (last := self._last.get(member.id)) is not None}
-        return [reported for member in members if (reported := self._read(member)) is not None]
+    def read(self, sessions: Collection[Session]) -> list[StatusReported]:
+        """A report for each session whose status was set since the one the registry holds."""
+        self._unread = {session.membership.id: why for session in sessions if (why := self._unread.get(session.membership.id)) is not None}
+        return [reported for session in sessions if (reported := self._read(session)) is not None]
 
-    def _read(self, member: Membership) -> StatusReported | None:
-        path = status_file(member)
+    def _read(self, session: Session) -> StatusReported | None:
+        member = session.membership
         try:
+            path = status_file(member)
             report = parse_report(member, path.read_bytes())
         except FileNotFoundError:
-            return self._unread(member, f"Claude Code keeps no status for it at {path}")
-        except Rejected as error:
-            return self._unread(member, f"{path} does not parse: {error}")
-        if self._last.get(member.id) == report.stamp:
+            return self._said(member, f"Claude Code keeps no status for it at {status_file(member)}")
+        except (Rejected, OSError) as error:
+            return self._said(member, f"its status file is refused: {error}")
+        self._unread.pop(member.id, None)
+        # [LAW:one-source-of-truth] edge-triggered on the stamp the registry holds, not a copy kept here: a status the
+        # registry let go of is heard again. [LAW:no-ambient-temporal-coupling] the stamp, not the status, so an idle,
+        # busy, idle between two reads is still a status set, and still heard.
+        if session.report is not None and session.report.stamp == report.stamp:
             return None
-        self._last[member.id] = report.stamp
         _unknown(member, report.status)
         return StatusReported(member.id, report)
 
-    def _unread(self, member: Membership, why: str) -> None:
+    def _said(self, member: Membership, why: str) -> None:
         # [LAW:no-silent-failure] said once each time the reason changes, rather than every read.
-        if self._last.get(member.id) != why:
+        if self._unread.get(member.id) != why:
             logger.warning(f"no status for session {member.id}: {why}")
-        self._last[member.id] = why
+        self._unread[member.id] = why
 
 
 def _unknown(member: Membership, status: Status) -> None:
@@ -97,7 +102,7 @@ def _unknown(member: Membership, status: Status) -> None:
 
 
 async def keep_reading_statuses(
-    members: Callable[[], Collection[Membership]], period: float, apply: Callable[[StatusReported], Awaitable[None]]
+    sessions: Callable[[], Collection[Session]], period: float, apply: Callable[[StatusReported], Awaitable[None]]
 ) -> None:
     """Read every live session's status once a period, and apply each one set since, until cancelled.
 
@@ -105,6 +110,6 @@ async def keep_reading_statuses(
     """
     statuses = Statuses()
     while True:
-        for reported in statuses.read(members()):
+        for reported in statuses.read(sessions()):
             await apply(reported)
         await asyncio.sleep(period)

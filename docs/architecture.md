@@ -1092,7 +1092,7 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   `waiting` (with `waitingFor`, `permission prompt` or `input needed`), or `shell`, and
   `statusUpdatedAt` is when it was set, in epoch milliseconds. A `!` command reports
   `busy`. `hands.sessions.statusfile` reads every listed session's file ten times a
-  second and applies a `StatusReported` each time the stamp moves, so a status set
+  second and applies a `StatusReported` each time its stamp differs from the one the registry holds, so a status set
   again to what it was, or an idle, busy, idle between two reads, is still heard. A
   status or reason hands does not know arrives as an unknown variant and is logged,
   never read as idle. A file that names another pid or another session is refused. The
