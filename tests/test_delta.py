@@ -177,21 +177,6 @@ async def test_a_new_turn_reads_against_its_own_beginning_and_not_the_one_before
     assert [file.path for file in (await deltas.taken(SID)).files] == ["b.py"]
 
 
-async def test_a_turn_no_prompt_marked_reads_against_where_the_turn_before_it_ended(tmp_path: Path) -> None:
-    """hands-status-bpp.44l: a message queued behind a turn runs as soon as that turn's Stop hook returns, and no prompt of
-    its own marks it (2.1.282). Its delta is its own, and not the turn before's again."""
-    root = repo(tmp_path)
-    deltas = Deltas()
-    await deltas.snapshot(SID, root)
-    (root / "first.py").write_text("turn one\n")
-    await deltas.compare(SID)
-    assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
-
-    (root / "queued.py").write_text("the queued turn\n")
-    await deltas.compare(SID)
-    assert [file.path for file in (await deltas.taken(SID)).files] == ["queued.py"]
-
-
 async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed(tmp_path: Path) -> None:
     """End to end through the parts that decide it: the reducer emits, the registry performs, in that order.
 
@@ -541,5 +526,27 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
     assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
     assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), "Done.")
     assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
+
+
+async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_changed(tmp_path: Path) -> None:
+    """hands-status-bpp.44l: no prompt of its own marks it, so p1's Stop does, while its hook holds Claude Code (2.1.282)."""
+    root = repo(tmp_path)
+    deltas = Deltas()
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
+    await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
+    await sessions.apply(StatusReported(SID, Report(status.Idle(), Stamp(1)), at=0.5))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Taken(SID, PromptId("p1"), Stamp(2), 1.5))
+    await sessions.apply(Prompted(SID, at=2.0, mode=None, prompt=PromptId("p1")))
+    (root / "first.py").write_text("turn one\n")
+    await sessions.apply(Stopped(SID, "One.", mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Taken(SID, PromptId("p2"), Stamp(4), 4.0))
+    (root / "queued.py").write_text("the queued turn\n")
+    await sessions.apply(Stopped(SID, "Two.", mode=None, prompt=PromptId("p2")))
+
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "One.")
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), "Two.")
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["queued.py"]
 
 

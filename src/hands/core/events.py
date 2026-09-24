@@ -86,7 +86,8 @@ class Taken:
     session: SessionId
     prompt: PromptId
     # When Claude Code wrote the record, on the clock it stamps a status with, so an idle it set after it can be told
-    # from one it set before. None only when the record carried no time, which 2.1.282's always do.
+    # from one it set before. None when the record carried no time, which 2.1.282's always do, or one the tail could not
+    # read and said so: either way it opens nothing.
     written: Stamp | None
     at: Instant  # when the record was read
 

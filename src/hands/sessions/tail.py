@@ -7,7 +7,6 @@ about where the turn started or what of it was heard.
 
 import asyncio
 import os
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -104,14 +103,14 @@ class Following:
     def numbered(self, number: int) -> Reading | None:
         return next((reading for reading in [self.reading, *self.ended] if reading.number == number), None)
 
-    def prompted(self, session: SessionId, record: Payload, written: Stamp | None, at: Instant) -> Taken | Continued | None:
+    def prompted(self, session: SessionId, record: Payload, at: Instant) -> Taken | Continued | None:
         """What this record says of the prompt the session is on: the first record under a prompt's id is Claude Code
         taking it, and Claude answering under an id it was not answering under before is its turn going on under that one."""
         match record.fields.get("type"):
             case "user":
                 # A record that names no prompt says nothing of which one Claude is answering.
                 was, self.asked = self.asked, prompt_of(record) or self.asked
-                return None if self.asked is None or self.asked == was else Taken(session, self.asked, written, at)
+                return None if self.asked is None or self.asked == was else Taken(session, self.asked, _written(session, record), at)
             case _:
                 # An assistant record: Claude answering whatever the user's side last carried.
                 was, self.answering = self.answering, self.asked
@@ -147,10 +146,6 @@ class Tails:
         # transcript the catch-up is reading. [LAW:single-enforcer] everything that touches a Following waits on
         # this, the marking of what was told included, so no two threads are ever inside one Following.
         self._reading = asyncio.Lock()
-        # How far behind the newest record read was when it was read, in seconds, of whichever transcript the
-        # last reading touched: it measures this loop keeping up, which is the loop's property and not a
-        # session's. None where that record carried no timestamp, because then nothing measured it.
-        self.lag: float | None = None
         # Everything read of a turn that no hook says and not yet handed out, in the order it was read, by whichever
         # reading found it: a Stop's reading can be the one that reads it. Touched only under the lock.
         self._transcribed: list[Transcribed] = []
@@ -278,15 +273,13 @@ class Tails:
                 logger.error(f"a record in the transcript of session {session} could not be read, so it is not told: {error}")
                 continue
             if record is not None:
-                written = _written(session, record)
                 # The prompt first: a prompt's first record can be the one that interrupts it, and it was taken to be.
                 # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
-                prompted = following.prompted(session, record, written, self._known.now())
+                prompted = following.prompted(session, record, self._known.now())
                 if prompted is not None:
                     self._transcribed.append(prompted)
                 if following.consume(record) is not None:
                     self._interrupt(session, record)
-                self.lag = None if written is None else time.time() - written / 1000
 
     def _interrupt(self, session: SessionId, record: Payload) -> None:
         prompt = prompt_of(record)

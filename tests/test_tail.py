@@ -414,18 +414,6 @@ async def test_a_session_registered_again_is_told_from_the_transcript_it_has_now
     assert telling is not None and telling.turn == Turn(Asked(None, "again"), (Said(None, "Done."),))
 
 
-async def test_how_far_behind_the_newest_record_was_when_it_was_read_is_measured(tmp_path: Path) -> None:
-    transcript = tmp_path / "t.jsonl"
-    stamped = '{"type":"assistant","timestamp":"2026-09-01T12:00:00.000Z","message":{"content":[{"type":"text","text":"Done."}]}}'
-    transcript.write_text(lines(PROMPT, stamped))
-    tails = await following(transcript)
-    assert tails.lag is not None and tails.lag > 0
-    # A record with no timestamp to compare against is read without one, rather than with a made-up one.
-    transcript.write_text(lines(PROMPT, stamped, DONE))
-    await tails.catch_up()
-    assert tails.lag is None
-
-
 async def test_the_catch_up_and_a_stop_never_read_the_same_bytes_twice(tmp_path: Path) -> None:
     """Both read off the loop in a thread, and a Stop reads the transcript the catch-up is already reading."""
     transcript = tmp_path / "t.jsonl"
