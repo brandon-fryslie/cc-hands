@@ -1085,7 +1085,9 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   second and applies a `StatusReported` each time its stamp differs from the one the registry holds, so a status set
   again to what it was, or an idle, busy, idle between two reads, is still heard. A
   status or reason hands does not know arrives as an unknown variant and is logged,
-  never read as idle. A file that names another pid or another session is refused. The
+  never read as idle. A file that names another pid or another session is refused. A file
+that is missing or refused is logged as an error, once per reason: without it a turn
+stopped with Escape, which fires no Stop, is never heard to end. The
   registry keeps the last one as `Session.report`. It is the source of whether a
   session's turn is over: an `idle` applied to a session in `Submitted`, `Working`,
   `Blocked`, or `AtDialog` ends its turn, however the turn was stopped, with no case for
@@ -1097,7 +1099,7 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   before the transcript says how the turn ended: an Escape's interrupt record is
   written ~100 ms after, and an Escape'd turn's Stop can fire after it. So the turn is
   kept as `Session.untold` and is told, once, at the first of five events: its Stop
-  (told with the reply the Stop carries), its interrupt record, a turn after it
+  (told with the reply the Stop carries), its interrupt record (one naming its prompt), a turn after it
   opening (told before that turn's mark), the session ending, or the tick `UNTOLD_SECONDS` after the
   status, which is what tells a double Escape that leaves no record. Which came first
   is decided by the order they are applied, with no stamp compared against hands'

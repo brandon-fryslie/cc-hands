@@ -290,7 +290,7 @@ class Tails:
         prompt = prompt_of(record)
         if prompt is None:
             # [LAW:no-silent-failure] a record that names no turn is the record of none, so the turn it stopped is told at
-            # its deadline, without it.
+            # the deadline Claude Code's idle set, without it.
             logger.error(f"session {session} was interrupted, but the record of it names no prompt, so its turn is told without it")
             return
         # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
