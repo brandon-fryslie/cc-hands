@@ -94,7 +94,7 @@ class DeadlineNear:
 
 @dataclass(frozen=True)
 class Expired:
-    """Nobody answered by voice in time, so hands replied deny."""
+    """Nobody answered by voice in time: a permission was denied, a question left to its dialog."""
 
     session: SessionId
     on: Blocker

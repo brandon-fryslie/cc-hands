@@ -251,7 +251,9 @@ Deadlines are data. The `Blocked` state carries the instant it expires and wheth
 the warning has been spoken. A single ticker sends `Tick(now)` once a second; the
 reducer compares, and emits `Speak("ten seconds on that permission")` exactly once,
 because the transition from `warned=False` to `warned=True` is a state change, not a
-timer callback. At the deadline it emits `Reply(deny)` and says so. The ticker's
+timer callback. At the deadline it emits `Reply(deny)` for a permission and says so;
+a question, which silence cannot answer, is withdrawn instead and left to its dialog,
+where the user may be answering it at the keyboard. The ticker's
 period only bounds how late a deadline is heard; no correctness property depends on
 a `sleep`.
 

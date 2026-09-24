@@ -1,7 +1,7 @@
 """A session's membership and lifecycle state, and the registry that holds them."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NewType, Self
 
@@ -50,9 +50,7 @@ class Question:
 
     asked: tuple[AskedQuestion, ...]
     # The tool input as it was asked, which the answers are written back into.
-    # [LAW:types-are-the-program] a question is what it asks: the input its answered call comes back with carries
-    # the answers too, and is still the same question.
-    input: Mapping[str, object] = field(compare=False)
+    input: Mapping[str, object]
 
 
 # Everything a session stops for arrives through the same PermissionRequest hook.

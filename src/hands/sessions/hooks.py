@@ -56,7 +56,8 @@ def _asked(block: object) -> AskedQuestion:
 
 def _option(option: object) -> Option:
     fields = Payload.of(option, "each option")
-    return Option(fields.text("label"), fields.optional_text("description"))
+    # Claude Code sends an empty description as often as none, and both mean the option has nothing to add.
+    return Option(fields.text("label"), fields.optional_text("description") or None)
 
 
 def _notified(session: SessionId, kind: str) -> Waited:

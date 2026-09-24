@@ -281,7 +281,7 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
 
         Args:
             request: The request id given with the questions.
-            answers: One answer per question, in the order they were asked: the label of the option the user chose, or their own words when no option fits. Where more than one may be chosen, join the labels with ", ".
+            answers: One answer per question, in the order they were asked: the label of the option the user chose, or their own words when no option fits. Where more than one may be chosen, join the labels with ", ". An empty answer when the user chose none.
         """
         await _decide(params, sessions, request, lambda: parse_answers(answers))
 
@@ -319,16 +319,12 @@ def parse_decision(decision: object, message: object) -> Decision:
 
 
 def parse_answers(answers: object) -> Answers:
-    """The model's answers, parsed once: each is typed into a dialog's answer, so none may be empty or press a key."""
+    """The model's answers, parsed once. An empty one leaves its question unanswered, as the dialog's own does."""
     return Answers(tuple(_answer_text(answer) for answer in _items(answers, "answers")))
 
 
 def _answer_text(answer: object) -> str:
     match answer:
-        case str() if not answer.strip():
-            raise Rejected("an answer is empty")
-        case str() if _CONTROL.search(answer):
-            raise Rejected("an answer holds a control character")
         case str():
             return answer
         case other:

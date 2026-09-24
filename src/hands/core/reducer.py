@@ -8,6 +8,7 @@ from hands.core.effects import (
     Audit,
     Deny,
     Effect,
+    HookReply,
     Narrate,
     Asking,
     DeadlineNear,
@@ -39,14 +40,14 @@ from hands.core.events import (
     ToolFinished,
     Waited,
 )
-from hands.core.session import Blocked, Blocker, Gone, Idle, Instant, Membership, Registry, RequestId, Session, SessionId, SessionState, Working
+from hands.core.session import Blocked, Blocker, Gone, Idle, Instant, Membership, Permission, Question, Registry, RequestId, Session, SessionId, SessionState, Working
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
 
 # What the agent reads when nobody answered in time.
 EXPIRED_MESSAGE = (
-    "Nobody answered this request by voice before its deadline, so hands denied it. "
+    "Nobody answered this permission request by voice before its deadline, so hands denied it. "
     "Do not retry it until the user asks."
 )
 
@@ -169,12 +170,21 @@ def _unwaited(event: SessionEvent) -> list[Effect]:
 
 def _finished(state: SessionState, call: Blocker, at: Instant) -> SessionState:
     match state:
-        case Blocked(on=asked) if asked == call:
-            # The tool the session was waiting to run has run, so its dialog was answered at the keyboard. A question
-            # answered there comes back carrying its answers, and is still the question that was asked.
+        case Blocked(on=asked) if _same_call(asked, call):
+            # The tool the session was waiting to run has run, so its dialog was answered at the keyboard.
             return Working(since=at)
         case _:
             return state
+
+
+def _same_call(asked: Blocker, call: Blocker) -> bool:
+    match (asked, call):
+        case (Question(asked=questions), Question(asked=answered)):
+            # A question answered at the keyboard comes back with the answers added to its input: it is the same
+            # call when it asks the same questions.
+            return questions == answered
+        case _:
+            return asked == call
 
 
 def _waited(state: SessionState) -> SessionState:
@@ -218,6 +228,17 @@ def _transition(session: SessionId, before: SessionState | None, after: SessionS
             return []
 
 
+def _expiry(on: Blocker) -> HookReply:
+    match on:
+        case Permission():
+            # [LAW:no-silent-failure] silence never approves: an unanswered request is denied, and said to be.
+            return Deny(EXPIRED_MESSAGE)
+        case Question():
+            # Silence cannot answer a question, so there is nothing to refuse: it is left to its dialog, where the
+            # user may be answering it at the keyboard, rather than closed under them.
+            return Withdraw()
+
+
 def _ticked(registry: Registry, at: Instant) -> tuple[Registry, list[Effect]]:
     after, effects = registry, list[Effect]()
     for session in registry.sessions.values():
@@ -230,8 +251,7 @@ def _ticked(registry: Registry, at: Instant) -> tuple[Registry, list[Effect]]:
 def _deadline(session: SessionId, state: SessionState, at: Instant) -> tuple[SessionState, list[Effect]]:
     match state:
         case Blocked(on=on, request=request, deadline=deadline) if at >= deadline:
-            # [LAW:no-silent-failure] silence never approves: an unanswered request is denied, and said to be.
-            return Working(since=at), [Reply(session, request, Deny(EXPIRED_MESSAGE)), Speak(Expired(session, on))]
+            return Working(since=at), [Reply(session, request, _expiry(on)), Speak(Expired(session, on))]
         case Blocked(on=on, deadline=deadline, warned=False) if at >= deadline - WARNING_LEAD_SECONDS:
             return replace(state, warned=True), [Speak(DeadlineNear(session, on, remaining=deadline - at))]
         case _:

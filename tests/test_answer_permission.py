@@ -169,9 +169,34 @@ async def test_an_answer_that_does_not_fit_the_question_sends_nothing_and_it_sti
     await shim.finished()
 
 
+async def test_a_question_nobody_answers_by_its_deadline_is_left_to_its_dialog_and_said_to_be(home: Home, sessions: Sessions, clock: Clock) -> None:
+    shim, moment = await asked(home, sessions, QUESTION)
+    for clock.now in (DEADLINE - 10.0, DEADLINE):
+        await sessions.apply(Tick(clock.now))
+    code, stdout, _ = await shim.finished()
+    # Printing nothing decides nothing: the dialog, where the user may be answering, stays up.
+    assert (code, stdout) == (0, "")
+    [warning, expiry] = [await sessions.heard(), await sessions.heard()]
+    assert (warning, expiry) == (Speak(DeadlineNear(SID, moment.on, remaining=10.0)), Speak(Expired(SID, moment.on)))
+    spoken = [frame(heard, names=lambda _: "quiz") for heard in (warning, expiry)]
+    assert [cast(TTSSpeakFrame, said).text for said in spoken] == [
+        "10 seconds left to answer quiz about its question.",
+        "Nobody answered quiz about its question in time, so it is left waiting at its dialog.",
+    ]
+
+
+async def test_an_empty_answer_leaves_its_question_unanswered(home: Home, sessions: Sessions) -> None:
+    shim, moment = await asked(home, sessions, QUESTION)
+    assert await call(named(sessions, "answer_question"), request=moment.request, answers=["green", ""]) == {
+        "readback": "Answered green; nothing for untitled, in cc-hands."
+    }
+    _, stdout, _ = await shim.finished()
+    assert decision(stdout) == {"behavior": "allow", "updatedInput": {**QUESTIONS, "answers": {"Which color?": "green", "Which fruits?": ""}}}
+
+
 @pytest.mark.parametrize(
     ("answers", "error"),
-    [("green", "answers should be a list"), (["green", ""], "an answer is empty"), (["green\x1b[A"], "control character"), ([3], "each answer should be a string")],
+    [("green", "answers should be a list"), ([3], "each answer should be a string")],
 )
 async def test_answers_that_do_not_parse_are_refused_out_loud(sessions: Sessions, answers: object, error: str) -> None:
     assert error in str((await call(named(sessions, "answer_question"), request="r", answers=answers))["error"])

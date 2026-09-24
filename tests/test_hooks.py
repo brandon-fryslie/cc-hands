@@ -98,13 +98,14 @@ def test_a_question_answered_at_the_keyboard_finishes_as_the_question_it_was(hom
     asked = parse(home, body(hook_event_name="PermissionRequest", tool_name="AskUserQuestion", tool_input=QUESTIONS, permission_suggestions=[]))
     answered = {**QUESTIONS, "answers": {"Which color do you prefer?": "green", "Which fruits do you like?": "pear, plum"}}
     finished = parse(home, body(hook_event_name="PostToolUse", tool_name="AskUserQuestion", tool_input=answered, tool_use_id="t", tool_response={}))
-    assert isinstance(asked, PermissionRequested) and isinstance(finished, ToolFinished) and finished.call == asked.on
+    assert isinstance(asked, PermissionRequested) and isinstance(finished, ToolFinished)
+    assert isinstance(asked.on, Question) and isinstance(finished.call, Question) and finished.call.asked == asked.on.asked
 
 
 def test_a_question_with_no_options_and_no_descriptions_is_still_a_question(home: Home) -> None:
-    asked = {"questions": [{"question": "Name it?"}, {"question": "Pick", "options": [{"label": "a"}]}]}
+    asked = {"questions": [{"question": "Name it?"}, {"question": "Pick", "options": [{"label": "a"}, {"label": "b", "description": ""}]}]}
     raw = body(hook_event_name="PermissionRequest", tool_name="AskUserQuestion", tool_input=asked, permission_suggestions=[])
-    on = Question((AskedQuestion("Name it?", (), several=False), AskedQuestion("Pick", (Option("a", None),), several=False)), asked)
+    on = Question((AskedQuestion("Name it?", (), several=False), AskedQuestion("Pick", (Option("a", None), Option("b", None)), several=False)), asked)
     assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, on=on)
 
 

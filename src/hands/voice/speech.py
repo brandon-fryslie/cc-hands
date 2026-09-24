@@ -72,40 +72,40 @@ def _ask_user(on: Blocker) -> str:
 def announcement_text(announcement: Announcement, names: Names) -> str:
     match announcement:
         case DeadlineNear(session=session, on=on, remaining=remaining):
-            return f"{round(remaining)} seconds left to answer {names(session)} {_about(on)}."
+            return f"{round(remaining)} seconds left to answer {names(session)} about {_what(on)}."
         case Expired(session=session, on=on):
             # Said as what hands did: an answer typed at the dialog meanwhile would already have settled it.
-            return f"Nobody answered {names(session)} {_about(on)} in time, so I told it no."
+            return f"Nobody answered {names(session)} about {_what(on)} in time, so {_left(on)}."
         case WaitingForYou(session=session):
             return f"{names(session)} is waiting for you."
-
-
-def _about(on: Blocker) -> str:
-    match on:
-        case Permission(tool=tool):
-            return f"about {tool}"
-        case Question():
-            return "about its question"
 
 
 def answer_readback(outcome: Outcome, names: Names) -> str:
     match outcome:
         case Answered(session=session, on=on, decision=decision):
-            return f"{_done(on, decision)} for {names(session)}."
+            return f"{_done(decision, _what(on))} for {names(session)}."
         case NotWaiting():
             return "That request is no longer waiting: it was already answered, answered at the keyboard, or denied at its deadline."
         case Unfit(on=on, decision=decision):
             return _unfit(on, decision)
 
 
-def _done(on: Blocker, decision: Decision) -> str:
-    match (on, decision):
-        case (_, Deny()):
-            return f"Denied {_what(on)}"
-        case (_, Allow()):
-            return f"Allowed {_what(on)}"
-        case (_, Answers(chosen=chosen)):
-            return f"Answered {'; '.join(chosen)}"
+def _done(decision: Decision, what: str) -> str:
+    match decision:
+        case Deny():
+            return f"Denied {what}"
+        case Allow():
+            return f"Allowed {what}"
+        case Answers(chosen=chosen):
+            return f"Answered {'; '.join(answer or 'nothing' for answer in chosen)}"
+
+
+def _left(on: Blocker) -> str:
+    match on:
+        case Permission():
+            return "I told it no"
+        case Question():
+            return "it is left waiting at its dialog"
 
 
 def _what(on: Blocker) -> str:
