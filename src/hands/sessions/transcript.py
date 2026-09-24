@@ -53,8 +53,13 @@ def turn_record(line: bytes) -> Payload | None:
         return None
     # [LAW:parse-dont-validate] the message is shaped here, at the one place a line becomes a record, so that
     # reading a turn out of it cannot raise halfway through a record its reader has already begun to consume.
-    message(record)
-    return record
+    shaped = message(record)
+    # Claude Code's own stand-in for a reply that never came, not something Claude said.
+    return None if shaped.get("model") == "<synthetic>" and result_text(shaped.get("content")) == _NO_RESPONSE else record
+
+
+# What Claude Code writes as the reply to a turn the user stopped at a question: 19 of this machine's interrupts are followed by it.
+_NO_RESPONSE = "No response requested."
 
 
 # The whole of the record Claude Code writes as a turn's last when the user stops it at the keyboard: the second when a

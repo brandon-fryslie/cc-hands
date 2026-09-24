@@ -545,6 +545,22 @@ async def test_an_escape_in_the_turn_a_queued_prompt_went_on_as_leaves_the_sessi
     assert listing is not None and isinstance(listing.session.state, Idle)
 
 
+async def test_the_stand_in_claude_code_writes_after_a_question_it_stopped_is_not_what_claude_said(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    stand_in = '{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"No response requested."}]}}'
+    transcript.write_text(lines(ASKED, WRITING, CUT_OFF, stand_in))
+    telling = await (await following(transcript)).tell(SID, None)
+    assert telling is not None and telling.turn.steps == (Said(None, "# Rivers"), Interruption(Ref("u9")))
+
+
+async def test_a_record_that_names_no_prompt_does_not_lose_the_turn_claude_is_answering(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    unnamed = '{"type":"user","isMeta":true,"message":{"role":"user","content":"injected"}}'
+    ran = '{"type":"user","promptId":"p2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"done"}]}}'
+    transcript.write_text(lines(ASKED, WRITING, unnamed, LOOPING, ran, WRITING))
+    assert await Tails(Registry([member(transcript)])).catch_up() == [Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
+
+
 async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_and_the_session_is_idle(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING))

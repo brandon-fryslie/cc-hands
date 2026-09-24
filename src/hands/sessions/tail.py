@@ -69,7 +69,8 @@ class Following:
         """The ids Claude was answering under and is now, where this record is it answering under a new one."""
         match record.fields.get("type"):
             case "user":
-                self.asked = prompt_of(record)
+                # A record that names no prompt says nothing of which one Claude is answering.
+                self.asked = prompt_of(record) or self.asked
                 return None
             case _:
                 # An assistant record: Claude answering whatever the user's side last carried.
