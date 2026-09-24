@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from loguru import logger
 
 from hands.core.drafts import DraftOutcome, DraftRequest, decide
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Narrate, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Unregistered, Withdraw
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Narrate, Note, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Unregistered, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
 from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
@@ -160,7 +160,7 @@ class Sessions:
                 logger.log(*_audited(record))
             case Reply(session=session, request=request, reply=reply):
                 self._reply(session, request, reply)
-            case Speak() | Narrate():
+            case Speak() | Narrate() | Note():
                 self._heard.put_nowait(effect)
             case Summarise() | SessionGone():
                 self._story.put_nowait(effect)

@@ -21,7 +21,7 @@ from hands.sessions.backfill import Unseen, read_since
 from hands.sessions.audit import Called, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.registry import Listing, Sessions
-from hands.voice.readback import readback, spoken_name, spoken_title
+from hands.voice.readback import readback, spoken_mode, spoken_name, spoken_title
 from hands.voice.speech import answer_readback
 
 # A Pipecat direct function: its signature and docstring are the schema the model sees.
@@ -73,10 +73,12 @@ def audited(tool: Tool, record: Record) -> Tool:
 
 def list_sessions_tool(sessions: Sessions) -> Tool:
     async def list_sessions(params: FunctionCallParams) -> None:
-        """List the running Claude Code sessions with their titles and what each is doing.
+        """List the running Claude Code sessions with their titles, what each is doing, and the permission mode each is in.
 
-        Call this when the user asks what is running, what sessions exist, or
-        what Claude is working on.
+        Call this when the user asks what is running, what sessions exist, what
+        Claude is working on, or what mode a session is in. A session's mode is the
+        one it had at its last prompt or tool call: one changed at its keyboard since
+        is seen when the session next does something.
         """
         await params.result_callback({"sessions": [describe_listing(listing) for listing in sessions.live()]})
 
@@ -184,6 +186,7 @@ def describe_listing(listing: Listing) -> dict[str, str]:
         "id": listing.session.membership.id,
         "title": spoken_title(listing),
         "state": _spoken_state(listing.session.state),
+        "mode": "not reported yet" if listing.session.mode is None else spoken_mode(listing.session.mode),
     }
 
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from hands.core.events import SessionEvent
-from hands.core.session import Blocker, RequestId, SessionId
+from hands.core.session import Blocker, Mode, RequestId, SessionId
 
 
 @dataclass(frozen=True)
@@ -145,7 +145,22 @@ class Narrate:
     moment: Asking
 
 
-Heard = Speak | Narrate
+@dataclass(frozen=True)
+class ModeChanged:
+    """A session reported a permission mode other than the one it reported before."""
+
+    session: SessionId
+    mode: Mode
+
+
+@dataclass(frozen=True)
+class Note:
+    """Put in the intermediary's context and not spoken: the model knows, and says nothing of it until asked."""
+
+    fact: ModeChanged
+
+
+Heard = Speak | Narrate | Note
 
 
 @dataclass(frozen=True)

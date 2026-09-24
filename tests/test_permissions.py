@@ -34,9 +34,9 @@ def registry(*sessions: Session) -> Registry:
 
 @pytest.mark.parametrize("decision", [Allow(), Deny("use git clean instead")])
 def test_an_answer_replies_to_the_waiting_hook_and_the_turn_carries_on(decision: Allow | Deny) -> None:
-    before = registry(Session(ONE, Blocked(on=BASH, request=REQUEST, deadline=61.0, warned=True)), Session(TWO, Idle()))
+    before = registry(Session(ONE, Blocked(on=BASH, request=REQUEST, deadline=61.0, warned=True), mode=None), Session(TWO, Idle(), mode=None))
     assert answer(before, Answer(REQUEST, decision, at=20.0)) == (
-        registry(Session(ONE, Working(since=20.0)), Session(TWO, Idle())),
+        registry(Session(ONE, Working(since=20.0), mode=None), Session(TWO, Idle(), mode=None)),
         Answered(ONE.id, BASH, decision),
         [Reply(ONE.id, REQUEST, decision)],
     )
@@ -47,23 +47,23 @@ def test_an_answer_replies_to_the_waiting_hook_and_the_turn_carries_on(decision:
     [Idle(), Working(since=1.0), Gone(), Blocked(on=BASH, request=RequestId("another"), deadline=61.0, warned=False)],
 )
 def test_an_answer_to_a_request_nobody_waits_on_changes_nothing(state: SessionState) -> None:
-    before = registry(Session(ONE, state))
+    before = registry(Session(ONE, state, mode=None))
     assert answer(before, Answer(REQUEST, Allow(), at=20.0)) == (before, NotWaiting(REQUEST), [])
 
 
 def test_a_request_is_answered_once() -> None:
-    once, _, _ = answer(registry(Session(ONE, Blocked(on=BASH, request=REQUEST, deadline=61.0, warned=False))), Answer(REQUEST, Allow(), at=2.0))
+    once, _, _ = answer(registry(Session(ONE, Blocked(on=BASH, request=REQUEST, deadline=61.0, warned=False), mode=None)), Answer(REQUEST, Allow(), at=2.0))
     assert answer(once, Answer(REQUEST, Deny("no"), at=3.0)) == (once, NotWaiting(REQUEST), [])
 
 
 def waiting_on(on: Blocker) -> Registry:
-    return registry(Session(ONE, Blocked(on=on, request=REQUEST, deadline=61.0, warned=False)))
+    return registry(Session(ONE, Blocked(on=on, request=REQUEST, deadline=61.0, warned=False), mode=None))
 
 
 def test_answers_reach_the_question_keyed_by_what_each_asked_with_its_input_kept() -> None:
     chosen = Answers(("SQLite", "lint, test"))
     assert answer(waiting_on(QUESTION), Answer(REQUEST, chosen, at=20.0)) == (
-        registry(Session(ONE, Working(since=20.0))),
+        registry(Session(ONE, Working(since=20.0), mode=None)),
         Answered(ONE.id, QUESTION, chosen),
         [Reply(ONE.id, REQUEST, AllowWith({**ASKED, "answers": {"Which database?": "SQLite", "Which checks?": "lint, test"}}))],
     )
@@ -107,7 +107,7 @@ def test_a_decision_that_does_not_answer_what_was_asked_sends_nothing_and_the_se
 )
 def test_a_plan_is_approved_for_the_mode_chosen_or_sent_back_to_planning(decision: Decision, reply: Approve | Deny) -> None:
     assert answer(waiting_on(PLAN), Answer(REQUEST, decision, at=20.0)) == (
-        registry(Session(ONE, Working(since=20.0))),
+        registry(Session(ONE, Working(since=20.0), mode=None)),
         Answered(ONE.id, PLAN, decision),
         [Reply(ONE.id, REQUEST, reply)],
     )

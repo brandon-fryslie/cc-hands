@@ -5,11 +5,11 @@ from collections.abc import Awaitable, Callable, Mapping
 
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 
-from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, Narrate, Speak, WaitingForYou
+from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Speak, WaitingForYou
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
 from hands.core.session import AskedQuestion, Blocker, Permission, Plan, Question, SessionId
 from hands.sessions.registry import Sessions
-from hands.voice.readback import spoken_name
+from hands.voice.readback import spoken_mode, spoken_name
 
 # A tool input is shown to the model whole up to this many characters; a longer one is cut and says so.
 _INPUT_SHOWN = 800
@@ -39,6 +39,12 @@ def frame(heard: Heard, names: Names) -> Frame:
             return TTSSpeakFrame(announcement_text(announcement, names))
         case Narrate(moment=moment):
             return LLMMessagesAppendFrame([{"role": "user", "content": narration(moment, names)}], run_llm=True)
+        case Note(fact=fact):
+            return LLMMessagesAppendFrame([{"role": "user", "content": noted(fact, names)}], run_llm=False)
+
+
+def noted(fact: ModeChanged, names: Names) -> str:
+    return f"[hands] The Claude Code session {names(fact.session)} is now in {spoken_mode(fact.mode)}. Say nothing about it unless the user asks."
 
 
 def narration(moment: Asking, names: Names) -> str:

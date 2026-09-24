@@ -51,12 +51,12 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     for event in (
         Joined(working, "startup"),
-        Prompted(working.id, at=1.0),
+        Prompted(working.id, at=1.0, mode="acceptEdits"),
         Joined(untitled, "startup"),
         Joined(blocked, "startup"),
-        PermissionRequested(blocked.id, at=2.0, request=RequestId("r"), on=Permission("Bash", {})),
+        PermissionRequested(blocked.id, at=2.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default"),
         Joined(asking, "startup"),
-        PermissionRequested(asking.id, at=3.0, request=RequestId("q"), on=Question((), {})),
+        PermissionRequested(asking.id, at=3.0, request=RequestId("q"), on=Question((), {}), mode=None),
         Joined(ended, "startup"),
         Ended(ended.id, "prompt_input_exit"),
     ):
@@ -64,10 +64,10 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
 
     assert await call(sessions) == {
         "sessions": [
-            {"id": "working", "title": "pipeline spike", "state": "working"},
-            {"id": "untitled", "title": "untitled, in untitled", "state": "idle"},
-            {"id": "blocked", "title": "auth refactor", "state": "waiting for permission to use Bash"},
-            {"id": "asking", "title": "untitled, in asking", "state": "waiting for the user to answer its question"},
+            {"id": "working", "title": "pipeline spike", "state": "working", "mode": "accept edits mode"},
+            {"id": "untitled", "title": "untitled, in untitled", "state": "idle", "mode": "not reported yet"},
+            {"id": "blocked", "title": "auth refactor", "state": "waiting for permission to use Bash", "mode": "manual mode"},
+            {"id": "asking", "title": "untitled, in asking", "state": "waiting for the user to answer its question", "mode": "not reported yet"},
         ]
     }
 
@@ -86,7 +86,7 @@ async def test_a_transcript_whose_title_cannot_be_read_lists_the_session_untitle
     broken.transcript.write_text('{"type":"ai-title","sessionId":"broken"}\n')
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(broken, "startup"))
-    assert await call(sessions) == {"sessions": [{"id": "broken", "title": "untitled, in broken", "state": "idle"}]}
+    assert await call(sessions) == {"sessions": [{"id": "broken", "title": "untitled, in broken", "state": "idle", "mode": "not reported yet"}]}
 
 
 def test_the_tool_is_a_valid_pipecat_direct_function() -> None:

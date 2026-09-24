@@ -2,7 +2,7 @@
 
 import difflib
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from hands.core.drafts import (
     DraftAmended,
@@ -13,7 +13,7 @@ from hands.core.drafts import (
     SessionEnded,
     UnknownSession,
 )
-from hands.core.session import Resolution, SessionId
+from hands.core.session import Mode, PermissionMode, Resolution, SessionId, UnknownMode
 from hands.sessions.registry import Listing, Sessions
 
 _WORDS = re.compile(r"[^\s]+|\n")
@@ -42,6 +42,26 @@ def readback(outcome: DraftOutcome, name: str) -> str:
 
 def spoken_title(listing: Listing) -> str:
     return listing.title or f"untitled, in {listing.session.membership.cwd.name}"
+
+
+# Each mode as the footer of a session's own screen names it, so what is heard is what the user would read there:
+# 2.1.281 shows the default mode as "manual mode on".
+_MODES: Mapping[PermissionMode, str] = {
+    "default": "manual mode",
+    "acceptEdits": "accept edits mode",
+    "plan": "plan mode",
+    "auto": "auto mode",
+    "dontAsk": "don't ask mode",
+    "bypassPermissions": "bypass permissions mode",
+}
+
+
+def spoken_mode(mode: Mode) -> str:
+    match mode:
+        case UnknownMode(name=name):
+            return f"a mode hands does not know, named {name}"
+        case known:
+            return _MODES[known]
 
 
 def spoken_name(sessions: Sessions, session: SessionId) -> str:
