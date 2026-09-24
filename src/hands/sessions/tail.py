@@ -111,11 +111,11 @@ class Following:
             case "user":
                 # A record that names no prompt says nothing of which one Claude is answering.
                 was, self.asked = self.asked, prompt_of(record) or self.asked
-                return None if self.asked is None or self.asked == was else Taken(session, self.asked, written, at)
+                return None if self.asked is None or self.asked == was else Taken(session, self.asked)
             case _:
                 # An assistant record: Claude answering whatever the user's side last carried.
                 was, self.answering = self.answering, self.asked
-                return None if was is None or self.answering is None or was == self.answering else Continued(session, was, self.answering)
+                return None if was is None or self.answering is None or was == self.answering else Continued(session, was, self.answering, written, at)
 
     def restart(self) -> None:
         """Read this file again from its start: nothing read of the file it was says anything about the file it is."""
@@ -273,12 +273,12 @@ class Tails:
         for line in complete:
             try:
                 record = turn_record(line)
-                written = None if record is None else written_of(record)
             except Rejected as error:
                 # [LAW:no-silent-failure] one unreadable line is skipped and said; the rest of the turn is still told.
                 logger.error(f"a record in the transcript of session {session} could not be read, so it is not told: {error}")
                 continue
             if record is not None:
+                written = _written(session, record)
                 # The prompt first: a prompt's first record can be the one that interrupts it, and it was taken to be.
                 # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
                 prompted = following.prompted(session, record, written, self._known.now())
@@ -310,6 +310,17 @@ async def keep_tailing(tails: Tails, period: float, apply: Callable[[Transcribed
         for transcribed in await tails.catch_up():
             await apply(transcribed)
         await asyncio.sleep(period)
+
+
+def _written(session: SessionId, record: Payload) -> Stamp | None:
+    """When Claude Code wrote the record; None, and said, for a time that cannot be read, which costs the record nothing
+    but that: its turn is still told, and only a turn no hook opened goes unopened for want of it."""
+    try:
+        return written_of(record)
+    except Rejected as error:
+        # [LAW:no-silent-failure] said, and read as no time, which opens nothing.
+        logger.error(f"a record in the transcript of session {session} has a time that cannot be read, so it is read as having none: {error}")
+        return None
 
 
 def _said_at(steps: list[Step], index: int) -> str | None:

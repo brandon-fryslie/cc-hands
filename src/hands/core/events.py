@@ -77,27 +77,30 @@ class Interrupted:
 @dataclass(frozen=True)
 class Taken:
     """Claude Code took the prompt: the transcript holds a record of its turn, which it writes only once the prompt's
-    hooks are done and it was not cancelled. A prompt no hook opened is taken too: a message queued while a turn ran,
-    once that turn's Stop lands, and the output of a `!` command, which Claude answers (2.1.282)."""
+    hooks are done and it was not cancelled."""
 
     session: SessionId
     prompt: PromptId
-    # When Claude Code wrote the record, on the clock it stamps a status with, so an idle it set after it can be told
-    # from one it set before. None only when the record carried no time, which 2.1.282's always do.
-    written: Stamp | None
-    at: Instant  # when the record was read
 
 
 @dataclass(frozen=True)
 class Continued:
     """Claude went on answering under another prompt's id without the turn ending: a queued message taken in mid-turn,
     or flushed by an Escape, carries its own new id from then on, and no hook ever names it (2.1.281). Read from the
-    transcript, where the user's side of every record Claude answers carries the id it answers under."""
+    transcript, where the user's side of every record Claude answers carries the id it answers under.
+
+    At the prompt it is a turn no hook opened: a message queued while a turn ran, answered once that turn's Stop landed,
+    or Claude's answer to a `!` command (2.1.282). A command such as /compact writes records under a new id too, but
+    Claude answers none of them."""
 
     session: SessionId
     # The id it was answering under, so a record read after the next prompt opened moves nothing.
     was: PromptId
     now: PromptId
+    # When Claude Code wrote Claude's answer, on the clock it stamps a status with, so an idle it set after it can be
+    # told from one it set before. None only when the record carried no time, which 2.1.282's always do.
+    written: Stamp | None
+    at: Instant  # when the record was read
 
 
 @dataclass(frozen=True)

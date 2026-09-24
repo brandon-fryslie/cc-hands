@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, NewType, Self
 
-from hands.core.status import Report
+from hands.core.status import Report, Stamp
 
 SessionId = NewType("SessionId", str)
 RequestId = NewType("RequestId", str)
@@ -172,6 +172,9 @@ class Session:
     taken: frozenset[PromptId] = frozenset()
     # [LAW:one-source-of-truth] what Claude Code last said the session is doing, as it said it. None until it is read.
     report: Report | None = None
+    # When Claude Code last set the session idle, of the statuses read: what Claude answers under an id no hook named is a
+    # turn only when written since. None until an idle is read, so a transcript read from its start opens nothing.
+    idled: Stamp | None = None
     # [LAW:no-ambient-temporal-coupling] the one wait on the transcript, as a value the clock settles: None when every
     # turn that ended has been told.
     untold: Untold | None = None

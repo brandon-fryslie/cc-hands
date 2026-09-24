@@ -95,9 +95,13 @@ def written_of(record: Payload) -> Stamp | None:
             return None
         case str() as stamp:
             try:
-                return Stamp(round(datetime.fromisoformat(stamp).timestamp() * 1000))
+                written = datetime.fromisoformat(stamp)
             except ValueError as error:
                 raise Rejected(f"a transcript record's timestamp {stamp!r} is not a time: {error}") from error
+            if written.tzinfo is None:
+                # Read as this machine's local time, it would be hours off the epoch Claude Code stamps a status in.
+                raise Rejected(f"a transcript record's timestamp {stamp!r} names no zone")
+            return Stamp(round(written.timestamp() * 1000))
         case other:
             raise Rejected(f"a transcript record's timestamp should be a string, got {type(other).__name__}")
 
