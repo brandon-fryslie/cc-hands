@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import NewType, Self
+from typing import Literal, NewType, Self
 
 SessionId = NewType("SessionId", str)
 RequestId = NewType("RequestId", str)
@@ -58,6 +58,21 @@ class Plan:
     """ExitPlanMode, waiting on the user to approve the plan or send it back to be planned again."""
 
     text: str
+
+
+# The permission modes Claude Code 2.1.281 has, named as every hook's permission_mode names them. Shift-tab cycles
+# them at the keyboard, and no hook fires when it does: a change is heard at the session's next hook.
+PermissionMode = Literal["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]
+
+
+@dataclass(frozen=True)
+class UnknownMode:
+    """A permission_mode this version of hands does not know, kept by its name so it is said rather than guessed at."""
+
+    name: str
+
+
+Mode = PermissionMode | UnknownMode
 
 
 # Everything a session stops for arrives through the same PermissionRequest hook.
@@ -118,6 +133,9 @@ SessionState = Idle | Working | Blocked | AtDialog | Gone
 class Session:
     membership: Membership
     state: SessionState
+    # [LAW:one-source-of-truth] the permission_mode of the last hook that carried one. None until one does:
+    # SessionStart, idle_prompt, and SessionEnd carry none (verified live on 2.1.281).
+    mode: Mode | None
 
 
 @dataclass(frozen=True)

@@ -303,7 +303,8 @@ spoken once per idle period, because `Idle.nudged` turns true as it is said and 
 way into `Idle` builds a fresh one. `Story` carries finished turns and sessions gone in one ordered
 queue, because a summary takes seconds, and an end spoken at once was heard before the
 last turn it ended. A turn's summary reaches TTS as one `TTSSpeakFrame`, with no player
-and no segments. The player, `Note`, the routing table, the overlays, the priority
+and no segments. `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
+with `run_llm` off. The player, the routing table, the overlays, the priority
 queue, and `coalesce` below are planned.
 
 The routing table is a value in `core`:
@@ -336,8 +337,16 @@ permission is needed, a line of Claude's text is ready. They fire at the moment,
 the blocking one is the only way to answer a permission. What a turn did, with the
 record id of each step, is in the transcript, which Claude Code appends to while the
 turn runs, so the daemon tails it rather than hooking every tool call. Every hook
-input carries `session_id`, `transcript_path`, `cwd`, `permission_mode`, and
-`hook_event_name`, and every one but `SessionStart` carries `permission_mode`; the
+input carries `session_id`, `transcript_path`, `cwd`, and `hook_event_name`. Of the
+events hands subscribes to, `UserPromptSubmit`, `Stop`, `PermissionRequest`,
+`PostToolUse`, and `PostToolUseFailure` carry `permission_mode` as well, and `SessionStart`, `Notification`, and
+`SessionEnd` do not (verified live on 2.1.281). That mode is the session's mode: each
+hook that carries one sets it, `list_sessions` says it, and a change reaches the
+intermediary as a `Note`. A hook fired inside a subagent carries the subagent's mode
+and an `agent_id`, and sets nothing. Shift-tab fires no hook, and the transcript writes its
+`permission-mode` record only as a prompt is sent, so a mode changed at an idle
+prompt is heard at the session's next prompt, and one changed mid-turn at its next
+tool call. The
 event-specific fields below were read out of the 2.1.263 bundle. Payloads captured from
 2.1.270 on 2026-09-14 carry no session title, so a session's title is the newest
 `ai-title` record in its transcript.
@@ -628,7 +637,7 @@ Record shapes worth knowing, observed in transcripts on 2026-09-14:
   `stdout`, `stderr`, and `interrupted` for commands; `gitOperation` for a commit, a
   push, a branch change, or a pull request. It describes one call, so it says which call it
   belongs to only where the record carries a single result.
-- `permission-mode` → live session mode.
+- `permission-mode` → the session mode, written only as a prompt is sent; the hooks report it sooner.
 - Every record: `uuid`, `parentUuid`, `timestamp`, `cwd`, `gitBranch`, `sessionId`.
 
 **Prose is the smallest part of a turn.** In one session sampled for this design there

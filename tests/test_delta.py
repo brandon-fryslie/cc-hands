@@ -190,9 +190,9 @@ async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
 
-    await sessions.apply(Prompted(SID, at=1.0))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None))
     subprocess.run(("sed", "-i", "", "s/x = 1/x = 99/", str(root / "a.py")), check=True)
-    await sessions.apply(Stopped(SID, "Done."))
+    await sessions.apply(Stopped(SID, "Done.", mode=None))
 
     # The story is queued, and by the time anyone takes it the delta is already read and waiting.
     story = await sessions.story()
@@ -268,7 +268,7 @@ async def test_a_reading_that_fails_outright_still_lets_the_turn_be_told(tmp_pat
     """
     sessions = attached(tmp_path)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
-    await sessions.apply(Stopped(SID, "Done."))
+    await sessions.apply(Stopped(SID, "Done.", mode=None))
     story = await asyncio.wait_for(sessions.story(), 2.0)
     assert isinstance(story, Summarise) and story.session == SID
 
@@ -282,7 +282,7 @@ async def test_a_mark_that_fails_outright_still_lets_the_prompt_through(tmp_path
     """
     sessions = attached(tmp_path)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
-    await sessions.apply(Prompted(SID, at=1.0))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None))
     # The mark is gone, the turn is not: the session is working, and the hook that said so was answered.
     assert [listing.session.state for listing in sessions.live()] == [Working(since=1.0)]
 

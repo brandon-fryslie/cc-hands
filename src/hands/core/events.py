@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from hands.core.session import Blocker, Instant, Membership, FinishedCall, RequestId, SessionId
+from hands.core.session import Blocker, Instant, Membership, FinishedCall, Mode, RequestId, SessionId
 
 
 StartSource = Literal["startup", "resume", "clear", "compact"]
@@ -42,12 +42,16 @@ class MovedOn:
 class Prompted:
     session: SessionId
     at: Instant
+    # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
+    mode: Mode | None
 
 
 @dataclass(frozen=True)
 class Stopped:
     session: SessionId
     closing: str | None  # the reply the turn closed with, as the Stop hook carries it; None when there was none
+    # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
+    mode: Mode | None
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,8 @@ class PermissionRequested:
     at: Instant
     request: RequestId
     on: Blocker
+    # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
+    mode: Mode | None
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,8 @@ class ToolFinished:
     session: SessionId
     at: Instant
     call: FinishedCall
+    # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
+    mode: Mode | None
 
 
 @dataclass(frozen=True)

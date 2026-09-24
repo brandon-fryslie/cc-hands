@@ -196,7 +196,7 @@ async def test_a_question_nobody_answers_by_its_deadline_is_left_to_its_dialog_a
     assert str((await call(named(sessions, "answer_question"), request=moment.request, answers=["red", "pear"]))["readback"]).startswith("That request is no longer waiting")
     # Answered at the keyboard after all, it comes back through PostToolUse and the session goes on.
     answered = Question(QUESTIONS_ASKED, {**QUESTIONS, "answers": {"Which color?": "red", "Which fruits?": "pear"}})
-    await sessions.apply(ToolFinished(SID, at=DEADLINE + 5.0, call=answered))
+    await sessions.apply(ToolFinished(SID, at=DEADLINE + 5.0, call=answered, mode=None))
     assert [listing.session.state for listing in sessions.live()] == [Working(since=DEADLINE + 5.0)]
 
 
@@ -289,7 +289,7 @@ async def test_a_reply_decided_as_the_hook_closes_is_logged_as_never_delivered(h
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
     try:
         assert await (await Shim.run(home, START)).finished() == (0, "", "")
-        request = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}))
+        request = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
         waiting = asyncio.create_task(sessions.ask(request))
         await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
         await sessions.answer(request.request, Allow())
@@ -313,7 +313,7 @@ async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_
 async def test_a_hook_that_asks_after_shutdown_began_is_let_go_at_once(home: Home, sessions: Sessions) -> None:
     assert await (await Shim.run(home, START)).finished() == (0, "", "")
     sessions.release_waiting()
-    request = PermissionRequested(SID, at=0.0, request=RequestId("late"), on=Permission("Bash", {}))
+    request = PermissionRequested(SID, at=0.0, request=RequestId("late"), on=Permission("Bash", {}), mode=None)
     assert await asyncio.wait_for(sessions.ask(request), WAIT_SECONDS) == Withdraw()
 
 
@@ -322,7 +322,7 @@ async def test_tool_calls_from_a_session_that_never_joined_are_not_warned_about(
     levels: list[str] = []
     sink = logger.add(lambda message: levels.append(message.record["level"].name), level="DEBUG")
     try:
-        await sessions.apply(ToolFinished(SID, at=1.0, call=Permission("Bash", {})))
+        await sessions.apply(ToolFinished(SID, at=1.0, call=Permission("Bash", {}), mode=None))
     finally:
         logger.remove(sink)
     assert levels == ["DEBUG"]

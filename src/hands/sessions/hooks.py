@@ -1,12 +1,13 @@
 """A hook's POST body, parsed once into a core event, and the reply a blocking hook prints."""
 
 from collections.abc import Mapping
+from typing import get_args
 
 from loguru import logger
 
 from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
 from hands.core.events import Ended, EndReason, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished, Waited
-from hands.core.session import AskedQuestion, Blocker, Instant, Option, Permission, Plan, PlanApproved, Question, FinishedCall, RequestId, SessionId
+from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership
 from hands.sessions.payload import Payload, Rejected
@@ -23,15 +24,15 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
             source = _start_source(payload.text("source"))
             return Joined(read_membership(home, session), source)
         case "UserPromptSubmit":
-            return Prompted(session, at)
+            return Prompted(session, at, _mode(payload))
         case "Stop":
-            return Stopped(session, _closing(payload))
+            return Stopped(session, _closing(payload), _mode(payload))
         case "Notification":
             return _notified(session, payload.text("notification_type"))
         case "PermissionRequest":
-            return PermissionRequested(session, at, request, _call(payload))
+            return PermissionRequested(session, at, request, _call(payload), _mode(payload))
         case "PostToolUse" | "PostToolUseFailure":
-            return ToolFinished(session, at, _ran(payload))
+            return ToolFinished(session, at, _ran(payload), _mode(payload))
         case "SessionEnd":
             return Ended(session, _end_reason(payload.text("reason")))
         case other:
@@ -103,6 +104,31 @@ def _closing(payload: Payload) -> str | None:
             # left to stop it, so the turn is taken and the loud line says why it will be told without its last reply.
             logger.error(f"Stop carried last_assistant_message as {type(other).__name__}, not a string, so the turn is told without its closing reply")
             return None
+
+
+def _mode(payload: Payload) -> Mode | None:
+    """The session's permission mode as the hook reports it, which every hook hands reads a mode from carries (2.1.281)."""
+    # Not refused when it is missing or strange, as an unknown start is: the hook's event is what moves the session,
+    # and refusing a Stop over its mode would leave the session working with nothing left to stop it.
+    # [LAW:no-silent-failure] a hook with no mode, or a strange one, leaves the session in the mode it last reported, and the log says why.
+    event = payload.fields.get("hook_event_name")
+    match (payload.fields.get("agent_id"), payload.fields.get("permission_mode")):
+        case (str(), _):
+            # Fired inside a subagent, which runs in its own mode (2.1.281): that mode is not the session's.
+            return None
+        case (_, str() as name):
+            # An unknown mode is not logged: it is said by its name wherever the mode is, which is louder.
+            return _KNOWN_MODES.get(name) or UnknownMode(name)
+        case (_, None):
+            logger.error(f"{event} carried no permission_mode, so the session keeps the mode it last reported")
+            return None
+        case (_, other):
+            logger.error(f"{event} carried permission_mode as {type(other).__name__}, not a string, so the session keeps the mode it last reported")
+            return None
+
+
+# [LAW:one-source-of-truth] the modes hands knows are the type's, read off it rather than listed again.
+_KNOWN_MODES: Mapping[str, PermissionMode] = {mode: mode for mode in get_args(PermissionMode)}
 
 
 def _start_source(source: str) -> StartSource:

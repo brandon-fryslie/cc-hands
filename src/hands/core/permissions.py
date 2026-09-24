@@ -1,6 +1,6 @@
 """What the user decides about a session waiting on them, what came of it, and the one function that decides."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from hands.core.effects import Allow, AllowWith, Answers, Approve, Decision, Deny, Effect, HookReply, KeepPlanning, Reply
 from hands.core.session import Blocked, Blocker, Instant, Permission, Plan, Question, Registry, RequestId, Session, SessionId, Working
@@ -43,14 +43,14 @@ def answer(registry: Registry, request: Answer) -> tuple[Registry, Outcome, list
     """One answer in; the next registry, what came of it, and the reply it calls for out. No I/O."""
     waiting = [session for session in registry.sessions.values() if _waits_on(session, request.request)]
     match waiting:
-        case [Session(membership=membership, state=Blocked(on=on))]:
+        case [Session(state=Blocked(on=on)) as session]:
             match _reply(on, request.decision):
                 case None:
                     return registry, Unfit(request.request, on, request.decision), []
                 case reply:
                     # The turn carries on from here, with the tool run or refused.
-                    answered = registry.put(Session(membership, Working(since=request.at)))
-                    return answered, Answered(membership.id, on, request.decision), [Reply(membership.id, request.request, reply)]
+                    answered = registry.put(replace(session, state=Working(since=request.at)))
+                    return answered, Answered(session.membership.id, on, request.decision), [Reply(session.membership.id, request.request, reply)]
         case _:
             return registry, NotWaiting(request.request), []
 

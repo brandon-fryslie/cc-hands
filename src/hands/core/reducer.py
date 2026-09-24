@@ -9,7 +9,9 @@ from hands.core.effects import (
     Deny,
     Effect,
     HookReply,
+    ModeChanged,
     Narrate,
+    Note,
     Asking,
     DeadlineNear,
     Expired,
@@ -40,7 +42,7 @@ from hands.core.events import (
     ToolFinished,
     Waited,
 )
-from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Permission, Plan, PlanApproved, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, Working
+from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Mode, Permission, Plan, PlanApproved, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, UnknownMode, Working
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
@@ -58,9 +60,10 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
     # inside the registry, so a deadline is arithmetic on values, never a clock read.
     match event:
         case Joined(membership=membership, source=source):
-            return _join(registry, membership, _started(source, registry.sessions.get(membership.id)))
+            return _join(registry, membership, *_started(source, registry.sessions.get(membership.id)))
         case Attached(membership=membership) if membership.id not in registry.sessions:
-            return registry.put(Session(membership, Idle())), []
+            # A membership file says nothing of the mode; the session's next hook will.
+            return registry.put(Session(membership, Idle(), mode=None)), []
         case Attached():
             # [LAW:no-ambient-temporal-coupling] a session the registry already knows was heard from its hooks, which
             # know more than its file: a sweep that read the file before a hook landed never overwrites it.
@@ -105,20 +108,24 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _ticked(registry, at)
 
 
-def _started(source: StartSource, previous: Session | None) -> SessionState:
+def _started(source: StartSource, previous: Session | None) -> tuple[SessionState, Mode | None]:
     # Compaction starts a session again in the middle of a turn, so what it was
     # doing carries over. Every other start sits at the prompt, whatever the
     # registry last heard: a session resumed after a crash was never told it stopped.
+    # SessionStart carries no permission_mode, so only compaction, which keeps its process, keeps the one it had;
+    # a session started or resumed in a new process may have been given any mode.
     match (source, previous):
-        case ("compact", Session(state=Working() | Blocked() | AtDialog() as state)):
-            return state
+        case ("compact", Session(state=Working() | Blocked() | AtDialog() as state, mode=mode)):
+            return state, mode
+        case ("compact", Session(mode=mode)):
+            return Idle(), mode
         case _:
-            return Idle()
+            return Idle(), None
 
 
-def _join(registry: Registry, membership: Membership, state: SessionState) -> tuple[Registry, list[Effect]]:
+def _join(registry: Registry, membership: Membership, state: SessionState, mode: Mode | None) -> tuple[Registry, list[Effect]]:
     previous = registry.sessions.get(membership.id)
-    return registry.put(Session(membership, state)), _transition(membership.id, None if previous is None else previous.state, state)
+    return registry.put(Session(membership, state, mode)), _transition(membership.id, None if previous is None else previous.state, state)
 
 
 def _ended_unheard(registry: Registry, membership: Membership, said: list[Effect]) -> tuple[Registry, list[Effect]]:
@@ -131,8 +138,8 @@ def _ended_unheard(registry: Registry, membership: Membership, said: list[Effect
         case Session(membership=held) if held.pid != membership.pid:
             # Started again in a new process since the sweep looked; what it saw ending is not this session.
             return registry, []
-        case Session(state=before):
-            return registry.put(Session(membership, Gone())), [*_transition(membership.id, before, Gone()), *said]
+        case Session(state=before) as was:
+            return registry.put(replace(was, membership=membership, state=Gone())), [*_transition(membership.id, before, Gone()), *said]
 
 
 def _enter(
@@ -153,9 +160,33 @@ def _enter(
         case Session(state=Gone()):
             # Ended is final until the session starts again; a hook that lands late cannot revive it.
             return registry, [Audit(AfterEnd(event)), *_unwaited(event)]
-        case Session(membership=membership, state=before) as was:
-            after = next(before)
-            return registry.put(Session(membership, after)), [*_transition(membership.id, before, after), *also(was)]
+        case Session(membership=membership, state=before, mode=held) as was:
+            after, reported = next(before), _reported(event)
+            # [LAW:dataflow-not-control-flow] every hook that carries a mode sets it, so a mode changed at the keyboard
+            # is heard at the session's next hook, whatever that hook moves the session to.
+            mode = held if reported is None else reported
+            # The mode is noted before the transition's effects, so a request it narrates is explained knowing the mode it was asked in.
+            return registry.put(Session(membership, after, mode)), [*_remoded(membership.id, held, mode), *_transition(membership.id, before, after), *also(was)]
+
+
+def _reported(event: SessionEvent) -> Mode | None:
+    """The mode the event's hook reported; None from the hooks that carry none."""
+    match event:
+        case Prompted(mode=mode) | Stopped(mode=mode) | PermissionRequested(mode=mode) | ToolFinished(mode=mode):
+            return mode
+        case Waited() | Ended():
+            return None
+
+
+def _remoded(session: SessionId, before: Mode | None, after: Mode | None) -> list[Effect]:
+    match after:
+        case str() | UnknownMode() if after != before:
+            # Noted from no mode too: a session resumed in a new process may be in another mode than the model was
+            # last told. The model is told, and says nothing: a mode the user set at the keyboard is not news to
+            # them, and one an approved plan set was said in the approval's readback.
+            return [Note(ModeChanged(session, after))]
+        case _:
+            return []
 
 
 def _unwaited(event: SessionEvent) -> list[Effect]:
@@ -203,9 +234,9 @@ def _waited(state: SessionState) -> SessionState:
 
 def _abandoned(registry: Registry, session: SessionId, request: RequestId, at: Instant) -> Registry:
     match registry.sessions.get(session):
-        case Session(membership=membership, state=Blocked(request=held)) if held == request:
+        case Session(state=Blocked(request=held)) as was if held == request:
             # No hook waits for a reply, so there is nothing to withdraw, answer, or deny.
-            return registry.put(Session(membership, Working(since=at)))
+            return registry.put(replace(was, state=Working(since=at)))
         case _:
             return registry
 
@@ -247,7 +278,7 @@ def _ticked(registry: Registry, at: Instant) -> tuple[Registry, list[Effect]]:
     after, effects = registry, list[Effect]()
     for session in registry.sessions.values():
         state, due = _deadline(session.membership.id, session.state, at)
-        after = after.put(Session(session.membership, state))
+        after = after.put(replace(session, state=state))
         effects += due
     return after, effects
 
