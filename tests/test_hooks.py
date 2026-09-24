@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.events import Ended, Joined, PermissionRequested, Prompted, Stopped, ToolFinished
+from hands.core.events import Ended, Joined, PermissionRequested, Prompted, Stopped, ToolFinished, Waited
 from hands.core.session import Membership, Permission, RequestId, SessionId
 from hands.sessions.home import Home
 from hands.sessions.hooks import parse_hook
@@ -90,3 +90,13 @@ def test_what_does_not_parse_is_rejected_by_name(home: Home, raw: bytes, reason:
 
 def test_an_end_reason_this_version_does_not_know_is_an_end_nobody_chose(home: Home) -> None:
     assert parse(home, body(hook_event_name="SessionEnd", reason="solar_flare")) == Ended(SID, "other")
+
+
+def test_the_idle_notification_is_a_session_waiting(home: Home) -> None:
+    idle = body(hook_event_name="Notification", message="Claude is waiting for your input", notification_type="idle_prompt")
+    assert parse(home, idle) == Waited(SID)
+
+
+def test_a_notification_hands_did_not_ask_for_is_rejected(home: Home) -> None:
+    with pytest.raises(Rejected, match="permission_prompt"):
+        parse(home, body(hook_event_name="Notification", message="Claude needs your permission", notification_type="permission_prompt"))

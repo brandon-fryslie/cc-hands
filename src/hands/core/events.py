@@ -51,6 +51,13 @@ class Stopped:
 
 
 @dataclass(frozen=True)
+class Waited:
+    """Claude Code says the session has sat at its prompt since its turn ended, and nobody has typed: idle_prompt."""
+
+    session: SessionId
+
+
+@dataclass(frozen=True)
 class PermissionRequested:
     session: SessionId
     at: Instant
@@ -90,7 +97,7 @@ class Tick:
 
 
 # Events about a session the registry must already know; a join is how it comes to.
-SessionEvent = Prompted | Stopped | PermissionRequested | ToolFinished | Ended
+SessionEvent = Prompted | Stopped | Waited | PermissionRequested | ToolFinished | Ended
 # What the liveness sweep saw in one membership file.
 Observed = Attached | Died | MovedOn
 Event = Joined | Observed | SessionEvent | Abandoned | Tick

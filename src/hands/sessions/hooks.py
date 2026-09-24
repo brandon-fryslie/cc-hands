@@ -5,8 +5,8 @@ from collections.abc import Mapping
 from loguru import logger
 
 from hands.core.effects import Allow, Deny, HookReply, Withdraw
-from hands.core.events import Ended, EndReason, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished
-from hands.core.session import Instant, Permission, RequestId
+from hands.core.events import Ended, EndReason, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished, Waited
+from hands.core.session import Instant, Permission, RequestId, SessionId
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership
 from hands.sessions.payload import Payload, Rejected
@@ -26,6 +26,8 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
             return Prompted(session, at)
         case "Stop":
             return Stopped(session, _closing(payload))
+        case "Notification":
+            return _notified(session, payload.text("notification_type"))
         case "PermissionRequest":
             permission = Permission(tool=payload.text("tool_name"), input=payload.mapping("tool_input"))
             return PermissionRequested(session, at, request, permission)
@@ -35,6 +37,15 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
             return Ended(session, _end_reason(payload.text("reason")))
         case other:
             raise Rejected(f"hook event {other!r} is not one hands handles")
+
+
+def _notified(session: SessionId, kind: str) -> Waited:
+    match kind:
+        case "idle_prompt":
+            return Waited(session)
+        case other:
+            # The hook's matcher lets only idle_prompt through, so another type is a settings file hands did not write.
+            raise Rejected(f"notification {other!r} is not one hands handles")
 
 
 def _closing(payload: Payload) -> str | None:

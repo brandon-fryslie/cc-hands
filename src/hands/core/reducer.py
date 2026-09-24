@@ -19,6 +19,7 @@ from hands.core.effects import (
     Snapshot,
     Summarise,
     Unregistered,
+    WaitingForYou,
     Withdraw,
 )
 from hands.core.events import (
@@ -36,6 +37,7 @@ from hands.core.events import (
     Stopped,
     Tick,
     ToolFinished,
+    Waited,
 )
 from hands.core.session import Blocked, Gone, Idle, Instant, Membership, Permission, Registry, RequestId, Session, SessionId, SessionState, Working
 
@@ -82,6 +84,8 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case Stopped(session=session, closing=closing):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
             return _enter(registry, event, lambda _: Idle(), lambda _was: [Compare(session), Summarise(session, closing)])
+        case Waited(session=session):
+            return _enter(registry, event, _waited, lambda was: _nudge(session, was.state))
         case PermissionRequested(at=at, request=request, permission=permission):
             deadline = at + registry.permission_deadline
             return _enter(registry, event, lambda _: Blocked(on=permission, request=request, deadline=deadline, warned=False))
@@ -170,6 +174,26 @@ def _finished(state: SessionState, call: Permission, at: Instant) -> SessionStat
             return Working(since=at)
         case _:
             return state
+
+
+def _waited(state: SessionState) -> SessionState:
+    match state:
+        case Idle() | Working():
+            # A session the registry holds as working has stopped all the same: an interrupt at the keyboard ends a
+            # turn with no Stop hook, and Claude Code, which is the one that knows, says it sits at its prompt.
+            return Idle(nudged=True)
+        case _:
+            # A session blocked on a permission is already asked about aloud, and its deadline is spoken; the hook
+            # it holds stays held.
+            return state
+
+
+def _nudge(session: SessionId, before: SessionState) -> list[Effect]:
+    match before:
+        case Idle(nudged=False) | Working():
+            return [Speak(WaitingForYou(session))]
+        case _:
+            return []
 
 
 def _abandoned(registry: Registry, session: SessionId, request: RequestId, at: Instant) -> Registry:

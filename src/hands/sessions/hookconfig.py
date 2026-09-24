@@ -29,10 +29,12 @@ POST_TIMEOUT_SECONDS = 2.0
 # [LAW:one-source-of-truth] the module every hook command runs, and the installer's mark of an entry that is hands'.
 SHIM_MODULE = "hands.sessions.shim"
 
-SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd")
+SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "Notification", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd")
 
 # [LAW:dataflow-not-control-flow] what each hook declares beyond its command, as a table; the rest take Claude Code's defaults.
 _DECLARED_TIMEOUTS: Mapping[str, int] = {"PermissionRequest": PERMISSION_HOOK_TIMEOUT_SECONDS}
+# The notifications hands hears, by Claude Code's notification_type; the rest never spawn the shim.
+_MATCHERS: Mapping[str, str] = {"Notification": "idle_prompt"}
 # Fired for every tool call, so they run in the background and never hold the agent up. They are how the
 # daemon learns that a tool it was asked about ran after all: its dialog was answered at the keyboard.
 _IN_BACKGROUND = frozenset({"PostToolUse", "PostToolUseFailure"})
@@ -46,7 +48,7 @@ def post_timeout(event: str) -> float:
 def hook_settings(python: Path, home: Home) -> dict[str, object]:
     # A single simple command, so the hook's shell execs it and the shim's parent is the claude process.
     command = shlex.join([str(python), "-m", SHIM_MODULE, str(home.root)])
-    return {"hooks": {event: [{"hooks": [{"type": "command", "command": command, **_declared(event)}]}] for event in SUBSCRIBED}}
+    return {"hooks": {event: [{**_matched(event), "hooks": [{"type": "command", "command": command, **_declared(event)}]}] for event in SUBSCRIBED}}
 
 
 def runs_the_shim(command: str) -> bool:
@@ -59,6 +61,11 @@ def runs_the_shim(command: str) -> bool:
 
 # Named whole: not inside a longer dotted name, though it may be joined to its -m.
 _SHIM_NAMED = re.compile(rf"(?:(?<=-m)|(?<![\w.])){re.escape(SHIM_MODULE)}(?![\w.])")
+
+
+def _matched(event: str) -> dict[str, object]:
+    matcher = _MATCHERS.get(event)
+    return {} if matcher is None else {"matcher": matcher}
 
 
 def _declared(event: str) -> dict[str, object]:

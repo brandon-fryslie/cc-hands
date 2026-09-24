@@ -72,16 +72,16 @@ def test_what_is_not_hands_is_kept_where_it_was() -> None:
         "hooks": {
             "PreToolUse": [{"matcher": "Bash", "hooks": [THEIRS]}],
             "Stop": [{"hooks": [THEIRS, {"type": "command", "command": SHIM}]}],  # theirs and ours in one group
-            "Notification": [],
+            "SubagentStop": [],
         },
     }
     after = merged(settings, declared())
     hooks = hooks_of(after)
     assert after["model"] == "opus"
     assert hooks["PreToolUse"] == [{"matcher": "Bash", "hooks": [THEIRS]}]
-    assert hooks["Notification"] == []
+    assert hooks["SubagentStop"] == []
     assert hooks["Stop"] == [{"hooks": [THEIRS]}, *declared()["Stop"]]
-    assert list(hooks)[:3] == ["PreToolUse", "Stop", "Notification"]  # the file's own order, hands' new events after
+    assert list(hooks)[:3] == ["PreToolUse", "Stop", "SubagentStop"]  # the file's own order, hands' new events after
 
 
 def test_a_moved_venv_replaces_the_old_command_and_an_unsubscribed_event_loses_its_entry() -> None:
