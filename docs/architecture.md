@@ -52,7 +52,7 @@ a habit of its authors. Everything in `core` can be exercised with plain values 
 mocks.
 
 **`sessions`** is every edge on the Claude Code side: the unix socket the hook shims
-POST to, the session files the shims write, the JSONL tail, the git delta reader, the
+POST to, the session files the shims write, Claude Code's own status files, the JSONL tail, the git delta reader, the
 process-liveness check, and the audit log. It
 parses hook input once at the socket into a `HookEvent` and rejects anything it does
 not recognise with a logged error and a non-2xx reply `[LAW:parse-dont-validate]`. It
@@ -1086,6 +1086,17 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   restart therefore loses nothing: its first sweep lists every session the last run
   listed, before a word is spoken.
 - **State** comes from the reducer applied to hook events since the daemon attached.
+- **What Claude Code says the session is doing** is the file Claude Code itself keeps
+  for every interactive session, `sessions/<pid>.json` in the config directory that
+  holds the session's transcript (2.1.280 to 2.1.282): `status` is `idle`, `busy`,
+  `waiting` (with `waitingFor`, `permission prompt` or `input needed`), or `shell`, and
+  `statusUpdatedAt` is when it was set, in epoch milliseconds. A `!` command reports
+  `busy`. `hands.sessions.statusfile` reads every listed session's file ten times a
+  second and applies a `StatusReported` each time the stamp moves, so a status set
+  again to what it was, or an idle, busy, idle between two reads, is still heard. A
+  status or reason hands does not know arrives as an unknown variant and is logged,
+  never read as idle. A file that names another pid or another session is refused. The
+  registry keeps the last one as `Session.report`, and it moves no state of its own yet.
 - **Ends nobody heard.** One process holds one session, so a running process's
   *holder* is the newest file that names it and passes the start-time check. A file
   whose process is not running is `Died`; the holder is `Attached`; any other file on

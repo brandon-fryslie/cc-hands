@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from hands.core.session import Blocker, Instant, Membership, FinishedCall, Mode, PromptId, RequestId, SessionId
+from hands.core.status import Report
 
 
 StartSource = Literal["startup", "resume", "clear", "compact"]
@@ -105,6 +106,15 @@ class Waited:
 
 
 @dataclass(frozen=True)
+class StatusReported:
+    """Claude Code set the session's status: read from the file it keeps for the session each time its stamp moves, so a
+    status set again to what it was is heard, and so is a busy that came and went between two reads."""
+
+    session: SessionId
+    report: Report
+
+
+@dataclass(frozen=True)
 class PermissionRequested:
     session: SessionId
     at: Instant
@@ -148,7 +158,7 @@ class Tick:
 
 
 # Events about a session the registry must already know; a join is how it comes to.
-SessionEvent = Prompted | Stopped | Interrupted | Taken | Continued | Waited | PermissionRequested | ToolFinished | Ended
+SessionEvent = Prompted | Stopped | Interrupted | Taken | Continued | Waited | StatusReported | PermissionRequested | ToolFinished | Ended
 # What a session's transcript says of its turn that none of its hooks do.
 Transcribed = Taken | Interrupted | Continued
 # What the liveness sweep saw in one membership file.
