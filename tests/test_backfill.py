@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.turn import Asked, Delegated, Edited, Happening, Ran, Ref
+from hands.core.turn import Asked, Delegated, Edited, Happening, Interruption, Ran, Ref
 from hands.sessions.backfill import Unseen, read_since
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
@@ -156,3 +156,12 @@ def test_a_transcript_that_is_being_written_is_read_only_as_far_as_its_last_whol
     whole = FIXTURE.read_bytes()
     half.write_bytes(whole[: whole.rindex(b"\n") + 1] + b'{"type":"assistant","message":{"content":[{"typ')
     assert read_since(half, None).happenings == read()
+
+
+def test_a_call_the_user_interrupted_is_read_as_over_and_the_interrupt_in_its_place(tmp_path: Path) -> None:
+    """A second call left open when the user pressed Escape is never answered: the interrupt is the proof."""
+    second = '{"uuid":"u5","type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"sleep 60"}}]}}'
+    cut = '{"uuid":"u6","type":"user","promptId":"p1","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}'
+    reading = read_since(written(tmp_path / "t.jsonl", PROMPT, CALL, RESULT, second, cut), None)
+    assert reading.happenings[-1] == Interruption(Ref("u6"))
+    assert reading.settled == len(reading.happenings)

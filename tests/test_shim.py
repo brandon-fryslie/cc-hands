@@ -63,7 +63,7 @@ async def test_a_start_records_membership_and_joins_the_registry(home: Home, ses
     assert await shim(home, START) == (0, "")
     assert await shim(home, PROMPT) == (0, "")
     membership = Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl"))
-    assert [listing.session for listing in sessions.live()] == [Session(membership, Working(since=10.0), mode=None)]
+    assert [listing.session for listing in sessions.live()] == [Session(membership, Working(since=10.0), mode=None, turn=None)]
     assert home.membership(SID).exists()
 
 

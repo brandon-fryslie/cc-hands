@@ -142,9 +142,16 @@ class Other:
     failed: bool
 
 
+@dataclass(frozen=True)
+class Interruption:
+    """The user stopped the turn at the keyboard, with Escape or Ctrl-C, before Claude finished it."""
+
+    ref: Ref | None
+
+
 # [LAW:types-are-the-program] tool calls are content, not noise: a turn's results are mostly in what it used, and
 # one variant per kind of result is what lets the summariser be shown a test run's counts instead of its scrollback.
-Step = Said | Edited | Ran | Tested | Looked | Planned | Delegated | Questioned | Other
+Step = Said | Edited | Ran | Tested | Looked | Planned | Delegated | Questioned | Other | Interruption
 
 
 @dataclass(frozen=True)
@@ -332,6 +339,8 @@ def describe(happening: Happening, budget: Budget) -> str:
             return "\n".join(_question(question, budget) for question in questions)
         case Other(tool=tool, input=input, result=result, failed=failed):
             return f"Claude used {tool}: {_cut(input, budget.input)}\n{'Result (failed)' if failed else 'Result'}: {_cut(result, budget.result)}"
+        case Interruption():
+            return "The user interrupted Claude here, so the turn did not finish."
 
 
 def _question(question: Question, budget: Budget) -> str:

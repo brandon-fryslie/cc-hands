@@ -51,7 +51,7 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     for event in (
         Joined(working, "startup"),
-        Prompted(working.id, at=1.0, mode="acceptEdits"),
+        Prompted(working.id, at=1.0, mode="acceptEdits", prompt=None),
         Joined(untitled, "startup"),
         Joined(blocked, "startup"),
         PermissionRequested(blocked.id, at=2.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default"),

@@ -10,6 +10,7 @@ from hands.core.turn import (
     Committed,
     Delegated,
     Edited,
+    Interruption,
     Looked,
     Other,
     Planned,
@@ -241,3 +242,14 @@ def test_nothing_the_repository_clause_says_is_rewritten_by_the_filter_in_front_
     [repository] = told(pushed, delta=Delta(commits=(Commit("f0f9776", "tidy"),))).repository
     heard = spoken(repository.text)
     assert heard.text == repository.text and heard.leaks == ()
+
+
+def test_a_turn_the_user_interrupted_says_so_first_from_the_types_and_never_as_a_section() -> None:
+    narrated = told(Said(None, "# Rivers"), Interruption(Ref("u9")), headline="It had started an essay on rivers.", delta=Delta(files=(Changed("a.md", 3, 0),)))
+    assert narrated.said() == "You interrupted it. It had started an essay on rivers. It left one file different."
+    assert topics(narrated) == ["what it said"]
+    assert [segment.refs for segment in narrated.interrupted] == [(Ref("u9"),)]
+
+
+def test_a_turn_that_finished_says_nothing_of_an_interruption() -> None:
+    assert told(Said(None, "Done.")).interrupted == ()

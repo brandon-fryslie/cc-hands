@@ -300,7 +300,9 @@ announcements and the idle nudge as `Speak` and permission requests as `Narrate`
 relayed as soon as the reducer emits them. The nudge is the `idle_prompt`
 notification, the only one the `Notification` hook's matcher lets through; it is
 spoken once per idle period, because `Idle.nudged` turns true as it is said and every
-way into `Idle` builds a fresh one. `Story` carries finished turns and sessions gone in one ordered
+way into `Idle` builds a fresh one. Claude Code sends no `idle_prompt` after an
+interrupted turn, so that one idle period carries `Idle.due`, and the tick nudges it
+when the notification would have come. `Story` carries finished turns and sessions gone in one ordered
 queue, because a summary takes seconds, and an end spoken at once was heard before the
 last turn it ended. A turn's summary reaches TTS as one `TTSSpeakFrame`, with no player
 and no segments. `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
@@ -362,6 +364,16 @@ event-specific fields below were read out of the 2.1.263 bundle. Payloads captur
 | `SubagentStop` | `agent_id`, `agent_transcript_path`, `agent_type`, `last_assistant_message` |
 | `MessageDisplay` | `turn_id`, `message_id`, `index`, `final`, `delta` |
 | `SessionEnd` | the common fields |
+
+No hook fires when the user interrupts a turn with Escape or Ctrl-C (2.1.281): no
+`Stop`, no `PostToolUse` for the tool it cut off, and no `idle_prompt` afterwards.
+Claude Code writes a user record instead, `[Request interrupted by user]`, or
+`[Request interrupted by user for tool use]` when a tool was running, carrying the
+`promptId` of the turn it stopped, which is the `prompt_id` that turn's
+`UserPromptSubmit` carried. The tail reads that record as the `Interrupted` event, and
+the reducer ends the session's turn only when the record names it, so an interrupt
+read after the next prompt ends nothing. Only the prompt names the turn: a background
+subagent's hooks keep the `prompt_id` of the turn that started it after that turn is over.
 
 The reply a `PermissionRequest` hook may give is printed on its stdout as
 `{"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": ...}}`,

@@ -9,9 +9,9 @@ from dataclasses import dataclass, field, replace
 from typing import cast
 
 from hands.core.steps import Call, Result, recognise
-from hands.core.turn import Opening, Said, Step
+from hands.core.turn import Asked, Interruption, Notified, Opening, Said, Step
 from hands.sessions.payload import Payload
-from hands.sessions.transcript import blocks, holds_a_tool, opening_of, ref_of, result_text, structured_result
+from hands.sessions.transcript import blocks, edge_of, holds_a_tool, ref_of, result_text, structured_result
 
 
 @dataclass
@@ -25,18 +25,26 @@ class Turning:
     places: dict[str, int] = field(default_factory=dict[str, int])
     mid_tool: bool = False
 
-    def consume(self, record: Payload) -> Opening | None:
-        """Read one record in, and say where it opened a turn rather than continuing one.
+    def consume(self, record: Payload) -> Opening | Interruption | None:
+        """Read one record in, and say where it opened a turn or cut one off rather than continuing one.
 
-        The opening is returned rather than taken, because what a new turn means is the reader's to decide: the
-        tail lets go of the turn it was following, and a backfill reading a whole morning keeps every one of them.
+        The edge is returned rather than taken, because what it means is the reader's to decide: the tail lets go
+        of the turn it was following at an opening and ends the session's turn at an interruption, and a backfill
+        reading a whole morning keeps every one of them.
         """
-        opening = opening_of(record, self.mid_tool)
+        edge = edge_of(record, self.mid_tool)
         parts = blocks(record)
         self.mid_tool = holds_a_tool(record)
-        if opening is not None:
-            # The record that opens a turn is what was asked, not a step of the answer.
-            return opening
+        match edge:
+            case Asked() | Notified():
+                # The record that opens a turn is what was asked, not a step of the answer.
+                return edge
+            case Interruption():
+                # The last step of the turn it cuts off, told in its place like any other.
+                self.slots.append(edge)
+                return edge
+            case None:
+                pass
         ref = ref_of(record)
         # `toolUseResult` describes one call, so a record carrying results for several says which of them it
         # belongs to for none: each is then recognised from its own text, rather than from another call's record.

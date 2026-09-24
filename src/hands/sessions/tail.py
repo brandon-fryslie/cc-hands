@@ -8,6 +8,7 @@ about where the turn started or what of it was heard.
 import asyncio
 import os
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -15,10 +16,11 @@ from typing import Protocol
 
 from loguru import logger
 
-from hands.core.session import Membership, SessionId
-from hands.core.turn import Answering, Continuing, Said, Step, Turn
+from hands.core.events import Interrupted
+from hands.core.session import Instant, Membership, SessionId
+from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.transcript import turn_record
+from hands.sessions.transcript import prompt_of, turn_record
 from hands.sessions.turning import Turning
 
 
@@ -48,12 +50,16 @@ class Following:
     told: int = 0
     stood_in: str | None = None
 
-    def consume(self, record: Payload) -> None:
-        """Read one record into the turn, letting go of the turn before it where this record opens a new one."""
-        opening = self.turn.consume(record)
-        if opening is not None:
-            self.forget()
-            self.turn.begin(opening)
+    def consume(self, record: Payload) -> Interruption | None:
+        """Read one record into the turn, letting go of the turn before it where this record opens a new one, and
+        saying where it cut the turn off."""
+        match self.turn.consume(record):
+            case Asked() | Notified() as opening:
+                self.forget()
+                self.turn.begin(opening)
+                return None
+            case edge:
+                return edge
 
     def restart(self) -> None:
         """Read this file again from its start: nothing read of the file it was says anything about the file it is."""
@@ -75,6 +81,8 @@ class Known(Protocol):
 
     def live_members(self) -> list[Membership]: ...
 
+    def now(self) -> Instant: ...
+
     def membership(self, session: SessionId) -> Membership | None: ...
 
 
@@ -93,9 +101,15 @@ class Tails:
         # last reading touched: it measures this loop keeping up, which is the loop's property and not a
         # session's. None where that record carried no timestamp, because then nothing measured it.
         self.lag: float | None = None
+        # Every interruption read and not yet handed out, by whichever reading found it: a Stop's reading can be the one
+        # that reads it. Touched only under the lock.
+        self._interrupted: list[Interrupted] = []
 
-    async def catch_up(self) -> None:
-        """Read what has been appended to every live session's transcript, and forget the sessions that are gone."""
+    async def catch_up(self) -> list[Interrupted]:
+        """Read what has been appended to every live session's transcript, and forget the sessions that are gone.
+
+        Returns the turns read as interrupted since the last catch-up, in the order they were read, which no hook says.
+        """
         async with self._reading:
             members = self._known.live_members()
             live = {member.id for member in members}
@@ -116,6 +130,8 @@ class Tails:
                 except OSError as error:
                     # [LAW:no-silent-failure] the offset does not move, so the same bytes are read again at the next catch-up.
                     logger.error(f"cannot read the transcript of session {member.id} from {following.path}: {error}")
+            interrupted, self._interrupted = self._interrupted, []
+            return interrupted
 
     async def tell(self, session: SessionId, closing: str | None) -> Telling | None:
         """What the session has not been told of its turn, or None before anything has opened one.
@@ -197,17 +213,30 @@ class Tails:
                 logger.error(f"a record in the transcript of session {session} could not be read, so it is not told: {error}")
                 continue
             if record is not None:
-                following.consume(record)
+                if following.consume(record) is not None:
+                    self._interrupt(session, record)
                 self.lag = _lag(record)
 
+    def _interrupt(self, session: SessionId, record: Payload) -> None:
+        prompt = prompt_of(record)
+        if prompt is None:
+            # [LAW:no-silent-failure] a record that names no turn cannot end one, so the session stays working until its next prompt.
+            logger.error(f"session {session} was interrupted, but the record of it names no prompt, so its turn cannot be ended")
+            return
+        # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
+        self._interrupted.append(Interrupted(session, prompt, self._known.now()))
 
-async def keep_tailing(tails: Tails, period: float) -> None:
-    """Read what every live transcript has gained, once a period, until cancelled.
 
-    The period is how late a record can be turned into a step, which is what a turn narrated while it runs waits on.
+async def keep_tailing(tails: Tails, period: float, apply: Callable[[Interrupted], Awaitable[None]]) -> None:
+    """Read what every live transcript has gained, once a period, and apply each interruption it held, until cancelled.
+
+    The period is how late a record can be turned into a step, which is what a turn narrated while it runs waits on,
+    and how late a turn the user stopped is heard to have stopped.
     """
     while True:
-        await tails.catch_up()
+        # Applied outside the reading: an interruption is told as a stopped turn is, and the telling reads the tail.
+        for interrupted in await tails.catch_up():
+            await apply(interrupted)
         await asyncio.sleep(period)
 
 

@@ -5,7 +5,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-from hands.core.turn import Asked, Notified, Opening, Ref
+from hands.core.session import PromptId
+from hands.core.turn import Asked, Interruption, Notified, Opening, Ref
 from hands.sessions.payload import Payload, Rejected
 
 # Records are written without spaces, so this finds every title record cheaply.
@@ -56,7 +57,28 @@ def turn_record(line: bytes) -> Payload | None:
     return record
 
 
-def opening_of(record: Payload, mid_tool: bool) -> Opening | None:
+# The whole of the record Claude Code writes as a turn's last when the user stops it at the keyboard: the second when a
+# tool was running, the first otherwise. The same two texts in every version on this machine, 2.1.201 to 2.1.281.
+# The text is the mark, not the record's interruptedMessageId: a turn stopped before Claude wrote anything names no
+# message, and 162 of the 2,000 such records here carry none.
+_INTERRUPTED = ("[Request interrupted by user]", "[Request interrupted by user for tool use]")
+
+
+def edge_of(record: Payload, mid_tool: bool) -> Opening | Interruption | None:
+    """Where this record begins a turn, or cuts the one under way off; None for a record in the middle of one."""
+    if record.fields.get("type") == "user" and result_text(message(record).get("content")) in _INTERRUPTED:
+        # Written as a user's message with no tool result in it, so it would otherwise read as the next prompt.
+        return Interruption(ref_of(record))
+    return _opening_of(record, mid_tool)
+
+
+def prompt_of(record: Payload) -> PromptId | None:
+    """The prompt_id of the turn a record belongs to, which Claude Code writes on the user's side of it."""
+    value = record.fields.get("promptId")
+    return PromptId(value) if isinstance(value, str) else None
+
+
+def _opening_of(record: Payload, mid_tool: bool) -> Opening | None:
     """What opens a turn: a prompt or a notification Claude Code handed a session that was not waiting on a tool.
 
     `mid_tool` says whether the record before this one was a tool call or its result.

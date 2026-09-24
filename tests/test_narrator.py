@@ -35,6 +35,9 @@ class Registry:
     def live_members(self) -> list[Membership]:
         return [self.member]
 
+    def now(self) -> float:
+        return 0.0
+
     def membership(self, session: SessionId) -> Membership | None:
         return self.member if session == self.member.id else None
 
@@ -59,7 +62,7 @@ async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_d
     narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, recorded.append, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
-        await sessions.apply(Prompted(SID, at=1.0, mode=None))
+        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=None))
         await sessions.apply(Stopped(SID, None, mode=None))
         spoken = await asyncio.wait_for(frames.get(), 5.0)
     finally:
@@ -88,7 +91,7 @@ async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_aft
     narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, lambda _: None, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
-        await sessions.apply(Prompted(SID, at=1.0, mode=None))
+        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=None))
         await sessions.apply(Stopped(SID, None, mode=None))
         # `claude -p` exits the moment its turn stops, so the end lands while the model is still summarising.
         await sessions.apply(Ended(SID, "other"))
@@ -123,7 +126,7 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
     narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, lambda _: None, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
-        await sessions.apply(Prompted(SID, at=1.0, mode=None))
+        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=None))
         await sessions.apply(Stopped(SID, "Looked.", mode=None))
         await asyncio.wait_for(frames.get(), 5.0)
         with transcript.open("a") as more:

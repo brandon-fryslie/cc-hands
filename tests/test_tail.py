@@ -7,9 +7,14 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from hands.core.session import Membership, SessionId
-from hands.core.turn import Asked, Continuing, Notified, Looked, Other, Ran, Said, Turn
-from hands.sessions.tail import Tails, Telling
+from hands.core.events import Interrupted
+from hands.core.session import Membership, PromptId, SessionId
+from hands.core.turn import Asked, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Turn
+from hands.core.effects import Summarise
+from hands.core.events import Joined, Prompted
+from hands.core.session import Idle
+from hands.sessions.registry import Sessions
+from hands.sessions.tail import Tails, Telling, keep_tailing
 
 SID = SessionId("bf411065-dc5c-4ec9-8302-61b84bdb5c53")
 
@@ -38,6 +43,9 @@ class Registry:
 
     def live_members(self) -> list[Membership]:
         return self.members
+
+    def now(self) -> float:
+        return 7.0
 
     def membership(self, session: SessionId) -> Membership | None:
         return next((member for member in self.heard if member.id == session), None)
@@ -419,3 +427,96 @@ async def test_the_catch_up_and_a_stop_never_read_the_same_bytes_twice(tmp_path:
     # Read twice, every step would be here twice over.
     assert telling is not None
     assert telling.turn == Turn(Asked(None, "first"), (Said(None, "Done."), RAN, Said(None, "Done.")))
+
+
+# An interrupt fires no hook (2.1.281). Claude Code writes these records instead, as captured from a live session.
+ASKED = '{"type":"user","promptId":"p1","message":{"role":"user","content":"Write an essay about rivers."}}'
+WRITING = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"# Rivers"}]}}'
+CUT_OFF = '{"type":"user","promptId":"p1","uuid":"u9","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}'
+LOOPING = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_9","name":"Bash","input":{"command":"for i in $(seq 60); do date; sleep 1; done"}}]}}'
+REJECTED = (
+    '{"type":"user","promptId":"p1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_9","is_error":true,'
+    '"content":"The user doesn\'t want to proceed with this tool use. The tool use was rejected."}]}}'
+)
+CUT_OFF_MID_TOOL = '{"type":"user","promptId":"p1","uuid":"u9","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}'
+
+
+async def test_a_turn_cut_off_while_claude_wrote_is_heard_as_interrupted_and_told_with_what_it_had_said(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, WRITING, CUT_OFF))
+    tails = Tails(Registry([member(transcript)]))
+    assert await tails.catch_up() == [Interrupted(SID, PromptId("p1"), at=7.0)]
+    telling = await tails.tell(SID, None)
+    # The record of the interrupt is written as a user's message, and is not read as the next thing asked.
+    assert telling is not None and telling.turn == Turn(Asked(None, "Write an essay about rivers."), (Said(None, "# Rivers"), Interruption(Ref("u9"))))
+
+
+async def test_a_turn_cut_off_while_a_tool_ran_is_heard_as_interrupted(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, LOOPING, REJECTED, CUT_OFF_MID_TOOL))
+    tails = Tails(Registry([member(transcript)]))
+    assert await tails.catch_up() == [Interrupted(SID, PromptId("p1"), at=7.0)]
+    telling = await tails.tell(SID, None)
+    assert telling is not None and telling.turn.steps[-1] == Interruption(Ref("u9"))
+
+
+async def test_the_prompt_after_an_interrupt_opens_a_turn_of_its_own(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, WRITING, CUT_OFF, '{"type":"user","promptId":"p2","message":{"role":"user","content":"Shorter."}}', DONE))
+    assert await turn_of(transcript) == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
+
+
+async def test_a_prompt_that_only_mentions_an_interrupt_is_a_prompt(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    quoting = '{"type":"user","promptId":"p1","message":{"role":"user","content":"Why did I see [Request interrupted by user] there?"}}'
+    transcript.write_text(lines(quoting))
+    tails = Tails(Registry([member(transcript)]))
+    assert await tails.catch_up() == []
+    telling = await tails.tell(SID, None)
+    assert telling is not None and telling.turn.opening == Asked(None, "Why did I see [Request interrupted by user] there?")
+
+
+async def test_an_interrupt_the_stops_own_reading_found_is_still_handed_out_at_the_next_catch_up(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, WRITING))
+    tails = await following(transcript)
+    with transcript.open("a") as more:
+        more.write(lines(CUT_OFF))
+    await tails.tell(SID, None)
+    assert await tails.catch_up() == [Interrupted(SID, PromptId("p1"), at=7.0)]
+    assert await tails.catch_up() == []
+
+
+async def test_an_interrupt_whose_record_names_no_turn_is_said_and_ends_nothing(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, WRITING, CUT_OFF.replace('"promptId":"p1",', "")))
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR", filter="hands")
+    try:
+        assert await Tails(Registry([member(transcript)])).catch_up() == []
+    finally:
+        logger.remove(sink)
+    assert errors == [f"session {SID} was interrupted, but the record of it names no prompt, so its turn cannot be ended"]
+
+
+async def test_the_older_record_of_an_interrupt_written_as_a_plain_string_is_one_too(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, WRITING, '{"type":"user","promptId":"p1","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}'))
+    assert await Tails(Registry([member(transcript)])).catch_up() == [Interrupted(SID, PromptId("p1"), at=7.0)]
+
+
+async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_and_the_session_is_idle(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, WRITING))
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member(transcript), "startup"))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    tailing = asyncio.create_task(keep_tailing(Tails(sessions), 0.01, sessions.apply))
+    try:
+        with transcript.open("a") as more:
+            more.write(lines(CUT_OFF))
+        assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, None)
+    finally:
+        tailing.cancel()
+    listing = sessions.listing(SID)
+    assert listing is not None and isinstance(listing.session.state, Idle)

@@ -49,12 +49,12 @@ async def test_a_mode_changed_at_the_keyboard_is_listed_and_noted_at_the_session
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(ONE, "startup"))
     assert describe_listing(sessions.live()[0])["mode"] == "not reported yet"
-    await sessions.apply(Prompted(SID, at=1.0, mode="default"))
+    await sessions.apply(Prompted(SID, at=1.0, mode="default", prompt=None))
     await sessions.apply(Stopped(SID, "ok", mode="default"))
     assert describe_listing(sessions.live()[0])["mode"] == "manual mode"
     assert await sessions.heard() == Note(ModeChanged(SID, "default"))
     # Shift-tab at the prompt fires no hook; the next prompt reports where it landed.
-    await sessions.apply(Prompted(SID, at=2.0, mode="acceptEdits"))
+    await sessions.apply(Prompted(SID, at=2.0, mode="acceptEdits", prompt=None))
     assert describe_listing(sessions.live()[0])["mode"] == "accept edits mode"
     assert await sessions.heard() == Note(ModeChanged(SID, "acceptEdits"))
 
@@ -62,7 +62,7 @@ async def test_a_mode_changed_at_the_keyboard_is_listed_and_noted_at_the_session
 async def test_a_voice_answer_keeps_the_mode_the_session_reported() -> None:
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(ONE, "startup"))
-    await sessions.apply(Prompted(SID, at=1.0, mode="plan"))
+    await sessions.apply(Prompted(SID, at=1.0, mode="plan", prompt=None))
     request = PermissionRequested(SID, at=2.0, request=RequestId("r1"), on=Permission("Bash", {}), mode="plan")
     await sessions.apply(request)
     await sessions.answer(RequestId("r1"), Allow())
