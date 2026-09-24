@@ -92,7 +92,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             # message's hook names it (2.1.281), and marks nothing, or the mark would move into the middle of the work it
             # is there to measure [LAW:no-ambient-temporal-coupling].
             return _enter(registry, event, lambda state: _prompted(state, prompt, at), _marked)
-        case Taken(session=session, prompt=prompt) if (held := registry.sessions.get(session)) is not None and _busy(held.state):
+        case Taken(session=session, prompt=prompt) if (held := _running(registry, session)) is not None:
             # The record names the turn Claude Code runs; it ends none. Only whether it is the one sent says anything.
             return _enter(registry, event, lambda state: _taken(state, _names(held, prompt)))
         case Taken():
@@ -105,14 +105,14 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             # The Stop of a turn already over: told now if its telling waited for it (see _untold), and otherwise one
             # applied after the next turn's prompt, which ending would idle that turn and spend its mark.
             return _enter(registry, event, lambda state: state)
-        case Interrupted(session=session) if _awaiting(registry.sessions.get(session)):
-            # The record of how a turn Claude Code said is over ended: what its telling waits for.
+        case Interrupted(session=session, prompt=prompt) if (held := registry.sessions.get(session)) is not None and _awaiting(held) and _names(held, prompt):
+            # The record of how the turn Claude Code said is over ended: what its telling waits for.
             return _enter(registry, event, lambda state: state)
         case Interrupted():
             # [LAW:one-source-of-truth] the transcript says how a turn ended, never that it did: Claude Code's idle ends
             # it, ~100 ms before this record is written (2.1.282), so there is nothing left running for it to stop.
             return registry, []
-        case Continued(session=session, was=was) if (held := registry.sessions.get(session)) is not None and _busy(held.state) and _names(held, was):
+        case Continued(session=session, was=was) if (held := _running(registry, session)) is not None and _names(held, was):
             # Still working, now on the queued message: the turn goes by its id, so the Stop that ends it names it.
             return _enter(registry, event, lambda state: state)
         case Continued():
@@ -120,7 +120,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return registry, []
         case Waited():
             return _enter(registry, event, _waited)
-        case StatusReported(session=session, report=Report(status=status.Idle()), at=at) if (held := registry.sessions.get(session)) is not None and _busy(held.state):
+        case StatusReported(session=session, report=Report(status=status.Idle()), at=at) if _running(registry, session) is not None:
             # [LAW:one-source-of-truth] Claude Code says the turn is over, however it was stopped, so it is: idle, and
             # nudged on hands' clock (Claude Code sent no idle_prompt in 75 s after some, 2.1.282). A prompt still sent was
             # cancelled by an Escape during its hooks, or taken and stopped before its record was read; either way it is
@@ -254,7 +254,9 @@ def _untold(event: SessionEvent, was: Session) -> tuple[Untold | None, list[Effe
         case Stopped(closing=closing) if _awaiting(was):
             # Its Stop fired after Claude Code set idle, as an Escape's can: told with the reply it carries.
             return None, _telling(was, closing)
-        case Interrupted() | Ended() | Prompted():
+        case Interrupted(prompt=prompt) if _awaiting(was) and _names(was, prompt):
+            return None, _telling(was, None)
+        case Ended() | Prompted():
             # Told before a session is said to be gone, and before a prompt marks the turn after it, so it is compared
             # against its own mark: in the order they happened.
             return None, _telling(was, None)
@@ -285,6 +287,15 @@ def _named(event: SessionEvent, was: Session) -> tuple[PromptId | None, frozense
             return was.turn, was.taken
 
 
+def _running(registry: Registry, session: SessionId) -> Session | None:
+    """The session, if Claude Code has it busy with a turn."""
+    match registry.sessions.get(session):
+        case Session(state=state) as held if _busy(state):
+            return held
+        case _:
+            return None
+
+
 def _busy(state: SessionState) -> bool:
     """Whether Claude Code has the session busy with a turn, as far as hands has heard: sent, working, or at a dialog."""
     return isinstance(state, Submitted | Working | Blocked | AtDialog)
@@ -304,7 +315,7 @@ def _ends(session: Session | None, prompt: PromptId | None) -> bool:
     """Whether a Stop ends a turn: the busy one it names, or, at the prompt, one hands never had running, such as the turn
     a session was in when it was attached. At the prompt, the Stop of the last turn ends nothing: that turn was told."""
     match session:
-        case Session(state=Submitted() | Working() | Blocked() | AtDialog()):
+        case Session(state=state) if _busy(state):
             return _names(session, prompt)
         case Session(state=Idle(), untold=None):
             return session.turn is None or not _names(session, prompt)

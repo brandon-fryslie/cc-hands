@@ -505,7 +505,7 @@ async def test_an_interrupt_whose_record_names_no_turn_is_said_and_ends_nothing(
         assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1"))]
     finally:
         logger.remove(sink)
-    assert errors == [f"session {SID} was interrupted, but the record of it names no prompt, so its turn cannot be ended"]
+    assert errors == [f"session {SID} was interrupted, but the record of it names no prompt, so its turn is told without it"]
 
 
 async def test_the_older_record_of_an_interrupt_written_as_a_plain_string_is_one_too(tmp_path: Path) -> None:

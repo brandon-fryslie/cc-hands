@@ -289,8 +289,9 @@ class Tails:
     def _interrupt(self, session: SessionId, record: Payload) -> None:
         prompt = prompt_of(record)
         if prompt is None:
-            # [LAW:no-silent-failure] a record that names no turn cannot end one, so the session stays working until its next prompt.
-            logger.error(f"session {session} was interrupted, but the record of it names no prompt, so its turn cannot be ended")
+            # [LAW:no-silent-failure] a record that names no turn is the record of none, so the turn it stopped is told at
+            # its deadline, without it.
+            logger.error(f"session {session} was interrupted, but the record of it names no prompt, so its turn is told without it")
             return
         # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
         self._transcribed.append(Interrupted(session, prompt, self._known.now()))

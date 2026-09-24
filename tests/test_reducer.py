@@ -736,6 +736,14 @@ def test_the_interrupt_record_written_after_claude_code_said_idle_is_when_the_tu
     assert state.sessions[ONE.id].state == Idle(due=10.0 + IDLE_NUDGE_SECONDS)
 
 
+def test_an_interrupt_record_of_another_turn_leaves_the_untold_one_waiting_for_its_own() -> None:
+    """A record read again from the start of a transcript is not the one the turn waits for."""
+    state, tellings = told([said_idle(), Interrupted(ONE.id, NEXT, at=10.1)])
+    assert tellings == []
+    state, effects = reduce(state, INTERRUPT)
+    assert [effect for effect in effects if isinstance(effect, Compare | Summarise)] == TOLD
+
+
 def test_a_stop_that_fires_after_claude_code_said_idle_tells_the_turn_with_its_closing_reply() -> None:
     state, tellings = told([said_idle(), Stopped(ONE.id, "done", mode="plan", prompt=TURN), Tick(20.0)])
     assert tellings == [Compare(ONE.id), Summarise(ONE.id, TURN, "done")]

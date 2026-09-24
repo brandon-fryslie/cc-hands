@@ -69,7 +69,7 @@ class Interrupted:
     from the record Claude Code writes in the transcript instead."""
 
     session: SessionId
-    # The turn the record says it stopped. A record read after the next prompt names the turn before it.
+    # The turn the record says it stopped: only the untold turn it names waits for it to be told.
     prompt: PromptId
     at: Instant  # when the record was read
 
