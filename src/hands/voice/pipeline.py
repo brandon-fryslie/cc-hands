@@ -31,7 +31,7 @@ from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from hands.voice.latency import LatencyObserver
-from hands.voice.microphone import KeyedAudioTransport, Speaker
+from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.ptt import KeyVAD, PushToTalk
 from hands.voice.spoken import SpokenForm
 from hands.voice.tools import Tool
@@ -122,11 +122,11 @@ def build_llm(
 
 @dataclass(frozen=True)
 class Voice:
-    """The assembled pipeline plus the handles its edges need: the key, the speaker, the three services that report failures, and the two sides of the conversation."""
+    """The assembled pipeline plus the handles its edges need: the key, the audio devices, the three services that report failures, and the two sides of the conversation."""
 
     worker: PipelineWorker
     key: PushToTalk
-    speaker: Speaker
+    audio: KeyedAudioTransport
     stt: Whisper
     llm: AnthropicLLMService | OpenAILLMService
     tts: PocketTTSService
@@ -185,5 +185,5 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
         idle_timeout_secs=None,
     )
     return Voice(
-        worker=worker, key=key, speaker=transport.output(), stt=stt, llm=llm, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator
+        worker=worker, key=key, audio=transport, stt=stt, llm=llm, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator
     )

@@ -1107,6 +1107,30 @@ the press is lost rather than mixed with the reply. A stalled event loop delays 
 interruption itself, and the mute then covers the reply for as long as it plays.
 Acoustic echo cancellation would lift the half duplex and is a separate ticket.
 
+**A lost device is followed, not waited on.** PortAudio does not report a device
+that disappears. Measured on 2026-09-24 against a CoreAudio aggregate device destroyed
+mid-stream, the microphone's callbacks simply stop, a write to the speaker blocks for
+good, and the stream still reports itself active. Before this, an unplugged headset left
+the daemon running and deaf: the heartbeat said up, the next turn produced nothing, and
+Pipecat's 10-second write timeout then marked the speaker unusable for the rest of the run.
+macOS moves the default devices the moment the default one disappears, so the
+`hands.voice.coreaudio` listener, which reports a change within about 17 ms, is the
+signal. The follower in `hands.voice.devices` then reopens the whole transport, in this
+order:
+
+1. Both streams are detached, so a write that comes meanwhile is reported unwritten.
+2. The speaker is closed before the microphone, since closing it releases the stuck write.
+3. PortAudio is ended and started again, since it lists devices only when it starts.
+4. Both streams are reopened on the new defaults, and the speaker is made usable again.
+
+It then says `Audio moved: listening on …, speaking on …` through the system channel,
+on the new speaker, or posts it if speech is down. Closing a microphone whose device is
+gone takes 3 to 4 s, so the whole move took about 5.5 s from unplug to the sentence.
+The next turn ran end to end on the built-in devices. Every step that touches a device runs off the event loop.
+A reopen that takes longer than 10 s, or one that fails, stops the run, and launchd's restart opens on whatever
+devices there are. The same path follows a headset plugged in, or a default changed in
+Control Center.
+
 **The gate has one owner and several edges.** `PushToTalk` holds the key position;
 whatever reads the physical world calls `move_key`. The edges are variants of one
 config value, not modes of the gate `[LAW:one-type-per-behavior]`:

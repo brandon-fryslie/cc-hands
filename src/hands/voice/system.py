@@ -18,6 +18,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
 from hands.sessions.audit import Announced, Record
+from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
 from hands.voice.whisper import NOTHING_TRANSCRIBED, Whisper
 
@@ -49,7 +50,14 @@ class NothingTranscribed:
     pass
 
 
-SystemFact = Started | ModelUnreachable | ModelFailed | TranscriptionFailed | NothingTranscribed
+@dataclass(frozen=True)
+class AudioMoved:
+    """The system's default devices changed, and the transport was reopened on these."""
+
+    devices: Devices
+
+
+SystemFact = Started | ModelUnreachable | ModelFailed | TranscriptionFailed | NothingTranscribed | AudioMoved
 
 
 def system_text(fact: SystemFact) -> str:
@@ -64,6 +72,8 @@ def system_text(fact: SystemFact) -> str:
             return "Speech recognition failed for that turn."
         case NothingTranscribed():
             return "Whisper returned nothing for that turn."
+        case AudioMoved(devices=devices):
+            return f"Audio moved: listening on {devices.input}, speaking on {devices.output}."
 
 
 @dataclass(frozen=True)
