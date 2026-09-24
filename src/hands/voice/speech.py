@@ -85,7 +85,7 @@ def answer_readback(outcome: Outcome, names: Names) -> str:
         case Answered(session=session, on=on, decision=decision):
             return f"{_done(decision, _what(on))} for {names(session)}."
         case NotWaiting():
-            return "That request is no longer waiting: it was already answered, answered at the keyboard, or denied at its deadline."
+            return "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
         case Unfit(on=on, decision=decision):
             return _unfit(on, decision)
 

@@ -83,11 +83,18 @@ class Blocked:
 
 
 @dataclass(frozen=True)
+class AtDialog:
+    """Still at its dialog after hands let go of the hook at the deadline, so only the keyboard can answer it now."""
+
+    on: Blocker
+
+
+@dataclass(frozen=True)
 class Gone:
     pass
 
 
-SessionState = Idle | Working | Blocked | Gone
+SessionState = Idle | Working | Blocked | AtDialog | Gone
 
 
 @dataclass(frozen=True)

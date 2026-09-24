@@ -19,7 +19,7 @@ from pipecat.services.llm_service import FunctionCallParams
 from hands.core.effects import Allow, Narrate, Withdraw, Asking, DeadlineNear, Expired, Speak
 from hands.core.events import PermissionRequested, Tick, ToolFinished
 from hands.core.reducer import EXPIRED_MESSAGE
-from hands.core.session import AskedQuestion, Blocked, Option, Permission, Question, RequestId, SessionId, Working
+from hands.core.session import AskedQuestion, AtDialog, Blocked, Option, Permission, Question, RequestId, SessionId, Working
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
@@ -93,6 +93,10 @@ QUESTIONS: dict[str, object] = {
     ]
 }
 QUESTION: dict[str, object] = {**ASK, "tool_name": "AskUserQuestion", "tool_input": QUESTIONS}
+QUESTIONS_ASKED = (
+    AskedQuestion("Which color?", (Option("red", "warm"), Option("green", "cool")), several=False),
+    AskedQuestion("Which fruits?", (Option("pear", None), Option("plum", None)), several=True),
+)
 
 
 async def asked(home: Home, sessions: Sessions, payload: Mapping[str, object] = ASK) -> tuple[Shim, Asking]:
@@ -135,7 +139,7 @@ async def test_a_voice_allow_is_what_the_waiting_hook_prints(home: Home, session
     assert (code, decision(stdout)) == (0, {"behavior": "allow"})
     assert [listing.session.state for listing in sessions.live()] == [Working(since=0.0)]
     assert await call(tool, request=moment.request, decision="deny") == {
-        "readback": "That request is no longer waiting: it was already answered, answered at the keyboard, or denied at its deadline."
+        "readback": "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
     }
 
 
@@ -183,6 +187,13 @@ async def test_a_question_nobody_answers_by_its_deadline_is_left_to_its_dialog_a
         "10 seconds left to answer quiz about its question.",
         "Nobody answered quiz about its question in time, so it is left waiting at its dialog.",
     ]
+    # Still at its dialog, and said to be; a voice answer now is refused out loud rather than sent late.
+    assert [listing.session.state for listing in sessions.live()] == [AtDialog(moment.on)]
+    assert str((await call(named(sessions, "answer_question"), request=moment.request, answers=["red", "pear"]))["readback"]).startswith("That request is no longer waiting")
+    # Answered at the keyboard after all, it comes back through PostToolUse and the session goes on.
+    answered = Question(QUESTIONS_ASKED, {**QUESTIONS, "answers": {"Which color?": "red", "Which fruits?": "pear"}})
+    await sessions.apply(ToolFinished(SID, at=DEADLINE + 5.0, call=answered))
+    assert [listing.session.state for listing in sessions.live()] == [Working(since=DEADLINE + 5.0)]
 
 
 async def test_an_empty_answer_leaves_its_question_unanswered(home: Home, sessions: Sessions) -> None:
@@ -241,7 +252,7 @@ async def test_an_unanswered_request_is_denied_at_its_deadline_after_one_warning
         Speak(Expired(SID, moment.on)),
     ]
     assert await call(named(sessions, "answer_permission"), request=moment.request, decision="allow") == {
-        "readback": "That request is no longer waiting: it was already answered, answered at the keyboard, or denied at its deadline."
+        "readback": "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
     }
 
 
@@ -327,7 +338,7 @@ async def test_a_voice_answer_after_the_hook_went_away_is_told_nothing_was_answe
     await asyncio.sleep(0.2)  # the daemon notices the closed connection
     assert [listing.session.state for listing in sessions.live()] == [Working(since=0.0)]
     assert await call(named(sessions, "answer_permission"), request=moment.request, decision="allow") == {
-        "readback": "That request is no longer waiting: it was already answered, answered at the keyboard, or denied at its deadline."
+        "readback": "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
     }
 
 

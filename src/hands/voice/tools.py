@@ -15,7 +15,7 @@ from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, StageDraft
 from hands.core.effects import Allow, Answers, Decision, Deny
-from hands.core.session import Blocked, Blocker, Gone, Idle, Permission, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Working
+from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Permission, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Working
 from hands.core.turn import Budget, Happening, Ref, describe
 from hands.sessions.backfill import Unseen, read_since
 from hands.sessions.audit import Called, Record
@@ -189,6 +189,8 @@ def _spoken_state(state: SessionState) -> str:
             return "working"
         case Blocked(on=on):
             return _waiting_on(on)
+        case AtDialog(on=on):
+            return f"{_waiting_on(on)} at the keyboard, too late to answer by voice"
         case Gone():
             return "ended"
 

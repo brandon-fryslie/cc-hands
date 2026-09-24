@@ -253,7 +253,8 @@ reducer compares, and emits `Speak("ten seconds on that permission")` exactly on
 because the transition from `warned=False` to `warned=True` is a state change, not a
 timer callback. At the deadline it emits `Reply(deny)` for a permission and says so;
 a question, which silence cannot answer, is withdrawn instead and left to its dialog,
-where the user may be answering it at the keyboard. The ticker's
+where the user may be answering it at the keyboard. The session is then `AtDialog`: still
+waiting, now on the keyboard alone, until the answered call comes back. The ticker's
 period only bounds how late a deadline is heard; no correctness property depends on
 a `sleep`.
 
