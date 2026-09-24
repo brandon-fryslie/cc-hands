@@ -69,7 +69,7 @@ class Interrupted:
     from the record Claude Code writes in the transcript instead."""
 
     session: SessionId
-    # The turn the record says it stopped. A record read after the next prompt names the turn before it.
+    # The turn the record says it stopped: only the untold turn it names waits for it to be told.
     prompt: PromptId
     at: Instant  # when the record was read
 
@@ -81,9 +81,6 @@ class Taken:
 
     session: SessionId
     prompt: PromptId
-    # Whether the record opens a turn of its own, as a prompt's first record does, rather than going on in the one
-    # running, as a flushed or a mid-turn notification's does: the two are told apart only by where they are written.
-    opens: bool
 
 
 @dataclass(frozen=True)

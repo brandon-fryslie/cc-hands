@@ -20,7 +20,7 @@ from hands.core.events import Continued, Interrupted, Taken, Transcribed
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.transcript import edge_of, prompt_of, turn_record
+from hands.sessions.transcript import prompt_of, turn_record
 from hands.sessions.turning import Turning
 
 
@@ -111,8 +111,7 @@ class Following:
             case "user":
                 # A record that names no prompt says nothing of which one Claude is answering.
                 was, self.asked = self.asked, prompt_of(record) or self.asked
-                opens = isinstance(edge_of(record, self.reading.turn.mid_tool), Asked | Notified)
-                return None if self.asked is None or self.asked == was else Taken(session, self.asked, opens)
+                return None if self.asked is None or self.asked == was else Taken(session, self.asked)
             case _:
                 # An assistant record: Claude answering whatever the user's side last carried.
                 was, self.answering = self.answering, self.asked
@@ -290,8 +289,9 @@ class Tails:
     def _interrupt(self, session: SessionId, record: Payload) -> None:
         prompt = prompt_of(record)
         if prompt is None:
-            # [LAW:no-silent-failure] a record that names no turn cannot end one, so the session stays working until its next prompt.
-            logger.error(f"session {session} was interrupted, but the record of it names no prompt, so its turn cannot be ended")
+            # [LAW:no-silent-failure] a record that names no turn is the record of none, so the turn it stopped is told at
+            # the deadline Claude Code's idle set, without it.
+            logger.error(f"session {session} was interrupted, but the record of it names no prompt, so its turn is told without it")
             return
         # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
         self._transcribed.append(Interrupted(session, prompt, self._known.now()))

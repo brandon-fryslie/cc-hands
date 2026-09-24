@@ -99,9 +99,10 @@ class Statuses:
         return StatusReported(member.id, report, self._clock())
 
     def _said(self, member: Membership, why: str) -> None:
-        # [LAW:no-silent-failure] said once each time the reason changes, rather than every read.
+        # [LAW:no-silent-failure] said once each time the reason changes, rather than every read, and as an error: the
+        # status is what ends a turn no Stop ends, so without it a turn stopped at the keyboard runs on until one does.
         if self._unread.get(member.id) != why:
-            logger.warning(f"no status for session {member.id}: {why}")
+            logger.error(f"no status for session {member.id}: {why}, so a turn stopped with Escape is not heard to end")
         self._unread[member.id] = why
 
 

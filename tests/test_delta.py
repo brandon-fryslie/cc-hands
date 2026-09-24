@@ -7,8 +7,10 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from hands.core.delta import Delta
-from hands.core.effects import Marked, Summarise
-from hands.core.events import Joined, Prompted, Stopped, Taken
+from hands.core.effects import Summarise
+from hands.core.events import Joined, Prompted, StatusReported, Stopped, Taken
+from hands.core import status
+from hands.core.status import Report, Stamp
 from hands.core.session import Membership, PromptId, SessionId, Submitted
 from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Deltas
 from hands.sessions.registry import Sessions
@@ -22,7 +24,7 @@ class Breaks:
     async def snapshot(self, session: SessionId, cwd: Path) -> None:
         raise RuntimeError("there is nowhere to put a scratch index")
 
-    async def compare(self, session: SessionId, mark: Marked) -> None:
+    async def compare(self, session: SessionId) -> None:
         raise RuntimeError("git is on fire")
 
     async def taken(self, session: SessionId) -> Delta:
@@ -55,7 +57,7 @@ async def turn(root: Path, work: object = None) -> Delta:
     await deltas.snapshot(SID, root)
     if callable(work):
         work()
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
     return await deltas.taken(SID)
 
 
@@ -146,7 +148,7 @@ async def test_a_directory_that_is_not_there_is_told_by_its_steps_alone(tmp_path
 async def test_a_turn_stopping_with_no_mark_before_it_reads_nothing(tmp_path: Path) -> None:
     """The daemon started in the middle of a turn: there is no beginning to compare against, so there is no delta."""
     deltas = Deltas()
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
     assert not await deltas.taken(SID)
 
 
@@ -156,7 +158,7 @@ async def test_a_delta_is_told_once_and_never_twice(tmp_path: Path) -> None:
     deltas = Deltas()
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("x = 3\n")
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
     assert await deltas.taken(SID)
     assert not await deltas.taken(SID)
 
@@ -166,12 +168,12 @@ async def test_a_new_turn_reads_against_its_own_beginning_and_not_the_one_before
     deltas = Deltas()
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("first turn\n")
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
     assert [file.path for file in (await deltas.taken(SID)).files] == ["a.py"]
 
     await deltas.snapshot(SID, root)
     (root / "b.py").write_text("second turn\n")
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
     assert [file.path for file in (await deltas.taken(SID)).files] == ["b.py"]
 
 
@@ -209,7 +211,7 @@ async def test_a_mark_that_would_cost_more_than_the_hook_can_afford_is_not_taken
     deltas = Deltas(marking=0.0)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("changed\n")
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
     assert not await deltas.taken(SID)
 
 
@@ -221,7 +223,7 @@ async def test_a_stop_waits_for_none_of_the_reading_it_starts(tmp_path: Path) ->
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("changed by something\n")
     start = time.perf_counter()
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
     assert time.perf_counter() - start < 0.01, "the stop path waited for git"
     # And the reading still arrives, for whoever comes to take it.
     assert [file.path for file in (await deltas.taken(SID)).files] == ["a.py"]
@@ -235,11 +237,11 @@ async def test_two_turns_that_stop_before_either_is_told_keep_their_own_changes(
 
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
 
     await deltas.snapshot(SID, root)
     (root / "second.py").write_text("turn two\n")
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
 
     assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
     assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
@@ -251,11 +253,11 @@ async def test_a_turn_that_stops_with_nothing_to_read_still_takes_its_place_in_t
     before's changes."""
     root = repo(tmp_path)
     deltas = Deltas()
-    await deltas.compare(SID, "last")  # no mark: the daemon started in the middle of this turn
+    await deltas.compare(SID)  # no mark: the daemon started in the middle of this turn
 
     await deltas.snapshot(SID, root)
     (root / "later.py").write_text("a later turn\n")
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
 
     assert not await deltas.taken(SID)
     assert [file.path for file in (await deltas.taken(SID)).files] == ["later.py"]
@@ -351,7 +353,7 @@ async def test_a_mark_that_ran_out_of_time_reading_where_it_stands_is_no_mark_at
     deltas = Slow()
     await deltas.snapshot(SID, root)
     (root / "during.py").write_text("the turn's own work\n")
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
     # No mark, so no delta: the turn is told by its steps alone, which is the one honest answer here.
     assert await deltas.taken(SID) == Delta()
 
@@ -388,7 +390,7 @@ async def test_more_turns_than_can_be_held_lose_the_newest_deltas_and_never_the_
     for n in range(HELD + 2):
         await deltas.snapshot(SID, root)
         (root / f"turn{n}.py").write_text(f"turn {n}\n")
-        await deltas.compare(SID, "last")
+        await deltas.compare(SID)
 
     told = [await deltas.taken(SID) for _ in range(HELD + 2)]
     assert [[file.path for file in delta.files] for delta in told[:HELD]] == [[f"turn{n}.py"] for n in range(HELD)]
@@ -431,7 +433,7 @@ async def test_a_head_that_could_not_be_read_is_no_more_a_repository_with_no_com
     await deltas.snapshot(SID, root)
     (root / ".git" / "HEAD").write_text(stood)  # the checkout finished, and the repository reads again
     (root / "during.py").write_text("the turn's own work\n")
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
     assert await deltas.taken(SID) == Delta()
 
 
@@ -467,7 +469,7 @@ async def test_a_commit_is_still_told_when_the_tree_it_left_behind_cannot_be_rea
     (root / "b.py").write_text("y = 2\n")
     git(root, "add", "-A")
     git(root, "commit", "-qm", "the one thing worth saying about this turn")
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
     delta = await deltas.taken(SID)
     assert [commit.subject for commit in delta.commits] == ["the one thing worth saying about this turn"]
 
@@ -498,14 +500,14 @@ async def test_a_turn_whose_changes_could_not_be_counted_has_its_patch_left_unre
     (root / "generated.csv").write_text("n,x\n" * (MOST_LINES + 10))
     git(root, "add", "-A")
     git(root, "commit", "-qm", "wrote the generated file")
-    await deltas.compare(SID, "last")
+    await deltas.compare(SID)
 
     delta = await deltas.taken(SID)
     assert not delta.patch and not delta.files
     assert [commit.subject for commit in delta.commits] == ["wrote the generated file"]
 
 
-async def test_a_turn_that_ended_unheard_before_the_next_prompt_keeps_its_own_changes(tmp_path: Path) -> None:
+async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_next_prompt_lands_first(tmp_path: Path) -> None:
     """The next prompt's hook landed before the record of p1's interrupt was read. p1 is compared there, before p2 is
     marked, so p2 is told only what p2 changed."""
     root = repo(tmp_path)
@@ -513,8 +515,9 @@ async def test_a_turn_that_ended_unheard_before_the_next_prompt_keeps_its_own_ch
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
-    await sessions.apply(Taken(SID, PromptId("p1"), opens=True))
+    await sessions.apply(Taken(SID, PromptId("p1")))
     (root / "first.py").write_text("turn one\n")
+    await sessions.apply(StatusReported(SID, Report(status.Idle(), Stamp(1)), at=4.0))
     await sessions.apply(Prompted(SID, at=5.0, mode=None, prompt=PromptId("p2")))
     (root / "second.py").write_text("turn two\n")
     await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2")))
@@ -525,67 +528,3 @@ async def test_a_turn_that_ended_unheard_before_the_next_prompt_keeps_its_own_ch
     assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
 
 
-async def test_a_turn_found_to_have_run_after_the_next_was_marked_is_read_up_to_that_mark(tmp_path: Path) -> None:
-    """hands-keyboard-gxr.90g: p1 runs and ends before any of it is read, and p2 is marked. p1's record, read after,
-    has it compared against the mark p2 set aside and up to p2's own: p1's work and none of p2's, and p2 still has its
-    own mark, and its own place after p1's in the order."""
-    root = repo(tmp_path)
-    deltas = Deltas()
-    await deltas.snapshot(SID, root)
-    (root / "first.py").write_text("turn one\n")
-    git(root, "add", "first.py")
-    git(root, "commit", "-qm", "one")
-    await deltas.snapshot(SID, root)
-    (root / "second.py").write_text("turn two\n")
-    await deltas.compare(SID, "set_aside")
-    await deltas.compare(SID, "last")
-
-    first = await deltas.taken(SID)
-    assert [file.path for file in first.files] == ["first.py"] and [commit.subject for commit in first.commits] == ["one"]
-    assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
-
-
-async def test_a_prompt_that_never_ran_leaves_nothing_behind_for_the_one_after_it(tmp_path: Path) -> None:
-    """A cancelled prompt's mark is set aside by the resent one's, and the resent turn's reading spends it: nothing
-    later reads against it."""
-    root = repo(tmp_path)
-    deltas = Deltas()
-    await deltas.snapshot(SID, root)
-    await deltas.snapshot(SID, root)
-    (root / "resent.py").write_text("the resent turn\n")
-    await deltas.compare(SID, "last")
-    await deltas.compare(SID, "set_aside")
-
-    assert [file.path for file in (await deltas.taken(SID)).files] == ["resent.py"]
-    assert not await deltas.taken(SID)
-
-
-async def test_a_turn_found_to_have_run_while_the_next_mark_is_still_being_taken_waits_for_that_mark(tmp_path: Path) -> None:
-    """The record of the turn a prompt was sent over is read while that prompt's snapshot is still running git: the
-    reading waits for the mark rather than reading to whenever it happens to run."""
-    root = repo(tmp_path)
-    deltas = Deltas()
-    await deltas.snapshot(SID, root)
-    (root / "first.py").write_text("turn one\n")
-    marking = asyncio.create_task(deltas.snapshot(SID, root))
-    await asyncio.sleep(0)
-    await deltas.compare(SID, "set_aside")
-    await marking
-    (root / "second.py").write_text("turn two\n")
-    await deltas.compare(SID, "last")
-
-    assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
-    assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
-
-
-async def test_a_turn_found_to_have_run_after_the_next_mark_failed_is_told_without_the_next_turn_s_work(tmp_path: Path) -> None:
-    """Read to now with no next mark to stop at, the turn would be told the next one's changes as its own."""
-    root = repo(tmp_path)
-    deltas = Deltas()
-    await deltas.snapshot(SID, root)
-    (root / "first.py").write_text("turn one\n")
-    await deltas.snapshot(SID, tmp_path / "not-a-repository")
-    (root / "second.py").write_text("turn two\n")
-    await deltas.compare(SID, "set_aside")
-
-    assert not await deltas.taken(SID)

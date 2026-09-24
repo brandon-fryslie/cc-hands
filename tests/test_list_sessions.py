@@ -52,7 +52,7 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
     for event in (
         Joined(working, "startup"),
         Prompted(working.id, at=1.0, mode="acceptEdits", prompt=PromptId("p1")),
-        Taken(working.id, PromptId("p1"), opens=True),
+        Taken(working.id, PromptId("p1")),
         Joined(untitled, "startup"),
         Joined(blocked, "startup"),
         PermissionRequested(blocked.id, at=2.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default"),

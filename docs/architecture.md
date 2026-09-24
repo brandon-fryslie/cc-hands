@@ -105,9 +105,10 @@ class Session:
 SessionState = Idle | Submitted | Working | Blocked | AtDialog | Gone
 
 # Sent, but not taken until its UserPromptSubmit hooks finish; an Escape before then
-# cancels it silently, so only the transcript's record of the turn makes it Working.
+# cancels it with no hook or record, so only the transcript's record of the turn makes
+# it Working, and only Claude Code's idle ends it.
 @dataclass(frozen=True)
-class Submitted: since: Instant; over: PromptId | None   # the prompt it was sent over, still Submitted
+class Submitted: since: Instant
 @dataclass(frozen=True)
 class Working:   since: Instant
 @dataclass(frozen=True)
@@ -375,32 +376,27 @@ No hook fires when the user interrupts a turn with Escape or Ctrl-C (2.1.281): n
 Claude Code writes a user record instead, `[Request interrupted by user]`, or
 `[Request interrupted by user for tool use]` when a tool was running, carrying the
 `promptId` of the turn it stopped, which is the `prompt_id` that turn's
-`UserPromptSubmit` carried. The tail reads that record as the `Interrupted` event, and
-the reducer ends the session's turn only when the record names it, so an interrupt
-read after the next prompt ends nothing. Only the prompt names the turn: a background
+`UserPromptSubmit` carried. The tail reads that record as the `Interrupted` event. It
+ends nothing: Claude Code sets the session `idle` ~100 ms before it writes the record
+(2.1.282), and that status is what ends the turn (see Sessions, below); the record is
+what the turn's telling waits for. Only the prompt names the turn: a background
 subagent's hooks keep the `prompt_id` of the turn that started it after that turn is over.
 
-A message queued into a running turn fires `UserPromptSubmit` with the running turn's
-`prompt_id`, the id that turn went on under after a flush included (2.1.281). So a prompt
-naming any other id was sent from the prompt, and the turn the registry still has running
-ended without its `Stop` or its interrupt read yet: the reducer ends it there, compared
-before the new turn is marked, and told as itself. A `Stop` carries the `prompt_id` of the
-turn it ends, which is how that turn is found in the tail. A turn a background task's
-notification opens fires `UserPromptSubmit` with an id of its own, as a typed prompt does.
-Until Claude answers under a flushed message's id, the registry keeps that id beside the turn's
-own, because a message queued in that window carries it. A record that opens a turn of its own,
-read while the registry still has another running, ends that one too. The registry remembers
-the ids of a turn it ended before its `Stop` was heard, so that `Stop`, applied late, ends
-nothing. A `Stop` naming an id not heard of yet ends its turn as any `Stop` does.
-
-A prompt sent while the one before it is still `Submitted` cannot say which that one was:
-cancelled by an Escape during its hooks, or taken, run, and ended inside one tail period,
-before any record of it was read. So the new `Submitted` keeps the id it was sent `over`,
-until that prompt's own record, or its `Stop` landing after the new prompt's hook, settles it.
-Either one ends that turn and tells it as itself, and leaves the new prompt sent. A record of
-the new prompt, read with none of the old one's before it, settles it the other way: the old
-prompt never ran. Only the id kept in `over` can be ended this way, so the old turns a
-transcript's first reading passes through end nothing.
+Only a `Stop` and Claude Code's status move a session out of `Submitted`, `Working`,
+`Blocked`, or `AtDialog`. Hooks and records name turns and fill them in, and never end
+them. A turn opens from the prompt: a `UserPromptSubmit` applied to a session at its
+prompt opens one, sent, and marks it. A message queued into a running turn fires
+`UserPromptSubmit` with the running turn's `prompt_id`, the id that turn went on under
+after a flush included (2.1.281), so one applied to a busy session is in the turn it names.
+Any other id it or a record carries while a turn runs joins the ids the turn goes by: a
+flush's, taken seconds before Claude answers under it, which a message queued in between
+carries; or, should Claude Code's idle go unread between two turns, the next turn's. A
+`Stop` carries the `prompt_id` of the turn it ends, which is how that turn is found in the
+tail, and it ends only a busy turn that goes by that id, so a `Stop` applied late never
+ends the turn after it. A `Stop` at the prompt tells a turn hands never had running,
+such as the one a session was in when it was attached, and ends nothing of the last one,
+which was told already. A turn a background task's notification opens fires
+`UserPromptSubmit` with an id of its own, as a typed prompt does.
 
 The reply a `PermissionRequest` hook may give is printed on its stdout as
 `{"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": ...}}`,
@@ -750,15 +746,9 @@ neither may cost the turn what it was read for, so both are performed under one 
 rather than one guard each `[LAW:single-enforcer]`: a mark may not fail the prompt hook
 waiting on it, and a reading may not cost the turn the `Summarise` queued behind it.
 
-A turn found to have run only after the next prompt was marked, the case of `Submitted.over`
-above, would lose its mark to that prompt's. So each `Snapshot` sets the mark it replaces aside,
-one per session, and that turn's `Compare` names the mark set aside. It is read up to the mark
-that replaced it, where the turn had already ended, so what the next turn has begun to change
-is not told as part of it. A mark is held from the moment its snapshot starts, so a reading
-that needs one still being taken waits for it; where it could not be taken at all, the turn
-is told without a delta rather than with the next turn's work. A `Compare` of the last mark spends the one set aside, because every
-turn before the last is over once the last is. Readings stay one per telling, in the order the
-tellings are made.
+A mark is held from the moment its snapshot starts, so a reading that needs one still
+being taken waits for it; where it could not be taken at all, the turn is told without a
+delta. Readings stay one per telling, in the order the tellings are made.
 
 Everything the summariser is shown of a delta is bounded by the `Budget`, commits
 included: a turn that pulls or rebases brings them by the hundred, and the count is the
@@ -1095,16 +1085,22 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   second and applies a `StatusReported` each time its stamp differs from the one the registry holds, so a status set
   again to what it was, or an idle, busy, idle between two reads, is still heard. A
   status or reason hands does not know arrives as an unknown variant and is logged,
-  never read as idle. A file that names another pid or another session is refused. The
-  registry keeps the last one as `Session.report`. An `idle` applied to a session in
-  `Working`, `Blocked`, or `AtDialog` ends its turn, however the turn was stopped. The
-  session is `Idle` at once, with its nudge timed by hands (no `idle_prompt` follows a
-  double Escape), and the turn's ids join `Session.ended`. Claude Code sets `idle`
+  never read as idle. A file that names another pid or another session is refused. A file
+that is missing or refused is logged as an error, once per reason: without it a turn
+stopped with Escape, which fires no Stop, is never heard to end. The
+  registry keeps the last one as `Session.report`. It is the source of whether a
+  session's turn is over: an `idle` applied to a session in `Submitted`, `Working`,
+  `Blocked`, or `AtDialog` ends its turn, however the turn was stopped, with no case for
+  any one way of stopping it. A prompt still `Submitted` was cancelled by an Escape during
+  its hooks, which sets `idle` ~70 ms later, or taken and stopped before the tail read its
+  record: either way its turn ends here, and is told as itself only if a record says it
+  ran. The session is `Idle` at once, with its nudge timed by hands (no `idle_prompt`
+  follows a double Escape). Claude Code sets `idle`
   before the transcript says how the turn ended: an Escape's interrupt record is
   written ~100 ms after, and an Escape'd turn's Stop can fire after it. So the turn is
-  kept as `Session.untold` and is told, once, at the first of four events: its Stop
-  (told with the reply the Stop carries), its interrupt record, a turn after it
-  opening (told before that turn's mark), or the tick `UNTOLD_SECONDS` after the
+  kept as `Session.untold` and is told, once, at the first of five events: its Stop
+  (told with the reply the Stop carries), its interrupt record (one naming its prompt), a turn after it
+  opening (told before that turn's mark), the session ending, or the tick `UNTOLD_SECONDS` after the
   status, which is what tells a double Escape that leaves no record. Which came first
   is decided by the order they are applied, with no stamp compared against hands'
   clock. Claude Code sets `idle` only once a Stop's hooks have returned, and the shim
