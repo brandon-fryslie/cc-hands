@@ -7,6 +7,7 @@ dependencies = [
     "pipecat-ai[anthropic,local,mlx-whisper,whisper,pocket-tts]>=1.9.0,<2",
     "loguru>=0.7",
     "pyobjc-framework-cocoa>=11",
+    "pyobjc-framework-coreaudio>=11",
 ]
 
 [project.scripts]

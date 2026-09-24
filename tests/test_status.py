@@ -14,7 +14,8 @@ import pytest
 
 from hands.daemon import indicator, launchd, status
 from hands.daemon.cli import main
-from hands.daemon.run import keep_beating, off_loop
+from hands.daemon.run import keep_beating
+from hands.voice.threads import off_loop
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 
@@ -173,7 +174,7 @@ async def test_work_off_the_loop_returns_its_result_or_raises_its_error() -> Non
 def test_a_process_exits_without_waiting_for_work_left_running_off_the_loop(tmp_path: Path) -> None:
     script = (
         "import asyncio, time\n"
-        "from hands.daemon.run import off_loop\n"
+        "from hands.voice.threads import off_loop\n"
         "async def main():\n"
         "    work = asyncio.create_task(off_loop(lambda: time.sleep(30), 'slow'))\n"
         "    await asyncio.sleep(0.1)\n"

@@ -17,11 +17,9 @@ every turn.
 """
 
 import asyncio
-import contextlib
 import os
 import signal
 import sys
-import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -43,6 +41,7 @@ from hands.sessions.tail import Tails, keep_tailing
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
+from hands.voice.devices import follow_default_devices
 from hands.voice.keys import drive_key
 from hands.voice.pipeline import (
     AnthropicBackend,
@@ -59,6 +58,7 @@ from hands.voice.summary import Summariser, summariser
 from hands.voice.summary_instruction import TURN_SUMMARY_INSTRUCTION
 from hands.voice.conversation import record_turns
 from hands.voice.system import Started, SystemChannel, listen
+from hands.voice.threads import off_loop
 from hands.voice.tools import audited, draft_tools, list_sessions_tool, permission_tools, read_session_tool
 
 # The model lives on inferno, the M4 Max on the LAN, served by mlx_lm.server.
@@ -137,7 +137,7 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash:
             loop.remove_signal_handler(signal_number)
         logger.remove(failures)
     # Written only by a stop: a crash leaves the last heartbeat naming a pid that is gone, which reads as down.
-    heart.beat("stopped", None if voice is None else _wall(voice.speaker.sounded_at), sessions.live_count())
+    heart.beat("stopped", None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
 async def load(config: VoiceConfig, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event, record: Record) -> Voice | None:
@@ -174,17 +174,18 @@ async def converse(
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
     tails = Tails(sessions)
-    listen(voice, SystemChannel(voice.tts, post_notification, record), started)
+    channel = SystemChannel(voice.tts, post_notification, record)
+    listen(voice, channel, started)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     failures: list[BaseException] = []
 
     def beat() -> None:
-        heart.beat(pipeline.state, _wall(voice.speaker.sounded_at), sessions.live_count())
+        heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count())
 
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
         # session stays listed, without the tail no record becomes a step, without the relay
-        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, and without the heartbeat the daemon looks dead while it runs, so any of
+        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the heartbeat the daemon looks dead while it runs, and without the device follower an unplugged headset leaves it deaf and mute, so any of
         # them failing stops the run where it can be seen, and launchd starts it again.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
@@ -198,6 +199,7 @@ async def converse(
         asyncio.create_task(relay(sessions, voice.worker.queue_frame), name="the session speech relay"),
         asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
+        asyncio.create_task(follow_default_devices(pipeline.started, voice.audio.reopen, channel.say), name="the audio device follower"),
     ]
     for task in background:
         task.add_done_callback(stop_if_failed)
@@ -236,36 +238,13 @@ class PipelineWatch:
         # [LAW:single-enforcer] "stopped" is not the watch's to say: a pipeline also finishes while a failed run
         # tears down, and only run() knows the run was told to stop.
         self.state: Literal["starting", "running"] = "starting"
+        # Set once, with the state: what waits for the pipeline to have started waits on this.
+        self.started = asyncio.Event()
 
         @worker.event_handler("on_pipeline_started")
         async def started(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
             self.state = "running"
-
-
-async def off_loop[T](work: Callable[[], T], name: str) -> T:
-    """The result of work run on a daemon thread, so a process told to stop exits without waiting for it."""
-    # asyncio.to_thread's executor thread is joined at exit, which would hold a stopped daemon until its models load.
-    loop = asyncio.get_running_loop()
-    settled: asyncio.Future[T] = loop.create_future()
-
-    def settle(outcome: Callable[[], None]) -> None:
-        if not settled.cancelled():
-            outcome()
-
-    def target() -> None:
-        try:
-            result = work()
-        except BaseException as error:
-            # Bound now: Python unbinds `error` when the except block ends, before the loop runs the report.
-            report: Callable[[], None] = lambda failure=error: settled.set_exception(failure)
-        else:
-            report = lambda: settled.set_result(result)
-        with contextlib.suppress(RuntimeError):
-            # The loop is closed only when the run has already ended; there is nobody left to tell.
-            loop.call_soon_threadsafe(settle, report)
-
-    threading.Thread(target=target, name=name, daemon=True).start()
-    return await settled
+            self.started.set()
 
 
 async def keep_beating(beat: Callable[[], None], period: float) -> None:
