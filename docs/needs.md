@@ -15,14 +15,15 @@ the bar is not "voice is possible" but "the keyboard is never required."
 ## 1. Every keyboard act has a spoken equivalent
 
 At the keyboard you prompt, interrupt, answer a question, approve a tool, accept a
-plan, pick an option, run `/compact`, and close a session.
+plan, pick an option, run `/compact`, and close a session. Starting a session is not
+on the list: it happens in a terminal, where the keyboard already is.
 If any of those has no spoken form, the first time you need it you go back to the
 desk. Completeness is the need, and it is checked by enumeration: the list of acts is
 finite and each one is either reachable or it is a known gap.
 
 Carried by the `Input` union, the `Blocked` state with its three blockers, and the
 tool surface. Delivered by the drafts and permissions tickets in the foundation epic,
-then **Whole keyboard by voice** and **Sessions by voice**.
+then **Whole keyboard by voice** and **Ending a session by voice**.
 
 ## 2. Dictation lands as intended
 

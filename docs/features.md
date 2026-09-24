@@ -17,7 +17,7 @@ thing hands does, so the output path comes ahead of anything that types into a
 session. **Loud daemon** follows, ahead of every feature that makes the intermediary
 smarter. After that, the epics are ordered by how soon their absence
 sends you back to the keyboard: interrupt and questions first, then attention across
-sessions, then dictation, the phone, and the day-long memory.
+sessions, then ending sessions, dictation, the phone, and the day-long memory.
 
 Nothing in the plan is a flag. Where two behaviours are wanted, they are variants of
 one config value with a declared cap `[LAW:no-mode-explosion]`; where one behaviour
@@ -218,10 +218,10 @@ Need 3. How several sessions share one ear.
 
 ## Ending a session by voice (`hands-lifecycle-n1m`)
 
-Need 1, the lifecycle act. Sessions are started the way they always are, by running
-`claude` in a terminal; hands does not start them.
+Need 1, the lifecycle act. Sessions are started in a terminal, not by hands; a session
+hands can type into is one the session-input epic (`hands-harness-5nb`) can reach.
 
-- **End a session.** `end_session` types `/exit` as a `Command` through fritter; the
+- **End a session.** `end_session` types `/exit` as a `Command` into the session; the
   session ending moves it to `Gone` and it is spoken. Done live.
 
 ## Dictation fidelity (`hands-dictation-vpz`)

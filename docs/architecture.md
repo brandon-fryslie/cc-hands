@@ -133,7 +133,7 @@ Input = Text | Command | Key
 Keystroke = Literal["escape", "enter", "ctrl_c", "up", "down", "tab", "shift_tab"]
 
 # The reducer's whole vocabulary of effects. Adapters perform these and nothing else.
-Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | Audit | Launch
+Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | Audit
 @dataclass(frozen=True)
 class Reply:    request: RequestId; reply: HookReply
 @dataclass(frozen=True)
@@ -155,7 +155,6 @@ class Compare:  session: SessionId                           # what it changed, 
 @dataclass(frozen=True)
 class Audit:    record: AuditRecord
 @dataclass(frozen=True)
-class Launch:   repo: Path; title: str                       # a new claude session, planned
 
 Priority = Literal["blocking", "result", "fyi"]
 
@@ -196,8 +195,8 @@ The block above is the target. `hands.core.effects` defines less today:
 `Effect = Audit | Reply | Heard | Story`, where `Heard = Speak | Narrate` carries
 permission announcements and requests and `Story = Summarise | SessionGone` carries
 finished turns and sessions gone. Today's `Summarise` holds a session, its transcript
-path, and the reply its `Stop` hook carried, not a narration id and steps. `Type`, `Note`, `Play`, `Snapshot`, and
-`Launch`, and the segment, narration, and playback types, are planned.
+path, and the reply its `Stop` hook carried, not a narration id and steps. `Type`, `Note`, `Play`, and `Snapshot`,
+and the segment, narration, and playback types, are planned.
 
 Two things are deliberately absent. There is no `Session.last_seen` timestamp,
 because silence measures nothing; liveness is the pid. And there is no queue of unsent
@@ -225,7 +224,7 @@ becomes synthetic keystrokes from the planned virtual keyboard, `Reply` writes t
 blocked shim's socket connection, `Speak` becomes a Pipecat `TTSSpeakFrame`, `Narrate` and `Note` become
 `LLMMessagesAppendFrame` with `run_llm` on or off, `Play` sends a segment to TTS
 through the player, `Summarise` calls the summariser, `Snapshot` records or diffs the
-target's git state, `Audit` appends one JSONL line, `Launch` starts `claude` in a repo. An
+target's git state, `Audit` appends one JSONL line. An
 adapter that fails raises; the supervisor logs it and the failure is spoken through
 the system channel. Nothing is retried silently and nothing falls back
 `[LAW:no-silent-failure]`.
