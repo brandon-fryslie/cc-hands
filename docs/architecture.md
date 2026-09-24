@@ -368,15 +368,17 @@ joined with ", " — the shape Claude Code's own dialog answers with (read out o
 2.1.280 bundle, and verified live: the agent went on with the answers given by voice).
 A plan is approved as its own dialog approves it: allow with an empty `updatedInput`,
 so the plan is read from its file as the user left it, and `updatedPermissions`
-holding one `setMode` to `acceptEdits` or `default` for the session. Claude Code
-ignores an allow without `updatedInput` for a tool that asks the user something, and
-shows its dialog instead. Keep planning is a deny, and the agent reads its message
-as the feedback (read out of the 2.1.281 bundle, and verified live). A plan that
+holding the mode to leave plan mode for — nothing, which returns the session to the
+mode it had before it planned, bypass or auto included, or one `setMode` to
+`acceptEdits` or `default` when the user names one. Claude Code ignores an allow
+without `updatedInput` for a tool that asks the user something, and shows its dialog
+instead. Keep planning is a deny, and the agent reads its message as the feedback
+(read out of the 2.1.281 bundle, and verified live). A plan that
 runs comes back through `PostToolUse` without its text, as `PlanApproved`.
 An answer that does not fit what was asked — the wrong number of answers, a plain
-allow to a question, which would run it unanswered, or a plain allow to a plan,
-which would leave plan mode for a mode nobody chose — sends nothing, and the session
-still waits.
+allow to a question, which would run it unanswered, a plain allow to a plan, or a
+plan's feedback sent against a tool's request — sends nothing, and the session still
+waits.
 
 The documented nine events are not the real set. There are 33:
 

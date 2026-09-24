@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from hands.core.session import Blocker, Instant, Membership, Ran, RequestId, SessionId
+from hands.core.session import Blocker, Instant, Membership, FinishedCall, RequestId, SessionId
 
 
 StartSource = Literal["startup", "resume", "clear", "compact"]
@@ -71,7 +71,7 @@ class ToolFinished:
 
     session: SessionId
     at: Instant
-    call: Ran
+    call: FinishedCall
 
 
 @dataclass(frozen=True)

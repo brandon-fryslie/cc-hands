@@ -40,7 +40,7 @@ from hands.core.events import (
     ToolFinished,
     Waited,
 )
-from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Permission, Plan, PlanApproved, Question, Ran, Registry, RequestId, Session, SessionId, SessionState, Working
+from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Permission, Plan, PlanApproved, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, Working
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
@@ -168,7 +168,7 @@ def _unwaited(event: SessionEvent) -> list[Effect]:
             return []
 
 
-def _finished(state: SessionState, call: Ran, at: Instant) -> SessionState:
+def _finished(state: SessionState, call: FinishedCall, at: Instant) -> SessionState:
     match state:
         case Blocked(on=asked) | AtDialog(on=asked) if _same_call(asked, call):
             # The tool the session was waiting to run has run, so its dialog was answered at the keyboard.
@@ -177,7 +177,7 @@ def _finished(state: SessionState, call: Ran, at: Instant) -> SessionState:
             return state
 
 
-def _same_call(asked: Blocker, call: Ran) -> bool:
+def _same_call(asked: Blocker, call: FinishedCall) -> bool:
     match (asked, call):
         case (Question(asked=questions), Question(asked=answered)):
             # A question answered at the keyboard comes back with the answers added to its input: it is the same

@@ -4,9 +4,9 @@ from collections.abc import Mapping
 
 from loguru import logger
 
-from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, Withdraw
+from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
 from hands.core.events import Ended, EndReason, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished, Waited
-from hands.core.session import AskedQuestion, Blocker, Instant, Option, Permission, Plan, PlanApproved, Question, Ran, RequestId, SessionId
+from hands.core.session import AskedQuestion, Blocker, Instant, Option, Permission, Plan, PlanApproved, Question, FinishedCall, RequestId, SessionId
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership
 from hands.sessions.payload import Payload, Rejected
@@ -41,32 +41,32 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
 def _call(payload: Payload) -> Blocker:
     """A tool call as its hooks name it: AskUserQuestion is a question put to the user, ExitPlanMode a plan put up for
     approval, every other tool a permission to run it."""
-    tool, input = payload.text("tool_name"), payload.mapping("tool_input")
-    match tool:
-        case "AskUserQuestion":
-            return _question(input)
+    match payload.text("tool_name"):
         case "ExitPlanMode":
             # Claude Code reads the plan file into the input before any hook sees it (2.1.281).
-            return Plan(Payload(input).text("plan"))
+            return Plan(Payload(payload.mapping("tool_input")).text("plan"))
         case _:
-            return Permission(tool=tool, input=input)
+            return _tool_call(payload)
 
 
-def _ran(payload: Payload) -> Ran:
+def _ran(payload: Payload) -> FinishedCall:
     """A call that ran, named as its request was, so the two can be matched."""
-    tool, input = payload.text("tool_name"), payload.mapping("tool_input")
-    match tool:
-        case "AskUserQuestion":
-            return _question(input)
+    match payload.text("tool_name"):
         case "ExitPlanMode":
             # Its input is what the approval sent, which is empty unless the plan was edited at the dialog (2.1.281).
             return PlanApproved()
         case _:
+            return _tool_call(payload)
+
+
+def _tool_call(payload: Payload) -> Permission | Question:
+    """Named the same asked and ran: AskUserQuestion is a question put to the user, every other tool a permission to run it."""
+    tool, input = payload.text("tool_name"), payload.mapping("tool_input")
+    match tool:
+        case "AskUserQuestion":
+            return Question(tuple(_asked(block) for block in Payload(input).items("questions")), input)
+        case _:
             return Permission(tool=tool, input=input)
-
-
-def _question(input: Mapping[str, object]) -> Question:
-    return Question(tuple(_asked(block) for block in Payload(input).items("questions")), input)
 
 
 def _asked(block: object) -> AskedQuestion:
@@ -124,6 +124,14 @@ def _end_reason(reason: str) -> EndReason:
             return "other"
 
 
+# With no mode set, ExitPlanMode goes back to the mode the session had before it planned.
+_MODE_AFTER_PLAN: Mapping[ModeAfterPlan, list[object]] = {
+    "resume": [],
+    "acceptEdits": [{"type": "setMode", "mode": "acceptEdits", "destination": "session"}],
+    "default": [{"type": "setMode", "mode": "default", "destination": "session"}],
+}
+
+
 def hook_output(reply: HookReply) -> Mapping[str, object] | None:
     """What a waiting PermissionRequest hook prints for Claude Code; None leaves the question to its dialog."""
     # The reply shape Claude Code parses from a PermissionRequest hook's stdout (2.1.270; the plan's, 2.1.281).
@@ -133,10 +141,10 @@ def hook_output(reply: HookReply) -> Mapping[str, object] | None:
         case AllowWith(input=input):
             decision = {"behavior": "allow", "updatedInput": dict(input)}
         case Approve(mode=mode):
-            # What the plan dialog's own two yeses send (2.1.281): an empty input, so the plan is read from its file as
-            # the user left it, and the mode to leave plan mode for. Claude Code ignores an allow with no updatedInput
-            # for a tool that asks the user something, and shows its dialog instead.
-            decision = {"behavior": "allow", "updatedInput": {}, "updatedPermissions": [{"type": "setMode", "mode": mode, "destination": "session"}]}
+            # What the plan dialog's own yeses send (2.1.281): an empty input, so the plan is read from its file as the
+            # user left it, and the mode to leave plan mode for. Claude Code ignores an allow with no updatedInput for a
+            # tool that asks the user something, and shows its dialog instead.
+            decision = {"behavior": "allow", "updatedInput": {}, "updatedPermissions": _MODE_AFTER_PLAN[mode]}
         case Deny(message=message):
             decision = {"behavior": "deny", "message": message}
         case Withdraw():

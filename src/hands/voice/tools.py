@@ -3,7 +3,7 @@
 import asyncio
 import functools
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import TypedDict, cast
 
@@ -14,7 +14,7 @@ from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, StageDraft
-from hands.core.effects import Allow, Answers, Approve, Decision, Deny
+from hands.core.effects import Allow, Answers, Approve, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Permission, Plan, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Working
 from hands.core.turn import Budget, Happening, Ref, describe
 from hands.sessions.backfill import Unseen, read_since
@@ -36,6 +36,12 @@ READBACK_COUNT = 40
 
 # What the agent reads when the user says no and gives no reason.
 DENIED_BY_VOICE = "The user denied this by voice."
+
+# What the agent reads when the user sends a plan back without saying what to change.
+SENT_BACK_BY_VOICE = "The user sent the plan back by voice without saying what to change. Ask them what they want different."
+
+# answer_plan's approvals, by the mode each leaves plan mode for.
+_APPROVALS: Mapping[str, ModeAfterPlan] = {"approve": "resume", "auto-accept edits": "acceptEdits", "manually approve edits": "default"}
 
 # Every C0 and C1 control character but newline and tab: each would press a key when the draft is typed.
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -296,7 +302,7 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
 
         Args:
             request: The request id given with the plan.
-            decision: "auto-accept edits" to approve the plan and let the session make its edits without asking, "manually approve edits" to approve it and be asked about each edit, or "keep planning" to send it back.
+            decision: "approve" to approve the plan and go on in the mode the session had before it planned; "auto-accept edits" or "manually approve edits" only when the user says how edits should go; or "keep planning" to send it back.
             message: Only when it keeps planning: what the user wants changed, in their words.
         """
         await _decide(params, sessions, request, lambda: parse_plan_decision(decision, message))
@@ -324,40 +330,31 @@ def parse_decision(decision: object, message: object) -> Decision:
             return Allow()
         case ("allow", str()):
             raise Rejected("a message goes only with deny; an allow carries none, so nothing was answered")
-        case ("allow", other):
+        case ("deny", ""):
+            return Deny(DENIED_BY_VOICE)
+        case ("deny", str()):
+            return Deny(message)
+        case ("allow" | "deny", other):
             raise Rejected(f"message should be a string, got {type(other).__name__}")
-        case ("deny", _):
-            return _refusal(message)
         case (other, _):
             raise Rejected(f"decision should be 'allow' or 'deny', got {other!r}")
 
 
-def parse_plan_decision(decision: object, message: object) -> Approve | Deny:
-    """The model's answer to a plan, parsed once into the plan dialog's own three choices."""
+def parse_plan_decision(decision: object, message: object) -> Approve | KeepPlanning:
+    """The model's answer to a plan, parsed once into an approval for a mode or a plan sent back."""
     match (decision, message):
-        case ("auto-accept edits", ""):
-            return Approve("acceptEdits")
-        case ("manually approve edits", ""):
-            return Approve("default")
-        case ("auto-accept edits" | "manually approve edits", str()):
+        case ("keep planning", ""):
+            return KeepPlanning(SENT_BACK_BY_VOICE)
+        case ("keep planning", str()):
+            return KeepPlanning(message)
+        case (str() as choice, "") if choice in _APPROVALS:
+            return Approve(_APPROVALS[choice])
+        case (str() as choice, str()) if choice in _APPROVALS:
             raise Rejected("a message goes only with keep planning; an approval carries none, so nothing was answered")
-        case ("auto-accept edits" | "manually approve edits", other):
+        case (str() as choice, other) if choice in _APPROVALS or choice == "keep planning":
             raise Rejected(f"message should be a string, got {type(other).__name__}")
-        case ("keep planning", _):
-            # Sent back as any request is refused: the agent reads why, and the tool not running keeps it in plan mode.
-            return _refusal(message)
         case (other, _):
-            raise Rejected(f"decision should be 'auto-accept edits', 'manually approve edits', or 'keep planning', got {other!r}")
-
-
-def _refusal(message: object) -> Deny:
-    match message:
-        case "":
-            return Deny(DENIED_BY_VOICE)
-        case str():
-            return Deny(message)
-        case other:
-            raise Rejected(f"message should be a string, got {type(other).__name__}")
+            raise Rejected(f"decision should be 'approve', 'auto-accept edits', 'manually approve edits', or 'keep planning', got {other!r}")
 
 
 def parse_answers(answers: object) -> Answers:

@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable, Mapping
 
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 
-from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, ModeAfterPlan, Narrate, Speak, WaitingForYou
+from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, Narrate, Speak, WaitingForYou
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
 from hands.core.session import AskedQuestion, Blocker, Permission, Plan, Question, SessionId
 from hands.sessions.registry import Sessions
@@ -17,7 +17,11 @@ _INPUT_SHOWN = 800
 Names = Callable[[SessionId], str]
 
 # How an approved plan goes on, in the words of the choice that approved it.
-_EDITS: Mapping[ModeAfterPlan, str] = {"acceptEdits": "edits accepted automatically", "default": "each edit asked about"}
+_AFTER_PLAN: Mapping[ModeAfterPlan, str] = {
+    "resume": ", in the mode it had before planning",
+    "acceptEdits": ", with its edits accepted automatically",
+    "default": ", asking you about each edit",
+}
 
 
 async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]]) -> None:
@@ -75,8 +79,7 @@ def _ask_user(on: Blocker) -> str:
             )
         case Plan():
             return (
-                "Tell the user in a few spoken sentences what the plan would do, not the plan itself, and ask whether to approve it "
-                "and whether edits should be accepted automatically or approved one by one. "
+                "Tell the user in a few spoken sentences what the plan would do, not the plan itself, and ask whether to approve it. "
                 "When they decide, call answer_plan with that request id."
             )
 
@@ -95,23 +98,25 @@ def announcement_text(announcement: Announcement, names: Names) -> str:
 def answer_readback(outcome: Outcome, names: Names) -> str:
     match outcome:
         case Answered(session=session, on=on, decision=decision):
-            return f"{_done(decision, _what(on))} for {names(session)}."
+            return f"{_done(decision, _what(on), names(session))}."
         case NotWaiting():
             return "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
         case Unfit(on=on, decision=decision):
             return _unfit(on, decision)
 
 
-def _done(decision: Decision, what: str) -> str:
+def _done(decision: Decision, what: str, name: str) -> str:
     match decision:
         case Deny():
-            return f"Denied {what}"
+            return f"Denied {what} for {name}"
         case Allow():
-            return f"Allowed {what}"
+            return f"Allowed {what} for {name}"
         case Answers(chosen=chosen):
-            return f"Answered {'; '.join(answer or 'nothing' for answer in chosen)}"
+            return f"Answered {'; '.join(answer or 'nothing' for answer in chosen)} for {name}"
         case Approve(mode=mode):
-            return f"Approved {what} with {_EDITS[mode]}"
+            return f"Approved {what} for {name}{_AFTER_PLAN[mode]}"
+        case KeepPlanning():
+            return f"Sent {what} back to keep planning for {name}"
 
 
 def _left(on: Blocker) -> str:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.effects import Allow, AllowWith, Answers, Approve, Decision, Deny, Reply
+from hands.core.effects import Allow, AllowWith, Answers, Approve, Decision, Deny, KeepPlanning, Reply
 from hands.core.permissions import Answer, Answered, NotWaiting, Unfit, answer
 from hands.core.session import AskedQuestion, Blocked, Blocker, Gone, Idle, Membership, Option, Permission, Plan, Question, Registry, RequestId, Session, SessionId, SessionState, Working
 
@@ -86,6 +86,9 @@ def test_a_question_can_be_refused_as_a_permission_is() -> None:
         (PLAN, Answers(("yes",))),
         (BASH, Approve("acceptEdits")),
         (QUESTION, Approve("default")),
+        # Feedback on a plan, sent against the wrong request, must not refuse a tool with it.
+        (BASH, KeepPlanning("split step 2")),
+        (QUESTION, KeepPlanning("split step 2")),
     ],
 )
 def test_a_decision_that_does_not_answer_what_was_asked_sends_nothing_and_the_session_still_waits(on: Blocker, decision: Decision) -> None:
@@ -93,10 +96,18 @@ def test_a_decision_that_does_not_answer_what_was_asked_sends_nothing_and_the_se
     assert answer(before, Answer(REQUEST, decision, at=20.0)) == (before, Unfit(REQUEST, on, decision), [])
 
 
-@pytest.mark.parametrize("decision", [Approve("acceptEdits"), Approve("default"), Deny("split step 2 in two")])
-def test_a_plan_is_approved_for_the_mode_chosen_or_sent_back_to_planning(decision: Approve | Deny) -> None:
+@pytest.mark.parametrize(
+    ("decision", "reply"),
+    [
+        (Approve("resume"), Approve("resume")),
+        (Approve("acceptEdits"), Approve("acceptEdits")),
+        (KeepPlanning("split step 2 in two"), Deny("split step 2 in two")),
+        (Deny("not now"), Deny("not now")),
+    ],
+)
+def test_a_plan_is_approved_for_the_mode_chosen_or_sent_back_to_planning(decision: Decision, reply: Approve | Deny) -> None:
     assert answer(waiting_on(PLAN), Answer(REQUEST, decision, at=20.0)) == (
         registry(Session(ONE, Working(since=20.0))),
         Answered(ONE.id, PLAN, decision),
-        [Reply(ONE.id, REQUEST, decision)],
+        [Reply(ONE.id, REQUEST, reply)],
     )
