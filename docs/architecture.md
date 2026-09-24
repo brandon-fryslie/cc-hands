@@ -1097,17 +1097,24 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   status or reason hands does not know arrives as an unknown variant and is logged,
   never read as idle. A file that names another pid or another session is refused. The
   registry keeps the last one as `Session.report`. An `idle` applied to a session in
-  `Working`, `Blocked`, or `AtDialog` ends its turn, however the turn was stopped: the
-  session is `Idle` with its nudge timed by hands (no `idle_prompt` follows a double
-  Escape), the turn is compared and told, and its ids join `Session.ended`, so the Stop,
-  interrupt record, or flushed id read after it ends nothing. Which came first is
-  decided by the order they are applied, with no stamp compared against hands' clock.
-  Claude Code sets `idle` only once a Stop's hooks have returned, and the shim returns
-  only once the Stop is applied, so a stopped turn is told by its Stop, with its
-  closing reply. It sets `busy` before a prompt's hooks run, so no `idle` read after a
-  prompt is applied predates it (both seen live on 2.1.282). That holds only if a file
-  is read at the moment its report is applied, so the reader reads each session's file
-  lazily, once the report before it has been applied.
+  `Working`, `Blocked`, or `AtDialog` ends its turn, however the turn was stopped. The
+  session is `Idle` at once, with its nudge timed by hands (no `idle_prompt` follows a
+  double Escape), and the turn's ids join `Session.ended`. Claude Code sets `idle`
+  before the transcript says how the turn ended: an Escape's interrupt record is
+  written ~100 ms after, and an Escape'd turn's Stop can fire after it. So the turn is
+  kept as `Session.untold` and is told, once, at the first of four events: its Stop
+  (told with the reply the Stop carries), its interrupt record, a turn after it
+  opening (told before that turn's mark), or the tick `UNTOLD_SECONDS` after the
+  status, which is what tells a double Escape that leaves no record. Which came first
+  is decided by the order they are applied, with no stamp compared against hands'
+  clock. Claude Code sets `idle` only once a Stop's hooks have returned, and the shim
+  waits (up to its 2 s post timeout) until the Stop is applied, so a stopped turn is
+  normally ended by its Stop. It sets `busy` before a prompt's hooks run, so no `idle`
+  read after a prompt is applied predates it. A single Escape that flushes a queued
+  message sets `busy` again, not `idle`. All three were seen live on 2.1.282. The
+  ordering holds only if a file is read at the moment its report is applied, so the
+  reader reads each session's file lazily, looked up by id, once the report before it
+  has been applied.
 - **Ends nobody heard.** One process holds one session, so a running process's
   *holder* is the newest file that names it and passes the start-time check. A file
   whose process is not running is `Died`; the holder is `Attached`; any other file on

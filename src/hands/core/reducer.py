@@ -157,12 +157,12 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _enter(registry, event, _waited)
         case StatusReported(session=session, report=Report(status=status.Idle()), at=at) if _running_in(registry.sessions.get(session)):
             # [LAW:one-source-of-truth] Claude Code says the turn is over, however it was stopped, so it is: idle, and
-            # nudged on hands' clock, as an interrupted turn is (no idle_prompt in 75 s after a
-            # double Escape, 2.1.282). [LAW:no-ambient-temporal-coupling] the status read is the status now, with no
-            # stamp to compare: Claude Code sets idle only once a Stop's hooks have returned, and the shim returns once
-            # the Stop is applied, so a stopped turn is told by its Stop, with its closing reply; and it sets busy before
-            # a prompt's hooks run, so no idle read after a prompt is applied is one from before it. The turn is told
-            # once the transcript says how it ended: see _untold. What else ends it later ends nothing: see _named.
+            # nudged on hands' clock, as an interrupted turn is (no idle_prompt in 75 s after a double Escape, 2.1.282).
+            # [LAW:no-ambient-temporal-coupling] the status read is the status now, with no stamp to compare: Claude
+            # Code sets idle only once a Stop's hooks have returned, and the shim waits for the Stop to be applied, so a
+            # stopped turn is normally ended by its Stop; and it sets busy before a prompt's hooks run, so no idle read
+            # after a prompt is applied is one from before it. The turn is told once the transcript says how it ended:
+            # see _untold. What else ends it later ends nothing: see _named.
             return _enter(registry, event, lambda _: Idle(due=at + IDLE_NUDGE_SECONDS))
         case StatusReported():
             # Kept as Claude Code said it, for what asks what the session is doing: a session not running already is
