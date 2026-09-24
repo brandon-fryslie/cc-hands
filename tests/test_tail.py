@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from hands.core.events import Continued, Interrupted
+from hands.core.events import Continued, Interrupted, Taken
 from hands.core.session import Membership, PromptId, SessionId
 from hands.core.turn import Asked, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Turn
 from hands.core.effects import Summarise
 from hands.core.events import Joined, Prompted
-from hands.core.session import Idle
+from hands.core.session import Idle, Submitted, Working
 from hands.sessions.registry import Sessions
 from hands.sessions.tail import Tails, Telling, keep_tailing
 
@@ -445,7 +445,7 @@ async def test_a_turn_cut_off_while_claude_wrote_is_heard_as_interrupted_and_tol
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING, CUT_OFF))
     tails = Tails(Registry([member(transcript)]))
-    assert await tails.catch_up() == [Interrupted(SID, PromptId("p1"), at=7.0)]
+    assert await tails.catch_up() == [Taken(SID, PromptId("p1")), Interrupted(SID, PromptId("p1"), at=7.0)]
     telling = await tails.tell(SID, None)
     # The record of the interrupt is written as a user's message, and is not read as the next thing asked.
     assert telling is not None and telling.turn == Turn(Asked(None, "Write an essay about rivers."), (Said(None, "# Rivers"), Interruption(Ref("u9"))))
@@ -455,7 +455,7 @@ async def test_a_turn_cut_off_while_a_tool_ran_is_heard_as_interrupted(tmp_path:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, LOOPING, REJECTED, CUT_OFF_MID_TOOL))
     tails = Tails(Registry([member(transcript)]))
-    assert await tails.catch_up() == [Interrupted(SID, PromptId("p1"), at=7.0)]
+    assert await tails.catch_up() == [Taken(SID, PromptId("p1")), Interrupted(SID, PromptId("p1"), at=7.0)]
     telling = await tails.tell(SID, None)
     assert telling is not None and telling.turn.steps[-1] == Interruption(Ref("u9"))
 
@@ -471,7 +471,7 @@ async def test_a_prompt_that_only_mentions_an_interrupt_is_a_prompt(tmp_path: Pa
     quoting = '{"type":"user","promptId":"p1","message":{"role":"user","content":"Why did I see [Request interrupted by user] there?"}}'
     transcript.write_text(lines(quoting))
     tails = Tails(Registry([member(transcript)]))
-    assert await tails.catch_up() == []
+    assert await tails.catch_up() == [Taken(SID, PromptId("p1"))]
     telling = await tails.tell(SID, None)
     assert telling is not None and telling.turn.opening == Asked(None, "Why did I see [Request interrupted by user] there?")
 
@@ -493,7 +493,7 @@ async def test_an_interrupt_whose_record_names_no_turn_is_said_and_ends_nothing(
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR", filter="hands")
     try:
-        assert await Tails(Registry([member(transcript)])).catch_up() == []
+        assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1"))]
     finally:
         logger.remove(sink)
     assert errors == [f"session {SID} was interrupted, but the record of it names no prompt, so its turn cannot be ended"]
@@ -502,7 +502,7 @@ async def test_an_interrupt_whose_record_names_no_turn_is_said_and_ends_nothing(
 async def test_the_older_record_of_an_interrupt_written_as_a_plain_string_is_one_too(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING, '{"type":"user","promptId":"p1","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}'))
-    assert await Tails(Registry([member(transcript)])).catch_up() == [Interrupted(SID, PromptId("p1"), at=7.0)]
+    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1")), Interrupted(SID, PromptId("p1"), at=7.0)]
 
 
 # A message queued while the loop ran, flushed by Escape, as captured live on 2.1.281: the cancelled call's result and the
@@ -517,7 +517,7 @@ async def test_a_turn_that_goes_on_under_a_queued_prompt_is_heard_to_after_the_i
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, LOOPING, FLUSHED, FLUSHING, QUEUED, BANANA))
     tails = Tails(Registry([member(transcript)]))
-    assert await tails.catch_up() == [Interrupted(SID, PromptId("p2"), at=7.0), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
+    assert await tails.catch_up() == [Taken(SID, PromptId("p1")), Taken(SID, PromptId("p2")), Interrupted(SID, PromptId("p2"), at=7.0), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
 
 
 async def test_a_queued_command_taken_in_mid_turn_is_heard_from_the_results_claude_answers(tmp_path: Path) -> None:
@@ -525,7 +525,7 @@ async def test_a_queued_command_taken_in_mid_turn_is_heard_from_the_results_clau
     transcript = tmp_path / "t.jsonl"
     ran = '{"type":"user","promptId":"p2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"done"}]}}'
     transcript.write_text(lines(ASKED, LOOPING, ran, WRITING))
-    assert await Tails(Registry([member(transcript)])).catch_up() == [Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
+    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1")), Taken(SID, PromptId("p2")), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
 
 
 async def test_an_escape_in_the_turn_a_queued_prompt_went_on_as_leaves_the_session_idle(tmp_path: Path) -> None:
@@ -558,7 +558,28 @@ async def test_a_record_that_names_no_prompt_does_not_lose_the_turn_claude_is_an
     unnamed = '{"type":"user","isMeta":true,"message":{"role":"user","content":"injected"}}'
     ran = '{"type":"user","promptId":"p2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"done"}]}}'
     transcript.write_text(lines(ASKED, WRITING, unnamed, LOOPING, ran, WRITING))
-    assert await Tails(Registry([member(transcript)])).catch_up() == [Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
+    assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1")), Taken(SID, PromptId("p2")), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
+
+
+async def test_a_prompt_cancelled_while_its_hooks_ran_never_makes_the_session_working_and_the_one_resent_does(tmp_path: Path) -> None:
+    """Escape during UserPromptSubmit writes nothing (2.1.281): only the record of a turn says its prompt was taken."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("")
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member(transcript), "startup"))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p0")))
+    tails = Tails(sessions)
+    for _ in range(3):
+        for transcribed in await tails.catch_up():
+            await sessions.apply(transcribed)
+    listing = sessions.listing(SID)
+    assert listing is not None and listing.session.state == Submitted(since=1.0)
+    await sessions.apply(Prompted(SID, at=4.0, mode=None, prompt=PromptId("p1")))
+    transcript.write_text(lines(ASKED))
+    for transcribed in await tails.catch_up():
+        await sessions.apply(transcribed)
+    listing = sessions.listing(SID)
+    assert listing is not None and listing.session.state == Working(since=4.0)
 
 
 async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_and_the_session_is_idle(tmp_path: Path) -> None:

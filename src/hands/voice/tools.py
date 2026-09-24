@@ -15,7 +15,7 @@ from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Decision, Deny, KeepPlanning, ModeAfterPlan
-from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Permission, Plan, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Working
+from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Permission, Plan, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Submitted, Working
 from hands.core.turn import Budget, Happening, Ref, describe
 from hands.sessions.backfill import Unseen, read_since
 from hands.sessions.audit import Called, Record
@@ -195,6 +195,8 @@ def _spoken_state(state: SessionState) -> str:
     match state:
         case Idle():
             return "idle"
+        case Submitted():
+            return "idle, with a prompt sent that Claude has not started on"
         case Working():
             return "working"
         case Blocked(on=on):

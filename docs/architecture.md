@@ -102,8 +102,12 @@ class Session:
 
 # One session is in exactly one of these. A session waiting on you and a session
 # working are different things, and the type says which.
-SessionState = Working | Idle | Blocked | Gone
+SessionState = Submitted | Working | Idle | Blocked | Gone
 
+# Sent, but not taken until its UserPromptSubmit hooks finish; an Escape before then
+# cancels it silently, so only the transcript's record of the turn makes it Working.
+@dataclass(frozen=True)
+class Submitted: since: Instant
 @dataclass(frozen=True)
 class Working:   since: Instant
 @dataclass(frozen=True)

@@ -34,6 +34,7 @@ from hands.core.events import (
     Event,
     Interrupted,
     Continued,
+    Taken,
     Joined,
     PermissionRequested,
     Prompted,
@@ -44,7 +45,7 @@ from hands.core.events import (
     ToolFinished,
     Waited,
 )
-from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Mode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, UnknownMode, Working
+from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Mode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, Submitted, UnknownMode, Working
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
@@ -88,9 +89,17 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _enter(
                 registry,
                 event,
-                lambda _: Working(since=at),
-                lambda was: [Snapshot(session, was.membership.cwd)] if isinstance(was.state, Idle) else [],
+                lambda state: _prompted(state, at),
+                lambda was: [Snapshot(session, was.membership.cwd)] if isinstance(was.state, Idle | Submitted) else [],
             )
+        case Taken(session=session, prompt=prompt):
+            match registry.sessions.get(session):
+                case Session(state=Submitted(since=since), turn=turn) if turn == prompt:
+                    # Working from when it was sent: the hooks it waited on are part of its turn.
+                    return _enter(registry, event, lambda _: Working(since=since))
+                case _:
+                    # A turn under way going on under a queued prompt, or one read after it ended: nothing to move.
+                    return registry, []
         case Stopped(session=session, closing=closing):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
             return _enter(registry, event, lambda _: Idle(), lambda _was: [Compare(session), Summarise(session, closing)])
@@ -137,7 +146,7 @@ def _started(membership: Membership, source: StartSource, previous: Session | No
     # SessionStart carries no permission_mode, so only compaction, which keeps its process, keeps the one it had;
     # a session started or resumed in a new process may have been given any mode.
     match (source, previous):
-        case ("compact", Session(state=Working() | Blocked() | AtDialog()) as previous):
+        case ("compact", Session(state=Submitted() | Working() | Blocked() | AtDialog()) as previous):
             return replace(previous, membership=membership)
         case ("compact", Session(state=Idle(due=due), mode=mode)):
             # A new idle period, which a nudge hands was timing for still has to come from hands.
@@ -203,7 +212,7 @@ def _reported(event: SessionEvent) -> Mode | None:
     match event:
         case Prompted(mode=mode) | Stopped(mode=mode) | PermissionRequested(mode=mode) | ToolFinished(mode=mode):
             return mode
-        case Interrupted() | Continued() | Waited() | Ended():
+        case Taken() | Interrupted() | Continued() | Waited() | Ended():
             return None
 
 
@@ -269,6 +278,17 @@ def _same_call(asked: Blocker, call: FinishedCall) -> bool:
             return True
         case _:
             return asked == call
+
+
+def _prompted(state: SessionState, at: Instant) -> SessionState:
+    match state:
+        case Idle() | Submitted():
+            # [LAW:types-are-the-program] not working yet: Claude Code takes a prompt only once its hooks finish, and an
+            # Escape before then cancels it with nothing to say so, so only the record of its turn can make it Working.
+            return Submitted(since=at)
+        case _:
+            # One that lands inside a running turn, queued or after a Stop nobody heard, is in a turn already.
+            return Working(since=at)
 
 
 def _waited(state: SessionState) -> SessionState:
