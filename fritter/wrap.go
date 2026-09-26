@@ -181,8 +181,9 @@ func (s *screen) Write(output []byte) (int, error) {
 	// terminal.
 	case errors.Is(err, syscall.EIO):
 		s.out = io.Discard
-	// [LAW:no-silent-failure] Anything else is said, and the next write tries again, so a
-	// passing failure costs the user only the output it failed to show.
+	// [LAW:no-silent-failure] Anything else is said, and the next write tries again. What
+	// the failed write did not get out is lost, perhaps partway through an escape sequence,
+	// and the window stays wrong until the child next redraws it; the session carries on.
 	case err != nil:
 		warn("cannot show the session's output: %v", err)
 	}
