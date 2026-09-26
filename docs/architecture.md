@@ -287,11 +287,10 @@ is the exception: it swallows pasted text and takes the Enter as "Yes". So when 
 drafts are sent, a send to a `Blocked` target is refused, the draft stays staged, and
 the user hears why.
 
-The workspace-trust dialog swallows a paste the same way, measured on 2.1.278, and that
-rule does **not** reach it. `Blocked` has one producer, the `PermissionRequest` hook, and
-no hook fires for a trust prompt: the session reads as `Idle`, fritter types into it, and
-the send is answered `ok` while the draft vanishes. It is a
-second rule and it is unbuilt — `hands-harness-5nb.xw8`.
+The workspace-trust dialog swallows a paste the same way, measured on 2.1.278, and needs
+no rule of its own: Claude Code runs no hook until a startup dialog is answered, so a
+session at one has no membership and nothing can be sent to it (`hands-harness-5nb.xw8`,
+measured on 2.1.283).
 
 ### Typing into a session
 
@@ -304,7 +303,9 @@ fritter publishes its socket's address to the process it wrapped in `FRITTER_SOC
 The hook runs as a child of that process and inherits it, so the address reaches
 `Membership.fritter` without either side deriving a path from a pid. A session started
 outside fritter has no address, and a send to it is refused by name rather than written
-into nothing. Inheritance also hands the address to a session started from inside a
+into nothing. Nobody has to remember to wrap one: `hands install-fritter` puts a `claude`
+in `<hands home>/bin` that runs every interactive claude under fritter, and runs a pipe, a
+script, or `claude -p` as the real claude with no address (`hands.sessions.wrapper`). Inheritance also hands the address to a session started from inside a
 wrapped one, so an address alone does not say which session it reaches: every request
 names the session's `Membership.pid`, and fritter refuses one that is not the process it
 wrapped.
