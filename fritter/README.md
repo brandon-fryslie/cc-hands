@@ -71,6 +71,8 @@ The answer is `{"ok":true}` or `{"ok":false,"reason":"..."}`. A reason always sa
 went wrong, because a write that was refused and a write that landed must never look
 alike to the caller. When the text lands but the Enter after it does not, the reason says
 so in those words — retyping text that is already sitting in the box would double it.
+A request refused for naming another process also carries `"elsewhere":true`, so a caller
+holding an inherited address can tell that it has nothing to say to this fritter.
 
 `working` types nothing. It says the program has started work, which fritter cannot always
 see for itself, and it is why a Ctrl-C then is not read as emptying the box (see *Who owns
@@ -116,8 +118,9 @@ Which bytes each one is, is terminal knowledge, so that table lives here rather 
 the caller. `ctrl_c` is the one to reach for to empty the input box, and it is the only
 key that empties it whatever is in it — when the program is idle. When it is working, the
 same press stops the work and leaves the box as it was, and the press after that empties
-it. A text request refused for a held line says so. Never send it twice into a box that
-is already empty: the first press arms the next one to quit the session. `ctrl_u` kills back to the start of the line the cursor is on, and that
+it. A text request refused for a held line says so. A `ctrl_c` within a second of the last
+Ctrl-C, from either side, is refused with how long to wait: a press into an idle, empty box
+arms the next one, for 800 milliseconds, to quit the session. `ctrl_u` kills back to the start of the line the cursor is on, and that
 is the line *as displayed*: a prompt long enough to wrap loses one row and keeps the rest.
 It is offered because a caller may want it, but it never hands the line back.
 
@@ -205,9 +208,11 @@ What stdin does say is that after any Ctrl-C the child is idle, whichever of the
 did. So the owner does not track working; it tracks *settled*: nothing since the last
 Ctrl-C could have set the child to work. A settled Ctrl-C empties the box. An unsettled
 one empties nothing and settles it, so recovering a held line after a turn takes two: a
-caller whose text is still refused after one `ctrl_c` sends another.
+caller whose text is still refused after one `ctrl_c` sends another, a second or more
+later.
 
-Anything that could have started work unsettles it. Any Return does, including one read as
+Anything that could have started work unsettles it. Any Return does, fritter's own and
+the user's, including one read as
 continuing the line, because that reading can be wrong in the direction of a Return that
 really sent. So does any chord whose effect is not known, and so does a `working` request —
 which is how a turn that starts without a keypress is heard. The owner starts unsettled,
@@ -216,9 +221,10 @@ the line, and nothing but a Ctrl-C this reads itself ever settles it; the hook t
 when a turn ends is not trusted to, because other plugins' Stop hooks can keep the turn
 going after it.
 
-What is left open is narrow: a `working` request answers a hook that runs before the turn's
-work, so a Ctrl-C arriving while that hook is still on its way here reaches a child that is
-already starting its turn.
+What is left open is narrow: a turn that starts with no keypress is heard only when its
+UserPromptSubmit hook reaches here, and the hook is a process that has to start. A Ctrl-C
+landing in those milliseconds reaches a child already in its turn, and is read as emptying
+the box.
 
 Everything else that is not a character is read as having changed the box by some amount
 the bytes do not say, and that holds the line until the box is proved empty. Backspace
@@ -341,7 +347,8 @@ statement in `main`. A guarantee that sometimes deadlocks is worse than one not 
   why it is parsed rather than scanned. With those reports arriving on stdin, a send is
   still accepted; before this was parsed, one was enough to refuse every send afterwards.
 - One Ctrl-C into an idle session empties the input box however many lines are in it, and
-  leaves the session running. A second press in a row, into the empty box, quits it.
+  leaves the session running. A second press within 800 milliseconds, into the empty box,
+  quits it — the default window of the double-press hook in the shipped code.
 - One Ctrl-C into a working session (2.1.283) stops the work and leaves the box exactly as
   it was, and one into a session where a turn has been started by a finished background
   task does the same. A second, now idle, empties the box and does not quit.

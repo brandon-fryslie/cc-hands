@@ -71,10 +71,11 @@ async def shim(home: Home, payload: Mapping[str, object], fritter: str | None = 
 
 
 class FakeFritter:
-    """A control socket that says yes to everything and remembers each request, decoded."""
+    """A control socket that gives every request one answer and remembers each, decoded."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, answer: bytes = b'{"ok":true}\n') -> None:
         self.asked: list[object] = []
+        self._answer = answer
         self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._listener.bind(str(path))
         self._listener.listen(4)
@@ -89,7 +90,7 @@ class FakeFritter:
                 return
             with connection:
                 self.asked.append(json.loads(connection.recv(65536)))
-                connection.sendall(b'{"ok":true}\n')
+                connection.sendall(self._answer)
 
     def close(self) -> None:
         self._listener.close()
@@ -281,13 +282,42 @@ async def test_only_a_prompt_tells_fritter_anything(home: Home, sessions: Sessio
     assert fritter.asked == []
 
 
-async def test_a_turn_start_fritter_did_not_hear_is_reported_and_still_reaches_hands(home: Home, sessions: Sessions) -> None:
+async def prompt_answered_by(home: Home, answer: bytes) -> tuple[int | None, str, str]:
+    directory = Path(tempfile.mkdtemp(prefix="fritter-"))
+    try:
+        fritter = FakeFritter(directory / "f.sock", answer)
+        try:
+            return await shim(home, PROMPT, fritter=str(directory / "f.sock"))
+        finally:
+            fritter.close()
+    finally:
+        shutil.rmtree(directory)
+
+
+async def test_a_turn_start_fritter_refused_is_reported_and_still_reaches_hands(home: Home, sessions: Sessions) -> None:
     assert await shim(home, START) == (0, "", "")
-    code, stdout, stderr = await shim(home, PROMPT, fritter="/tmp/no-fritter-here.sock")
+    code, stdout, stderr = await prompt_answered_by(home, b'{"ok":false,"reason":"no request kind named \\"working\\""}\n')
     assert (code, stdout) == (1, "")
     assert "this turn's start did not reach fritter" in stderr
     [listing] = sessions.live()
     assert (listing.session.state, listing.session.turn) == (Submitted(since=10.0), PromptId("p1"))
+
+
+async def test_an_address_inherited_from_another_session_has_nothing_to_hear(home: Home, sessions: Sessions) -> None:
+    # A session started from inside a wrapped one - from its shell, or a tmux server
+    # started there - carries that one's address. Its turns are nothing to that fritter.
+    answer = b'{"ok":false,"elsewhere":true,"reason":"this socket types into process 1"}\n'
+    assert await prompt_answered_by(home, answer) == (0, "", "")
+
+
+async def test_an_address_nothing_listens_on_any_more_has_nothing_to_hear(home: Home, sessions: Sessions) -> None:
+    # The fritter that published it has exited, so no input box is held for this session.
+    assert await shim(home, PROMPT, fritter="/tmp/no-fritter-here.sock") == (0, "", "")
+
+
+async def test_a_hook_other_than_a_prompt_asks_nothing_of_its_payload_for_fritter(home: Home) -> None:
+    stop = {"session_id": SID, "hook_event_name": "Stop"}
+    assert await shim(home, stop, fritter="/tmp/fritter-abc.sock") == (0, "", "")
 
 
 async def test_a_session_started_outside_fritter_records_no_way_to_type_into_it(home: Home, sessions: Sessions) -> None:

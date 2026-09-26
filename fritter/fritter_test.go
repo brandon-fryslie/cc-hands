@@ -704,6 +704,7 @@ func TestACtrlCIntoAChildTheCallerSaysIsWorkingDoesNotHandTheLineBack(t *testing
 	if _, err := term.MakeRaw(int(wrapped.master.Fd())); err != nil {
 		t.Fatalf("cannot put the session's terminal into raw mode: %v", err)
 	}
+	clock := stopped(wrapped.line)
 
 	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
 		t.Fatalf("cannot settle the child: %s", answer.Reason)
@@ -717,18 +718,113 @@ func TestACtrlCIntoAChildTheCallerSaysIsWorkingDoesNotHandTheLineBack(t *testing
 	if answer := ask(`{"kind":"working"}`); !answer.OK {
 		t.Fatalf("the word that work began was refused: %s", answer.Reason)
 	}
+	clock.pass(quitWindow)
 	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
 		t.Fatalf("the ctrl_c was refused: %s", answer.Reason)
 	}
 	if answer := ask(`{"kind":"text","text":"INTRUDER"}`); answer.OK {
 		t.Fatal("the ctrl_c only stopped the work, and text was typed onto the end of the user's prompt")
 	}
+	clock.pass(quitWindow)
 	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
 		t.Fatalf("the second ctrl_c was refused: %s", answer.Reason)
 	}
 	if answer := ask(`{"kind":"text","text":"now ok"}`); !answer.OK {
 		t.Fatalf("the child was idle for the second ctrl_c and the line was still held: %s", answer.Reason)
 	}
+}
+
+func TestTextFritterSubmitsStartsWorkTooSoTheNextCtrlCDoesNotHandTheLineBack(t *testing.T) {
+	// fritter's own Enter starts a turn as surely as the user's, and it must not need a
+	// hook to hear about work it started itself.
+	wrapped, ask, _ := wrap(t, "sh", "-c", "cat >/dev/null")
+	defer func() { _ = wrapped.cmd.Process.Kill() }()
+	if _, err := term.MakeRaw(int(wrapped.master.Fd())); err != nil {
+		t.Fatalf("cannot put the session's terminal into raw mode: %v", err)
+	}
+	clock := stopped(wrapped.line)
+
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
+		t.Fatalf("cannot settle the child: %s", answer.Reason)
+	}
+	if answer := ask(`{"kind":"text","text":"write an essay about rivers","submit":true}`); !answer.OK {
+		t.Fatalf("cannot submit: %s", answer.Reason)
+	}
+	if _, err := wrapped.Write([]byte("header  please fix the auth bug")); err != nil {
+		t.Fatalf("cannot type: %v", err)
+	}
+	clock.pass(quitWindow)
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
+		t.Fatalf("the ctrl_c was refused: %s", answer.Reason)
+	}
+	if answer := ask(`{"kind":"text","text":"INTRUDER"}`); answer.OK {
+		t.Fatal("the ctrl_c only stopped the turn fritter started, and text was typed onto the end of the user's prompt")
+	}
+}
+
+func TestACtrlCThatCouldQuitTheSessionIsRefused(t *testing.T) {
+	// A Ctrl-C into an idle, empty box arms the next one, for 800ms, to quit the session.
+	// Recovering a held line can take two, so the second waits the window out.
+	wrapped, ask, _ := wrap(t, "sh", "-c", "cat >/dev/null")
+	defer func() { _ = wrapped.cmd.Process.Kill() }()
+	if _, err := term.MakeRaw(int(wrapped.master.Fd())); err != nil {
+		t.Fatalf("cannot put the session's terminal into raw mode: %v", err)
+	}
+	clock := stopped(wrapped.line)
+
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
+		t.Fatalf("the first ctrl_c was refused: %s", answer.Reason)
+	}
+	clock.pass(quitWindow - time.Millisecond)
+	answer := ask(`{"kind":"key","key":"ctrl_c"}`)
+	if answer.OK {
+		t.Fatal("a second ctrl_c inside the window went in, and could have quit the session")
+	}
+	if !strings.Contains(answer.Reason, "nothing was typed") {
+		t.Fatalf("the refusal must say nothing was typed, got %q", answer.Reason)
+	}
+	// The user's own count too: a Ctrl-C at the keyboard is the first of a pair as surely.
+	clock.pass(time.Millisecond)
+	if _, err := wrapped.Write([]byte{ctrlC}); err != nil {
+		t.Fatalf("cannot press ctrl-c: %v", err)
+	}
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); answer.OK {
+		t.Fatal("a ctrl_c went in straight after the user's own")
+	}
+	clock.pass(quitWindow)
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
+		t.Fatalf("a ctrl_c after the window was refused: %s", answer.Reason)
+	}
+	if answer := ask(`{"kind":"key","key":"enter"}`); !answer.OK {
+		t.Fatalf("a key that cannot quit anything was held back by the window: %s", answer.Reason)
+	}
+}
+
+// fixedClock is a clock that moves only when told to.
+type fixedClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func (c *fixedClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *fixedClock) pass(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
+}
+
+// stopped gives the line owner a clock the test moves, so a window is a step and not a sleep.
+func stopped(line *lineOwner) *fixedClock {
+	clock := &fixedClock{at: time.Now()}
+	line.mu.Lock()
+	defer line.mu.Unlock()
+	line.now = clock.now
+	return clock
 }
 
 func TestMultiLineTextIsRefusedWhenTheSessionWillNotBracketIt(t *testing.T) {
@@ -869,6 +965,9 @@ func TestARequestForAnotherProcessIsNotTypedIntoThisOne(t *testing.T) {
 			answer := ask(c.body)
 			if answer.OK {
 				t.Fatal("a request for another process was typed into this one")
+			}
+			if !answer.Elsewhere {
+				t.Fatal("the refusal must say the address belongs to another session, so a holder of an inherited one can tell")
 			}
 			if !strings.Contains(answer.Reason, "nothing was typed") {
 				t.Fatalf("the refusal must say nothing was typed, got %q", answer.Reason)

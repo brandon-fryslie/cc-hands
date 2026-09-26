@@ -27,7 +27,7 @@ from hands.sessions.home import Home, default_home
 from hands.sessions.hookconfig import post_timeout
 from hands.sessions.membership import remove_membership, write_membership
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.typing import Typist, Untyped
+from hands.sessions.typing import Elsewhere, NotListening, Typist, Untyped
 
 # [LAW:no-silent-failure] Claude Code shows a hook's stderr for exit 1 and carries
 # on. Exit 2 would instead block the prompt or the stop and hand the message to
@@ -92,11 +92,15 @@ def tell_fritter(payload: Payload) -> int:
     turn that starts on its own - a background task finishing starts one, and fires this
     hook like any other. The hook runs before the turn's work, so fritter hears in time.
     """
-    wrapped = membership(payload)
-    if payload.text("hook_event_name") != "UserPromptSubmit" or wrapped.fritter is None:
+    if payload.text("hook_event_name") != "UserPromptSubmit" or not os.environ.get("FRITTER_SOCKET"):
         return 0
     try:
-        Typist.of(wrapped).working()
+        Typist.of(membership(payload)).working()
+    except (Elsewhere, NotListening):
+        # The address came down from a session this one was started inside, or its fritter
+        # has exited. Either way no fritter holds this session's input box, so there is no
+        # line this turn could make wrong, and nothing to tell.
+        return 0
     except Untyped as error:
         # [LAW:no-silent-failure] Unheard, fritter can hand back a line with the user's
         # words still in it after the next ctrl_c.

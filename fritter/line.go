@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 // How much of the end of the input box is remembered.
@@ -14,6 +15,13 @@ import (
 // ordinary "type it, take some back, submit it" known, and anything longer is a line held
 // until the user types again, which is the recoverable direction.
 const remembered = 16
+
+// How long after one Ctrl-C another may be the press that quits the session.
+//
+// A Ctrl-C the child has nothing to do with - an idle session, an empty box - arms the
+// next one to quit it, for 800 milliseconds: the default window of the double-press hook
+// in 2.1.283. A second gives the bytes' trip through stdin room on top of that.
+const quitWindow = time.Second
 
 // lineOwner answers the one question about the input box that only fritter can answer:
 // has the person at the keyboard put characters in it that they have not yet sent?
@@ -83,10 +91,14 @@ type lineOwner struct {
 	// turn that starts without a keypress is heard `[LAW:no-silent-failure]`. It starts
 	// unsettled, because a program can be started with work to do.
 	settled bool
+	// When the last Ctrl-C was seen, from either side. The child's own double-press rule is
+	// timed, so this is the one fact here that is a time rather than a state of the box.
+	lastCancel time.Time
+	now        func() time.Time
 }
 
 func newLineOwner() *lineOwner {
-	return &lineOwner{}
+	return &lineOwner{now: time.Now}
 }
 
 // typed records a slice of the user's stdin, whatever it turns out to hold.
@@ -154,6 +166,7 @@ func (l *lineOwner) fold(presses []press) (emptiedIt bool) {
 				emptiedIt = true
 			}
 			l.settled = true
+			l.lastCancel = l.now()
 		case disturbed:
 			l.held = true
 			l.settled = false
@@ -255,6 +268,14 @@ func (l *lineOwner) working() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.settled = false
+}
+
+// armed reports how long a Ctrl-C sent now could still be the second press that quits the
+// session, and zero once it no longer can.
+func (l *lineOwner) armed() time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return max(0, quitWindow-l.now().Sub(l.lastCancel))
 }
 
 // empty records that there is nothing in the box.

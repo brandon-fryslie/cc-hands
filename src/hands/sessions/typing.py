@@ -53,6 +53,14 @@ class Untyped(Exception):
     """
 
 
+class Elsewhere(Untyped):
+    """The address is another session's fritter, inherited: it types into some other process."""
+
+
+class NotListening(Untyped):
+    """Nothing is listening at the address, so the fritter that published it has exited."""
+
+
 @dataclass(frozen=True)
 class Typist:
     """A session that can be typed into, which is to say one fritter wrapped.
@@ -126,9 +134,12 @@ class Typist:
         except OSError as error:
             if delivered:
                 raise self._nobody_knows(f"it never answered ({error})", unknown) from error
+            unreached = f"cannot reach the fritter for session {self.session} at {self.socket}: {error}"
             # A session whose process is gone leaves a socket nobody is listening on, and
             # that is the common case here rather than an exotic one.
-            raise Untyped(f"cannot reach the fritter for session {self.session} at {self.socket}: {error}") from error
+            if isinstance(error, (FileNotFoundError, ConnectionRefusedError)):
+                raise NotListening(unreached) from error
+            raise Untyped(unreached) from error
         _raise_if_refused(self.session, answer, lambda what: self._nobody_knows(what, unknown))
 
     def _nobody_knows(self, what: str, unknown: str) -> Untyped:
@@ -190,6 +201,8 @@ def _raise_if_refused(session: SessionId, answer: bytes, nobody_knows: Callable[
     match decoded:
         case {"ok": True}:
             return
+        case {"ok": False, "reason": str() as reason, "elsewhere": True}:
+            raise Elsewhere(f"fritter refused a request for session {session}: {reason}")
         case {"ok": False, "reason": str() as reason}:
             # The one answer fritter actually gave. Its reason says whether anything
             # reached the box, so this is the only failure that does not need the warning.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,10 @@ type request struct {
 type response struct {
 	OK     bool   `json:"ok"`
 	Reason string `json:"reason,omitempty"`
+	// The request named a process this socket does not type into. Its own field because a
+	// caller holding an inherited address has nothing to tell this fritter, and must be
+	// able to tell that apart from a refusal it has to act on without reading the reason.
+	Elsewhere bool `json:"elsewhere,omitempty"`
 }
 
 // The named chords hands can ask for, and the bytes a terminal sends for each.
@@ -46,8 +51,8 @@ var keystrokes = map[string][]byte{
 	// a single press and kept 192 characters. It is offered because a caller may want it,
 	// but it settles nothing. Ctrl-C is the chord that empties the box whatever is in it,
 	// when the child is idle; when it is working the same press stops the work and leaves
-	// the box alone. Never two in a row, because a press into an idle, empty box arms
-	// the next one to quit the session.
+	// the box alone. A ctrl_c within quitWindow of the last one is refused, because a
+	// press into an idle, empty box arms the next one to quit the session.
 	"ctrl_u":    {0x15},
 	"up":        []byte("\x1b[A"),
 	"down":      []byte("\x1b[B"),
@@ -174,7 +179,7 @@ func (w *Wrapped) inject(asked request) response {
 	// request meant for some other session is turned away, before a byte of it is typed
 	// into this one.
 	if child := w.cmd.Process.Pid; asked.Pid != child {
-		return response{OK: false, Reason: fmt.Sprintf("this socket types into process %d and the request is for process %d; nothing was typed. An address inherited from another session reaches that session, not this one", child, asked.Pid)}
+		return response{OK: false, Elsewhere: true, Reason: fmt.Sprintf("this socket types into process %d and the request is for process %d; nothing was typed. An address inherited from another session reaches that session, not this one", child, asked.Pid)}
 	}
 	// Nothing is typed for this one, so it does not queue behind a write: it is sent from
 	// the hook that runs before a turn's work, and the turn waits on the answer.
@@ -228,7 +233,7 @@ func (w *Wrapped) dispatch(asked request, claim *hold) response {
 // of two people's words, which nobody afterwards can pull apart.
 func (w *Wrapped) typeText(asked request, claim *hold) response {
 	if !w.line.free() {
-		return response{OK: false, Reason: "this session's input holds text that was not seen to be sent - typed by the user, or brought in by a key such as tab, up, down or ctrl_u - and text is not typed into it until a Return sends it or a ctrl_c empties it. A ctrl_c empties it only when nothing could have started work since the ctrl_c before it; otherwise it stops that work and leaves the box as it was, and the next one empties it"}
+		return response{OK: false, Reason: "this session's input holds text that was not seen to be sent - typed by the user, or brought in by a key such as tab, up, down or ctrl_u - and text is not typed into it until a Return sends it or a ctrl_c empties it. A ctrl_c empties it only when nothing could have started work since the ctrl_c before it; otherwise it stops that work and leaves the box as it was, and the next one, a second or more later, empties it"}
 	}
 	// [LAW:parse-dont-validate] Text is characters and newlines. A control byte in it is
 	// a keystroke wearing text's clothes: an ESC ends the bracketing early and everything
@@ -253,6 +258,9 @@ func (w *Wrapped) typeText(asked request, claim *hold) response {
 		return response{OK: false, Reason: wrong}
 	}
 	if asked.Submit {
+		// Before the Enter and whether or not it lands: once it is on its way, the turn it
+		// starts may be under way, and nothing on stdin will say so.
+		w.line.working()
 		if wrong, bad := w.send(claim, keystrokes["enter"]).wrong(); bad {
 			// A submit is two writes, and the caller has to be able to tell which one
 			// failed: retyping text that is already sitting in the box doubles it.
@@ -285,6 +293,12 @@ func (w *Wrapped) pressKey(asked request, claim *hold) response {
 	chord, known := keystrokes[asked.Key]
 	if !known {
 		return response{OK: false, Reason: fmt.Sprintf("no key named %q", asked.Key)}
+	}
+	// [LAW:single-enforcer] Checked under the request's claim, so no Ctrl-C of the user's
+	// can land between this and the write. Theirs is never held back: two in a row is how
+	// they mean to quit.
+	if wait := w.line.armed(); bytes.Equal(chord, keystrokes["ctrl_c"]) && wait > 0 {
+		return response{OK: false, Reason: fmt.Sprintf("a Ctrl-C went in less than %s ago, and one into an idle, empty box arms the next to quit the session; nothing was typed. Send it again in %s", quitWindow, wait.Round(time.Millisecond))}
 	}
 	if wrong, bad := w.send(claim, chord).wrong(); bad {
 		// Recorded only for a chord that went out whole: half of one is not a chord the
