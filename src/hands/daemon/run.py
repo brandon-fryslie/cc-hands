@@ -98,7 +98,7 @@ def backend_from_env() -> LLMBackend:
         )
     if choice == "openai":
         return OpenAICompatibleBackend(
-            base_url=OPENAI_URL,
+            base_url=os.environ.get("HANDS_LLM_URL", OPENAI_URL),
             api_key=_key("OPENAI_API_KEY", choice),
             model=os.environ.get("HANDS_LLM_MODEL", OPENAI_MODEL),
         )

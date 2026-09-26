@@ -70,7 +70,11 @@ mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts �
 The LLM is a backend variant: `HANDS_LLM=local`, the default, is Qwen3-30B-A3B on
 inferno through `mlx_lm.server`; `HANDS_LLM=openai` is `gpt-4.1-mini` through OpenAI's
 API; `HANDS_LLM=anthropic` is Claude through the API. `HANDS_LLM_MODEL` names another
-model for any of them. A keyed variant stops at start, naming the variable, when its key
+model for any of them. `HANDS_LLM_URL` moves `local` or `openai` to another
+OpenAI-compatible server; it is the base URL the client appends `/chat/completions` to,
+so it usually ends in `/v1` (`https://api-chicago.codexapi.pro/v1`: the bare host answers
+404). Such a server must stream tool calls, because the pipeline's service always
+streams: api-chicago.codexapi.pro streams replies but drops tool calls (2026-09-25). A keyed variant stops at start, naming the variable, when its key
 (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) is not set. The key can live in a `.env` at the
 repository root, which git ignores, and `uv run --env-file .env` puts it in the
 environment; uv stops if the file is not there. The

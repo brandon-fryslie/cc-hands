@@ -42,15 +42,20 @@ def test_openai_needs_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
         backend_from_env()
 
 
-def test_openai_reaches_openai_with_its_key_and_a_model_the_environment_can_override(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_openai_reaches_openai_with_its_key_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HANDS_LLM", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "k")
-    # HANDS_LLM_URL names the local server; it does not move OpenAI.
-    monkeypatch.setenv("HANDS_LLM_URL", "http://elsewhere:9/v1")
+    monkeypatch.delenv("HANDS_LLM_URL", raising=False)
     monkeypatch.delenv("HANDS_LLM_MODEL", raising=False)
-    assert backend_from_env() == OpenAICompatibleBackend(base_url=OPENAI_URL, api_key="k", model=OPENAI_MODEL)
+    assert backend_from_env() == OpenAICompatibleBackend(base_url="https://api.openai.com/v1", api_key="k", model=OPENAI_MODEL)
+
+
+def test_openai_url_and_model_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HANDS_LLM", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("HANDS_LLM_URL", "https://reseller.example/v1")
     monkeypatch.setenv("HANDS_LLM_MODEL", "gpt-other")
-    assert backend_from_env() == OpenAICompatibleBackend(base_url="https://api.openai.com/v1", api_key="k", model="gpt-other")
+    assert backend_from_env() == OpenAICompatibleBackend(base_url="https://reseller.example/v1", api_key="k", model="gpt-other")
 
 
 def test_a_backend_printed_does_not_print_its_key() -> None:
