@@ -66,7 +66,13 @@ def show(before: Shown | None, verdict: Verdict, now: datetime) -> Shown:
             return Shown(after, TITLES[after], text, notices, owing and not notices, now if notices else posted_at)
 
 
-def finished(seen: Shown, orphaned: bool) -> bool:
-    """Whether the indicator is done: the process that started it is gone, and the light has stopped saying up."""
-    # A daemon that has exited but is not yet reaped still holds its pid and reads as up; the look after says what became of it.
-    return orphaned and seen.light != "up"
+def finished(verdict: Verdict, orphaned: bool, run: int) -> bool:
+    """Whether the indicator is done: the run that started it, pid `run`, is gone, and the heartbeat no longer says it is up."""
+    # A run that has exited but is not yet reaped still holds its pid and reads as up; the look after says what became
+    # of it. A heartbeat that says up for another pid is the next run's, which has an indicator of its own.
+    return orphaned and not (isinstance(verdict, Up) and verdict.status.pid == run)
+
+
+def last_words(seen: Shown) -> tuple[str, ...]:
+    """What the indicator posts on its way out: a departure the quiet window was holding back goes out now or never."""
+    return seen.notices or ((seen.text,) if seen.owed else ())

@@ -25,10 +25,12 @@ from hands.sessions.home import Home
 
 # How often the heartbeat is looked at: a daemon that dies is shown within this of the verdict changing.
 LOOK_SECONDS = 1.0
+# How long the notice posted on the way out may take before the indicator exits without it.
+LAST_POST_SECONDS = 5.0
 
 
-def show(home: Home) -> None:
-    """Run the status item until the process is told to stop."""
+def show(home: Home, run: int) -> None:
+    """Run the status item until `run`, the process that started this one, is gone and the heartbeat has said so."""
     app = AppKit.NSApplication.sharedApplication()
     # A menu-bar item only: no Dock icon, no menu bar of its own, never the active app.
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
@@ -39,22 +41,23 @@ def show(home: Home) -> None:
     verdict_line.setEnabled_(False)
     item.setMenu_(menu)
     before: indicator.Shown | None = None
-    # The process that started this one; once it is gone, this process has been handed to another parent.
-    starter = os.getppid()
 
     def look(_timer: object) -> None:
         nonlocal before
         try:
             now = datetime.now(UTC)
-            seen = indicator.show(before, heartbeat.look(home.status, now), now)
+            verdict = heartbeat.look(home.status, now)
+            seen = indicator.show(before, verdict, now)
             before = seen
             item.button().setTitle_(seen.title)
             item.button().setToolTip_(seen.text)
             verdict_line.setTitle_(seen.text)
-            if indicator.finished(seen, orphaned=os.getppid() != starter):
-                # Posted before exiting, not beside it: the notice that the run went is the last thing this process does.
-                for notice in seen.notices:
-                    asyncio.run(post_notification(notice))
+            # Once `run` is gone, this process has been handed to another parent, and never back.
+            if indicator.finished(verdict, orphaned=os.getppid() != run, run=run):
+                # Posted before exiting, not beside it: the notice that the run went is the last thing this process
+                # does, bounded so that an osascript that never returns cannot keep the process up in its place.
+                for notice in indicator.last_words(seen):
+                    asyncio.run(asyncio.wait_for(post_notification(notice), LAST_POST_SECONDS))
                 os._exit(0)
             for notice in seen.notices:
                 post(notice)

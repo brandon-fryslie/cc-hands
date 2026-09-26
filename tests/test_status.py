@@ -261,16 +261,32 @@ def test_a_death_owed_inside_the_quiet_window_is_dropped_if_hands_comes_back_bef
     assert not any(shown_over(looks)[2:])
 
 
-def test_the_indicator_finishes_once_the_run_that_started_it_is_gone_and_the_light_has_left_up(tmp_path: Path) -> None:
+def test_the_indicator_finishes_once_the_run_that_started_it_is_gone_and_the_heartbeat_no_longer_says_it_is_up(tmp_path: Path) -> None:
+    run = beat()
     looks: list[heartbeat.Verdict] = [
-        heartbeat.Up(beat()),
-        heartbeat.Unresponsive(beat()),
-        heartbeat.Down(beat()),
+        heartbeat.Up(run),
+        heartbeat.Up(beat(pid=run.pid + 1)),
+        heartbeat.Unresponsive(run),
+        heartbeat.Down(run),
         heartbeat.Stopped(beat(pipeline="stopped")),
         heartbeat.Unreadable(tmp_path, "x"),
+        heartbeat.NeverRan(tmp_path),
     ]
-    shown = [indicator.show(None, verdict, NOW) for verdict in looks]
-    # A hung daemon is still its parent: the indicator stays to show it stuck.
-    assert not any(indicator.finished(seen, orphaned=False) for seen in shown)
-    # Orphaned while the light says up is a daemon that has exited and not yet been reaped: one more look.
-    assert [indicator.finished(seen, orphaned=True) for seen in shown] == [False, True, True, True, True]
+    # A hung run is still its parent: the indicator stays to show it stuck.
+    assert not any(indicator.finished(verdict, orphaned=False, run=run.pid) for verdict in looks)
+    # Orphaned while its run reads up is a run that has exited and not yet been reaped: one more look. Up under another
+    # pid is the next run, which has an indicator of its own.
+    assert [indicator.finished(verdict, orphaned=True, run=run.pid) for verdict in looks] == [False, True, True, True, True, True, True]
+
+
+def test_a_departure_the_quiet_window_held_back_goes_out_as_the_indicator_finishes(tmp_path: Path) -> None:
+    stuck, down, up = heartbeat.Unresponsive(beat()), heartbeat.Down(beat()), heartbeat.Up(beat())
+    before = None
+    for verdict, seconds in [(up, 0), (stuck, 1), (up, 5), (down, 20)]:
+        before = indicator.show(before, verdict, NOW + timedelta(seconds=seconds))
+    # Killed twenty seconds after a stall was announced: the quiet window holds the death back, and the way out says it.
+    assert before.notices == () and before.owed
+    assert indicator.last_words(before) == (heartbeat.describe(down, NOW + timedelta(seconds=20)),)
+    # A departure already posted is not posted twice, and a light that is up has nothing to say.
+    assert indicator.last_words(indicator.show(None, down, NOW)) == ()
+    assert indicator.last_words(indicator.show(before, up, NOW + timedelta(seconds=21))) == ()

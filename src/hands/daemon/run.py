@@ -127,6 +127,10 @@ def config_from_env() -> VoiceConfig:
     )
 
 
+# The signals that stop a run as the q key does: closing its terminal is how a run in a terminal is most often ended.
+QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
 async def run(config: VoiceConfig, home: Home, heart: heartbeat.Heart, after_crash: bool) -> None:
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
     # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
@@ -136,10 +140,10 @@ async def run(config: VoiceConfig, home: Home, heart: heartbeat.Heart, after_cra
     sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record, changes=deltas)
     hooks = await serve_hooks(home, sessions)
     quit_event = asyncio.Event()
-    # [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the q key, and a failed background task all set
-    # this one event, and it is installed before the models load, so a stop is heard in every phase of the run.
+    # [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the q key, and a failed
+    # background task all set this one event, and it is installed before the models load, so a stop is heard in every phase of the run.
     loop = asyncio.get_running_loop()
-    for signal_number in (signal.SIGINT, signal.SIGTERM):
+    for signal_number in QUIT_SIGNALS:
         loop.add_signal_handler(signal_number, quit_event.set)
     try:
         # A restart is back where it was before the models load: every session with a file and a running process is listed.
@@ -152,7 +156,7 @@ async def run(config: VoiceConfig, home: Home, heart: heartbeat.Heart, after_cra
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
         # From here a signal has its default effect again: nothing is left to stop gracefully.
-        for signal_number in (signal.SIGINT, signal.SIGTERM):
+        for signal_number in QUIT_SIGNALS:
             loop.remove_signal_handler(signal_number)
         logger.remove(failures)
     # Written only by a stop: a crash leaves the last heartbeat naming a pid that is gone, which reads as down.

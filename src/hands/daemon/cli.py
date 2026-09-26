@@ -5,10 +5,13 @@ import asyncio
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+
+from loguru import logger
 
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home, default_home
@@ -21,7 +24,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
-    commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
+    shown = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
+    shown.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
     arguments = parser.parse_args(argv)
@@ -51,9 +55,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             return tail_log(home, arguments.lines)
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
+            # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits
+            # in that second would leave this process watching its new one, launchd, forever.
+            parent = os.getppid() if arguments.parent is None else arguments.parent
             from hands.daemon.menubar import show
 
-            show(home)
+            show(home, parent)
             return 0
         case other:
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
@@ -64,11 +71,18 @@ def start_indicator(home: Home) -> None:
     # [LAW:single-enforcer] the indicator ends itself once the run that started it is gone (menubar.show), however the
     # run ended; a session of its own keeps the terminal's Ctrl-C and hangup from ending it first, before it has said so.
     # Its output shares this terminal, so an indicator that fails is seen where the daemon's own failures are.
-    subprocess.Popen(
-        [sys.executable, "-m", "hands.daemon", "--home", str(home.root), "indicator"],
+    shown = subprocess.Popen(
+        [sys.executable, "-m", "hands.daemon", "--home", str(home.root), "indicator", "--parent", str(os.getpid())],
         stdin=subprocess.DEVNULL,
         start_new_session=True,
     )
+    threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
+
+
+def reap(shown: subprocess.Popen[bytes]) -> None:
+    """Wait on the indicator, so one that exits early is reaped and said, not left a zombie under the run."""
+    # It exits of its own accord only once the run is gone, so an exit this process lives to see is a failure.
+    logger.error(f"the menu-bar indicator exited ({shown.wait()}) while hands runs; hands is not shown in the menu bar")
 
 
 def report(home: Home) -> int:
