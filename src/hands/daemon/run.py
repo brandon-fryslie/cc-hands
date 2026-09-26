@@ -1,4 +1,4 @@
-"""`hands run`: the daemon in the foreground, as launchd runs it.
+"""`hands run`: the daemon, in the foreground of the terminal it was started in.
 
     uv run hands run              # Qwen on inferno (HANDS_LLM=local, the default)
     HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
@@ -8,12 +8,11 @@ Sessions join through the hook socket at ~/.hands/hands.sock (the home is
 HANDS_HOME when that is set). A Claude Code session is registered when the hands
 plugin is installed and enabled; its hooks are plugin/hooks/hooks.json.
 
-Every heartbeat rewrites ~/.hands/status.json, which `hands status` reads. Run
-from a terminal, the space bar holds the conversation: press once to start
-talking, press again to stop, `q` quits. Under launchd there is no terminal, so
-there is no key edge yet: sessions are registered and spoken about, but not
-answered by voice. Latency from key release to the first audio out is logged for
-every turn.
+Every heartbeat rewrites ~/.hands/status.json, which `hands status` and the
+menu-bar indicator read. The space bar holds the conversation: press once to
+start talking, press again to stop, `q` quits. With stdin not a terminal there is
+no key edge: sessions are registered and spoken about, but not answered by voice.
+Latency from key release to the first audio out is logged for every turn.
 """
 
 import asyncio
@@ -137,7 +136,7 @@ async def run(config: VoiceConfig, home: Home, heart: heartbeat.Heart, after_cra
     sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record, changes=deltas)
     hooks = await serve_hooks(home, sessions)
     quit_event = asyncio.Event()
-    # [LAW:single-enforcer] launchd's SIGTERM, a terminal's Ctrl-C, the q key, and a failed background task all set
+    # [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the q key, and a failed background task all set
     # this one event, and it is installed before the models load, so a stop is heard in every phase of the run.
     loop = asyncio.get_running_loop()
     for signal_number in (signal.SIGINT, signal.SIGTERM):
@@ -206,7 +205,7 @@ async def converse(
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
         # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
         # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the key edge no turn starts, so any of
-        # them failing stops the run where it can be seen, and launchd starts it again.
+        # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
             failures.append(error)
@@ -260,7 +259,7 @@ async def converse(
         for task in background:
             task.cancel()
     # [LAW:no-silent-failure] a run that failed ends by raising, so it is not written as stopped: it reads as down,
-    # exits nonzero, and launchd starts it again.
+    # exits nonzero, and every hook after it fails loudly until hands is run again.
     if failures:
         raise failures[0]
     if not quit_event.is_set():

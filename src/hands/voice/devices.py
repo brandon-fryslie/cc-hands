@@ -19,8 +19,8 @@ async def follow(
     """Each time the defaults move off the ones the streams are open on, reopen on the new ones and say which; until cancelled."""
     while True:
         await moved(changes, current, opened_on())
-        # [LAW:no-silent-failure] a reopen that fails raises out of here and stops the run, so launchd starts a
-        # fresh daemon on whatever devices there are, rather than one that has silently gone deaf and mute.
+        # [LAW:no-silent-failure] a reopen that fails raises out of here and stops the run, which reads as down, so
+        # the next run opens whatever devices there are, rather than one run going on silently deaf and mute.
         await say(AudioMoved(await finished(reopen())))
 
 

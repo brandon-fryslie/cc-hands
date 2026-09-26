@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import plistlib
 import subprocess
 import sys
 import time
@@ -12,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.daemon import indicator, launchd
+from hands.daemon import indicator
 from hands.sessions import heartbeat
 from hands.daemon.cli import main
 from hands.daemon.run import keep_beating
@@ -209,30 +208,6 @@ def test_a_process_exits_without_waiting_for_work_left_running_off_the_loop(tmp_
     assert time.monotonic() - started < 5
 
 
-def test_the_launch_agent_keeps_the_daemon_up_and_logs_where_status_can_point(tmp_path: Path) -> None:
-    home = Home(tmp_path)
-    agent = plistlib.loads(launchd.agent(launchd.DAEMON, Path("/venv/bin/python"), home))
-    assert agent == {
-        "Label": "hands.daemon",
-        "ProgramArguments": ["/venv/bin/python", "-m", "hands.daemon", "--home", str(tmp_path), "run"],
-        "RunAtLoad": True,
-        "KeepAlive": True,
-        "ProcessType": "Interactive",
-        "StandardOutPath": str(home.daemon_log),
-        "StandardErrorPath": str(home.daemon_log),
-    }
-
-
-def test_the_indicator_has_a_launch_agent_of_its_own(tmp_path: Path, capsysbinary: pytest.CaptureFixture[bytes]) -> None:
-    home = Home(tmp_path)
-    assert main(["--home", str(tmp_path), "launchd", "indicator"]) == 0
-    agent = plistlib.loads(capsysbinary.readouterr().out)
-    assert agent["Label"] == "hands.indicator"
-    assert agent["ProgramArguments"][-3:] == ["--home", str(tmp_path), "indicator"]
-    assert agent["KeepAlive"] is True
-    assert agent["StandardErrorPath"] == str(home.indicator_log)
-
-
 def test_each_verdict_has_its_own_light_and_the_broken_ones_warn(tmp_path: Path) -> None:
     verdicts: list[heartbeat.Verdict] = [
         heartbeat.Up(beat()),
@@ -264,10 +239,10 @@ def test_a_notification_is_posted_when_the_verdict_leaves_up_and_only_then(tmp_p
     assert shown_over([(verdict, NOW) for verdict in looks]) == [(), (), (), (heartbeat.describe(down, NOW),), (), ()]
 
 
-def test_a_daemon_that_keeps_crashing_is_announced_once_a_quiet_window(tmp_path: Path) -> None:
-    down, up = heartbeat.Down(beat()), heartbeat.Up(beat())
-    # launchd restarts a daemon that crashes on every start about every ten seconds.
-    looks = [(verdict, NOW + timedelta(seconds=10 * cycle)) for cycle in range(8) for verdict in (up, down)]
+def test_a_daemon_that_keeps_stalling_is_announced_once_a_quiet_window(tmp_path: Path) -> None:
+    stuck, up = heartbeat.Unresponsive(beat()), heartbeat.Up(beat())
+    # A loop that stalls for a few seconds, recovers, and stalls again every ten.
+    looks = [(verdict, NOW + timedelta(seconds=10 * cycle)) for cycle in range(8) for verdict in (up, stuck)]
     posted = [at for (_, at), notices in zip(looks, shown_over(looks)) if notices]
     assert posted == [NOW, NOW + timedelta(seconds=60)]
 
@@ -284,3 +259,18 @@ def test_a_death_owed_inside_the_quiet_window_is_dropped_if_hands_comes_back_bef
     at = [NOW + timedelta(seconds=seconds) for seconds in (0, 1, 10, 40, 55, 70)]
     looks = list(zip([up, down, up, down, up, up], at))
     assert not any(shown_over(looks)[2:])
+
+
+def test_the_indicator_finishes_once_the_run_that_started_it_is_gone_and_the_light_has_left_up(tmp_path: Path) -> None:
+    looks: list[heartbeat.Verdict] = [
+        heartbeat.Up(beat()),
+        heartbeat.Unresponsive(beat()),
+        heartbeat.Down(beat()),
+        heartbeat.Stopped(beat(pipeline="stopped")),
+        heartbeat.Unreadable(tmp_path, "x"),
+    ]
+    shown = [indicator.show(None, verdict, NOW) for verdict in looks]
+    # A hung daemon is still its parent: the indicator stays to show it stuck.
+    assert not any(indicator.finished(seen, orphaned=False) for seen in shown)
+    # Orphaned while the light says up is a daemon that has exited and not yet been reaped: one more look.
+    assert [indicator.finished(seen, orphaned=True) for seen in shown] == [False, True, True, True, True]

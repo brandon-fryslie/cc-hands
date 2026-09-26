@@ -232,7 +232,7 @@ async def test_the_screen_is_not_filled_by_a_burst_either() -> None:
 
 
 async def test_a_post_the_screen_refused_is_not_taken_for_one_the_user_saw() -> None:
-    """Under launchd there may be no GUI session to post into, so osascript refuses every time. The refusal is no
+    """A run started over ssh may have no GUI session to post into, so osascript refuses every time. The refusal is no
     announcement and goes on no audit — and it still costs one attempt, because a screen that always says no is
     the one case where recording only what landed would hammer it at the jammed cadence forever."""
     clock, recorded, attempts = Clock(), list[Entry](), list[str]()

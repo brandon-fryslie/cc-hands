@@ -19,8 +19,8 @@ TITLES: dict[Light, str] = {
 }
 
 
-# After a notice, how long another departure from up is shown and not posted: a daemon that crashes on every start
-# comes up and goes down again once per launchd throttle interval, and a notice for each would bury the screen.
+# After a notice, how long another departure from up is shown and not posted: a daemon whose loop stalls and recovers
+# over and over leaves up each time, and a notice for each would bury the screen.
 QUIET = timedelta(seconds=60)
 
 
@@ -64,3 +64,9 @@ def show(before: Shown | None, verdict: Verdict, now: datetime) -> Shown:
             quiet = posted_at is not None and now - posted_at < QUIET
             notices = (text,) if owing and not quiet else ()
             return Shown(after, TITLES[after], text, notices, owing and not notices, now if notices else posted_at)
+
+
+def finished(seen: Shown, orphaned: bool) -> bool:
+    """Whether the indicator is done: the process that started it is gone, and the light has stopped saying up."""
+    # A daemon that has exited but is not yet reaped still holds its pid and reads as up; the look after says what became of it.
+    return orphaned and seen.light != "up"

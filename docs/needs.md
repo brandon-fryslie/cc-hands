@@ -87,8 +87,9 @@ nothing. The daemon must be heard or seen to be alive, a hook that cannot reach 
 must fail where you can see it, an unreachable model must be spoken, and an error
 must reach you by a path that does not run through the thing that broke.
 
-Carried by the system speech channel, the heartbeat file, the non-zero shim exit,
-and launchd. Delivered by **Loud daemon**, and it is ranked ahead of every content
+Carried by the system speech channel, the heartbeat file and the menu-bar indicator
+that reads it, the terminal the daemon runs in, and the shim's non-zero exit when
+the heartbeat says the daemon died, hung, or cannot be read. Delivered by **Loud daemon**, and it is ranked ahead of every content
 feature because transport defects are the ones you feel on the first try (failure
 mode 11).
 

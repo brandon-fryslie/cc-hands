@@ -53,8 +53,8 @@ Instant = float  # seconds on the monotonic clock
 ECHO_PATH_SECS = 0.15
 
 # How long a reopen may take before the run gives up on reopening in place. Closing a microphone whose device is
-# gone was measured at 2.7 to 3.7 s; a reopen that never finishes fails the run, and launchd's restart opens a
-# fresh process on the new defaults.
+# gone was measured at 2.7 to 3.7 s; a reopen that never finishes fails the run, which reads as down, and the next
+# `hands run` opens on the new defaults.
 REOPEN_DEADLINE = timedelta(seconds=10)
 
 
