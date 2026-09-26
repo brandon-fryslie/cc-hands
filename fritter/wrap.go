@@ -96,7 +96,7 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer, killed <-chan os.Signal)
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
-		_, _ = io.Copy(io.MultiWriter(stdout, w.paste), w.master)
+		_, _ = io.Copy(io.MultiWriter(&screen{out: stdout}, w.paste), w.master)
 	}()
 	// [LAW:no-silent-failure] cmd.Wait returns the moment the child is reaped, which is
 	// before the last of what it printed has been copied out - `fritter -- sh -c 'echo
@@ -160,6 +160,25 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer, killed <-chan os.Signal)
 		return 0, fmt.Errorf("waiting for %s: %w", w.cmd.Path, err)
 	}
 	return 0, nil
+}
+
+// screen is the user's terminal as the child's output sees it: written to for as long as
+// it takes the writes, and let go of when it stops.
+//
+// [LAW:dataflow-not-control-flow] The pty is read for as long as the child writes to it,
+// whether or not there is a terminal left to show the output on. A child whose output
+// nobody reads blocks - on a write, or in the tcsetattr that waits for output to drain
+// before changing the terminal's mode, which Claude Code makes on its way out - so a copy
+// that stopped with the terminal would leave the child, and fritter waiting on it, running
+// after the window they ran in was closed.
+type screen struct{ out io.Writer }
+
+func (s *screen) Write(output []byte) (int, error) {
+	if _, err := s.out.Write(output); err != nil {
+		warn("the terminal stopped taking the session's output, which goes nowhere from here: %v", err)
+		s.out = io.Discard
+	}
+	return len(output), nil
 }
 
 // How long run waits for the child's last output after the child is gone.

@@ -401,6 +401,62 @@ func TestTheProgramPrintsTheLastWordAndTakesItsSocketWithIt(t *testing.T) {
 	}
 }
 
+func TestClosingTheTerminalEndsTheSessionAndTakesItsSocketWithIt(t *testing.T) {
+	// The child is Claude Code's shape on its way out: told its terminal hung up, it has
+	// more to write than a pty holds before it can exit. With the terminal gone, fritter
+	// is the only reader that output has; if fritter stops reading, the child never exits
+	// and neither does fritter, and both are left running with nobody able to see them.
+	dir := shortTempDir(t)
+	fritter := exec.Command(os.Args[0], "-test.run=TestHelperFritter")
+	fritter.Env = append(os.Environ(),
+		"FRITTER_HELPER=1",
+		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--\x1fsh\x1f-c\x1f"+
+			`trap 'head -c 1048576 /dev/zero; exit 0' HUP; echo "ready $$"; read line`,
+	)
+	terminal, err := pty.Start(fritter)
+	if err != nil {
+		t.Fatalf("cannot start fritter on a terminal: %v", err)
+	}
+	var printed []byte
+	for !strings.Contains(string(printed), "\n") {
+		chunk := make([]byte, 256)
+		n, err := terminal.Read(chunk)
+		if err != nil {
+			t.Fatalf("the child never said it was ready; the terminal saw %q: %v", printed, err)
+		}
+		printed = append(printed, chunk[:n]...)
+	}
+	var child int
+	if _, err := fmt.Sscanf(string(printed[strings.Index(string(printed), "ready"):]), "ready %d", &child); err != nil {
+		t.Fatalf("cannot read the child's pid from %q: %v", printed, err)
+	}
+
+	// What a terminal emulator does when its window closes, and tmux when its pane is
+	// killed: the terminal goes, and fritter, whose controlling terminal it was, is hung up.
+	terminal.Close()
+
+	exited := make(chan error, 1)
+	go func() { exited <- fritter.Wait() }()
+	select {
+	case <-exited:
+	case <-time.After(10 * time.Second):
+		_ = syscall.Kill(child, syscall.SIGKILL)
+		_ = fritter.Process.Kill()
+		t.Fatal("fritter and its child outlived the terminal they ran in")
+	}
+	if err := syscall.Kill(child, 0); !errors.Is(err, syscall.ESRCH) {
+		_ = syscall.Kill(child, syscall.SIGKILL)
+		t.Errorf("fritter exited and left its child %d running: %v", child, err)
+	}
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("cannot read %s: %v", dir, err)
+	}
+	if len(left) != 0 {
+		t.Errorf("fritter left %d entries in %s behind it", len(left), dir)
+	}
+}
+
 func TestMultiLineTextIsRefusedWhenTheSessionWillNotBracketIt(t *testing.T) {
 	// A shell never turns bracketed paste on, so a newline here is an Enter. Answering ok
 	// would tell hands one message was sent where several separate prompts were.
