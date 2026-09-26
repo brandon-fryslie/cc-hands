@@ -60,6 +60,11 @@ class Typist:
 
     session: SessionId
     socket: Path
+    # The process the session is. fritter types only into the process it wrapped, and the
+    # address alone does not say which that is: it is inherited, so a session started from
+    # inside a wrapped one carries its parent's. Every request names this, and fritter
+    # refuses one that names a process it did not wrap.
+    pid: int
 
     @classmethod
     def of(cls, membership: Membership) -> "Typist":
@@ -69,7 +74,7 @@ class Typist:
             raise Untyped(
                 f"session {membership.id} was not started under fritter, so there is nowhere to type into it"
             )
-        return cls(session=membership.id, socket=membership.fritter)
+        return cls(session=membership.id, socket=membership.fritter, pid=membership.pid)
 
     def type(self, text: PromptText, submit: bool) -> None:
         """Put text into the session's input, and press Enter after it when asked to.
@@ -77,11 +82,11 @@ class Typist:
         A newline inside the text stays a newline in the message: fritter brackets the
         paste when the session accepts bracketing, so only `submit` submits.
         """
-        self._ask({"kind": "text", "text": str(text), "submit": submit})
+        self._ask({"pid": self.pid, "kind": "text", "text": str(text), "submit": submit})
 
     def press(self, key: Keystroke) -> None:
         """Send one named chord, which is not text and is never escaped as text."""
-        self._ask({"kind": "key", "key": key})
+        self._ask({"pid": self.pid, "kind": "key", "key": key})
 
     def _ask(self, request: dict[str, object]) -> None:
         body = json.dumps(request).encode() + b"\n"

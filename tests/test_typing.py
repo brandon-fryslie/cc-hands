@@ -72,7 +72,7 @@ def test_text_and_whether_to_submit_reach_fritter_as_asked(short_dir: Path) -> N
     finally:
         fritter.close()
     assert fritter.asked is not None
-    assert json.loads(fritter.asked) == {"kind": "text", "text": "fix the auth middleware", "submit": True}
+    assert json.loads(fritter.asked) == {"pid": 4242, "kind": "text", "text": "fix the auth middleware", "submit": True}
 
 
 def test_a_newline_is_sent_as_text_because_bracketing_is_fritters_job(short_dir: Path) -> None:
@@ -85,7 +85,7 @@ def test_a_newline_is_sent_as_text_because_bracketing_is_fritters_job(short_dir:
     finally:
         fritter.close()
     assert fritter.asked is not None
-    assert json.loads(fritter.asked) == {"kind": "text", "text": "first\nsecond", "submit": False}
+    assert json.loads(fritter.asked) == {"pid": 4242, "kind": "text", "text": "first\nsecond", "submit": False}
 
 
 def test_a_named_key_is_sent_as_a_key_and_never_as_text(short_dir: Path) -> None:
@@ -96,7 +96,7 @@ def test_a_named_key_is_sent_as_a_key_and_never_as_text(short_dir: Path) -> None
     finally:
         fritter.close()
     assert fritter.asked is not None
-    assert json.loads(fritter.asked) == {"kind": "key", "key": "escape"}
+    assert json.loads(fritter.asked) == {"pid": 4242, "kind": "key", "key": "escape"}
 
 
 def test_a_refusal_carries_fritters_reason(short_dir: Path) -> None:

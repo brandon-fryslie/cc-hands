@@ -143,7 +143,7 @@ Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | A
 @dataclass(frozen=True)
 class Reply:    request: RequestId; reply: HookReply
 @dataclass(frozen=True)
-class Type:     session: SessionId; input: Input             # through fritter; unbuilt, hands-keyboard-gxr.i5n
+class Type:     session: SessionId; input: Input             # through fritter; unbuilt, hands-harness-5nb.l0u
 @dataclass(frozen=True)
 class Speak:    text: str; priority: Priority                # straight to TTS
 @dataclass(frozen=True)
@@ -304,7 +304,10 @@ fritter publishes its socket's address to the process it wrapped in `FRITTER_SOC
 The hook runs as a child of that process and inherits it, so the address reaches
 `Membership.fritter` without either side deriving a path from a pid. A session started
 outside fritter has no address, and `Typist.of` refuses it by name rather than writing
-into nothing.
+into nothing. Inheritance also hands the address to a session started from inside a
+wrapped one, so an address alone does not say which session it reaches: every request
+names the session's `Membership.pid`, and fritter refuses one that is not the process it
+wrapped.
 
 Two things are divided rather than duplicated. hands decides *whether* a session may be
 written to, from state fritter cannot see. fritter decides only whether the person at

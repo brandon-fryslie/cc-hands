@@ -19,6 +19,7 @@ import (
 // kind, and the kind says which, so there is no request that names both and no reader
 // that has to guess.
 type request struct {
+	Pid    int    `json:"pid"`    // the process the caller means to type into; see inject
 	Kind   string `json:"kind"`   // "text" or "key"
 	Text   string `json:"text"`   // kind "text": the characters to type, already escaped by the caller
 	Submit bool   `json:"submit"` // kind "text": whether to press Enter after them
@@ -71,6 +72,9 @@ var keystrokes = map[string][]byte{
 //
 //	readDeadline (1s) + at most two writes at writeGrace (2s) + replyDeadline (1s)
 //	  = 4s < hands' ANSWER_TIMEOUT (5s)
+//
+// Nothing waits for another writer to finish, because inject refuses rather than queues,
+// so there is no fifth term.
 const (
 	readDeadline  = 1 * time.Second
 	replyDeadline = 1 * time.Second
@@ -164,9 +168,30 @@ func reply(connection net.Conn, answer response) {
 // A refused write that reported success would leave hands believing a draft was sent
 // when it was not, which is indistinguishable afterwards from one Claude Code ignored.
 func (w *Wrapped) inject(asked request) response {
-	w.injecting.Lock()
-	defer w.injecting.Unlock()
+	// [LAW:single-enforcer] The address reaches a caller by inheritance, and inheritance
+	// does not stop at the process fritter wrapped: a second session started from inside
+	// this one - from its shell, or from a tmux server first started there - carries this
+	// address as its own. Only fritter knows which process it wrapped, so this is where a
+	// request meant for some other session is turned away, before a byte of it is typed
+	// into this one.
+	if child := w.cmd.Process.Pid; asked.Pid != child {
+		return response{OK: false, Reason: fmt.Sprintf("this socket types into process %d and the request is for process %d; nothing was typed. An address inherited from another session reaches that session, not this one", child, asked.Pid)}
+	}
+	// [LAW:no-ambient-temporal-coupling] Refused rather than queued. A wait here would be
+	// spent out of the budget the caller's timer allows for the whole exchange, and what
+	// holds the input can be a write the child is not reading, which ends when it ends.
+	if !w.writing.TryLock() {
+		return response{OK: false, Reason: "another write into this session has not finished - a request, the user's own typing, or an earlier write the child is not reading - so nothing was typed; a session that keeps answering this is not reading its input"}
+	}
+	w.handedOff = false
+	answer := w.dispatch(asked)
+	if !w.handedOff {
+		w.writing.Unlock()
+	}
+	return answer
+}
 
+func (w *Wrapped) dispatch(asked request) response {
 	switch asked.Kind {
 	case "text":
 		return w.typeText(asked)
@@ -197,6 +222,11 @@ func (w *Wrapped) typeText(asked request) response {
 	// ok to that would tell hands one message was sent when several were.
 	if !bracketed && strings.Contains(asked.Text, "\n") {
 		return response{OK: false, Reason: "this session has not turned bracketed paste on, so the newlines in this text would submit it as several separate prompts"}
+	}
+	// [LAW:no-silent-failure] An Enter the child takes as something other than a send
+	// leaves the text in the box, and an ok would tell the caller it was sent.
+	if asked.Submit && staysUnsent(asked.Text) {
+		return response{OK: false, Reason: "this text ends where the session takes Enter as something other than sending - after a backslash, which becomes a newline, or on an @, # or : token, whose completion list takes the Enter - so it would sit unsent; nothing was typed"}
 	}
 	if wrong, bad := w.send(encoded).wrong(); bad {
 		return response{OK: false, Reason: wrong}
@@ -299,21 +329,19 @@ func (d delivery) wrong() (string, bool) {
 // is not a file the runtime can poll, so SetWriteDeadline answers "file type does not
 // support deadline" and the only bound available is to stop waiting. The write itself is
 // not cancelled - it cannot be - so while one is outstanding nothing else may write, or
-// two half-written messages interleave into one nobody can attribute. It clears itself
-// the moment the child starts reading again.
+// two half-written messages interleave into one nobody can attribute. So a write given up
+// on keeps the right to write: the lock passes to it, and it lets go the moment the child
+// reads what it was holding.
+//
+// Called only by inject, which holds w.writing.
 func (w *Wrapped) send(keys []byte) delivery {
-	if w.stuck.Load() {
-		return delivery{how: partway, of: len(keys), why: errors.New("an earlier write to this session has not finished, so the child is not reading its input")}
-	}
 	type written struct {
 		n   int
 		err error
 	}
 	done := make(chan written, 1)
-	w.stuck.Store(true)
 	go func() {
 		n, err := w.master.Write(keys)
-		w.stuck.Store(false)
 		done <- written{n, err}
 	}()
 	select {
@@ -323,6 +351,11 @@ func (w *Wrapped) send(keys []byte) delivery {
 		}
 		return delivery{how: arrived, landed: landed.n, of: len(keys)}
 	case <-time.After(writeGrace):
+		w.handedOff = true
+		go func() {
+			<-done
+			w.writing.Unlock()
+		}()
 		return delivery{how: unknowable, of: len(keys), why: fmt.Errorf("the session did not take this within %s, so it is not reading its input; how much of it landed is not known", writeGrace)}
 	}
 }

@@ -1,6 +1,10 @@
 package main
 
-import "sync"
+import (
+	"regexp"
+	"strings"
+	"sync"
+)
 
 // How much of the end of the input box is remembered.
 //
@@ -187,29 +191,22 @@ func (l *lineOwner) escaping() bool {
 // Whether the list is up is decided by the token ending at the cursor. Neither the token
 // nor the cursor is visible here, so what is asked instead is whether any cursor position
 // inside the remembered end of the line would have opened one - the same question the
-// child asks, over the part of the answer this can see.
+// child asks, over the part of the answer this can see. What came before the remembered
+// end is not remembered, and a space is one of the things it could have been, which is
+// what the `^` in the patterns reads it as.
 func (l *lineOwner) completing() bool {
-	for i, r := range l.tail {
-		least, opens := opensList[r]
-		if !opens || !afterABreak(l.tail, i) {
-			continue
-		}
-		token := 0
-		for _, after := range l.tail[i+1:] {
-			if !tokenChar(after) {
-				break
-			}
-			token++
-		}
-		if token >= least {
+	for cursor := range l.tail {
+		if opensList(string(l.tail[:cursor+1])) {
 			return true
 		}
 	}
 	return false
 }
 
-// What opens a completion list, and how many characters of token the child's own pattern
-// needs after it before it can match. Read out of 2.1.278 rather than guessed:
+// opensList reports whether a cursor at the end of text would have a completion list open.
+//
+// [LAW:one-source-of-truth] The child's own patterns, read out of 2.1.278 rather than
+// guessed, and joined into one:
 //
 //	@ /(^|[\s\u3002\u3001\uFF1F\uFF01])@([\p{L}\p{N}\p{M}_\-./\\()[\]~:]*|"[^"]*"?)$/u
 //	# /(^|\s)#([a-z0-9][a-z0-9_-]*)$/
@@ -220,34 +217,23 @@ func (l *lineOwner) completing() bool {
 //
 // A slash command is not here. Its Return runs the command and empties the box - the
 // child passes `shouldExecute` true on that path - so it is an ordinary submit.
-var opensList = map[rune]int{'@': 0, '#': 1, ':': 2}
-
-// tokenChar reports whether a completion token can be made of this character.
-//
-// One class covers the two patterns that need one, which is wider than either alone -
-// `#` does not take `+`, `:` does not take a leading digit. Wider holds a Return now and
-// then that would have sent, and that is the direction to be wrong in.
-func tokenChar(r rune) bool {
-	switch {
-	case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-		return true
-	}
-	return r == '_' || r == '-' || r == '+'
+func opensList(text string) bool {
+	return listToken.MatchString(text)
 }
 
-// afterABreak reports whether the character at i could be starting a word, which is what
-// the `(^|\s)` on the front of each pattern asks.
-func afterABreak(tail []rune, i int) bool {
-	if i == 0 {
-		// What came before the remembered end of the line is not remembered, and a space
-		// is one of the things it could have been.
-		return true
-	}
-	switch tail[i-1] {
-	case ' ', '\t', '\n', '\r', '\u3002', '\u3001', '\uFF1F', '\uFF01':
-		return true
-	}
-	return false
+var listToken = regexp.MustCompile(`(?:^|[\s\x{3002}\x{3001}\x{FF1F}\x{FF01}])@(?:[\p{L}\p{N}\p{M}_\-./\\()\[\]~:]*|"[^"]*"?)$` +
+	`|(?:^|\s)#[a-z0-9][a-z0-9_-]*$` +
+	`|(?:^|\s):[a-z0-9_+-]{2,}$`)
+
+// staysUnsent reports whether an Enter pressed straight after text, with the cursor at its
+// end, would go on with the line instead of sending it: after a backslash, which the child
+// turns into a newline, or under a completion list, which takes the Enter for itself.
+//
+// It is `continued` with the cursor known. Text fritter types into an empty box leaves the
+// cursor at its end, so here the two rules can be asked exactly rather than read the way
+// that holds.
+func staysUnsent(text string) bool {
+	return strings.HasSuffix(text, `\`) || opensList(text)
 }
 
 // empty records that there is nothing in the box.

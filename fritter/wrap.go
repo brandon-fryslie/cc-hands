@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -25,12 +24,15 @@ type Wrapped struct {
 	cmd    *exec.Cmd
 	paste  *pasteMode
 	line   *lineOwner
-	// One injection at a time: a request is a check and one or two writes, and two
-	// interleaving would put half of each into the input box.
-	injecting sync.Mutex
-	// A write that fritter stopped waiting on and cannot take back. Until it finishes,
-	// every other write is refused rather than queued behind it - see send.
-	stuck atomic.Bool
+	// The right to write into the child's input, held by one writer at a time: a request
+	// for its check and its one or two writes, the user's keyboard for each read of it, and
+	// a write fritter stopped waiting on until the child takes it. Two writers at once put
+	// half of each into the input box, and a check that was true before someone else wrote
+	// is not true after.
+	writing sync.Mutex
+	// Set by send, under writing, when it gives a write up and passes the lock to it; see
+	// inject, which then leaves the unlocking to that write.
+	handedOff bool
 }
 
 // start runs argv on a new pty, with env added to the child's environment.
@@ -58,6 +60,19 @@ func start(argv []string, env []string) (*Wrapped, error) {
 // Where a byte came from - the user's keyboard or the control socket - is a value the
 // writer carries, never a branch in the pump.
 func (w *Wrapped) run(stdin *os.File, stdout io.Writer, killed <-chan os.Signal) (int, error) {
+	// Closed last of everything here, so the forwarding below covers the drain and the
+	// terminal being put back, and then ends: the channel is the caller's and outlives run.
+	finished := make(chan struct{})
+	defer close(finished)
+	// The session is over, so its input is too. Left open, the master outlives run with
+	// the stdin reader and any request still in flight writing into a pty nobody reads;
+	// closed, they are told so. Deferred before the restore, so it runs after it: the
+	// resizer reads the master until the restore has joined it.
+	defer func() {
+		if err := w.master.Close(); err != nil {
+			warn("cannot close the session's pty: %v", err)
+		}
+	}()
 	restore, err := w.attach(stdin)
 	if err != nil {
 		return 0, err
@@ -116,9 +131,14 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer, killed <-chan os.Signal)
 	// Ctrl-C at the keyboard never arrives here: in raw mode it is byte 0x03 travelling to
 	// the child through the pty, which is what makes it the child's interrupt and not ours.
 	go func() {
-		for received := range killed {
-			if err := w.cmd.Process.Signal(received); err != nil {
-				warn("cannot pass %s to the session: %v", received, err)
+		for {
+			select {
+			case received := <-killed:
+				if err := w.cmd.Process.Signal(received); err != nil {
+					warn("cannot pass %s to the session: %v", received, err)
+				}
+			case <-finished:
+				return
 			}
 		}
 	}()
@@ -143,6 +163,11 @@ const drainGrace = 2 * time.Second
 // questions on this same stream, so the line owner parses rather than counts - see
 // input.go, which exists because counting was wrong.
 func (w *Wrapped) Write(input []byte) (int, error) {
+	// Waited for rather than refused: these are the user's own keys, and nothing may drop
+	// them. The wait is behind one request's writes, or behind a child that is reading
+	// nothing, in which case these would have blocked in the pty just the same.
+	w.writing.Lock()
+	defer w.writing.Unlock()
 	w.line.typed(input)
 	return w.master.Write(input)
 }

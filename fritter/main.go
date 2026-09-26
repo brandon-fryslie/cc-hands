@@ -49,8 +49,9 @@ func run(args []string, stdin *os.File, stdout io.Writer) int {
 	// the forwarding starts.
 	killed := make(chan os.Signal, 1)
 	signal.Notify(killed, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
-	// Stopped last of all, so forwarding still covers the drain, the terminal being put
-	// back, and the socket being removed.
+	// Stopped last of all, so a signal arriving during the drain, the terminal being put
+	// back or the socket being removed is caught rather than ending fritter halfway
+	// through them.
 	defer signal.Stop(killed)
 
 	dir, argv, err := parse(args)

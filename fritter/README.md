@@ -51,9 +51,16 @@ the path and says so, rather than letting `bind` fail with an error that names n
 One JSON object per connection, newline-terminated, answered with one JSON object.
 
 ```
-{"kind":"text","text":"fix the auth middleware","submit":true}
-{"kind":"key","key":"escape"}
+{"pid":4242,"kind":"text","text":"fix the auth middleware","submit":true}
+{"pid":4242,"kind":"key","key":"escape"}
 ```
+
+`pid` is the process the caller means to type into, and a request naming any process but
+the one fritter wrapped is refused before anything is typed. The address alone cannot say
+which session it reaches: it is inherited, so a second session started from inside a
+wrapped one — from its shell, or from a tmux server first started there — finds its
+parent's address in its own environment. hands records each session's process with its
+address, so it always has the pid to name.
 
 The answer is `{"ok":true}` or `{"ok":false,"reason":"..."}`. A reason always says what
 went wrong, because a write that was refused and a write that landed must never look
@@ -61,9 +68,11 @@ alike to the caller. When the text lands but the Enter after it does not, the re
 so in those words — retyping text that is already sitting in the box would double it.
 
 A caller has one second and 64 KB to get its request in. Past the size it is refused with
-a reason that says so; past the time the connection is dropped, because a client that
-connects and never finishes its line would otherwise hold a goroutine for the rest of the
-session. Both are generous for a local client sending one small object.
+a reason that says so. Past the time, a connection that sent nothing is dropped, because a
+client that connects and never writes would otherwise hold a goroutine for the rest of the
+session; one that sent part of a line is answered for what it sent — a whole object without
+its newline is carried out, and anything less is refused as unreadable. Both bounds are
+generous for a local client sending one small object.
 
 Each phase of an exchange is bounded on its own, and that is deliberate. Reading the
 request gets **one** second, a write into the session gives up after **one** so its reason
@@ -77,7 +86,12 @@ it is wedged.
 
 `text` is typed literally. fritter does not decide what a leading `/` or `@` means to the
 program underneath — that belongs to the caller, and in hands it is already settled
-before anything reaches here. `submit` presses Enter afterwards.
+before anything reaches here. `submit` presses Enter afterwards — and a `submit` is refused
+before anything is typed when the text ends where Claude Code would take that Enter as
+something other than a send: after a backslash, which it turns into a newline, or on a
+token that opens a completion list (the patterns are under *Who owns the input line*),
+whose list takes the Enter. Typed into an empty box the cursor is at the end of the text,
+so this is asked exactly rather than read the way that holds.
 
 `text` is characters and newlines, and a control byte in it is refused by name. A control
 byte there is a keystroke in text's clothing: an `ESC` ends the bracketing early, so
@@ -270,7 +284,10 @@ input and a write that fills it blocks until the child reads, which a running se
 at once and a stopped one never does. Waiting there with no bound hangs the request and
 everything behind it — including the `ctrl_c` that was meant to be the way back. The write
 cannot be taken back, so while one is outstanding every other is refused rather than queued
-behind it, and it clears itself the moment the child starts reading again. What landed is
+behind it, and it clears itself the moment the child starts reading again. The user's own
+keys are the one writer that waits instead: nothing may drop them, and they wait only
+behind a request's writes, never inside one, so a request's check and the text it types
+cannot have the user's typing land between them. What landed is
 always reported: a write that failed partway says how many bytes reached the box, because
 "nothing was typed" would send a caller to retype a message half of which is already there.
 
@@ -303,8 +320,8 @@ statement in `main`. A guarantee that sometimes deadlocks is worse than one not 
 - A Return continues the line when the character *before the cursor* is a backslash, not
   only when the line ends in one. Typing `ab\c`, pressing Left once and pressing Return
   left `ab` and `c` in the box.
-- Escape does not touch the box. Ctrl-W takes the last word. Backspacing to empty hands
-  the line back.
+- Escape does not touch the box. Ctrl-W takes the last word. Backspace takes one character
+  or none, so backspacing to what looks like an empty box does not hand the line back.
 - Up pulls the previous prompt into an empty box. Nothing was typed and the box filled,
   which is why a history key holds the line.
 - A Return pressed straight after a backslash does **not** submit. The backslash is

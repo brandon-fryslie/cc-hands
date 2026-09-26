@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -423,8 +424,22 @@ func wrapOnto(t *testing.T, stdout io.Writer, argv ...string) (*Wrapped, func(st
 		exited <- code
 	}()
 
+	// Every request names the process it is for. A body that names none is given this
+	// child's, so each test says only what it is about; the ones about naming the wrong
+	// process say so themselves.
 	ask := func(body string) response {
 		t.Helper()
+		var fields map[string]any
+		if json.Unmarshal([]byte(body), &fields) == nil {
+			if _, named := fields["pid"]; !named {
+				fields["pid"] = wrapped.cmd.Process.Pid
+				encoded, err := json.Marshal(fields)
+				if err != nil {
+					t.Fatalf("cannot encode %v: %v", fields, err)
+				}
+				body = string(encoded)
+			}
+		}
 		connection, err := net.Dial("unix", socket.address)
 		if err != nil {
 			t.Fatalf("cannot dial the control socket: %v", err)
@@ -746,6 +761,63 @@ func TestRequestsThatNameNothingRealAreRefusedWithAReason(t *testing.T) {
 	// one, or the wrapper never finishes and the test tears its terminal down underneath.
 	if answer := ask(`{"kind":"text","text":"done","submit":true}`); !answer.OK {
 		t.Fatalf("the child could not be let go: %s", answer.Reason)
+	}
+}
+
+func TestARequestForAnotherProcessIsNotTypedIntoThisOne(t *testing.T) {
+	// The address is inherited, and so is carried by any session started from inside
+	// this one. A request naming that other session's process must not land here.
+	wrapped, ask, _ := wrap(t, "sh", "-c", "IFS= read -r line; test \"$line\" = mine && exit 3 || exit 9")
+	defer func() { _ = wrapped.cmd.Process.Kill() }()
+
+	for _, c := range []struct{ name, body string }{
+		{"another process", fmt.Sprintf(`{"pid":%d,"kind":"text","text":"intruder","submit":true}`, wrapped.cmd.Process.Pid+1)},
+		{"no process at all", `{"pid":0,"kind":"key","key":"enter"}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			answer := ask(c.body)
+			if answer.OK {
+				t.Fatal("a request for another process was typed into this one")
+			}
+			if !strings.Contains(answer.Reason, "nothing was typed") {
+				t.Fatalf("the refusal must say nothing was typed, got %q", answer.Reason)
+			}
+		})
+	}
+	if answer := ask(`{"kind":"text","text":"mine","submit":true}`); !answer.OK {
+		t.Fatalf("a request for this process was refused: %s", answer.Reason)
+	}
+}
+
+func TestASubmitTheSessionWouldNotSendIsRefusedBeforeAnythingIsTyped(t *testing.T) {
+	// A Return after a backslash is a newline, and one under a completion list picks an
+	// entry; either way the text would sit in the box under an ok that said it was sent.
+	wrapped, ask, exited := wrap(t, "sh", "-c", "IFS= read -r line; test \"$line\" = \"note: fix this\" && exit 3 || exit 9")
+	defer func() { _ = wrapped.cmd.Process.Kill() }()
+
+	for _, text := range []string{`continue me \`, "look at @src/ha", "fix @", "see #12", "run :ab"} {
+		t.Run(text, func(t *testing.T) {
+			encoded, _ := json.Marshal(map[string]any{"kind": "text", "text": text, "submit": true})
+			answer := ask(string(encoded))
+			if answer.OK {
+				t.Fatalf("%q was reported sent", text)
+			}
+			if !strings.Contains(answer.Reason, "nothing was typed") {
+				t.Fatalf("the refusal must say nothing was typed, got %q", answer.Reason)
+			}
+		})
+	}
+	// Nothing above reached the child, so the first line it reads is this one.
+	if answer := ask(`{"kind":"text","text":"note: fix this","submit":true}`); !answer.OK {
+		t.Fatalf("ordinary prose was refused: %s", answer.Reason)
+	}
+	select {
+	case code := <-exited:
+		if code != 3 {
+			t.Fatalf("exit code %d: something refused above reached the child first", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child never exited")
 	}
 }
 
