@@ -1,0 +1,7 @@
+{
+  "name": "hands",
+  "description": "Hands-free control of Claude Code: the hooks that join every session to the hands daemon. While hands is not running they cost a session nothing.",
+  "author": {
+    "name": "Brandon Fryslie"
+  }
+}

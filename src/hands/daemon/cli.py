@@ -1,4 +1,4 @@
-"""`hands`: run the daemon, ask whether it is up, show it in the menu bar, print their LaunchAgents, install its hooks."""
+"""`hands`: run the daemon, ask whether it is up, show it in the menu bar, print their LaunchAgents."""
 
 import argparse
 import asyncio
@@ -10,24 +10,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from hands.daemon import launchd
-from hands.sessions import heartbeat
-from hands.sessions import audit
+from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home, default_home
-from hands.sessions.install import default_settings, install
-from hands.sessions.payload import Rejected
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hands")
-    parser.add_argument("--home", type=Path, default=default_home().root, help="where the socket, sessions, and heartbeat live")
+    parser.add_argument("--home", type=Path, default=default_home().root, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("run", help="run the daemon in the foreground (launchd runs it this way)")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     commands.add_parser("indicator", help="show the daemon's verdict in the menu bar and post a notification when it stops being up")
     agents = commands.add_parser("launchd", help="print the LaunchAgent property list that keeps the daemon or the indicator up")
     agents.add_argument("agent", choices=sorted(launchd.AGENTS), help="which process the agent keeps up")
-    installing = commands.add_parser("install-hooks", help="merge hands' hook entries into a Claude Code settings file; running it again changes nothing")
-    installing.add_argument("--settings", type=Path, default=default_settings(), help="the settings file to merge into (default: the one Claude Code reads)")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
     arguments = parser.parse_args(argv)
@@ -49,8 +44,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return report(home)
         case "log":
             return tail_log(home, arguments.lines)
-        case "install-hooks":
-            return install_hooks(arguments.settings, home)
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
             from hands.daemon.menubar import show
@@ -76,19 +69,6 @@ def report(home: Home) -> int:
             out, code = sys.stderr, 2
     print(heartbeat.describe(verdict, now), file=out)
     return code
-
-
-def install_hooks(settings: Path, home: Home) -> int:
-    try:
-        installed = install(settings, Path(sys.executable), home)
-    except (Rejected, OSError, UnicodeError) as error:
-        # [LAW:no-silent-failure] a file that cannot be read, parsed, or written is said in one line, and left as it was.
-        print(f"hands install-hooks: {error}", file=sys.stderr)
-        return 2
-    # The diff is the output, so it can be read or piped; the one-line verdict goes to stderr beside it.
-    sys.stdout.write(installed.diff)
-    print(f"hands install-hooks: {'updated' if installed.diff else 'already current'}: {installed.path}", file=sys.stderr)
-    return 0
 
 
 # How often `hands log` looks for new lines.

@@ -1,0 +1,14 @@
+{
+  "name": "cc-hands",
+  "description": "hands, hands-free control of Claude Code, as a plugin.",
+  "owner": {
+    "name": "Brandon Fryslie"
+  },
+  "plugins": [
+    {
+      "name": "hands",
+      "source": "./",
+      "description": "The hooks that join every Claude Code session to the hands daemon."
+    }
+  ]
+}

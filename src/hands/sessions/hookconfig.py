@@ -1,21 +1,14 @@
-"""The hook settings a Claude Code session runs hands with, and the one number every permission time comes from.
+"""The hooks hands' Claude Code plugin installs, and the one number every permission time comes from.
 
-    <hands python> -m hands.sessions.hookconfig     # prints the settings JSON
-    hands install-hooks                             # merges them into ~/.claude/settings.json
+    <hands python> -m hands.sessions.hookconfig > hooks/hooks.json     # regenerates the plugin's hook file
 
 It is imported by the shim, so it holds only the standard library and hands' data modules.
 """
 
 import json
-import re
-import shlex
-import sys
 from collections.abc import Mapping
-from pathlib import Path
 
-from hands.sessions.home import Home, default_home
-
-# [LAW:single-enforcer] Claude Code kills a PermissionRequest hook after this many seconds. The settings
+# [LAW:single-enforcer] Claude Code kills a PermissionRequest hook after this many seconds. The hooks
 # below declare it, and the shim's wait and the daemon's default-deny deadline are both derived from it.
 PERMISSION_HOOK_TIMEOUT_SECONDS = 90
 
@@ -26,8 +19,12 @@ PERMISSION_DEADLINE_SECONDS = float(PERMISSION_HOOK_TIMEOUT_SECONDS - REPLY_MARG
 # Every other hook posts and returns, so a daemon slower than this is reported as unreachable.
 POST_TIMEOUT_SECONDS = 2.0
 
-# [LAW:one-source-of-truth] the module every hook command runs, and the installer's mark of an entry that is hands'.
+# [LAW:one-source-of-truth] the module every hook runs, and the launcher, inside the plugin, that runs it under a
+# Python new enough for hands. The plugin has no venv, so the launcher puts the plugin's own src on the path.
 SHIM_MODULE = "hands.sessions.shim"
+LAUNCHER = "hooks/python"
+# Where the plugin's hook file lives, relative to the plugin root; Claude Code loads it from there unasked.
+HOOKS_FILE = "hooks/hooks.json"
 
 SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "Notification", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd")
 
@@ -45,22 +42,17 @@ def post_timeout(event: str) -> float:
     return float(_DECLARED_TIMEOUTS.get(event, POST_TIMEOUT_SECONDS))
 
 
-def hook_settings(python: Path, home: Home) -> dict[str, object]:
-    # A single simple command, so the hook's shell execs it and the shim's parent is the claude process.
-    command = shlex.join([str(python), "-m", SHIM_MODULE, str(home.root)])
-    return {"hooks": {event: [{**_matched(event), "hooks": [{"type": "command", "command": command, **_declared(event)}]}] for event in SUBSCRIBED}}
+def plugin_hooks() -> dict[str, object]:
+    """The plugin's hooks.json: every subscribed event runs the shim through the plugin's launcher."""
+    # Exec form (`args` set): Claude Code spawns the launcher itself, with no shell between, and the launcher execs
+    # Python, so the shim is the process Claude Code spawned and its parent is the claude process whose pid it records.
+    command = {"type": "command", "command": f"${{CLAUDE_PLUGIN_ROOT}}/{LAUNCHER}", "args": ["-m", SHIM_MODULE]}
+    return {"hooks": {event: [{**_matched(event), "hooks": [{**command, **_declared(event)}]}] for event in SUBSCRIBED}}
 
 
-def runs_the_shim(command: str) -> bool:
-    """Whether a hook command runs hands' shim, as hook_settings builds it or as any earlier or hand-edited version did."""
-    # [LAW:one-source-of-truth] beside the builder, and keyed on the one thing every version of it shares: the shim's
-    # module, named whole. It is found inside `sh -c '...'` and in `-mhands.sessions.shim` alike, so a change to how
-    # the command is built, or a user's wrapping of it, never leaves an entry looking like somebody else's and doubled.
-    return _SHIM_NAMED.search(command) is not None
-
-
-# Named whole: not inside a longer dotted name, though it may be joined to its -m.
-_SHIM_NAMED = re.compile(rf"(?:(?<=-m)|(?<![\w.])){re.escape(SHIM_MODULE)}(?![\w.])")
+def rendered() -> str:
+    """hooks.json's text, byte for byte as it is checked in."""
+    return json.dumps(plugin_hooks(), indent=2) + "\n"
 
 
 def _matched(event: str) -> dict[str, object]:
@@ -74,7 +66,7 @@ def _declared(event: str) -> dict[str, object]:
 
 
 def main() -> None:
-    print(json.dumps(hook_settings(Path(sys.executable), default_home()), indent=2))
+    print(rendered(), end="")
 
 
 if __name__ == "__main__":

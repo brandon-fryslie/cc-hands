@@ -1,5 +1,6 @@
 """Where the daemon and the shims meet on disk."""
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,4 +45,6 @@ class Home:
 
 
 def default_home() -> Home:
-    return Home(Path.home() / ".hands")
+    """HANDS_HOME, or ~/.hands: the hook shim, which Claude Code runs with no arguments of hands', finds it as the CLI does."""
+    # [LAW:one-source-of-truth] the one place the default is named; the CLI's --home and the shim both start here.
+    return Home(Path(os.environ.get("HANDS_HOME") or Path.home() / ".hands"))
