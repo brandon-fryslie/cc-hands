@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from hands.daemon import indicator, launchd, status
+from hands.daemon import indicator, launchd
+from hands.sessions import heartbeat
 from hands.daemon.cli import main
 from hands.daemon.run import keep_beating
 from hands.voice.threads import off_loop
@@ -23,7 +24,7 @@ NOW = datetime(2026, 9, 14, 12, 0, 0, tzinfo=UTC)
 BEAT = timedelta(seconds=2)
 
 
-def beat(**changes: object) -> status.Status:
+def beat(**changes: object) -> heartbeat.Status:
     fields: dict[str, object] = {
         "pid": 4242,
         "started_at": NOW - timedelta(minutes=5, seconds=3),
@@ -34,22 +35,22 @@ def beat(**changes: object) -> status.Status:
         "live_sessions": 2,
         **changes,
     }
-    return status.Status(**fields)  # pyright: ignore[reportArgumentType]
+    return heartbeat.Status(**fields)  # pyright: ignore[reportArgumentType]
 
 
 def test_a_heartbeat_reads_back_as_it_was_written(tmp_path: Path) -> None:
     written = beat(last_audio_out=None)
-    status.write(tmp_path / "status.json", written)
-    assert status.read(tmp_path / "status.json") == written
+    heartbeat.write(tmp_path / "status.json", written)
+    assert heartbeat.read(tmp_path / "status.json") == written
     assert [path.name for path in tmp_path.iterdir()] == ["status.json"]  # nothing left of the replacement
 
 
 def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -> None:
-    heart = status.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT)
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT)
     heart.beat("starting", None, 0)
-    first = status.read(heart.path)
+    first = heartbeat.read(heart.path)
     heart.beat("running", NOW, 2)
-    second = status.read(heart.path)
+    second = heartbeat.read(heart.path)
     assert first is not None and second is not None
     assert (first.pid, first.started_at, first.heartbeat, first.pipeline, first.live_sessions) == (4242, NOW, BEAT, "starting", 0)
     assert (second.pid, second.started_at, second.heartbeat, second.pipeline, second.last_audio_out) == (4242, NOW, BEAT, "running", NOW)
@@ -57,7 +58,7 @@ def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -
 
 
 def test_no_file_is_a_daemon_that_never_ran(tmp_path: Path) -> None:
-    assert status.read(tmp_path / "status.json") is None
+    assert heartbeat.read(tmp_path / "status.json") is None
 
 
 @pytest.mark.parametrize(
@@ -65,52 +66,52 @@ def test_no_file_is_a_daemon_that_never_ran(tmp_path: Path) -> None:
     [
         (b"{", "not JSON"),
         (b'{"pid": 1}', "started_at"),
-        (status.encode(beat()).replace("running", "dancing").encode(), "pipeline should be"),
-        (status.encode(beat()).replace("+00:00", "").encode(), "carries its zone"),
-        (status.encode(beat(pid=2**63)).encode(), "not a process id"),
-        (status.encode(beat(pid=2**31)).encode(), "not a process id"),
-        (status.encode(beat(pid=100_000)).encode(), "not a process id"),  # past macOS's PID_MAX, which ps refuses
-        (status.encode(beat(pid=0)).encode(), "not a process id"),  # kill(0, 0) asks after our own process group
-        (status.encode(beat(pid=-1)).encode(), "not a process id"),
-        (status.encode(beat()).replace('"heartbeat_ms": 2000', '"heartbeat_ms": 100000000000000000000').encode(), "not a heartbeat period"),
-        (status.encode(beat(heartbeat=timedelta(0))).encode(), "not a heartbeat period"),
+        (heartbeat.encode(beat()).replace("running", "dancing").encode(), "pipeline should be"),
+        (heartbeat.encode(beat()).replace("+00:00", "").encode(), "carries its zone"),
+        (heartbeat.encode(beat(pid=2**63)).encode(), "not a process id"),
+        (heartbeat.encode(beat(pid=2**31)).encode(), "not a process id"),
+        (heartbeat.encode(beat(pid=100_000)).encode(), "not a process id"),  # past macOS's PID_MAX, which ps refuses
+        (heartbeat.encode(beat(pid=0)).encode(), "not a process id"),  # kill(0, 0) asks after our own process group
+        (heartbeat.encode(beat(pid=-1)).encode(), "not a process id"),
+        (heartbeat.encode(beat()).replace('"heartbeat_ms": 2000', '"heartbeat_ms": 100000000000000000000').encode(), "not a heartbeat period"),
+        (heartbeat.encode(beat(heartbeat=timedelta(0))).encode(), "not a heartbeat period"),
     ],
 )
 def test_a_heartbeat_that_does_not_parse_is_refused(raw: bytes, error: str) -> None:
     with pytest.raises(Rejected, match=error):
-        status.parse(raw)
+        heartbeat.parse(raw)
 
 
 def test_the_verdict_follows_the_pid_and_the_heartbeat_age(tmp_path: Path) -> None:
     path = tmp_path / "status.json"
-    assert status.judge(path, None, NOW, alive=False) == status.NeverRan(path)
-    assert status.judge(path, beat(), NOW, alive=True) == status.Up(beat())
-    assert status.judge(path, beat(), NOW, alive=False) == status.Down(beat())
-    late = beat(written_at=NOW - BEAT * status.MISSED_BEATS - timedelta(seconds=1))
-    assert status.judge(path, late, NOW, alive=True) == status.Unresponsive(late)
+    assert heartbeat.judge(path, None, NOW, alive=False) == heartbeat.NeverRan(path)
+    assert heartbeat.judge(path, beat(), NOW, alive=True) == heartbeat.Up(beat())
+    assert heartbeat.judge(path, beat(), NOW, alive=False) == heartbeat.Down(beat())
+    late = beat(written_at=NOW - BEAT * heartbeat.MISSED_BEATS - timedelta(seconds=1))
+    assert heartbeat.judge(path, late, NOW, alive=True) == heartbeat.Unresponsive(late)
 
 
 @pytest.mark.parametrize("alive", [False, True])
 def test_a_daemon_whose_last_heartbeat_said_stopped_is_stopped_whoever_holds_its_pid_now(alive: bool, tmp_path: Path) -> None:
     # Alive is a daemon still cleaning up, or another process that got the pid; neither is a hang.
     stopped = beat(pipeline="stopped", written_at=NOW - timedelta(hours=1))
-    assert status.judge(tmp_path, stopped, NOW, alive=alive) == status.Stopped(stopped)
+    assert heartbeat.judge(tmp_path, stopped, NOW, alive=alive) == heartbeat.Stopped(stopped)
 
 
 def test_each_verdict_is_said_plainly(tmp_path: Path) -> None:
-    assert status.describe(status.Up(beat()), NOW) == (
+    assert heartbeat.describe(heartbeat.Up(beat()), NOW) == (
         "hands is up: pid 4242, up 5m 3s, pipeline running, last audio out 12s ago, 2 live sessions"
     )
-    assert status.describe(status.Up(beat(last_audio_out=None, live_sessions=1, started_at=NOW - timedelta(hours=2))), NOW) == (
+    assert heartbeat.describe(heartbeat.Up(beat(last_audio_out=None, live_sessions=1, started_at=NOW - timedelta(hours=2))), NOW) == (
         "hands is up: pid 4242, up 2h 0m 0s, pipeline running, last audio out never, 1 live session"
     )
-    assert status.describe(status.Down(beat()), NOW) == "hands is down: its process, pid 4242, is gone; its last heartbeat was 1s ago"
-    assert status.describe(status.Unresponsive(beat(written_at=NOW - timedelta(minutes=3))), NOW) == (
+    assert heartbeat.describe(heartbeat.Down(beat()), NOW) == "hands is down: its process, pid 4242, is gone; its last heartbeat was 1s ago"
+    assert heartbeat.describe(heartbeat.Unresponsive(beat(written_at=NOW - timedelta(minutes=3))), NOW) == (
         "hands is not responding: pid 4242 is running, pipeline running, but its last heartbeat was 3m 0s ago"
     )
-    assert status.describe(status.Stopped(beat(pipeline="stopped")), NOW) == "hands is stopped: pid 4242 finished its pipeline 1s ago"
-    assert status.describe(status.NeverRan(tmp_path), NOW) == f"hands has not run: there is no heartbeat at {tmp_path}"
-    assert status.describe(status.Unreadable(tmp_path, "not JSON"), NOW) == (
+    assert heartbeat.describe(heartbeat.Stopped(beat(pipeline="stopped")), NOW) == "hands is stopped: pid 4242 finished its pipeline 1s ago"
+    assert heartbeat.describe(heartbeat.NeverRan(tmp_path), NOW) == f"hands has not run: there is no heartbeat at {tmp_path}"
+    assert heartbeat.describe(heartbeat.Unreadable(tmp_path, "not JSON"), NOW) == (
         f"hands is unknown: its heartbeat at {tmp_path} cannot be read: not JSON"
     )
 
@@ -118,55 +119,65 @@ def test_each_verdict_is_said_plainly(tmp_path: Path) -> None:
 def test_looking_at_the_heartbeat_judges_it_against_the_process_table(dead_pid: Callable[[], int], tmp_path: Path) -> None:
     path = tmp_path / "status.json"
     now = datetime.now(UTC)
-    assert status.look(path, now) == status.NeverRan(path)
-    status.write(path, beat(pid=os.getpid(), started_at=now, written_at=now))
-    assert isinstance(status.look(path, now), status.Up)
-    status.write(path, beat(pid=dead_pid(), started_at=now, written_at=now))
-    assert isinstance(status.look(path, now), status.Down)
+    assert heartbeat.look(path, now) == heartbeat.NeverRan(path)
+    heartbeat.write(path, beat(pid=os.getpid(), started_at=now, written_at=now))
+    assert isinstance(heartbeat.look(path, now), heartbeat.Up)
+    heartbeat.write(path, beat(pid=dead_pid(), started_at=now, written_at=now))
+    assert isinstance(heartbeat.look(path, now), heartbeat.Down)
 
 
 @pytest.mark.parametrize(
-    "raw", [b"{", status.encode(beat(pid=2**63)).encode(), status.encode(beat()).replace('"heartbeat_ms": 2000', '"heartbeat_ms": 1e400').encode()]
+    "raw", [b"{", heartbeat.encode(beat(pid=2**63)).encode(), heartbeat.encode(beat()).replace('"heartbeat_ms": 2000', '"heartbeat_ms": 1e400').encode()]
 )
 def test_a_heartbeat_that_cannot_be_read_is_its_own_verdict_and_never_raises(raw: bytes, tmp_path: Path) -> None:
     path = tmp_path / "status.json"
     path.write_bytes(raw)
-    assert isinstance(status.look(path, NOW), status.Unreadable)
+    assert isinstance(heartbeat.look(path, NOW), heartbeat.Unreadable)
     path.unlink()
     path.mkdir()  # a read that fails in the OS, not in the parse
-    assert isinstance(status.look(path, NOW), status.Unreadable)
+    assert isinstance(heartbeat.look(path, NOW), heartbeat.Unreadable)
 
 
 def test_hands_status_exits_zero_only_when_the_daemon_is_up(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path)
     assert main(["--home", str(tmp_path), "status"]) == 1
     assert "has not run" in capsys.readouterr().out
-    status.write(home.status, beat(pid=os.getpid(), started_at=datetime.now(UTC), written_at=datetime.now(UTC)))
+    heartbeat.write(home.status, beat(pid=os.getpid(), started_at=datetime.now(UTC), written_at=datetime.now(UTC)))
     assert main(["--home", str(tmp_path), "status"]) == 0
     assert capsys.readouterr().out.startswith(f"hands is up: pid {os.getpid()}")
     home.status.write_text("{")
     assert main(["--home", str(tmp_path), "status"]) == 2
     assert "cannot be read" in capsys.readouterr().err
-    status.write(home.status, beat(pid=2**63))
+    heartbeat.write(home.status, beat(pid=2**63))
     assert main(["--home", str(tmp_path), "status"]) == 2
     assert "not a process id" in capsys.readouterr().err
 
 
+def test_a_relative_hands_home_is_refused_but_never_stands_in_the_way_of_an_explicit_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HANDS_HOME", "relhome")
+    assert main(["--home", str(tmp_path), "status"]) == 1
+    assert "has not run" in capsys.readouterr().out
+    assert main(["status"]) == 2
+    assert "HANDS_HOME must be an absolute path, got 'relhome'" in capsys.readouterr().err
+
+
 def test_the_daemon_is_running_only_if_its_pid_is_held_by_the_process_that_started_then(dead_pid: Callable[[], int]) -> None:
     now = datetime.now(UTC)
-    assert status.running(beat(pid=os.getpid(), started_at=now))
-    assert status.running(beat(pid=1, started_at=now))  # launchd, root's: seen, and it started before now
-    assert not status.running(beat(pid=dead_pid(), started_at=now))
+    assert heartbeat.running(beat(pid=os.getpid(), started_at=now))
+    assert heartbeat.running(beat(pid=1, started_at=now))  # launchd, root's: seen, and it started before now
+    assert not heartbeat.running(beat(pid=dead_pid(), started_at=now))
     # This process holds the pid, but it started long after the heartbeat's daemon did: the number was reused.
-    assert not status.running(beat(pid=os.getpid(), started_at=now - timedelta(days=3)))
+    assert not heartbeat.running(beat(pid=os.getpid(), started_at=now - timedelta(days=3)))
 
 
 def test_a_heartbeat_whose_pid_went_to_a_later_process_reads_as_down(tmp_path: Path) -> None:
     path = tmp_path / "status.json"
     now = datetime.now(UTC)
     # After a reboot: the old heartbeat, still on disk, names a pid some new process now holds.
-    status.write(path, beat(pid=os.getpid(), started_at=now - timedelta(days=3), written_at=now - timedelta(days=3)))
-    assert isinstance(status.look(path, now), status.Down)
+    heartbeat.write(path, beat(pid=os.getpid(), started_at=now - timedelta(days=3), written_at=now - timedelta(days=3)))
+    assert isinstance(heartbeat.look(path, now), heartbeat.Down)
 
 
 async def test_the_heartbeat_is_rewritten_every_period() -> None:
@@ -223,22 +234,22 @@ def test_the_indicator_has_a_launch_agent_of_its_own(tmp_path: Path, capsysbinar
 
 
 def test_each_verdict_has_its_own_light_and_the_broken_ones_warn(tmp_path: Path) -> None:
-    verdicts: list[status.Verdict] = [
-        status.Up(beat()),
-        status.Unresponsive(beat()),
-        status.Down(beat()),
-        status.NeverRan(tmp_path),
-        status.Unreadable(tmp_path, "not JSON"),
+    verdicts: list[heartbeat.Verdict] = [
+        heartbeat.Up(beat()),
+        heartbeat.Unresponsive(beat()),
+        heartbeat.Down(beat()),
+        heartbeat.NeverRan(tmp_path),
+        heartbeat.Unreadable(tmp_path, "not JSON"),
     ]
     shown = [indicator.show(None, verdict, NOW) for verdict in verdicts]
     assert [seen.light for seen in shown] == ["up", "not responding", "down", "off", "unreadable"]
     assert len({seen.title for seen in shown}) == len(shown)
     assert [seen.title.startswith("⚠︎") for seen in shown] == [False, True, True, False, True]
-    assert indicator.show(None, status.Stopped(beat(pipeline="stopped")), NOW).light == "off"
-    assert [seen.text for seen in shown] == [status.describe(verdict, NOW) for verdict in verdicts]
+    assert indicator.show(None, heartbeat.Stopped(beat(pipeline="stopped")), NOW).light == "off"
+    assert [seen.text for seen in shown] == [heartbeat.describe(verdict, NOW) for verdict in verdicts]
 
 
-def shown_over(looks: Sequence[tuple[status.Verdict, datetime]]) -> list[tuple[str, ...]]:
+def shown_over(looks: Sequence[tuple[heartbeat.Verdict, datetime]]) -> list[tuple[str, ...]]:
     before: indicator.Shown | None = None
     posted: list[tuple[str, ...]] = []
     for verdict, at in looks:
@@ -248,13 +259,13 @@ def shown_over(looks: Sequence[tuple[status.Verdict, datetime]]) -> list[tuple[s
 
 
 def test_a_notification_is_posted_when_the_verdict_leaves_up_and_only_then(tmp_path: Path) -> None:
-    down, up = status.Down(beat()), status.Up(beat())
-    looks: list[status.Verdict] = [down, up, up, down, down, status.Unreadable(tmp_path, "x")]
-    assert shown_over([(verdict, NOW) for verdict in looks]) == [(), (), (), (status.describe(down, NOW),), (), ()]
+    down, up = heartbeat.Down(beat()), heartbeat.Up(beat())
+    looks: list[heartbeat.Verdict] = [down, up, up, down, down, heartbeat.Unreadable(tmp_path, "x")]
+    assert shown_over([(verdict, NOW) for verdict in looks]) == [(), (), (), (heartbeat.describe(down, NOW),), (), ()]
 
 
 def test_a_daemon_that_keeps_crashing_is_announced_once_a_quiet_window(tmp_path: Path) -> None:
-    down, up = status.Down(beat()), status.Up(beat())
+    down, up = heartbeat.Down(beat()), heartbeat.Up(beat())
     # launchd restarts a daemon that crashes on every start about every ten seconds.
     looks = [(verdict, NOW + timedelta(seconds=10 * cycle)) for cycle in range(8) for verdict in (up, down)]
     posted = [at for (_, at), notices in zip(looks, shown_over(looks)) if notices]
@@ -262,14 +273,14 @@ def test_a_daemon_that_keeps_crashing_is_announced_once_a_quiet_window(tmp_path:
 
 
 def test_a_death_inside_the_quiet_window_is_announced_when_the_window_closes_if_hands_is_still_down() -> None:
-    down, up = status.Down(beat()), status.Up(beat())
+    down, up = heartbeat.Down(beat()), heartbeat.Up(beat())
     at = [NOW + timedelta(seconds=seconds) for seconds in (0, 1, 10, 40, 50, 61, 70)]
     looks = list(zip([up, down, up, down, down, down, down], at))
     assert [bool(notices) for notices in shown_over(looks)] == [False, True, False, False, False, True, False]
 
 
 def test_a_death_owed_inside_the_quiet_window_is_dropped_if_hands_comes_back_before_it_closes() -> None:
-    down, up = status.Down(beat()), status.Up(beat())
+    down, up = heartbeat.Down(beat()), heartbeat.Up(beat())
     at = [NOW + timedelta(seconds=seconds) for seconds in (0, 1, 10, 40, 55, 70)]
     looks = list(zip([up, down, up, down, up, up], at))
     assert not any(shown_over(looks)[2:])

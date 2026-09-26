@@ -161,11 +161,13 @@ closes.
 - **Audio device loss.** Unplugging the headset does not kill the pipeline: the
   transport error is spoken through the surviving device or shown on screen, and
   the transport is rebuilt on the default device. Done by unplugging mid-turn.
-- **Hook installer.** `hands install-hooks` merges the eight hook entries, with
-  their timeouts, into the Claude Code settings file, idempotently, keyed by a
-  marker so re-running changes nothing; `MessageDisplay` is an HTTP hook, the rest
-  are shims. Done when running it twice yields one diff, and when a streaming turn
-  with the daemon stopped stalls no longer than the hook's timeout.
+- **Hooks as a plugin.** The repository is a Claude Code plugin whose
+  `plugin/hooks/hooks.json` is generated from `hookconfig`; installing, disabling, or
+  uninstalling the plugin is how the hooks go on and off. A shim that cannot reach
+  the daemon exits 0 silently when the heartbeat says hands was stopped or never
+  ran, and exits 1 with the reason when it died, hung, or cannot be read. Done when
+  a session with the plugin and no daemon shows no hook error and its own
+  permission dialog, and a daemon killed with -9 shows a hook error.
 
 ## Whole keyboard by voice (`hands-keyboard-gxr`)
 

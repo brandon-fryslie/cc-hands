@@ -185,7 +185,9 @@ indistinguishable from "the agent is still working."
 the socket leaves a visible trace. Never let a dead pipeline look like a working one with
 nothing to say. The design is the "Loud failure" section of `architecture.md`: launchd
 restarts it, `status.json` is the heartbeat, the system speech channel needs no model,
-and the shim exits non-zero.
+and the shim exits non-zero when the heartbeat says the daemon died, hung, or cannot be
+read. A daemon that was stopped or never ran is off, not dead, and its shim exits 0
+silently: the hooks are always installed, so off must cost a session nothing.
 
 ### 15. Two sessions speak at once
 

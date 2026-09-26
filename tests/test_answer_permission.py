@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -74,7 +75,7 @@ class Shim:
     @classmethod
     async def run(cls, home: Home, payload: Mapping[str, object]) -> "Shim":
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "hands.sessions.shim", str(home.root),
+            sys.executable, "-m", "hands.sessions.shim", env={**os.environ, "HANDS_HOME": str(home.root)},
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         assert process.stdin is not None
