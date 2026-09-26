@@ -46,7 +46,7 @@ SPOKEN_REPLY_INSTRUCTION = (
     "what is running. Call read_session to catch up on what a session has been "
     "doing, and say what it amounts to rather than reading its steps out. "
     "When the user dictates something for a session, stage it "
-    "with stage_draft and say the readback; if they ask to send it, say that sending is not built yet. "
+    "with stage_draft and say the readback; call send_draft only when they say to send it. "
     "When a session asks permission, explain what it wants and ask; call "
     "answer_permission only with the decision the user gave. When a session asks the user questions, "
     "put them to the user and call answer_question only with the answers the user gave. When a session "

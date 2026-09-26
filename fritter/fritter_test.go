@@ -54,14 +54,14 @@ func TestEncodeBracketsOnlyWhenTheChildAcceptsItAndSaysWhichItDid(t *testing.T) 
 	// child can turn bracketing off in between, and a message accepted as one paste goes
 	// as several submitted prompts under an ok.
 	mode := newPasteMode()
-	body, end, bracketed := mode.encode("a\nb")
-	if string(body)+string(end) != "a\nb" || bracketed {
-		t.Fatalf("with paste off, text must go as it is and say so, got %q%q bracketed=%v", body, end, bracketed)
+	pasted, bracketed := mode.encode("a\nb")
+	if string(pasted) != "a\nb" || bracketed {
+		t.Fatalf("with paste off, text must go as it is and say so, got %q bracketed=%v", pasted, bracketed)
 	}
 	mode.Write([]byte("\x1b[?2004h"))
-	body, end, bracketed = mode.encode("a\nb")
-	if string(body)+string(end) != "\x1b[200~a\nb\x1b[201~" || !bracketed {
-		t.Fatalf("with paste on, text must be bracketed and say so, got %q%q bracketed=%v", body, end, bracketed)
+	pasted, bracketed = mode.encode("a\nb")
+	if string(pasted) != "\x1b[200~a\nb\x1b[201~" || !bracketed {
+		t.Fatalf("with paste on, text must be bracketed and say so, got %q bracketed=%v", pasted, bracketed)
 	}
 }
 
@@ -186,9 +186,7 @@ func wrapOnto(t *testing.T, stdout io.Writer, argv ...string) (*Wrapped, func(st
 // TestHelperRecorder, and hands back what the child read, one entry per read.
 //
 // The child is Claude Code's shape as far as input goes: its terminal is raw and it has
-// asked for bracketed paste. It pauses between reads, so writes fritter did not wait on
-// pile up in the queue and come out of the next read together - which is how a real child
-// a moment slow reads them, and what fritter has to prevent.
+// asked for bracketing.
 func recorded(t *testing.T, reads int) (*Wrapped, func(string) response, func() []string) {
 	t.Helper()
 	log := filepath.Join(t.TempDir(), "reads")
@@ -201,9 +199,9 @@ func recorded(t *testing.T, reads int) (*Wrapped, func(string) response, func() 
 		}
 	}()
 	// The child says it is ready by turning bracketing on, which it does once its
-	// terminal is raw; until then a Ctrl-S would be flow control and not a key.
+	// terminal is raw.
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, _, bracketed := wrapped.paste.encode(""); bracketed {
+		if _, bracketed := wrapped.paste.encode(""); bracketed {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -264,54 +262,17 @@ func TestHelperRecorder(t *testing.T) {
 		fmt.Fprintf(out, "%q\n", buf[:n])
 	}
 	out.Close()
-	// A session does not end the instant it reads its last key, and fritter looks at the
-	// input queue to see that it was read: a terminal whose session has ended cannot be
-	// looked at, and what it last held is then not known to have been read.
-	time.Sleep(300 * time.Millisecond)
 	os.Exit(3)
 }
 
-func TestTextGoesIntoAnEmptiedBoxOneStepPerRead(t *testing.T) {
-	// Each step is read on its own. Read together, Claude Code took `a`, Ctrl-S and the
-	// paste for one paste: the Ctrl-S was stripped, the `a` stayed at the front of the
-	// message, and the Enter was held for review.
-	//
-	// Except the Enter, which is read with the marker that closes the paste: read apart from
-	// it, the session took the Enter before the paste was in the box and sent nothing.
-	_, ask, reads := recorded(t, 6)
-	if answer := ask(`{"kind":"text","text":"two\nlines","submit":true}`); !answer.OK {
+func TestTextIsPastedAndSentAsOneWrite(t *testing.T) {
+	// The text and the Return behind it, as someone at the keyboard would type them. The
+	// child reads them together, so the Return sends what the paste put in the box.
+	_, ask, reads := recorded(t, 1)
+	if answer := ask(`{"kind":"text","text":"two\nlines"}`); !answer.OK {
 		t.Fatalf("the text was refused: %s", answer.Reason)
 	}
-	want := []string{"a\x13", "a\x13", "\x13", "\x7f", "\x1b[200~two\nlines", "\x1b[201~\r"}
-	if got := reads(); !slices.Equal(got, want) {
-		t.Fatalf("the child read %q, want %q", got, want)
-	}
-}
-
-func TestTextLeftUnsentIsClosedAndNotSent(t *testing.T) {
-	// Unsent, the paste is closed and nothing presses Enter.
-	_, ask, reads := recorded(t, 6)
-	if answer := ask(`{"kind":"text","text":"draft","submit":false}`); !answer.OK {
-		t.Fatalf("the text was refused: %s", answer.Reason)
-	}
-	want := []string{"a\x13", "a\x13", "\x13", "\x7f", "\x1b[200~draft", "\x1b[201~"}
-	if got := reads(); !slices.Equal(got, want) {
-		t.Fatalf("the child read %q, want %q", got, want)
-	}
-}
-
-func TestWhatTheUserTypedIsReadApartFromWhatFollowsIt(t *testing.T) {
-	// Keys the user typed just before a request can still be waiting when it takes the
-	// lock. Read together with the Ctrl-S after them, they are one read the child may take
-	// for a paste.
-	wrapped, ask, reads := recorded(t, 7)
-	if _, err := wrapped.Write([]byte("half a thought")); err != nil {
-		t.Fatalf("cannot type as the user: %v", err)
-	}
-	if answer := ask(`{"kind":"text","text":"mine","submit":false}`); !answer.OK {
-		t.Fatalf("the text was refused: %s", answer.Reason)
-	}
-	want := []string{"half a thought", "a\x13", "a\x13", "\x13", "\x7f", "\x1b[200~mine", "\x1b[201~"}
+	want := []string{"\x1b[200~two\nlines\x1b[201~\r"}
 	if got := reads(); !slices.Equal(got, want) {
 		t.Fatalf("the child read %q, want %q", got, want)
 	}
@@ -446,7 +407,7 @@ func TestMultiLineTextIsRefusedWhenTheSessionWillNotBracketIt(t *testing.T) {
 	wrapped, ask, exited := wrap(t, "sh", "-c", "sleep 30")
 	defer ending(t, wrapped, exited)
 
-	answer := ask(`{"kind":"text","text":"first\nsecond","submit":true}`)
+	answer := ask(`{"kind":"text","text":"first\nsecond"}`)
 	if answer.OK {
 		t.Fatal("a multi-line draft was accepted into a session that cannot take one whole")
 	}
@@ -486,10 +447,10 @@ func TestTextThatIsNotCharactersIsRefusedRatherThanTyped(t *testing.T) {
 	_, ask, reads := recorded(t, 1)
 
 	for _, c := range []struct{ name, body string }{
-		{"the marker that ends a paste", `{"kind":"text","text":"look at \u001b[201~ this","submit":true}`},
-		{"an interrupt", `{"kind":"text","text":"a\u0003b","submit":true}`},
-		{"a carriage return, which submits", `{"kind":"text","text":"first\rsecond","submit":true}`},
-		{"a tab, which is a key", `{"kind":"text","text":"a\tb","submit":true}`},
+		{"the marker that ends a paste", `{"kind":"text","text":"look at \u001b[201~ this"}`},
+		{"an interrupt", `{"kind":"text","text":"a\u0003b"}`},
+		{"a carriage return, which submits", `{"kind":"text","text":"first\rsecond"}`},
+		{"a tab, which is a key", `{"kind":"text","text":"a\tb"}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			answer := ask(c.body)
@@ -502,48 +463,6 @@ func TestTextThatIsNotCharactersIsRefusedRatherThanTyped(t *testing.T) {
 		})
 	}
 	onlyEnterArrived(t, ask, reads)
-}
-
-func TestASessionThatIsNotReadingItsInputIsSaidSoRatherThanWaitedOn(t *testing.T) {
-	// Every write waits for the child to read it, which a stopped or wedged session never
-	// does. Waiting there with no bound hangs the request and everything behind it: the next
-	// caller in is hands sending the ctrl_c that was supposed to be the way back.
-	//
-	// Raw, because a cooked terminal counts nothing until a line is in and the wait would
-	// be no wait; Claude Code runs raw.
-	wrapped, ask, exited := wrap(t, "sh", "-c", "sleep 30")
-	if _, err := term.MakeRaw(int(wrapped.master.Fd())); err != nil {
-		t.Fatalf("cannot put the session's terminal into raw mode: %v", err)
-	}
-	defer ending(t, wrapped, exited)
-
-	stuck := ask(`{"kind":"text","text":"hello","submit":true}`)
-	if stuck.OK {
-		t.Fatal("a session that reads nothing was reported as taking the text")
-	}
-	if !strings.Contains(stuck.Reason, "not reading its input") {
-		t.Fatalf("the reason must say the session is not reading, got %q", stuck.Reason)
-	}
-	// The first emptying step is in the queue, unread. The caller has to hear that the box
-	// was being changed under the user, and that none of its text is there.
-	if !strings.Contains(stuck.Reason, "none of the text was typed") || !strings.Contains(stuck.Reason, "may be gone") {
-		t.Fatalf("the reason must say the box was being emptied and the text not typed, got %q", stuck.Reason)
-	}
-
-	// The write is still out there and cannot be taken back, so the next request is
-	// refused at once rather than queued behind it - queued it would wait just as long,
-	// and two half-written messages interleave into one nobody can attribute.
-	started := time.Now()
-	behind := ask(`{"kind":"key","key":"ctrl_u"}`)
-	if behind.OK {
-		t.Fatal("a chord was reported as delivered while a write was still stuck")
-	}
-	if waited := time.Since(started); waited > typeGrace {
-		t.Fatalf("the next request waited %s behind the stuck one", waited)
-	}
-	if !strings.Contains(behind.Reason, "has not finished") {
-		t.Fatalf("the reason must say what it is behind, got %q", behind.Reason)
-	}
 }
 
 func TestRequestsThatNameNothingRealAreRefusedWithAReason(t *testing.T) {
@@ -573,7 +492,7 @@ func TestARequestForAnotherProcessIsNotTypedIntoThisOne(t *testing.T) {
 	wrapped, ask, reads := recorded(t, 1)
 
 	for _, c := range []struct{ name, body string }{
-		{"another process", fmt.Sprintf(`{"pid":%d,"kind":"text","text":"intruder","submit":true}`, wrapped.cmd.Process.Pid+1)},
+		{"another process", fmt.Sprintf(`{"pid":%d,"kind":"text","text":"intruder"}`, wrapped.cmd.Process.Pid+1)},
 		{"no process at all", `{"pid":0,"kind":"key","key":"enter"}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -581,28 +500,8 @@ func TestARequestForAnotherProcessIsNotTypedIntoThisOne(t *testing.T) {
 			if answer.OK {
 				t.Fatal("a request for another process was typed into this one")
 			}
-			if !strings.Contains(answer.Reason, "nothing was typed") {
-				t.Fatalf("the refusal must say nothing was typed, got %q", answer.Reason)
-			}
-		})
-	}
-	onlyEnterArrived(t, ask, reads)
-}
-
-func TestASubmitTheSessionWouldNotSendIsRefusedBeforeAnythingIsTyped(t *testing.T) {
-	// A Return after a backslash is a newline, and one under a completion list picks an
-	// entry; either way the text would sit in the box under an ok that said it was sent.
-	_, ask, reads := recorded(t, 1)
-
-	for _, text := range []string{`continue me \`, "look at @src/ha", "fix @", "see #12", "run :ab"} {
-		t.Run(text, func(t *testing.T) {
-			encoded, _ := json.Marshal(map[string]any{"kind": "text", "text": text, "submit": true})
-			answer := ask(string(encoded))
-			if answer.OK {
-				t.Fatalf("%q was reported sent", text)
-			}
-			if !strings.Contains(answer.Reason, "nothing was typed") {
-				t.Fatalf("the refusal must say nothing was typed, got %q", answer.Reason)
+			if !strings.Contains(answer.Reason, "types into process") {
+				t.Fatalf("the refusal must name the process it types into, got %q", answer.Reason)
 			}
 		})
 	}

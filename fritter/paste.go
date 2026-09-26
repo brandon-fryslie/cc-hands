@@ -130,20 +130,17 @@ func (p *pasteMode) enabled() bool {
 }
 
 // encode renders text as the child should receive it - bracketed when the child asked for
-// bracketing, bare when it did not - and says which it did. The text and what closes it come
-// apart, so the closing marker can be written with the Enter after it; see typeText.
+// bracketing, bare when it did not - and says which it did.
 //
 // [LAW:dataflow-not-control-flow] The mode is read once and the answer carries it out.
 // Asking twice - once to decide whether multi-line text is safe, once to encode it - lets
 // the child turn bracketing off in between, so a message accepted as one paste goes as
 // several submitted prompts.
-func (p *pasteMode) encode(text string) (body, end []byte, bracketed bool) {
+func (p *pasteMode) encode(text string) (pasted []byte, bracketed bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.on {
-		return []byte(text), nil, false
+		return []byte(text), false
 	}
-	// Both are fresh, because the caller appends the Enter to the end: returned as itself,
-	// pasteEnd would be the shared array that append writes into.
-	return append(append([]byte(nil), pasteStart...), text...), append([]byte(nil), pasteEnd...), true
+	return append(append(append([]byte(nil), pasteStart...), text...), pasteEnd...), true
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,15 +23,9 @@ type Wrapped struct {
 	master *os.File
 	cmd    *exec.Cmd
 	paste  *pasteMode
-	queue  inputQueue
-	// The right to write into the child's input, held by one writer at a time: a request
-	// for all of its writes, the user's keyboard for each read of it, and a write fritter
-	// stopped waiting on until the child takes it. Two writers at once put half of each into
-	// the input box, and a request's steps only mean what they say read one at a time.
-	//
-	// A channel of one rather than a mutex, because a request's wait for it is bounded,
-	// and because the write that takes it over from a request is what lets it go.
-	writing chan struct{}
+	// Held for each write into the child's input, the user's keys and a request's alike, so
+	// that neither lands in the middle of the other.
+	writing sync.Mutex
 }
 
 // start runs argv on a new pty, with env added to the child's environment.
@@ -41,8 +36,6 @@ type Wrapped struct {
 func start(argv []string, env []string) (*Wrapped, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), env...)
-	// Opened here rather than by pty.Start, which starts the child the same way but keeps
-	// the slave's name to itself - and the name is how the input queue is read.
 	master, slave, err := pty.Open()
 	if err != nil {
 		return nil, fmt.Errorf("cannot open a pty for %s: %w", argv[0], err)
@@ -56,7 +49,7 @@ func start(argv []string, env []string) (*Wrapped, error) {
 		master.Close()
 		return nil, fmt.Errorf("cannot start %s on a pty: %w", argv[0], err)
 	}
-	return &Wrapped{master: master, cmd: cmd, paste: newPasteMode(), queue: inputQueue{path: slave.Name()}, writing: make(chan struct{}, 1)}, nil
+	return &Wrapped{master: master, cmd: cmd, paste: newPasteMode()}, nil
 }
 
 // run pumps the terminal and the child into each other until the child exits, and
@@ -172,13 +165,11 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer, killed <-chan os.Signal)
 // How long run waits for the child's last output after the child is gone.
 const drainGrace = 2 * time.Second
 
-// Write forwards what arrived on the user's stdin to the child.
+// Write types input into the child: what arrived on the user's stdin, and what a request
+// asked for.
 func (w *Wrapped) Write(input []byte) (int, error) {
-	// Waited for rather than refused: these are the user's own keys, and nothing may drop
-	// them. The wait is behind one request's writes, or behind a child that is reading
-	// nothing, in which case these would have blocked in the pty just the same.
-	w.writing <- struct{}{}
-	defer func() { <-w.writing }()
+	w.writing.Lock()
+	defer w.writing.Unlock()
 	return w.master.Write(input)
 }
 

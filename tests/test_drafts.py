@@ -1,5 +1,6 @@
 """Drafts as a table: registry before, request, and what came of it. No I/O."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,12 +13,17 @@ from hands.core.drafts import (
     DraftRequest,
     DraftStaged,
     NothingStaged,
+    SendDraft,
     SessionEnded,
     StageDraft,
     UnknownSession,
+    Unwrapped,
+    AtItsDialog,
     decide,
 )
+from hands.core.effects import Text, Type
 from hands.core.session import (
+    AtDialog,
     Blocked,
     Gone,
     Idle,
@@ -31,6 +37,7 @@ from hands.core.session import (
     SessionId,
     SessionState,
     Staged,
+    Submitted,
     Working,
 )
 
@@ -41,8 +48,11 @@ BETTER = Staged(PromptText("fix the token helper"), ())
 BLOCKED = Blocked(on=Permission(tool="Bash", input={"command": "ls"}), request=RequestId("r"), deadline=9.0, warned=False)
 
 
-def registry(state: SessionState = Idle(), drafts: dict[SessionId, Staged] | None = None) -> Registry:
-    return Registry(permission_deadline=60.0, sessions={ONE.id: Session(ONE, state, mode=None, turn=None)}, drafts=drafts or {})
+WRAPPED = replace(ONE, fritter=Path("/tmp/fritter-1/session.sock"))
+
+
+def registry(state: SessionState = Idle(), drafts: dict[SessionId, Staged] | None = None, member: Membership = ONE) -> Registry:
+    return Registry(permission_deadline=60.0, sessions={ONE.id: Session(member, state, mode=None, turn=None)}, drafts=drafts or {})
 
 
 def staged(state: SessionState = Idle()) -> Registry:
@@ -89,3 +99,36 @@ def test_a_discard_touches_only_its_own_session() -> None:
     )
     after, _ = decide(both, DiscardDraft(TWO.id))
     assert after.drafts == {ONE.id: FIX}
+
+
+def wrapped(state: SessionState = Idle(), drafts: dict[SessionId, Staged] | None = None) -> Registry:
+    return registry(state, drafts, member=WRAPPED)
+
+
+@pytest.mark.parametrize("state", [Idle(), Submitted(since=1.0), Working(since=1.0)])
+def test_a_send_is_typed_into_the_fritter_that_wrapped_the_session_and_the_draft_is_gone_at_once(state: SessionState) -> None:
+    typed = Type(ONE.id, Path("/tmp/fritter-1/session.sock"), pid=1, input=Text(FIX.text))
+    assert decide(wrapped(state, {ONE.id: FIX}), SendDraft(ONE.id)) == (wrapped(state), typed)
+
+
+def test_text_is_typed_behind_a_space_so_a_leading_sigil_is_read_as_text() -> None:
+    assert Text(FIX.text).typed == " /fix the auth middleware"
+
+
+def test_a_session_nobody_wrapped_is_refused_by_name_and_keeps_its_draft() -> None:
+    assert decide(staged(), SendDraft(ONE.id)) == (staged(), Unwrapped(ONE.id))
+
+
+@pytest.mark.parametrize("state", [BLOCKED, AtDialog(on=BLOCKED.on)])
+def test_a_session_at_a_dialog_is_sent_nothing_and_keeps_its_draft(state: SessionState) -> None:
+    before = wrapped(state, {ONE.id: FIX})
+    assert decide(before, SendDraft(ONE.id)) == (before, AtItsDialog(ONE.id))
+
+
+def test_an_ended_session_is_sent_nothing() -> None:
+    before = wrapped(Gone(), {ONE.id: FIX})
+    assert decide(before, SendDraft(ONE.id)) == (before, SessionEnded(ONE.id))
+
+
+def test_with_nothing_staged_there_is_nothing_to_send() -> None:
+    assert decide(wrapped(), SendDraft(ONE.id)) == (wrapped(), NothingStaged(ONE.id))

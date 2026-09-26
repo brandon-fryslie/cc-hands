@@ -13,8 +13,10 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import AssistantTurnStoppedMessage, LLMContextAggregatorPair, UserTurnMessageAddedMessage
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.events import Ended, Joined
-from hands.core.session import Membership, SessionId
+from hands.core.effects import Type
+from hands.core.events import Ended, Joined, PermissionRequested
+from hands.core.session import Membership, Permission, RequestId, SessionId
+from hands.sessions.typing import Untyped
 from hands.sessions.audit import AuditLog, Record
 from hands.sessions.registry import Sessions
 from hands.voice.conversation import record_turns
@@ -70,7 +72,7 @@ async def test_an_ended_session_is_told_its_draft_cannot_change_and_the_draft_ca
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     await sessions.apply(Ended(id, "other"))
     assert await call(tools, "amend_draft", session=id, text="run the linter", resolutions=[]) == {
-        "readback": "untitled, in cc-hands has ended, so its draft cannot be staged or changed."
+        "readback": "untitled, in cc-hands has ended, so its draft cannot be staged, changed, or sent."
     }
     assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for untitled, in cc-hands."}
 
@@ -94,7 +96,7 @@ async def test_arguments_that_do_not_parse_are_refused_out_loud(text: str, resol
 async def test_the_draft_tools_are_valid_pipecat_direct_functions(tmp_path: Path) -> None:
     sessions, _ = await joined(tmp_path)
     wrappers = [DirectFunctionWrapper(tool) for tool in draft_tools(sessions)]
-    assert [wrapper.name for wrapper in wrappers] == ["stage_draft", "amend_draft", "discard_draft"]
+    assert [wrapper.name for wrapper in wrappers] == ["stage_draft", "amend_draft", "discard_draft", "send_draft"]
     schema = wrappers[0].to_function_schema()
     assert schema.required == ["session", "text", "resolutions"]
     assert schema.properties["resolutions"]["items"]["required"] == ["heard", "meant"]
@@ -102,7 +104,7 @@ async def test_the_draft_tools_are_valid_pipecat_direct_functions(tmp_path: Path
 
 async def test_an_interruption_does_not_cancel_a_draft_tool(tmp_path: Path) -> None:
     sessions, _ = await joined(tmp_path)
-    assert [getattr(tool, "_pipecat_cancel_on_interruption") for tool in draft_tools(sessions)] == [False] * 3
+    assert [getattr(tool, "_pipecat_cancel_on_interruption") for tool in draft_tools(sessions)] == [False] * 4
 
 
 async def fire(aggregator: object, event: str, message: object) -> None:
@@ -137,3 +139,67 @@ async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to
     ]
     assert written[2]["result"] == {"readback": "Draft for untitled, in cc-hands: run the tests"}
     assert [datetime.fromisoformat(line["at"]) for line in written] == sorted(datetime.fromisoformat(line["at"]) for line in written)
+
+
+async def wrapped(tmp: Path, typist: Callable[[Type], None], record: Record = unrecorded) -> tuple[Sessions, SessionId]:
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record, typist=typist)
+    await sessions.apply(Joined(Membership(SessionId("s1"), 4242, Path("/code/cc-hands"), tmp / "none.jsonl", tmp / "f.sock"), "startup"))
+    return sessions, SessionId("s1")
+
+
+async def test_a_sent_draft_is_typed_into_its_session_once_and_is_gone(tmp_path: Path) -> None:
+    typed: list[Type] = []
+    sessions, id = await wrapped(tmp_path, typed.append)
+    tools = draft_tools(sessions)
+    await call(tools, "stage_draft", session=id, text="/compact the tests", resolutions=[])
+    assert await call(tools, "send_draft", session=id) == {"readback": "Sent the draft to untitled, in cc-hands."}
+    assert await call(tools, "send_draft", session=id) == {"readback": "There is no draft for untitled, in cc-hands."}
+    [effect] = typed
+    assert (effect.socket, effect.pid, effect.input.typed) == (tmp_path / "f.sock", 4242, " /compact the tests")
+
+
+async def test_a_send_fritter_could_not_type_is_said_with_the_draft_it_was(tmp_path: Path) -> None:
+    def refused(_: Type) -> None:
+        raise Untyped("fritter did not type into session s1: cannot write to the session")
+
+    sessions, id = await wrapped(tmp_path, refused)
+    tools = draft_tools(sessions)
+    await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
+    assert await call(tools, "send_draft", session=id) == {
+        "readback": "The draft for untitled, in cc-hands was not sent, and is no longer staged: "
+        "fritter did not type into session s1: cannot write to the session. It said: run the tests"
+    }
+
+
+async def test_a_session_nobody_wrapped_is_refused_by_name_and_its_draft_survives(tmp_path: Path) -> None:
+    sessions, id = await joined(tmp_path)
+    tools = draft_tools(sessions)
+    await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
+    assert await call(tools, "send_draft", session=id) == {
+        "readback": "untitled, in cc-hands was not started under fritter, so hands cannot type into it. The draft is still staged."
+    }
+    assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for untitled, in cc-hands."}
+
+
+async def test_a_session_waiting_at_a_permission_dialog_is_sent_nothing(tmp_path: Path) -> None:
+    typed: list[Type] = []
+    sessions, id = await wrapped(tmp_path, typed.append)
+    tools = draft_tools(sessions)
+    await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
+    await sessions.apply(PermissionRequested(id, 0.0, RequestId("r1"), Permission("Bash", {"command": "ls"}), None))
+    assert await call(tools, "send_draft", session=id) == {
+        "readback": "untitled, in cc-hands is waiting at a dialog, which would take the draft as its answer. The draft is still staged."
+    }
+    assert typed == []
+
+
+async def test_what_is_typed_is_in_the_audit_log_before_the_readback(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
+    sessions, id = await wrapped(tmp_path, lambda _: None, record)
+    tools = [audited(tool, record) for tool in draft_tools(sessions)]
+    await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
+    await call(tools, "send_draft", session=id)
+    written = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [line["type"] for line in written][-2:] == ["Typing", "Called"]
+    assert written[-2]["effect"]["input"] == {"type": "Text", "prompt": "run the tests"}

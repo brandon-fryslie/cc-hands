@@ -143,7 +143,7 @@ Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | A
 @dataclass(frozen=True)
 class Reply:    request: RequestId; reply: HookReply
 @dataclass(frozen=True)
-class Type:     session: SessionId; input: Input             # through fritter; unbuilt, hands-harness-5nb.l0u
+class Type:     session: SessionId; socket: Path; pid: int; input: Input  # through fritter
 @dataclass(frozen=True)
 class Speak:    text: str; priority: Priority                # straight to TTS
 @dataclass(frozen=True)
@@ -235,13 +235,13 @@ adapter that fails raises; the supervisor logs it and the failure is spoken thro
 the system channel. Nothing is retried silently and nothing falls back
 `[LAW:no-silent-failure]`.
 
-That block is the design, not the code. `core/effects.py` has seven of those nine today -
-`Audit`, `Reply`, `Speak`, `Narrate`, `Note`, `Summarise`, `Snapshot` - plus `SessionGone`
-and `Compare`, which the block above leaves out. `Type` and `Play` are unbuilt, and their
-adapters are named here in a tense the code has not earned yet. `Type` is the nearest:
-what it will call is built and measured - `hands.sessions.typing.Typist` types into a
-session's fritter - and only the effect and its place in the reducer are left, in
-`hands-harness-5nb.l0u`.
+That block is the design, not the code. `core/effects.py` has eight of those nine today -
+`Audit`, `Reply`, `Type`, `Speak`, `Narrate`, `Note`, `Summarise`, `Snapshot` - plus
+`SessionGone` and `Compare`, which the block above leaves out. `Play` is unbuilt. `Input` is
+`Text` alone so far; `Command` and `Key` are `hands-keyboard-gxr.i5n`. `Type` is emitted by
+`core.drafts.decide` for a send rather than by `reduce`, and `Sessions.draft` performs it:
+the draft leaves the registry the moment the send is decided, so it is sent at most once,
+and the send's answer is whether fritter typed it.
 
 Because every transition is `reduce` on values, the test suite for the session
 lifecycle is a table: state before, event, state after, effects. There is no pipeline,
@@ -289,8 +289,8 @@ the user hears why.
 
 The workspace-trust dialog swallows a paste the same way, measured on 2.1.278, and that
 rule does **not** reach it. `Blocked` has one producer, the `PermissionRequest` hook, and
-no hook fires for a trust prompt: the session reads as `Idle`, fritter sees an empty input
-box and types into it, and the send is answered `ok` while the draft vanishes. It is a
+no hook fires for a trust prompt: the session reads as `Idle`, fritter types into it, and
+the send is answered `ok` while the draft vanishes. It is a
 second rule and it is unbuilt — `hands-harness-5nb.xw8`.
 
 ### Typing into a session
@@ -303,20 +303,17 @@ session driven with the display asleep: no window, no grant, no focus.
 fritter publishes its socket's address to the process it wrapped in `FRITTER_SOCKET`.
 The hook runs as a child of that process and inherits it, so the address reaches
 `Membership.fritter` without either side deriving a path from a pid. A session started
-outside fritter has no address, and `Typist.of` refuses it by name rather than writing
+outside fritter has no address, and a send to it is refused by name rather than written
 into nothing. Inheritance also hands the address to a session started from inside a
 wrapped one, so an address alone does not say which session it reaches: every request
 names the session's `Membership.pid`, and fritter refuses one that is not the process it
 wrapped.
 
-Two things are divided rather than duplicated. hands decides *whether* a session may be
-written to, from state fritter cannot see. fritter owns how text gets into the box
-whole: it empties the box and Claude Code's stash first, with a fixed run of keys that
-needs nothing known about either, and waits for the session to read each step before
-writing the next, because Claude Code reads a large enough read as a paste. What the
-person at the keyboard had half-written is not kept. And escaping stays
-here: what a leading `/` means is `Input`'s business, and fritter types the text it is
-given.
+A send is typing: the text, pasted, and Return, in one write, as someone at the keyboard
+would type it. hands decides *whether* a session may be written to, from state fritter
+cannot see, and what a leading `/` means is `Input`'s business; fritter types the text it
+is given. Text the person at the keyboard had half-written stays in front of it, as it
+would under their own paste.
 
 `fritter/README.md` holds the protocol and what was measured.
 
@@ -1255,13 +1252,12 @@ answers "which one did you mean".
 generated from the stored resolutions, never from the model repeating itself:
 "Draft for cc-hands, reading 'auth middleware' as `authMiddleware.ts`: refactor the
 auth middleware to use the new token helper." Speak what changed, not what you said.
-A draft is staged, amended, and discarded; sending it waits for the Type effect
-(`hands-harness-5nb.l0u`; `hands-keyboard-gxr.i5n` is the commands and keys beside it). How the keys reach the right session is settled and built:
-fritter holds that session's pseudo-terminal and `Typist` types into it over a unix
-socket, so there is no window to find, no focus to steal and no macOS permission to
-ask for. What is left open is confirming the send through the `UserPromptSubmit` hook.
-Until then the model tells the user that sending is not built. The send will append an audit record before it types, so "did it send
-something I didn't approve" is answered by one file.
+A draft is staged, amended, discarded, and sent with `send_draft`, as the Type effect
+(`hands-keyboard-gxr.i5n` is the commands and keys beside it). fritter holds the session's
+pseudo-terminal and `Typist` types into it over a unix socket, so there is no window to
+find, no focus to steal and no macOS permission to ask for. A send appends a `Typing`
+audit record before it types, so "did it send something I didn't approve" is answered by
+one file.
 
 ## The intermediary's tools
 
@@ -1273,7 +1269,7 @@ end_session(session?)
 interrupt_session(session?)
 send_command(session?, command, args?)
 stage_draft(session?, text)      amend_draft(session?, text)
-discard_draft(session?)
+discard_draft(session?)          send_draft(session?)
 answer_permission(request, decision, message?)
 answer_question(request, answers)
 find_path(session?, query)
@@ -1305,13 +1301,7 @@ commands, with their sigil intact, once the Type effect can send them.
 `Input` variant already knows. Claude Code reads three sigils at the start of a
 prompt: `/` a command, `@` a file mention, `!` shell mode. Behind a space each is
 plain text, so `Text` is always typed with a leading space, whatever it starts with,
-and its newlines must stay inside the prompt rather than submit it.
-Typed text lands after whatever is already in the target's input box. Claude Code
-2.1.270 has no key that empties the box safely: Ctrl-S stashes but restores an
-existing stash when the box is empty, Ctrl-L only redraws, a burst of Ctrl-U is
-dropped, and Escape and Ctrl-C interrupt a turn. So what was actually submitted is
-read back from the transcript, which records every prompt, and a prompt that is not
-the draft is spoken.
+and its newlines stay inside the prompt because fritter pastes it.
 
 ## The audio side
 

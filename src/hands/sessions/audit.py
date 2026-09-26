@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     # Defined only in loguru's type stubs.
     from loguru import Message
 
-from hands.core.effects import AuditRecord, Effect
+from hands.core.effects import AuditRecord, Effect, Type
 from hands.core.events import Event
 
 
@@ -35,6 +35,13 @@ class Applied:
 @dataclass(frozen=True)
 class Performed:
     effect: Effect
+
+
+@dataclass(frozen=True)
+class Typing:
+    """What is about to be typed into a session: written before the typing, so the log holds every send."""
+
+    effect: Type
 
 
 @dataclass(frozen=True)
@@ -100,7 +107,7 @@ class Failure:
     message: str
 
 
-Entry = AuditRecord | Applied | Performed | EffectFailed | Transcribed | Replied | Called | Announced | Recounted | Failure
+Entry = AuditRecord | Applied | Performed | Typing | EffectFailed | Transcribed | Replied | Called | Announced | Recounted | Failure
 Record = Callable[[Entry], None]
 
 
