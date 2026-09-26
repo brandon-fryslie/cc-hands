@@ -74,6 +74,41 @@ so the turn boundary is the key and the pipeline can never transcribe itself. Me
 on 2026-09-12, voice to voice with the local model: 1.4 s from key release to first
 audio on a plain turn, 4.3 s on a turn with a tool call.
 
+## Installing the hooks
+
+hands hears a session through Claude Code hooks, and they come from a plugin. This
+repository is the plugin and its own marketplace, so installing it installs the
+hooks in every session, and nothing is merged into your settings by hand:
+
+```
+claude plugin marketplace add ~/code/cc-hands     # once; in a session: /plugin marketplace add ~/code/cc-hands
+claude plugin install hands@cc-hands              # hooks on, in every new session
+claude plugin disable hands@cc-hands              # hooks off, still installed
+claude plugin enable hands@cc-hands               # hooks back on
+claude plugin uninstall hands@cc-hands            # hooks gone
+claude plugin marketplace remove cc-hands         # and the marketplace with them
+```
+
+The same commands work as `/plugin ...` inside a session. A session picks up a change
+when it starts, or on `/reload-plugins`. Installed from a local directory, the plugin
+runs from this checkout, so a `git pull` here updates the hooks too.
+
+The hooks need a Python 3.12 or newer on `PATH` (`python3`, `python3.14`, `python3.13`,
+or `python3.12`, the first that is new enough); they run the plugin's own `src` and
+need no venv. The shim finds hands' home as the CLI does: `HANDS_HOME`, or `~/.hands`.
+
+The hooks are on whether or not hands is running. While hands is stopped, or has never
+run, they cost a session nothing: no hook error, and a permission request gets Claude
+Code's own dialog. A hands that died, hung, or left a heartbeat nothing can read shows
+up in every session as a hook error saying so.
+
+`hooks/hooks.json` is generated from `hands.sessions.hookconfig`, and a test fails when
+the two differ. After changing the hook table:
+
+```
+uv run python -m hands.sessions.hookconfig > hooks/hooks.json
+```
+
 ## Running
 
 ```
@@ -83,7 +118,6 @@ HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands indicator                  # the daemon's verdict in the menu bar; launchd runs it this way
-uv run hands install-hooks              # merge hands' hooks into ~/.claude/settings.json; again changes nothing
 uv run pytest && uv run pyright
 uv run python evals/narration.py       # real turns through the real summariser; needs the model to be up
 ```

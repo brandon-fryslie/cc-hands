@@ -265,7 +265,7 @@ period only bounds how late a deadline is heard; no correctness property depends
 a `sleep`.
 
 The deadline itself comes from one number. `hands.sessions.hookconfig` declares the
-`PermissionRequest` hook's timeout (90 seconds) in the settings it prints; the shim
+`PermissionRequest` hook's timeout (90 seconds) in the plugin's `hooks/hooks.json`; the shim
 waits on the daemon that long for that hook alone, and the daemon denies 5 seconds
 earlier, so the deny reaches Claude Code before Claude Code kills the hook
 `[LAW:single-enforcer]`.
@@ -461,30 +461,34 @@ daemon is still waiting on a permission for has run, because its dialog was answ
 at the keyboard. They are declared `async`, so the shim they spawn on every tool call
 never holds the agent up.
 
-**Installing the hooks.** `hands install-hooks` merges the entries `hookconfig`
-declares into a Claude Code settings file. That is the one Claude Code reads,
-`$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json`, unless `--settings`
-names another. It keeps no list of its own. It takes out every entry that runs
-hands' shim (`hands.sessions.shim` named anywhere in its command, even inside `sh -c`, as `hookconfig`
-recognises it beside the builder) and puts the declared ones in. So a second run
-changes nothing, a moved venv or home replaces the old command, a hand-wrapped shim
-is replaced by the simple command liveness needs, and an event hands stops
-subscribing to loses its entry. Every entry that does not run the shim is left
-alone. The home is written absolute, because a hook runs from its session's
-directory. The file is replaced whole, through any symlink to the file it points
-at, keeping its permissions, and the change is printed as a diff. A file that does
-not parse is refused and left as it was. Measured with the daemon stopped, a
-streaming turn under the installed shims took 12.4 s against 11.5 s without them:
-each shim fails at once, and Claude Code shows `cannot reach the hands daemon` in
-the session as a non-blocking hook error.
+**Installing the hooks.** The repository is a Claude Code plugin, and its own
+marketplace: `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and
+`hooks/hooks.json`. Installing the plugin installs the hooks; disabling or
+uninstalling it removes them, and no settings file is edited by hands. `hooks.json`
+is generated from `hookconfig` (`python -m hands.sessions.hookconfig > hooks/hooks.json`),
+and a test fails when the checked-in file differs from what `hookconfig` declares.
+Every hook is exec form: `${CLAUDE_PLUGIN_ROOT}/hooks/python -m hands.sessions.shim`,
+spawned by Claude Code with no shell between. The plugin has no venv, so
+`hooks/python` finds the first Python 3.12 or newer on `PATH`, puts the plugin's own
+`src` on `PYTHONPATH`, and execs it; the shim runs as the process Claude Code spawned,
+so its parent is the claude process. A launcher that ran Python as its child, as
+`uv run` does, would record its own pid instead. The shim's home is `HANDS_HOME`, or
+`~/.hands`, found the way the `hands` CLI finds it.
 
-**The shims.** Each is a two-line script in the target session's hook config: POST
-stdin to the daemon socket, exit. At `SessionStart` the shim also writes
+**The shims.** Each is one process per hook: POST stdin to the daemon socket, exit.
+At `SessionStart` the shim also writes
 `~/.hands/sessions/<session_id>.json` with its parent pid, `cwd`, and
 `transcript_path`; that file is the one record of the session's membership, written
-by one writer. A shim that cannot reach the socket exits non-zero with a message, so
-Claude Code shows the failure in the session where it happened rather than letting a
-dead daemon look like a quiet one `[LAW:no-silent-failure]`.
+by one writer. It is written whether or not the daemon is up, so a daemon started
+later finds the sessions already running. The hooks are installed whether or not
+hands is running, so a shim that cannot reach the socket asks the heartbeat why
+(`hands.sessions.heartbeat.look`, the judge `hands status` uses). A hands that was
+stopped or never ran is off, not broken: the shim exits 0 and prints nothing, and a
+permission request falls through to Claude Code's own dialog. A hands whose heartbeat
+says it died, hung, or is up but not answering, or whose heartbeat cannot be read,
+makes the shim exit 1 with the socket error and the verdict on stderr, so Claude Code
+shows the failure in the session where it happened rather than letting a dead daemon
+look like a quiet one `[LAW:no-silent-failure]`.
 
 **The constraint that will bite.** Hooks run in the agent's critical path with a
 timeout, and `MessageDisplay` and `SessionStart` dispatch synchronously. A shim that
@@ -1353,8 +1357,8 @@ thing that failed `[LAW:no-silent-failure]`:
    status` prints it. When TTS itself is down, a macOS notification is posted through
    `osascript`. `hands indicator` is a menu-bar status item in a process of its own,
    under its own launchd agent (`hands.indicator`), so the daemon dying cannot take it
-   down too. Once a second it judges the heartbeat through `status.look`, the one
-   read-and-judge that `hands status` and the crash check at start also use. Its title
+   down too. Once a second it judges the heartbeat through `heartbeat.look`, the one
+   read-and-judge that `hands status`, the crash check at start, and the hook shim also use. Its title
    shows one of five lights: up, not responding, down, off (stopped or never ran), and
    unreadable. An unreadable heartbeat is warned of as loudly as a dead daemon. It
    posts a notification when the light leaves up, at most once a minute, so a daemon that
@@ -1390,7 +1394,8 @@ thing that failed `[LAW:no-silent-failure]`:
 
 The daemon runs under launchd with `KeepAlive`, so a crash is a restart, and the
 restart re-reads the session files and speaks that it is back. A hook shim that cannot
-reach the socket fails visibly in the target session. Two clocks are never allowed to
+reach the socket fails visibly in the target session, unless the heartbeat says hands
+was stopped or never ran. Two clocks are never allowed to
 disagree about whether the daemon is up: the heartbeat file is written by the daemon
 alone, and everything else reads it.
 

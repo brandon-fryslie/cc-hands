@@ -3,10 +3,9 @@
     uv run hands run              # Qwen on inferno (HANDS_LLM=local, the default)
     HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
 
-Sessions join through the hook socket at ~/.hands/hands.sock. A Claude Code
-session is registered when its settings carry the hooks this prints:
-
-    uv run python -m hands.sessions.hookconfig
+Sessions join through the hook socket at ~/.hands/hands.sock (the home is
+HANDS_HOME when that is set). A Claude Code session is registered when the hands
+plugin is installed and enabled; its hooks are hooks/hooks.json.
 
 Every heartbeat rewrites ~/.hands/status.json, which `hands status` reads. Run
 from a terminal, the space bar holds the conversation: press once to start
