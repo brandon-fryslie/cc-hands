@@ -183,20 +183,32 @@ func (w *Wrapped) inject(asked request) response {
 	if !w.writing.TryLock() {
 		return response{OK: false, Reason: "another write into this session has not finished - a request, the user's own typing, or an earlier write the child is not reading - so nothing was typed; a session that keeps answering this is not reading its input"}
 	}
-	w.handedOff = false
-	answer := w.dispatch(asked)
-	if !w.handedOff {
+	var claim hold
+	answer := w.dispatch(asked, &claim)
+	if !claim.passed {
 		w.writing.Unlock()
 	}
 	return answer
 }
 
-func (w *Wrapped) dispatch(asked request) response {
+// hold is one request's claim on w.writing, and whether it has been passed on.
+//
+// [LAW:no-shared-mutable-globals] Local to the request that took the lock. On Wrapped it
+// would be read after the lock had been passed to a write and let go, by which time the
+// next request may have taken the lock and reset it - and the first would unlock the
+// second's claim.
+type hold struct {
+	// A write this request gave up on has the lock now and lets go of it when the child
+	// takes it; see send.
+	passed bool
+}
+
+func (w *Wrapped) dispatch(asked request, claim *hold) response {
 	switch asked.Kind {
 	case "text":
-		return w.typeText(asked)
+		return w.typeText(asked, claim)
 	case "key":
-		return w.pressKey(asked)
+		return w.pressKey(asked, claim)
 	default:
 		return response{OK: false, Reason: fmt.Sprintf("no request kind named %q", asked.Kind)}
 	}
@@ -205,7 +217,7 @@ func (w *Wrapped) dispatch(asked request) response {
 // typeText is the one request that yields to the person at the keyboard. Text is the only
 // thing that can interleave: dropped into a half-written line it produces one prompt made
 // of two people's words, which nobody afterwards can pull apart.
-func (w *Wrapped) typeText(asked request) response {
+func (w *Wrapped) typeText(asked request, claim *hold) response {
 	if !w.line.free() {
 		return response{OK: false, Reason: "the user has unsent text in this session's input; it is theirs until they submit or cancel it, or until a key request clears the line"}
 	}
@@ -228,11 +240,11 @@ func (w *Wrapped) typeText(asked request) response {
 	if asked.Submit && staysUnsent(asked.Text) {
 		return response{OK: false, Reason: "this text ends where the session takes Enter as something other than sending - after a backslash, which becomes a newline, or on an @, # or : token, whose completion list takes the Enter - so it would sit unsent; nothing was typed"}
 	}
-	if wrong, bad := w.send(encoded).wrong(); bad {
+	if wrong, bad := w.send(claim, encoded).wrong(); bad {
 		return response{OK: false, Reason: wrong}
 	}
 	if asked.Submit {
-		if wrong, bad := w.send(keystrokes["enter"]).wrong(); bad {
+		if wrong, bad := w.send(claim, keystrokes["enter"]).wrong(); bad {
 			// A submit is two writes, and the caller has to be able to tell which one
 			// failed: retyping text that is already sitting in the box doubles it.
 			return response{OK: false, Reason: fmt.Sprintf("the text was typed and is sitting unsent in the input box, but Enter did not land, so do not send it again: %s", wrong)}
@@ -260,12 +272,12 @@ func controlByte(text string) (byte, int) {
 // also be a door locked from the inside - Enter and Ctrl-C are the very keys that
 // free a line, so a session whose line is held would have no way back except a human at
 // the physical keyboard, which is the case this whole program exists to avoid.
-func (w *Wrapped) pressKey(asked request) response {
+func (w *Wrapped) pressKey(asked request, claim *hold) response {
 	chord, known := keystrokes[asked.Key]
 	if !known {
 		return response{OK: false, Reason: fmt.Sprintf("no key named %q", asked.Key)}
 	}
-	if wrong, bad := w.send(chord).wrong(); bad {
+	if wrong, bad := w.send(claim, chord).wrong(); bad {
 		// Recorded only for a chord that went out whole: half of one is not a chord the
 		// child acted on, and crediting it would free a line that is still held.
 		return response{OK: false, Reason: wrong}
@@ -333,8 +345,8 @@ func (d delivery) wrong() (string, bool) {
 // on keeps the right to write: the lock passes to it, and it lets go the moment the child
 // reads what it was holding.
 //
-// Called only by inject, which holds w.writing.
-func (w *Wrapped) send(keys []byte) delivery {
+// Called only under a request's claim on w.writing, which is what it passes on.
+func (w *Wrapped) send(claim *hold, keys []byte) delivery {
 	type written struct {
 		n   int
 		err error
@@ -351,7 +363,7 @@ func (w *Wrapped) send(keys []byte) delivery {
 		}
 		return delivery{how: arrived, landed: landed.n, of: len(keys)}
 	case <-time.After(writeGrace):
-		w.handedOff = true
+		claim.passed = true
 		go func() {
 			<-done
 			w.writing.Unlock()

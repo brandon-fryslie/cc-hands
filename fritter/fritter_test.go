@@ -879,3 +879,24 @@ func shortTempDir(t *testing.T) string {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	return dir
 }
+
+func TestASessionThatCannotBeAttachedIsNotLeftRunning(t *testing.T) {
+	// The child starts before the terminal is put into raw mode, so a stdin that is not a
+	// terminal fails after there is already a session to end.
+	wrapped, err := start([]string{"sh", "-c", "sleep 30"}, nil)
+	if err != nil {
+		t.Fatalf("cannot start: %v", err)
+	}
+	notATerminal, err := os.CreateTemp(t.TempDir(), "stdin")
+	if err != nil {
+		t.Fatalf("cannot make a stdin: %v", err)
+	}
+	defer notATerminal.Close()
+	if _, err := wrapped.run(notATerminal, io.Discard, make(chan os.Signal)); err == nil {
+		t.Fatal("run attached to a file as though it were a terminal")
+	}
+	if wrapped.cmd.ProcessState == nil {
+		_ = wrapped.cmd.Process.Kill()
+		t.Fatal("run returned with the session it started still running")
+	}
+}

@@ -30,9 +30,6 @@ type Wrapped struct {
 	// half of each into the input box, and a check that was true before someone else wrote
 	// is not true after.
 	writing sync.Mutex
-	// Set by send, under writing, when it gives a write up and passes the lock to it; see
-	// inject, which then leaves the unlocking to that write.
-	handedOff bool
 }
 
 // start runs argv on a new pty, with env added to the child's environment.
@@ -75,6 +72,13 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer, killed <-chan os.Signal)
 	}()
 	restore, err := w.attach(stdin)
 	if err != nil {
+		// [LAW:no-silent-failure] The child is already running, and nothing past this
+		// point would ever end it or wait for it: fritter would exit and leave it behind.
+		if killErr := w.cmd.Process.Kill(); killErr != nil {
+			warn("cannot end the session after failing to attach to the terminal: %v", killErr)
+		}
+		// Its exit is the kill just sent, so what Wait says about it is already known.
+		_ = w.cmd.Wait()
 		return 0, err
 	}
 	// [LAW:no-silent-failure] A terminal left in raw mode is a shell the user cannot
