@@ -1,0 +1,2 @@
+# The compiled binary: "go build ./..." in a main package drops it here.
+/fritter

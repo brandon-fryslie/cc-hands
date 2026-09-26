@@ -20,6 +20,9 @@ def write_membership(home: Home, membership: Membership) -> None:
             "pid": membership.pid,
             "cwd": str(membership.cwd),
             "transcript_path": str(membership.transcript),
+            # Written as null rather than left out, so a file from a session nobody
+            # wrapped and a file written before this field existed read the same way.
+            "fritter_socket": None if membership.fritter is None else str(membership.fritter),
         }
     )
     # [LAW:no-ambient-temporal-coupling] written beside and renamed into place,
@@ -56,9 +59,13 @@ def read_membership(home: Home, session: SessionId) -> Membership:
 
 def parse_membership(session: SessionId, raw: bytes) -> Membership:
     record = Payload.parse(raw)
+    # [LAW:parse-dont-validate] Missing and empty both mean this session was not wrapped.
+    # Path("") is PosixPath("."), and a Typist made from that would dial a directory.
+    address = record.optional_text("fritter_socket")
     return Membership(
         id=session,
         pid=parse_pid(record.integer("pid")),
         cwd=Path(record.text("cwd")),
         transcript=Path(record.text("transcript_path")),
+        fritter=Path(address) if address else None,
     )

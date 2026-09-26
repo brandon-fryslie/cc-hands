@@ -66,7 +66,10 @@ def test_an_entry_is_its_type_and_fields_nested_values_alike() -> None:
     }
     assert encoded(Applied(Joined(member(), "startup")))["event"] == {
         "type": "Joined",
-        "membership": {"type": "Membership", "id": "s1", "pid": 4242, "cwd": "/code/cc-hands", "transcript": "/nowhere/s1.jsonl"},
+        # fritter is the socket to type into this session, and null for a session nobody
+        # wrapped; it is in the log because "why could hands not type into that one" is
+        # a question the log should be able to answer.
+        "membership": {"type": "Membership", "id": "s1", "pid": 4242, "cwd": "/code/cc-hands", "transcript": "/nowhere/s1.jsonl", "fritter": None},
         "source": "startup",
     }
 
