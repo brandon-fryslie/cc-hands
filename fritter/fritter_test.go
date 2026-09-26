@@ -453,6 +453,7 @@ func TestMultiLineTextIsRefusedWhenTheSessionWillNotBracketIt(t *testing.T) {
 	if !strings.Contains(answer.Reason, "bracketed paste") {
 		t.Fatalf("the refusal must say why, got %q", answer.Reason)
 	}
+	nothingTyped(t, answer)
 }
 
 // ending kills a child that reads nothing on purpose, which nothing else would ever end,
@@ -478,6 +479,48 @@ func onlyEnterArrived(t *testing.T, ask func(string) response, reads func() []st
 		t.Fatalf("the child read %q; something refused above reached it", got)
 	}
 }
+
+// nothingTyped checks a refusal says, as a value and not only in its reason, that none of
+// the request reached the session: the caller resends on that alone.
+func nothingTyped(t *testing.T, answer response) {
+	t.Helper()
+	if answer.Typed != typedNothing {
+		t.Fatalf("a refusal that typed nothing says typed %q", answer.Typed)
+	}
+}
+
+func TestAFailedWriteSaysWhetherTheRequestMayBeInTheSession(t *testing.T) {
+	// A caller resends a refused request only when this says nothing of it was typed, so
+	// it must say maybe wherever the request's own keys, or the text before them, may be
+	// in the box - and nothing only where they cannot be.
+	steps := textSteps([]byte("hi"), []byte{}, true)
+	emptied, body, closing := steps[len(emptying)-1], steps[len(emptying)], steps[len(emptying)+1]
+	key := keyStep(keystrokes["enter"])
+	none := delivery{how: partway, landed: 0, of: 2, why: errors.New("x")}
+	some := delivery{how: partway, landed: 1, of: 2, why: errors.New("x")}
+	unknown := delivery{how: unknowable, of: 2, why: errors.New("x")}
+	for _, c := range []struct {
+		name string
+		at   step
+		how  delivery
+		want typed
+	}{
+		{"emptying, even with its keys in the box", emptied, unknown, typedNothing},
+		{"the text, none of it written", body, none, typedNothing},
+		{"the text, part of it written", body, some, typedMaybe},
+		{"the text, not known how much", body, unknown, typedMaybe},
+		{"the Enter after the text, none of it written", closing, none, typedMaybe},
+		{"a key, none of it written", key, none, typedNothing},
+		{"a key, not known whether it was", key, unknown, typedMaybe},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.at.left(c.how); got != c.want {
+				t.Fatalf("left %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestTextThatIsNotCharactersIsRefusedRatherThanTyped(t *testing.T) {
 	// text is characters and newlines. A control byte in it is a keystroke in text's
 	// clothes: an ESC ends the bracketing early, so everything after it is typed and
@@ -499,6 +542,7 @@ func TestTextThatIsNotCharactersIsRefusedRatherThanTyped(t *testing.T) {
 			if !strings.Contains(answer.Reason, "control byte") {
 				t.Fatalf("the reason must say what it found, got %q", answer.Reason)
 			}
+			nothingTyped(t, answer)
 		})
 	}
 	onlyEnterArrived(t, ask, reads)
@@ -529,6 +573,7 @@ func TestASessionThatIsNotReadingItsInputIsSaidSoRatherThanWaitedOn(t *testing.T
 	if !strings.Contains(stuck.Reason, "none of the text was typed") || !strings.Contains(stuck.Reason, "may be gone") {
 		t.Fatalf("the reason must say the box was being emptied and the text not typed, got %q", stuck.Reason)
 	}
+	nothingTyped(t, stuck)
 
 	// The write is still out there and cannot be taken back, so the next request is
 	// refused at once rather than queued behind it - queued it would wait just as long,
@@ -544,6 +589,7 @@ func TestASessionThatIsNotReadingItsInputIsSaidSoRatherThanWaitedOn(t *testing.T
 	if !strings.Contains(behind.Reason, "has not finished") {
 		t.Fatalf("the reason must say what it is behind, got %q", behind.Reason)
 	}
+	nothingTyped(t, behind)
 }
 
 func TestRequestsThatNameNothingRealAreRefusedWithAReason(t *testing.T) {
@@ -562,6 +608,7 @@ func TestRequestsThatNameNothingRealAreRefusedWithAReason(t *testing.T) {
 			if !strings.Contains(answer.Reason, c.says) {
 				t.Fatalf("the reason must say %q, got %q", c.says, answer.Reason)
 			}
+			nothingTyped(t, answer)
 		})
 	}
 	onlyEnterArrived(t, ask, reads)
@@ -584,6 +631,7 @@ func TestARequestForAnotherProcessIsNotTypedIntoThisOne(t *testing.T) {
 			if !strings.Contains(answer.Reason, "nothing was typed") {
 				t.Fatalf("the refusal must say nothing was typed, got %q", answer.Reason)
 			}
+			nothingTyped(t, answer)
 		})
 	}
 	onlyEnterArrived(t, ask, reads)
@@ -604,6 +652,7 @@ func TestASubmitTheSessionWouldNotSendIsRefusedBeforeAnythingIsTyped(t *testing.
 			if !strings.Contains(answer.Reason, "nothing was typed") {
 				t.Fatalf("the refusal must say nothing was typed, got %q", answer.Reason)
 			}
+			nothingTyped(t, answer)
 		})
 	}
 	onlyEnterArrived(t, ask, reads)

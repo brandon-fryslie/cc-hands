@@ -11,8 +11,7 @@ fritter [--socket-dir DIR] -- COMMAND [ARGS...]
 ```
 
 hands is what it was built for, and hands' client for it - `hands.sessions.typing` - is
-written and tested against it. The effect that will call that client is not built yet
-(`hands-harness-5nb.l0u`), so nothing in hands dials this socket today. Nothing in fritter
+written and tested against it; `send_draft` is what dials it. Nothing in fritter
 knows any of that; Claude Code is simply the first program it wraps.
 
 ## Why a pseudo-terminal and not a pipe
@@ -65,9 +64,12 @@ wrap the program itself — `fritter -- claude` — and not a launcher that runs
 child: the launcher is what fritter wrapped, and every request naming the program under it
 is refused.
 
-The answer is `{"ok":true}` or `{"ok":false,"reason":"..."}`. A reason always says what
-went wrong, because a write that was refused and a write that landed must never look
-alike to the caller. When the text lands but the Enter after it does not, the reason says
+The answer is `{"ok":true}` or `{"ok":false,"reason":"...","typed":"nothing"}`, where
+`typed` is `nothing` when none of the request reached the program and `maybe` when some or
+all of it may have. A reason always says what went wrong, because a write that was refused
+and a write that landed must never look alike to the caller; `typed` says the part a caller
+acts on, since resending after `nothing` is safe and resending after `maybe` can type the
+text twice. When the text lands but the Enter after it does not, the reason says
 so in those words — retyping text that is already sitting in the box would double it.
 
 A caller has one second and 64 KB to get its request in. Past the size it is refused with

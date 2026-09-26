@@ -223,16 +223,38 @@ class Staged:
 
 
 @dataclass(frozen=True)
+class Sending:
+    """A staged draft being typed into its session now: nothing else may be done with it until that is over."""
+
+    draft: Staged
+
+
+@dataclass(frozen=True)
+class Unsure:
+    """A draft whose send failed after some or all of it may have reached the session.
+
+    Not sent again as it is, because sending it twice is the one outcome nobody can undo: it is sendable again once it
+    is staged or amended again, and the readback of that is how the user comes to hear of it.
+    """
+
+    draft: Staged
+    reason: str  # what went wrong, as the typing told it
+
+
+Draft = Staged | Sending | Unsure
+
+
+@dataclass(frozen=True)
 class Registry:
     permission_deadline: float  # seconds from a permission request to its default deny
     sessions: Mapping[SessionId, Session]
     # [LAW:types-are-the-program] a session with no entry has nothing staged; there is no empty draft.
-    drafts: Mapping[SessionId, Staged]
+    drafts: Mapping[SessionId, Draft]
 
     def put(self, session: Session) -> Self:
         return replace(self, sessions={**self.sessions, session.membership.id: session})
 
-    def stage(self, session: SessionId, draft: Staged) -> Self:
+    def hold(self, session: SessionId, draft: Draft) -> Self:
         return replace(self, drafts={**self.drafts, session: draft})
 
     def unstage(self, session: SessionId) -> Self:

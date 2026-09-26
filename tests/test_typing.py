@@ -11,9 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.session import Membership, PromptText, SessionId
+from hands.core.effects import Landed, MaybeTyped, NotTyped, Text, Type
+from hands.core.session import PromptText, SessionId
 from hands.sessions import typing
-from hands.sessions.typing import Typist, Untyped
+from hands.sessions.typing import Typist, type_into
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
 
@@ -52,27 +53,56 @@ class FakeFritter:
         self._thread.join(timeout=2)
 
 
-def wrapped(path: Path) -> Membership:
-    return Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl"), fritter=path)
-
-
-def test_a_session_nobody_wrapped_cannot_be_typed_into() -> None:
-    plain = Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl"))
-    with pytest.raises(Untyped) as refused:
-        Typist.of(plain)
-    assert SID in str(refused.value)
-    assert "not started under fritter" in str(refused.value)
+def typist(path: Path) -> Typist:
+    return Typist(SID, path, pid=4242)
 
 
 def test_text_and_whether_to_submit_reach_fritter_as_asked(short_dir: Path) -> None:
     path = short_dir / "f.sock"
     fritter = FakeFritter(path, b'{"ok":true}\n')
     try:
-        Typist.of(wrapped(path)).type(PromptText("fix the auth middleware"), submit=True)
+        landed = typist(path).type(PromptText("fix the auth middleware"), submit=True)
     finally:
         fritter.close()
+    assert landed == Landed()
     assert fritter.asked is not None
     assert json.loads(fritter.asked) == {"pid": 4242, "kind": "text", "text": "fix the auth middleware", "submit": True}
+
+
+def test_a_type_effect_is_typed_behind_a_space_and_submitted(short_dir: Path) -> None:
+    path = short_dir / "f.sock"
+    fritter = FakeFritter(path, b'{"ok":true}\n')
+    try:
+        landed = type_into(Type(SID, path, pid=4242, input=Text(PromptText("/compact now"))))
+    finally:
+        fritter.close()
+    assert landed == Landed()
+    assert fritter.asked is not None
+    assert json.loads(fritter.asked) == {"pid": 4242, "kind": "text", "text": " /compact now", "submit": True}
+
+
+def test_a_refusal_that_may_have_typed_some_of_it_says_so_with_fritters_reason(short_dir: Path) -> None:
+    # The draft is held back on this alone: resent, text already in the box goes in twice.
+    path = short_dir / "f.sock"
+    fritter = FakeFritter(path, b'{"ok":false,"reason":"3 of 9 bytes reached the input box","typed":"maybe"}\n')
+    try:
+        refused = typist(path).type(PromptText("hello"), submit=True)
+    finally:
+        fritter.close()
+    assert isinstance(refused, MaybeTyped), refused
+    assert "3 of 9 bytes reached the input box" in refused.reason
+
+
+def test_a_refusal_that_does_not_say_what_it_typed_is_taken_as_maybe(short_dir: Path) -> None:
+    # A fritter that says no without saying how far it got has said nothing that makes a resend safe.
+    path = short_dir / "f.sock"
+    fritter = FakeFritter(path, b'{"ok":false,"reason":"something went wrong"}\n')
+    try:
+        refused = typist(path).type(PromptText("hello"), submit=True)
+    finally:
+        fritter.close()
+    assert isinstance(refused, MaybeTyped), refused
+    assert "do not send it again" in refused.reason
 
 
 def test_a_newline_is_sent_as_text_because_bracketing_is_fritters_job(short_dir: Path) -> None:
@@ -81,7 +111,7 @@ def test_a_newline_is_sent_as_text_because_bracketing_is_fritters_job(short_dir:
     path = short_dir / "f.sock"
     fritter = FakeFritter(path, b'{"ok":true}\n')
     try:
-        Typist.of(wrapped(path)).type(PromptText("first\nsecond"), submit=False)
+        typist(path).type(PromptText("first\nsecond"), submit=False)
     finally:
         fritter.close()
     assert fritter.asked is not None
@@ -92,7 +122,7 @@ def test_a_named_key_is_sent_as_a_key_and_never_as_text(short_dir: Path) -> None
     path = short_dir / "f.sock"
     fritter = FakeFritter(path, b'{"ok":true}\n')
     try:
-        Typist.of(wrapped(path)).press("escape")
+        typist(path).press("escape")
     finally:
         fritter.close()
     assert fritter.asked is not None
@@ -101,21 +131,21 @@ def test_a_named_key_is_sent_as_a_key_and_never_as_text(short_dir: Path) -> None
 
 def test_a_refusal_carries_fritters_reason(short_dir: Path) -> None:
     path = short_dir / "f.sock"
-    fritter = FakeFritter(path, b'{"ok":false,"reason":"the user has unsent text in this session\'s input"}\n')
+    fritter = FakeFritter(path, b'{"ok":false,"reason":"the user has unsent text in this session\'s input","typed":"nothing"}\n')
     try:
-        with pytest.raises(Untyped) as refused:
-            Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
+        refused = typist(path).type(PromptText("hello"), submit=True)
+        assert isinstance(refused, NotTyped), refused
     finally:
         fritter.close()
-    assert "the user has unsent text" in str(refused.value)
+    assert "the user has unsent text" in refused.reason
 
 
 def test_a_socket_nobody_is_listening_on_says_so(short_dir: Path) -> None:
     # The common case: the session's process ended and took its fritter with it.
     path = short_dir / "gone.sock"
-    with pytest.raises(Untyped) as refused:
-        Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
-    assert str(path) in str(refused.value)
+    refused = typist(path).type(PromptText("hello"), submit=True)
+    assert isinstance(refused, NotTyped), refused
+    assert str(path) in refused.reason
 
 
 def test_an_answer_that_says_neither_yes_nor_no_is_not_taken_for_yes(short_dir: Path) -> None:
@@ -129,12 +159,12 @@ def test_an_answer_that_says_neither_yes_nor_no_is_not_taken_for_yes(short_dir: 
         path = short_dir / f"f{len(answer)}.sock"
         fritter = FakeFritter(path, answer)
         try:
-            with pytest.raises(Untyped) as refused:
-                Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
+            refused = typist(path).type(PromptText("hello"), submit=True)
+            assert isinstance(refused, MaybeTyped), refused
         finally:
             fritter.close()
-        assert "may already be in the input box" in str(refused.value), answer
-        assert "do not send it again" in str(refused.value), answer
+        assert "may already be in the input box" in refused.reason, answer
+        assert "do not send it again" in refused.reason, answer
 
 
 def test_a_refusal_fritter_actually_gave_is_not_dressed_up_as_a_silence(short_dir: Path) -> None:
@@ -143,14 +173,14 @@ def test_a_refusal_fritter_actually_gave_is_not_dressed_up_as_a_silence(short_di
     # the input box" to a refusal that begins "the user has unsent text" would tell a
     # caller not to resend a message that was never sent at all.
     path = short_dir / "refused.sock"
-    fritter = FakeFritter(path, b'{"ok":false,"reason":"the user has unsent text in this session\'s input"}\n')
+    fritter = FakeFritter(path, b'{"ok":false,"reason":"the user has unsent text in this session\'s input","typed":"nothing"}\n')
     try:
-        with pytest.raises(Untyped) as refused:
-            Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
+        refused = typist(path).type(PromptText("hello"), submit=True)
+        assert isinstance(refused, NotTyped), refused
     finally:
         fritter.close()
-    assert "the user has unsent text" in str(refused.value)
-    assert "may already be in the input box" not in str(refused.value)
+    assert "the user has unsent text" in refused.reason
+    assert "may already be in the input box" not in refused.reason
 
 
 def test_a_request_too_big_for_fritter_is_refused_rather_than_sent(short_dir: Path) -> None:
@@ -160,13 +190,13 @@ def test_a_request_too_big_for_fritter_is_refused_rather_than_sent(short_dir: Pa
     path = short_dir / "big.sock"
     fritter = FakeFritter(path, b'{"ok":true}\n')
     try:
-        with pytest.raises(Untyped) as refused:
-            Typist.of(wrapped(path)).type(PromptText("x" * (typing.REQUEST_LIMIT + 1)), submit=True)
+        refused = typist(path).type(PromptText("x" * (typing.REQUEST_LIMIT + 1)), submit=True)
+        assert isinstance(refused, NotTyped), refused
     finally:
         fritter.close()
     assert fritter.asked is None, "an oversize request was sent rather than refused"
-    assert "takes at most" in str(refused.value)
-    assert "nothing was typed" in str(refused.value)
+    assert "takes at most" in refused.reason
+    assert "nothing was typed" in refused.reason
 
 
 class EndlessFritter:
@@ -213,8 +243,7 @@ def test_a_fritter_that_answers_forever_does_not_hold_the_daemon_forever(
     fritter = EndlessFritter(path, chunk=b"x", gap=0.02, stop_after=5.0)
     try:
         started = time.monotonic()
-        with pytest.raises(Untyped):
-            Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
+        assert isinstance(typist(path).type(PromptText("hello"), submit=True), MaybeTyped)
         waited = time.monotonic() - started
     finally:
         fritter.close()
@@ -229,8 +258,7 @@ def test_an_answer_that_runs_past_its_size_is_cut_off(short_dir: Path, monkeypat
     fritter = EndlessFritter(path, chunk=b"x" * 4096, gap=0.0, stop_after=5.0)
     try:
         started = time.monotonic()
-        with pytest.raises(Untyped):
-            Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
+        assert isinstance(typist(path).type(PromptText("hello"), submit=True), MaybeTyped)
         waited = time.monotonic() - started
     finally:
         fritter.close()
@@ -275,13 +303,13 @@ def test_a_request_that_landed_but_went_unanswered_says_not_to_send_it_again(
     path = short_dir / "mute.sock"
     fritter = MuteFritter(path, hold=3.0)
     try:
-        with pytest.raises(Untyped) as refused:
-            Typist.of(wrapped(path)).type(PromptText("fix the auth middleware"), submit=True)
+        refused = typist(path).type(PromptText("fix the auth middleware"), submit=True)
+        assert isinstance(refused, MaybeTyped), refused
     finally:
         fritter.close()
     assert fritter.asked is not None, "the request never reached the fake fritter, so this tests nothing"
-    assert "may already be in the input box" in str(refused.value)
-    assert "do not send it again" in str(refused.value)
+    assert "may already be in the input box" in refused.reason
+    assert "do not send it again" in refused.reason
 
 
 def test_a_fritter_that_hangs_up_without_answering_says_that_and_not_that_it_answered_badly(short_dir: Path) -> None:
@@ -290,13 +318,13 @@ def test_a_fritter_that_hangs_up_without_answering_says_that_and_not_that_it_ans
     path = short_dir / "hangup.sock"
     fritter = MuteFritter(path, hold=0.0)
     try:
-        with pytest.raises(Untyped) as refused:
-            Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
+        refused = typist(path).type(PromptText("hello"), submit=True)
+        assert isinstance(refused, MaybeTyped), refused
     finally:
         fritter.close()
-    assert "closed the connection without answering" in str(refused.value)
-    assert "not JSON" not in str(refused.value)
+    assert "closed the connection without answering" in refused.reason
+    assert "not JSON" not in refused.reason
     # MuteFritter reads the request before it hangs up, so this is a delivered request
     # whose answer never came - the text may be in the box already.
     assert fritter.asked, "the request never reached the fake fritter, so this tests nothing"
-    assert "may already be in the input box" in str(refused.value)
+    assert "may already be in the input box" in refused.reason

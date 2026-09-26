@@ -143,7 +143,7 @@ Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | A
 @dataclass(frozen=True)
 class Reply:    request: RequestId; reply: HookReply
 @dataclass(frozen=True)
-class Type:     session: SessionId; input: Input             # through fritter; unbuilt, hands-harness-5nb.l0u
+class Type:     session: SessionId; socket: Path; pid: int; input: Input  # through fritter
 @dataclass(frozen=True)
 class Speak:    text: str; priority: Priority                # straight to TTS
 @dataclass(frozen=True)
@@ -235,13 +235,19 @@ adapter that fails raises; the supervisor logs it and the failure is spoken thro
 the system channel. Nothing is retried silently and nothing falls back
 `[LAW:no-silent-failure]`.
 
-That block is the design, not the code. `core/effects.py` has seven of those nine today -
-`Audit`, `Reply`, `Speak`, `Narrate`, `Note`, `Summarise`, `Snapshot` - plus `SessionGone`
-and `Compare`, which the block above leaves out. `Type` and `Play` are unbuilt, and their
-adapters are named here in a tense the code has not earned yet. `Type` is the nearest:
-what it will call is built and measured - `hands.sessions.typing.Typist` types into a
-session's fritter - and only the effect and its place in the reducer are left, in
-`hands-harness-5nb.l0u`.
+That block is the design, not the code. `core/effects.py` has eight of those nine today -
+`Audit`, `Reply`, `Type`, `Speak`, `Narrate`, `Note`, `Summarise`, `Snapshot` - plus `SessionGone`
+and `Compare`, which the block above leaves out. `Play` is unbuilt, and its adapter is named
+here in a tense the code has not earned yet. `Input` is `Text` alone so far; `Command` and
+`Key` are `hands-keyboard-gxr.i5n`.
+
+`Type` is not in the `Effect` union, and is not performed with the rest. `core.drafts.decide`
+emits it for a send, `Sessions.draft` performs it with `hands.sessions.typing.type_into`, and
+what came of it - a `Landing` - goes back through `core.drafts.land`, which decides what
+becomes of the draft. `Landed` unstages it. `NotTyped` stages it again as it was. `MaybeTyped`
+holds it `Unsure`: some or all of it may be in the box, so it is not sent again until it is
+staged or amended again. fritter's answer says which of the two failures it was, as a value
+beside the reason, because a resend is safe after one and types the draft twice after the other.
 
 Because every transition is `reduce` on values, the test suite for the session
 lifecycle is a table: state before, event, state after, effects. There is no pipeline,
@@ -1255,13 +1261,13 @@ answers "which one did you mean".
 generated from the stored resolutions, never from the model repeating itself:
 "Draft for cc-hands, reading 'auth middleware' as `authMiddleware.ts`: refactor the
 auth middleware to use the new token helper." Speak what changed, not what you said.
-A draft is staged, amended, and discarded; sending it waits for the Type effect
-(`hands-harness-5nb.l0u`; `hands-keyboard-gxr.i5n` is the commands and keys beside it). How the keys reach the right session is settled and built:
-fritter holds that session's pseudo-terminal and `Typist` types into it over a unix
-socket, so there is no window to find, no focus to steal and no macOS permission to
-ask for. What is left open is confirming the send through the `UserPromptSubmit` hook.
-Until then the model tells the user that sending is not built. The send will append an audit record before it types, so "did it send
-something I didn't approve" is answered by one file.
+A draft is staged, amended, discarded, and sent with `send_draft`, as the Type effect
+(`hands-keyboard-gxr.i5n` is the commands and keys beside it). fritter holds the session's
+pseudo-terminal and `Typist` types into it over a unix socket, so there is no window to
+find, no focus to steal and no macOS permission to ask for. What is left open is confirming
+the send against the prompt the transcript records (`hands-narration-2mc.758`). A send
+appends a `Typing` audit record before it types, so "did it send something I didn't
+approve" is answered by one file.
 
 ## The intermediary's tools
 
@@ -1273,7 +1279,7 @@ end_session(session?)
 interrupt_session(session?)
 send_command(session?, command, args?)
 stage_draft(session?, text)      amend_draft(session?, text)
-discard_draft(session?)
+discard_draft(session?)          send_draft(session?)
 answer_permission(request, decision, message?)
 answer_question(request, answers)
 find_path(session?, query)

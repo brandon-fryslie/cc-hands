@@ -29,6 +29,27 @@ type request struct {
 type response struct {
 	OK     bool   `json:"ok"`
 	Reason string `json:"reason,omitempty"`
+	// What a refusal leaves of the request in the session. Empty only when OK.
+	Typed typed `json:"typed,omitempty"`
+}
+
+// typed is what of a refused request may be in the session: none of it, or perhaps some or
+// all of it.
+//
+// [LAW:types-are-the-program] The reason says the same thing in English, and a person reads
+// it. A caller acts on it: resending a request of which nothing was typed is safe, and
+// resending one that may be in the box sends it twice. That decision cannot rest on the
+// wording of a sentence, so it travels as a value beside it.
+type typed string
+
+const (
+	typedNothing typed = "nothing"
+	typedMaybe   typed = "maybe"
+)
+
+// refuse is the one way to say no, so no refusal can leave out what it left behind.
+func refuse(left typed, reason string) response {
+	return response{OK: false, Reason: reason, Typed: left}
 }
 
 // The named chords hands can ask for, and the bytes a terminal sends for each.
@@ -152,7 +173,7 @@ func (w *Wrapped) answer(connection net.Conn) {
 		// request cut off mid-way is refused for the JSON it no longer ends with, which
 		// tells a caller its draft was malformed when what happened is that it was long.
 		if int64(len(body)) >= askLimit {
-			reply(connection, response{OK: false, Reason: fmt.Sprintf("the request passed %d bytes without ending in a newline", askLimit)})
+			reply(connection, refuse(typedNothing, fmt.Sprintf("the request passed %d bytes without ending in a newline", askLimit)))
 			return
 		}
 		if len(body) == 0 {
@@ -162,7 +183,7 @@ func (w *Wrapped) answer(connection net.Conn) {
 	}
 	var asked request
 	if err := json.Unmarshal(body, &asked); err != nil {
-		reply(connection, response{OK: false, Reason: fmt.Sprintf("cannot read the request: %v", err)})
+		reply(connection, refuse(typedNothing, fmt.Sprintf("cannot read the request: %v", err)))
 		return
 	}
 	reply(connection, w.inject(asked))
@@ -200,7 +221,7 @@ func (w *Wrapped) inject(asked request) response {
 	// request meant for some other session is turned away, before a byte of it is typed
 	// into this one.
 	if child := w.cmd.Process.Pid; asked.Pid != child {
-		return response{OK: false, Reason: fmt.Sprintf("this socket types into process %d and the request is for process %d; nothing was typed. An address inherited from another session reaches that session, not this one", child, asked.Pid)}
+		return refuse(typedNothing, fmt.Sprintf("this socket types into process %d and the request is for process %d; nothing was typed. An address inherited from another session reaches that session, not this one", child, asked.Pid))
 	}
 	// [LAW:no-ambient-temporal-coupling] Waited for, but not for long. The user's keys and
 	// the terminal's reports hold the input for an instant each, and a request arriving
@@ -210,7 +231,7 @@ func (w *Wrapped) inject(asked request) response {
 	select {
 	case w.writing <- struct{}{}:
 	case <-time.After(claimGrace):
-		return response{OK: false, Reason: fmt.Sprintf("another write into this session has not finished after %s - another request's, or an earlier one the child is not reading - so nothing was typed", claimGrace)}
+		return refuse(typedNothing, fmt.Sprintf("another write into this session has not finished after %s - another request's, or an earlier one the child is not reading - so nothing was typed", claimGrace))
 	}
 	claim := hold{by: time.After(typeGrace)}
 	answer := w.dispatch(asked, &claim)
@@ -241,7 +262,7 @@ func (w *Wrapped) dispatch(asked request, claim *hold) response {
 	case "key":
 		return w.pressKey(asked, claim)
 	default:
-		return response{OK: false, Reason: fmt.Sprintf("no request kind named %q", asked.Kind)}
+		return refuse(typedNothing, fmt.Sprintf("no request kind named %q", asked.Kind))
 	}
 }
 
@@ -257,46 +278,64 @@ func (w *Wrapped) typeText(asked request, claim *hold) response {
 	// after it is typed and submitted on its own, and a 0x03 is a Ctrl-C. Either way what
 	// the caller asked to send as one message arrives as something else, under an ok.
 	if offending, at := controlByte(asked.Text); at >= 0 {
-		return response{OK: false, Reason: fmt.Sprintf("this text holds the control byte %#02x at offset %d, which is a keystroke and not a character; send a key request for it", offending, at)}
+		return refuse(typedNothing, fmt.Sprintf("this text holds the control byte %#02x at offset %d, which is a keystroke and not a character; send a key request for it", offending, at))
 	}
 	body, end, bracketed := w.paste.encode(asked.Text)
 	// [LAW:no-silent-failure] Bare newlines go to the child as Enter presses, so without
 	// bracketing a multi-line draft arrives as several separate submitted prompts. Saying
 	// ok to that would tell hands one message was sent when several were.
 	if !bracketed && strings.Contains(asked.Text, "\n") {
-		return response{OK: false, Reason: "this session has not turned bracketed paste on, so the newlines in this text would submit it as several separate prompts"}
+		return refuse(typedNothing, "this session has not turned bracketed paste on, so the newlines in this text would submit it as several separate prompts")
 	}
 	// [LAW:no-silent-failure] An Enter the child takes as something other than a send
 	// leaves the text in the box, and an ok would tell the caller it was sent.
 	if asked.Submit && staysUnsent(asked.Text) {
-		return response{OK: false, Reason: "this text ends where the session takes Enter as something other than sending - after a backslash, which becomes a newline, or on an @, # or : token, whose completion list takes the Enter - so it would sit unsent; nothing was typed. A space after the token closes the list"}
+		return refuse(typedNothing, "this text ends where the session takes Enter as something other than sending - after a backslash, which becomes a newline, or on an @, # or : token, whose completion list takes the Enter - so it would sit unsent; nothing was typed. A space after the token closes the list")
 	}
-	// [LAW:dataflow-not-control-flow] A request is its steps, and each is written the same
-	// way. What differs is what a failure at that step leaves behind, which the caller has
-	// to be told: retyping text that is already in the box doubles it.
-	//
-	// The Enter goes in with the marker that closes the paste. Read apart from it, even a
-	// millisecond later, the session took the Enter before the paste was in the box and
-	// sent nothing.
+	return w.write(claim, textSteps(body, end, asked.Submit))
+}
+
+// textSteps is a text request as the writes it is made of, in order.
+//
+// [LAW:dataflow-not-control-flow] A request is its steps, and each is written the same
+// way. What differs is what a failure at that step leaves behind, which the caller has
+// to be told: retyping text that is already in the box doubles it.
+//
+// The Enter goes in with the marker that closes the paste. Read apart from it, even a
+// millisecond later, the session took the Enter before the paste was in the box and
+// sent nothing.
+func textSteps(body, end []byte, submit bool) []step {
 	var steps []step
 	for _, keys := range emptying {
-		steps = append(steps, step{keys, "the input box was being emptied, so what it and the stash held may be gone, and none of the text was typed: %s"})
+		steps = append(steps, step{keys, "the input box was being emptied, so what it and the stash held may be gone, and none of the text was typed: %s", typedNothing, typedNothing})
 	}
 	closing := "the text is in the input box, unsent, and whether what closes it was read is not known; the next text request empties the box: %s"
-	if asked.Submit {
+	if submit {
 		end = append(end, keystrokes["enter"]...)
 		// Whether the Enter was read is exactly what an unknowable end cannot say, so the
 		// caller is told it may have been sent - and a session that quit on it cannot be asked.
 		closing = "the text is in the input box and whether what closes it was read is not known, so it may have been sent; do not send it again: %s"
 	}
-	steps = append(steps, step{body, "%s"}, step{end, closing})
-	return w.write(claim, steps)
+	// The text is the first step whose keys are the request's own; once it is all in, what
+	// follows it can only fail with the text already in the box.
+	return append(steps, step{body, "%s", typedMaybe, typedNothing}, step{end, closing, typedMaybe, typedMaybe})
 }
 
 // step is one write of a request, and what to tell the caller if it does not land.
 type step struct {
 	keys   []byte
 	failed string // a format taking what went wrong with the write
+	// What of the request a failure at this step leaves in the session: when some of this
+	// step's keys may have reached it, and when none did.
+	touched, untouched typed
+}
+
+// left is what of the request a failure at this step leaves in the session.
+func (s step) left(d delivery) typed {
+	if d.touched() {
+		return s.touched
+	}
+	return s.untouched
 }
 
 // controlByte finds the first byte in text that is a keystroke rather than a character,
@@ -316,9 +355,14 @@ func controlByte(text string) (byte, int) {
 func (w *Wrapped) pressKey(asked request, claim *hold) response {
 	chord, known := keystrokes[asked.Key]
 	if !known {
-		return response{OK: false, Reason: fmt.Sprintf("no key named %q", asked.Key)}
+		return refuse(typedNothing, fmt.Sprintf("no key named %q", asked.Key))
 	}
-	return w.write(claim, []step{{chord, "%s"}})
+	return w.write(claim, []step{keyStep(chord)})
+}
+
+// keyStep is a key request's one write: all of it is the request's own.
+func keyStep(chord []byte) step {
+	return step{chord, "%s", typedMaybe, typedNothing}
 }
 
 // write sends a request's steps in order, each once the child has read the one before, and
@@ -331,11 +375,12 @@ func (w *Wrapped) pressKey(asked request, claim *hold) response {
 // every other writer out, the user's keyboard included.
 func (w *Wrapped) write(claim *hold, steps []step) response {
 	if err := w.queue.waitEmpty(claim.by); err != nil {
-		return response{OK: false, Reason: fmt.Sprintf("nothing was typed: %v", err)}
+		return refuse(typedNothing, fmt.Sprintf("nothing was typed: %v", err))
 	}
 	for _, s := range steps {
-		if wrong, bad := w.send(claim, s.keys).wrong(); bad {
-			return response{OK: false, Reason: fmt.Sprintf(s.failed, wrong)}
+		landed := w.send(claim, s.keys)
+		if wrong, bad := landed.wrong(); bad {
+			return refuse(s.left(landed), fmt.Sprintf(s.failed, wrong))
 		}
 	}
 	return response{OK: true}
@@ -385,6 +430,12 @@ func (d delivery) wrong() (string, bool) {
 	default:
 		return d.why.Error(), true
 	}
+}
+
+// touched says whether any of the write may have reached the session: some bytes did, or
+// how many did is not known.
+func (d delivery) touched() bool {
+	return d.how == unknowable || d.landed > 0
 }
 
 // send writes to the child, waits for the child to read it, and reports what became of it.

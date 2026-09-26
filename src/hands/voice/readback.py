@@ -5,13 +5,20 @@ import re
 from collections.abc import Iterable, Mapping
 
 from hands.core.drafts import (
+    AtItsDialog,
     DraftAmended,
     DraftDiscarded,
     DraftOutcome,
+    DraftSent,
     DraftStaged,
+    MaybeSent,
     NothingStaged,
+    NotSent,
+    SentBefore,
     SessionEnded,
+    StillSending,
     UnknownSession,
+    Unwrapped,
 )
 from hands.core.session import Mode, PermissionMode, Resolution, SessionId, UnknownMode
 from hands.sessions.registry import Listing, Sessions
@@ -37,7 +44,21 @@ def readback(outcome: DraftOutcome, name: str) -> str:
         case NothingStaged():
             return f"There is no draft for {name}."
         case SessionEnded():
-            return f"{name} has ended, so its draft cannot be staged or changed."
+            return f"{name} has ended, so its draft cannot be staged, changed, or sent."
+        case DraftSent():
+            return f"Sent the draft to {name}."
+        case NotSent(reason=reason):
+            return f"The draft for {name} was not sent, and is still staged: {reason}"
+        case MaybeSent(reason=reason):
+            return f"The draft for {name} may have reached it, in part or whole, so it is not sent again unless it is staged again: {reason}"
+        case SentBefore(reason=reason):
+            return f"The last send of the draft for {name} may already have reached it, so it is not sent again unless it is staged again: {reason}"
+        case StillSending():
+            return f"The draft for {name} is being sent right now."
+        case Unwrapped():
+            return f"{name} was not started under fritter, so hands cannot type into it. The draft is still staged."
+        case AtItsDialog():
+            return f"{name} is waiting at a dialog, which would take the draft as its answer. The draft is still staged."
 
 
 def spoken_title(listing: Listing) -> str:

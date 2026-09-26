@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from hands.core.events import SessionEvent
-from hands.core.session import Blocker, Mode, PromptId, RequestId, SessionId
+from hands.core.session import Blocker, Mode, PromptId, PromptText, RequestId, SessionId
 
 
 @dataclass(frozen=True)
@@ -222,3 +222,57 @@ class Compare:
 Repository = Snapshot | Compare
 
 Effect = Audit | Reply | Heard | Story | Repository
+
+
+@dataclass(frozen=True)
+class Text:
+    """A prompt, typed into a session's input and submitted."""
+
+    prompt: PromptText
+
+    @property
+    def typed(self) -> PromptText:
+        """What goes into the input box: the prompt behind a space.
+
+        [LAW:single-enforcer] Claude Code reads `/`, `@` and `!` at the start of a prompt as a command, a file mention
+        and shell mode, and behind a space as the characters they are. Always a space, so nothing anywhere asks what a
+        prompt starts with. Measured on 2.1.283: the box keeps the space, and so does the transcript's record.
+        """
+        return PromptText(f" {self.prompt}")
+
+
+@dataclass(frozen=True)
+class Type:
+    """Put into a session through the fritter that wrapped it, which listens at `socket` and wrapped process `pid`.
+
+    Performed apart from the effects above, because what came of it decides what becomes of the draft it sends.
+    """
+
+    session: SessionId
+    socket: Path
+    pid: int
+    input: Text
+
+
+@dataclass(frozen=True)
+class Landed:
+    """All of it was typed, and the Enter after it."""
+
+
+@dataclass(frozen=True)
+class NotTyped:
+    """None of it reached the session, so typing it again cannot type it twice."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class MaybeTyped:
+    """Some or all of it may be in the session, and nobody can say how much."""
+
+    reason: str
+
+
+# What came of a Type. [LAW:types-are-the-program] two failures, because one of them may be sent again and the other
+# must not be, and nothing but this value says which.
+Landing = Landed | NotTyped | MaybeTyped
