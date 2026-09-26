@@ -13,7 +13,7 @@ from pipecat.adapters.schemas.direct_function import DirectFunction
 from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, StageDraft
+from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Permission, Plan, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Submitted, Working
 from hands.core.turn import Budget, Happening, Ref, describe
@@ -226,10 +226,10 @@ class Resolved(TypedDict):
 
 
 def draft_tools(sessions: Sessions) -> list[Tool]:
-    """stage_draft, amend_draft, discard_draft: a prompt dictated for a session, read back until it is right. Nothing reaches a session from here."""
+    """stage_draft, amend_draft, discard_draft, send_draft: a prompt dictated for a session, read back until it is right, then sent."""
 
     async def stage_draft(params: FunctionCallParams, session: str, text: str, resolutions: list[Resolved]) -> None:
-        """Stage a prompt the user dictated for a session. It is not sent: hands cannot type into a session yet.
+        """Stage a prompt the user dictated for a session. It is not sent until the user says to send it.
 
         Say the returned readback to the user word for word.
 
@@ -260,8 +260,18 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         """
         await _answer(params, sessions, session, DiscardDraft)
 
-    # A barge-in must not cancel a draft call part way: the draft would change without its readback being heard.
-    return [_uncancelled_by_interruption(tool) for tool in (stage_draft, amend_draft, discard_draft)]
+    async def send_draft(params: FunctionCallParams, session: str) -> None:
+        """Type a session's staged draft into it and press Return. Call it only once the user has said to send it.
+
+        Say the returned readback to the user.
+
+        Args:
+            session: The session's id, from list_sessions.
+        """
+        await _answer(params, sessions, session, SendDraft)
+
+    # A barge-in must not cancel a draft call part way: the draft would change, or be sent, without its readback heard.
+    return [_uncancelled_by_interruption(tool) for tool in (stage_draft, amend_draft, discard_draft, send_draft)]
 
 
 async def _answer(
@@ -270,7 +280,7 @@ async def _answer(
     # [LAW:no-silent-failure] the model hears each failure and says it; the log keeps it.
     try:
         id = _session_id(session)
-        outcome = sessions.draft(request(id))
+        outcome = await sessions.draft(request(id))
     except Rejected as error:
         logger.error(f"draft tool refused its arguments: {error}")
         await params.result_callback({"error": str(error)})
@@ -407,6 +417,8 @@ def _prompt_text(text: object) -> PromptText:
             raise Rejected("the draft text is empty")
         case str() if _CONTROL.search(text):
             raise Rejected("the draft text holds a control character, which would press a key when the draft is typed")
+        case str() if text.endswith("\\"):
+            raise Rejected("the draft text ends with a backslash, which turns the Return that sends it into a newline")
         case str():
             return PromptText(text)
         case other:

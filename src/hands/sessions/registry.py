@@ -6,16 +6,17 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from hands.core.drafts import DraftOutcome, DraftRequest, decide
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Narrate, Note, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Unregistered, Withdraw
+from hands.core.drafts import DraftOutcome, DraftRequest, DraftSent, NotSent, decide
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Narrate, Note, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Type, Unregistered, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
 from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Membership, Registry, RequestId, Session, SessionId
-from hands.sessions.audit import Applied, EffectFailed, Performed, Record
+from hands.sessions.audit import Applied, EffectFailed, Performed, Record, Typing
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import ai_title
+from hands.sessions.typing import Untyped, type_into
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,14 @@ class Listing:
 class Sessions:
     """Applies events, draft requests, and answers to waiting sessions through the core, performs their effects, and answers who is running."""
 
-    def __init__(self, permission_deadline: float, clock: Callable[[], Instant], record: Record, changes: Changes | None = None) -> None:
+    def __init__(
+        self,
+        permission_deadline: float,
+        clock: Callable[[], Instant],
+        record: Record,
+        changes: Changes | None = None,
+        typist: Callable[[Type], None] = type_into,
+    ) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
         self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={})
         # [LAW:effects-at-boundaries] the one clock: hooks, answers, and ticks are all stamped from it.
@@ -36,6 +44,8 @@ class Sessions:
         self._record = record
         # What a turn did to the repository it ran in. A daemon given none tells every turn by its steps alone.
         self._changes = changes or NoChanges()
+        # What types a Type into its session, or raises Untyped.
+        self._typist = typist
         # A blocking hook's connection waits on its future; only a Reply effect resolves one, until shutdown lets them all go.
         self._waiting: dict[RequestId, asyncio.Future[HookReply]] = {}
         # Set once, at shutdown: from then on a permission hook is let go as soon as it asks.
@@ -96,9 +106,21 @@ class Sessions:
         await self._perform_all(effects)
         return outcome
 
-    def draft(self, request: DraftRequest) -> DraftOutcome:
-        self._registry, outcome = decide(self._registry, request)
-        return outcome
+    async def draft(self, request: DraftRequest) -> DraftOutcome:
+        """Apply a draft request. A send is typed into its session, and the outcome is whether that was done."""
+        self._registry, decided = decide(self._registry, request)
+        match decided:
+            case Type(session=session, input=input) as effect:
+                self._record(Typing(effect))
+                try:
+                    await asyncio.to_thread(self._typist, effect)
+                except Untyped as error:
+                    # [LAW:no-silent-failure] said, with the draft's text, which is nowhere else now.
+                    logger.error(f"the draft for session {session} was not sent: {error}")
+                    return NotSent(session, input.prompt, str(error))
+                return DraftSent(session)
+            case outcome:
+                return outcome
 
     async def keep_time(self, period: float) -> None:
         """Tell the reducer the time once a period, until cancelled. The period is how late a deadline can be heard."""
