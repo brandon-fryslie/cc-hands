@@ -227,8 +227,8 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 		// the line clear, and hands writes over the user's words - nothing undoes that.
 		// Read as typing, an arrow key whose sequence really was split counts two
 		// characters that are not there and holds a line that is empty, which the user's
-		// next Enter clears and which hands can clear itself with a ctrl_c, because a key
-		// is never refused. One of those is recoverable.
+		// next Enter clears and which hands can clear itself with a ctrl_c, because a held
+		// line never refuses a key. One of those is recoverable.
 		return 1, press{}, true
 	}
 	switch next := s[1]; {

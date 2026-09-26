@@ -254,14 +254,14 @@ func (w *Wrapped) typeText(asked request, claim *hold) response {
 	if asked.Submit && staysUnsent(asked.Text) {
 		return response{OK: false, Reason: "this text ends where the session takes Enter as something other than sending - after a backslash, which becomes a newline, or on an @, # or : token, whose completion list takes the Enter - so it would sit unsent; nothing was typed. A space after the token closes the list"}
 	}
-	if wrong, bad := w.send(claim, encoded).wrong(); bad {
+	if wrong, bad := w.send(claim, encoded, unrecorded).wrong(); bad {
 		return response{OK: false, Reason: wrong}
 	}
 	if asked.Submit {
 		// Before the Enter and whether or not it lands: once it is on its way, the turn it
 		// starts may be under way, and nothing on stdin will say so.
 		w.line.working()
-		if wrong, bad := w.send(claim, keystrokes["enter"]).wrong(); bad {
+		if wrong, bad := w.send(claim, keystrokes["enter"], unrecorded).wrong(); bad {
 			// A submit is two writes, and the caller has to be able to tell which one
 			// failed: retyping text that is already sitting in the box doubles it.
 			return response{OK: false, Reason: fmt.Sprintf("the text was typed and is sitting unsent in the input box, but Enter did not land, so do not send it again: %s", wrong)}
@@ -300,14 +300,17 @@ func (w *Wrapped) pressKey(asked request, claim *hold) response {
 	if wait := w.line.armed(); bytes.Equal(chord, keystrokes["ctrl_c"]) && wait > 0 {
 		return response{OK: false, Reason: fmt.Sprintf("a Ctrl-C went in less than %s ago, and one into an idle, empty box arms the next to quit the session; nothing was typed. Send it again in %s", quitWindow, wait.Round(time.Millisecond))}
 	}
-	if wrong, bad := w.send(claim, chord).wrong(); bad {
-		// Recorded only for a chord that went out whole: half of one is not a chord the
-		// child acted on, and crediting it would free a line that is still held.
+	// Recorded only once the chord has gone out whole: half of one is not a chord the child
+	// acted on, and crediting it would free a line that is still held.
+	if wrong, bad := w.send(claim, chord, func() { w.line.sent(chord) }).wrong(); bad {
 		return response{OK: false, Reason: wrong}
 	}
-	w.line.sent(chord)
 	return response{OK: true}
 }
+
+// unrecorded is what landing text records in the line owner: nothing, because fritter's own
+// characters are not the user's.
+func unrecorded() {}
 
 // landing is how a write into the session ended.
 type landing int
@@ -357,8 +360,12 @@ func (d delivery) wrong() (string, bool) {
 
 // send writes to the child and reports what became of it.
 //
-// It does not touch the line owner: these bytes are not the user's, and counting them as
-// typing would make fritter refuse its own next write.
+// landed runs once every byte has reached the child, and before the right to write passes
+// on, however late that is `[LAW:no-ambient-temporal-coupling]`. A chord is recorded there
+// and nowhere else, so one that had to be given up on is still recorded when the child
+// takes it - a Ctrl-C that landed late is the first of a pair as surely as one on time,
+// and the next request's check has to see it. Text records nothing: these bytes are not
+// the user's, and counting them as typing would make fritter refuse its own next write.
 //
 // The write runs on a goroutine because a pty write has no deadline to set: a pty master
 // is not a file the runtime can poll, so SetWriteDeadline answers "file type does not
@@ -369,7 +376,7 @@ func (d delivery) wrong() (string, bool) {
 // reads what it was holding.
 //
 // Called only under a request's claim on w.writing, which is what it passes on.
-func (w *Wrapped) send(claim *hold, keys []byte) delivery {
+func (w *Wrapped) send(claim *hold, keys []byte, landed func()) delivery {
 	type written struct {
 		n   int
 		err error
@@ -380,15 +387,18 @@ func (w *Wrapped) send(claim *hold, keys []byte) delivery {
 		done <- written{n, err}
 	}()
 	select {
-	case landed := <-done:
-		if landed.err != nil {
-			return delivery{how: partway, landed: landed.n, of: len(keys), why: fmt.Errorf("cannot write to the session: %w", landed.err)}
+	case wrote := <-done:
+		if wrote.err != nil {
+			return delivery{how: partway, landed: wrote.n, of: len(keys), why: fmt.Errorf("cannot write to the session: %w", wrote.err)}
 		}
-		return delivery{how: arrived, landed: landed.n, of: len(keys)}
+		landed()
+		return delivery{how: arrived, landed: wrote.n, of: len(keys)}
 	case <-time.After(writeGrace):
 		claim.passed = true
 		go func() {
-			<-done
+			if late := <-done; late.err == nil {
+				landed()
+			}
 			<-w.writing
 		}()
 		return delivery{how: unknowable, of: len(keys), why: fmt.Errorf("the session did not take this within %s, so it is not reading its input; how much of it landed is not known", writeGrace)}

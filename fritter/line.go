@@ -45,7 +45,7 @@ const quitWindow = time.Second
 // held until the box is proved empty by a Return that really sent or a Ctrl-C into an
 // idle child. That is
 // the safe direction to be wrong in: a refused write is loud and recoverable, and a key
-// request is never refused, so hands can always clear a line this holds too long. A write
+// request is never refused for a held line, so hands can always clear a line this holds too long. A write
 // into a half-typed line is a garbled prompt nobody can attribute.
 type lineOwner struct {
 	mu    sync.Mutex

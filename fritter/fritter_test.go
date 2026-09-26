@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -797,6 +798,35 @@ func TestACtrlCThatCouldQuitTheSessionIsRefused(t *testing.T) {
 	}
 	if answer := ask(`{"kind":"key","key":"enter"}`); !answer.OK {
 		t.Fatalf("a key that cannot quit anything was held back by the window: %s", answer.Reason)
+	}
+}
+
+func TestACtrlCThatLandsLateStillArmsTheQuitGuard(t *testing.T) {
+	// A Ctrl-C given up on is not gone: it sits in the queue and reaches the child when the
+	// child reads, and the next request's write follows straight behind it. Unrecorded, two
+	// of them go in back to back, which is how a session is quit.
+	go_ := filepath.Join(t.TempDir(), "go")
+	wrapped, ask, _ := wrap(t, "sh", "-c", `while [ ! -e "$0" ]; do sleep 0.02; done; exec cat >/dev/null`, go_)
+	defer func() { _ = wrapped.cmd.Process.Kill() }()
+	if _, err := term.MakeRaw(int(wrapped.master.Fd())); err != nil {
+		t.Fatalf("cannot put the session's terminal into raw mode: %v", err)
+	}
+	// Measured on macOS: a raw pty queues 1022 bytes and blocks on the next, so this fills it.
+	if answer := ask(`{"kind":"text","text":"` + strings.Repeat("x", 1022) + `","submit":false}`); !answer.OK {
+		t.Fatalf("the queue could not be filled: %s", answer.Reason)
+	}
+	if stuck := ask(`{"kind":"key","key":"ctrl_c"}`); stuck.OK || !strings.Contains(stuck.Reason, "not reading its input") {
+		t.Fatalf("the ctrl_c was meant to stall behind a full queue, got %+v", stuck)
+	}
+	if err := os.WriteFile(go_, nil, 0o600); err != nil {
+		t.Fatalf("cannot let the child read: %v", err)
+	}
+	answer := ask(`{"kind":"key","key":"ctrl_c"}`)
+	if answer.OK {
+		t.Fatal("a ctrl_c went in straight behind one that landed late, and could have quit the session")
+	}
+	if !strings.Contains(answer.Reason, "nothing was typed") {
+		t.Fatalf("the refusal must say nothing was typed, got %q", answer.Reason)
 	}
 }
 

@@ -287,8 +287,8 @@ those sixteen characters holds the Return after it, and so does any cursor posit
 them that would have opened a completion list. What that leaves open is a token further
 back in the line than is remembered with the cursor parked inside it; and in the other
 direction, a line held that was really sent. That one clears when the user types sixteen
-more characters, or when hands sends a `ctrl_c` into an idle child — a key request is
-never refused, so a held line can always be handed back.
+more characters, or when hands sends a `ctrl_c` into an idle child — a held line never
+refuses a key request, so it can always be handed back.
 
 Escape is left alone, which is not the compromise an earlier version of this file claimed
 it was: Claude Code 2.1.278 does not clear its input box on Escape. That was measured, not
