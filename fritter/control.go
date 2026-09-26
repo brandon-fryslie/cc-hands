@@ -282,12 +282,14 @@ func (w *Wrapped) typeText(asked request, claim *hold) response {
 	for _, keys := range emptying {
 		steps = append(steps, step{keys, "the input box was being emptied, so what it and the stash held may be gone, and none of the text was typed: %s"})
 	}
+	closing := "the text is in the input box, unsent, and whether what closes it was read is not known; the next text request empties the box: %s"
 	if asked.Submit {
 		end = append(end, keystrokes["enter"]...)
+		// Whether the Enter was read is exactly what an unknowable end cannot say, so the
+		// caller is told it may have been sent - and a session that quit on it cannot be asked.
+		closing = "the text is in the input box and whether what closes it was read is not known, so it may have been sent; do not send it again: %s"
 	}
-	// Whether the Enter was read is exactly what an unknowable end cannot say, so the
-	// caller is told it may have been sent - and a session that quit on it cannot be asked.
-	steps = append(steps, step{body, "%s"}, step{end, "the text is in the input box and whether what closes it was read is not known, so it may have been sent; do not send it again: %s"})
+	steps = append(steps, step{body, "%s"}, step{end, closing})
 	return w.write(claim, steps)
 }
 
