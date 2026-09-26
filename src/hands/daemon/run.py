@@ -56,7 +56,7 @@ from hands.voice.narrator import narrate
 from hands.voice.speech import relay
 from hands.voice.summary import Summariser, summariser
 from hands.voice.summary_instruction import TURN_SUMMARY_INSTRUCTION
-from hands.voice.briefing import brief_on_start
+from hands.voice.briefing import brief
 from hands.voice.conversation import record_turns
 from hands.voice.system import SystemChannel, listen, unheard
 from hands.voice.threads import off_loop
@@ -200,7 +200,6 @@ async def converse(
     tails = Tails(sessions)
     channel = SystemChannel(voice.tts, post_notification, record)
     listen(voice, channel, after_crash)
-    brief_on_start(voice.worker, sessions)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     failures: list[BaseException] = []
 
@@ -217,6 +216,7 @@ async def converse(
             failures.append(error)
             quit_event.set()
 
+    await brief(sessions, voice.worker.queue_frame)
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),

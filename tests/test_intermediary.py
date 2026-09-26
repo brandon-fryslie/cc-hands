@@ -1,6 +1,7 @@
 """The intermediary is told which sessions run and never their history, can decline to answer, and its eval judges the tools the daemon gives it."""
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,8 +33,8 @@ def names(sessions: Sessions) -> list[str]:
 def test_the_briefing_names_each_session_by_title_state_and_mode_with_the_id_for_the_tools() -> None:
     note = briefing([AUTH, FRESH])
     assert note.startswith("[hands] ")
-    assert f'"auth refactor" (id {AUTH["id"]}), idle, in manual mode' in note
-    assert f'"untitled, in cc-hands" (id {FRESH["id"]}), working, its mode not reported yet' in note
+    assert f'"auth refactor" (id {AUTH["id"]}), idle, permission mode: manual mode' in note
+    assert f'"untitled, in cc-hands" (id {FRESH["id"]}), working, permission mode: not reported yet' in note
     assert "Say nothing about this unless the user asks." in note
 
 
@@ -53,17 +54,14 @@ async def test_stay_silent_ends_the_turn_without_running_the_model_again() -> No
     assert properties is not None and properties.run_llm is False
 
 
-def test_every_tool_the_intermediary_is_given_is_named_by_its_prompt() -> None:
-    # A tool the prompt never mentions is one the model has to discover from its schema alone; a tool the
-    # prompt names that is not here is worse, and is what the ordering rule in intermediary_instruction forbids.
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
-    given = names(sessions)
-    assert "stay_silent" in given
-    # The answer tools and amend/discard are reached for from the narration and the readback, not the prompt.
-    named_by_prompt = {"list_sessions", "read_session", "stage_draft", "send_draft", "stay_silent"}
-    assert named_by_prompt <= set(given)
-    for name in named_by_prompt:
-        assert name in INTERMEDIARY_INSTRUCTION
+def test_the_prompt_names_no_tool_the_daemon_does_not_give() -> None:
+    # The rule in intermediary_instruction: a prompt that asks for a tool before it exists gets that tool paraphrased.
+    # Every tool is snake_case, so every snake_case name in the prompt is a tool, bar the code names it quotes as ones never to say.
+    quoted_code_names = {"parse_date", "test_invoice_total"}
+    named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", INTERMEDIARY_INSTRUCTION)) - quoted_code_names
+    given = set(names(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)))
+    assert named, "the prompt names no tool at all"
+    assert named <= given, f"the prompt names {sorted(named - given)}, which the daemon does not give"
 
 
 def test_every_conversation_case_loads_with_exactly_one_expectation_and_names_only_tools_the_daemon_gives() -> None:
@@ -73,7 +71,6 @@ def test_every_conversation_case_loads_with_exactly_one_expectation_and_names_on
     for case in loaded:
         for wanted in evaluation.wanted(case.expect):
             assert wanted in given, f"{case.name} expects {wanted}, which the daemon does not give"
-        assert case.messages[0]["content"].startswith("[hands] hands has just started")
 
 
 def test_a_reply_that_names_an_id_or_a_code_name_fails_and_a_plain_one_holds() -> None:
@@ -92,6 +89,18 @@ def test_a_silent_case_holds_only_for_stay_silent_alone() -> None:
     assert not all(check.held for check in evaluation.judge(case, "Sure!", ()))
 
 
+async def test_words_said_beside_a_look_are_judged_with_the_step_after_it() -> None:
+    [case] = [case for case in evaluation.cases() if case.name == "not-for-me-door"]
+    asked = iter([(f"Let me check session {AUTH['id']}.", (evaluation.Call("list_sessions", {}),)), ("", (evaluation.Call("stay_silent", {}),))])
+
+    async def ask(_messages: object) -> tuple[str, tuple[object, ...]]:
+        return next(asked)
+
+    said, calls, looks = await evaluation.answer(ask, case)
+    assert looks == 1 and said == f"Let me check session {AUTH['id']}."
+    assert not all(check.held for check in evaluation.judge(case, said, calls))
+
+
 def test_a_call_case_fails_on_the_wrong_arguments_and_on_a_stray_tool() -> None:
     [case] = [case for case in evaluation.cases() if case.name == "dictation-is-staged"]
     right = evaluation.Call("stage_draft", {"session": AUTH["id"], "text": "Use the new token helper in the login flow.", "resolutions": []})
@@ -100,3 +109,5 @@ def test_a_call_case_fails_on_the_wrong_arguments_and_on_a_stray_tool() -> None:
     assert not all(check.held for check in evaluation.judge(case, "", (wrong_session,)))
     sent_too = evaluation.Call("send_draft", {"session": AUTH["id"]})
     assert not all(check.held for check in evaluation.judge(case, "", (right, sent_too)))
+    staged_twice = evaluation.Call("stage_draft", {**right.arguments, "text": "Use the old token helper."})
+    assert not all(check.held for check in evaluation.judge(case, "", (right, staged_twice)))

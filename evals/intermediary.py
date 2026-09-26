@@ -3,8 +3,8 @@
 
 Run it against whatever model the daemon runs:
 
-    uv run python evals/intermediary.py                 # the local model on inferno, three runs each
-    uv run python evals/intermediary.py --runs 1        # one run each, for a quick look
+    uv run python evals/intermediary.py                 # the local model on inferno, one run each
+    uv run python evals/intermediary.py --runs 3        # three runs each, for a model that samples
     HANDS_LLM=anthropic uv run python evals/intermediary.py
     HANDS_LLM_URL=http://localhost:8080/v1 uv run python evals/intermediary.py    # the same model, served here
 
@@ -14,12 +14,14 @@ the request is built by the daemon's own Pipecat service and adapter, so what it
 shown in a run [LAW:one-source-of-truth]. The one difference is that it is asked unstreamed: what it answers is the
 same, and a proxy that drops streamed tool calls (hands-llm-000.atw) cannot fake a failure.
 
-A case expects exactly one of three things, and a model is stochastic, so every check must hold in every run:
+A case expects exactly one of three things, and every check must hold in every run. The local model is served at
+temperature 0, so one run is all it has to say; a backend that samples needs more.
 
 A model may look before it acts, calling list_sessions first. In a run that listing comes straight back and the model
 goes on, so here it is answered with the case's own sessions, as list_sessions would describe them, and the model is
-asked again; the step it then takes is the one judged, and how often it looked first is counted as the latency it
-costs, since every look is one more round trip before the user hears anything.
+asked again; the step it then takes is the one judged, with every word it said on the way, since those reached the
+speaker too. How often it looked first is counted as the latency it costs, since every look is one more round trip
+before the user hears anything.
 
   call     the named tool is called, or one of them where a case names several, with the arguments the case names; `mentions` asks that each of an argument's
            listed wordings, any of them, appears in it. Only the tools the case allows may be called beside it.
@@ -28,7 +30,9 @@ costs, since every look is one more round trip before the user hears anything.
            code-shaped reached the ear, judged by `core.spoken`, the filter in front of the speaker.
   silent   stay_silent is called, and nothing else is said or called.
 
-Exit codes are the contract: 0 every check held, 1 a check failed, 2 the model could not be reached at all.
+Exit codes are the contract: 0 every check held, 1 a check failed, 2 the model could not be reached at all. A model
+that was reached and gave no answer, an error status or a turn past the timeout, is a failed check: the daemon's
+turn fails the same way.
 """
 
 import argparse
@@ -38,6 +42,7 @@ import re
 import statistics
 import sys
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,11 +52,11 @@ import anthropic
 import openai
 from loguru import logger
 from anthropic import AsyncAnthropic
-from anthropic.types import TextBlock, ToolUseBlock
+from anthropic.types.beta import BetaTextBlock, BetaToolUseBlock
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
-from pipecat.adapters.services.anthropic_adapter import AnthropicLLMAdapter
 from pipecat.processors.aggregators.llm_context import LLMContext, LLMContextMessage
+from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.openai.llm import OpenAILLMService
 
 from hands.core.spoken import spoken
@@ -75,15 +80,6 @@ TIMEOUT_SECONDS = 60.0
 class Call:
     name: str
     arguments: dict[str, object]
-
-
-@dataclass(frozen=True)
-class Answer:
-    """What the model did at the decision point: what it said, and every tool it called."""
-
-    said: str
-    calls: tuple[Call, ...]
-    seconds: float
 
 
 @dataclass(frozen=True)
@@ -126,10 +122,6 @@ def _case(path: Path) -> Case:
 Ask = Callable[[list[LLMContextMessage]], Awaitable[tuple[str, tuple[Call, ...]]]]
 
 
-class Unreachable(Exception):
-    """The model could not be asked at all, which is no eval rather than a failed one."""
-
-
 def asker(backend: LLMBackend) -> Ask:
     """The one place the backend variant is inspected: each asks the way its daemon service would."""
     tools = intermediary_tools(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None))
@@ -149,10 +141,7 @@ def asker(backend: LLMBackend) -> Ask:
                 params = cast(dict[str, Any], service.build_chat_completion_params(invocation))  # pyright: ignore[reportUnknownMemberType]
                 params["stream"] = False
                 params.pop("stream_options", None)
-                try:
-                    completion = cast(ChatCompletion, await client.chat.completions.create(**params))
-                except openai.APIConnectionError as error:
-                    raise Unreachable(f"{type(error).__name__}: {error}") from error
+                completion = cast(ChatCompletion, await client.chat.completions.create(**params))
                 message = completion.choices[0].message
                 calls = tuple(
                     Call(call.function.name, _arguments(call.function.arguments)) for call in message.tool_calls or () if call.type == "function"
@@ -161,25 +150,20 @@ def asker(backend: LLMBackend) -> Ask:
 
             return from_openai
         case AnthropicBackend(api_key=api_key, model=model):
+            service_ = build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=MAX_REPLY_TOKENS)
+            assert isinstance(service_, AnthropicLLMService)
             client_ = AsyncAnthropic(api_key=api_key, max_retries=0, timeout=TIMEOUT_SECONDS)
 
             async def from_anthropic(messages: list[LLMContextMessage]) -> tuple[str, tuple[Call, ...]]:
                 context = LLMContext(messages=list(messages), tools=list(tools))
-                invocation = AnthropicLLMAdapter().get_llm_invocation_params(
-                    context, enable_prompt_caching=False, system_instruction=INTERMEDIARY_INSTRUCTION
-                )
-                try:
-                    reply = await client_.messages.create(
-                        model=model,
-                        max_tokens=MAX_REPLY_TOKENS,
-                        system=invocation["system"] if isinstance(invocation["system"], str) else anthropic.omit,
-                        messages=invocation["messages"],
-                        tools=invocation["tools"],
-                    )
-                except anthropic.APIConnectionError as error:
-                    raise Unreachable(f"{type(error).__name__}: {error}") from error
-                said = " ".join(block.text for block in reply.content if isinstance(block, TextBlock))
-                calls = tuple(Call(block.name, block.input) for block in reply.content if isinstance(block, ToolUseBlock))
+                # Pipecat assembles this request inside its streaming call, with no builder to borrow as the OpenAI
+                # path does, so these are that assembly's steps the daemon's settings reach, each the service's own:
+                # its adapter call, and the thinking it turns off for a Sonnet that would otherwise think.
+                params: dict[str, Any] = {"model": model, "max_tokens": MAX_REPLY_TOKENS, **service_._get_llm_invocation_params(context)}  # pyright: ignore[reportPrivateUsage]
+                service_._maybe_disable_thinking(params)  # pyright: ignore[reportPrivateUsage]
+                reply = await client_.beta.messages.create(**params, betas=["interleaved-thinking-2025-05-14"])
+                said = " ".join(block.text for block in reply.content if isinstance(block, BetaTextBlock))
+                calls = tuple(Call(block.name, cast(dict[str, object], block.input)) for block in reply.content if isinstance(block, BetaToolUseBlock))
                 return said, calls
 
             return from_anthropic
@@ -190,14 +174,19 @@ MOST_LOOKS = 2
 
 
 async def answer(ask: Ask, case: Case) -> tuple[str, tuple[Call, ...], int]:
-    """What the model did at the case's decision point, after any looks it took first, and how many it took."""
+    """What the model did at the case's decision point, after any looks it took first, and how many it took.
+
+    What it said is everything it said on the way there: words beside a look reach the speaker as surely as a reply.
+    """
     messages: list[LLMContextMessage] = list(case.messages)
+    heard: list[str] = []
     looks = 0
     while True:
         said, calls = await ask(messages)
+        heard.append(said.strip())
         looking = [call.name for call in calls] == ["list_sessions"] and "list_sessions" not in wanted(case.expect)
         if not looking or looks == MOST_LOOKS:
-            return said, calls, looks
+            return " ".join(part for part in heard if part), calls, looks
         looks += 1
         id = f"look_{looks}"
         messages += [
@@ -247,10 +236,13 @@ def _called(call_case: dict[str, Any], calls: tuple[Call, ...], allowed: set[str
     if not matching:
         return Check("call", False, f"no {' or '.join(names)} call; called {[call.name for call in calls]}")
     call = matching[0]
+    repeated = [name for name, times in Counter(call.name for call in matching).items() if times > 1]
     wrong = [f"{key}={call.arguments.get(key)!r}, not {value!r}" for key, value in call_case.get("args", {}).items() if call.arguments.get(key) != value]
     for key, wordings in call_case.get("mentions", {}).items():
         value = str(call.arguments.get(key, "")).lower()
         wrong += [f"{key} holds none of {group}: {value!r}" for group in wordings if not any(word.lower() in value for word in group)]
+    if repeated:
+        wrong.append(f"called {repeated} more than once, where the second call replaces or repeats the first")
     if stray:
         wrong.append(f"also called {stray}")
     return Check("call", not wrong, "; ".join(wrong))
@@ -307,7 +299,7 @@ def _runs(value: str) -> int:
 
 async def main() -> int:
     parsed = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parsed.add_argument("--runs", type=_runs, default=3, help="runs of each case; a model is stochastic (default 3)")
+    parsed.add_argument("--runs", type=_runs, default=1, help="runs of each case; raise it for a model that samples (default 1)")
     parsed.add_argument("--only", default="", help="run only the cases whose name holds this")
     parsed.add_argument("--show", action="store_true", help="print every answer, not only the ones that failed")
     args = parsed.parse_args()
@@ -331,18 +323,24 @@ async def main() -> int:
             began = time.monotonic()
             try:
                 said, calls, looks = await answer(ask, case)
-            except (Unreachable, openai.OpenAIError, anthropic.AnthropicError) as error:
+                broke = [check for check in judge(case, said, calls) if not check.held]
+            except (openai.APITimeoutError, anthropic.APITimeoutError, openai.APIStatusError, anthropic.APIStatusError) as error:
+                # Reached, and no answer: the request the daemon would send failed, which is this run failing.
+                # Caught before the connection errors, which the timeouts are a kind of.
+                said, calls, looks = "", (), 0
+                broke = [Check("answered", False, f"{type(error).__name__}: {error}")]
+            except (openai.APIConnectionError, anthropic.APIConnectionError) as error:
                 # [LAW:no-silent-failure] a model that cannot be reached is not a failing eval, it is no eval.
                 print(f"   cannot reach the model: {type(error).__name__}: {error}")
+                print(f"{failures} failed checks before it stopped")
                 return 2
-            answered = Answer(said, calls, time.monotonic() - began)
-            seconds.append(answered.seconds)
+            took = time.monotonic() - began
+            seconds.append(took)
             looked += looks > 0
-            broke = [check for check in judge(case, answered.said, answered.calls) if not check.held]
             failures += len(broke)
-            shown = f"{' '.join(f'{call.name}({json.dumps(call.arguments)})' for call in answered.calls)} {answered.said!r}".strip()
+            shown = f"{' '.join(f'{call.name}({json.dumps(call.arguments)})' for call in calls)} {said!r}".strip()
             first = f"(looked {looks}×) " if looks else ""
-            print(f"   {'ok  ' if not broke else 'FAIL'} {answered.seconds:5.2f}s  {first}{shown}" if broke or args.show else f"   ok   {answered.seconds:5.2f}s")
+            print(f"   {'ok  ' if not broke else 'FAIL'} {took:5.2f}s  {first}{shown}" if broke or args.show else f"   ok   {took:5.2f}s")
             for check in broke:
                 print(f"        {check.name}: {check.detail}")
         print()

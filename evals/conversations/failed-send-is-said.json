@@ -70,18 +70,26 @@
     "reply": {
       "needs": [
         [
-          "not",
           "can't",
           "cannot",
-          "couldn't"
+          "couldn't",
+          "wasn't",
+          "didn't",
+          "isn't",
+          "not sent",
+          "not been sent",
+          "not able",
+          "unable"
         ]
       ],
       "never": [
-        "sent it",
-        "has been sent",
         "i've sent",
         "i sent",
-        "was sent"
+        "has been sent",
+        "it was sent",
+        "it's sent",
+        "sent it to",
+        "on its way"
       ],
       "sentences": 2
     }

@@ -4,10 +4,9 @@ Pointers, not content (docs/architecture.md, 'Push pointers, pull content'): a s
 transcript, where read_session pulls it on demand, so the note is the same size after a week of work as after none.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame
-from pipecat.pipeline.worker import PipelineWorker
 
 from hands.sessions.registry import Sessions
 from hands.voice.tools import describe_listing
@@ -27,16 +26,14 @@ def briefing(listed: Sequence[Mapping[str, str]]) -> str:
 
 
 def _described(session: Mapping[str, str]) -> str:
-    mode = session["mode"]
-    in_mode = "its mode not reported yet" if mode == "not reported yet" else f"in {mode}"
-    return f'"{session["title"]}" (id {session["id"]}), {session["state"]}, {in_mode}'
+    return f'"{session["title"]}" (id {session["id"]}), {session["state"]}, permission mode: {session["mode"]}'
 
 
-def brief_on_start(worker: PipelineWorker, sessions: Sessions) -> None:
-    """Hand the intermediary the note once the pipeline is running, with the model left unrun: it knows, and says nothing."""
+async def brief(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]]) -> None:
+    """Queue the note with the model left unrun: it knows, and says nothing.
 
-    @worker.event_handler("on_pipeline_started")
-    async def brief(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
-        # Read at the start rather than at the load: the sweep before the load and the hooks since have both had their say.
-        note = briefing([describe_listing(listing) for listing in sessions.live()])
-        await worker.queue_frame(LLMMessagesAppendFrame([{"role": "user", "content": note}], run_llm=False))
+    [LAW:no-ambient-temporal-coupling] awaited before the relay and the narrator start, so the note is the first
+    thing in the model's context and every change it hears of came after what the note says.
+    """
+    note = briefing([describe_listing(listing) for listing in sessions.live()])
+    await queue_frame(LLMMessagesAppendFrame([{"role": "user", "content": note}], run_llm=False))
