@@ -100,9 +100,11 @@ what each has and what remains.
   become question segments that play at every length, ahead of the sections; a
   turn that ends on one makes the idle nudge say the session has a question. Done
   by fixtures of real turns that do and do not end on a question, with the eval
-  reporting misses and false alarms. Built: the summary instruction ends a turn's
-  summary on the question it asked. Remaining: question segments, the idle nudge, and
-  the fixtures and eval.
+  reporting misses and false alarms. Built: the daemon reads a turn's closing text
+  and its unanswered `AskUserQuestion` calls for what it is waiting on, the question
+  segment plays last at every length in the summariser's words or, where it left the
+  question out, Claude's put in spoken form, and the nudge says "X has a question for
+  you." Nine eval cases, four asking and five not, run with no miss and no false alarm.
 - **The intermediary's prompt.** The conversational model's own deliverable,
   separate from the summariser's: titles for sessions and no ids aloud, replies in
   spoken form, "speak what changed" for readbacks, calling `expand`, `resume`,
@@ -195,7 +197,8 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
   `Session.mode`; `list_sessions` speaks it; a mode change is a `Note`. Done when
   shift-tab in a session is reflected in the next `list_sessions`.
 - **Waiting-for-you nudge.** The `idle_prompt` notification becomes a `Speak`: "X
-  is waiting for you." Done when leaving a session idle triggers exactly one nudge.
+  is waiting for you.", or "X has a question for you." when its turn ended on one.
+  Done when leaving a session idle triggers exactly one nudge.
   Built: heard live on 2.1.280, once per idle period, 60 s after the turn ended.
 - **An interrupted turn.** Escape or Ctrl-C mid-turn fires no `Stop` and no later
   `idle_prompt`, so the tail reads the transcript's own record of the interrupt, which

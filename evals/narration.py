@@ -9,8 +9,8 @@ Run it against whatever model the daemon runs:
     HANDS_LLM=openai uv run --env-file .env python evals/narration.py
 
 Each case under `evals/fixtures` is a real turn, lifted whole out of a real transcript, beside the facts a
-listener has to come away with. The turn is folded by the daemon's own recognisers and rendered by the daemon's
-own `render`, so what the model is shown here is byte-for-byte what it is shown at a `Stop` [LAW:one-source-of-truth].
+listener has to come away with. The turn is folded by the daemon's own recognisers and written out by the daemon's
+own `shown`, so what the model is shown here is byte-for-byte what it is shown at a `Stop` [LAW:one-source-of-truth].
 
 Five checks run on every telling, and a model is stochastic, so every one of them must hold in every run:
 
@@ -23,6 +23,11 @@ Five checks run on every telling, and a model is stochastic, so every one of the
   numbers  every number the model said is a number the turn showed. A local model was heard on 2026-09-21
            reporting "version two point seven point one" for a runner that printed 8.4.1; a number with no
            source in the render is that failure, caught. The headline only: the rest is counted by code.
+  never    nothing the case forbids was said.
+
+One more runs once a case, with no model in it: the questions the daemon finds the turn waiting on are the ones
+the case's `asks` names, none missed and none found that it does not name. A miss or a false alarm fails the run
+as a failed check does, and `tests/test_questions.py` holds the same reading to zero without a model.
 
 Exit codes are the contract: 0 every check held, 1 a check failed, 2 the model could not be reached at all —
 and 2 as well from argparse, for a command line that never starts a run.
@@ -43,9 +48,9 @@ import anthropic
 import openai
 
 from hands.core.delta import Changed, Commit, Delta
-from hands.core.narration import Narration, narration, sentences_of
+from hands.core.narration import Narration, narration, open_questions, reported_and_asked, shown
 from hands.core.spoken import spoken
-from hands.core.turn import Answering, Budget, Continuing, Opening, Step, Turn, render
+from hands.core.turn import Answering, Asked, Budget, Continuing, Interruption, Notified, Opening, Step, Turn
 from hands.daemon.run import SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS, backend_from_env
 from hands.sessions.transcript import turn_record
 from hands.sessions.turning import Turning
@@ -74,6 +79,8 @@ class Case:
     delta: Delta
     facts: tuple[Fact, ...]
     never: tuple[str, ...]
+    # A few words of each question the turn is waiting on, as Claude wrote them; empty for a turn that asked nothing.
+    asks: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -94,6 +101,8 @@ class Telling:
     seconds: float
     checks: tuple[Check, ...]
     also_claimed: bool  # the report said what git was about to say, so the listener heard it twice
+    unworded: bool  # the turn asked and the report did not, so its question was said in Claude's words
+    dropped: bool  # the report asked what the turn never did, and it went unsaid
 
 
 def cases() -> list[Case]:
@@ -119,6 +128,9 @@ def _case(expectation: Path) -> Case:
         delta=_delta(written.get("delta", {})),
         facts=tuple(Fact(tuple(fact["needs"]), fact["why"]) for fact in written["facts"]),
         never=tuple(written.get("never", ())),
+        # Required, not defaulted: a case silent about its question would count as asking none, and a question
+        # found there would be charged as a false alarm that nobody decided was false.
+        asks=tuple(written["asks"]),
     )
 
 
@@ -140,10 +152,14 @@ def _folded(transcript: Path) -> tuple[Opening, list[Step]]:
         record = turn_record(line)
         if record is None:
             continue
-        opening = turning.consume(record)
-        if opening is not None:
-            turning.clear()
-            turning.begin(opening)
+        match turning.consume(record):
+            case Asked() | Notified() as opening:
+                turning.clear()
+                turning.begin(opening)
+            case Interruption() | None:
+                # A step, which the turning has already put in its place. Taken for an opening, as it was until
+                # 2026-09-25, it emptied `waiting-on-a-choice` into a turn of no steps opened by the interruption.
+                pass
     if turning.opening is None:
         raise SystemExit(f"{transcript} holds no turn: a fixture is a turn and its opening record must be in it.")
     return turning.opening, turning.steps()
@@ -151,14 +167,36 @@ def _folded(transcript: Path) -> tuple[Opening, list[Step]]:
 
 async def tell(case: Case, summarise: Summariser, budget: Budget) -> Telling:
     """Summarise the case's turn once and judge what came back."""
-    shown = render(case.turn, case.delta, budget)
+    message = shown(case.turn, case.delta, budget)
     began = time.monotonic()
-    headline = await summarise(shown)
+    headline = await summarise(message)
     seconds = time.monotonic() - began
     told = narration(headline, case.turn, case.delta, HEADLINE_SENTENCES)
     said = told.said()
-    checks = (_facts(case, said), _spoken(said), _length(told), _numbers(told.headline.text, shown), _never(case, said))
-    return Telling(said, headline, seconds, checks, _also_claimed(told))
+    checks = (_facts(case, said), _spoken(said), _length(told), _numbers(told.headline.text, message), _never(case, said))
+    worded = bool(reported_and_asked(headline)[1])
+    return Telling(said, headline, seconds, checks, _also_claimed(told), bool(told.questions) and not worded, worded and not told.questions)
+
+
+@dataclass(frozen=True)
+class Detection:
+    """How the daemon's own reading of a case's turn for its questions went, against what the case says it asks."""
+
+    missed: tuple[str, ...]  # what the case says the turn asks and nothing found holds
+    alarmed: tuple[str, ...]  # what was found that holds nothing the case says the turn asks
+
+
+def detection(case: Case) -> Detection:
+    """The questions the daemon finds the turn waiting on, judged against the ones the case says it is.
+
+    No model is in it: this is `open_questions`, the reading `narration` itself does, so it is judged once a case
+    rather than once a telling, and a pytest holds it to zero with no model to reach.
+    """
+    found = [question.asked for question in open_questions(case.turn)]
+    return Detection(
+        missed=tuple(asked for asked in case.asks if not any(asked in question for question in found)),
+        alarmed=tuple(question for question in found if not any(asked in question for asked in case.asks)),
+    )
 
 
 def _facts(case: Case, said: str) -> Check:
@@ -189,7 +227,7 @@ def _length(told: Narration) -> Check:
     counted off the reply as it arrived — and on 2026-09-22 it overran in nine of twelve tellings, which is
     exactly why the number is kept by code and this check guards the code that keeps it.
     """
-    reported = [sentence for sentence in sentences_of(told.headline.text) if not sentence.endswith("?")]
+    reported = reported_and_asked(told.headline.text)[0]
     return Check(
         "length",
         len(reported) <= HEADLINE_SENTENCES,
@@ -221,10 +259,10 @@ def _also_claimed(told: Narration) -> bool:
     Dropping git's clause when the report claims one was considered and refused: a model that claims a commit
     that never landed is exactly the case git's clause exists to contradict, and suppressing it there would turn
     a redundancy into a silent wrong answer [LAW:no-silent-failure]. So the listener hears it twice sometimes,
-    and this number is how often. Only the report is read: a closing question may name the commit it asks about.
+    and this number is how often. Only the report is read, which is all the headline holds: a question may name
+    the commit it asks about.
     """
-    reported = " ".join(sentence for sentence in sentences_of(told.headline.text) if not sentence.endswith("?"))
-    return bool(told.repository) and bool(_CLAIMED.search(reported))
+    return bool(told.repository) and bool(_CLAIMED.search(told.headline.text))
 
 
 def _never(case: Case, said: str) -> Check:
@@ -296,9 +334,20 @@ async def main() -> int:
     failures = 0
     overran = 0
     doubled = 0
+    unworded = 0
+    dropped = 0
+    missed = 0
+    alarmed = 0
     seconds: list[float] = []
     for case in chosen:
         print(f"── {case.name}: {case.about}")
+        found = detection(case)
+        missed += len(found.missed)
+        alarmed += len(found.alarmed)
+        for question in found.missed:
+            print(f"   MISS the turn asks {question!r}, and no question found holds it")
+        for question in found.alarmed:
+            print(f"   FALSE ALARM found {question!r}, which the turn does not ask")
         for run in range(args.runs):
             try:
                 telling = await tell(case, summarise, TURN_BUDGET)
@@ -307,8 +356,10 @@ async def main() -> int:
                 print(f"   cannot reach the model: {type(error).__name__}: {error}")
                 return 2
             seconds.append(telling.seconds)
-            overran += len([sentence for sentence in sentences_of(telling.headline) if not sentence.endswith("?")]) > HEADLINE_SENTENCES
+            overran += len(reported_and_asked(telling.headline)[0]) > HEADLINE_SENTENCES
             doubled += telling.also_claimed
+            unworded += telling.unworded
+            dropped += telling.dropped
             broke = [check for check in telling.checks if not check.held]
             failures += len(broke)
             mark = "ok  " if not broke else "FAIL"
@@ -322,8 +373,15 @@ async def main() -> int:
     # changing it. A model that overruns every time is a model being asked for a length it will not write.
     print(f"the model wrote more than {HEADLINE_SENTENCES} sentence(s) in {overran} of {len(chosen) * args.runs} tellings, and was cut")
     print(f"the report also claimed what git then said in {doubled} of {len(chosen) * args.runs} tellings, and was left to")
+    # Not verdicts either: what the question segment did about the model, so the listener heard the right thing
+    # regardless. A count that climbs is the instruction's to fix.
+    print(f"the report asked none of the turn's questions in {unworded} of {len(chosen) * args.runs} tellings, which said them in Claude's words")
+    print(f"the report asked what the turn never did in {dropped} of {len(chosen) * args.runs} tellings, which left it unsaid")
+    # A verdict: a miss is a turn waiting on an answer it never asks for, and a false alarm is a question put to a
+    # listener that nobody asked.
+    print(f"question detection: {missed} missed and {alarmed} false alarms over {len(chosen)} cases")
     print(f"{failures} failed checks over {len(chosen) * args.runs} tellings")
-    return 1 if failures else 0
+    return 1 if failures or missed or alarmed else 0
 
 
 if __name__ == "__main__":

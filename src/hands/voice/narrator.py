@@ -10,9 +10,9 @@ from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core.delta import Delta
 from hands.core.effects import SessionGone, Summarise
-from hands.core.narration import narration
+from hands.core.narration import narration, shown
 from hands.core.session import PromptId, SessionId
-from hands.core.turn import Budget, Interruption, render
+from hands.core.turn import Budget, Interruption
 from hands.sessions.audit import Recounted, Record
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.payload import Rejected
@@ -70,7 +70,7 @@ async def recount(
         # A turn stopped before it did anything has nothing for a model to report, and a model told not to say it was
         # interrupted would report something anyway: its narration is the interruption alone.
         did = delta or any(not isinstance(step, Interruption) for step in telling.turn.steps)
-        headline = await summarise(render(telling.turn, delta, budget)) if did else ""
+        headline = await summarise(shown(telling.turn, delta, budget)) if did else ""
         # The number this whole epic turns on, and until now invisible: how long a finished turn waited on the
         # model before it could be spoken at all.
         logger.info(f"session {session} was summarised in {time.monotonic() - began:.2f} s")

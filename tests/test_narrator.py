@@ -147,10 +147,11 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
     # The second telling carries the opening as context rather than as the request. Handed it as the request,
     # a small model answers it again: heard live on 2026-09-21 as a second summary restating the first half.
     assert shown == [
-        "The user asked:\nfix it\n\nClaude said:\nLooked.",
+        "The user asked:\nfix it\n\nClaude said:\nLooked.\n\nThe turn asks the user nothing.",
         "This turn has already been reported once, up to and including its first step, and none of that may be"
         " reported again. For context only, this is what opened it:\nThe user asked:\nfix it\n"
-        "Report only what it did after that, below.\n\nClaude ran pytest\nOutput: 1 passed\n\nClaude said:\nFixed.",
+        "Report only what it did after that, below.\n\nClaude ran pytest\nOutput: 1 passed\n\nClaude said:\nFixed."
+        "\n\nThe turn asks the user nothing.",
     ]
 
 

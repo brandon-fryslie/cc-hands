@@ -79,9 +79,10 @@ class Announced:
 class Recounted:
     """What the user heard about a turn a session finished, and what the narration left them able to ask for.
 
-    `topics` is every section of the turn's narration that was built and not played, and `questions` is every
-    question it holds. Neither is spoken, so this line is the one place a developer who cannot see the screen
-    can find out what "more on that" has to open and what the session is waiting on an answer to.
+    `topics` is every section of the turn's narration that was built and not played, which makes this line the
+    one place a developer who cannot see the screen can find out what "more on that" has to open. `questions`
+    is what was said of what the session is waiting on an answer to, which is also the end of `summary`, kept
+    apart so a log reader need not tell the question from the report.
     """
 
     session: str
