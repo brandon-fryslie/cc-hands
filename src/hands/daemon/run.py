@@ -31,7 +31,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.services.whisper.stt import MLXModel
 from pipecat.workers.runner import WorkerRunner
 
-from hands.daemon import status
+from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.sessions.audit import AuditLog, Record, failures_to
@@ -111,7 +111,7 @@ def config_from_env() -> VoiceConfig:
     )
 
 
-async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash: bool) -> None:
+async def run(config: VoiceConfig, home: Home, heart: heartbeat.Heart, after_crash: bool) -> None:
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
     # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
     failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
@@ -143,7 +143,7 @@ async def run(config: VoiceConfig, home: Home, heart: status.Heart, after_crash:
     heart.beat("stopped", None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def load(config: VoiceConfig, sessions: Sessions, heart: status.Heart, quit_event: asyncio.Event, record: Record) -> Voice | None:
+async def load(config: VoiceConfig, sessions: Sessions, heart: heartbeat.Heart, quit_event: asyncio.Event, record: Record) -> Voice | None:
     """The voice, built off the event loop while the loop beats "starting"; None when told to stop first."""
     tools = [audited(tool, record) for tool in (list_sessions_tool(sessions), read_session_tool(sessions), *draft_tools(sessions), *permission_tools(sessions))]
     # Loading the models takes seconds: off the loop, a slow start reads as starting, and only a stuck loop as not responding.
@@ -168,7 +168,7 @@ async def converse(
     home: Home,
     sessions: Sessions,
     summarise: Summariser,
-    heart: status.Heart,
+    heart: heartbeat.Heart,
     quit_event: asyncio.Event,
     after_crash: bool,
     record: Record,

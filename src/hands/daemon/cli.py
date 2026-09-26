@@ -9,7 +9,8 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from hands.daemon import launchd, status
+from hands.daemon import launchd
+from hands.sessions import heartbeat
 from hands.sessions import audit
 from hands.sessions.home import Home, default_home
 from hands.sessions.install import default_settings, install
@@ -35,7 +36,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         case "run":
             # Read before this run's first heartbeat replaces it.
             after_crash = crashed_before(home)
-            heart = status.Heart(home.status, os.getpid(), datetime.now(UTC), status.HEARTBEAT)
+            heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
             # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its
             # models load, seconds of silence in which the file would otherwise still name the process that died.
             heart.beat("starting", None, 0)
@@ -65,15 +66,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def report(home: Home) -> int:
     now = datetime.now(UTC)
-    verdict = status.look(home.status, now)
+    verdict = heartbeat.look(home.status, now)
     match verdict:
-        case status.Up():
+        case heartbeat.Up():
             out, code = sys.stdout, 0
-        case status.NeverRan() | status.Unresponsive() | status.Down() | status.Stopped():
+        case heartbeat.NeverRan() | heartbeat.Unresponsive() | heartbeat.Down() | heartbeat.Stopped():
             out, code = sys.stdout, 1
-        case status.Unreadable():
+        case heartbeat.Unreadable():
             out, code = sys.stderr, 2
-    print(status.describe(verdict, now), file=out)
+    print(heartbeat.describe(verdict, now), file=out)
     return code
 
 
@@ -113,7 +114,7 @@ def tail_log(home: Home, lines: int) -> int:
 def crashed_before(home: Home) -> bool:
     """Whether the last run ended without being stopped: its heartbeat names a pid that is gone, or one that went quiet."""
     now = datetime.now(UTC)
-    verdict = status.look(home.status, now)
-    if isinstance(verdict, status.Unreadable):
-        print(f"hands run: not counted as a crash, since {status.describe(verdict, now)}", file=sys.stderr)
-    return isinstance(verdict, status.Down | status.Unresponsive)
+    verdict = heartbeat.look(home.status, now)
+    if isinstance(verdict, heartbeat.Unreadable):
+        print(f"hands run: not counted as a crash, since {heartbeat.describe(verdict, now)}", file=sys.stderr)
+    return isinstance(verdict, heartbeat.Down | heartbeat.Unresponsive)

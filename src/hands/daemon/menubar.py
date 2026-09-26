@@ -17,7 +17,8 @@ from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
 from loguru import logger
 from PyObjCTools import AppHelper
 
-from hands.daemon import indicator, status
+from hands.daemon import indicator
+from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 
@@ -42,7 +43,7 @@ def show(home: Home) -> None:
         nonlocal before
         try:
             now = datetime.now(UTC)
-            seen = indicator.show(before, status.look(home.status, now), now)
+            seen = indicator.show(before, heartbeat.look(home.status, now), now)
             before = seen
             item.button().setTitle_(seen.title)
             item.button().setToolTip_(seen.text)

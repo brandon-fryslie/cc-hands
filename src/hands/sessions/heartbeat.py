@@ -1,7 +1,8 @@
 """The heartbeat file: what the daemon last said about itself, and what a reader can conclude from it.
 
-The daemon is the file's only writer; `hands status` and the menu-bar indicator only read it,
-so there is one clock that says whether hands is up.
+The daemon is the file's only writer; `hands status`, the menu-bar indicator, and the hook shim only read it,
+so there is one clock that says whether hands is up. It lives beside the shim, below the daemon, because the shim
+reads it and imports only the standard library and hands' data modules.
 """
 
 import json
@@ -137,7 +138,7 @@ Verdict = NeverRan | Up | Unresponsive | Down | Stopped | Unreadable
 
 def look(path: Path, now: datetime) -> Verdict:
     """What the heartbeat file says of the daemon now: the one way anything outside the daemon learns whether it is up."""
-    # [LAW:single-enforcer] `hands status`, the crash check at start, and the menu-bar indicator all judge through here.
+    # [LAW:single-enforcer] `hands status`, the crash check at start, the menu-bar indicator, and the shim all judge through here.
     try:
         last = read(path)
     except (Rejected, OSError) as error:

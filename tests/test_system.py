@@ -14,7 +14,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 from pipecat.utils.errors import ErrorCategory
 
-from hands.daemon import status
+from hands.sessions import heartbeat
 from hands.daemon.cli import crashed_before
 from hands.sessions.audit import Announced, Entry
 from hands.daemon.notify import notification_command
@@ -313,12 +313,12 @@ GONE = "a pid no process holds"
     ],
 )
 def test_a_run_crashed_when_its_last_heartbeat_was_not_a_stop_and_it_is_not_beating(
-    pipeline: status.PipelineState | None, pid: int | str, written_ago: int, crashed: bool, tmp_path: Path, dead_pid: Callable[[], int]
+    pipeline: heartbeat.PipelineState | None, pid: int | str, written_ago: int, crashed: bool, tmp_path: Path, dead_pid: Callable[[], int]
 ) -> None:
     home = Home(tmp_path)
     now = datetime.now(UTC)
     if pipeline is not None:
-        status.write(home.status, status.Status(dead_pid() if pid == GONE else int(pid), now, now - timedelta(seconds=written_ago), status.HEARTBEAT, pipeline, None, 0))
+        heartbeat.write(home.status, heartbeat.Status(dead_pid() if pid == GONE else int(pid), now, now - timedelta(seconds=written_ago), heartbeat.HEARTBEAT, pipeline, None, 0))
     assert crashed_before(home) is crashed
 
 
@@ -326,7 +326,7 @@ def test_a_heartbeat_whose_pid_a_later_process_took_is_a_crash(tmp_path: Path) -
     home = Home(tmp_path)
     day_ago = datetime.now(UTC) - timedelta(days=1)
     # This process holds the pid, but it started long after the run that wrote the heartbeat.
-    status.write(home.status, status.Status(os.getpid(), day_ago, day_ago, status.HEARTBEAT, "running", None, 0))
+    heartbeat.write(home.status, heartbeat.Status(os.getpid(), day_ago, day_ago, heartbeat.HEARTBEAT, "running", None, 0))
     assert crashed_before(home) is True
 
 

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from hands.daemon.status import Down, NeverRan, Stopped, Unreadable, Unresponsive, Up, Verdict, describe
+from hands.sessions.heartbeat import Down, NeverRan, Stopped, Unreadable, Unresponsive, Up, Verdict, describe
 
 # Stopped and never ran are one light: in both, nothing is running and nothing went wrong on the way to that.
 Light = Literal["up", "not responding", "down", "off", "unreadable"]
