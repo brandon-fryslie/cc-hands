@@ -162,8 +162,8 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer, killed <-chan os.Signal)
 	return 0, nil
 }
 
-// screen is the user's terminal as the child's output sees it: written to for as long as
-// it takes the writes, and let go of when it stops.
+// screen is the user's terminal as the child's output sees it: written to until it hangs
+// up, and let go of then.
 //
 // [LAW:dataflow-not-control-flow] The pty is read for as long as the child writes to it,
 // whether or not there is a terminal left to show the output on. A child whose output
@@ -174,9 +174,17 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer, killed <-chan os.Signal)
 type screen struct{ out io.Writer }
 
 func (s *screen) Write(output []byte) (int, error) {
-	if _, err := s.out.Write(output); err != nil {
-		warn("the terminal stopped taking the session's output, which goes nowhere from here: %v", err)
+	_, err := s.out.Write(output)
+	switch {
+	// A terminal that has hung up answers every write with EIO, and the same hangup reaches
+	// fritter as SIGHUP and ends the session. There is no one to tell: stderr is the same
+	// terminal.
+	case errors.Is(err, syscall.EIO):
 		s.out = io.Discard
+	// [LAW:no-silent-failure] Anything else is said, and the next write tries again, so a
+	// passing failure costs the user only the output it failed to show.
+	case err != nil:
+		warn("cannot show the session's output: %v", err)
 	}
 	return len(output), nil
 }

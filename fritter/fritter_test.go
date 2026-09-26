@@ -401,6 +401,45 @@ func TestTheProgramPrintsTheLastWordAndTakesItsSocketWithIt(t *testing.T) {
 	}
 }
 
+// flaky is a terminal that fails the writes it is told to, and takes the rest.
+type flaky struct {
+	failures []error
+	got      string
+}
+
+func (f *flaky) Write(p []byte) (int, error) {
+	if len(f.failures) > 0 {
+		err := f.failures[0]
+		f.failures = f.failures[1:]
+		return 0, err
+	}
+	f.got += string(p)
+	return len(p), nil
+}
+
+func TestOnlyAHungUpTerminalStopsBeingWrittenTo(t *testing.T) {
+	// A write that fails in passing - a descriptor another process on the same terminal
+	// made non-blocking answers EAGAIN - must not blank the user's window for the rest of
+	// the session while the child carries on underneath it.
+	passing := &flaky{failures: []error{syscall.EAGAIN}}
+	shown := &screen{out: passing}
+	shown.Write([]byte("lost "))
+	shown.Write([]byte("shown"))
+	if passing.got != "shown" {
+		t.Errorf("after a passing failure the terminal was shown %q, want %q", passing.got, "shown")
+	}
+
+	// A hung-up terminal fails every write from then on, and fritter's SIGHUP is already
+	// ending the session; what the child still prints has nowhere to go but away.
+	gone := &flaky{failures: []error{syscall.EIO}}
+	shown = &screen{out: gone}
+	shown.Write([]byte("lost "))
+	shown.Write([]byte("also lost"))
+	if gone.got != "" {
+		t.Errorf("a hung-up terminal was written to again: %q", gone.got)
+	}
+}
+
 func TestClosingTheTerminalEndsTheSessionAndTakesItsSocketWithIt(t *testing.T) {
 	// The child is Claude Code's shape on its way out: told its terminal hung up, it has
 	// more to write than a pty holds before it can exit. With the terminal gone, fritter
@@ -417,35 +456,39 @@ func TestClosingTheTerminalEndsTheSessionAndTakesItsSocketWithIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot start fritter on a terminal: %v", err)
 	}
-	var printed []byte
-	for !strings.Contains(string(printed), "\n") {
+	defer fritter.Process.Kill()
+	exited := make(chan error, 1)
+	go func() { exited <- fritter.Wait() }()
+	// One bound over the whole session. A fritter that never prints, or never exits, is
+	// killed, which ends the read or the wait below and fails the test rather than hanging it.
+	watchdog := time.AfterFunc(10*time.Second, func() { _ = fritter.Process.Kill() })
+	defer watchdog.Stop()
+
+	var printed string
+	for at := -1; at < 0 || !strings.Contains(printed[at:], "\n"); at = strings.Index(printed, "ready") {
 		chunk := make([]byte, 256)
 		n, err := terminal.Read(chunk)
 		if err != nil {
 			t.Fatalf("the child never said it was ready; the terminal saw %q: %v", printed, err)
 		}
-		printed = append(printed, chunk[:n]...)
+		printed += string(chunk[:n])
 	}
 	var child int
-	if _, err := fmt.Sscanf(string(printed[strings.Index(string(printed), "ready"):]), "ready %d", &child); err != nil {
+	if _, err := fmt.Sscanf(printed[strings.Index(printed, "ready"):], "ready %d", &child); err != nil {
 		t.Fatalf("cannot read the child's pid from %q: %v", printed, err)
 	}
+	// The child leads a process group of its own, which holds whatever it started too.
+	defer syscall.Kill(-child, syscall.SIGKILL)
 
 	// What a terminal emulator does when its window closes, and tmux when its pane is
 	// killed: the terminal goes, and fritter, whose controlling terminal it was, is hung up.
 	terminal.Close()
 
-	exited := make(chan error, 1)
-	go func() { exited <- fritter.Wait() }()
-	select {
-	case <-exited:
-	case <-time.After(10 * time.Second):
-		_ = syscall.Kill(child, syscall.SIGKILL)
-		_ = fritter.Process.Kill()
+	<-exited
+	if !watchdog.Stop() {
 		t.Fatal("fritter and its child outlived the terminal they ran in")
 	}
 	if err := syscall.Kill(child, 0); !errors.Is(err, syscall.ESRCH) {
-		_ = syscall.Kill(child, syscall.SIGKILL)
 		t.Errorf("fritter exited and left its child %d running: %v", child, err)
 	}
 	left, err := os.ReadDir(dir)
