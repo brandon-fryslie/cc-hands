@@ -219,7 +219,7 @@ def _spoken(said: str) -> Check:
 
 
 def _length(told: Narration) -> Check:
-    """What is spoken is within its number of sentences. A question is always said, so it is not counted.
+    """The headline is within its number of sentences. The question is always said, and is not in it.
 
     This judges the narration and not the model, and cannot be read as judging the model: `_headline` cuts to
     the number before this sees it, so the check holds by construction and fails only if that cut regresses,
@@ -227,7 +227,9 @@ def _length(told: Narration) -> Check:
     counted off the reply as it arrived — and on 2026-09-22 it overran in nine of twelve tellings, which is
     exactly why the number is kept by code and this check guards the code that keeps it.
     """
-    reported = reported_and_asked(told.headline.text)[0]
+    # Every sentence, one read as asked among them: the headline holds only report, so that is a rhetorical question
+    # the cut left without its answer, and still a sentence spoken.
+    reported = [sentence for part in reported_and_asked(told.headline.text) for sentence in part]
     return Check(
         "length",
         len(reported) <= HEADLINE_SENTENCES,

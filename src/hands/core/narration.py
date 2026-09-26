@@ -215,7 +215,8 @@ def _headline(reported: list[str], sentences: int) -> str:
 
 @dataclass(frozen=True)
 class InText:
-    """A sentence of the turn's closing text that asks the listener something, or offers them something."""
+    """What the turn's closing text asks the listener or offers them: one thing, however many sentences it takes,
+    since Claude splits one choice over two."""
 
     step: Said
     asked: str
@@ -241,13 +242,20 @@ def open_questions(turn: Turn) -> tuple[Open, ...]:
     """What the turn is waiting on the listener to answer: whatever it asked through `AskUserQuestion` and never
     had answered, and whatever its closing text asks.
 
-    Closing text only, meaning text that is the turn's last step: a turn that asked something and then went on
-    working had its answer or did not need one, and text an interruption followed was cut off, not left waiting.
+    Only where the turn ended on it: a turn that asked something and then went on working had its answer or did
+    not need one. A dialog is left waiting where nothing but the user stopping it came after, which is how an
+    Escape at the dialog ends a turn; one Claude went on past was declined with a message or refused by a hook, as
+    5 of the 94 unanswered dialogs in this machine's transcripts were on 2026-09-25. Text an interruption
+    followed was cut off, not left waiting.
     """
     unanswered = [
-        InDialog(step, question) for step in turn.steps if isinstance(step, Questioned) for question in step.questions if question.answer is None
+        InDialog(step, question)
+        for at, step in enumerate(turn.steps)
+        if isinstance(step, Questioned) and all(isinstance(later, Interruption) for later in turn.steps[at + 1 :])
+        for question in step.questions
+        if question.answer is None
     ]
-    closing = [InText(step, sentence) for step in turn.steps[-1:] if isinstance(step, Said) for sentence in reported_and_asked(step.text)[1]]
+    closing = [InText(step, " ".join(asked)) for step in turn.steps[-1:] if isinstance(step, Said) for asked in [reported_and_asked(step.text)[1]] if asked]
     return (*unanswered, *closing)
 
 
@@ -270,21 +278,18 @@ def _questions(worded: list[str], waiting: tuple[Open, ...]) -> tuple[Segment, .
     """The one segment that asks what the turn is waiting on, or nothing for a turn waiting on nothing.
 
     In the summariser's words where it asked and the turn is waiting on one thing, because they are the words
-    made to be heard, and whatever it asked can only be that thing. The closing text is one thing however many
-    sentences it asks in, since Claude splits one choice over two; each unanswered dialog question is another.
-    Waiting on two, nothing says which of them the summariser's words cover — asked one, it can drop the other,
+    made to be heard, and whatever it asked can only be that thing. Waiting on two, nothing says which of them the summariser's words cover — asked one, it can drop the other,
     and then that one is said zero times — so each is said in Claude's own words instead, put in spoken form,
     as it is where the summariser asked nothing: a turn waiting on an answer it never asks for is the failure
     this segment exists to prevent, and saying a question less well beats not saying it [LAW:no-silent-failure].
     What the summariser asked of a turn that asked nothing is dropped, which the instruction forbids it to write.
     """
-    things = len(dict.fromkeys(question.step if isinstance(question, InText) else question for question in waiting))
     match waiting:
         case ():
             return ()
         case _:
             holding = tuple(dict.fromkeys(question.step for question in waiting))
-            return (Segment(THE_QUESTION, " ".join(worded) if worded and things == 1 else _unworded(waiting), holding),)
+            return (Segment(THE_QUESTION, " ".join(worded) if worded and len(waiting) == 1 else _unworded(waiting), holding),)
 
 
 def _unworded(waiting: tuple[Open, ...]) -> str:
@@ -322,7 +327,11 @@ _QUOTED = re.compile(rf"{_SPANS}|\?(?=[\w=&/%])|\?(?=\s*(?:→|->|=>))")
 _SPAN = re.compile(_SPANS)
 _MUTED = "\x00"
 _PARAGRAPH = re.compile(r"\n[ \t]*\n")
-_LISTED = re.compile(r"^[ \t]*(?:[-*+]|\d{1,2}[.)])[ \t]+")
+_MARKER = r"[ \t]*(?:[-*+]|\d{1,2}[.)])[ \t]+"
+_LISTED = re.compile(rf"^{_MARKER}")
+# Where a paragraph's next list item or table row begins. A line break anywhere else is a wrap, inside one sentence or
+# between two.
+_ITEM = re.compile(rf"\n(?={_MARKER}|[ \t]*\|)")
 _HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]")
 # A sentence ends at its mark, or past the bold, bracket or quotation that closes with it.
 _SENTENCE = re.compile(r"(?<=[.!?])\s+|(?<=[.!?][*_)\"'”’])\s+|(?<=[.!?][*_)\"'”’]{2})\s+")
@@ -372,17 +381,17 @@ def _read(paragraph: str, closing: bool) -> list[tuple[bool, str]]:
     """Each sentence of a paragraph, and whether it asks the listener something.
 
     Read from the end, because whether a question was the text asking itself depends on what follows it: a
-    question the same line goes on to tell after — "Why did it fail? The cache was stale." — answered itself.
+    question its own item goes on to tell after — "Why did it fail? The cache was stale." — answered itself.
     Unless something later in the paragraph looks ahead to an answer still to come — "What is pi? A pointer is
     enough. Once I have that I'll pin the interface." — which in 3,038 closing texts on this machine is what
-    every real question followed by more of its line did. The line and not the paragraph, because the lines
-    after a list item are the other items, which answer nothing.
+    every real question followed by more of its line did. The item and not the paragraph, because what follows
+    a list item is the other items, which answer nothing.
     """
     read: list[tuple[bool, str]] = []
     ahead = False
-    for line in reversed(_lines(paragraph)):
+    for item in reversed(_items(paragraph)):
         told = False
-        for sentence in reversed(line):
+        for sentence in reversed(item):
             own = _SPAN.sub("", sentence)
             questioned = sentence.rstrip(_CLOSERS).endswith("?")
             addressed = questioned and bool(_ADDRESSED.search(own))
@@ -396,11 +405,13 @@ def _read(paragraph: str, closing: bool) -> list[tuple[bool, str]]:
     return read[::-1]
 
 
-def _lines(paragraph: str) -> list[list[str]]:
-    """A paragraph's sentences, a line at a time so a list's items are their own. No heading is among them: a
-    title names what follows it and asks nothing."""
-    lines = [_LISTED.sub("", line).strip() for line in paragraph.splitlines() if not _HEADING.match(line)]
-    return [[sentence for sentence in _SENTENCE.split(line) if sentence] for line in lines]
+def _items(paragraph: str) -> list[list[str]]:
+    """A paragraph's sentences, a list item or table row at a time so each is its own, and the prose around them whole
+    however it was wrapped: a sentence broken over two lines is one sentence. No heading is among them: a title
+    names what follows it and asks nothing."""
+    kept = "\n".join(line for line in paragraph.splitlines() if not _HEADING.match(line))
+    items = [" ".join(_LISTED.sub("", item).split()) for item in _ITEM.split(kept)]
+    return [[sentence for sentence in _SENTENCE.split(item) if sentence] for item in items]
 
 
 def _sections(steps: list[Sectioned]) -> tuple[Segment, ...]:

@@ -138,10 +138,20 @@ def test_an_offer_with_no_question_mark_is_said_in_claudes_words_where_the_summa
 
 def test_a_turn_waiting_on_two_things_says_each_even_where_the_summariser_asked_only_one() -> None:
     """Nothing says which of two the summariser's words cover, so a question it dropped would be said zero times."""
+    dialog = Questioned(None, (Question("Merge now?", ("Merge", "Wait"), None), Question("Re-run the review?", (), None)))
+    said = told(Ran(None, "pytest", None, False, "ok", ()), dialog, headline="The suites pass. Want it to re-run the review?").said()
+    assert said == "The suites pass. It is asking: Merge now? Either Merge or Wait. It is asking: Re-run the review?"
+
+
+def test_a_choice_split_over_two_sentences_is_said_as_the_one_thing_it_is() -> None:
+    said = told(Said(None, "The rename is in. Should I update the logout code?\nOr roll it back?"), headline="The rename is in.").said()
+    assert said == "The rename is in. It said: Should I update the logout code? Or roll it back?"
+
+
+def test_a_dialog_escaped_is_still_waiting_and_one_claude_went_on_past_is_not() -> None:
     dialog = Questioned(None, (Question("Merge now?", ("Merge", "Wait"), None),))
-    closing = Said(None, "The suites pass. Say the word and I'll re-run the review.")
-    said = told(dialog, closing, headline="The suites pass. Want it to re-run the review?").said()
-    assert said == "The suites pass. It is asking: Merge now? Either Merge or Wait. It said: Say the word and I'll re-run the review."
+    assert [question.text for question in told(dialog, Interruption(None)).questions] == ["It is asking: Merge now? Either Merge or Wait."]
+    assert told(dialog, Said(None, "Going with a merge, then."), Said(None, "Merged, and the suites pass.")).questions == ()
 
 
 def test_one_thing_asked_over_two_sentences_is_still_the_summarisers_to_word() -> None:

@@ -172,6 +172,22 @@ async def test_a_turn_that_cannot_be_summarised_is_said_to_have_failed_and_logge
     assert isinstance(failure, Failure) and "APIConnectionError: Connection error." in failure.message
 
 
+async def test_a_turn_that_cannot_be_summarised_still_says_what_it_is_waiting_on(tmp_path: Path) -> None:
+    """Whether a turn asked anything is the daemon's to find, with no model, and a question is always said."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        '{"uuid":"u1","type":"user","message":{"role":"user","content":"fix the test"}}\n'
+        '{"uuid":"u2","type":"assistant","message":{"content":[{"type":"text","text":"Fixed it. Want me to push it?"}]}}\n'
+    )
+
+    async def failing(turn: str) -> str:
+        raise SummaryFailed("the model returned no summary")
+
+    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", failing, lambda _: None, BUDGET, Delta())
+    assert isinstance(spoken, TTSSpeakFrame)
+    assert spoken.text == "cc-hands finished a turn, and I could not summarise it. It said: Want me to push it?"
+
+
 async def test_a_missing_transcript_is_said_to_have_failed_too(tmp_path: Path) -> None:
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")

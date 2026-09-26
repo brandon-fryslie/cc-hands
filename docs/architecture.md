@@ -356,8 +356,8 @@ for you." rather than "X is waiting for you." It is true for the two things the 
 counts as waiting: a reply the `Stop` carried that the narration's own `reported_and_asked`
 reads as asking, and a turn that went idle still at an `AskUserQuestion` dialog. The
 reducer cannot call `open_questions` itself, since the `Questioned` steps it reads live only
-in the transcript; the two differ where a dismissed dialog was followed by another
-permission before the turn stopped. `Story` carries finished turns and sessions gone in one ordered
+in the transcript; the two differ where the dialog was escaped, which closed its hook and
+moved the session off the question before the turn stopped. `Story` carries finished turns and sessions gone in one ordered
 queue, because a summary takes seconds, and an end spoken at once was heard before the
 last turn it ended. A turn's summary reaches TTS as one `TTSSpeakFrame`, with no player
 and no segments. `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
@@ -913,7 +913,8 @@ hashes, and an ending that asks the turn's question with the session as "it". Th
 narrator speaks the summary after the session's name, keeps it in the intermediary's
 context, and writes it to the audit log as `Recounted`. When reading or summarising
 fails, it says "cc-hands finished a turn, and I could not summarise it." without the model and
-out of the context, and logs the reason, which is a `Failure` line. Measured live
+out of the context, followed by what the turn is waiting on when summarising was what failed, since
+finding that needs no model, and logs the reason, which is a `Failure` line. Measured live
 against a real `claude -p` session, with Qwen3-30B-A3B on inferno: the summary was ready
 1.3 s after `Stop` and first audio came at 1.36 s, and the session's end was heard
 after its summary. Measured again against a session whose first `Stop` another hook
@@ -1069,14 +1070,16 @@ how often the model overran, which is the signal for changing the number.
 
 **What the turn asked always plays, once, and the daemon decides whether it asked.** A turn
 that ends on a question is waiting on the listener whether or not a hook blocks, so
-`open_questions` reads it off the turn itself: every `AskUserQuestion` nobody answered, and
-every sentence of the closing text that asks — the turn's last step, since a question it
-worked past was answered or did not need one. `reported_and_asked` is the one reading of a
+`open_questions` reads it off the turn itself: an `AskUserQuestion` nobody answered that
+nothing but an interruption followed, and what the closing text asks — the turn's last step,
+since a question it worked past was answered or did not need one. A dialog Claude went on
+past was declined with a message or refused by a hook, as 5 of the 94 unanswered in this machine's
+transcripts were; the other 89 were escaped, and ended the turn on the question. `reported_and_asked` is the one reading of a
 text for questions, used on Claude's closing text, on the summariser's reply, and for the
 nudge `[LAW:one-source-of-truth]`. A question put to the listener outright counts wherever
 it stands ("want me to do it?" before two more sections). Where the text ends, an offer
 counts ("Say the word and I'll do it."), and so do a choice and any other question, unless
-its own line goes on to answer it ("Why did it fail? The cache was stale.") and nothing
+its own list item or run of prose goes on to answer it ("Why did it fail? The cache was stale.") and nothing
 later in the paragraph looks ahead to an answer still to come ("Once I have that I'll pin
 the interface."). A `?` inside a code block, a code span, a quotation, or an italic aside is
 written about rather than asked, one with a word straight after it is in an address or a

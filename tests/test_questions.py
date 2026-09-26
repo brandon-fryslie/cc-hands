@@ -59,6 +59,8 @@ def test_a_question_or_an_offer_the_text_ends_on_is_asked(text: str, questions: 
         "Why did I say it? Genre pressure, honestly.\n\nThe corrected sheet is in.",
         "Why did it fail? The cache was stale. Fixed now.",
         "Is this right? I think so, the tests agree.",
+        # The same, with the answer on the question's next line.
+        "**Why did it fail?**\nThe cache was stale. Fixed now.",
         # Inside code, a code span, a quotation, and an aside in italics: written about, not asked.
         "The tool list:\n\n```\nread_session(session, since?)\nspeak(text)\n```\n\nIt is built.",
         "It now reads `listening?.method ?? chosen`.",
@@ -76,6 +78,10 @@ def test_a_question_or_an_offer_the_text_ends_on_is_asked(text: str, questions: 
 )
 def test_a_text_that_asks_the_listener_nothing_is_not_read_as_asking(text: str) -> None:
     assert asked(text) == []
+
+
+def test_a_sentence_wrapped_over_two_lines_is_one_sentence() -> None:
+    assert reported_and_asked("The rename is in, but three session tests\nstill fail.") == (["The rename is in, but three session tests still fail."], [])
 
 
 def test_a_question_mark_muted_for_being_quoted_is_given_back_to_the_sentence_that_holds_it() -> None:

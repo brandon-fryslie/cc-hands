@@ -472,8 +472,8 @@ def _asking(closing: str | None, state: SessionState) -> bool:
     So each half is read from the reducer's own record of the same fact. The closing text is the Stop's reply,
     read by the narration's own `reported_and_asked` [LAW:one-source-of-truth]. An unanswered `AskUserQuestion`
     is a turn that ended still at its dialog: answered at the keyboard or by voice, the tool ran and the session
-    was working again before it stopped. The two can differ where a dialog was dismissed and the turn went on to
-    another permission, which moved the session off the question the transcript still records unanswered.
+    was working again before it stopped. The two differ where the dialog was escaped: the turn ended on it and is
+    told as waiting on it, but the Escape closed the dialog's hook, which moved the session off the question first.
     """
     match state:
         case Blocked(on=Question()) | AtDialog(on=Question()):
