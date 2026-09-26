@@ -21,8 +21,8 @@ def summariser(backend: LLMBackend, instruction: str, max_tokens: int, timeout: 
     # [LAW:one-type-per-behavior] both backends take the same turn and give the same text; only the client differs.
     # No retries: a summary that fails is said at once, not after a backoff that sounds like nothing happened.
     match backend:
-        case OpenAICompatibleBackend(base_url=base_url, model=model):
-            openai_client = AsyncOpenAI(base_url=base_url, api_key="unused", max_retries=0, timeout=timeout)
+        case OpenAICompatibleBackend(base_url=base_url, api_key=api_key, model=model):
+            openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=0, timeout=timeout)
 
             async def from_openai(turn: str) -> str:
                 completion = await openai_client.chat.completions.create(

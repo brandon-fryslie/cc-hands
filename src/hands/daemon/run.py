@@ -65,7 +65,11 @@ from hands.voice.tools import audited, draft_tools, list_sessions_tool, permissi
 # The model lives on inferno, the M4 Max on the LAN, served by mlx_lm.server.
 LOCAL_LLM_URL = "http://inferno.local:8080/v1"
 LOCAL_LLM_MODEL = "mlx-community/Qwen3-30B-A3B-Instruct-2507-8bit"
-API_KEY_VAR = "ANTHROPIC_API_KEY"
+# mlx_lm.server checks no key, but the OpenAI client will not send a request without one.
+LOCAL_LLM_KEY = "unused"
+OPENAI_URL = "https://api.openai.com/v1"
+# Not a reasoning model, so no thinking precedes the first spoken word; it calls tools and takes max_tokens.
+OPENAI_MODEL = "gpt-4.1-mini"
 # How late a permission deadline can be heard.
 TICK_SECONDS = 1.0
 # How late a session whose process died, or one that started unheard, is noticed.
@@ -81,7 +85,7 @@ SUMMARY_TIMEOUT_SECONDS = 30.0
 
 
 def backend_from_env() -> LLMBackend:
-    """HANDS_LLM picks the variant: `local` (default) or `anthropic`."""
+    """HANDS_LLM picks the variant: `local` (default), `openai`, or `anthropic`."""
     # [LAW:parse-dont-validate] the environment is parsed here, once, into a
     # variant that carries exactly what its service needs; an unknown choice
     # or a missing key stops the process at the door.
@@ -89,17 +93,29 @@ def backend_from_env() -> LLMBackend:
     if choice == "local":
         return OpenAICompatibleBackend(
             base_url=os.environ.get("HANDS_LLM_URL", LOCAL_LLM_URL),
+            api_key=LOCAL_LLM_KEY,
             model=os.environ.get("HANDS_LLM_MODEL", LOCAL_LLM_MODEL),
         )
+    if choice == "openai":
+        return OpenAICompatibleBackend(
+            base_url=OPENAI_URL,
+            api_key=_key("OPENAI_API_KEY", choice),
+            model=os.environ.get("HANDS_LLM_MODEL", OPENAI_MODEL),
+        )
     if choice == "anthropic":
-        api_key = os.environ.get(API_KEY_VAR)
-        if not api_key:
-            sys.exit(f"{API_KEY_VAR} is not set; HANDS_LLM=anthropic needs it to reach Claude.")
         return AnthropicBackend(
-            api_key=api_key,
+            api_key=_key("ANTHROPIC_API_KEY", choice),
             model=os.environ.get("HANDS_LLM_MODEL", "claude-haiku-4-5-20251001"),
         )
-    sys.exit(f"HANDS_LLM={choice!r} is not one of: local, anthropic.")
+    sys.exit(f"HANDS_LLM={choice!r} is not one of: local, openai, anthropic.")
+
+
+def _key(var: str, choice: str) -> str:
+    """The API key a keyed variant cannot run without, or the process stops naming the variable."""
+    key = os.environ.get(var)
+    if not key:
+        sys.exit(f"{var} is not set; HANDS_LLM={choice} needs it to reach its model.")
+    return key
 
 
 def config_from_env() -> VoiceConfig:

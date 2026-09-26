@@ -6,7 +6,7 @@ that. `VoiceConfig` is the whole variability of the pipeline as data.
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -61,15 +61,18 @@ SPOKEN_REPLY_INSTRUCTION = (
 class AnthropicBackend:
     """Claude over the Anthropic API."""
 
-    api_key: str
+    # Kept out of the repr, so a backend printed or logged does not print its key.
+    api_key: str = field(repr=False)
     model: str
 
 
 @dataclass(frozen=True)
 class OpenAICompatibleBackend:
-    """Any OpenAI-compatible chat completions server, such as mlx_lm.server."""
+    """Any OpenAI chat completions server: OpenAI's own API, or one such as mlx_lm.server."""
 
     base_url: str
+    # Sent as the bearer token on every call, whatever the server does with it; kept out of the repr like Claude's.
+    api_key: str = field(repr=False)
     model: str
 
 
@@ -112,10 +115,10 @@ def build_llm(
                     model=model, system_instruction=instruction, max_tokens=max_tokens
                 ),
             )
-        case OpenAICompatibleBackend(base_url=base_url, model=model):
+        case OpenAICompatibleBackend(base_url=base_url, api_key=api_key, model=model):
             return FailFastOpenAILLMService(
                 base_url=base_url,
-                api_key="unused",
+                api_key=api_key,
                 settings=OpenAILLMService.Settings(
                     model=model, system_instruction=instruction, max_tokens=max_tokens
                 ),
