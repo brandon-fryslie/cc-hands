@@ -44,15 +44,41 @@ var keystrokes = map[string][]byte{
 	// Ctrl-U kills back to the start of the line the cursor is on, and that is the line as
 	// displayed: measured, a 250-character prompt in a 100-column terminal lost one row to
 	// a single press and kept 192 characters. It is offered because a caller may want it,
-	// but it settles nothing. Ctrl-C is the chord that empties the box whatever is in it,
-	// and the one to reach for when a line has to be cleared - once, because a second
-	// press in a row quits the session.
+	// but it empties nothing. Text is typed into a box fritter has emptied itself; see stash.
 	"ctrl_u":    {0x15},
 	"up":        []byte("\x1b[A"),
 	"down":      []byte("\x1b[B"),
 	"tab":       {'\t'},
 	"shift_tab": []byte("\x1b[Z"),
 }
+
+// emptying leaves the input box empty and Claude Code's stash with nothing in it, whatever
+// either held before. Each is one step, read on its own.
+//
+// Ctrl-S in Claude Code 2.1.283 moves the box into the stash - every line of it, wherever
+// the cursor is, in shell mode or out, with a completion list open or not - and leaves the
+// box empty in prompt mode. Into an empty box it does the opposite and puts the stash back.
+// So:
+//
+//   - `a`, Ctrl-S: the box is certain not to be empty when the Ctrl-S lands, so it is
+//     stashed, and the box is empty. The `a` has to be a character the box keeps: a space
+//     or a no-break space typed into an empty box leaves it reading as empty, and the
+//     Ctrl-S then restored the stash under whatever came next.
+//   - `a`, Ctrl-S again: the stash is now exactly `a`. Whatever it held is gone; the stash
+//     is fritter's to use.
+//   - Ctrl-S into the empty box: the `a` comes back, with the cursor after it, and the
+//     stash is empty.
+//   - Backspace: takes the character before the cursor, which is that `a`.
+//
+// The stash has to end empty because the session puts it back into the box as it sends
+// a prompt, and it does that some time after reading the Enter: a stash written a
+// millisecond after the Enter was read put the text away unsent. With nothing stashed,
+// nothing comes back, and nothing has to follow the Enter.
+//
+// Ctrl-C is not a way to do it. Into an idle session it empties the box and arms the next
+// press to quit; into a working one it stops the work and leaves the box as it was - and
+// which of the two the session is, stdin does not say.
+var emptying = [][]byte{[]byte("a\x13"), []byte("a\x13"), {0x13}, {del}}
 
 // How long each phase of one exchange may take, and the most a caller may send.
 //
@@ -70,25 +96,26 @@ var keystrokes = map[string][]byte{
 //
 // Their sum is what hands must outlast, and does:
 //
-//	readDeadline (1s) + claimGrace (0.5s) + at most two writes at writeGrace each (2s)
-//	  + replyDeadline (1s) = 4.5s < hands' ANSWER_TIMEOUT (5s)
+//	readDeadline (1s) + claimGrace (0.5s) + typeGrace (2s) + replyDeadline (1s)
+//	  = 4.5s < hands' ANSWER_TIMEOUT (5s)
 const (
 	readDeadline  = 1 * time.Second
 	replyDeadline = 1 * time.Second
 	askLimit      = 64 * 1024
 )
 
-// How long a write into the child's input may take before fritter stops waiting on it,
-// and how long serve waits before accepting again after an error it did not expect.
+// How long a request's writes into the child's input may take, all of them together,
+// before fritter stops waiting on them, and how long serve waits before accepting again
+// after an error it did not expect.
 //
-// A pty in raw mode holds a kilobyte of input, and a write that fills it blocks until the
-// child reads - which a running session does at once, and a stopped or wedged one never
-// does. Measured on macOS: a cooked pty takes 300KB without blocking, a raw one blocks at
-// 1024 bytes, and Claude Code runs raw. A wait with no bound there is the whole program
-// hanging on the one thing it exists to do, so the wait ends and says so instead.
+// Every write waits for the child to read it (see inputQueue), which a running session
+// does at once and a stopped or wedged one never does. A wait with no bound there is the
+// whole program hanging on the one thing it exists to do, so the wait ends and says so
+// instead. One budget for the request rather than one per write, because a text request
+// is up to four writes and the sum above has to hold for all of them.
 const (
 	claimGrace    = 500 * time.Millisecond
-	writeGrace    = 1 * time.Second
+	typeGrace     = 2 * time.Second
 	acceptBackoff = 50 * time.Millisecond
 )
 
@@ -185,7 +212,7 @@ func (w *Wrapped) inject(asked request) response {
 	case <-time.After(claimGrace):
 		return response{OK: false, Reason: fmt.Sprintf("another write into this session has not finished after %s - another request's, or an earlier one the child is not reading - so nothing was typed", claimGrace)}
 	}
-	var claim hold
+	claim := hold{by: time.After(typeGrace)}
 	answer := w.dispatch(asked, &claim)
 	if !claim.passed {
 		<-w.writing
@@ -203,6 +230,8 @@ type hold struct {
 	// A write this request gave up on has the lock now and lets go of it when the child
 	// takes it; see send.
 	passed bool
+	// When the request's writes stop being waited on.
+	by <-chan time.Time
 }
 
 func (w *Wrapped) dispatch(asked request, claim *hold) response {
@@ -216,13 +245,13 @@ func (w *Wrapped) dispatch(asked request, claim *hold) response {
 	}
 }
 
-// typeText is the one request that yields to the person at the keyboard. Text is the only
-// thing that can interleave: dropped into a half-written line it produces one prompt made
-// of two people's words, which nobody afterwards can pull apart.
+// typeText types text into a box it has emptied first.
+//
+// Emptying it is not a courtesy to the person at the keyboard but the only way the text
+// arrives as itself: typed onto whatever they had half-written, it would be one prompt made
+// of two people's words, which nobody afterwards can pull apart. What they had written is
+// not kept; see emptying.
 func (w *Wrapped) typeText(asked request, claim *hold) response {
-	if !w.line.free() {
-		return response{OK: false, Reason: "this session's input holds text that was not seen to be sent - typed by the user, or brought in by a key such as tab, up, down or ctrl_u - and text is not typed into it until a Return sends it or a ctrl_c empties it"}
-	}
 	// [LAW:parse-dont-validate] Text is characters and newlines. A control byte in it is
 	// a keystroke wearing text's clothes: an ESC ends the bracketing early and everything
 	// after it is typed and submitted on its own, and a 0x03 is a Ctrl-C. Either way what
@@ -230,7 +259,7 @@ func (w *Wrapped) typeText(asked request, claim *hold) response {
 	if offending, at := controlByte(asked.Text); at >= 0 {
 		return response{OK: false, Reason: fmt.Sprintf("this text holds the control byte %#02x at offset %d, which is a keystroke and not a character; send a key request for it", offending, at)}
 	}
-	encoded, bracketed := w.paste.encode(asked.Text)
+	body, end, bracketed := w.paste.encode(asked.Text)
 	// [LAW:no-silent-failure] Bare newlines go to the child as Enter presses, so without
 	// bracketing a multi-line draft arrives as several separate submitted prompts. Saying
 	// ok to that would tell hands one message was sent when several were.
@@ -242,17 +271,33 @@ func (w *Wrapped) typeText(asked request, claim *hold) response {
 	if asked.Submit && staysUnsent(asked.Text) {
 		return response{OK: false, Reason: "this text ends where the session takes Enter as something other than sending - after a backslash, which becomes a newline, or on an @, # or : token, whose completion list takes the Enter - so it would sit unsent; nothing was typed. A space after the token closes the list"}
 	}
-	if wrong, bad := w.send(claim, encoded).wrong(); bad {
-		return response{OK: false, Reason: wrong}
+	// [LAW:dataflow-not-control-flow] A request is its steps, and each is written the same
+	// way. What differs is what a failure at that step leaves behind, which the caller has
+	// to be told: retyping text that is already in the box doubles it.
+	//
+	// The Enter goes in with the marker that closes the paste. Read apart from it, even a
+	// millisecond later, the session took the Enter before the paste was in the box and
+	// sent nothing.
+	var steps []step
+	for _, keys := range emptying {
+		steps = append(steps, step{keys, "the input box was being emptied and nothing of the text was typed: %s"})
 	}
 	if asked.Submit {
-		if wrong, bad := w.send(claim, keystrokes["enter"]).wrong(); bad {
-			// A submit is two writes, and the caller has to be able to tell which one
-			// failed: retyping text that is already sitting in the box doubles it.
-			return response{OK: false, Reason: fmt.Sprintf("the text was typed and is sitting unsent in the input box, but Enter did not land, so do not send it again: %s", wrong)}
+		end = append(end, keystrokes["enter"]...)
+	}
+	steps = append(steps, step{body, "%s"}, step{end, "the text is in the input box but what ends it did not land, so it is not sent; do not send it again: %s"})
+	for _, s := range steps {
+		if wrong, bad := w.send(claim, s.keys).wrong(); bad {
+			return response{OK: false, Reason: fmt.Sprintf(s.failed, wrong)}
 		}
 	}
 	return response{OK: true}
+}
+
+// step is one write of a request, and what to tell the caller if it does not land.
+type step struct {
+	keys   []byte
+	failed string // a format taking what went wrong with the write
 }
 
 // controlByte finds the first byte in text that is a keystroke rather than a character,
@@ -267,24 +312,16 @@ func controlByte(text string) (byte, int) {
 	return 0, -1
 }
 
-// pressKey sends one chord, and does not yield to the person at the keyboard.
-//
-// A keystroke cannot interleave with anything: it does exactly what it would do if the
-// user had pressed it themselves, and they see the result. Gating it on a free line would
-// also be a door locked from the inside - Enter and Ctrl-C are the very keys that
-// free a line, so a session whose line is held would have no way back except a human at
-// the physical keyboard, which is the case this whole program exists to avoid.
+// pressKey sends one chord. It does exactly what it would do if the user had pressed it
+// themselves, and they see the result.
 func (w *Wrapped) pressKey(asked request, claim *hold) response {
 	chord, known := keystrokes[asked.Key]
 	if !known {
 		return response{OK: false, Reason: fmt.Sprintf("no key named %q", asked.Key)}
 	}
 	if wrong, bad := w.send(claim, chord).wrong(); bad {
-		// Recorded only for a chord that went out whole: half of one is not a chord the
-		// child acted on, and crediting it would free a line that is still held.
 		return response{OK: false, Reason: wrong}
 	}
-	w.line.sent(chord)
 	return response{OK: true}
 }
 
@@ -292,9 +329,9 @@ func (w *Wrapped) pressKey(asked request, claim *hold) response {
 type landing int
 
 const (
-	arrived    landing = iota // every byte reached the input box
+	arrived    landing = iota // every byte reached the child, and the child read it
 	partway                   // the write came back with an error, so how much landed is known
-	unknowable                // the write never came back, so how much landed cannot be known
+	unknowable                // the child had not read it in time, so how much landed cannot be known
 )
 
 // delivery is what became of one write into the session.
@@ -334,43 +371,54 @@ func (d delivery) wrong() (string, bool) {
 	}
 }
 
-// send writes to the child and reports what became of it.
+// send writes to the child, waits for the child to read it, and reports what became of it.
 //
-// It does not touch the line owner: these bytes are not the user's, and counting them as
-// typing would make fritter refuse its own next write.
+// The child is waited on before the write as well as after: what the user typed a moment
+// before this request took the lock may still be unread, and read together with these
+// bytes it is one read the child can take for a paste (see inputQueue).
 //
-// The write runs on a goroutine because a pty write has no deadline to set: a pty master
-// is not a file the runtime can poll, so SetWriteDeadline answers "file type does not
-// support deadline" and the only bound available is to stop waiting. The write itself is
-// not cancelled - it cannot be - so while one is outstanding nothing else may write, or
-// two half-written messages interleave into one nobody can attribute. So a write given up
-// on keeps the right to write: the lock passes to it, and it lets go the moment the child
-// reads what it was holding.
+// The write runs on a goroutine because neither it nor the wait after it has a deadline to
+// set: a pty master is not a file the runtime can poll, so SetWriteDeadline answers "file
+// type does not support deadline", and the only bound available is to stop waiting. Neither
+// is cancelled - they cannot be - so while one is outstanding nothing else may write, or
+// what the next request writes is read together with these bytes. So a write given up on
+// keeps the right to write: the lock passes to it, and it lets go the moment the child has
+// read what it was holding.
 //
 // Called only under a request's claim on w.writing, which is what it passes on.
 func (w *Wrapped) send(claim *hold, keys []byte) delivery {
-	type written struct {
-		n   int
-		err error
+	if err := w.queue.waitEmpty(claim.by); err != nil {
+		return delivery{how: partway, of: len(keys), why: err}
 	}
-	done := make(chan written, 1)
+	type outcome struct {
+		n           int
+		wrote, read error
+	}
+	done := make(chan outcome, 1)
 	go func() {
 		n, err := w.master.Write(keys)
-		done <- written{n, err}
+		finished := outcome{n: n, wrote: err}
+		if err == nil {
+			finished.read = w.queue.waitEmpty(nil)
+		}
+		done <- finished
 	}()
 	select {
-	case landed := <-done:
-		if landed.err != nil {
-			return delivery{how: partway, landed: landed.n, of: len(keys), why: fmt.Errorf("cannot write to the session: %w", landed.err)}
+	case finished := <-done:
+		switch {
+		case finished.wrote != nil:
+			return delivery{how: partway, landed: finished.n, of: len(keys), why: fmt.Errorf("cannot write to the session: %w", finished.wrote)}
+		case finished.read != nil:
+			return delivery{how: unknowable, of: len(keys), why: finished.read}
 		}
-		return delivery{how: arrived, landed: landed.n, of: len(keys)}
-	case <-time.After(writeGrace):
+		return delivery{how: arrived, landed: finished.n, of: len(keys)}
+	case <-claim.by:
 		claim.passed = true
 		go func() {
 			<-done
 			<-w.writing
 		}()
-		return delivery{how: unknowable, of: len(keys), why: fmt.Errorf("the session did not take this within %s, so it is not reading its input; how much of it landed is not known", writeGrace)}
+		return delivery{how: unknowable, of: len(keys), why: fmt.Errorf("the session did not take this within %s, so it is not reading its input; how much of it landed is not known", typeGrace)}
 	}
 }
 

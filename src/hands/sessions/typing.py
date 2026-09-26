@@ -23,8 +23,8 @@ from hands.core.session import Keystroke, Membership, PromptText, SessionId
 # How long the whole exchange may take, and the most an answer may run to.
 #
 # This must stay longer than fritter's own bounds added up, and they are: one second to
-# read the request, half a second waiting for any other write to finish, one for each
-# write into the session (at most two), and one more for the reply, which fritter grants
+# read the request, half a second waiting for any other write to finish, two for all of
+# its writes into the session together, and one more for the reply, which fritter grants
 # after the typing is over so that answering is always affordable. Four and a half against
 # this five. Shorten this below fritter's sum and hands hears its
 # own timer instead of what fritter had to say. Reaching it at all means
