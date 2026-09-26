@@ -1,6 +1,7 @@
 """`hands run`: the daemon in the foreground, as launchd runs it.
 
     uv run hands run              # Qwen on inferno (HANDS_LLM=local, the default)
+    HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
     HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
 
 Sessions join through the hook socket at ~/.hands/hands.sock. A Claude Code
@@ -112,7 +113,8 @@ def backend_from_env() -> LLMBackend:
 
 def _key(var: str, choice: str) -> str:
     """The API key a keyed variant cannot run without, or the process stops naming the variable."""
-    key = os.environ.get(var)
+    # A key has no whitespace in it: space around one in a .env is dropped, and a blank one is no key.
+    key = os.environ.get(var, "").strip()
     if not key:
         sys.exit(f"{var} is not set; HANDS_LLM={choice} needs it to reach its model.")
     return key

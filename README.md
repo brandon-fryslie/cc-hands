@@ -74,11 +74,11 @@ model for any of them. `HANDS_LLM_URL` moves `local` or `openai` to another
 OpenAI-compatible server; it is the base URL the client appends `/chat/completions` to,
 so it usually ends in `/v1` (`https://api-chicago.codexapi.pro/v1`: the bare host answers
 404). Such a server must stream tool calls, because the pipeline's service always
-streams: api-chicago.codexapi.pro streams replies but drops tool calls (2026-09-25). A keyed variant stops at start, naming the variable, when its key
-(`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) is not set. The key can live in a `.env` at the
-repository root, which git ignores, and `uv run --env-file .env` puts it in the
-environment; uv stops if the file is not there. The
-gate is push-to-talk: the key is the voice activity detector and the microphone mute,
+streams: api-chicago.codexapi.pro streams replies but drops tool calls (2026-09-25). A
+keyed variant stops at start, naming the variable, when its key (`OPENAI_API_KEY` or
+`ANTHROPIC_API_KEY`) is not set. The key can live in a `.env` at the repository root,
+which git ignores, and `uv run --env-file .env` puts it in the environment; uv stops if
+the file is not there. The gate is push-to-talk: the key is the voice activity detector and the microphone mute,
 so the turn boundary is the key and the pipeline can never transcribe itself. Measured
 on 2026-09-12, voice to voice with the local model: 1.4 s from key release to first
 audio on a plain turn, 4.3 s on a turn with a tool call.
