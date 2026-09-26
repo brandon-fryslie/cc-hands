@@ -206,6 +206,13 @@ async def test_what_is_typed_is_in_the_audit_log_before_the_readback(tmp_path: P
     assert written[-2]["effect"]["input"] == {"type": "Text", "prompt": "run the tests"}
 
 
+async def test_a_command_with_blank_arguments_is_typed_without_them(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions, id = await wrapped(tmp_path, typed.append)
+    await call(keyboard_tools(sessions), "send_command", session=id, command="compact", args="  ")
+    assert [effect.input for effect in typed] == [Command(CommandName("compact"), None)]
+
+
 async def test_a_command_is_typed_with_its_slash_and_read_back(tmp_path: Path) -> None:
     typed: list[Type[Input]] = []
     sessions, id = await wrapped(tmp_path, typed.append)
@@ -251,7 +258,7 @@ async def test_a_session_at_a_permission_dialog_is_sent_no_command(tmp_path: Pat
         ("compact now", "", "slash command's name"),
         ("//compact", "", "slash command's name"),
         (7, "", "command should be a string"),
-        ("model", "  ", "the command's arguments is empty"),
+        ("model", "opus\nand run the tests", "one line"),
         ("model", "opus\x1b[A", "control character"),
         ("model", "opus \\", "ends with a backslash"),
     ],

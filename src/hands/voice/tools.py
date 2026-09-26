@@ -3,7 +3,7 @@
 import asyncio
 import functools
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from typing import TypedDict, cast
 
@@ -13,9 +13,9 @@ from pipecat.adapters.schemas.direct_function import DirectFunction
 from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, SendDraft, StageDraft
+from hands.core.drafts import AmendDraft, DiscardDraft, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
-from hands.core.keyboard import Interrupt, KeyboardRequest, SendCommand
+from hands.core.keyboard import Interrupt, SendCommand
 from hands.core.session import AtDialog, Blocked, Blocker, CommandName, Gone, Idle, Permission, Plan, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Submitted, Working
 from hands.core.turn import Budget, Happening, Ref, describe
 from hands.sessions.backfill import Unseen, read_since
@@ -242,7 +242,7 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
             text: The prompt, cleaned up from what the user said.
             resolutions: Each spoken phrase you turned into something exact, such as a file name, with what you made of it. Empty when you resolved nothing.
         """
-        await _answer(params, sessions, session, lambda id: StageDraft(id, parse_draft(text, resolutions)))
+        await _answer(params, sessions, session, lambda id: StageDraft(id, parse_draft(text, resolutions)), sessions.draft, readback)
 
     async def amend_draft(params: FunctionCallParams, session: str, text: str, resolutions: list[Resolved]) -> None:
         """Replace a session's staged draft with a corrected one when the user changes it.
@@ -254,7 +254,7 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
             text: The whole corrected prompt, not only the changed words.
             resolutions: Every resolution the corrected prompt relies on.
         """
-        await _answer(params, sessions, session, lambda id: AmendDraft(id, parse_draft(text, resolutions)))
+        await _answer(params, sessions, session, lambda id: AmendDraft(id, parse_draft(text, resolutions)), sessions.draft, readback)
 
     async def discard_draft(params: FunctionCallParams, session: str) -> None:
         """Throw away a session's staged draft without sending it.
@@ -262,7 +262,7 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        await _answer(params, sessions, session, DiscardDraft)
+        await _answer(params, sessions, session, DiscardDraft, sessions.draft, readback)
 
     async def send_draft(params: FunctionCallParams, session: str) -> None:
         """Type a session's staged draft into it and press Return. Call it only once the user has said to send it.
@@ -272,24 +272,29 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        await _answer(params, sessions, session, SendDraft)
+        await _answer(params, sessions, session, SendDraft, sessions.draft, readback)
 
     # A barge-in must not cancel a draft call part way: the draft would change, or be sent, without its readback heard.
     return [_uncancelled_by_interruption(tool) for tool in (stage_draft, amend_draft, discard_draft, send_draft)]
 
 
-async def _answer(
-    params: FunctionCallParams, sessions: Sessions, session: object, request: Callable[[SessionId], DraftRequest]
+async def _answer[R, O](
+    params: FunctionCallParams,
+    sessions: Sessions,
+    session: object,
+    request: Callable[[SessionId], R],
+    apply: Callable[[R], Awaitable[O]],
+    say: Callable[[O, str], str],
 ) -> None:
     # [LAW:no-silent-failure] the model hears each failure and says it; the log keeps it.
     try:
         id = _session_id(session)
-        outcome = await sessions.draft(request(id))
+        outcome = await apply(request(id))
     except Rejected as error:
-        logger.error(f"draft tool refused its arguments: {error}")
+        logger.error(f"{params.function_name} refused its arguments: {error}")
         await params.result_callback({"error": str(error)})
         return
-    await params.result_callback({"readback": readback(outcome, spoken_name(sessions, id))})
+    await params.result_callback({"readback": say(outcome, spoken_name(sessions, id))})
 
 
 def keyboard_tools(sessions: Sessions) -> list[Tool]:
@@ -306,7 +311,7 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
             command: The command's name, such as "compact" or "model".
             args: What follows the name, such as "opus" for model. Empty when the user gave nothing.
         """
-        await _type(params, sessions, session, lambda id: SendCommand(id, parse_command(command, args)))
+        await _answer(params, sessions, session, lambda id: SendCommand(id, parse_command(command, args)), sessions.keyboard, keyboard_readback)
 
     async def interrupt_session(params: FunctionCallParams, session: str) -> None:
         """Stop what a session is doing, as pressing Escape at its keyboard does. At a permission dialog that is the dialog's no.
@@ -316,24 +321,10 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        await _type(params, sessions, session, Interrupt)
+        await _answer(params, sessions, session, Interrupt, sessions.keyboard, keyboard_readback)
 
     # A barge-in must not cancel either part way: it would be typed without its readback heard.
     return [_uncancelled_by_interruption(tool) for tool in (send_command, interrupt_session)]
-
-
-async def _type(
-    params: FunctionCallParams, sessions: Sessions, session: object, request: Callable[[SessionId], KeyboardRequest]
-) -> None:
-    # [LAW:no-silent-failure] the model hears each failure and says it; the log keeps it.
-    try:
-        id = _session_id(session)
-        outcome = await sessions.keyboard(request(id))
-    except Rejected as error:
-        logger.error(f"{params.function_name} refused its arguments: {error}")
-        await params.result_callback({"error": str(error)})
-        return
-    await params.result_callback({"readback": keyboard_readback(outcome, spoken_name(sessions, id))})
 
 
 def permission_tools(sessions: Sessions) -> list[Tool]:
@@ -461,7 +452,7 @@ def parse_draft(text: object, resolutions: object) -> Staged:
 
 def parse_command(name: object, args: object) -> Command:
     """The model's arguments, parsed once into a command whose name and arguments are safe to type after a slash."""
-    return Command(_command_name(name), None if args == "" else _prompt_text(args, "the command's arguments"))
+    return Command(_command_name(name), _command_args(args))
 
 
 def _command_name(name: object) -> CommandName:
@@ -475,6 +466,17 @@ def _command_name(name: object) -> CommandName:
             return CommandName(named.group(1))
         case other:
             raise Rejected(f"command should be a string, got {type(other).__name__}")
+
+
+def _command_args(args: object) -> PromptText | None:
+    match args:
+        case str() if not args.strip():
+            return None
+        case str() if "\n" in args:
+            # A command is one line: what a line break does inside one, pasted, is unmeasured.
+            raise Rejected("a command's arguments are one line, and these hold a line break")
+        case _:
+            return _prompt_text(args, "the argument string")
 
 
 def _prompt_text(text: object, what: str) -> PromptText:
