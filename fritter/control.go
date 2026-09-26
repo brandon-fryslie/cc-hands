@@ -70,7 +70,7 @@ var keystrokes = map[string][]byte{
 //
 // Their sum is what hands must outlast, and does:
 //
-//	readDeadline (1s) + claimGrace (0.5s) + at most two writes at writeGrace (2s)
+//	readDeadline (1s) + claimGrace (0.5s) + at most two writes at writeGrace each (2s)
 //	  + replyDeadline (1s) = 4.5s < hands' ANSWER_TIMEOUT (5s)
 const (
 	readDeadline  = 1 * time.Second
