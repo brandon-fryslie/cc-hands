@@ -96,13 +96,23 @@ func opensString(s []byte) bool {
 
 // endOfString measures how much of s belongs to a string sequence already begun, and
 // says whether the sequence ended inside it. They end at BEL or at ESC \.
+//
+// Or at any other control byte, which says it was never one - the rule input.go keeps for
+// the other direction. A payload is printable, and an ESC inside one is a tmux passthrough
+// doubling its escapes, so ESC does not end it; but a stray opener in rendered output is
+// followed within a line by a carriage return, and without this every mode change after it
+// would be skipped as payload for the rest of the session.
 func endOfString(s []byte) (n int, done bool) {
 	for i := 0; i < len(s); i++ {
-		if s[i] == 0x07 {
+		switch {
+		case s[i] == 0x07:
 			return i + 1, true
-		}
-		if s[i] == esc && i+1 < len(s) && s[i+1] == '\\' {
-			return i + 2, true
+		case s[i] == esc:
+			if i+1 < len(s) && s[i+1] == '\\' {
+				return i + 2, true
+			}
+		case s[i] < 0x20 || s[i] == del:
+			return i, true
 		}
 	}
 	return len(s), false

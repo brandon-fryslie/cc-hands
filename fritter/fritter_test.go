@@ -86,7 +86,7 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"a report split across two reads", []string{"\x1b[<35;8", "9;12M"}, true},
 		// An ESC alone in a read is the Escape key, so `[A` after it is two characters -
 		// even when it really was an arrow key whose sequence the read cut in half. That
-		// holds a line that is empty, which an Enter or a ctrl_u clears. The other way
+		// holds a line that is empty, which an Enter or a ctrl_c clears. The other way
 		// round frees a line that is not empty, and nothing clears that.
 		{"an escape split from what might be its sequence", []string{"\x1b", "[A"}, false},
 		// Up and Down are the history keys: they pull a whole previous prompt into the box,
@@ -150,6 +150,15 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		// `O` and `[` are ordinary characters as well as the second byte of an arrow key.
 		// Read as the sequence, these count nothing and free a line holding two letters.
 		{"escape, then a word beginning with O", []string{"\x1b", "O", "k"}, false},
+		// The same, arriving in one read - over ssh or tmux, everything typed within a
+		// round trip does. It reads as an SS3, and an SS3 not known to be harmless holds.
+		{"escape and a word beginning with O arriving together", []string{"\x1bOk"}, false},
+		{"escape and a bracketed word arriving together", []string{"\x1b[x"}, false},
+		// A terminal can send any key as a CSI sequence. The kitty keyboard protocol sends
+		// Ctrl-Y, which pastes back what was last killed, as `ESC [ 121 ; 5 u`.
+		{"a key sent as a CSI sequence is not known to be harmless", []string{"\x1b[121;5u"}, false},
+		{"but the keyboard flags the terminal reports are only an answer", []string{"\x1b[?1u"}, true},
+		{"and shift-tab only cycles the mode", []string{"\x1b[Z"}, true},
 		{"escape, then a word beginning with a bracket", []string{"\x1b", "[", "x"}, false},
 		{"escape, then a word beginning with O, backspaced to one", []string{"\x1b", "Oops", "\x7f\x7f"}, false},
 		// An SS3 that ends on a control byte was never an SS3, and taking three bytes
@@ -360,6 +369,10 @@ func TestTheModeIsReadFromCommandsAndNotFromWhatTheChildPrints(t *testing.T) {
 		{"a tmux passthrough that contains the on sequence", []string{"\x1bPtmux;\x1b\x1b[?2004h\x1b\\"}, false},
 		{"a title split across two writes", []string{"\x1b[?2004h", "\x1b]0;claude \x1b[?20", "04l here\x07"}, true},
 		{"the child really does turn it off after a title", []string{"\x1b[?2004h", "\x1b]0;claude\x07", "\x1b[?2004l"}, false},
+		// An opener with no terminator, printed as part of something rendered. A payload
+		// is printable, so the line break after it says it was never a string, and the
+		// mode changes that follow are still commands.
+		{"a stray opener does not hide the mode for good", []string{"output \x1b] more\r\n", "\x1b[?2004h"}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			mode := newPasteMode()
@@ -596,7 +609,7 @@ func TestTheUserKeepsTheirOwnHalfTypedLine(t *testing.T) {
 	if answer.OK {
 		t.Fatal("a write landed in the middle of the user's line")
 	}
-	if !strings.Contains(answer.Reason, "unsent text") {
+	if !strings.Contains(answer.Reason, "not seen to be sent") {
 		t.Fatalf("the refusal must say why, got %q", answer.Reason)
 	}
 
@@ -689,7 +702,7 @@ func TestASessionThatIsNotReadingItsInputIsSaidSoRatherThanWaitedOn(t *testing.T
 	// A pty in raw mode holds a kilobyte of input, and a write that fills it blocks until
 	// the child reads - which a stopped or wedged session never does. Waiting there with
 	// no bound hangs the request and everything behind it: the next caller in is hands
-	// sending the ctrl_u that was supposed to be the way back.
+	// sending the ctrl_c that was supposed to be the way back.
 	//
 	// Measured on macOS: a cooked pty takes 300 KB without blocking, a raw one blocks at
 	// 1024 bytes. Claude Code runs raw, so raw is the configuration this has to hold in,

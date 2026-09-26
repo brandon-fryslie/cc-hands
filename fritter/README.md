@@ -60,7 +60,10 @@ the one fritter wrapped is refused before anything is typed. The address alone c
 which session it reaches: it is inherited, so a second session started from inside a
 wrapped one — from its shell, or from a tmux server first started there — finds its
 parent's address in its own environment. hands records each session's process with its
-address, so it always has the pid to name.
+address, so it always has the pid to name. That is the process the hook runs under, so
+wrap the program itself — `fritter -- claude` — and not a launcher that runs it as a
+child: the launcher is what fritter wrapped, and every request naming the program under it
+is refused.
 
 The answer is `{"ok":true}` or `{"ok":false,"reason":"..."}`. A reason always says what
 went wrong, because a write that was refused and a write that landed must never look
@@ -75,12 +78,12 @@ its newline is carried out, and anything less is refused as unreadable. Both bou
 generous for a local client sending one small object.
 
 Each phase of an exchange is bounded on its own, and that is deliberate. Reading the
-request gets **one** second, a write into the session gives up after **one** so its reason
-has time to be written, and the reply gets **one** of its own, granted after the typing is
-over. A single deadline across all three would let a slow write spend what the reply
+request gets **one** second, waiting for another write to finish gets **half** of one, a
+write into the session gives up after **one** so its reason has time to be written, and the
+reply gets **one** of its own, granted after the typing is over. A single deadline across all three would let a slow write spend what the reply
 needed — fritter would type the text and then be unable to say so, and a caller hearing
-only that the connection closed sends the message twice. The sum is at most four seconds
-against the **five** hands allows, so what hands hears is fritter's reason and not its own
+only that the connection closed sends the message twice. The sum is at most four and a half
+seconds against the **five** hands allows, so what hands hears is fritter's reason and not its own
 timer. Widen any one without the others and a wedged session stops being able to say that
 it is wedged.
 
@@ -91,7 +94,8 @@ before anything is typed when the text ends where Claude Code would take that En
 something other than a send: after a backslash, which it turns into a newline, or on a
 token that opens a completion list (the patterns are under *Who owns the input line*),
 whose list takes the Enter. Typed into an empty box the cursor is at the end of the text,
-so this is asked exactly rather than read the way that holds.
+so this is asked exactly rather than read the way that holds. A space after the token
+closes the list, because none of the patterns takes one.
 
 `text` is characters and newlines, and a control byte in it is refused by name. A control
 byte there is a keystroke in text's clothing: an `ESC` ends the bracketing early, so
@@ -283,11 +287,11 @@ A write into the session gives up after a second. A pty in raw mode holds a kilo
 input and a write that fills it blocks until the child reads, which a running session does
 at once and a stopped one never does. Waiting there with no bound hangs the request and
 everything behind it — including the `ctrl_c` that was meant to be the way back. The write
-cannot be taken back, so while one is outstanding every other is refused rather than queued
-behind it, and it clears itself the moment the child starts reading again. The user's own
-keys are the one writer that waits instead: nothing may drop them, and they wait only
-behind a request's writes, never inside one, so a request's check and the text it types
-cannot have the user's typing land between them. What landed is
+cannot be taken back, so while one is outstanding nothing else writes: a request waits half
+a second for it and is then refused rather than queued, and it clears itself the moment the
+child starts reading again. The user's own keys wait for as long as it takes, because
+nothing may drop them, and they wait only behind a request's writes, never inside one, so a
+request's check and the text it types cannot have the user's typing land between them. What landed is
 always reported: a write that failed partway says how many bytes reached the box, because
 "nothing was typed" would send a caller to retype a message half of which is already there.
 

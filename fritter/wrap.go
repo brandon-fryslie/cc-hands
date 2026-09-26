@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -29,7 +28,10 @@ type Wrapped struct {
 	// a write fritter stopped waiting on until the child takes it. Two writers at once put
 	// half of each into the input box, and a check that was true before someone else wrote
 	// is not true after.
-	writing sync.Mutex
+	//
+	// A channel of one rather than a mutex, because a request's wait for it is bounded,
+	// and because the write that takes it over from a request is what lets it go.
+	writing chan struct{}
 }
 
 // start runs argv on a new pty, with env added to the child's environment.
@@ -44,7 +46,7 @@ func start(argv []string, env []string) (*Wrapped, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot start %s on a pty: %w", argv[0], err)
 	}
-	return &Wrapped{master: master, cmd: cmd, paste: newPasteMode(), line: newLineOwner()}, nil
+	return &Wrapped{master: master, cmd: cmd, paste: newPasteMode(), line: newLineOwner(), writing: make(chan struct{}, 1)}, nil
 }
 
 // run pumps the terminal and the child into each other until the child exits, and
@@ -170,8 +172,8 @@ func (w *Wrapped) Write(input []byte) (int, error) {
 	// Waited for rather than refused: these are the user's own keys, and nothing may drop
 	// them. The wait is behind one request's writes, or behind a child that is reading
 	// nothing, in which case these would have blocked in the pty just the same.
-	w.writing.Lock()
-	defer w.writing.Unlock()
+	w.writing <- struct{}{}
+	defer func() { <-w.writing }()
 	w.line.typed(input)
 	return w.master.Write(input)
 }

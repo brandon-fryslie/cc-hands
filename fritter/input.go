@@ -250,7 +250,7 @@ func (r *reader) escape(s []byte, settling bool) (n int, did press, complete boo
 			// Enter the user just pressed.
 			return 1, press{}, true
 		}
-		return 3, press{does: cursorKey(s[2])}, true
+		return 3, press{does: ss3Key(s[2])}, true
 	case next == ']' || next == 'P' || next == '^' || next == '_':
 		// A string sequence, which is how a terminal answers a question at length: the
 		// clipboard, its name, its colours. It ends at BEL or at ESC \.
@@ -305,19 +305,41 @@ func chord(b byte) effect {
 	return disturbed
 }
 
-// cursorKey says what a sequence ending in this byte did to the box.
+// csiKey says what a CSI sequence did to the box, from its parameters and final byte.
 //
-// Almost every one of them is the terminal answering a question or the cursor moving, and
-// neither touches the text: focus reports end in I or O, mouse reports in M or m, a cursor
-// position in R, a device attributes reply in c. The ones that do touch it are the history
-// keys - Up and Down pull a whole previous prompt in, which is how an empty box fills
-// while nothing is typed - and the `~` forms, Delete among them.
-func cursorKey(final byte) effect {
-	switch final {
-	case 'A', 'B', '~':
-		return disturbed
+// [LAW:parse-dont-validate] The rule the control bytes follow: the ones known to leave the
+// box alone are listed and everything else disturbs it. A terminal can send any key as a
+// CSI sequence - the kitty keyboard protocol sends Ctrl-Y as `ESC [ 121 ; 5 u` - and a
+// key guessed harmless that is not frees a line that is not free.
+//
+// Two kinds are known to leave it alone. The terminal answering a question: a reply that
+// opens with a private marker (device attributes, mode reports, keyboard flags, an SGR
+// mouse report), a focus report in I or O, a cursor position in R, a status in n, a window
+// report in t. And the cursor moving sideways - C and D, with H and F for home and end -
+// or Shift-Tab, Z, which cycles the mode and leaves the text. Up and Down are not among
+// them: they pull a whole previous prompt into the box, which is how an empty box fills
+// while nothing is typed.
+func csiKey(parameters []byte, final byte) effect {
+	if len(parameters) > 0 && bytes.IndexByte([]byte("?><="), parameters[0]) >= 0 {
+		return nothing
 	}
-	return nothing
+	switch final {
+	case 'I', 'O', 'R', 'n', 't', 'C', 'D', 'H', 'F', 'Z':
+		return nothing
+	}
+	return disturbed
+}
+
+// ss3Key says what an SS3 sequence did to the box. Only the sideways cursor keys are
+// known to leave it alone. The rest - Up and Down in application mode, the function keys,
+// and an Escape followed by a word beginning with O that arrived in the same read - are
+// read the way that holds.
+func ss3Key(final byte) effect {
+	switch final {
+	case 'C', 'D', 'H', 'F':
+		return nothing
+	}
+	return disturbed
 }
 
 // unterminated is what to do with a sequence that has not ended yet: wait for the rest of
@@ -348,7 +370,7 @@ func (r *reader) csi(s []byte) (n int, did press, complete bool) {
 	// are printable, so a control byte here says this was never a sequence either.
 	for i := 2; i < len(s) && i < sequenceLimit; i++ {
 		if s[i] >= 0x40 && s[i] <= 0x7e {
-			return i + 1, press{does: cursorKey(s[i])}, true
+			return i + 1, press{does: csiKey(s[2:i], s[i])}, true
 		}
 		if s[i] < 0x20 || s[i] == del {
 			return 1, press{}, true

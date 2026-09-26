@@ -241,7 +241,7 @@ func (l *lineOwner) empty() {
 	l.held = false
 	l.tail = l.tail[:0]
 	// An empty box is empty however unsure the parser was a moment ago. Without this the
-	// ctrl_u sent to free a held line frees the count and leaves the doubt, and the line
+	// ctrl_c sent to free a held line empties the box and leaves the doubt, and the line
 	// stays held by the very request sent to clear it.
 	l.unsure = false
 }

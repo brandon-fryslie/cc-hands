@@ -70,11 +70,8 @@ var keystrokes = map[string][]byte{
 //
 // Their sum is what hands must outlast, and does:
 //
-//	readDeadline (1s) + at most two writes at writeGrace (2s) + replyDeadline (1s)
-//	  = 4s < hands' ANSWER_TIMEOUT (5s)
-//
-// Nothing waits for another writer to finish, because inject refuses rather than queues,
-// so there is no fifth term.
+//	readDeadline (1s) + claimGrace (0.5s) + at most two writes at writeGrace (2s)
+//	  + replyDeadline (1s) = 4.5s < hands' ANSWER_TIMEOUT (5s)
 const (
 	readDeadline  = 1 * time.Second
 	replyDeadline = 1 * time.Second
@@ -90,6 +87,7 @@ const (
 // 1024 bytes, and Claude Code runs raw. A wait with no bound there is the whole program
 // hanging on the one thing it exists to do, so the wait ends and says so instead.
 const (
+	claimGrace    = 500 * time.Millisecond
 	writeGrace    = 1 * time.Second
 	acceptBackoff = 50 * time.Millisecond
 )
@@ -177,16 +175,20 @@ func (w *Wrapped) inject(asked request) response {
 	if child := w.cmd.Process.Pid; asked.Pid != child {
 		return response{OK: false, Reason: fmt.Sprintf("this socket types into process %d and the request is for process %d; nothing was typed. An address inherited from another session reaches that session, not this one", child, asked.Pid)}
 	}
-	// [LAW:no-ambient-temporal-coupling] Refused rather than queued. A wait here would be
-	// spent out of the budget the caller's timer allows for the whole exchange, and what
-	// holds the input can be a write the child is not reading, which ends when it ends.
-	if !w.writing.TryLock() {
-		return response{OK: false, Reason: "another write into this session has not finished - a request, the user's own typing, or an earlier write the child is not reading - so nothing was typed; a session that keeps answering this is not reading its input"}
+	// [LAW:no-ambient-temporal-coupling] Waited for, but not for long. The user's keys and
+	// the terminal's reports hold the input for an instant each, and a request arriving
+	// in one of those instants should not be turned away for it. Anything holding it
+	// longer is another request's writes or a write the child is not reading, which ends
+	// when it ends - and the wait is spent out of the caller's budget, so it is bounded.
+	select {
+	case w.writing <- struct{}{}:
+	case <-time.After(claimGrace):
+		return response{OK: false, Reason: fmt.Sprintf("another write into this session has not finished after %s - another request's, or an earlier one the child is not reading - so nothing was typed", claimGrace)}
 	}
 	var claim hold
 	answer := w.dispatch(asked, &claim)
 	if !claim.passed {
-		w.writing.Unlock()
+		<-w.writing
 	}
 	return answer
 }
@@ -219,7 +221,7 @@ func (w *Wrapped) dispatch(asked request, claim *hold) response {
 // of two people's words, which nobody afterwards can pull apart.
 func (w *Wrapped) typeText(asked request, claim *hold) response {
 	if !w.line.free() {
-		return response{OK: false, Reason: "the user has unsent text in this session's input; it is theirs until they submit or cancel it, or until a key request clears the line"}
+		return response{OK: false, Reason: "this session's input holds text that was not seen to be sent - typed by the user, or brought in by a key such as tab, up, down or ctrl_u - and text is not typed into it until a Return sends it or a ctrl_c empties it"}
 	}
 	// [LAW:parse-dont-validate] Text is characters and newlines. A control byte in it is
 	// a keystroke wearing text's clothes: an ESC ends the bracketing early and everything
@@ -238,7 +240,7 @@ func (w *Wrapped) typeText(asked request, claim *hold) response {
 	// [LAW:no-silent-failure] An Enter the child takes as something other than a send
 	// leaves the text in the box, and an ok would tell the caller it was sent.
 	if asked.Submit && staysUnsent(asked.Text) {
-		return response{OK: false, Reason: "this text ends where the session takes Enter as something other than sending - after a backslash, which becomes a newline, or on an @, # or : token, whose completion list takes the Enter - so it would sit unsent; nothing was typed"}
+		return response{OK: false, Reason: "this text ends where the session takes Enter as something other than sending - after a backslash, which becomes a newline, or on an @, # or : token, whose completion list takes the Enter - so it would sit unsent; nothing was typed. A space after the token closes the list"}
 	}
 	if wrong, bad := w.send(claim, encoded).wrong(); bad {
 		return response{OK: false, Reason: wrong}
@@ -366,7 +368,7 @@ func (w *Wrapped) send(claim *hold, keys []byte) delivery {
 		claim.passed = true
 		go func() {
 			<-done
-			w.writing.Unlock()
+			<-w.writing
 		}()
 		return delivery{how: unknowable, of: len(keys), why: fmt.Errorf("the session did not take this within %s, so it is not reading its input; how much of it landed is not known", writeGrace)}
 	}
