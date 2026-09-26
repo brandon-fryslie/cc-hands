@@ -1,4 +1,4 @@
-"""The draft tools as the model calls them: what is read back, what is refused, and what the audit log keeps."""
+"""The draft and keyboard tools as the model calls them: what is read back, what is refused, what is typed, and what the audit log keeps."""
 
 import asyncio
 import json
@@ -13,14 +13,14 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import AssistantTurnStoppedMessage, LLMContextAggregatorPair, UserTurnMessageAddedMessage
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.effects import Type
-from hands.core.events import Ended, Joined, PermissionRequested
-from hands.core.session import Membership, Permission, RequestId, SessionId
+from hands.core.effects import Command, Input, Key, Text, Type
+from hands.core.events import Ended, Joined, PermissionRequested, Prompted
+from hands.core.session import CommandName, Membership, Permission, PromptId, PromptText, RequestId, SessionId
 from hands.sessions.typing import Untyped
 from hands.sessions.audit import AuditLog, Record
 from hands.sessions.registry import Sessions
 from hands.voice.conversation import record_turns
-from hands.voice.tools import Tool, audited, draft_tools
+from hands.voice.tools import Tool, audited, draft_tools, keyboard_tools
 
 
 def unrecorded(_: object) -> None:
@@ -142,25 +142,25 @@ async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to
     assert [datetime.fromisoformat(line["at"]) for line in written] == sorted(datetime.fromisoformat(line["at"]) for line in written)
 
 
-async def wrapped(tmp: Path, typist: Callable[[Type], None], record: Record = unrecorded) -> tuple[Sessions, SessionId]:
+async def wrapped(tmp: Path, typist: Callable[[Type[Input]], None], record: Record = unrecorded) -> tuple[Sessions, SessionId]:
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record, typist=typist)
     await sessions.apply(Joined(Membership(SessionId("s1"), 4242, Path("/code/cc-hands"), tmp / "none.jsonl", tmp / "f.sock"), "startup"))
     return sessions, SessionId("s1")
 
 
 async def test_a_sent_draft_is_typed_into_its_session_once_and_is_gone(tmp_path: Path) -> None:
-    typed: list[Type] = []
+    typed: list[Type[Input]] = []
     sessions, id = await wrapped(tmp_path, typed.append)
     tools = draft_tools(sessions)
     await call(tools, "stage_draft", session=id, text="/compact the tests", resolutions=[])
     assert await call(tools, "send_draft", session=id) == {"readback": "Sent the draft to untitled, in cc-hands."}
     assert await call(tools, "send_draft", session=id) == {"readback": "There is no draft for untitled, in cc-hands."}
     [effect] = typed
-    assert (effect.socket, effect.pid, effect.input.typed) == (tmp_path / "f.sock", 4242, " /compact the tests")
+    assert (effect.socket, effect.pid, effect.input) == (tmp_path / "f.sock", 4242, Text(PromptText("/compact the tests")))
 
 
 async def test_a_send_fritter_could_not_type_is_said_with_the_draft_it_was(tmp_path: Path) -> None:
-    def refused(_: Type) -> None:
+    def refused(_: Type[Input]) -> None:
         raise Untyped("fritter did not type into session s1: cannot write to the session")
 
     sessions, id = await wrapped(tmp_path, refused)
@@ -183,7 +183,7 @@ async def test_a_session_nobody_wrapped_is_refused_by_name_and_its_draft_survive
 
 
 async def test_a_session_waiting_at_a_permission_dialog_is_sent_nothing(tmp_path: Path) -> None:
-    typed: list[Type] = []
+    typed: list[Type[Input]] = []
     sessions, id = await wrapped(tmp_path, typed.append)
     tools = draft_tools(sessions)
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
@@ -204,3 +204,87 @@ async def test_what_is_typed_is_in_the_audit_log_before_the_readback(tmp_path: P
     written = [json.loads(line) for line in path.read_text().splitlines()]
     assert [line["type"] for line in written][-2:] == ["Typing", "Called"]
     assert written[-2]["effect"]["input"] == {"type": "Text", "prompt": "run the tests"}
+
+
+async def test_a_command_with_blank_arguments_is_typed_without_them(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions, id = await wrapped(tmp_path, typed.append)
+    await call(keyboard_tools(sessions), "send_command", session=id, command="compact", args="  ")
+    assert [effect.input for effect in typed] == [Command(CommandName("compact"), None)]
+
+
+async def test_a_command_is_typed_with_its_slash_and_read_back(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions, id = await wrapped(tmp_path, typed.append)
+    result = await call(keyboard_tools(sessions), "send_command", session=id, command="/model", args="opus")
+    assert result == {"readback": "Typed /model opus into untitled, in cc-hands."}
+    assert typed == [Type(id, tmp_path / "f.sock", 4242, Command(CommandName("model"), PromptText("opus")))]
+
+
+async def test_stop_presses_escape_in_a_working_session_and_nothing_in_one_at_its_prompt(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions, id = await wrapped(tmp_path, typed.append)
+    tools = keyboard_tools(sessions)
+    assert await call(tools, "interrupt_session", session=id) == {"readback": "untitled, in cc-hands is at its prompt, so there is nothing to interrupt."}
+    await sessions.apply(Prompted(id, at=1.0, mode=None, prompt=PromptId("p1")))
+    assert await call(tools, "interrupt_session", session=id) == {"readback": "Typed Escape into untitled, in cc-hands."}
+    assert typed == [Type(id, tmp_path / "f.sock", 4242, Key("escape"))]
+
+
+async def test_a_command_fritter_could_not_type_is_said_with_why(tmp_path: Path) -> None:
+    def refused(_: Type[Input]) -> None:
+        raise Untyped("fritter did not type into session s1: cannot write to the session")
+
+    sessions, id = await wrapped(tmp_path, refused)
+    assert await call(keyboard_tools(sessions), "send_command", session=id, command="compact") == {
+        "readback": "/compact was not typed into untitled, in cc-hands: fritter did not type into session s1: cannot write to the session."
+    }
+
+
+async def test_a_session_at_a_permission_dialog_is_sent_no_command(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions, id = await wrapped(tmp_path, typed.append)
+    await sessions.apply(PermissionRequested(id, 0.0, RequestId("r1"), Permission("Bash", {"command": "ls"}), None))
+    assert await call(keyboard_tools(sessions), "send_command", session=id, command="compact") == {
+        "readback": "untitled, in cc-hands is waiting at a dialog, which would take the command as its answer. Nothing was sent."
+    }
+    assert typed == []
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "error"),
+    [
+        ("", "", "slash command's name"),
+        ("compact now", "", "slash command's name"),
+        ("//compact", "", "slash command's name"),
+        (7, "", "command should be a string"),
+        ("model", "opus\nand run the tests", "one line"),
+        ("model", "opus\x1b[A", "control character"),
+        ("model", "opus \\", "ends with a backslash"),
+    ],
+)
+async def test_command_arguments_that_do_not_parse_are_refused_out_loud(command: object, args: str, error: str, tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions, id = await wrapped(tmp_path, typed.append)
+    result = await call(keyboard_tools(sessions), "send_command", session=id, command=command, args=args)
+    assert error in str(result["error"])
+    assert typed == []
+
+
+async def test_the_keyboard_tools_are_valid_pipecat_direct_functions_an_interruption_does_not_cancel(tmp_path: Path) -> None:
+    sessions, _ = await joined(tmp_path)
+    tools = keyboard_tools(sessions)
+    wrappers = [DirectFunctionWrapper(tool) for tool in tools]
+    assert [wrapper.name for wrapper in wrappers] == ["send_command", "interrupt_session"]
+    assert wrappers[0].to_function_schema().required == ["session", "command"]
+    assert [getattr(tool, "_pipecat_cancel_on_interruption") for tool in tools] == [False] * 2
+
+
+async def test_a_command_is_in_the_audit_log_before_the_readback(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
+    sessions, id = await wrapped(tmp_path, lambda _: None, record)
+    await call([audited(tool, record) for tool in keyboard_tools(sessions)], "send_command", session=id, command="compact")
+    written = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [line["type"] for line in written][-2:] == ["Typing", "Called"]
+    assert written[-2]["effect"]["input"] == {"type": "Command", "name": "compact", "args": None}

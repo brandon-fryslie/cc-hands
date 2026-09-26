@@ -26,6 +26,10 @@ PromptText = NewType("PromptText", str)
 # belongs to whatever does the typing, not here; this is the vocabulary hands speaks.
 Keystroke = Literal["escape", "enter", "ctrl_c", "ctrl_u", "up", "down", "tab", "shift_tab"]
 
+# A slash command's name without its slash, such as `compact` or a plugin's `memento:ceiling`: word characters, colons,
+# and hyphens, so typing it after a slash cannot type anything but the command. Made only where the model's words are parsed.
+CommandName = NewType("CommandName", str)
+
 
 @dataclass(frozen=True)
 class Membership:

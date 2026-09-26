@@ -3,8 +3,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from hands.core.effects import Text, Type
-from hands.core.session import AtDialog, Blocked, Gone, PromptText, Registry, Session, SessionId, Staged
+from hands.core.effects import NotTyped, Text, Type, Typed
+from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped
+from hands.core.session import AtDialog, Blocked, Gone, Registry, Session, SessionId, Staged
 
 
 @dataclass(frozen=True)
@@ -53,54 +54,14 @@ class DraftDiscarded:
 
 
 @dataclass(frozen=True)
-class DraftSent:
-    session: SessionId
-
-
-@dataclass(frozen=True)
-class NotSent:
-    """The typing failed. The draft left the registry when the send was decided, so its text is carried here."""
-
-    session: SessionId
-    text: PromptText
-    reason: str
-
-
-@dataclass(frozen=True)
-class UnknownSession:
-    session: SessionId
-
-
-@dataclass(frozen=True)
 class NothingStaged:
     session: SessionId
 
 
-@dataclass(frozen=True)
-class SessionEnded:
-    session: SessionId
+DraftOutcome =DraftStaged | DraftAmended | DraftDiscarded | NothingStaged | Unreached | Typed[Text] | NotTyped[Text]
 
 
-@dataclass(frozen=True)
-class Unwrapped:
-    """The session was not started under fritter, so there is nothing to type into."""
-
-    session: SessionId
-
-
-@dataclass(frozen=True)
-class AtItsDialog:
-    """The session is waiting at a dialog, which would take a typed draft as its answer."""
-
-    session: SessionId
-
-
-DraftOutcome = (
-    DraftStaged | DraftAmended | DraftDiscarded | DraftSent | NotSent | UnknownSession | NothingStaged | SessionEnded | Unwrapped | AtItsDialog
-)
-
-
-def decide(registry: Registry, request: DraftRequest) -> tuple[Registry, DraftOutcome | Type]:
+def decide(registry: Registry, request: DraftRequest) -> tuple[Registry, DraftOutcome | Type[Text]]:
     """One draft request in; the next registry and what came of it out, or what to type. No I/O."""
     match registry.sessions.get(request.session):
         case None:
@@ -111,7 +72,7 @@ def decide(registry: Registry, request: DraftRequest) -> tuple[Registry, DraftOu
             return _decide(registry, request, session, registry.drafts.get(request.session))
 
 
-def _decide(registry: Registry, request: DraftRequest, session: Session, staged: Staged | None) -> tuple[Registry, DraftOutcome | Type]:
+def _decide(registry: Registry, request: DraftRequest, session: Session, staged: Staged | None) -> tuple[Registry, DraftOutcome | Type[Text]]:
     id = request.session
     match (request, staged, session.state, session.membership.fritter):
         case (AmendDraft() | DiscardDraft() | SendDraft(), None, _, _):
