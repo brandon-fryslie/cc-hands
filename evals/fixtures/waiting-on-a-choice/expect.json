@@ -4,5 +4,6 @@
     {"needs": ["pass", "green", "clean", "sound"], "why": "the suites passed, which is the result the turn reported"},
     {"needs": ["?"], "why": "the turn ends on a question, and a question is always said"}
   ],
-  "never": ["sync.ts", "23e8b7ba", "happy-cli"]
+  "never": ["sync.ts", "23e8b7ba", "happy-cli", "Recommended"],
+  "asks": ["How do you want to close PR #1?"]
 }

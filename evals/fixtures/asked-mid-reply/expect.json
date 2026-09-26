@@ -1,0 +1,9 @@
+{
+  "about": "Asked what a stray directory is: Claude Code's own liveness registry. The reply asks whether to fix it in the middle, then goes on for two more sections without asking again.",
+  "facts": [
+    {"needs": ["claude code"], "why": "the answer: Claude Code writes it, not the user's plugin"},
+    {"needs": ["?"], "why": "the turn asked whether to make the fix, and a question is always said"}
+  ],
+  "never": ["44765", "74ba6a2", "procStart", "routing-rat"],
+  "asks": ["want me to do it?"]
+}

@@ -1,0 +1,8 @@
+{
+  "about": "Asked whether a grand claim was believed: no, it is false by overreach. The reply asks itself why it said it, answers at once, and ends on a statement, so it asks the listener nothing.",
+  "facts": [
+    {"needs": ["overreach", "false", "overstat", "not true", "wrong", "wouldn't", "would not", "sounded", "sounds good", "rhetoric", "not because it"], "why": "the answer: it was said for how it sounded, and it is false as written"}
+  ],
+  "never": ["?"],
+  "asks": []
+}

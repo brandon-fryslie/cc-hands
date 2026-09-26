@@ -120,6 +120,9 @@ class Idle:
     # When hands says the session is waiting on its own clock, for an idle period Claude Code sends no idle_prompt for:
     # one a turn the user interrupted began (2.1.281). None where idle_prompt will say it, or already has.
     due: Instant | None = None
+    # Whether the turn that left it here ended on a question or an offer, so the nudge can say it has one rather than
+    # only that it waits: its dialog question left unanswered, or its closing reply asking. See `_asking` in the reducer.
+    asking: bool = False
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,9 @@ class Submitted:
 @dataclass(frozen=True)
 class Working:
     since: Instant
+    # Its question dialog was closed unanswered, by an Escape at it, which kills the hook and fires no post-tool hook
+    # and no Stop, and it has run nothing since: what the turn is waiting on if it ends here. See `_asking` in the reducer.
+    unanswered: bool = False
 
 
 @dataclass(frozen=True)

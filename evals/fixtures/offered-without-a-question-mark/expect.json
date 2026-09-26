@@ -1,0 +1,9 @@
+{
+  "about": "Asked why there are two input-method entries: they are two separate builds, and the reply ends on an offer to remove the development one that carries no question mark.",
+  "facts": [
+    {"needs": ["separate", "development", "dev build", "two builds", "two apps"], "why": "the answer: two separate builds, each with its own input method"},
+    {"needs": ["?", "say the word", "want it to", "should it", "offer"], "why": "the turn ends on an offer, and what it offered is always said"}
+  ],
+  "never": ["Flavor.swift", "ai.promptctl", "s71"],
+  "asks": ["Say the word and I'll do it."]
+}

@@ -147,10 +147,11 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
     # The second telling carries the opening as context rather than as the request. Handed it as the request,
     # a small model answers it again: heard live on 2026-09-21 as a second summary restating the first half.
     assert shown == [
-        "The user asked:\nfix it\n\nClaude said:\nLooked.",
+        "The user asked:\nfix it\n\nClaude said:\nLooked.\n\nThe turn asks the user nothing.",
         "This turn has already been reported once, up to and including its first step, and none of that may be"
         " reported again. For context only, this is what opened it:\nThe user asked:\nfix it\n"
-        "Report only what it did after that, below.\n\nClaude ran pytest\nOutput: 1 passed\n\nClaude said:\nFixed.",
+        "Report only what it did after that, below.\n\nClaude ran pytest\nOutput: 1 passed\n\nClaude said:\nFixed."
+        "\n\nThe turn asks the user nothing.",
     ]
 
 
@@ -169,6 +170,22 @@ async def test_a_turn_that_cannot_be_summarised_is_said_to_have_failed_and_logge
     assert not spoken.append_to_context
     [failure] = recorded
     assert isinstance(failure, Failure) and "APIConnectionError: Connection error." in failure.message
+
+
+async def test_a_turn_that_cannot_be_summarised_still_says_what_it_is_waiting_on(tmp_path: Path) -> None:
+    """Whether a turn asked anything is the daemon's to find, with no model, and a question is always said."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        '{"uuid":"u1","type":"user","message":{"role":"user","content":"fix the test"}}\n'
+        '{"uuid":"u2","type":"assistant","message":{"content":[{"type":"text","text":"Fixed it. Want me to push it?"}]}}\n'
+    )
+
+    async def failing(turn: str) -> str:
+        raise SummaryFailed("the model returned no summary")
+
+    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", failing, lambda _: None, BUDGET, Delta())
+    assert isinstance(spoken, TTSSpeakFrame)
+    assert spoken.text == "cc-hands finished a turn, and I could not summarise it. It said: Want me to push it?"
 
 
 async def test_a_missing_transcript_is_said_to_have_failed_too(tmp_path: Path) -> None:

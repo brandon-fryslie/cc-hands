@@ -351,7 +351,16 @@ notification, the only one the `Notification` hook's matcher lets through; it is
 spoken once per idle period, because `Idle.nudged` turns true as it is said and every
 way into `Idle` builds a fresh one. Claude Code sends no `idle_prompt` after an
 interrupted turn, so that one idle period carries `Idle.due`, and the tick nudges it
-when the notification would have come. `Story` carries finished turns and sessions gone in one ordered
+when the notification would have come. `Idle.asking` makes the nudge "X has a question
+for you." rather than "X is waiting for you." It is true for the two things the telling
+counts as waiting: a reply the `Stop` carried that the narration's own `reported_and_asked`
+reads as asking, and a turn that ended at an `AskUserQuestion` dialog with nothing run
+after it, the dialog still up or escaped. An Escape kills the dialog's hook, so the session
+goes to `Working` with the question `unanswered`, and a tool running, a message typed, or
+another permission clears it. The reducer cannot call `open_questions` itself, since the
+`Questioned` steps it reads live only in the transcript. The two still differ where a dialog
+was declined with a message and Claude answered in text alone before stopping: that is heard
+as the Escape it looks like, the common case. `Story` carries finished turns and sessions gone in one ordered
 queue, because a summary takes seconds, and an end spoken at once was heard before the
 last turn it ended. A turn's summary reaches TTS as one `TTSSpeakFrame`, with no player
 and no segments. `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
@@ -719,7 +728,8 @@ that failed while nothing is counted failing did more than run a suite, and so d
 committed on its way; both stay the `Ran` that carries the output saying what else happened.
 `go test` writes its package line the same way for a package that never built, with the reason
 where the time goes, so a package line counts only when it carries the time it took. Questions
-asked in plain text rather than through `AskUserQuestion` are found when the turn is summarised.
+asked in plain text rather than through `AskUserQuestion` are not a step: they are read off the
+turn's closing text when it is narrated.
 
 Record shapes worth knowing, observed in transcripts on 2026-09-14:
 
@@ -906,7 +916,8 @@ hashes, and an ending that asks the turn's question with the session as "it". Th
 narrator speaks the summary after the session's name, keeps it in the intermediary's
 context, and writes it to the audit log as `Recounted`. When reading or summarising
 fails, it says "cc-hands finished a turn, and I could not summarise it." without the model and
-out of the context, and logs the reason, which is a `Failure` line. Measured live
+out of the context, followed by what the turn is waiting on when summarising was what failed, since
+finding that needs no model, and logs the reason, which is a `Failure` line. Measured live
 against a real `claude -p` session, with Qwen3-30B-A3B on inferno: the summary was ready
 1.3 s after `Stop` and first audio came at 1.36 s, and the session's end was heard
 after its summary. Measured again against a session whose first `Stop` another hook
@@ -998,8 +1009,8 @@ lines. Step summaries requested as steps arrive, so that first audio does not wa
 whole turn to be read, are planned and belong to the progress ticket.
 
 **The narration tree.** `core/narration.py` cuts a finished turn into segments: the
-headline, what the repository did, one segment per question, and one section per topic —
-the change, the tests, the commit, the commands, what it read, the plan, the subagents,
+headline, what the repository did, the question it is waiting on, what the user already
+answered, and one section per topic — the change, the tests, the commit, the commands, what it read, the plan, the subagents,
 the other tools, what it said. The topics are not a table of rules written beside the
 steps; they are a match over the `Step` union, which already draws exactly those lines, so
 a new kind of step is a compile error here rather than a result with nowhere to go
@@ -1054,19 +1065,46 @@ papered over, and `hands-narration-k4q` owns closing it.
 `HEADLINE_SENTENCES` lives beside the instruction it rewrites, because changing it means
 re-rendering that text and the two cannot be apart. It starts at one. Asked for one
 sentence the local model wrote two in nine tellings out of twelve, so `narration` cuts the
-reply to the number and keeps a closing question whole whatever the number is — the same
-reason the spoken-form filter is a filter and not an instruction: a rule held as an
-instruction is obeyed or not and checked by nobody. Nothing cut is lost, because the
-sections hold every step the headline was made from. The eval reports how often the model
-overran, which is the signal for changing the number.
+reply's report to the number — the same reason the spoken-form filter is a filter and not
+an instruction: a rule held as an instruction is obeyed or not and checked by nobody. A
+question is not in the count, because it is not in the headline at all. Nothing cut is
+lost, because the sections hold every step the headline was made from. The eval reports
+how often the model overran, which is the signal for changing the number.
 
-**A question is in the tree and does not yet play.** Every `AskUserQuestion` becomes its
-own segment, carrying its record id, said as a question and not as a count. It is not
-spoken at `Stop`, for two reasons that both point the same way: the segment still holds
-what Claude typed at a screen — a path, a hash, a "(Recommended)" — and the headline has
-already been asked to end on the turn's question in spoken form, so playing both would say
-it once well and once verbatim. Making questions play at every length, and finding the ones
-Claude asked in prose rather than through the tool, is `hands-narration-2mc.4mu`.
+**What the turn asked always plays, once, and the daemon decides whether it asked.** A turn
+that ends on a question is waiting on the listener whether or not a hook blocks, so
+`open_questions` reads it off the turn itself: an `AskUserQuestion` nobody answered that
+nothing but an interruption followed, and what the closing text asks — the turn's last step,
+since a question it worked past was answered or did not need one. A dialog Claude went on
+past was declined with a message or refused by a hook, as 5 of the 94 unanswered in this machine's
+transcripts were; the other 89 were escaped, and ended the turn on the question. `reported_and_asked` is the one reading of a
+text for questions, used on Claude's closing text, on the summariser's reply, and for the
+nudge `[LAW:one-source-of-truth]`. A question put to the listener outright counts wherever
+it stands ("want me to do it?" before two more sections). Where the text ends, an offer
+counts ("Say the word and I'll do it."), and so do a choice and any other question, unless
+its own list item or run of prose goes on to answer it ("Why did it fail? The cache was stale.") and nothing
+later in the paragraph looks ahead to an answer still to come ("Once I have that I'll pin
+the interface."). A `?` inside a code block, a code span, a quotation, or an italic aside is
+written about rather than asked, one with a word straight after it is in an address or a
+name, and one an arrow follows was answered on its line. Those shapes were read off 3,038
+closing texts on this machine, and each that decides a case and fits in a fixture is one:
+the only real closing that asks itself and answers on the same line is a 794 KB turn.
+
+What plays is one question segment, last, at every length. The summariser's message is
+`shown`: the turn as `render` writes it, then what the daemon found it waiting on, in spoken
+form, or that it asks nothing. Measured on inferno on 2026-09-25, without that line the
+model ended four of nine fixture turns that asked nothing on a question of its own and left
+out a question asked above two more sections; with it, none of either. Its words are the
+ones the summariser ended its reply on, which `narration` takes out of the headline so the
+question is said once — where the turn waits on one thing, the closing text counting as one
+however many sentences it asks in. Waiting on two, nothing says which the summariser's words
+cover, and where it left the question out, the words are Claude's own, framed as "It is
+asking:" or "It said:", with "(Recommended)" dropped and put through `spoken`. Where
+the summariser asked and the turn did not, what it asked is dropped: the instruction
+already forbids it, and this is what holds it, while one of its sentences that only reads
+like an offer ("left the retry count up to you") stays in the report. An `AskUserQuestion`
+the turn is no longer waiting on, answered or gone past, is its own segment in `settled`,
+there to be opened and never played.
 
 **The eval.** `evals/narration.py` runs real turns, lifted whole out of real transcripts,
 through the daemon's own recognisers, `render`, and summariser, and judges what comes back:
@@ -1074,7 +1112,10 @@ that the facts a listener must have are in it, that nothing code-shaped reached 
 that the headline is within its number, that every number said is a number the turn showed,
 and that nothing the case forbids was said. The code-shape judge is `core/spoken.py` itself
 rather than a second table of patterns, so the eval cannot drift from what the daemon does.
-It exits 0, 1, or 2 — every check held, a check failed, or the model could not be reached —
+Once a case, with no model, it also judges `open_questions` against the questions the
+case's `asks` names and counts misses and false alarms, which `tests/test_questions.py`
+holds to zero over the same fixtures.
+It exits 0, 1, or 2 — every check held, a check or a question failed, or the model could not be reached —
 and a model is stochastic, so it tells each case several times and every telling must hold.
 Measured live against `claude -p` sessions on inferno, twice on 2026-09-22: `Stop` to the
 summary 2.01 s and 1.82 s, `Stop` to first audio 2.07 s and 1.88 s, which puts the speech

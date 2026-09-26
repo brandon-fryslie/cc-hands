@@ -1,7 +1,9 @@
 """A turn's narration tree: what plays when it stops, what is left to open, and what each part was cut from."""
 
+import pytest
+
 from hands.core.delta import Changed, Commit, Delta
-from hands.core.narration import Narration, narration, opened
+from hands.core.narration import Narration, narration, opened, shown
 from hands.core.spoken import spoken
 from hands.core.turn import (
     Asked,
@@ -81,33 +83,115 @@ def test_the_headline_covers_the_whole_turn_including_what_opened_it() -> None:
     assert narrated.headline.covers == (Asked(None, "fix the test"), Said(Ref("u2"), "Done."))
 
 
-def test_a_question_is_a_segment_of_its_own_and_never_falls_into_a_section() -> None:
+def test_an_unanswered_question_is_a_segment_of_its_own_and_never_falls_into_a_section() -> None:
     asked = Questioned(Ref("u3"), (Question("Roll the rename back?", ("roll back", "press on"), None),))
     narrated = told(Said(None, "Two tests fail."), asked)
     assert topics(narrated) == ["what it said"]
     [question] = narrated.questions
-    assert question.text == "It is asking: Roll the rename back? Either roll back and press on."
+    assert question.text == "It is asking: Roll the rename back? Either roll back or press on."
     assert question.refs == (Ref("u3"),)
 
 
-def test_a_question_already_answered_says_what_was_chosen_rather_than_asking_it_again() -> None:
+def test_a_question_already_answered_is_there_to_open_and_is_not_asked_again() -> None:
     asked = Questioned(None, (Question("Roll the rename back?", (), "press on"),))
-    [question] = told(asked).questions
-    assert question.text == "It asked: Roll the rename back? You chose press on."
+    narrated = told(asked)
+    assert narrated.questions == ()
+    assert [answer.text for answer in narrated.settled] == ["It asked: Roll the rename back? You chose press on."]
 
 
-def test_every_question_of_one_step_gets_its_own_segment() -> None:
+def test_every_question_the_turn_waits_on_is_in_its_one_question_segment() -> None:
     asked = Questioned(None, (Question("A?", (), None), Question("B?", (), None)))
-    assert [question.text for question in told(asked).questions] == ["It is asking: A?", "It is asking: B?"]
+    assert [question.text for question in told(asked).questions] == ["It is asking: A? It is asking: B?"]
 
 
-def test_what_plays_is_the_headline_and_neither_a_section_nor_a_question_read_out_as_written() -> None:
-    """A question segment holds the words Claude typed at a screen — here a path and a hash — and the headline
-    has already been asked to end on the turn's question. Playing both says it twice, once verbatim."""
+def test_a_question_is_said_once_and_in_the_summarisers_words_where_it_asked_it() -> None:
+    """The question segment holds the words Claude typed at a screen — here a path and a hash — and the summariser
+    was asked to put the same question in words that can be heard. It plays once, in those."""
     asked = Questioned(None, (Question("Roll src/auth.py back to a1b2c3d?", (), None),))
     narrated = told(Edited(None, "/a/b.py", False, "@@"), asked, headline="The rename is in. Should it roll the auth code back?")
     assert narrated.said() == "The rename is in. Should it roll the auth code back?"
-    assert [question.text for question in narrated.questions] == ["It is asking: Roll src/auth.py back to a1b2c3d?"]
+    assert narrated.headline.text == "The rename is in."
+
+
+def test_a_question_the_summariser_dropped_is_said_in_claudes_words_put_in_spoken_form() -> None:
+    """A turn waiting on an answer it never asks for is the failure the question segment exists to prevent."""
+    asked = Questioned(None, (Question("Roll `src/auth.py` back to a1b2c3d?", ("Roll back (Recommended)", "Press on"), None),))
+    said = told(Edited(None, "/a/b.py", False, "@@"), asked, headline="The rename is in.").said()
+    heard = spoken(said)
+    assert heard.text == said and heard.leaks == ()
+    assert said.startswith("The rename is in. It is asking: Roll ") and said.endswith(" Either Roll back or Press on.")
+    assert not any(written in said for written in ("src/", "a1b2c3d", "Recommended", "`"))
+
+
+def test_a_question_asked_in_prose_plays_though_no_hook_blocked_on_it() -> None:
+    closing = Said(Ref("u4"), "Fixed the refresh test.\n\nWant me to look at the other flaky ones too?")
+    narrated = told(Ran(None, "pytest", None, False, "ok", ()), closing, headline="Fixed the refresh test. Want it to look at the other flaky tests?")
+    assert narrated.said() == "Fixed the refresh test. Want it to look at the other flaky tests?"
+    assert [question.refs for question in narrated.questions] == [(Ref("u4"),)]
+
+
+def test_an_offer_with_no_question_mark_is_said_in_claudes_words_where_the_summariser_left_it_out() -> None:
+    closing = Said(None, "The dev build should not be on that Mac. Say the word and I'll remove it.")
+    narrated = told(closing, headline="The dev build is on the clean Mac by mistake.")
+    assert narrated.said() == "The dev build is on the clean Mac by mistake. It said: Say the word and I'll remove it."
+
+
+def test_a_turn_waiting_on_two_things_says_each_even_where_the_summariser_asked_only_one() -> None:
+    """Nothing says which of two the summariser's words cover, so a question it dropped would be said zero times."""
+    dialog = Questioned(None, (Question("Merge now?", ("Merge", "Wait"), None), Question("Re-run the review?", (), None)))
+    said = told(Ran(None, "pytest", None, False, "ok", ()), dialog, headline="The suites pass. Want it to re-run the review?").said()
+    assert said == "The suites pass. It is asking: Merge now? Either Merge or Wait. It is asking: Re-run the review?"
+
+
+def test_a_report_that_only_reads_like_an_offer_is_kept_where_the_turn_asked_nothing() -> None:
+    narrated = told(Said(None, "Done. Retry count is now a setting."), headline="It made the retry count a setting that is up to you.")
+    assert narrated.said() == "It made the retry count a setting that is up to you." and narrated.questions == ()
+
+
+def test_a_dialog_claude_went_on_past_is_there_to_open_and_is_not_asked() -> None:
+    dialog = Questioned(None, (Question("Merge now?", ("Merge", "Wait"), None),))
+    narrated = told(dialog, Said(None, "Merged, and the suites pass."))
+    assert narrated.questions == ()
+    assert [settled.text for settled in narrated.settled] == ["It asked: Merge now? It went on without an answer."]
+
+
+def test_a_choice_split_over_two_sentences_is_said_as_the_one_thing_it_is() -> None:
+    said = told(Said(None, "The rename is in. Should I update the logout code?\nOr roll it back?"), headline="The rename is in.").said()
+    assert said == "The rename is in. It said: Should I update the logout code? Or roll it back?"
+
+
+def test_a_dialog_escaped_is_still_waiting_and_one_claude_went_on_past_is_not() -> None:
+    dialog = Questioned(None, (Question("Merge now?", ("Merge", "Wait"), None),))
+    assert [question.text for question in told(dialog, Interruption(None)).questions] == ["It is asking: Merge now? Either Merge or Wait."]
+    assert told(dialog, Said(None, "Going with a merge, then."), Said(None, "Merged, and the suites pass.")).questions == ()
+
+
+def test_one_thing_asked_over_two_sentences_is_still_the_summarisers_to_word() -> None:
+    closing = Said(None, "The rename is in. Should I update the logout code? Or roll the rename back?")
+    said = told(closing, headline="The rename is in. Should it update the logout code, or roll the rename back?").said()
+    assert said == "The rename is in. Should it update the logout code, or roll the rename back?"
+
+
+def test_a_question_the_turn_never_asked_is_not_said_whoever_wrote_it() -> None:
+    """The instruction forbids the summariser offering next steps the turn never offered; this is what holds it."""
+    narrated = told(Said(None, "Fixed it. All twelve tests pass."), headline="Fixed it. Want it to look at the others too?")
+    assert narrated.said() == "Fixed it." and narrated.questions == ()
+
+
+def test_a_question_the_turn_went_on_working_past_is_not_waiting() -> None:
+    narrated = told(Said(None, "Want me to run the tests?"), Ran(None, "pytest", None, False, "ok", ()), headline="The tests pass.")
+    assert narrated.questions == () and narrated.said() == "The tests pass."
+
+
+def test_the_summariser_is_told_what_the_daemon_found_the_turn_waiting_on_so_it_words_that_and_nothing_else() -> None:
+    turn = Turn(Asked(None, "why two?"), (Said(None, "Two builds. Say the word and I'll remove one."),))
+    assert shown(turn, Delta(), ROOMY).endswith("your report ends by asking it:\n  It said: Say the word and I'll remove one.")
+    assert shown(Turn(Asked(None, "fix it"), (Said(None, "Fixed."),)), Delta(), ROOMY).endswith("\n\nThe turn asks the user nothing.")
+
+
+def test_a_question_cut_off_by_an_interruption_is_not_waiting() -> None:
+    narrated = told(Said(None, "Want me to run the tests?"), Interruption(None), headline="It offered to run the tests.")
+    assert narrated.questions == ()
 
 
 def test_what_the_repository_did_is_said_from_the_types_and_never_from_the_model() -> None:
@@ -193,34 +277,41 @@ def test_the_headline_is_cut_to_its_number_of_sentences_rather_than_asked_for_it
     assert told(Said(None, "x"), headline=said, sentences=2).headline.text == "The rename is in. Three tests still fail."
 
 
-def test_a_closing_question_survives_the_cut_at_every_length() -> None:
+ASKING = Said(None, "The rename is in, but three tests fail.\n\nWant me to roll the rename back?")
+
+
+@pytest.mark.parametrize("sentences", [1, 2, 3])
+def test_a_closing_question_is_said_whole_at_every_length_and_is_never_counted_in_it(sentences: int) -> None:
     """A turn waiting on an answer that never asks is worse than a long one."""
-    said = "The rename is in. Three tests still fail. Should it roll the rename back?"
-    assert told(Said(None, "x"), headline=said, sentences=1).headline.text == "The rename is in. Should it roll the rename back?"
+    said = "The rename is in. Three tests still fail. The docs are updated. Should it roll the rename back?"
+    narrated = told(ASKING, headline=said, sentences=sentences)
+    assert narrated.said().endswith(" Should it roll the rename back?")
+    assert narrated.said().count("?") == 1
+    assert "?" not in narrated.headline.text
+
+
+@pytest.mark.parametrize("sentences", [1, 2, 3])
+def test_a_question_the_summariser_left_out_is_still_said_at_every_length(sentences: int) -> None:
+    narrated = told(ASKING, headline="The rename is in. Three tests still fail.", sentences=sentences)
+    assert narrated.said().endswith(" It said: Want me to roll the rename back?")
 
 
 def test_a_report_that_is_only_a_question_is_still_asked() -> None:
-    assert told(Said(None, "x"), headline="Want it to carry on?", sentences=1).headline.text == "Want it to carry on?"
+    assert told(ASKING, headline="Want it to carry on?", sentences=1).said() == "Want it to carry on?"
 
 
 def test_the_question_is_said_last_whatever_the_summariser_put_where() -> None:
     """A fact read out after the question leaves the listener holding the answer to something already gone by."""
     pushed = Ran(None, "git push", None, False, "", (Pushed("main"),))
-    narrated = told(pushed, headline="The entry is gone. Want it to carry on?", sentences=1)
+    narrated = told(pushed, ASKING, headline="Want it to carry on? The entry is gone.", sentences=1)
     assert narrated.said() == "The entry is gone. It pushed main. Want it to carry on?"
 
 
-def test_every_question_survives_the_cut_and_not_only_the_last_of_them() -> None:
+def test_every_sentence_the_question_takes_is_said_and_not_only_the_last_of_them() -> None:
     """A small model routinely splits one choice over two sentences. Keeping the last alone leaves a listener a
-    dangling alternative with the question that gave it meaning deleted, and a turn waiting on an answer it
-    never asked for is the one failure the cut exists to avoid."""
+    dangling alternative with the question that gave it meaning deleted."""
     split = "The rename is in. Should it update the logout code? Or roll the rename back?"
-    assert told(headline=split, sentences=1).headline.text == "The rename is in. Should it update the logout code? Or roll the rename back?"
-
-
-def test_a_question_still_outlives_the_report_it_came_with() -> None:
-    long = "It did one thing. It did a second thing. Shall it go on?"
-    assert told(headline=long, sentences=1).headline.text == "It did one thing. Shall it go on?"
+    assert told(ASKING, headline=split, sentences=1).said() == "The rename is in. Should it update the logout code? Or roll the rename back?"
 
 
 def test_a_branch_is_said_in_words_because_the_speaker_reads_a_slash_aloud() -> None:

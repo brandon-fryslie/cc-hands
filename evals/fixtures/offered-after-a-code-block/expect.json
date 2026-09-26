@@ -1,0 +1,9 @@
+{
+  "about": "Told the SDK is out: every lever is a command-line flag, with a tool list in a code block whose only question mark is an optional argument. It ends by offering to scaffold, and asking where, without a question mark.",
+  "facts": [
+    {"needs": ["flag", "command line", "cli"], "why": "the answer: every lever the SDK offered is a command-line flag"},
+    {"needs": ["?", "tell me where", "where"], "why": "the turn ends waiting to be told where to scaffold, which is always said"}
+  ],
+  "never": ["read_session", "allowed-tools", "mcp.json", "CLAUDE_CONFIG_DIR"],
+  "asks": ["just tell me where"]
+}
