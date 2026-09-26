@@ -24,6 +24,11 @@ def asked(text: str) -> list[str]:
     ("text", "questions"),
     [
         ("Fixed the test. Want me to look at the others?", ["Want me to look at the others?"]),
+        ("Fixed it. Want me to also update the docs?", ["Want me to also update the docs?"]),
+        ("Should I push, or wait for review?", ["Should I push, or wait for review?"]),
+        # Put to the listener, so a sentence after it in the same paragraph does not answer it.
+        ("Where do you want the directory? I'll scaffold the daemon there.", ["Where do you want the directory?"]),
+        ("Which do you prefer?\n\n- The transport.\n- The keyboard.", ["Which do you prefer?"]),
         ("Should it update the logout code, or roll the rename back?", ["Should it update the logout code, or roll the rename back?"]),
         # Offers with no question mark, which a trailing-mark rule never hears.
         ("I'd remove the dev build. Say the word and I'll do it.", ["Say the word and I'll do it."]),
@@ -50,8 +55,10 @@ def test_a_question_or_an_offer_the_text_ends_on_is_asked(text: str, questions: 
     [
         "Done. All twelve tests pass.",
         "",
-        # The text asked itself and answered.
+        # The text asked itself and answered, in an earlier paragraph or in the one it ends on.
         "Why did I say it? Genre pressure, honestly.\n\nThe corrected sheet is in.",
+        "Why did it fail? The cache was stale. Fixed now.",
+        "Is this right? I think so, the tests agree.",
         # Inside code, a code span, a quotation, and an aside in italics: written about, not asked.
         "The tool list:\n\n```\nread_session(session, since?)\nspeak(text)\n```\n\nIt is built.",
         "It now reads `listening?.method ?? chosen`.",

@@ -136,6 +136,20 @@ def test_an_offer_with_no_question_mark_is_said_in_claudes_words_where_the_summa
     assert narrated.said() == "The dev build is on the clean Mac by mistake. It said: Say the word and I'll remove it."
 
 
+def test_a_turn_waiting_on_two_things_says_each_even_where_the_summariser_asked_only_one() -> None:
+    """Nothing says which of two the summariser's words cover, so a question it dropped would be said zero times."""
+    dialog = Questioned(None, (Question("Merge now?", ("Merge", "Wait"), None),))
+    closing = Said(None, "The suites pass. Say the word and I'll re-run the review.")
+    said = told(dialog, closing, headline="The suites pass. Want it to re-run the review?").said()
+    assert said == "The suites pass. It is asking: Merge now? Either Merge or Wait. It said: Say the word and I'll re-run the review."
+
+
+def test_one_thing_asked_over_two_sentences_is_still_the_summarisers_to_word() -> None:
+    closing = Said(None, "The rename is in. Should I update the logout code? Or roll the rename back?")
+    said = told(closing, headline="The rename is in. Should it update the logout code, or roll the rename back?").said()
+    assert said == "The rename is in. Should it update the logout code, or roll the rename back?"
+
+
 def test_a_question_the_turn_never_asked_is_not_said_whoever_wrote_it() -> None:
     """The instruction forbids the summariser offering next steps the turn never offered; this is what holds it."""
     narrated = told(Said(None, "Fixed it. All twelve tests pass."), headline="Fixed it. Want it to look at the others too?")

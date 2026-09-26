@@ -71,7 +71,8 @@ THE_INTERRUPTION = Topic("the interruption", "interruption")
 
 # The steps a section is cut from. A question and an interruption are not among them: each has a segment of its own
 # at the top level, and an open question and an interruption play at every length, so the type that says which steps
-# fall into sections is also the type that says they never do [LAW:types-are-the-program]. Without it, `topic_of` would need an arm for a step it can never be handed.
+# fall into sections is also the type that says they never do [LAW:types-are-the-program]. Without it, `topic_of`
+# would need an arm for a step it can never be handed.
 Sectioned = Said | Edited | Ran | Tested | Looked | Planned | Delegated | Other
 
 
@@ -268,17 +269,22 @@ def shown(turn: Turn, delta: Delta, budget: Budget) -> str:
 def _questions(worded: list[str], waiting: tuple[Open, ...]) -> tuple[Segment, ...]:
     """The one segment that asks what the turn is waiting on, or nothing for a turn waiting on nothing.
 
-    In the summariser's words where it asked, because they are the words made to be heard. Where it did not, in
-    Claude's own, put in spoken form: a turn waiting on an answer it never asks is the failure this segment
-    exists to prevent, and saying the question less well beats not saying it [LAW:no-silent-failure]. What the
-    summariser asked of a turn that asked nothing is dropped, which the instruction already forbids it to write.
+    In the summariser's words where it asked and the turn is waiting on one thing, because they are the words
+    made to be heard, and whatever it asked can only be that thing. The closing text is one thing however many
+    sentences it asks in, since Claude splits one choice over two; each unanswered dialog question is another.
+    Waiting on two, nothing says which of them the summariser's words cover — asked one, it can drop the other,
+    and then that one is said zero times — so each is said in Claude's own words instead, put in spoken form,
+    as it is where the summariser asked nothing: a turn waiting on an answer it never asks for is the failure
+    this segment exists to prevent, and saying a question less well beats not saying it [LAW:no-silent-failure].
+    What the summariser asked of a turn that asked nothing is dropped, which the instruction forbids it to write.
     """
+    things = len(dict.fromkeys(question.step if isinstance(question, InText) else question for question in waiting))
     match waiting:
         case ():
             return ()
         case _:
             holding = tuple(dict.fromkeys(question.step for question in waiting))
-            return (Segment(THE_QUESTION, " ".join(worded) or _unworded(waiting), holding),)
+            return (Segment(THE_QUESTION, " ".join(worded) if worded and things == 1 else _unworded(waiting), holding),)
 
 
 def _unworded(waiting: tuple[Open, ...]) -> str:
@@ -322,7 +328,12 @@ _HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+|(?<=[.!?][*_)\"'”’])\s+|(?<=[.!?][*_)\"'”’]{2})\s+")
 _CLOSERS = "*_)\"'”’ "
 # A question put to the listener outright, which is asked wherever in the text it stands.
-_ADDRESSED = re.compile(r"\b(?:you|your|yours|want me|should I|shall I|may I|can I|do I)\b", re.IGNORECASE)
+# The summariser's own voice is here too, since it asks with the session as "it": "Want it to carry on?"
+_ADDRESSED = re.compile(r"\b(?:you|your|yours|want (?:me|it) to|should (?:I|it)|shall (?:I|it)|may I|can I|do I)\b", re.IGNORECASE)
+_CHOICE = re.compile(r"\bor\b", re.IGNORECASE)
+# A sentence that looks ahead to an answer still to come, rather than giving one: to the listener, a condition on
+# what they say, or what happens once they have.
+_AHEAD = re.compile(r"\b(?:you|your|you'd|if|once|whether|unless|either|until|I'll|I will|I'd|I would|tell me|let me know)\b", re.IGNORECASE)
 # An offer or a choice put without a question mark, which is asked only where the text ends on it.
 _OFFERED = re.compile(
     r"\b(?:let me know|tell me (?:which|whether|if|where|what|how|when)|say the word|your call|up to you"
@@ -339,12 +350,13 @@ def reported_and_asked(text: str) -> tuple[list[str], list[str]]:
     their questions, and were there two rules the headline could ask what the nudge says is no question, or the
     nudge promise one that is never said [LAW:one-source-of-truth].
 
-    A sentence is asked where the text ends on it — its last paragraph, or the one that introduces the list it
-    ends on — and ends in a question mark or makes an offer: "Say the word and I'll do it." Earlier than that,
-    only a question put to the listener outright counts: "Want me to do it?" asked above three more sections
-    still waits on an answer, where "Why did I say it?" was the text asking itself, and it went on to answer.
-    The shapes were read off 1,386 closing texts in this machine's transcripts on 2026-09-25, and the eval
-    holds a real turn of each shape that decides a case, asked and not.
+    A question put to the listener outright is asked wherever it stands: "Want me to do it?" asked above three
+    more sections still waits on an answer. Any other question is asked only where the text ends on it — its
+    last paragraph, or the one that introduces the list it ends on — and only where its own paragraph does not
+    go on to tell something after it: "Why did it fail? The cache was stale." is the text asking itself, and it
+    answered. An offer is asked where the text ends on it: "Say the word and I'll do it." The shapes were read
+    off 3,038 closing texts in this machine's transcripts on 2026-09-25, and the eval holds a real turn of each
+    shape that decides a case, asked and not.
     """
     muted = _QUOTED.sub(lambda quoted: quoted.group(0).replace("?", _MUTED), _FENCED.sub("", text))
     paragraphs = [paragraph for paragraph in _PARAGRAPH.split(muted.strip()) if paragraph.strip()]
@@ -352,22 +364,43 @@ def reported_and_asked(text: str) -> tuple[list[str], list[str]]:
     # A choice laid out as a list is asked by the sentence above it, and the text ends on the list.
     while closing > 0 and all(_LISTED.match(line) for line in paragraphs[closing].splitlines() if line.strip()):
         closing -= 1
-    read = [(_asks(sentence, at >= closing), sentence.replace(_MUTED, "?")) for at, paragraph in enumerate(paragraphs) for sentence in _sentences(paragraph)]
+    read = [(asks, sentence.replace(_MUTED, "?")) for at, paragraph in enumerate(paragraphs) for asks, sentence in _read(paragraph, at >= closing)]
     return [sentence for asks, sentence in read if not asks], [sentence for asks, sentence in read if asks]
 
 
-def _sentences(paragraph: str) -> list[str]:
+def _read(paragraph: str, closing: bool) -> list[tuple[bool, str]]:
+    """Each sentence of a paragraph, and whether it asks the listener something.
+
+    Read from the end, because whether a question was the text asking itself depends on what follows it: a
+    question the same line goes on to tell after — "Why did it fail? The cache was stale." — answered itself.
+    Unless something later in the paragraph looks ahead to an answer still to come — "What is pi? A pointer is
+    enough. Once I have that I'll pin the interface." — which in 3,038 closing texts on this machine is what
+    every real question followed by more of its line did. The line and not the paragraph, because the lines
+    after a list item are the other items, which answer nothing.
+    """
+    read: list[tuple[bool, str]] = []
+    ahead = False
+    for line in reversed(_lines(paragraph)):
+        told = False
+        for sentence in reversed(line):
+            own = _SPAN.sub("", sentence)
+            questioned = sentence.rstrip(_CLOSERS).endswith("?")
+            addressed = questioned and bool(_ADDRESSED.search(own))
+            # A choice where the text ends is put to someone: "does it mean the suite, or also the smoke test?" was
+            # followed by what each option would cost, which tells and answers nothing.
+            chosen = questioned and bool(_CHOICE.search(own))
+            asks = addressed or closing and (bool(_OFFERED.search(own)) or chosen or questioned and (ahead or not told))
+            told = told or not asks
+            ahead = ahead or not asks and bool(_AHEAD.search(own))
+            read.append((asks, sentence))
+    return read[::-1]
+
+
+def _lines(paragraph: str) -> list[list[str]]:
     """A paragraph's sentences, a line at a time so a list's items are their own. No heading is among them: a
     title names what follows it and asks nothing."""
     lines = [_LISTED.sub("", line).strip() for line in paragraph.splitlines() if not _HEADING.match(line)]
-    return [sentence for line in lines for sentence in _SENTENCE.split(line) if sentence]
-
-
-def _asks(sentence: str, closing: bool) -> bool:
-    """Whether a sentence asks the listener something, given whether the text ends on it."""
-    questioned = sentence.rstrip(_CLOSERS).endswith("?")
-    own = _SPAN.sub("", sentence)
-    return questioned or bool(_OFFERED.search(own)) if closing else questioned and bool(_ADDRESSED.search(own))
+    return [[sentence for sentence in _SENTENCE.split(line) if sentence] for line in lines]
 
 
 def _sections(steps: list[Sectioned]) -> tuple[Segment, ...]:

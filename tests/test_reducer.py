@@ -412,6 +412,24 @@ def test_a_turn_that_stopped_on_a_question_is_nudged_as_having_one(closing: str 
     assert heard == [Speak(WaitingForYou(ONE.id, asking=asking))]
 
 
+QUESTION = Question((AskedQuestion("Merge now?", (Option("merge", None), Option("wait", None)), several=False),), {})
+
+
+@pytest.mark.parametrize("dialog", [Blocked(on=QUESTION, request=RequestId("q0"), deadline=65.0, warned=False), AtDialog(QUESTION)])
+def test_a_turn_that_ended_with_its_dialog_question_unanswered_is_nudged_as_having_one(dialog: SessionState) -> None:
+    """The telling counts an unanswered `AskUserQuestion` as waiting, so the nudge does too: interrupted at the
+    dialog, Claude Code sets the session idle with no Stop and no closing reply to read."""
+    state, _ = reduce(in_turn(dialog), StatusReported(ONE.id, Report(status.Idle(), Stamp(2000)), at=10.0))
+    assert reduce(state, Waited(ONE.id))[1] == [Speak(WaitingForYou(ONE.id, asking=True))]
+
+
+def test_a_dialog_question_answered_before_the_turn_stopped_is_not_what_it_waits_on() -> None:
+    state = in_turn(Working(since=20.0))
+    for event in [Stopped(ONE.id, "Merged.", mode=None, prompt=TURN, again=False), Waited(ONE.id)]:
+        state, effects = reduce(state, event)
+    assert effects == [Speak(WaitingForYou(ONE.id, asking=False))]
+
+
 def test_a_question_is_still_the_nudge_when_hands_times_it_itself() -> None:
     assert reduce(holding(Idle(due=70.0, asking=True)), Tick(at=70.0)) == (holding(Idle(nudged=True, asking=True)), [Speak(WaitingForYou(ONE.id, asking=True))])
 

@@ -351,10 +351,13 @@ notification, the only one the `Notification` hook's matcher lets through; it is
 spoken once per idle period, because `Idle.nudged` turns true as it is said and every
 way into `Idle` builds a fresh one. Claude Code sends no `idle_prompt` after an
 interrupted turn, so that one idle period carries `Idle.due`, and the tick nudges it
-when the notification would have come. `Idle.asking` is read off the reply the `Stop`
-carried, by the narration's own `reported_and_asked`, and makes the nudge "X has a
-question for you." rather than "X is waiting for you.": one reading, so the nudge never
-promises a question the telling did not ask. `Story` carries finished turns and sessions gone in one ordered
+when the notification would have come. `Idle.asking` makes the nudge "X has a question
+for you." rather than "X is waiting for you." It is true for the two things the telling
+counts as waiting: a reply the `Stop` carried that the narration's own `reported_and_asked`
+reads as asking, and a turn that went idle still at an `AskUserQuestion` dialog. The
+reducer cannot call `open_questions` itself, since the `Questioned` steps it reads live only
+in the transcript; the two differ where a dismissed dialog was followed by another
+permission before the turn stopped. `Story` carries finished turns and sessions gone in one ordered
 queue, because a summary takes seconds, and an end spoken at once was heard before the
 last turn it ended. A turn's summary reaches TTS as one `TTSSpeakFrame`, with no player
 and no segments. `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
@@ -1070,22 +1073,27 @@ that ends on a question is waiting on the listener whether or not a hook blocks,
 every sentence of the closing text that asks — the turn's last step, since a question it
 worked past was answered or did not need one. `reported_and_asked` is the one reading of a
 text for questions, used on Claude's closing text, on the summariser's reply, and for the
-nudge `[LAW:one-source-of-truth]`. Where the text ends, a question mark or an offer counts
-("Say the word and I'll do it."); above that, only a question put to the listener outright
-("want me to do it?" before two more sections). A `?` inside a code block, a code span, a
-quotation, or an italic aside is written about rather than asked, one with a word straight
-after it is in an address or a name, and one an arrow follows was answered on its line.
-Those shapes were read off 1,386 closing texts on this machine, and each that decides a case
-is an eval fixture.
+nudge `[LAW:one-source-of-truth]`. A question put to the listener outright counts wherever
+it stands ("want me to do it?" before two more sections). Where the text ends, an offer
+counts ("Say the word and I'll do it."), and so do a choice and any other question, unless
+its own line goes on to answer it ("Why did it fail? The cache was stale.") and nothing
+later in the paragraph looks ahead to an answer still to come ("Once I have that I'll pin
+the interface."). A `?` inside a code block, a code span, a quotation, or an italic aside is
+written about rather than asked, one with a word straight after it is in an address or a
+name, and one an arrow follows was answered on its line. Those shapes were read off 3,038
+closing texts on this machine, and each that decides a case and fits in a fixture is one:
+the only real closing that asks itself and answers on the same line is a 794 KB turn.
 
 What plays is one question segment, last, at every length. The summariser's message is
 `shown`: the turn as `render` writes it, then what the daemon found it waiting on, in spoken
 form, or that it asks nothing. Measured on inferno on 2026-09-25, without that line the
 model ended four of nine fixture turns that asked nothing on a question of its own and left
 out a question asked above two more sections; with it, none of either. Its words are the
-ones the summariser ended its reply on, which `narration` takes out of the headline so the question
-is said once; where the summariser left the question out, they are Claude's own, framed as
-"It is asking:" or "It said:", with "(Recommended)" dropped and put through `spoken`. Where
+ones the summariser ended its reply on, which `narration` takes out of the headline so the
+question is said once — where the turn waits on one thing, the closing text counting as one
+however many sentences it asks in. Waiting on two, nothing says which the summariser's words
+cover, and where it left the question out, the words are Claude's own, framed as "It is
+asking:" or "It said:", with "(Recommended)" dropped and put through `spoken`. Where
 the summariser asked and the turn did not, what it asked is dropped: the instruction
 already forbids it, and this is what holds it. An `AskUserQuestion` already answered is its
 own segment in `answered`, there to be opened and never played.

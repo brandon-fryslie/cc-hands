@@ -121,7 +121,7 @@ class Idle:
     # one a turn the user interrupted began (2.1.281). None where idle_prompt will say it, or already has.
     due: Instant | None = None
     # Whether the turn that left it here ended on a question or an offer, so the nudge can say it has one rather than
-    # only that it waits. Read off the reply its Stop carried, by the narration's own reading of a text for questions.
+    # only that it waits: its dialog question left unanswered, or its closing reply asking. See `_asking` in the reducer.
     asking: bool = False
 
 

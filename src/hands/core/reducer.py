@@ -106,7 +106,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return registry, []
         case Stopped(session=session, closing=closing, prompt=stopped, again=again) if _ends(registry.sessions.get(session), event):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
-            return _enter(registry, event, lambda _: Idle(asking=_asking(closing)), lambda was: [Compare(session, again), Summarise(session, stopped, closing), *_following(was)])
+            return _enter(registry, event, lambda state: Idle(asking=_asking(closing, state)), lambda was: [Compare(session, again), Summarise(session, stopped, closing), *_following(was)])
         case Stopped():
             # The Stop of a turn already over: told now if its telling waited for it (see _untold), and otherwise one
             # applied after the next turn's prompt, which ending would idle that turn and spend its mark.
@@ -135,7 +135,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             # waits for the Stop to be applied, so a stopped turn is normally ended by its Stop; and it sets busy before
             # a prompt's hooks run, so no idle read after a prompt is applied is one from before it. The turn is told
             # once the transcript says how it ended: see _untold.
-            return _enter(registry, event, lambda _: Idle(due=at + IDLE_NUDGE_SECONDS))
+            return _enter(registry, event, lambda state: Idle(due=at + IDLE_NUDGE_SECONDS, asking=_asking(None, state)))
         case StatusReported():
             # Kept as Claude Code said it, for what asks what the session is doing: a session not running already is
             # where an idle leaves it, and busy or waiting say nothing a hook has not.
@@ -462,15 +462,24 @@ def _taken(state: SessionState, named: bool) -> SessionState:
             return state
 
 
-def _asking(closing: str | None) -> bool:
-    """Whether the reply a turn stopped on asks the listener anything; a turn that closed on no reply asked nothing."""
-    match closing:
-        case str():
-            # [LAW:one-source-of-truth] the reading the narration says the question by, so the nudge never promises
-            # a question the telling does not ask.
-            return bool(reported_and_asked(closing)[1])
-        case None:
-            return False
+def _asking(closing: str | None, state: SessionState) -> bool:
+    """Whether a turn that ended in `state`, on the reply `closing`, left the listener something to answer: the
+    two things `open_questions` counts in the telling, so the nudge and the telling agree on what asking is.
+
+    `open_questions` itself cannot be called here, because it reads the turn's `Questioned` steps, which exist
+    only in the transcript the tail reads, and nothing the reducer is handed carries them; making it the one
+    function would take the narrator handing its finding back as an event, after the summariser has answered.
+    So each half is read from the reducer's own record of the same fact. The closing text is the Stop's reply,
+    read by the narration's own `reported_and_asked` [LAW:one-source-of-truth]. An unanswered `AskUserQuestion`
+    is a turn that ended still at its dialog: answered at the keyboard or by voice, the tool ran and the session
+    was working again before it stopped. The two can differ where a dialog was dismissed and the turn went on to
+    another permission, which moved the session off the question the transcript still records unanswered.
+    """
+    match state:
+        case Blocked(on=Question()) | AtDialog(on=Question()):
+            return True
+        case _:
+            return closing is not None and bool(reported_and_asked(closing)[1])
 
 
 def _waited(state: SessionState) -> SessionState:
