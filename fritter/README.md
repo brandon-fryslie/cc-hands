@@ -91,6 +91,13 @@ Termination signals are forwarded to the child, so the ordinary exit path runs a
 socket is removed and the terminal restored. Without that, a killed fritter would die with
 its cleanup unrun, leaving a stale socket for the next caller to dial into nothing.
 
+Closing the terminal ends the session. The terminal's hangup reaches fritter as SIGHUP and
+is forwarded like any other termination signal, and the child's output is read from the
+pty for as long as the child writes, whether or not the terminal is still there to show
+it. A child whose output nobody reads blocks on its way out — Claude Code waits in
+`tcsetattr` for its output to drain — and would be left running, with fritter waiting on
+it, after the window they ran in had gone.
+
 The exit code is the child's. A child killed by a signal is reported as 128 plus that
 signal, the way a shell reports it — SIGTERM is 143 — because a signalled child has no
 exit code of its own, and passing on Go's -1 would exit 255 and leave a caller unable to
@@ -128,6 +135,9 @@ On 2.1.283:
 - Text behind a leading space starting with `/`, `@` or `!` is sent as plain text, and the
   transcript records it with the space.
 - The binary asks for bracketed paste.
+- Killing the tmux session a wrapped session runs in, or sending fritter SIGHUP or
+  SIGTERM, ends fritter, claude and the processes claude started within a second, and
+  removes the socket directory.
 
 On 2.1.278:
 
