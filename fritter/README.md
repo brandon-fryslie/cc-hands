@@ -59,7 +59,8 @@ One JSON object per connection, newline-terminated, answered with one JSON objec
 the one fritter wrapped is refused. The address alone cannot say which session it
 reaches: it is inherited, so a second session started from inside a wrapped one finds its
 parent's address in its own environment. So wrap the program itself — `fritter -- claude`
-— and not a launcher that runs it as a child.
+— and not a launcher that runs it as a child. hands' `claude` shim, written by
+`hands install-fritter`, does exactly that for every interactive session.
 
 A `text` request is typed the way someone at the keyboard types a message: the text, then
 Return. It goes into the child as one write. fritter does not decide what a leading `/` or

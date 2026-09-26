@@ -31,6 +31,11 @@ class Home:
         """One file per session, written by its shim: the set of sessions hands is attached to."""
         return self.root / "sessions"
 
+    @property
+    def bin(self) -> Path:
+        """fritter, and the claude that runs every interactive session under it, written by `hands install-fritter`."""
+        return self.root / "bin"
+
     def membership(self, session: SessionId) -> Path:
         return self.memberships / f"{session}.json"
 

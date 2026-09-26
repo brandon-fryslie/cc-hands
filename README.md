@@ -109,6 +109,23 @@ The hooks need a Python 3.12 or newer on `PATH` (`python3.14`, `python3.13`,
 venv. Without one, every hook fails saying so. The shim finds hands' home as the CLI
 does: `HANDS_HOME`, which must be absolute, or `~/.hands`.
 
+## Wrapping every session
+
+hands types into a session through fritter, so it reaches only the sessions started
+under it. Install a `claude` that starts every one that way, and put it first on `PATH`:
+
+```
+uv run hands install-fritter                    # builds fritter, writes ~/.hands/bin/claude beside it
+export PATH="$HOME/.hands/bin:$PATH"            # in your shell's startup file
+```
+
+That `claude` runs the next `claude` on `PATH` under fritter when a terminal is on both
+ends and there is no `-p` or `--print`; a pipe, a script, and `claude -p` run the real
+claude exactly as before. `hands install-fritter` exits 0 only when `claude` on the
+current `PATH` is the one it wrote, and says what to add when it is not. Run it again
+after fritter changes: it builds fritter from this checkout. A session started before
+the shim stays unreachable until it ends.
+
 The hooks are on whether or not hands is running. While hands is stopped, has never
 run, or is still starting, they cost a session nothing: no hook error, and a permission
 request gets Claude Code's own dialog. A hands that died, hung, or left a heartbeat nothing can read shows

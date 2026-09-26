@@ -13,7 +13,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from hands.sessions import audit, heartbeat
+from hands.sessions import audit, heartbeat, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.payload import Rejected
 
@@ -26,6 +26,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     shown = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     shown.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
+    commands.add_parser("install-fritter", help="build fritter and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
     arguments = parser.parse_args(argv)
@@ -53,6 +54,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return report(home)
         case "log":
             return tail_log(home, arguments.lines)
+        case "install-fritter":
+            return install_fritter(home)
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
             # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits
@@ -97,6 +100,23 @@ def report(home: Home) -> int:
             out, code = sys.stderr, 2
     print(heartbeat.describe(verdict, now), file=out)
     return code
+
+
+def install_fritter(home: Home) -> int:
+    try:
+        installed = wrapper.install(home, os.environ.get("PATH", ""))
+    except wrapper.Uninstallable as error:
+        print(f"hands install-fritter: {error}", file=sys.stderr)
+        return 1
+    print(f"built {installed.fritter}")
+    print(f"wrote {installed.shim}")
+    if installed.on_path:
+        print("every interactive claude started from this PATH runs under fritter")
+        return 0
+    ahead = "nothing" if installed.found is None else installed.found
+    print(f"`claude` on this PATH is {ahead}, not the shim, so no session is wrapped yet. Put {home.bin} first:", file=sys.stderr)
+    print(f'  export PATH="{home.bin}:$PATH"', file=sys.stderr)
+    return 1
 
 
 # How often `hands log` looks for new lines.
