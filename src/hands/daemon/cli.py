@@ -16,13 +16,8 @@ from hands.sessions.payload import Rejected
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    try:
-        fallback = default_home()
-    except Rejected as error:
-        print(f"hands: {error}", file=sys.stderr)
-        return 2
     parser = argparse.ArgumentParser(prog="hands")
-    parser.add_argument("--home", type=Path, default=fallback.root, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
+    parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("run", help="run the daemon in the foreground (launchd runs it this way)")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
@@ -32,7 +27,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
     arguments = parser.parse_args(argv)
-    home = Home(arguments.home)
+    try:
+        # HANDS_HOME is read only when --home is not given, so a bad one never stands in the way of an explicit home.
+        home = default_home() if arguments.home is None else Home(arguments.home)
+    except Rejected as error:
+        print(f"hands: {error}", file=sys.stderr)
+        return 2
     match arguments.command:
         case "run":
             # Read before this run's first heartbeat replaces it.
