@@ -235,13 +235,13 @@ adapter that fails raises; the supervisor logs it and the failure is spoken thro
 the system channel. Nothing is retried silently and nothing falls back
 `[LAW:no-silent-failure]`.
 
-That block is the design, not the code. `core/effects.py` has five of those ten today -
-`Audit`, `Reply`, `Speak`, `Narrate`, `Summarise` - plus `SessionGone`, which the block
-above leaves out. `Type`, `Note`, `Play`, `Snapshot` and `Launch` are declared and unbuilt,
-and their adapters are named here in a tense the code has not earned yet. `Type` is the
-nearest: what it will call is built and measured - `hands.sessions.typing.Typist` types
-into a session's fritter - and only the effect and its place in the reducer are left, in
-`hands-keyboard-gxr.i5n`.
+That block is the design, not the code. `core/effects.py` has seven of those nine today -
+`Audit`, `Reply`, `Speak`, `Narrate`, `Note`, `Summarise`, `Snapshot` - plus `SessionGone`
+and `Compare`, which the block above leaves out. `Type` and `Play` are unbuilt, and their
+adapters are named here in a tense the code has not earned yet. `Type` is the nearest:
+what it will call is built and measured - `hands.sessions.typing.Typist` types into a
+session's fritter - and only the effect and its place in the reducer are left, in
+`hands-harness-5nb.l0u`.
 
 Because every transition is `reduce` on values, the test suite for the session
 lifecycle is a table: state before, event, state after, effects. There is no pipeline,
