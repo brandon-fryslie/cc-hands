@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -40,7 +41,10 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"a line submitted", []string{"hello", "\r"}, true},
 		{"typed again after submitting", []string{"hello\r", "more"}, false},
 		{"typed and submitted in one read", []string{"hello\r"}, true},
-		{"cleared with ctrl-c", []string{"oops", "\x03"}, true},
+		// A Ctrl-C empties the box only when the child is idle; when it is working the
+		// same press stops the work and leaves the box as it was. After any Ctrl-C the
+		// child is idle, so a leading one is what an idle child looks like from here.
+		{"cleared with ctrl-c", []string{"\x03", "oops", "\x03"}, true},
 		// Ctrl-U kills back to the start of the line the cursor is on, and that is the
 		// displayed line: measured, 250 characters in a 100-column terminal lost one row
 		// to a single press and kept 192. Where the cursor is and how wide the terminal
@@ -48,7 +52,27 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"ctrl-u cannot prove the box is empty", []string{"oops", "\x15"}, false},
 		{"not on a box with more than one line in it", []string{"aaa", "\n", "bbb", "\x15"}, false},
 		{"and not on one that was already past accounting for", []string{"\x1b[A", "\x15"}, false},
-		{"ctrl-c does, however many lines are in it", []string{"aaa", "\n", "bbb", "\x03"}, true},
+		{"ctrl-c does, however many lines are in it", []string{"\x03", "aaa", "\n", "bbb", "\x03"}, true},
+
+		// hands-harness-5nb.dh7, measured on 2.1.283: the user types their next prompt
+		// while the child works, one Ctrl-C stops the work, and the prompt is still there.
+		{"a ctrl-c while the child works leaves the box as it was",
+			[]string{"\x03", "fix it\r", "header  please fix the auth bug", "\x03"}, false},
+		{"and the one after it, into an idle child, empties it",
+			[]string{"\x03", "fix it\r", "header  please fix the auth bug", "\x03", "\x03"}, true},
+		// A program can be started with work to do, so a child nobody has settled is not
+		// known to be idle.
+		{"a child that was never settled is not known to be idle", []string{"oops", "\x03"}, false},
+		{"until a ctrl-c settles it", []string{"oops", "\x03", "\x03"}, true},
+		// A Return read as continuing the line may really have sent it, so it could have
+		// started work all the same.
+		{"a Return read as continuing the line may still have started work",
+			[]string{"\x03", "abc\\", "\r", "\x03"}, false},
+		{"a chord whose effect is not known may have started work",
+			[]string{"\x03", "abc", "\x18\x13", "\x03"}, false},
+		{"typing starts nothing", []string{"\x03", "abc", "def", "\x03"}, true},
+		{"nor does escape", []string{"\x03", "abc", "\x1b", "\x03"}, true},
+		{"nor the terminal answering a question", []string{"\x03", "abc", "\x1b[O", "\x03"}, true},
 		{"escape leaves the box alone", []string{"oops", "\x1b"}, false},
 		{"a word killed leaves the count standing", []string{"alpha beta", "\x17"}, false},
 		// A bare newline is Ctrl-J, which puts one in the box rather than sending it.
@@ -124,11 +148,11 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"escape, then a message that opens like another one", []string{"\x1b", "]drop the table"}, false},
 		{"escape, then the pointer moves", []string{"\x1b", "\x1b[<0;45;12M"}, true},
 		{"a box proved empty by a Return is accounted for again", []string{"\x1b[A", "\r"}, true},
-		{"and one proved empty by ctrl-c is too", []string{"\x1b[A", "\x03"}, true},
+		{"and one proved empty by ctrl-c is too", []string{"\x03", "\x1b[A", "\x03", "\x03"}, true},
 		{"escape, then the window loses focus", []string{"\x1b", "\x1b[O"}, true},
 		{"alt-up arrives as two escapes and a history key", []string{"\x1b\x1b[A"}, false},
 		{"typed, escape, then submitted", []string{"hello", "\x1b", "\r"}, true},
-		{"typed, escape, then cleared", []string{"hello", "\x1b", "\x03"}, true},
+		{"typed, escape, then cleared", []string{"\x03", "hello", "\x1b", "\x03"}, true},
 		{"typed, escape, then backspaced back to what might be empty",
 			[]string{"ab", "\x1b", "\x7f\x7f"}, false},
 		{"an answer longer than any key holds the line rather than freeing it", []string{"\x1b]" + strings.Repeat("A", 4095), "BBB\x07"}, false},
@@ -172,7 +196,8 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"a backslash and Return continue the line", []string{"please fix the auth bug in \\", "\r"}, false},
 		{"a backslash and Return arriving in one read", []string{"abc\\\r"}, false},
 		{"a line continued and then really submitted", []string{"abc\\", "\r", "def", "\r"}, true},
-		{"ctrl-c empties a continued line, because it empties anything", []string{"abc\\", "\r", "\x03"}, true},
+		{"ctrl-c empties a continued line, because it empties anything",
+			[]string{"abc\\", "\r", "\x03", "\x03"}, true},
 		{"but ctrl-u cannot prove it emptied one", []string{"abc\\", "\r", "\x15"}, false},
 		// Nothing comes off the remembered end any more, because nothing on stdin says how
 		// much came off the box. So what it holds is a superset of what the line really
@@ -210,7 +235,8 @@ func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
 		{"a colon token is", []string{"nice :smile", "\r"}, false},
 		{"a slash command runs and empties the box", []string{"/compact", "\r"}, true},
 		{"an ordinary prompt is still sent by its Return", []string{"what changed today", "\r"}, true},
-		{"ctrl-c empties a box a completion left full", []string{"look at @src/ha", "\r", "\x03"}, true},
+		{"ctrl-c empties a box a completion left full",
+			[]string{"look at @src/ha", "\r", "\x03", "\x03"}, true},
 		{"and what it left is forgotten as the user types on", []string{
 			"look at @src/ha", "\r", "and then some more words", "\r"}, true},
 	} {
@@ -244,12 +270,29 @@ func TestAChordFritterSendsMeansWhatTheSameChordMeansTyped(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			line := newLineOwner()
-			line.typed([]byte("theirs"))
+			line.typed([]byte("\x03theirs"))
 			line.sent(keystrokes[c.key])
 			if line.free() != c.free {
 				t.Fatalf("after sending %s: free=%v, want %v", c.key, line.free(), c.free)
 			}
 		})
+	}
+}
+
+func TestACallersWordThatWorkBeganKeepsTheNextCtrlCFromEmptyingTheBox(t *testing.T) {
+	// A turn can start with no keypress at all - a background task finishing starts one,
+	// measured on 2.1.283 - and stdin says nothing about it. The caller hears it from the
+	// session's UserPromptSubmit hook, which runs before the work does.
+	line := newLineOwner()
+	line.typed([]byte("\x03header  please fix the auth bug"))
+	line.working()
+	line.sent(keystrokes["ctrl_c"])
+	if line.free() {
+		t.Fatal("a ctrl_c into a working child stopped the work, and the line was handed back with the user's prompt still in the box")
+	}
+	line.sent(keystrokes["ctrl_c"])
+	if !line.free() {
+		t.Fatal("the child is idle after the first ctrl_c, and the second did not hand the line back")
 	}
 }
 
@@ -260,7 +303,7 @@ func TestAKeyThatEmptiesTheBoxSettlesTheLineEvenMidSequence(t *testing.T) {
 	// count alone is not enough - the doubt has to go with it, or the ctrl_c sent to
 	// clear the line leaves the line held by the very request sent to clear it.
 	line := newLineOwner()
-	line.typed([]byte("\x1b"))
+	line.typed([]byte("\x03\x1b"))
 	line.typed([]byte("Please fix the auth bug"))
 	if line.free() {
 		t.Fatal("the user is typing and the parser cannot yet see it; the line is not free")
@@ -279,7 +322,7 @@ func TestAKeyDoesNotTakeTheEndOfThePasteWithIt(t *testing.T) {
 	// every Enter counts as a pasted character instead of emptying the box. No keystroke
 	// recovers from that - the session can never be typed into again.
 	line := newLineOwner()
-	line.typed([]byte("\x1b[200~line one"))
+	line.typed([]byte("\x03\x1b[200~line one"))
 	line.typed([]byte(" and more\x1b[20"))
 	line.sent(keystrokes["ctrl_c"])
 	line.typed([]byte("1~"))
@@ -298,7 +341,7 @@ func TestAKeyDoesNotTakeThePasteItDidNotEnd(t *testing.T) {
 	// would empty a count that is not empty, and the line would read free with the tail of
 	// someone's paste sitting in the box.
 	line := newLineOwner()
-	line.typed([]byte("\x1b[200~line one"))
+	line.typed([]byte("\x03\x1b[200~line one"))
 	if line.free() {
 		t.Fatal("a paste in progress is characters in the box")
 	}
@@ -653,6 +696,167 @@ func TestAKeyGoesThroughAHeldLineAndGivesItBack(t *testing.T) {
 	}
 }
 
+func TestACtrlCIntoAChildTheCallerSaysIsWorkingDoesNotHandTheLineBack(t *testing.T) {
+	// The hands hook says so over the socket when a turn starts, and a ctrl_c after that
+	// stops the work rather than emptying the box. Raw before the first press, so the 0x03
+	// is a byte the child reads and not a signal the terminal turns it into.
+	wrapped, ask, _ := wrap(t, "sh", "-c", "cat >/dev/null")
+	defer func() { _ = wrapped.cmd.Process.Kill() }()
+	if _, err := term.MakeRaw(int(wrapped.master.Fd())); err != nil {
+		t.Fatalf("cannot put the session's terminal into raw mode: %v", err)
+	}
+	clock := stopped(wrapped.line)
+
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
+		t.Fatalf("cannot settle the child: %s", answer.Reason)
+	}
+	if _, err := wrapped.Write([]byte("header  please fix the auth bug")); err != nil {
+		t.Fatalf("cannot type: %v", err)
+	}
+	if answer := ask(fmt.Sprintf(`{"pid":%d,"kind":"working"}`, wrapped.cmd.Process.Pid+1)); answer.OK {
+		t.Fatal("another process's turn was taken as this one's")
+	}
+	if answer := ask(`{"kind":"working"}`); !answer.OK {
+		t.Fatalf("the word that work began was refused: %s", answer.Reason)
+	}
+	clock.pass(quitWindow)
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
+		t.Fatalf("the ctrl_c was refused: %s", answer.Reason)
+	}
+	if answer := ask(`{"kind":"text","text":"INTRUDER"}`); answer.OK {
+		t.Fatal("the ctrl_c only stopped the work, and text was typed onto the end of the user's prompt")
+	}
+	clock.pass(quitWindow)
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
+		t.Fatalf("the second ctrl_c was refused: %s", answer.Reason)
+	}
+	if answer := ask(`{"kind":"text","text":"now ok"}`); !answer.OK {
+		t.Fatalf("the child was idle for the second ctrl_c and the line was still held: %s", answer.Reason)
+	}
+}
+
+func TestTextFritterSubmitsStartsWorkTooSoTheNextCtrlCDoesNotHandTheLineBack(t *testing.T) {
+	// fritter's own Enter starts a turn as surely as the user's, and it must not need a
+	// hook to hear about work it started itself.
+	wrapped, ask, _ := wrap(t, "sh", "-c", "cat >/dev/null")
+	defer func() { _ = wrapped.cmd.Process.Kill() }()
+	if _, err := term.MakeRaw(int(wrapped.master.Fd())); err != nil {
+		t.Fatalf("cannot put the session's terminal into raw mode: %v", err)
+	}
+	clock := stopped(wrapped.line)
+
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
+		t.Fatalf("cannot settle the child: %s", answer.Reason)
+	}
+	if answer := ask(`{"kind":"text","text":"write an essay about rivers","submit":true}`); !answer.OK {
+		t.Fatalf("cannot submit: %s", answer.Reason)
+	}
+	if _, err := wrapped.Write([]byte("header  please fix the auth bug")); err != nil {
+		t.Fatalf("cannot type: %v", err)
+	}
+	clock.pass(quitWindow)
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
+		t.Fatalf("the ctrl_c was refused: %s", answer.Reason)
+	}
+	if answer := ask(`{"kind":"text","text":"INTRUDER"}`); answer.OK {
+		t.Fatal("the ctrl_c only stopped the turn fritter started, and text was typed onto the end of the user's prompt")
+	}
+}
+
+func TestACtrlCThatCouldQuitTheSessionIsRefused(t *testing.T) {
+	// A Ctrl-C into an idle, empty box arms the next one, for 800ms, to quit the session.
+	// Recovering a held line can take two, so the second waits the window out.
+	wrapped, ask, _ := wrap(t, "sh", "-c", "cat >/dev/null")
+	defer func() { _ = wrapped.cmd.Process.Kill() }()
+	if _, err := term.MakeRaw(int(wrapped.master.Fd())); err != nil {
+		t.Fatalf("cannot put the session's terminal into raw mode: %v", err)
+	}
+	clock := stopped(wrapped.line)
+
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
+		t.Fatalf("the first ctrl_c was refused: %s", answer.Reason)
+	}
+	clock.pass(quitWindow - time.Millisecond)
+	answer := ask(`{"kind":"key","key":"ctrl_c"}`)
+	if answer.OK {
+		t.Fatal("a second ctrl_c inside the window went in, and could have quit the session")
+	}
+	if !strings.Contains(answer.Reason, "nothing was typed") {
+		t.Fatalf("the refusal must say nothing was typed, got %q", answer.Reason)
+	}
+	// The user's own count too: a Ctrl-C at the keyboard is the first of a pair as surely.
+	clock.pass(time.Millisecond)
+	if _, err := wrapped.Write([]byte{ctrlC}); err != nil {
+		t.Fatalf("cannot press ctrl-c: %v", err)
+	}
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); answer.OK {
+		t.Fatal("a ctrl_c went in straight after the user's own")
+	}
+	clock.pass(quitWindow)
+	if answer := ask(`{"kind":"key","key":"ctrl_c"}`); !answer.OK {
+		t.Fatalf("a ctrl_c after the window was refused: %s", answer.Reason)
+	}
+	if answer := ask(`{"kind":"key","key":"enter"}`); !answer.OK {
+		t.Fatalf("a key that cannot quit anything was held back by the window: %s", answer.Reason)
+	}
+}
+
+func TestACtrlCThatLandsLateStillArmsTheQuitGuard(t *testing.T) {
+	// A Ctrl-C given up on is not gone: it sits in the queue and reaches the child when the
+	// child reads, and the next request's write follows straight behind it. Unrecorded, two
+	// of them go in back to back, which is how a session is quit.
+	go_ := filepath.Join(t.TempDir(), "go")
+	wrapped, ask, _ := wrap(t, "sh", "-c", `while [ ! -e "$0" ]; do sleep 0.02; done; exec cat >/dev/null`, go_)
+	defer func() { _ = wrapped.cmd.Process.Kill() }()
+	if _, err := term.MakeRaw(int(wrapped.master.Fd())); err != nil {
+		t.Fatalf("cannot put the session's terminal into raw mode: %v", err)
+	}
+	// Measured on macOS: a raw pty queues 1022 bytes and blocks on the next, so this fills it.
+	if answer := ask(`{"kind":"text","text":"` + strings.Repeat("x", 1022) + `","submit":false}`); !answer.OK {
+		t.Fatalf("the queue could not be filled: %s", answer.Reason)
+	}
+	if stuck := ask(`{"kind":"key","key":"ctrl_c"}`); stuck.OK || !strings.Contains(stuck.Reason, "not reading its input") {
+		t.Fatalf("the ctrl_c was meant to stall behind a full queue, got %+v", stuck)
+	}
+	if err := os.WriteFile(go_, nil, 0o600); err != nil {
+		t.Fatalf("cannot let the child read: %v", err)
+	}
+	answer := ask(`{"kind":"key","key":"ctrl_c"}`)
+	if answer.OK {
+		t.Fatal("a ctrl_c went in straight behind one that landed late, and could have quit the session")
+	}
+	if !strings.Contains(answer.Reason, "nothing was typed") {
+		t.Fatalf("the refusal must say nothing was typed, got %q", answer.Reason)
+	}
+}
+
+// fixedClock is a clock that moves only when told to.
+type fixedClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func (c *fixedClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *fixedClock) pass(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
+}
+
+// stopped gives the line owner a clock the test moves, so a window is a step and not a sleep.
+func stopped(line *lineOwner) *fixedClock {
+	clock := &fixedClock{at: time.Now()}
+	line.mu.Lock()
+	defer line.mu.Unlock()
+	line.now = clock.now
+	return clock
+}
+
 func TestMultiLineTextIsRefusedWhenTheSessionWillNotBracketIt(t *testing.T) {
 	// A shell never turns bracketed paste on, so a newline here is an Enter. Answering ok
 	// would tell hands one message was sent where several separate prompts were.
@@ -791,6 +995,9 @@ func TestARequestForAnotherProcessIsNotTypedIntoThisOne(t *testing.T) {
 			answer := ask(c.body)
 			if answer.OK {
 				t.Fatal("a request for another process was typed into this one")
+			}
+			if !answer.Elsewhere {
+				t.Fatal("the refusal must say the address belongs to another session, so a holder of an inherited one can tell")
 			}
 			if !strings.Contains(answer.Reason, "nothing was typed") {
 				t.Fatalf("the refusal must say nothing was typed, got %q", answer.Reason)

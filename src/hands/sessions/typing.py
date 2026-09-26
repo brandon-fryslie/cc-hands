@@ -38,6 +38,9 @@ ANSWER_LIMIT = 64 * 1024
 # while sendall is still writing and the caller sees a broken pipe instead of the reason.
 REQUEST_LIMIT = 64 * 1024
 
+# What a request that types leaves unknown when it went out and no answer came back.
+TYPED_UNKNOWN = "so the text may already be in the input box - do not send it again"
+
 
 class Untyped(Exception):
     """The text was not typed, or it is not known whether it was. The message says which.
@@ -48,6 +51,14 @@ class Untyped(Exception):
     given up on leaves one that is partly there. The message is where that distinction
     lives, because the only reader of it is a model reading English.
     """
+
+
+class Elsewhere(Untyped):
+    """The address is another session's fritter, inherited: it types into some other process."""
+
+
+class NotListening(Untyped):
+    """Nothing is listening at the address, so the fritter that published it has exited."""
 
 
 @dataclass(frozen=True)
@@ -83,13 +94,17 @@ class Typist:
         A newline inside the text stays a newline in the message: fritter brackets the
         paste when the session accepts bracketing, so only `submit` submits.
         """
-        self._ask({"pid": self.pid, "kind": "text", "text": str(text), "submit": submit})
+        self._ask({"pid": self.pid, "kind": "text", "text": str(text), "submit": submit}, TYPED_UNKNOWN)
 
     def press(self, key: Keystroke) -> None:
         """Send one named chord, which is not text and is never escaped as text."""
-        self._ask({"pid": self.pid, "kind": "key", "key": key})
+        self._ask({"pid": self.pid, "kind": "key", "key": key}, TYPED_UNKNOWN)
 
-    def _ask(self, request: dict[str, object]) -> None:
+    def working(self) -> None:
+        """Say that the session has started a turn, so a ctrl_c now stops it rather than emptying the box."""
+        self._ask({"pid": self.pid, "kind": "working"}, "so whether it heard is not known")
+
+    def _ask(self, request: dict[str, object], unknown: str) -> None:
         body = json.dumps(request).encode() + b"\n"
         # [LAW:parse-dont-validate] Refused here rather than sent: fritter stops reading at
         # its own limit and closes, which arrives as a broken pipe partway through sendall
@@ -118,13 +133,16 @@ class Typist:
                 answer = _read_line(connection, deadline)
         except OSError as error:
             if delivered:
-                raise self._nobody_knows(f"it never answered ({error})") from error
+                raise self._nobody_knows(f"it never answered ({error})", unknown) from error
+            unreached = f"cannot reach the fritter for session {self.session} at {self.socket}: {error}"
             # A session whose process is gone leaves a socket nobody is listening on, and
             # that is the common case here rather than an exotic one.
-            raise Untyped(f"cannot reach the fritter for session {self.session} at {self.socket}: {error}") from error
-        _raise_if_refused(self.session, answer, self._nobody_knows)
+            if isinstance(error, (FileNotFoundError, ConnectionRefusedError)):
+                raise NotListening(unreached) from error
+            raise Untyped(unreached) from error
+        _raise_if_refused(self.session, answer, lambda what: self._nobody_knows(what, unknown))
 
-    def _nobody_knows(self, what: str) -> Untyped:
+    def _nobody_knows(self, what: str, unknown: str) -> Untyped:
         """The failure to report when the request went out and no answer came back.
 
         [LAW:one-source-of-truth] Every failure past the point the request was delivered is
@@ -132,12 +150,9 @@ class Typist:
         the others is how a message gets typed twice. fritter types into the pty before it
         answers, so "no answer" never means "nothing happened" - not when the connection
         closed silently, not when what came back was not JSON, and not when it was JSON
-        that says neither yes nor no.
+        that says neither yes nor no. `unknown` is what that leaves unknown for this request.
         """
-        return Untyped(
-            f"the request reached the fritter for session {self.session} at {self.socket} but {what},"
-            " so the text may already be in the input box - do not send it again"
-        )
+        return Untyped(f"the request reached the fritter for session {self.session} at {self.socket} but {what}, {unknown}")
 
 
 def _left(deadline: float) -> float:
@@ -186,9 +201,11 @@ def _raise_if_refused(session: SessionId, answer: bytes, nobody_knows: Callable[
     match decoded:
         case {"ok": True}:
             return
+        case {"ok": False, "reason": str() as reason, "elsewhere": True}:
+            raise Elsewhere(f"fritter refused a request for session {session}: {reason}")
         case {"ok": False, "reason": str() as reason}:
             # The one answer fritter actually gave. Its reason says whether anything
             # reached the box, so this is the only failure that does not need the warning.
-            raise Untyped(f"fritter refused to type into session {session}: {reason}")
+            raise Untyped(f"fritter refused a request for session {session}: {reason}")
         case other:
             raise nobody_knows(f"it answered {other!r}, which says neither yes nor no")

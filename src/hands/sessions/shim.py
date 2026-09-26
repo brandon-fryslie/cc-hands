@@ -4,7 +4,7 @@
 
 It runs in Claude Code's critical path for every subscribed hook, so it imports
 only the standard library and hands' data modules, and it never waits on
-anything but the post. Every post returns at once but a PermissionRequest's,
+anything but the post - and, at a prompt in a session fritter wrapped, fritter. Every post returns at once but a PermissionRequest's,
 which waits for the answer and prints it for Claude Code to read.
 
 The plugin installs the hooks whether or not hands is running, so a daemon the
@@ -27,6 +27,7 @@ from hands.sessions.home import Home, default_home
 from hands.sessions.hookconfig import post_timeout
 from hands.sessions.membership import remove_membership, write_membership
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.typing import Elsewhere, NotListening, Typist, Untyped
 
 # [LAW:no-silent-failure] Claude Code shows a hook's stderr for exit 1 and carries
 # on. Exit 2 would instead block the prompt or the stop and hand the message to
@@ -55,28 +56,57 @@ class _UnixConnection(http.client.HTTPConnection):
         self.sock = connection
 
 
+def membership(payload: Payload) -> Membership:
+    """The session this hook runs under, as its own process and environment say."""
+    return Membership(
+        id=payload.session_id(),
+        # The hook's shell execs a single simple command, so this is the claude
+        # process. A compound hook command (`a; b`) would make it that shell.
+        pid=os.getppid(),
+        cwd=Path(payload.text("cwd")),
+        transcript=Path(payload.text("transcript_path")),
+        # [LAW:one-source-of-truth] fritter publishes its own address and nothing
+        # else names it. The claude process it wrapped has it in its environment
+        # and this hook inherited that environment, so the address arrives here
+        # without fritter and hands agreeing on a path or a filename. Empty or
+        # unset both mean this session was not wrapped.
+        fritter=Path(address) if (address := os.environ.get("FRITTER_SOCKET")) else None,
+    )
+
+
 def record(home: Home, payload: Payload) -> None:
     match payload.text("hook_event_name"):
         case "SessionStart":
-            membership = Membership(
-                id=payload.session_id(),
-                # The hook's shell execs a single simple command, so this is the claude
-                # process. A compound hook command (`a; b`) would make it that shell.
-                pid=os.getppid(),
-                cwd=Path(payload.text("cwd")),
-                transcript=Path(payload.text("transcript_path")),
-                # [LAW:one-source-of-truth] fritter publishes its own address and nothing
-                # else names it. The claude process it wrapped has it in its environment
-                # and this hook inherited that environment, so the address arrives here
-                # without fritter and hands agreeing on a path or a filename. Empty or
-                # unset both mean this session was not wrapped.
-                fritter=Path(address) if (address := os.environ.get("FRITTER_SOCKET")) else None,
-            )
-            write_membership(home, membership)
+            write_membership(home, membership(payload))
         case "SessionEnd":
             remove_membership(home, payload.session_id())
         case _:
             pass
+
+
+def tell_fritter(payload: Payload) -> int:
+    """Tell the fritter wrapping this session that a turn is starting, before its work does.
+
+    A Ctrl-C into a working session stops the work and leaves the input box as it was, so
+    fritter must not read it as emptying the box. It sees a Return start a turn, but not a
+    turn that starts on its own - a background task finishing starts one, and fires this
+    hook like any other. The hook runs before the turn's work, so fritter hears in time.
+    """
+    if payload.text("hook_event_name") != "UserPromptSubmit" or not os.environ.get("FRITTER_SOCKET"):
+        return 0
+    try:
+        Typist.of(membership(payload)).working()
+    except (Elsewhere, NotListening):
+        # The address came down from a session this one was started inside, or its fritter
+        # has exited. Either way no fritter holds this session's input box, so there is no
+        # line this turn could make wrong, and nothing to tell.
+        return 0
+    except Untyped as error:
+        # [LAW:no-silent-failure] Unheard, fritter can hand back a line with the user's
+        # words still in it after the next ctrl_c.
+        print(f"hands: this turn's start did not reach fritter: {error}", file=sys.stderr)
+        return FAILED
+    return 0
 
 
 def post(home: Home, body: bytes, timeout: float) -> str:
@@ -132,18 +162,20 @@ def main(argv: Sequence[str]) -> int:
     except Rejected as error:
         print(f"hands: {error}", file=sys.stderr)
         return FAILED
+    told = 0  # nothing has failed to reach fritter until it has been told
     try:
         payload = Payload.parse(body)
         record(home, payload)
+        told = tell_fritter(payload)
         reply = post(home, body, post_timeout(payload.text("hook_event_name")))
     except Unreached as error:
-        return unreached(home, error)
+        return unreached(home, error) or told
     except (Rejected, Refused) as error:
         print(f"hands: {error}", file=sys.stderr)
         return FAILED
     # Claude Code reads a permission decision from the hook's stdout.
     sys.stdout.write(reply)
-    return 0
+    return told
 
 
 if __name__ == "__main__":

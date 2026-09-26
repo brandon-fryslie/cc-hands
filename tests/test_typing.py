@@ -13,7 +13,7 @@ import pytest
 
 from hands.core.session import Membership, PromptText, SessionId
 from hands.sessions import typing
-from hands.sessions.typing import Typist, Untyped
+from hands.sessions.typing import Elsewhere, NotListening, Typist, Untyped
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
 
@@ -99,6 +99,39 @@ def test_a_named_key_is_sent_as_a_key_and_never_as_text(short_dir: Path) -> None
     assert json.loads(fritter.asked) == {"pid": 4242, "kind": "key", "key": "escape"}
 
 
+def test_a_turn_starting_is_sent_as_its_own_kind(short_dir: Path) -> None:
+    path = short_dir / "f.sock"
+    fritter = FakeFritter(path, b'{"ok":true}\n')
+    try:
+        Typist.of(wrapped(path)).working()
+    finally:
+        fritter.close()
+    assert fritter.asked is not None
+    assert json.loads(fritter.asked) == {"pid": 4242, "kind": "working"}
+
+
+def test_an_unanswered_turn_start_does_not_warn_about_text_nobody_sent(short_dir: Path) -> None:
+    path = short_dir / "f.sock"
+    fritter = FakeFritter(path, b"")
+    try:
+        with pytest.raises(Untyped) as unanswered:
+            Typist.of(wrapped(path)).working()
+    finally:
+        fritter.close()
+    assert "whether it heard is not known" in str(unanswered.value)
+    assert "input box" not in str(unanswered.value)
+
+
+def test_an_address_another_session_owns_is_told_apart(short_dir: Path) -> None:
+    path = short_dir / "f.sock"
+    fritter = FakeFritter(path, b'{"ok":false,"elsewhere":true,"reason":"this socket types into process 1"}\n')
+    try:
+        with pytest.raises(Elsewhere):
+            Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
+    finally:
+        fritter.close()
+
+
 def test_a_refusal_carries_fritters_reason(short_dir: Path) -> None:
     path = short_dir / "f.sock"
     fritter = FakeFritter(path, b'{"ok":false,"reason":"the user has unsent text in this session\'s input"}\n')
@@ -113,7 +146,7 @@ def test_a_refusal_carries_fritters_reason(short_dir: Path) -> None:
 def test_a_socket_nobody_is_listening_on_says_so(short_dir: Path) -> None:
     # The common case: the session's process ended and took its fritter with it.
     path = short_dir / "gone.sock"
-    with pytest.raises(Untyped) as refused:
+    with pytest.raises(NotListening) as refused:
         Typist.of(wrapped(path)).type(PromptText("hello"), submit=True)
     assert str(path) in str(refused.value)
 
