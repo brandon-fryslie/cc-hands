@@ -56,7 +56,7 @@ class Topic:
 
 THE_HEADLINE = Topic("the headline", "turn")
 THE_QUESTION = Topic("the question", "question")
-WHAT_YOU_ANSWERED = Topic("what you answered", "answer")
+WHAT_IT_ASKED = Topic("what it asked", "question")
 WHAT_IT_SAID = Topic("what it said", "message")
 THE_CHANGE = Topic("the change", "edit")
 THE_TESTS = Topic("the tests", "test run")
@@ -141,9 +141,9 @@ class Narration:
     repository: tuple[Segment, ...]
     # What the turn is waiting on the listener to answer. Plays at every length.
     questions: tuple[Segment, ...]
-    # What the user already answered through `AskUserQuestion`: there to be opened, and never played, since it is
-    # news to nobody.
-    answered: tuple[Segment, ...]
+    # What it asked through `AskUserQuestion` and is not waiting on any more, answered or gone past: there to be
+    # opened, and never played, since it is news to nobody.
+    settled: tuple[Segment, ...]
     sections: tuple[Segment, ...]
 
     def said(self) -> str:
@@ -178,8 +178,13 @@ def narration(said: str, turn: Turn, delta: Delta, sentences: int) -> Narration:
     and can end on one the turn never asked [LAW:one-source-of-truth]. The summariser is left the one thing only
     it can do, which is to put the question in words that can be heard.
     """
-    reported, worded = reported_and_asked(said)
-    answered = [step for step in turn.steps if isinstance(step, Questioned)]
+    waiting = open_questions(turn)
+    read = reading(said)
+    # A turn waiting on nothing asked nothing, so a sentence of the summariser's read as asking is report phrased
+    # like an offer, "left the retry count up to you", and kept, unless it is a question the model invented, which
+    # is dropped. Dropping the first as well left a one-sentence report saying nothing at all.
+    reported = [sentence for asks, sentence in read if not asks or not waiting and not _questioned(sentence)]
+    worded = [sentence for asks, sentence in read if asks]
     sectioned = [step for step in turn.steps if not isinstance(step, Questioned | Interruption)]
     changes = tuple(change for step in turn.steps if isinstance(step, Ran) for change in step.git)
     return Narration(
@@ -189,8 +194,14 @@ def narration(said: str, turn: Turn, delta: Delta, sentences: int) -> Narration:
         # turn that ends on one: a queued message that cut a tool off mid-turn let the turn go on, and it is a step.
         interrupted=tuple(Segment(THE_INTERRUPTION, "You interrupted it.", (step,)) for step in turn.steps[-1:] if isinstance(step, Interruption)),
         repository=_repository(delta, changes),
-        questions=_questions(worded, open_questions(turn)),
-        answered=tuple(_answered(question, step) for step in answered for question in step.questions if question.answer is not None),
+        questions=_questions(worded, waiting),
+        settled=tuple(
+            _settled(question, step)
+            for step in turn.steps
+            if isinstance(step, Questioned)
+            for question in step.questions
+            if InDialog(step, question) not in waiting
+        ),
         sections=_sections(sectioned),
     )
 
@@ -333,8 +344,9 @@ _LISTED = re.compile(rf"^{_MARKER}")
 # between two.
 _ITEM = re.compile(rf"\n(?={_MARKER}|[ \t]*\|)")
 _HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]")
-# A sentence ends at its mark, or past the bold, bracket or quotation that closes with it.
-_SENTENCE = re.compile(r"(?<=[.!?])\s+|(?<=[.!?][*_)\"'”’])\s+|(?<=[.!?][*_)\"'”’]{2})\s+")
+# A sentence ends at its mark, or past the bold, bracket or quotation that closes with it, but not at an "e.g." or an
+# "i.e." inside it.
+_SENTENCE = re.compile(r"(?<=[.!?])(?<!\be\.g\.)(?<!\bi\.e\.)\s+|(?<=[.!?][*_)\"'”’])\s+|(?<=[.!?][*_)\"'”’]{2})\s+")
 _CLOSERS = "*_)\"'”’ "
 # A question put to the listener outright, which is asked wherever in the text it stands.
 # The summariser's own voice is here too, since it asks with the session as "it": "Want it to carry on?"
@@ -353,7 +365,13 @@ _OFFERED = re.compile(
 
 
 def reported_and_asked(text: str) -> tuple[list[str], list[str]]:
-    """The text's sentences, split into what it told and what it asked of the listener.
+    """The text's sentences, split into what it told and what it asked of the listener, as `reading` reads them."""
+    read = reading(text)
+    return [sentence for asks, sentence in read if not asks], [sentence for asks, sentence in read if asks]
+
+
+def reading(text: str) -> list[tuple[bool, str]]:
+    """The text's sentences in order, each with whether it asks the listener something.
 
     One definition, because the summariser's reply, Claude's own closing text and the idle nudge are all read for
     their questions, and were there two rules the headline could ask what the nudge says is no question, or the
@@ -373,8 +391,7 @@ def reported_and_asked(text: str) -> tuple[list[str], list[str]]:
     # A choice laid out as a list is asked by the sentence above it, and the text ends on the list.
     while closing > 0 and all(_LISTED.match(line) for line in paragraphs[closing].splitlines() if line.strip()):
         closing -= 1
-    read = [(asks, sentence.replace(_MUTED, "?")) for at, paragraph in enumerate(paragraphs) for asks, sentence in _read(paragraph, at >= closing)]
-    return [sentence for asks, sentence in read if not asks], [sentence for asks, sentence in read if asks]
+    return [(asks, sentence.replace(_MUTED, "?")) for at, paragraph in enumerate(paragraphs) for asks, sentence in _read(paragraph, at >= closing)]
 
 
 def _read(paragraph: str, closing: bool) -> list[tuple[bool, str]]:
@@ -393,7 +410,7 @@ def _read(paragraph: str, closing: bool) -> list[tuple[bool, str]]:
         told = False
         for sentence in reversed(item):
             own = _SPAN.sub("", sentence)
-            questioned = sentence.rstrip(_CLOSERS).endswith("?")
+            questioned = _questioned(sentence)
             addressed = questioned and bool(_ADDRESSED.search(own))
             # A choice where the text ends is put to someone: "does it mean the suite, or also the smoke test?" was
             # followed by what each option would cost, which tells and answers nothing.
@@ -403,6 +420,10 @@ def _read(paragraph: str, closing: bool) -> list[tuple[bool, str]]:
             ahead = ahead or not asks and bool(_AHEAD.search(own))
             read.append((asks, sentence))
     return read[::-1]
+
+
+def _questioned(sentence: str) -> bool:
+    return sentence.rstrip(_CLOSERS).endswith("?")
 
 
 def _items(paragraph: str) -> list[list[str]]:
@@ -468,9 +489,13 @@ def _action(change: GitChange) -> str:
             return f"{action} a pull request"
 
 
-def _answered(question: Question, step: Questioned) -> Segment:
-    """A question the user already answered, and what they chose, for a listener who asks what it was."""
-    return Segment(WHAT_YOU_ANSWERED, f"It asked: {question.question} You chose {question.answer}.", (step,))
+def _settled(question: Question, step: Questioned) -> Segment:
+    """A question the turn is not waiting on any more, and how it ended, for a listener who asks what it was."""
+    match question.answer:
+        case str() as chosen:
+            return Segment(WHAT_IT_ASKED, f"It asked: {question.question} You chose {chosen}.", (step,))
+        case None:
+            return Segment(WHAT_IT_ASKED, f"It asked: {question.question} It went on without an answer.", (step,))
 
 
 def _counted(many: int, thing: str) -> str:

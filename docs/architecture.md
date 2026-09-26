@@ -1098,8 +1098,10 @@ however many sentences it asks in. Waiting on two, nothing says which the summar
 cover, and where it left the question out, the words are Claude's own, framed as "It is
 asking:" or "It said:", with "(Recommended)" dropped and put through `spoken`. Where
 the summariser asked and the turn did not, what it asked is dropped: the instruction
-already forbids it, and this is what holds it. An `AskUserQuestion` already answered is its
-own segment in `answered`, there to be opened and never played.
+already forbids it, and this is what holds it, while one of its sentences that only reads
+like an offer ("left the retry count up to you") stays in the report. An `AskUserQuestion`
+the turn is no longer waiting on, answered or gone past, is its own segment in `settled`,
+there to be opened and never played.
 
 **The eval.** `evals/narration.py` runs real turns, lifted whole out of real transcripts,
 through the daemon's own recognisers, `render`, and summariser, and judges what comes back:

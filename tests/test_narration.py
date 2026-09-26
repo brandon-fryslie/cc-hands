@@ -96,7 +96,7 @@ def test_a_question_already_answered_is_there_to_open_and_is_not_asked_again() -
     asked = Questioned(None, (Question("Roll the rename back?", (), "press on"),))
     narrated = told(asked)
     assert narrated.questions == ()
-    assert [answer.text for answer in narrated.answered] == ["It asked: Roll the rename back? You chose press on."]
+    assert [answer.text for answer in narrated.settled] == ["It asked: Roll the rename back? You chose press on."]
 
 
 def test_every_question_the_turn_waits_on_is_in_its_one_question_segment() -> None:
@@ -141,6 +141,18 @@ def test_a_turn_waiting_on_two_things_says_each_even_where_the_summariser_asked_
     dialog = Questioned(None, (Question("Merge now?", ("Merge", "Wait"), None), Question("Re-run the review?", (), None)))
     said = told(Ran(None, "pytest", None, False, "ok", ()), dialog, headline="The suites pass. Want it to re-run the review?").said()
     assert said == "The suites pass. It is asking: Merge now? Either Merge or Wait. It is asking: Re-run the review?"
+
+
+def test_a_report_that_only_reads_like_an_offer_is_kept_where_the_turn_asked_nothing() -> None:
+    narrated = told(Said(None, "Done. Retry count is now a setting."), headline="It made the retry count a setting that is up to you.")
+    assert narrated.said() == "It made the retry count a setting that is up to you." and narrated.questions == ()
+
+
+def test_a_dialog_claude_went_on_past_is_there_to_open_and_is_not_asked() -> None:
+    dialog = Questioned(None, (Question("Merge now?", ("Merge", "Wait"), None),))
+    narrated = told(dialog, Said(None, "Merged, and the suites pass."))
+    assert narrated.questions == ()
+    assert [settled.text for settled in narrated.settled] == ["It asked: Merge now? It went on without an answer."]
 
 
 def test_a_choice_split_over_two_sentences_is_said_as_the_one_thing_it_is() -> None:

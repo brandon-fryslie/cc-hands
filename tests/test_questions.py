@@ -44,6 +44,8 @@ def asked(text: str) -> list[str]:
         ("Which should go first?\n\n1. The transport.\n2. The keyboard.", ["Which should go first?"]),
         ("**Want me to merge it?**", ["**Want me to merge it?**"]),
         ("Two gaps are left (should I file them?)", ["Two gaps are left (should I file them?)"]),
+        # An "e.g." ends no sentence, so the question is asked whole.
+        ("It could move to the root (e.g. `templates/`) — want me to move it?", ["It could move to the root (e.g. `templates/`) — want me to move it?"]),
     ],
 )
 def test_a_question_or_an_offer_the_text_ends_on_is_asked(text: str, questions: list[str]) -> None:

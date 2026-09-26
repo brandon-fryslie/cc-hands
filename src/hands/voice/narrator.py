@@ -88,7 +88,7 @@ async def recount(
         Recounted(
             session,
             spoken,
-            tuple(dict.fromkeys(segment.topic.name for segment in (*told.sections, *told.answered))),
+            tuple(dict.fromkeys(segment.topic.name for segment in (*told.sections, *told.settled))),
             tuple(question.text for question in told.questions),
         )
     )
