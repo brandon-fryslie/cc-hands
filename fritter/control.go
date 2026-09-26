@@ -20,7 +20,7 @@ import (
 // that has to guess.
 type request struct {
 	Pid    int    `json:"pid"`    // the process the caller means to type into; see inject
-	Kind   string `json:"kind"`   // "text" or "key"
+	Kind   string `json:"kind"`   // "text", "key", or "working"
 	Text   string `json:"text"`   // kind "text": the characters to type, already escaped by the caller
 	Submit bool   `json:"submit"` // kind "text": whether to press Enter after them
 	Key    string `json:"key"`    // kind "key": one of the names in keystrokes
@@ -45,8 +45,9 @@ var keystrokes = map[string][]byte{
 	// displayed: measured, a 250-character prompt in a 100-column terminal lost one row to
 	// a single press and kept 192 characters. It is offered because a caller may want it,
 	// but it settles nothing. Ctrl-C is the chord that empties the box whatever is in it,
-	// and the one to reach for when a line has to be cleared - once, because a second
-	// press in a row quits the session.
+	// when the child is idle; when it is working the same press stops the work and leaves
+	// the box alone. Never two in a row, because a press into an idle, empty box arms
+	// the next one to quit the session.
 	"ctrl_u":    {0x15},
 	"up":        []byte("\x1b[A"),
 	"down":      []byte("\x1b[B"),
@@ -175,6 +176,12 @@ func (w *Wrapped) inject(asked request) response {
 	if child := w.cmd.Process.Pid; asked.Pid != child {
 		return response{OK: false, Reason: fmt.Sprintf("this socket types into process %d and the request is for process %d; nothing was typed. An address inherited from another session reaches that session, not this one", child, asked.Pid)}
 	}
+	// Nothing is typed for this one, so it does not queue behind a write: it is sent from
+	// the hook that runs before a turn's work, and the turn waits on the answer.
+	if asked.Kind == "working" {
+		w.line.working()
+		return response{OK: true}
+	}
 	// [LAW:no-ambient-temporal-coupling] Waited for, but not for long. The user's keys and
 	// the terminal's reports hold the input for an instant each, and a request arriving
 	// in one of those instants should not be turned away for it. Anything holding it
@@ -221,7 +228,7 @@ func (w *Wrapped) dispatch(asked request, claim *hold) response {
 // of two people's words, which nobody afterwards can pull apart.
 func (w *Wrapped) typeText(asked request, claim *hold) response {
 	if !w.line.free() {
-		return response{OK: false, Reason: "this session's input holds text that was not seen to be sent - typed by the user, or brought in by a key such as tab, up, down or ctrl_u - and text is not typed into it until a Return sends it or a ctrl_c empties it"}
+		return response{OK: false, Reason: "this session's input holds text that was not seen to be sent - typed by the user, or brought in by a key such as tab, up, down or ctrl_u - and text is not typed into it until a Return sends it or a ctrl_c empties it. A ctrl_c empties it only when nothing could have started work since the ctrl_c before it; otherwise it stops that work and leaves the box as it was, and the next one empties it"}
 	}
 	// [LAW:parse-dont-validate] Text is characters and newlines. A control byte in it is
 	// a keystroke wearing text's clothes: an ESC ends the bracketing early and everything

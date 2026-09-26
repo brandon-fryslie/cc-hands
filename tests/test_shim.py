@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import socket
+import threading
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -67,6 +68,32 @@ async def shim(home: Home, payload: Mapping[str, object], fritter: str | None = 
     )
     stdout, stderr = await process.communicate(json.dumps(payload).encode())
     return process.returncode, stdout.decode(), stderr.decode()
+
+
+class FakeFritter:
+    """A control socket that says yes to everything and remembers each request, decoded."""
+
+    def __init__(self, path: Path) -> None:
+        self.asked: list[object] = []
+        self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._listener.bind(str(path))
+        self._listener.listen(4)
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                connection, _ = self._listener.accept()
+            except OSError:
+                return
+            with connection:
+                self.asked.append(json.loads(connection.recv(65536)))
+                connection.sendall(b'{"ok":true}\n')
+
+    def close(self) -> None:
+        self._listener.close()
+        self._thread.join(timeout=2)
 
 
 def beat(home: Home, pid: int, written_ago: timedelta, pipeline: heartbeat.PipelineState = "running") -> None:
@@ -223,6 +250,44 @@ async def test_a_session_started_under_fritter_records_where_to_type_into_it(hom
     assert await shim(home, START, fritter="/tmp/fritter-abc.sock") == (0, "", "")
     [listing] = sessions.live()
     assert listing.session.membership.fritter == Path("/tmp/fritter-abc.sock")
+
+
+async def test_a_prompt_in_a_wrapped_session_tells_fritter_a_turn_is_starting(home: Home, sessions: Sessions) -> None:
+    # A Ctrl-C into a working session stops the work and leaves the box alone, and a turn a
+    # background task starts is not one fritter sees begin. This hook is how it hears.
+    directory = Path(tempfile.mkdtemp(prefix="fritter-"))
+    try:
+        fritter = FakeFritter(directory / "f.sock")
+        try:
+            assert await shim(home, PROMPT, fritter=str(directory / "f.sock")) == (0, "", "")
+        finally:
+            fritter.close()
+    finally:
+        shutil.rmtree(directory)
+    # The shim's parent is the process the hook runs under, which here is this one.
+    assert fritter.asked == [{"pid": os.getpid(), "kind": "working"}]
+
+
+async def test_only_a_prompt_tells_fritter_anything(home: Home, sessions: Sessions) -> None:
+    directory = Path(tempfile.mkdtemp(prefix="fritter-"))
+    try:
+        fritter = FakeFritter(directory / "f.sock")
+        try:
+            assert await shim(home, START, fritter=str(directory / "f.sock")) == (0, "", "")
+        finally:
+            fritter.close()
+    finally:
+        shutil.rmtree(directory)
+    assert fritter.asked == []
+
+
+async def test_a_turn_start_fritter_did_not_hear_is_reported_and_still_reaches_hands(home: Home, sessions: Sessions) -> None:
+    assert await shim(home, START) == (0, "", "")
+    code, stdout, stderr = await shim(home, PROMPT, fritter="/tmp/no-fritter-here.sock")
+    assert (code, stdout) == (1, "")
+    assert "this turn's start did not reach fritter" in stderr
+    [listing] = sessions.live()
+    assert (listing.session.state, listing.session.turn) == (Submitted(since=10.0), PromptId("p1"))
 
 
 async def test_a_session_started_outside_fritter_records_no_way_to_type_into_it(home: Home, sessions: Sessions) -> None:

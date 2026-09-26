@@ -316,7 +316,10 @@ those keystrokes never reach it; text arriving then is refused with a reason. A 
 not, because a key does exactly what the person pressing it would do and cannot
 interleave with anything, and because Enter and Ctrl-C are the keys that give the line
 back - gating them would leave a held session reachable only by a human at the physical
-keyboard, which is the case fritter exists to remove. And escaping stays here: what a
+keyboard, which is the case fritter exists to remove. A Ctrl-C gives the line back only
+into an idle session - into a working one it stops the work and leaves the box as it was -
+and a turn can start with no keypress, so the shim tells fritter from `UserPromptSubmit`
+when one does. And escaping stays here: what a
 leading `/` means is `Input`'s business, and fritter types the text it is given.
 
 `fritter/README.md` holds the protocol and what was measured.

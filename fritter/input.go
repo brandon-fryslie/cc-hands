@@ -23,7 +23,7 @@ const (
 	nothing   effect = iota // a report, or a key that leaves the box exactly as it was
 	inserted                // characters went into the box
 	submitted               // Return, which empties the box - unless what it follows says otherwise
-	cancelled               // Ctrl-C, which empties it whatever is in it
+	cancelled               // Ctrl-C, which empties it whatever is in it - if the child is idle
 	disturbed               // the box changed by some amount these bytes do not say
 )
 
@@ -66,8 +66,9 @@ var cursorOnly = map[byte]bool{
 // The bytes that leave the box empty, and the ones that take a character out of it.
 //
 // Measured against Claude Code 2.1.278 rather than assumed, and more than once, because
-// the first measurements were wrong twice over. One Ctrl-C empties the box however many
-// lines are in it, and it is the only chord that does. Escape does not touch the box.
+// the first measurements were wrong twice over. One Ctrl-C into an idle child empties the
+// box however many lines are in it, and it is the only chord that does; into a working one
+// it stops the work instead. Escape does not touch the box.
 // Ctrl-U and Ctrl-W take back an amount that depends on where the cursor is and how wide
 // the terminal is, so neither of them is here.
 const (

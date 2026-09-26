@@ -12,7 +12,8 @@ fritter [--socket-dir DIR] -- COMMAND [ARGS...]
 
 hands is what it was built for, and hands' client for it - `hands.sessions.typing` - is
 written and tested against it. The effect that will call that client is not built yet
-(`hands-harness-5nb.l0u`), so nothing in hands dials this socket today. Nothing in fritter
+(`hands-harness-5nb.l0u`). What hands sends today is the one request that types nothing:
+its hook says when a turn starts. Nothing in fritter
 knows any of that; Claude Code is simply the first program it wraps.
 
 ## Why a pseudo-terminal and not a pipe
@@ -53,6 +54,7 @@ One JSON object per connection, newline-terminated, answered with one JSON objec
 ```
 {"pid":4242,"kind":"text","text":"fix the auth middleware","submit":true}
 {"pid":4242,"kind":"key","key":"escape"}
+{"pid":4242,"kind":"working"}
 ```
 
 `pid` is the process the caller means to type into, and a request naming any process but
@@ -69,6 +71,12 @@ The answer is `{"ok":true}` or `{"ok":false,"reason":"..."}`. A reason always sa
 went wrong, because a write that was refused and a write that landed must never look
 alike to the caller. When the text lands but the Enter after it does not, the reason says
 so in those words — retyping text that is already sitting in the box would double it.
+
+`working` types nothing. It says the program has started work, which fritter cannot always
+see for itself, and it is why a Ctrl-C then is not read as emptying the box (see *Who owns
+the input line*). hands sends it from Claude Code's UserPromptSubmit hook, which runs
+before the turn's work and holds the turn until it is answered, so it does not wait behind
+another request's write.
 
 A caller has one second and 64 KB to get its request in. Past the size it is refused with
 a reason that says so. Past the time, a connection that sent nothing is dropped, because a
@@ -106,8 +114,10 @@ under an `ok`. Send a `key` request for a keystroke.
 The keys are `escape`, `enter`, `ctrl_c`, `ctrl_u`, `up`, `down`, `tab` and `shift_tab`.
 Which bytes each one is, is terminal knowledge, so that table lives here rather than in
 the caller. `ctrl_c` is the one to reach for to empty the input box, and it is the only
-key that empties it whatever is in it — but send it once, because a second press in a row
-quits the session. `ctrl_u` kills back to the start of the line the cursor is on, and that
+key that empties it whatever is in it — when the program is idle. When it is working, the
+same press stops the work and leaves the box as it was, and the press after that empties
+it. A text request refused for a held line says so. Never send it twice into a box that
+is already empty: the first press arms the next one to quit the session. `ctrl_u` kills back to the start of the line the cursor is on, and that
 is the line *as displayed*: a prompt long enough to wrap loses one row and keeps the rest.
 It is offered because a caller may want it, but it never hands the line back.
 
@@ -184,15 +194,31 @@ counted box reaches zero with the character still in it. Hold the key down past 
 of a line — an autorepeat, not a corner — and it reaches zero with a whole line still in
 it. A count that only ever rises is a flag that has learnt to add, so it is a flag.
 
-Ctrl-C empties the box when the child is idle. That, and the characters themselves, is
-the whole of what is known — and the qualification is load-bearing, because it is not yet
-honoured. When the child is *working*, the same key interrupts the work and does not touch
-the box at all: the user's half-typed next prompt is still sitting there afterwards, and
-this reads the box as empty and hands the line back. Measured, and tracked as
-`hands-harness-5nb.dh7`. Whether the child is working is not something stdin says — this
-sees the Return that starts the work and never sees it end — so closing it needs a second
-source of truth rather than another rule here, and that is a design change, not a parser
-fix.
+Ctrl-C empties the box when the child is idle, and only then. When the child is
+*working*, the same key stops the work and does not touch the box: the user's half-typed
+next prompt is still sitting there afterwards. Measured against 2.1.283, typing while a
+long reply streamed. Whether the child is working is not something stdin says — this sees
+the Return that starts work and never sees it end, and a turn can start with no keypress
+at all, when a background task finishes.
+
+What stdin does say is that after any Ctrl-C the child is idle, whichever of the two it
+did. So the owner does not track working; it tracks *settled*: nothing since the last
+Ctrl-C could have set the child to work. A settled Ctrl-C empties the box. An unsettled
+one empties nothing and settles it, so recovering a held line after a turn takes two: a
+caller whose text is still refused after one `ctrl_c` sends another.
+
+Anything that could have started work unsettles it. Any Return does, including one read as
+continuing the line, because that reading can be wrong in the direction of a Return that
+really sent. So does any chord whose effect is not known, and so does a `working` request —
+which is how a turn that starts without a keypress is heard. The owner starts unsettled,
+because a program can be started with work to do. Every one of those errs toward holding
+the line, and nothing but a Ctrl-C this reads itself ever settles it; the hook that fires
+when a turn ends is not trusted to, because other plugins' Stop hooks can keep the turn
+going after it.
+
+What is left open is narrow: a `working` request answers a hook that runs before the turn's
+work, so a Ctrl-C arriving while that hook is still on its way here reaches a child that is
+already starting its turn.
 
 Everything else that is not a character is read as having changed the box by some amount
 the bytes do not say, and that holds the line until the box is proved empty. Backspace
@@ -255,8 +281,8 @@ those sixteen characters holds the Return after it, and so does any cursor posit
 them that would have opened a completion list. What that leaves open is a token further
 back in the line than is remembered with the cursor parked inside it; and in the other
 direction, a line held that was really sent. That one clears when the user types sixteen
-more characters, or at once if hands sends a `ctrl_c` — a key request is never refused,
-so a held line can always be handed back.
+more characters, or when hands sends a `ctrl_c` into an idle child — a key request is
+never refused, so a held line can always be handed back.
 
 Escape is left alone, which is not the compromise an earlier version of this file claimed
 it was: Claude Code 2.1.278 does not clear its input box on Escape. That was measured, not
@@ -314,8 +340,17 @@ statement in `main`. A guarantee that sometimes deadlocks is worse than one not 
   `?1002h`, `?1003h`, `?1006h` — which is why stdin carries far more than keypresses and
   why it is parsed rather than scanned. With those reports arriving on stdin, a send is
   still accepted; before this was parsed, one was enough to refuse every send afterwards.
-- One Ctrl-C empties the input box however many lines are in it, and leaves the session
-  running. A second press in a row quits it.
+- One Ctrl-C into an idle session empties the input box however many lines are in it, and
+  leaves the session running. A second press in a row, into the empty box, quits it.
+- One Ctrl-C into a working session (2.1.283) stops the work and leaves the box exactly as
+  it was, and one into a session where a turn has been started by a finished background
+  task does the same. A second, now idle, empties the box and does not quit.
+- A background task finishing starts a turn with no keypress, and that turn fires
+  UserPromptSubmit like any other (2.1.283).
+- Neither the terminal title nor anything on screen says the session is working: the title
+  held one value through a whole reply. Ctrl-L and Ctrl-S are no way to empty the box
+  either — Ctrl-L leaves it alone, and Ctrl-S stashes it but puts the stash back into an
+  empty one.
 - Ctrl-U does **not** empty the box. It kills back to the start of the line the cursor is
   on, and that is the *displayed* line. A box holding `aaa`, `bbb`, `ccc` took four presses
   and still had `aaa` in it; 250 characters typed into a 100-column terminal lost one

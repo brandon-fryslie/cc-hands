@@ -99,6 +99,29 @@ def test_a_named_key_is_sent_as_a_key_and_never_as_text(short_dir: Path) -> None
     assert json.loads(fritter.asked) == {"pid": 4242, "kind": "key", "key": "escape"}
 
 
+def test_a_turn_starting_is_sent_as_its_own_kind(short_dir: Path) -> None:
+    path = short_dir / "f.sock"
+    fritter = FakeFritter(path, b'{"ok":true}\n')
+    try:
+        Typist.of(wrapped(path)).working()
+    finally:
+        fritter.close()
+    assert fritter.asked is not None
+    assert json.loads(fritter.asked) == {"pid": 4242, "kind": "working"}
+
+
+def test_an_unanswered_turn_start_does_not_warn_about_text_nobody_sent(short_dir: Path) -> None:
+    path = short_dir / "f.sock"
+    fritter = FakeFritter(path, b"")
+    try:
+        with pytest.raises(Untyped) as unanswered:
+            Typist.of(wrapped(path)).working()
+    finally:
+        fritter.close()
+    assert "whether it heard is not known" in str(unanswered.value)
+    assert "input box" not in str(unanswered.value)
+
+
 def test_a_refusal_carries_fritters_reason(short_dir: Path) -> None:
     path = short_dir / "f.sock"
     fritter = FakeFritter(path, b'{"ok":false,"reason":"the user has unsent text in this session\'s input"}\n')

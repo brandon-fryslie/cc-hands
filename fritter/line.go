@@ -34,7 +34,8 @@ const remembered = 16
 // Ctrl-Y pastes back what was last killed, Backspace takes one character or none, Tab
 // completes a path, and Up pulls a whole previous prompt into a box nothing was typed
 // into - and how much any of that came to is not in the bytes. All of them leave the line
-// held until the box is proved empty by a Ctrl-C or a Return that really sent. That is
+// held until the box is proved empty by a Return that really sent or a Ctrl-C into an
+// idle child. That is
 // the safe direction to be wrong in: a refused write is loud and recoverable, and a key
 // request is never refused, so hands can always clear a line this holds too long. A write
 // into a half-typed line is a garbled prompt nobody can attribute.
@@ -67,6 +68,21 @@ type lineOwner struct {
 	// whatever the parser was in the middle of: whatever those bytes were, they are not
 	// in the box now.
 	unsure bool
+	// Nothing since the last Ctrl-C could have set the child to work, so the next one
+	// empties the box.
+	//
+	// What a Ctrl-C does is decided by the child, not the key. Idle, it empties the box; at
+	// work, it stops the work and leaves the box exactly as it was - measured on 2.1.283
+	// with the user's next prompt half-typed in it. stdin sees the Return that starts work
+	// and never sees work end, so being at work is not something to track; being settled
+	// is, because after any Ctrl-C at all the child is idle, whichever of the two it did.
+	//
+	// Anything that could have started work unsettles it: any Return, whether or not it
+	// read as a send - a Return read as continuing the line may really have sent it - any
+	// chord whose effect is not known, and a caller's word that work began, which is how a
+	// turn that starts without a keypress is heard `[LAW:no-silent-failure]`. It starts
+	// unsettled, because a program can be started with work to do.
+	settled bool
 }
 
 func newLineOwner() *lineOwner {
@@ -121,29 +137,26 @@ func (l *lineOwner) fold(presses []press) (emptiedIt bool) {
 				l.tail = append(l.tail[:0], l.tail[len(l.tail)-remembered:]...)
 			}
 		case submitted:
+			l.settled = false
 			if l.continued() {
 				continue
 			}
 			// A Return sends whatever is in the box, counted or not, so this is the one
-			// thing besides Ctrl-C that settles a box nothing could account for.
+			// thing besides a settled Ctrl-C that empties a box nothing could account for.
 			l.empty()
 			emptiedIt = true
 		case cancelled:
-			// One Ctrl-C empties the box however many lines are in it. Measured, and it is
-			// why this and not Ctrl-U is the way back from a line nothing else settles.
-			// The second press in a row quits the session, so it is sent once.
-			//
-			// It is also the one thing left here that is trusted and should not be. That
-			// measurement was taken on an idle child; a Ctrl-C while the child is working
-			// interrupts the work and leaves the box exactly as it was, so this empties a
-			// box that still holds the user's next prompt. Tracked as
-			// hands-harness-5nb.dh7. Whether the child is working is not on stdin - the
-			// Return that starts it is seen and its end never is - so it wants a second
-			// source of truth rather than another rule in here.
-			l.empty()
-			emptiedIt = true
+			// One Ctrl-C into an idle child empties the box however many lines are in it.
+			// Into a working one it stops the work and empties nothing. Either way the
+			// child is idle after it, so the next one is the press that empties.
+			if l.settled {
+				l.empty()
+				emptiedIt = true
+			}
+			l.settled = true
 		case disturbed:
 			l.held = true
+			l.settled = false
 		}
 	}
 	return emptiedIt
@@ -234,6 +247,14 @@ var listToken = regexp.MustCompile(`(?:^|[\s\x{3002}\x{3001}\x{FF1F}\x{FF01}])@(
 // that holds.
 func staysUnsent(text string) bool {
 	return strings.HasSuffix(text, `\`) || opensList(text)
+}
+
+// working records a caller's word that the child has started work, so a Ctrl-C now stops
+// that work rather than emptying the box.
+func (l *lineOwner) working() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.settled = false
 }
 
 // empty records that there is nothing in the box.
