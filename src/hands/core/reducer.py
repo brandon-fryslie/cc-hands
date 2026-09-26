@@ -48,6 +48,7 @@ from hands.core.events import (
 )
 from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Instant, Membership, Mode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Session, SessionId, SessionState, Submitted, UnknownMode, Untold, Working
 from hands.core import status
+from hands.core.narration import reported_and_asked
 from hands.core.status import Report, Stamp
 
 # How long before a permission's deadline the one warning is spoken.
@@ -105,7 +106,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return registry, []
         case Stopped(session=session, closing=closing, prompt=stopped, again=again) if _ends(registry.sessions.get(session), event):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
-            return _enter(registry, event, lambda _: Idle(), lambda was: [Compare(session, again), Summarise(session, stopped, closing), *_following(was)])
+            return _enter(registry, event, lambda _: Idle(asking=_asking(closing)), lambda was: [Compare(session, again), Summarise(session, stopped, closing), *_following(was)])
         case Stopped():
             # The Stop of a turn already over: told now if its telling waited for it (see _untold), and otherwise one
             # applied after the next turn's prompt, which ending would idle that turn and spend its mark.
@@ -166,9 +167,10 @@ def _started(membership: Membership, source: StartSource, previous: Session | No
     match (source, previous):
         case ("compact", Session(state=Submitted() | Working() | Blocked() | AtDialog()) as previous):
             return replace(previous, membership=membership)
-        case ("compact", Session(state=Idle(due=due), mode=mode, report=report, idled=idled, untold=untold)):
-            # A new idle period, which a nudge hands was timing for still has to come from hands.
-            return Session(membership, Idle(due=due), mode, turn=None, report=report, idled=idled, untold=untold)
+        case ("compact", Session(state=Idle(due=due, asking=asking), mode=mode, report=report, idled=idled, untold=untold)):
+            # A new idle period, which a nudge hands was timing for still has to come from hands, about the question
+            # still unanswered: compacting the context answers nothing.
+            return Session(membership, Idle(due=due, asking=asking), mode, turn=None, report=report, idled=idled, untold=untold)
         case ("compact", Session(mode=mode, report=report, idled=idled, untold=untold)):
             return Session(membership, Idle(), mode, turn=None, report=report, idled=idled, untold=untold)
         case (_, Session(untold=untold)):
@@ -460,10 +462,21 @@ def _taken(state: SessionState, named: bool) -> SessionState:
             return state
 
 
+def _asking(closing: str | None) -> bool:
+    """Whether the reply a turn stopped on asks the listener anything; a turn that closed on no reply asked nothing."""
+    match closing:
+        case str():
+            # [LAW:one-source-of-truth] the reading the narration says the question by, so the nudge never promises
+            # a question the telling does not ask.
+            return bool(reported_and_asked(closing)[1])
+        case None:
+            return False
+
+
 def _waited(state: SessionState) -> SessionState:
     match state:
         case Idle():
-            return Idle(nudged=True)
+            return replace(state, nudged=True, due=None)
         case _:
             # [LAW:no-ambient-temporal-coupling] each hook posts from its own process, so an idle_prompt sent as the
             # user typed can land after the prompt it raced: a working session stays working, and is not nudged.
@@ -495,8 +508,8 @@ def _transition(session: SessionId, before: SessionState | None, after: SessionS
             return [Reply(session, held, Withdraw())]
         case (_, Blocked(request=asked, on=on)):
             return [Narrate(Asking(session, asked, on))]
-        case (Idle(nudged=False), Idle(nudged=True)):
-            return [Speak(WaitingForYou(session))]
+        case (Idle(nudged=False), Idle(nudged=True, asking=asking)):
+            return [Speak(WaitingForYou(session, asking))]
         case _:
             return []
 
@@ -534,6 +547,7 @@ def _deadline(session: SessionId, state: SessionState, at: Instant) -> tuple[Ses
             return replace(state, warned=True), [Speak(DeadlineNear(session, on, remaining=deadline - at))]
         case Idle(nudged=False, due=float() as due) if at >= due:
             # Nudged as an idle_prompt nudges, through the one place a nudge is said.
-            return Idle(nudged=True), _transition(session, state, Idle(nudged=True))
+            nudged = replace(state, nudged=True, due=None)
+            return nudged, _transition(session, state, nudged)
         case _:
             return state, []

@@ -97,8 +97,8 @@ def announcement_text(announcement: Announcement, names: Names) -> str:
         case Expired(session=session, on=on):
             # Said as what hands did: an answer typed at the dialog meanwhile would already have settled it.
             return f"Nobody answered {names(session)} about {_what(on)} in time, so {_left(on)}."
-        case WaitingForYou(session=session):
-            return f"{names(session)} is waiting for you."
+        case WaitingForYou(session=session, asking=asking):
+            return f"{names(session)} {'has a question for you' if asking else 'is waiting for you'}."
 
 
 def answer_readback(outcome: Outcome, names: Names) -> str:

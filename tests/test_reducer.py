@@ -383,11 +383,37 @@ def test_a_closed_terminal_after_the_sweep_found_the_session_dead_says_nothing_m
     assert reduce(holding(Gone()), event) == (holding(Gone()), [Audit(AfterEnd(event))])
 
 
-NUDGE = Speak(WaitingForYou(ONE.id))
+NUDGE = Speak(WaitingForYou(ONE.id, asking=False))
 
 
 def test_a_session_left_at_its_prompt_is_said_to_be_waiting() -> None:
     assert reduce(holding(Idle()), Waited(ONE.id)) == (holding(Idle(nudged=True)), [NUDGE])
+
+
+@pytest.mark.parametrize(
+    ("closing", "asking"),
+    [
+        ("Fixed the refresh test. Want me to look at the other flaky ones?", True),
+        # No question mark: an offer is asked all the same.
+        ("The dev build should not be on that Mac. Say the word and I'll remove it.", True),
+        # A question the reply went on to answer asks the listener nothing.
+        ("Why did it fail?\n\nThe mock froze the clock. All twelve tests pass now.", False),
+        ("Done.", False),
+        (None, False),
+    ],
+)
+def test_a_turn_that_stopped_on_a_question_is_nudged_as_having_one(closing: str | None, asking: bool) -> None:
+    """Read by the narration's own reading of a text for questions, so the nudge never promises one the telling does not ask."""
+    heard: list[Effect] = []
+    state = in_turn(Working(since=1.0))
+    for event in [Stopped(ONE.id, closing, mode=None, prompt=TURN, again=False), Waited(ONE.id)]:
+        state, effects = reduce(state, event)
+        heard += [effect for effect in effects if isinstance(effect, Speak)]
+    assert heard == [Speak(WaitingForYou(ONE.id, asking=asking))]
+
+
+def test_a_question_is_still_the_nudge_when_hands_times_it_itself() -> None:
+    assert reduce(holding(Idle(due=70.0, asking=True)), Tick(at=70.0)) == (holding(Idle(nudged=True, asking=True)), [Speak(WaitingForYou(ONE.id, asking=True))])
 
 
 def test_an_idle_notification_that_lands_after_the_prompt_it_raced_leaves_the_turn_working() -> None:
