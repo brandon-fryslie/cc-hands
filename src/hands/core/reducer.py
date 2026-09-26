@@ -119,8 +119,9 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             # it, ~100 ms before this record is written (2.1.282), so there is nothing left running for it to stop.
             return registry, []
         case Continued(session=session, was=was) if (held := _running(registry, session)) is not None and _names(held, was):
-            # Still working, now on the queued message: the turn goes by its id, so the Stop that ends it names it.
-            return _enter(registry, event, lambda state: state)
+            # Still working, now on the queued message: the turn goes by its id, so the Stop that ends it names it. A
+            # dialog escaped before it was answered by that message, as one typed past at the prompt is.
+            return _enter(registry, event, _went_on)
         case Continued():
             # Read after the turn it went on in had ended, or of one this registry never heard open: nothing to move.
             return registry, []
@@ -414,6 +415,16 @@ def _finished(state: SessionState, call: FinishedCall, at: Instant) -> SessionSt
             # The tool the session was waiting to run has run, so its dialog was answered at the keyboard.
             return Working(since=at)
         case _:
+            # Any other tool ran: a dialog escaped before it was gone past.
+            return _went_on(state)
+
+
+def _went_on(state: SessionState) -> SessionState:
+    """The session did something after a question dialog it was left at, so the turn is no longer waiting on it."""
+    match state:
+        case Working():
+            return replace(state, unanswered=False)
+        case _:
             return state
 
 
@@ -471,12 +482,19 @@ def _asking(closing: str | None, state: SessionState) -> bool:
     function would take the narrator handing its finding back as an event, after the summariser has answered.
     So each half is read from the reducer's own record of the same fact. The closing text is the Stop's reply,
     read by the narration's own `reported_and_asked` [LAW:one-source-of-truth]. An unanswered `AskUserQuestion`
-    is a turn that ended still at its dialog: answered at the keyboard or by voice, the tool ran and the session
-    was working again before it stopped. The two differ where the dialog was escaped: the turn ended on it and is
-    told as waiting on it, but the Escape closed the dialog's hook, which moved the session off the question first.
+    is a turn that ended at its dialog, still up or escaped, with nothing run after it: the telling counts a dialog
+    nothing but an interruption followed. Answered at the keyboard or by voice, the tool ran and the session was
+    working again before it stopped; escaped, its hook was killed (`Abandoned`) and the session is `Working` with
+    the question `unanswered` until a tool runs, a message is typed, or another permission is asked.
+
+    The two still differ in one case: a dialog declined with a message, which Claude answered in text alone and
+    then stopped. The reducer hears `Abandoned` and then the `Stop`, which is also what an Escape is heard as when
+    its own late `Stop` (see `_untold`) is applied before the idle status is read, so it is taken as the Escape,
+    which is 89 of the 94 unanswered dialogs in this machine's transcripts; the telling, seeing Claude's text after
+    the dialog, says it is not waiting on it.
     """
     match state:
-        case Blocked(on=Question()) | AtDialog(on=Question()):
+        case Blocked(on=Question()) | AtDialog(on=Question()) | Working(unanswered=True):
             return True
         case _:
             return closing is not None and bool(reported_and_asked(closing)[1])
@@ -495,9 +513,10 @@ def _waited(state: SessionState) -> SessionState:
 
 def _abandoned(registry: Registry, session: SessionId, request: RequestId, at: Instant) -> Registry:
     match registry.sessions.get(session):
-        case Session(state=Blocked(request=held)) as was if held == request:
-            # No hook waits for a reply, so there is nothing to withdraw, answer, or deny.
-            return registry.put(replace(was, state=Working(since=at)))
+        case Session(state=Blocked(request=held, on=on)) as was if held == request:
+            # No hook waits for a reply, so there is nothing to withdraw, answer, or deny. A question closed this way was
+            # escaped at its dialog, and is what the turn waits on until it runs something else.
+            return registry.put(replace(was, state=Working(since=at, unanswered=isinstance(on, Question))))
         case _:
             return registry
 

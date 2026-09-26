@@ -137,6 +137,9 @@ class Submitted:
 @dataclass(frozen=True)
 class Working:
     since: Instant
+    # Its question dialog was closed unanswered, by an Escape at it, which kills the hook and fires no post-tool hook
+    # and no Stop, and it has run nothing since: what the turn is waiting on if it ends here. See `_asking` in the reducer.
+    unanswered: bool = False
 
 
 @dataclass(frozen=True)

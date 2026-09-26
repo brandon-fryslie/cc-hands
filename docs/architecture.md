@@ -354,10 +354,13 @@ interrupted turn, so that one idle period carries `Idle.due`, and the tick nudge
 when the notification would have come. `Idle.asking` makes the nudge "X has a question
 for you." rather than "X is waiting for you." It is true for the two things the telling
 counts as waiting: a reply the `Stop` carried that the narration's own `reported_and_asked`
-reads as asking, and a turn that went idle still at an `AskUserQuestion` dialog. The
-reducer cannot call `open_questions` itself, since the `Questioned` steps it reads live only
-in the transcript; the two differ where the dialog was escaped, which closed its hook and
-moved the session off the question before the turn stopped. `Story` carries finished turns and sessions gone in one ordered
+reads as asking, and a turn that ended at an `AskUserQuestion` dialog with nothing run
+after it, the dialog still up or escaped. An Escape kills the dialog's hook, so the session
+goes to `Working` with the question `unanswered`, and a tool running, a message typed, or
+another permission clears it. The reducer cannot call `open_questions` itself, since the
+`Questioned` steps it reads live only in the transcript. The two still differ where a dialog
+was declined with a message and Claude answered in text alone before stopping: that is heard
+as the Escape it looks like, the common case. `Story` carries finished turns and sessions gone in one ordered
 queue, because a summary takes seconds, and an end spoken at once was heard before the
 last turn it ended. A turn's summary reaches TTS as one `TTSSpeakFrame`, with no player
 and no segments. `Heard` also carries a mode change as a `Note`, which enters the intermediary's context

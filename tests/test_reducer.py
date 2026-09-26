@@ -423,6 +423,62 @@ def test_a_turn_that_ended_with_its_dialog_question_unanswered_is_nudged_as_havi
     assert reduce(state, Waited(ONE.id))[1] == [Speak(WaitingForYou(ONE.id, asking=True))]
 
 
+ASKING = Blocked(on=QUESTION, request=RequestId("q0"), deadline=65.0, warned=False)
+ESCAPED = Abandoned(ONE.id, RequestId("q0"), at=8.0)
+WENT_IDLE = StatusReported(ONE.id, Report(status.Idle(), Stamp(2000)), at=10.0)
+STOPPED = Stopped(ONE.id, "Done.", mode=None, prompt=TURN, again=False)
+
+
+def nudged(state: Registry, *events: Event) -> list[Effect]:
+    """What is said once the session has sat idle, after the events."""
+    for event in events:
+        state, _ = reduce(state, event)
+    return [effect for effect in reduce(state, Waited(ONE.id))[1] if isinstance(effect, Speak)]
+
+
+@pytest.mark.parametrize(
+    "ended",
+    [
+        # The interrupt Claude Code sets idle for, with no Stop.
+        [WENT_IDLE],
+        # The same, with the Stop an Escape can fire after the idle, applied after it or before it was read.
+        [WENT_IDLE, STOPPED],
+        [STOPPED],
+        [WENT_IDLE, Interrupted(ONE.id, TURN, at=11.0)],
+    ],
+)
+def test_a_turn_escaped_at_its_dialog_question_is_nudged_as_having_one_however_it_ends(ended: list[Event]) -> None:
+    """The telling counts a dialog that nothing but the interruption followed as waiting, and so does the nudge,
+    though the Escape killed the dialog's hook before the turn ended."""
+    assert nudged(in_turn(ASKING), ESCAPED, *ended) == [Speak(WaitingForYou(ONE.id, asking=True))]
+
+
+def test_a_question_left_to_its_dialog_at_the_voice_deadline_and_then_escaped_is_still_the_nudge() -> None:
+    assert nudged(in_turn(ASKING), Tick(at=65.0), WENT_IDLE) == [Speak(WaitingForYou(ONE.id, asking=True))]
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        # Claude went on past the escaped dialog and ran something, as the telling sees in the steps after it.
+        [ESCAPED, ToolFinished(ONE.id, at=9.0, call=BASH, mode=None)],
+        [ESCAPED, PermissionRequested(ONE.id, 9.0, RequestId("r1"), BASH, None), ToolFinished(ONE.id, at=9.5, call=BASH, mode=None)],
+        # A message typed or queued after it answered it.
+        [ESCAPED, Prompted(ONE.id, at=9.0, mode=None, prompt=TURN)],
+        [ESCAPED, Continued(ONE.id, was=TURN, now=PromptId("p2"))],
+        # Answered at the keyboard: the question's tool ran, before its hook was let go or after.
+        [ToolFinished(ONE.id, at=9.0, call=QUESTION, mode=None)],
+        [ToolFinished(ONE.id, at=9.0, call=QUESTION, mode=None), ESCAPED],
+    ],
+)
+def test_a_dialog_question_answered_or_gone_past_is_not_what_the_turn_waits_on(after: list[Event]) -> None:
+    assert nudged(in_turn(ASKING), *after, WENT_IDLE) == [Speak(WaitingForYou(ONE.id, asking=False))]
+
+
+def test_a_permission_escaped_at_its_dialog_asks_the_listener_nothing() -> None:
+    assert nudged(in_turn(Blocked(on=BASH, request=RequestId("q0"), deadline=65.0, warned=False)), ESCAPED, WENT_IDLE) == [NUDGE]
+
+
 def test_a_dialog_question_answered_before_the_turn_stopped_is_not_what_it_waits_on() -> None:
     state = in_turn(Working(since=20.0))
     for event in [Stopped(ONE.id, "Merged.", mode=None, prompt=TURN, again=False), Waited(ONE.id)]:
