@@ -325,7 +325,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
     monkeypatch.setattr(built, "PocketTTSService", Recorded)
     built.build_voice(
         built.VoiceConfig(
-            llm=built.OpenAICompatibleBackend(base_url="http://example/v1", model="m"),
+            llm=built.OpenAICompatibleBackend(base_url="http://example/v1", api_key="k", model="m"),
             whisper_model="mlx-community/whisper-tiny",
             voice="cosette",
         ),

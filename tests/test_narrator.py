@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from aiohttp import web
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
@@ -20,6 +19,8 @@ from hands.sessions.tail import Tails
 from hands.voice.narrator import narrate, recount
 from hands.voice.pipeline import OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
+
+from conftest import ServeChat
 
 FIXTURE = Path(__file__).parent / "fixtures" / "turn.jsonl"
 BUDGET = Budget(opening=100, said=100, input=100, result=100, steps=10, files=10, commits=10, changes=500)
@@ -157,7 +158,7 @@ async def test_a_turn_that_cannot_be_summarised_is_said_to_have_failed_and_logge
     recorded: list[Entry] = []
 
     # A port nothing listens on: the model is unreachable the way a stopped inferno is.
-    unreachable = summariser(OpenAICompatibleBackend(base_url="http://127.0.0.1:9/v1", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
+    unreachable = summariser(OpenAICompatibleBackend(base_url="http://127.0.0.1:9/v1", api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
         spoken = await recount(tailing(FIXTURE), SID, None, None, "cc-hands", unreachable, recorded.append, BUDGET, Delta())
@@ -223,52 +224,26 @@ async def test_a_turn_that_did_nothing_and_changed_nothing_is_still_silent(tmp_p
     assert await recount(tailing(transcript), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta()) is None
 
 
-async def openai_server(content: str | None) -> tuple[web.AppRunner, str, list[dict[str, object]]]:
-    """A chat completions endpoint that answers every request with content, and keeps what it was asked."""
-    asked: list[dict[str, object]] = []
-
-    async def complete(request: web.Request) -> web.Response:
-        asked.append(await request.json())
-        return web.json_response(
-            {
-                "id": "c1", "object": "chat.completion", "created": 0, "model": "m",
-                "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
-            }
-        )
-
-    app = web.Application()
-    app.router.add_post("/v1/chat/completions", complete)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
-    await site.start()
-    port = runner.addresses[0][1]
-    return runner, f"http://127.0.0.1:{port}/v1", asked
-
-
-async def test_the_openai_compatible_summariser_sends_the_instruction_and_the_turn_and_returns_the_text() -> None:
-    runner, url, asked = await openai_server("  Fixed the test.  ")
-    try:
-        summarise = summariser(OpenAICompatibleBackend(base_url=url, model="m"), "Summarise.", max_tokens=50, timeout=5.0)
-        assert await summarise("The user asked:\nfix it") == "Fixed the test."
-    finally:
-        await runner.cleanup()
-    [request] = asked
+async def test_the_openai_compatible_summariser_sends_the_instruction_and_the_turn_with_its_key_and_returns_the_text(
+    chat_server: ServeChat,
+) -> None:
+    server = await chat_server("  Fixed the test.  ")
+    summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
+    assert await summarise("The user asked:\nfix it") == "Fixed the test."
+    [request] = server.asked
     assert request["model"] == "m" and request["max_tokens"] == 50
     assert request["messages"] == [{"role": "system", "content": "Summarise."}, {"role": "user", "content": "The user asked:\nfix it"}]
+    assert server.keys == ["k"]
 
 
-async def test_a_summary_with_nothing_in_it_is_a_failure() -> None:
-    runner, url, _ = await openai_server(None)
-    try:
-        summarise = summariser(OpenAICompatibleBackend(base_url=url, model="m"), "Summarise.", max_tokens=50, timeout=5.0)
-        with pytest.raises(SummaryFailed):
-            await summarise("The user asked:\nfix it")
-    finally:
-        await runner.cleanup()
+async def test_a_summary_with_nothing_in_it_is_a_failure(chat_server: ServeChat) -> None:
+    server = await chat_server(None)
+    summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
+    with pytest.raises(SummaryFailed):
+        await summarise("The user asked:\nfix it")
 
 
-async def test_a_model_that_answers_with_nothing_is_said_to_have_failed_rather_than_spoken_as_a_stop() -> None:
+async def test_a_model_that_answers_with_nothing_is_said_to_have_failed_rather_than_spoken_as_a_stop(chat_server: ServeChat) -> None:
     """The whole chain, because its two halves were pinned separately and the join between them was not: a
     model that answers with nothing raises out of the summariser, and `recount` is what catches it.
 
@@ -277,15 +252,14 @@ async def test_a_model_that_answers_with_nothing_is_said_to_have_failed_rather_t
     happen is that the summariser refuses empty text at the boundary, so the narration is never handed any
     [LAW:single-enforcer]. This is the test that says so, rather than a second empty check inland.
     """
-    runner, url, _ = await openai_server(None)
+    server = await chat_server(None)
     recorded: list[Entry] = []
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
-        summarise = summariser(OpenAICompatibleBackend(base_url=url, model="m"), "Summarise.", max_tokens=50, timeout=5.0)
+        summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
         spoken = await recount(tailing(FIXTURE), SID, None, None, "cc-hands", summarise, recorded.append, BUDGET, Delta())
     finally:
         logger.remove(sink)
-        await runner.cleanup()
     assert isinstance(spoken, TTSSpeakFrame)
     assert spoken.text == "cc-hands finished a turn, and I could not summarise it."
     [failure] = recorded

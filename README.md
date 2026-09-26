@@ -68,8 +68,17 @@ mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts �
 ```
 
 The LLM is a backend variant: `HANDS_LLM=local`, the default, is Qwen3-30B-A3B on
-inferno through `mlx_lm.server`; `HANDS_LLM=anthropic` is Claude through the API. The
-gate is push-to-talk: the key is the voice activity detector and the microphone mute,
+inferno through `mlx_lm.server`; `HANDS_LLM=openai` is `gpt-4.1-mini` through OpenAI's
+API; `HANDS_LLM=anthropic` is Claude through the API. `HANDS_LLM_MODEL` names another
+model for any of them. `HANDS_LLM_URL` moves `local` or `openai` to another
+OpenAI-compatible server; it is the base URL the client appends `/chat/completions` to,
+so it usually ends in `/v1` (`https://api-chicago.codexapi.pro/v1`: the bare host answers
+404). Such a server must stream tool calls, because the pipeline's service always
+streams: api-chicago.codexapi.pro streams replies but drops tool calls (2026-09-25). A
+keyed variant stops at start, naming the variable, when its key (`OPENAI_API_KEY` or
+`ANTHROPIC_API_KEY`) is not set. The key can live in a `.env` at the repository root,
+which git ignores, and `uv run --env-file .env` puts it in the environment; uv stops if
+the file is not there. The gate is push-to-talk: the key is the voice activity detector and the microphone mute,
 so the turn boundary is the key and the pipeline can never transcribe itself. Measured
 on 2026-09-12, voice to voice with the local model: 1.4 s from key release to first
 audio on a plain turn, 4.3 s on a turn with a tool call.
@@ -116,6 +125,7 @@ uv run python -m hands.sessions.hookconfig > plugin/hooks/hooks.json
 uv sync
 uv run hands run                        # in a terminal: space to talk, space again to stop, q to quit
 HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
+HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands indicator                  # the daemon's verdict in the menu bar; launchd runs it this way

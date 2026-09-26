@@ -6,6 +6,7 @@ Run it against whatever model the daemon runs:
     uv run python evals/narration.py                 # the local model on inferno, three tellings each
     uv run python evals/narration.py --runs 1        # one telling each, for a quick look
     HANDS_LLM=anthropic uv run python evals/narration.py
+    HANDS_LLM=openai uv run --env-file .env python evals/narration.py
 
 Each case under `evals/fixtures` is a real turn, lifted whole out of a real transcript, beside the facts a
 listener has to come away with. The turn is folded by the daemon's own recognisers and rendered by the daemon's
