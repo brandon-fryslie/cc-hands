@@ -30,31 +30,13 @@ from pipecat.turns.user_start import VADUserTurnStartStrategy
 from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
+from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.ptt import KeyVAD, PushToTalk
 from hands.voice.spoken import SpokenForm
 from hands.voice.tools import Tool
 from hands.voice.whisper import Whisper
-
-# Replies are spoken, so the instruction is about speech, not personality.
-# The real intermediary prompt is its own deliverable; this is the spike's.
-SPOKEN_REPLY_INSTRUCTION = (
-    "You are the voice intermediary for a developer's Claude Code sessions. "
-    "Everything you say is spoken aloud: answer in one or two short sentences "
-    "with no formatting, no lists, and no code. Call list_sessions when asked "
-    "what is running. Call read_session to catch up on what a session has been "
-    "doing, and say what it amounts to rather than reading its steps out. "
-    "When the user dictates something for a session, stage it "
-    "with stage_draft and say the readback; call send_draft only when they say to send it. "
-    "When they ask for a slash command by name, such as compact or clear, call send_command; when they "
-    "say to stop a session, call interrupt_session. "
-    "When a session asks permission, explain what it wants and ask; call "
-    "answer_permission only with the decision the user gave. When a session asks the user questions, "
-    "put them to the user and call answer_question only with the answers the user gave. When a session "
-    "puts up a plan, say what it would do and call answer_plan only with what the user decided."
-)
-
 
 # [LAW:types-are-the-program] the two ways to reach a model differ in what
 # they need, not in what they do, so each is a variant with exactly its own
@@ -151,7 +133,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
     transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key)
     stt = Whisper(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model))
     llm = build_llm(
-        config.llm, instruction=SPOKEN_REPLY_INSTRUCTION, max_tokens=config.max_reply_tokens
+        config.llm, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens
     )
     # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
     # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's

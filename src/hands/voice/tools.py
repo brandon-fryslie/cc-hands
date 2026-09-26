@@ -78,6 +78,28 @@ def audited(tool: Tool, record: Record) -> Tool:
     return cast(Tool, call)
 
 
+def intermediary_tools(sessions: Sessions) -> list[Tool]:
+    """Every tool the intermediary is given, in the order its schema lists them.
+
+    [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
+    tool added here is one the eval's model is offered too.
+    """
+    return [list_sessions_tool(sessions), read_session_tool(sessions), *draft_tools(sessions), *keyboard_tools(sessions), *permission_tools(sessions), stay_silent_tool()]
+
+
+def stay_silent_tool() -> Tool:
+    async def stay_silent(params: FunctionCallParams) -> None:
+        """Say nothing in reply to what was just heard, because it was not said to you.
+
+        Calling it is the whole reply: add no words of your own.
+        """
+        # [LAW:no-silent-failure] the choice not to answer is still a Called line in the audit log, and with the model
+        # not run on the result, nothing follows it to the speaker.
+        await params.result_callback({"silent": True}, properties=FunctionCallResultProperties(run_llm=False))
+
+    return stay_silent
+
+
 def list_sessions_tool(sessions: Sessions) -> Tool:
     async def list_sessions(params: FunctionCallParams) -> None:
         """List the running Claude Code sessions with their titles, what each is doing, and the permission mode each is in.

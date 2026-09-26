@@ -150,6 +150,7 @@ uv run hands log                        # the audit log: what hands heard, said,
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run pytest && uv run pyright
 uv run python evals/narration.py       # real turns through the real summariser; needs the model to be up
+uv run python evals/intermediary.py    # conversations through the intermediary's prompt and tools; same
 ```
 
 `pytest` and `pyright` judge the code. The eval judges what a listener hears: it tells four
@@ -157,6 +158,10 @@ real turns, lifted whole out of real transcripts, and checks that the facts are 
 no code name reached the ear, that what is spoken stays within its configured length, and
 that every number the model said is a number the turn showed. It exits 0 when every check held, 1 when one
 failed, and 2 when the model could not be reached at all.
+
+The intermediary's eval judges its next move at one moment of a conversation: the tool it
+calls and with what, or what it says, held to the same spoken-form judge, or that it stays
+silent for words not meant for it. Its exit codes mean the same.
 
 hands runs only while `hands run` does, in the terminal it was started in: `q` or
 Ctrl-C stops it, and nothing starts it again.

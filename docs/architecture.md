@@ -1297,6 +1297,18 @@ surface above is the whole surface `[LAW:no-mode-explosion]`.
 it, taken from Happy's `skip_turn`. Push-to-talk rarely needs it; the wake-word edge,
 which opens the mic without a hand, does.
 
+**The prompt and its eval.** The intermediary's prompt is `voice/intermediary_instruction.py`,
+and `evals/intermediary.py` judges it over `evals/conversations`, one decision point a case,
+asked through the daemon's own service, adapter, tool schemas, and start-up note. The prompt
+says when to reach for a tool, and the tool's docstring says how to use what comes back; it
+names only tools the model is given, so each planned tool's ticket adds its own line. Two traps,
+both measured against Qwen on 2026-09-26: it copies a quoted wrong reply almost word for word
+("The docs site is idle, so it can take this" came back as "The auth refactor session is
+idle, so it can take this"), so a wrong reply is quoted only when no case could pass by
+copying it, and a plausible one is described as an action instead; and mlx_lm.server samples at temperature 0, so its runs are identical and an edit to
+one paragraph can flip a case that paragraph never mentions. Run the whole eval after every
+edit, not the cases the edit was for.
+
 `send_command` exists so that `/clear`, `/compact`, and `/model` reach the target as
 commands, with their sigil intact. `stage_draft` text always has a leading sigil escaped. The two never share a code path that inspects the first character; the
 `Input` variant already knows. Claude Code reads three sigils at the start of a

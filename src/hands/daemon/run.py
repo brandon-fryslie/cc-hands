@@ -56,10 +56,11 @@ from hands.voice.narrator import narrate
 from hands.voice.speech import relay
 from hands.voice.summary import Summariser, summariser
 from hands.voice.summary_instruction import TURN_SUMMARY_INSTRUCTION
+from hands.voice.briefing import brief
 from hands.voice.conversation import record_turns
 from hands.voice.system import SystemChannel, listen, unheard
 from hands.voice.threads import off_loop
-from hands.voice.tools import audited, draft_tools, keyboard_tools, list_sessions_tool, permission_tools, read_session_tool
+from hands.voice.tools import audited, intermediary_tools
 
 # The model lives on inferno, the M4 Max on the LAN, served by mlx_lm.server.
 LOCAL_LLM_URL = "http://inferno.local:8080/v1"
@@ -165,7 +166,7 @@ async def run(config: VoiceConfig, home: Home, heart: heartbeat.Heart, after_cra
 
 async def load(config: VoiceConfig, sessions: Sessions, heart: heartbeat.Heart, quit_event: asyncio.Event, record: Record) -> Voice | None:
     """The voice, built off the event loop while the loop beats "starting"; None when told to stop first."""
-    tools = [audited(tool, record) for tool in (list_sessions_tool(sessions), read_session_tool(sessions), *draft_tools(sessions), *keyboard_tools(sessions), *permission_tools(sessions))]
+    tools = [audited(tool, record) for tool in intermediary_tools(sessions)]
     # Loading the models takes seconds: off the loop, a slow start reads as starting, and only a stuck loop as not responding.
     building = asyncio.create_task(off_loop(lambda: build_voice(config, tools=tools), "the voice load"))
     starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, sessions.live_count()), heart.period.total_seconds()))
@@ -215,6 +216,7 @@ async def converse(
             failures.append(error)
             quit_event.set()
 
+    await brief(sessions, voice.worker.queue_frame)
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
