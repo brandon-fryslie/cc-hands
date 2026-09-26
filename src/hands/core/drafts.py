@@ -126,6 +126,8 @@ def _decide(registry: Registry, request: DraftRequest, session: Session, staged:
         case (SendDraft(), Staged(), _, None):
             return registry, Unwrapped(id)
         case (SendDraft(), Staged(), Blocked() | AtDialog(), Path()):
+            # The workspace-trust dialog needs no case: Claude Code runs no hook, SessionStart included, until the folder
+            # is trusted, so a session at it is not in the registry at all (measured on 2.1.283).
             return registry, AtItsDialog(id)
         case (SendDraft(), Staged() as draft, _, Path() as socket):
             # Sent the moment it is decided: the draft leaves the registry here, so there is never a second send of it.
