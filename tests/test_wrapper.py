@@ -107,10 +107,20 @@ def test_every_hands_shim_is_skipped_however_path_names_it(root: Path) -> None:
     assert ran.stdout == "claude  socket=unset\n"
 
 
-def test_an_empty_path_entry_is_the_current_directory(root: Path) -> None:
+@pytest.mark.parametrize("entries", ["{bin}::/usr/bin:/bin", "{bin}:/usr/bin:/bin:", ":{bin}:/usr/bin:/bin"])
+def test_an_empty_path_entry_is_the_current_directory(root: Path, entries: str) -> None:
     shim = installed_shim(root)
-    ran = subprocess.run([str(shim)], env={"PATH": f"{root / 'bin'}::/usr/bin:/bin"}, cwd=root / "real", stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    path = entries.format(bin=root / "bin")
+    ran = subprocess.run([str(shim)], env={"PATH": path}, cwd=root / "real", stdin=subprocess.DEVNULL, capture_output=True, text=True)
     assert ran.stdout == "claude  socket=unset\n"
+
+
+def test_another_home_s_shim_first_on_path_wraps_as_this_one_would(root: Path) -> None:
+    shim = installed_shim(root)
+    other = executable(root / "other" / "claude", shim_script(root / "other" / "fritter"))
+    assert wrapper.Installed(shim, root / "bin" / "fritter", other).on_path
+    assert not wrapper.Installed(shim, root / "bin" / "fritter", root / "real" / "claude").on_path
+    assert not wrapper.Installed(shim, root / "bin" / "fritter", None).on_path
 
 
 def test_no_real_claude_on_path_is_said_and_runs_nothing(root: Path) -> None:

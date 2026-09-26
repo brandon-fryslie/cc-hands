@@ -38,7 +38,12 @@ class Installed:
 
     @property
     def on_path(self) -> bool:
-        return self.found is not None and self.found.samefile(self.shim)
+        """Whether that `claude` is a hands shim: this one, or another home's, which wraps a session just as well."""
+        if self.found is None:
+            return False
+        with self.found.open("rb") as found:
+            found.readline()
+            return found.readline().rstrip(b"\n") == MARK.encode()
 
 
 def shim_script(fritter: Path) -> str:
@@ -47,7 +52,8 @@ def shim_script(fritter: Path) -> str:
     # installer that moves it and the updater that repoints ~/.local/bin/claude are followed without a reinstall.
     # Every hands shim is skipped by its mark, not only this one: two homes' shims on one PATH would otherwise each
     # take the other for the real claude, and fritter would nest without end. fritter is handed the path, never the
-    # name, or it would run a shim again. An empty PATH entry is the current directory, as it is to the shell.
+    # name, or it would run a shim again. An empty PATH entry is the current directory, as it is to the shell; the colon
+    # added before splitting keeps a trailing one, which splitting on IFS would drop.
     # A session is a terminal on both ends and no print. A pipe, a script, and `claude -p` are not sessions to
     # drive, and on a pty they would not be what they are; they run the real claude, without the address of any
     # session they were started from, so none of them claims a fritter that does not type into it. -c is the one
@@ -59,7 +65,8 @@ fritter={shlex.quote(str(fritter))}
 set -f
 real=
 IFS=:
-for dir in $PATH; do
+path=$PATH:
+for dir in $path; do
   candidate=${{dir:-.}}/claude
   [ -f "$candidate" ] && [ -x "$candidate" ] || continue
   mark=
