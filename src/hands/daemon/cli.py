@@ -56,7 +56,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
             # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits
-            # in that second would leave this process watching its new one, launchd, forever.
+            # in that second would leave this process watching its new one, pid 1, forever.
             parent = os.getppid() if arguments.parent is None else arguments.parent
             from hands.daemon.menubar import show
 
