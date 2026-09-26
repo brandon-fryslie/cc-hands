@@ -57,7 +57,7 @@ def show(home: Home, run: int) -> None:
                 # Posted before exiting, not beside it: the notice that the run went is the last thing this process
                 # does, bounded so that an osascript that never returns cannot keep the process up in its place.
                 for notice in indicator.last_words(seen):
-                    asyncio.run(asyncio.wait_for(post_notification(notice), LAST_POST_SECONDS))
+                    asyncio.run(post_last(notice))
                 os._exit(0)
             for notice in seen.notices:
                 post(notice)
@@ -78,3 +78,11 @@ def post(notice: str) -> None:
     """Post off the main thread: osascript takes a moment, and the status item must keep up meanwhile."""
     # post_notification logs its own failure; nothing here waits on it.
     threading.Thread(target=lambda: asyncio.run(post_notification(notice)), name="notice", daemon=True).start()
+
+
+async def post_last(notice: str) -> None:
+    """Post a notice on the way out, or say that it could not be posted in time; the indicator exits either way."""
+    try:
+        await asyncio.wait_for(post_notification(notice), LAST_POST_SECONDS)
+    except TimeoutError:
+        logger.error(f"osascript did not post {notice!r} within {LAST_POST_SECONDS:.0f}s; the indicator exits without it")
