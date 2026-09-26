@@ -1,0 +1,55 @@
+{
+  "about": "Told what is running, it names sessions by their titles and never their ids.",
+  "sessions": [
+    {
+      "id": "5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34",
+      "title": "auth refactor",
+      "state": "idle",
+      "mode": "manual mode"
+    },
+    {
+      "id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68",
+      "title": "hands daemon",
+      "state": "working",
+      "mode": "auto mode"
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": "What's running right now?"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_2",
+          "type": "function",
+          "function": {
+            "name": "list_sessions",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_2",
+      "content": "{\"sessions\": [{\"id\": \"5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34\", \"title\": \"auth refactor\", \"state\": \"idle\", \"mode\": \"manual mode\"}, {\"id\": \"c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68\", \"title\": \"hands daemon\", \"state\": \"working\", \"mode\": \"auto mode\"}]}"
+    }
+  ],
+  "expect": {
+    "reply": {
+      "needs": [
+        [
+          "auth refactor"
+        ],
+        [
+          "hands daemon"
+        ]
+      ],
+      "sentences": 2
+    }
+  }
+}
