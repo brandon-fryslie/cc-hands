@@ -120,6 +120,9 @@ On 2.1.283:
 - A bracketed paste and the Return behind it, read together, are sent: a short text and a
   3 KB one alike. A Return read a moment after the paste, apart from it, sent nothing, which
   is why the two go as one write.
+- Read together that way, text ending on an `@` or `#` token is sent as it is: no
+  completion list opens to take the Return. Text ending on a backslash is not sent. The
+  Return becomes a newline, and the next text typed is submitted joined onto it.
 - Text behind a leading space starting with `/`, `@` or `!` is sent as plain text, and the
   transcript records it with the space.
 - The binary asks for bracketed paste.

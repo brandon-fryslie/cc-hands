@@ -19,6 +19,7 @@ Instant = float  # monotonic seconds
 # A newline is not a control character here: bracketing carries it into the message, and it
 # is the carriage return that would submit a half-written one. A tab is, because nothing
 # carries a tab - it is in the Keystroke vocabulary below and is sent by name.
+# It does not end with a backslash, which would make the Return that sends it a newline.
 PromptText = NewType("PromptText", str)
 
 # The named chords a session can be sent, as distinct from text. Which bytes each one is

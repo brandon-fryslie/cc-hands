@@ -83,6 +83,7 @@ async def test_an_ended_session_is_told_its_draft_cannot_change_and_the_draft_ca
         ("  \n", [], "the draft text is empty"),
         ("clear the line\x15and press enter\r", [], "control character"),
         ("fix the\tauth middleware", [], "control character"),
+        ("continue the refactor \\", [], "ends with a backslash"),
         ("fine", [{"heard": "x"}], "missing field 'meant'"),
         ("fine", "none", "resolutions should be a list"),
     ],

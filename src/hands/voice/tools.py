@@ -417,6 +417,8 @@ def _prompt_text(text: object) -> PromptText:
             raise Rejected("the draft text is empty")
         case str() if _CONTROL.search(text):
             raise Rejected("the draft text holds a control character, which would press a key when the draft is typed")
+        case str() if text.endswith("\\"):
+            raise Rejected("the draft text ends with a backslash, which turns the Return that sends it into a newline")
         case str():
             return PromptText(text)
         case other:
