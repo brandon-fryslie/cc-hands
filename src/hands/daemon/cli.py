@@ -32,7 +32,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     try:
         # HANDS_HOME is read only when --home is not given, so a bad one never stands in the way of an explicit home.
-        home = default_home() if arguments.home is None else Home(arguments.home)
+        # A relative --home is this directory's, made absolute here, since the home is written into the shim.
+        home = default_home() if arguments.home is None else Home(arguments.home.absolute())
     except Rejected as error:
         print(f"hands: {error}", file=sys.stderr)
         return 2

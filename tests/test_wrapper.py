@@ -11,7 +11,8 @@ import pytest
 
 from hands.daemon.cli import main
 from hands.sessions.home import Home
-from hands.sessions.wrapper import install, shim_script
+from hands.sessions import wrapper
+from hands.sessions.wrapper import shim_script
 
 # Each stand-in says what it was run with, and whether it carries a fritter address.
 RECORDER = '#!/bin/sh\nprintf "%s %s socket=%s\\n" "$(basename "$0")" "$*" "${FRITTER_SOCKET-unset}"\n'
@@ -37,7 +38,7 @@ def installed_shim(root: Path) -> Path:
     bin = root / "bin"
     executable(bin / "fritter", RECORDER)
     executable(root / "real" / "claude", RECORDER)
-    return executable(bin / "claude", shim_script(bin / "claude", bin / "fritter"))
+    return executable(bin / "claude", shim_script(bin / "fritter"))
 
 
 def on_a_pipe(argv: Sequence[str], path: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -69,7 +70,7 @@ def test_a_session_on_a_terminal_runs_under_fritter_around_the_real_claude(root:
     assert printed == f"fritter -- {root / 'real' / 'claude'} --resume abc socket=unset\n"
 
 
-@pytest.mark.parametrize("args", [["-p", "hello"], ["--print", "hello"], ["--model", "opus", "-p", "hello"]])
+@pytest.mark.parametrize("args", [["-p", "hello"], ["--print", "hello"], ["--model", "opus", "-p", "hello"], ["-cp", "hello"], ["-pc", "hello"]])
 def test_print_on_a_terminal_runs_the_real_claude(root: Path, args: list[str]) -> None:
     shim = installed_shim(root)
     printed = on_a_terminal([str(shim), *args], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin")
@@ -88,11 +89,27 @@ def test_off_a_terminal_the_real_claude_runs_without_the_address_of_the_session_
     assert (ran.returncode, ran.stdout, ran.stderr) == (0, "claude mcp serve socket=unset\n", "")
 
 
-def test_the_shim_is_skipped_however_path_names_it(root: Path) -> None:
+@pytest.mark.parametrize("args", [["-dp"], ["-rp"]])
+def test_an_option_whose_value_is_p_is_a_session(root: Path, args: list[str]) -> None:
+    # -d and -r take a value, so -dp is a debug filter and -rp a session to resume.
     shim = installed_shim(root)
+    printed = on_a_terminal([str(shim), *args], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin")
+    assert printed.startswith("fritter -- ")
+
+
+def test_every_hands_shim_is_skipped_however_path_names_it(root: Path) -> None:
+    # Two homes' shims on one PATH would each take the other for the real claude, and nest fritters without end.
+    shim = installed_shim(root)
+    other = executable(root / "other" / "claude", shim_script(root / "other" / "fritter"))
     (root / "alias").mkdir()
     (root / "alias" / "claude").symlink_to(shim)
-    ran = on_a_pipe([str(shim)], f"{root / 'alias'}:{root / 'bin'}::{root / 'bin'}:{root / 'real'}:/usr/bin:/bin")
+    ran = on_a_pipe([str(shim)], f"{root / 'alias'}:{root / 'bin'}:{other.parent}:{root / 'bin'}:{root / 'real'}:/usr/bin:/bin")
+    assert ran.stdout == "claude  socket=unset\n"
+
+
+def test_an_empty_path_entry_is_the_current_directory(root: Path) -> None:
+    shim = installed_shim(root)
+    ran = subprocess.run([str(shim)], env={"PATH": f"{root / 'bin'}::/usr/bin:/bin"}, cwd=root / "real", stdin=subprocess.DEVNULL, capture_output=True, text=True)
     assert ran.stdout == "claude  socket=unset\n"
 
 
@@ -100,14 +117,14 @@ def test_no_real_claude_on_path_is_said_and_runs_nothing(root: Path) -> None:
     shim = installed_shim(root)
     ran = on_a_pipe([str(shim)], f"{root / 'bin'}:/usr/bin:/bin")
     assert ran.returncode == 127
-    assert (ran.stdout, ran.stderr) == ("", f"claude: nothing on PATH named claude but hands' shim, {shim}\n")
+    assert (ran.stdout, ran.stderr) == ("", "claude: nothing on PATH named claude but hands' shims\n")
 
 
 def test_a_path_with_spaces_and_quotes_is_the_path_the_shim_names(root: Path) -> None:
     bin = root / "it's a bin"
     executable(bin / "fritter", RECORDER)
     executable(root / "real" / "claude", RECORDER)
-    shim = executable(bin / "claude", shim_script(bin / "claude", bin / "fritter"))
+    shim = executable(bin / "claude", shim_script(bin / "fritter"))
     printed = on_a_terminal([str(shim)], f"{bin}:{root / 'real'}:/usr/bin:/bin")
     assert printed == f"fritter -- {root / 'real' / 'claude'} socket=unset\n"
 
@@ -120,7 +137,9 @@ def test_install_builds_a_fritter_that_gives_the_session_an_address_and_says_whe
 
     monkeypatch.setenv("PATH", tools)
     assert main(["--home", str(home.root), "install-fritter"]) == 1
-    assert f'export PATH="{home.bin}:$PATH"' in capsys.readouterr().err
+    said = capsys.readouterr().err
+    assert f"`claude` on this PATH is {root / 'real' / 'claude'}, not the shim" in said
+    assert f'export PATH="{home.bin}:$PATH"' in said
     first = (home.bin / "claude").read_bytes()
 
     monkeypatch.setenv("PATH", f"{home.bin}:{tools}")
@@ -131,4 +150,17 @@ def test_install_builds_a_fritter_that_gives_the_session_an_address_and_says_whe
 
     printed = on_a_terminal(["claude", "hi"], f"{home.bin}:{tools}")
     assert printed.startswith("claude hi socket=/tmp/fritter-")
-    assert install(home, tools).found == root / "real" / "claude"
+
+
+def test_a_relative_home_is_this_directory_s(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The home is written into the shim, which runs from every directory.
+    monkeypatch.chdir(root)
+    homes: list[Home] = []
+
+    def install(home: Home, path: str) -> wrapper.Installed:
+        homes.append(home)
+        raise wrapper.Uninstallable("enough")
+
+    monkeypatch.setattr(wrapper, "install", install)
+    assert main(["--home", "h", "install-fritter"]) == 1
+    assert homes == [Home(root / "h")]
