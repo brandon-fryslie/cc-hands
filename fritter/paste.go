@@ -143,5 +143,7 @@ func (p *pasteMode) encode(text string) (body, end []byte, bracketed bool) {
 	if !p.on {
 		return []byte(text), nil, false
 	}
-	return append(append([]byte(nil), pasteStart...), text...), pasteEnd, true
+	// Both are fresh, because the caller appends the Enter to the end: returned as itself,
+	// pasteEnd would be the shared array that append writes into.
+	return append(append([]byte(nil), pasteStart...), text...), append([]byte(nil), pasteEnd...), true
 }

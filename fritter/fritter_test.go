@@ -505,32 +505,29 @@ func TestTextThatIsNotCharactersIsRefusedRatherThanTyped(t *testing.T) {
 }
 
 func TestASessionThatIsNotReadingItsInputIsSaidSoRatherThanWaitedOn(t *testing.T) {
-	// A pty in raw mode holds a kilobyte of input, and a write that fills it blocks until
-	// the child reads - which a stopped or wedged session never does. Waiting there with
-	// no bound hangs the request and everything behind it: the next caller in is hands
-	// sending the ctrl_c that was supposed to be the way back.
+	// Every write waits for the child to read it, which a stopped or wedged session never
+	// does. Waiting there with no bound hangs the request and everything behind it: the next
+	// caller in is hands sending the ctrl_c that was supposed to be the way back.
 	//
-	// Measured on macOS: a cooked pty takes 300 KB without blocking, a raw one blocks at
-	// 1024 bytes. Claude Code runs raw, so raw is the configuration this has to hold in,
-	// and the test puts the pty there rather than testing the one that cannot fail.
+	// Raw, because a cooked terminal counts nothing until a line is in and the wait would
+	// be no wait; Claude Code runs raw.
 	wrapped, ask, exited := wrap(t, "sh", "-c", "sleep 30")
 	if _, err := term.MakeRaw(int(wrapped.master.Fd())); err != nil {
 		t.Fatalf("cannot put the session's terminal into raw mode: %v", err)
 	}
 	defer ending(t, wrapped, exited)
 
-	stuck := ask(`{"kind":"text","text":"` + strings.Repeat("x", 2000) + `","submit":false}`)
+	stuck := ask(`{"kind":"text","text":"hello","submit":true}`)
 	if stuck.OK {
-		t.Fatal("a session that reads nothing took two kilobytes")
+		t.Fatal("a session that reads nothing was reported as taking the text")
 	}
 	if !strings.Contains(stuck.Reason, "not reading its input") {
 		t.Fatalf("the reason must say the session is not reading, got %q", stuck.Reason)
 	}
-	// The write went into a kilobyte-deep queue before it blocked, so part of the message
-	// is in front of the user. "Nothing was typed" reads as "send it again", which doubles
-	// the half that is already there.
-	if strings.Contains(stuck.Reason, "nothing was typed") {
-		t.Fatalf("a write that may have landed partly was reported as landing not at all: %q", stuck.Reason)
+	// The first emptying step is in the queue, unread. The caller has to hear that the box
+	// was being changed under the user, and that none of its text is there.
+	if !strings.Contains(stuck.Reason, "none of the text was typed") || !strings.Contains(stuck.Reason, "may be gone") {
+		t.Fatalf("the reason must say the box was being emptied and the text not typed, got %q", stuck.Reason)
 	}
 
 	// The write is still out there and cannot be taken back, so the next request is

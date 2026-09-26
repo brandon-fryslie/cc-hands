@@ -169,7 +169,9 @@ What does is the pty's own count of the bytes waiting on the session's side of i
 writes a step, waits for that count to reach zero, and writes the next; it waits the same
 way before the first, so keys the user typed a moment earlier are read on their own too.
 A terminal in canonical mode counts nothing until a whole line is in, so for a program that
-reads lines the wait is no wait; Claude Code reads raw.
+reads lines the wait is no wait; Claude Code reads raw. The count is measured on macOS
+only, and fritter builds nowhere else: Linux hands a pty write to the session's side on a
+workqueue, so its count can read zero before the bytes are there to read.
 
 The Enter is the one key that must not be read on its own. Read a millisecond after the
 paste, the session took it before the paste was in the box and sent nothing. So it goes in
@@ -215,7 +217,7 @@ child left running can hold the pty open and an unbounded wait would keep fritte
 after its session ended. Reaching that bound means output really was lost, and fritter
 says so.
 
-A request's writes give up after two seconds between them. Each one waits for the child to
+A request's writes give up two seconds after it starts writing, all of them together. Each one waits for the child to
 read it, which a running session does at once and a stopped one never does. Waiting there
 with no bound hangs the request and everything behind it. A write cannot be taken back, so
 while one is outstanding nothing else writes: a request waits half a second for it and is

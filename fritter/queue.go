@@ -23,7 +23,9 @@ import (
 // is not writing the next until the child has taken the last - and whether it has is a fact
 // the pty keeps: the count of bytes waiting on its slave side.
 //
-// It has two limits. A terminal in canonical mode counts
+// It has three limits. It is measured on macOS only, and fritter builds nowhere else: Linux
+// hands a pty write to the slave on a workqueue, so the count there can read 0 before the
+// child can see the bytes at all. A terminal in canonical mode counts
 // nothing until a whole line is in, so for a program that reads lines the wait is no wait;
 // Claude Code reads raw, where the count is every byte. And a terminal whose session has
 // ended cannot be counted at all, so a child that exits on the key it was sent is reported
@@ -32,9 +34,15 @@ type inputQueue struct {
 	path string // the slave device, which the child holds open as its terminal
 }
 
-// How often the queue is looked at while waiting for the child to read it. A running
-// session reads its input at once, so this is the whole of what the wait usually costs.
-const queuePoll = time.Millisecond
+// How often the queue is looked at while waiting for the child to read it: at first
+// queuePoll, since a running session reads its input at once and this is the whole of what
+// the wait usually costs, and then less often, up to queuePollMost. A write given up on is
+// waited on for as long as the child does not read, and a stopped session can not read for
+// hours.
+const (
+	queuePoll     = time.Millisecond
+	queuePollMost = 100 * time.Millisecond
+)
 
 var errQueued = errors.New("the session has not read what is waiting in its input")
 
@@ -49,9 +57,7 @@ func (q inputQueue) waitEmpty(stop <-chan time.Time) error {
 		return fmt.Errorf("cannot look at the session's input queue: %w", err)
 	}
 	defer slave.Close()
-	tick := time.NewTicker(queuePoll)
-	defer tick.Stop()
-	for {
+	for poll := queuePoll; ; poll = min(2*poll, queuePollMost) {
 		waiting, err := unix.IoctlGetInt(int(slave.Fd()), fionread)
 		if err != nil {
 			return fmt.Errorf("cannot count the session's unread input, so whether it read this is not known - a session that has ended cannot be counted: %w", err)
@@ -60,7 +66,7 @@ func (q inputQueue) waitEmpty(stop <-chan time.Time) error {
 			return nil
 		}
 		select {
-		case <-tick.C:
+		case <-time.After(poll):
 		case <-stop:
 			return errQueued
 		}

@@ -112,7 +112,7 @@ const (
 // does at once and a stopped or wedged one never does. A wait with no bound there is the
 // whole program hanging on the one thing it exists to do, so the wait ends and says so
 // instead. One budget for the request rather than one per write, because a text request
-// is up to four writes and the sum above has to hold for all of them.
+// is six writes and the sum above has to hold for all of them.
 const (
 	claimGrace    = 500 * time.Millisecond
 	typeGrace     = 2 * time.Second
@@ -280,18 +280,15 @@ func (w *Wrapped) typeText(asked request, claim *hold) response {
 	// sent nothing.
 	var steps []step
 	for _, keys := range emptying {
-		steps = append(steps, step{keys, "the input box was being emptied and nothing of the text was typed: %s"})
+		steps = append(steps, step{keys, "the input box was being emptied, so what it and the stash held may be gone, and none of the text was typed: %s"})
 	}
 	if asked.Submit {
 		end = append(end, keystrokes["enter"]...)
 	}
-	steps = append(steps, step{body, "%s"}, step{end, "the text is in the input box but what ends it did not land, so it is not sent; do not send it again: %s"})
-	for _, s := range steps {
-		if wrong, bad := w.send(claim, s.keys).wrong(); bad {
-			return response{OK: false, Reason: fmt.Sprintf(s.failed, wrong)}
-		}
-	}
-	return response{OK: true}
+	// Whether the Enter was read is exactly what an unknowable end cannot say, so the
+	// caller is told it may have been sent - and a session that quit on it cannot be asked.
+	steps = append(steps, step{body, "%s"}, step{end, "the text is in the input box and whether what closes it was read is not known, so it may have been sent; do not send it again: %s"})
+	return w.write(claim, steps)
 }
 
 // step is one write of a request, and what to tell the caller if it does not land.
@@ -319,8 +316,25 @@ func (w *Wrapped) pressKey(asked request, claim *hold) response {
 	if !known {
 		return response{OK: false, Reason: fmt.Sprintf("no key named %q", asked.Key)}
 	}
-	if wrong, bad := w.send(claim, chord).wrong(); bad {
-		return response{OK: false, Reason: wrong}
+	return w.write(claim, []step{{chord, "%s"}})
+}
+
+// write sends a request's steps in order, each once the child has read the one before, and
+// stops at the first that does not land.
+//
+// The child is waited on once before the first step as well: what the user typed a moment
+// before this request took the lock may still be unread, and read together with the first
+// step it is one read the child can take for a paste (see inputQueue). Between steps there is
+// nothing to wait for twice - each step's own wait saw the queue empty, and the lock keeps
+// every other writer out, the user's keyboard included.
+func (w *Wrapped) write(claim *hold, steps []step) response {
+	if err := w.queue.waitEmpty(claim.by); err != nil {
+		return response{OK: false, Reason: fmt.Sprintf("nothing was typed: %v", err)}
+	}
+	for _, s := range steps {
+		if wrong, bad := w.send(claim, s.keys).wrong(); bad {
+			return response{OK: false, Reason: fmt.Sprintf(s.failed, wrong)}
+		}
 	}
 	return response{OK: true}
 }
@@ -365,17 +379,13 @@ func (d delivery) wrong() (string, bool) {
 		if d.landed == 0 {
 			return fmt.Sprintf("nothing was typed: %v", d.why), true
 		}
-		return fmt.Sprintf("%d of %d bytes reached the input box before the write failed, so what is there is a fragment; clear the line before sending anything else: %v", d.landed, d.of, d.why), true
+		return fmt.Sprintf("%d of %d bytes reached the input box before the write failed, so what is there is a fragment, which the next text request empties: %v", d.landed, d.of, d.why), true
 	default:
 		return d.why.Error(), true
 	}
 }
 
 // send writes to the child, waits for the child to read it, and reports what became of it.
-//
-// The child is waited on before the write as well as after: what the user typed a moment
-// before this request took the lock may still be unread, and read together with these
-// bytes it is one read the child can take for a paste (see inputQueue).
 //
 // The write runs on a goroutine because neither it nor the wait after it has a deadline to
 // set: a pty master is not a file the runtime can poll, so SetWriteDeadline answers "file
@@ -387,9 +397,6 @@ func (d delivery) wrong() (string, bool) {
 //
 // Called only under a request's claim on w.writing, which is what it passes on.
 func (w *Wrapped) send(claim *hold, keys []byte) delivery {
-	if err := w.queue.waitEmpty(claim.by); err != nil {
-		return delivery{how: partway, of: len(keys), why: err}
-	}
 	type outcome struct {
 		n           int
 		wrote, read error
@@ -418,7 +425,7 @@ func (w *Wrapped) send(claim *hold, keys []byte) delivery {
 			<-done
 			<-w.writing
 		}()
-		return delivery{how: unknowable, of: len(keys), why: fmt.Errorf("the session did not take this within %s, so it is not reading its input; how much of it landed is not known", typeGrace)}
+		return delivery{how: unknowable, of: len(keys), why: fmt.Errorf("the session had not read this request's keys %s after it was asked, so it is not reading its input or is reading it slowly; how much of this write landed is not known", typeGrace)}
 	}
 }
 
