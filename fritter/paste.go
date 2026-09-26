@@ -12,6 +12,12 @@ var (
 	pasteOff = []byte("\x1b[?2004l")
 )
 
+// The two bytes a terminal's escape sequences and its keys are told apart by.
+const (
+	esc = 0x1b // begins every escape sequence
+	del = 0x7f // Backspace, as a terminal sends it
+)
+
 // Wrapping injected text in these tells the child the text was pasted, so a newline
 // inside it is a newline in the message rather than the Enter that submits it.
 var (
@@ -49,8 +55,7 @@ func (p *pasteMode) Write(output []byte) (int, error) {
 		// tmux passthrough - are text the terminal displays or forwards, not commands it
 		// obeys. Matching the mode bytes anywhere would let a title that happens to
 		// contain them turn bracketing off on a session that still has it on, and a
-		// passthrough turn it on where nothing enabled it. input.go skips these whole
-		// when reading the other direction; this reads them the same way.
+		// passthrough turn it on where nothing enabled it.
 		if p.skipping {
 			end, done := endOfString(scan[i:])
 			i += end
@@ -97,8 +102,7 @@ func opensString(s []byte) bool {
 // endOfString measures how much of s belongs to a string sequence already begun, and
 // says whether the sequence ended inside it. They end at BEL or at ESC \.
 //
-// Or at any other control byte, which says it was never one - the rule input.go keeps for
-// the other direction. A payload is printable, and an ESC inside one is a tmux passthrough
+// Or at any other control byte, which says it was never one. A payload is printable, and an ESC inside one is a tmux passthrough
 // doubling its escapes, so ESC does not end it; but a stray opener in rendered output is
 // followed within a line by a carriage return, and without this every mode change after it
 // would be skipped as payload for the rest of the session.
@@ -126,21 +130,20 @@ func (p *pasteMode) enabled() bool {
 }
 
 // encode renders text as the child should receive it - bracketed when the child asked for
-// bracketing, bare when it did not - and says which it did.
+// bracketing, bare when it did not - and says which it did. The text and what closes it come
+// apart, so the closing marker can be written with the Enter after it; see typeText.
 //
 // [LAW:dataflow-not-control-flow] The mode is read once and the answer carries it out.
 // Asking twice - once to decide whether multi-line text is safe, once to encode it - lets
 // the child turn bracketing off in between, so a message accepted as one paste goes as
 // several submitted prompts.
-func (p *pasteMode) encode(text string) (encoded []byte, bracketed bool) {
+func (p *pasteMode) encode(text string) (body, end []byte, bracketed bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.on {
-		return []byte(text), false
+		return []byte(text), nil, false
 	}
-	encoded = make([]byte, 0, len(pasteStart)+len(text)+len(pasteEnd))
-	encoded = append(encoded, pasteStart...)
-	encoded = append(encoded, text...)
-	encoded = append(encoded, pasteEnd...)
-	return encoded, true
+	// Both are fresh, because the caller appends the Enter to the end: returned as itself,
+	// pasteEnd would be the shared array that append writes into.
+	return append(append([]byte(nil), pasteStart...), text...), append([]byte(nil), pasteEnd...), true
 }

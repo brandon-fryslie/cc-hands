@@ -78,23 +78,23 @@ its newline is carried out, and anything less is refused as unreadable. Both bou
 generous for a local client sending one small object.
 
 Each phase of an exchange is bounded on its own, and that is deliberate. Reading the
-request gets **one** second, waiting for another write to finish gets **half** of one, a
-write into the session gives up after **one** so its reason has time to be written, and the
-reply gets **one** of its own, granted after the typing is over. A single deadline across all three would let a slow write spend what the reply
+request gets **one** second, waiting for another write to finish gets **half** of one, the
+request's writes into the session give up after **two** between them so their reason has
+time to be written, and the reply gets **one** of its own, granted after the typing is over. A single deadline across all three would let a slow write spend what the reply
 needed — fritter would type the text and then be unable to say so, and a caller hearing
 only that the connection closed sends the message twice. The sum is at most four and a half
 seconds against the **five** hands allows, so what hands hears is fritter's reason and not its own
 timer. Widen any one without the others and a wedged session stops being able to say that
 it is wedged.
 
-`text` is typed literally. fritter does not decide what a leading `/` or `@` means to the
+`text` is typed into a box fritter has emptied first; see *Emptying the box*. It is typed literally. fritter does not decide what a leading `/` or `@` means to the
 program underneath — that belongs to the caller, and in hands it is already settled
 before anything reaches here. `submit` presses Enter afterwards — and a `submit` is refused
 before anything is typed when the text ends where Claude Code would take that Enter as
 something other than a send: after a backslash, which it turns into a newline, or on a
-token that opens a completion list (the patterns are under *Who owns the input line*),
+token that opens a completion list (the patterns are under *When Enter does not send*),
 whose list takes the Enter. Typed into an empty box the cursor is at the end of the text,
-so this is asked exactly rather than read the way that holds. A space after the token
+so this is asked exactly. A space after the token
 closes the list, because none of the patterns takes one.
 
 `text` is characters and newlines, and a control byte in it is refused by name. A control
@@ -105,11 +105,11 @@ under an `ok`. Send a `key` request for a keystroke.
 
 The keys are `escape`, `enter`, `ctrl_c`, `ctrl_u`, `up`, `down`, `tab` and `shift_tab`.
 Which bytes each one is, is terminal knowledge, so that table lives here rather than in
-the caller. `ctrl_c` is the one to reach for to empty the input box, and it is the only
-key that empties it whatever is in it — but send it once, because a second press in a row
-quits the session. `ctrl_u` kills back to the start of the line the cursor is on, and that
-is the line *as displayed*: a prompt long enough to wrap loses one row and keeps the rest.
-It is offered because a caller may want it, but it never hands the line back.
+the caller. A key goes in as it is, exactly as if the user had pressed it, and none of
+them is needed to empty the box before text: fritter does that itself. `ctrl_c` interrupts
+a working session; into an idle one it empties the box and arms a second press to quit.
+`ctrl_u` kills back to the start of the line the cursor is on, and that is the line *as
+displayed*: a prompt long enough to wrap loses one row and keeps the rest.
 
 ## Multi-line text
 
@@ -123,114 +123,68 @@ program has not asked for bracketing, because unbracketed it would arrive as sev
 separate submitted prompts. Answering `ok` to that would tell the caller one message was
 sent where several were.
 
-## Who owns the input line
+## Emptying the box
 
-If the person at the keyboard has characters in the box they have not sent, fritter
-refuses to type text into it and says so. A half-written line is theirs until they send it
-or throw it away.
+A `text` request types into an empty box, and fritter empties it itself, with Claude
+Code's stash and without knowing anything about what the box or the stash held:
 
-This is the only fact about the input box fritter owns. Whether a session should be
-written to at all — whether it is working, or sitting at a permission dialog — is the
-caller's to decide, and hands decides it from state fritter cannot see. fritter's rule
-covers the one thing the caller cannot know, because those keystrokes never reach it.
+1. `a`, then Ctrl-S. Ctrl-S moves the box into the stash — every line of it, wherever the
+   cursor is, in shell mode or out, with a completion list open or not — and leaves it
+   empty in prompt mode. Into an *empty* box the same key puts the stash back instead, and
+   the `a` is what makes sure the box is not empty when it lands.
+2. `a`, then Ctrl-S again. The stash is now exactly `a`, and whatever it held is gone.
+3. Ctrl-S into the empty box. The `a` comes back with the cursor after it, and the stash is
+   empty.
+4. Backspace, which takes the character before the cursor: that `a`.
 
-### Keys are never refused for it
+The box is empty and so is the stash. What the person at the keyboard had half-written is
+not kept, and neither is anything they had stashed: the stash is fritter's to use.
 
-A `key` request goes through whether the line is held or not. Text is the only thing that
-interleaves: dropped into a half-written line it makes one prompt out of two people's
-words, and afterwards nobody can pull them apart. A keystroke does exactly what it would
-have done had the user pressed it, and the user sees the result.
+The stash has to end empty, not just the box. The session puts the stash back into the box
+as it sends a prompt, and it does that some time after it reads the Enter — a stash
+written a millisecond after the Enter was read put the text away unsent — so nothing can
+safely follow the Enter to clean up. With nothing stashed, nothing comes back.
 
-It is also the way back. Enter and Ctrl-C are the keys that empty the box, so
-refusing them would lock the door from the inside — a session whose line was held would be
-reachable only by a human at the physical keyboard, which is the situation this program
-exists to remove. A key that empties the box tells the line owner so, read by the same
-parser that reads the keyboard, so there is one account of what those bytes mean and not
-two.
+The `a` has to be a character the box keeps. A space typed into an empty box is dropped,
+and a no-break space leaves the box reading as empty; either way the Ctrl-S after it
+restored the stash under the text that came next.
 
-### Why stdin has to be parsed and not scanned
+Ctrl-C is not a way to empty the box. Into an idle session it empties it and arms a second
+press to quit; into a working one it stops the work and leaves the box exactly as it was.
+Which of the two a session is, is not something stdin says, and an earlier version of
+fritter that tried to follow it from the keystrokes kept finding keys it had got wrong.
 
-The obvious way to follow the line is to watch stdin for Enter and Ctrl-C. It does not
-work, and it fails silently. A terminal in raw mode also carries its answers to the
-child's own questions: Claude Code turns on focus reporting and mouse reporting, so
-`ESC [ O` arrives every time you tab away and mouse reports arrive as you move the
-pointer. None of them holds an Enter, and all of them are full of printable bytes — read
-as characters, `ESC [ <0;45;12M` is a pointer moving and ten keys pressed. Tab away
-once and every send afterwards is refused into an empty box, for as long as the session
-lives.
+### One step per read
 
-So `input.go` parses the stream. Escape sequences are skipped whole, by their shape rather
-than their contents: CSI, SS3, the X10 mouse report that carries three raw bytes after
-`ESC [ M` and so does not say where it ends, and the string sequences a terminal answers
-longer questions with. A sequence cut in half by the end of a read is held over to the
-next one. A paste the user made at their own keyboard is read as characters, newlines and
-all, because that is exactly what the brackets around it say it is. What is left over is
-typing.
+Each step — the four that empty the box, the text, and the marker that closes the paste
+with the Enter after it — is written only once the session has read the one before.
+Claude Code decides what a read means from the whole read: `a`, Ctrl-S and a long
+bracketed paste arriving in one read were taken as one paste, the Ctrl-S stripped as an
+invisible character, the `a` left at the front of the message, and the Enter held for
+review. Short ones got through, which is what makes it dangerous. Written back to back,
+the steps come out of one read whenever the session is a moment slow, so no spacing in
+time keeps them apart.
 
-The owner then records one fact: something is in the box that was not seen to leave it.
-A count was the obvious shape — a text box is a number of characters — and it was wrong,
-because nothing arriving on stdin ever takes the number back down.
+What does is the pty's own count of the bytes waiting on the session's side of it. fritter
+writes a step, waits for that count to reach zero, and writes the next; it waits the same
+way before the first, so keys the user typed a moment earlier are read on their own too.
+A terminal in canonical mode counts nothing until a whole line is in, so for a program that
+reads lines the wait is no wait; Claude Code reads raw. The count is measured on macOS
+only, and fritter builds nowhere else: Linux hands a pty write to the session's side on a
+workqueue, so its count can read zero before the bytes are there to read.
 
-Backspace looked like the exception, and an earlier version of this file promised that
-backspacing to an empty box hands the line back. It does not. The child reads the key as
+The Enter is the one key that must not be read on its own. Read a millisecond after the
+paste, the session took it before the paste was in the box and sent nothing. So it goes in
+the same write as the marker that closes the paste, and the text is written before them:
+however many reads a long text takes, the marker and the Enter arrive together.
 
-```js
-backspace(){if(this.isAtStart())return this;return this.left().modifyText(this)}
-```
+### When Enter does not send
 
-so a Backspace with the cursor at the start of the box removes nothing at all, and where
-the cursor is is not something stdin says. Type `x`, press Ctrl-A, press Backspace, and a
-counted box reaches zero with the character still in it. Hold the key down past the start
-of a line — an autorepeat, not a corner — and it reaches zero with a whole line still in
-it. A count that only ever rises is a flag that has learnt to add, so it is a flag.
-
-Ctrl-C empties the box when the child is idle. That, and the characters themselves, is
-the whole of what is known — and the qualification is load-bearing, because it is not yet
-honoured. When the child is *working*, the same key interrupts the work and does not touch
-the box at all: the user's half-typed next prompt is still sitting there afterwards, and
-this reads the box as empty and hands the line back. Measured, and tracked as
-`hands-harness-5nb.dh7`. Whether the child is working is not something stdin says — this
-sees the Return that starts the work and never sees it end — so closing it needs a second
-source of truth rather than another rule here, and that is a design change, not a parser
-fix.
-
-Everything else that is not a character is read as having changed the box by some amount
-the bytes do not say, and that holds the line until the box is proved empty. Backspace
-takes one character or none; Ctrl-W takes a word; Ctrl-U takes back to the start of the
-displayed line, so a wrapped prompt loses a row and keeps the rest; Ctrl-Y pastes back
-whatever was last killed; Tab completes a path in; Up and Down pull a whole previous
-prompt into a box nothing was typed into. Four
-chords are listed as leaving the box alone — Ctrl-A, Ctrl-B, Ctrl-E, Ctrl-F — along with
-the sequences that are the terminal answering a question, and the cursor keys that only
-move sideways.
-
-The reason the list is that short is that almost every edit is defined against something
-invisible from here: the cursor, or the width of the terminal. Ctrl-U is bounded by both.
-Nothing on stdin says where the cursor is, so anything measured from it is unknowable, and
-unknowable holds the line.
-
-Listing the harmless ones and holding the line for everything else is the only arrangement
-that does not need the list to be complete, and it will never be complete: the ways to
-edit a text box belong to the child and change when the child changes. Successive reviews
-of this file each found another key that had been assumed harmless and was not. That is
-the safe direction to be wrong in — a refused write is loud and recoverable, a write into
-a half-typed line is a garbled prompt nobody can attribute.
-
-Enter usually empties the box, and the exceptions are the two ways a multi-line prompt
-gets written by hand — so they are not corners, and read as submits each one empties a
-count that is not empty and lets hands write into the middle of somebody's sentence.
-
-Claude Code reads a Return that follows a backslash as *keep typing*: the backslash
-becomes a newline and everything already typed stays where it is. And Ctrl-J, which the
-child offers in its own footer, is a different key from Return — it arrives as a bare
-`0x0A` where Return arrives as `0x0D`, and it puts a newline in the box and sends nothing.
-Both were measured against the running program by typing a prompt, pressing the key, and
-watching the words stay.
-
-The third is a completion list. With one open the child calls `preventDefault()` on the
-Return and applies the highlighted entry instead, which leaves the box *longer* than it
-was and still unsent. Whether a list is open is decided by the token ending at the cursor,
-and the child's own patterns say which tokens those are:
+Two things in Claude Code take a Return and do something else with it. After a backslash
+the backslash becomes a newline and everything stays in the box. And with a completion
+list open the Return applies the highlighted entry and sends nothing. Whether a list is
+open is decided by the token ending at the cursor, and the child's own patterns say which
+tokens those are:
 
 ```js
 @ /(^|[\s\u3002\u3001\uFF1F\uFF01])@([\p{L}\p{N}\p{M}_\-./\\()[\]~:]*|"[^"]*"?)$/u
@@ -238,29 +192,9 @@ and the child's own patterns say which tokens those are:
 : /(^|\s):([a-z0-9_+-]{2,})$/
 ```
 
-An `@` naming a file is how a prompt points at code, and a directory keeps the list open
-for the press after, so a user tabbing a path down with Return is ordinary use. The `*` on
-the first pattern is why a bare `@` counts: a cursor sitting straight after one already
-opens the list on every file there is. A slash command is not one of these — its Return
-runs the command and empties the box.
-
-Those two rules are why the owner keeps the end of the line rather than only a flag.
-Sixteen characters of the line's end are remembered. Nothing comes off that end, because
-nothing on stdin says how much came off the box, so what is remembered is a superset of
-what the line really ends with — and a superset can only hold a Return that would have
-sent, never free one that would not.
-
-Where the cursor is, is not tracked — nothing on stdin says. So a backslash anywhere in
-those sixteen characters holds the Return after it, and so does any cursor position among
-them that would have opened a completion list. What that leaves open is a token further
-back in the line than is remembered with the cursor parked inside it; and in the other
-direction, a line held that was really sent. That one clears when the user types sixteen
-more characters, or at once if hands sends a `ctrl_c` — a key request is never refused,
-so a held line can always be handed back.
-
-Escape is left alone, which is not the compromise an earlier version of this file claimed
-it was: Claude Code 2.1.278 does not clear its input box on Escape. That was measured, not
-assumed, and it is why the key is in the table but changes nothing here.
+The `*` on the first is why a bare `@` counts. A slash command is not one of these — its
+Return runs the command and empties the box. A `submit` whose text ends on either is
+refused before anything is typed.
 
 ## What run promises, and what it does not
 
@@ -283,15 +217,14 @@ child left running can hold the pty open and an unbounded wait would keep fritte
 after its session ended. Reaching that bound means output really was lost, and fritter
 says so.
 
-A write into the session gives up after a second. A pty in raw mode holds a kilobyte of
-input and a write that fills it blocks until the child reads, which a running session does
-at once and a stopped one never does. Waiting there with no bound hangs the request and
-everything behind it — including the `ctrl_c` that was meant to be the way back. The write
-cannot be taken back, so while one is outstanding nothing else writes: a request waits half
-a second for it and is then refused rather than queued, and it clears itself the moment the
-child starts reading again. The user's own keys wait for as long as it takes, because
-nothing may drop them, and they wait only behind a request's writes, never inside one, so a
-request's check and the text it types cannot have the user's typing land between them. What landed is
+A request's writes give up two seconds after it starts writing, all of them together. Each one waits for the child to
+read it, which a running session does at once and a stopped one never does. Waiting there
+with no bound hangs the request and everything behind it. A write cannot be taken back, so
+while one is outstanding nothing else writes: a request waits half a second for it and is
+then refused rather than queued, and it clears itself the moment the child has read it.
+The user's own keys wait for as long as it takes, because nothing may drop them, and they
+wait only behind a request's writes, never inside one, so the user's typing cannot land
+between a request's steps. What landed is
 always reported: a write that failed partway says how many bytes reached the box, because
 "nothing was typed" would send a caller to retype a message half of which is already there.
 
@@ -304,39 +237,49 @@ in, not the shape a session runs in, and a contract that holds only under test i
 The caller must not close stdin before its process ends, which for fritter is the next
 statement in `main`. A guarantee that sometimes deadlocks is worse than one not made.
 
-## Measured against Claude Code 2.1.278
+## Measured against Claude Code
+
+On 2.1.283:
+
+- `a` then Ctrl-S empties the box whatever is in it: a multi-line prompt, a `!` shell-mode
+  prompt or a bare `!` (the box comes back in prompt mode), a prompt ending in an `@`
+  token with its completion list open, and a prompt typed while a turn was running.
+  Ctrl-S into an empty box puts the stash back.
+- A space into an empty box is dropped, so a space then Ctrl-S restored the stash and the
+  text after it was sent on the end of the user's old words.
+- Submitting puts the stash back into the box ("Draft restored"), unless the prompt is a
+  slash command, whose stash comes back when the command ends. It happens after the Enter is
+  read, not as it is read: a Ctrl-S a millisecond after the Enter put the text away unsent.
+- An Enter read a millisecond after the paste it follows sent nothing. Read together with
+  the marker that closes the paste, it sent a short text and a 3 KB one.
+- `a`, Ctrl-S, `a`, Ctrl-S, Ctrl-S, Backspace leaves the box and the stash empty, from a
+  box holding a draft with the cursor inside it and a stash holding something else. Eight
+  sends in a row from empty boxes, user drafts and unsent multi-line text each arrived as
+  exactly the text sent and left the box empty.
+- `a`, Ctrl-S and a bracketed paste of about 75 characters in one read were taken as one
+  paste: the Ctrl-S removed as an invisible character, the `a` kept, the Enter held for
+  review. At about 45 characters the same read did what it says. Read apart, every length
+  did. A long bracketed paste followed by Enter in one read was sent.
+- The pty's count of unread bytes on the session's side, `FIONREAD`, follows exactly what
+  the session has not read yet, when the terminal is raw.
+- The binary asks for bracketed paste, the kitty keyboard protocol (`>1u`) and
+  modifyOtherKeys (`>4;2m`).
+
+On 2.1.278:
 
 - The child turns bracketed paste on, and text wrapped in it arrives as one multi-line
   message.
-- Text followed immediately by Enter submits correctly. No delay is needed between them,
-  so there is no timing bet in the send path.
-- The child also turns on focus reporting and mouse reporting — `ESC [ ?1000h`,
-  `?1002h`, `?1003h`, `?1006h` — which is why stdin carries far more than keypresses and
-  why it is parsed rather than scanned. With those reports arriving on stdin, a send is
-  still accepted; before this was parsed, one was enough to refuse every send afterwards.
-- One Ctrl-C empties the input box however many lines are in it, and leaves the session
-  running. A second press in a row quits it.
+- One Ctrl-C into an idle session empties the input box however many lines are in it, and
+  leaves the session running. A second press in a row quits it. Into a working session one
+  Ctrl-C stops the work and leaves the box as it was.
 - Ctrl-U does **not** empty the box. It kills back to the start of the line the cursor is
   on, and that is the *displayed* line. A box holding `aaa`, `bbb`, `ccc` took four presses
   and still had `aaa` in it; 250 characters typed into a 100-column terminal lost one
-  wrapped row to a single press and kept 192. On a short one-line box it does clear it,
-  which is why an earlier version of this file said it cleared the box.
-- A Return continues the line when the character *before the cursor* is a backslash, not
-  only when the line ends in one. Typing `ab\c`, pressing Left once and pressing Return
-  left `ab` and `c` in the box.
-- Escape does not touch the box. Ctrl-W takes the last word. Backspace takes one character
-  or none, so backspacing to what looks like an empty box does not hand the line back.
-- Up pulls the previous prompt into an empty box. Nothing was typed and the box filled,
-  which is why a history key holds the line.
+  wrapped row to a single press and kept 192.
 - A Return pressed straight after a backslash does **not** submit. The backslash is
-  replaced by a newline and the prompt stays in the box, which is how a multi-line prompt
-  is written by hand. Measured by typing `please fix the auth bug in \` and pressing
-  Return: the box kept the words and grew a line.
-- Ctrl-J does not submit either. It is a bare `0x0A`, a different key from Return's
-  `0x0D`, and it is the multi-line prompt for any terminal that cannot send Shift-Enter.
-  Measured the same way: the prompt stayed and the box grew a line.
+  replaced by a newline and the prompt stays in the box.
 - A two-line prompt sent with the display asleep arrived as one message and was answered.
-- A pty in raw mode — which is what the child puts its side into — blocks a write at 1024
+- A pty in raw mode — which is what the child puts its side into — blocks a write at 1022
   bytes when nothing is reading. A cooked one takes 300 KB without blocking, which is why
   a test against a shell proves nothing here unless it makes the pty raw first.
 - A process the child spawns sees `FRITTER_SOCKET`.
@@ -351,6 +294,7 @@ go test -race ./...
 go build -o fritter .
 ```
 
-The tests wrap a shell rather than Claude Code, so they need no session and no network.
+The tests wrap a shell, or the test binary itself reading its terminal raw and recording
+each read, rather than Claude Code, so they need no session and no network.
 They use short temporary directories on purpose: `t.TempDir()` names the directory after
 the test, which pushes the socket path past the 104-byte limit.

@@ -310,14 +310,13 @@ names the session's `Membership.pid`, and fritter refuses one that is not the pr
 wrapped.
 
 Two things are divided rather than duplicated. hands decides *whether* a session may be
-written to, from state fritter cannot see. fritter decides only whether the person at
-the keyboard has characters in the box they have not sent, which hands cannot see because
-those keystrokes never reach it; text arriving then is refused with a reason. A key is
-not, because a key does exactly what the person pressing it would do and cannot
-interleave with anything, and because Enter and Ctrl-C are the keys that give the line
-back - gating them would leave a held session reachable only by a human at the physical
-keyboard, which is the case fritter exists to remove. And escaping stays here: what a
-leading `/` means is `Input`'s business, and fritter types the text it is given.
+written to, from state fritter cannot see. fritter owns how text gets into the box
+whole: it empties the box and Claude Code's stash first, with a fixed run of keys that
+needs nothing known about either, and waits for the session to read each step before
+writing the next, because Claude Code reads a large enough read as a paste. What the
+person at the keyboard had half-written is not kept. And escaping stays
+here: what a leading `/` means is `Input`'s business, and fritter types the text it is
+given.
 
 `fritter/README.md` holds the protocol and what was measured.
 

@@ -8,6 +8,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,297 +20,6 @@ import (
 	"github.com/creack/pty"
 	"golang.org/x/term"
 )
-
-func TestTheLineIsHeldByWhatTheUserTypedAndNothingElse(t *testing.T) {
-	// [LAW:behavior-not-structure] The contract is "has the user got unsent characters in
-	// the box", stated as what arrived on stdin and what should follow. How it is tracked
-	// is not asserted.
-	//
-	// Everything below the first group is a terminal answering the child rather than a
-	// person typing. Claude Code turns focus reporting and mouse reporting on - the
-	// captured pty output from this session shows it sending \x1b[?1000h \x1b[?1002h
-	// \x1b[?1003h \x1b[?1006h - so these arrive on stdin during any ordinary session, and
-	// they are full of printable bytes. Counted as typing they hold the line for good:
-	// tab away from the terminal once and every send afterwards is refused into an empty
-	// box. That is what these cases exist to prevent.
-	for _, c := range []struct {
-		name  string
-		reads []string
-		free  bool
-	}{
-		{"nothing typed", nil, true},
-		{"a half-typed line", []string{"half"}, false},
-		{"a line submitted", []string{"hello", "\r"}, true},
-		{"typed again after submitting", []string{"hello\r", "more"}, false},
-		{"typed and submitted in one read", []string{"hello\r"}, true},
-		{"cleared with ctrl-c", []string{"oops", "\x03"}, true},
-		// Ctrl-U kills back to the start of the line the cursor is on, and that is the
-		// displayed line: measured, 250 characters in a 100-column terminal lost one row
-		// to a single press and kept 192. Where the cursor is and how wide the terminal
-		// is are both invisible here, so no press of it proves the box is empty.
-		{"ctrl-u cannot prove the box is empty", []string{"oops", "\x15"}, false},
-		{"not on a box with more than one line in it", []string{"aaa", "\n", "bbb", "\x15"}, false},
-		{"and not on one that was already past accounting for", []string{"\x1b[A", "\x15"}, false},
-		{"ctrl-c does, however many lines are in it", []string{"aaa", "\n", "bbb", "\x03"}, true},
-		{"escape leaves the box alone", []string{"oops", "\x1b"}, false},
-		{"a word killed leaves the count standing", []string{"alpha beta", "\x17"}, false},
-		// A bare newline is Ctrl-J, which puts one in the box rather than sending it.
-		{"ctrl-j is a newline in the box, not a submit", []string{"hello", "\n"}, false},
-		{"ctrl-j then a real Return sends it", []string{"hello", "\n", "world", "\r"}, true},
-		{"ctrl-j into an empty box puts a character in it", []string{"\n"}, false},
-		{"ctrl-j and a Return arriving in one read", []string{"hello\nworld\r"}, true},
-		{"an empty read changes nothing", []string{"half", ""}, false},
-		// Backspace looks like the one key whose effect is a number - one character, every
-		// time - and it is not. The child reads it as
-		// `backspace(){if(this.isAtStart())return this;...}`, so a press with the cursor at
-		// the start of the box takes nothing out of it, and where the cursor is is not
-		// something stdin says. Counted, these free a line with the user's words still in
-		// it, which is the one mistake with no recovery.
-		{"backspaced back to what might be empty", []string{"abc", "\x7f\x7f\x7f"}, false},
-		{"backspaced most of the way", []string{"abc", "\x7f\x7f"}, false},
-		{"backspaced past where empty would have been", []string{"a", "\x7f\x7f\x7f"}, false},
-		{"taken back from the start of the box, where it takes nothing",
-			[]string{"x", "\x01", "\x7f"}, false},
-		// Holding the key down past the start of a line is an autorepeat, not a corner:
-		// six of these erase `hello `, and the other five land at offset 0 and do nothing.
-		{"held down past the start of a line", []string{
-			"hello world", "\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D", strings.Repeat("\x7f", 11)}, false},
-		{"and a Return after all of it still hands the line back",
-			[]string{"abc", "\x7f\x7f\x7f", "\r"}, true},
-
-		{"the window losing focus", []string{"\x1b[O"}, true},
-		{"the window gaining focus", []string{"\x1b[I"}, true},
-		{"focus lost while a line is held", []string{"half", "\x1b[O"}, false},
-		{"an sgr mouse report", []string{"\x1b[<35;89;12M"}, true},
-		{"an x10 mouse report whose bytes are printable", []string{"\x1b[M !!"}, true},
-		{"a cursor position report", []string{"\x1b[24;80R"}, true},
-		{"a device attributes report", []string{"\x1b[?1;2c"}, true},
-		{"a colour query answered", []string{"\x1b]11;rgb:1b1b/1b1b/1b1b\x07"}, true},
-		{"a report split across two reads", []string{"\x1b[<35;8", "9;12M"}, true},
-		// An ESC alone in a read is the Escape key, so `[A` after it is two characters -
-		// even when it really was an arrow key whose sequence the read cut in half. That
-		// holds a line that is empty, which an Enter or a ctrl_c clears. The other way
-		// round frees a line that is not empty, and nothing clears that.
-		{"an escape split from what might be its sequence", []string{"\x1b", "[A"}, false},
-		// Up and Down are the history keys: they pull a whole previous prompt into the box,
-		// so an empty box fills without a character being typed. Left and Right only move.
-		{"the history keys fill the box", []string{"\x1b[A"}, false},
-		{"down fills it too", []string{"\x1b[B"}, false},
-		{"and so does up in application mode", []string{"\x1bOA"}, false},
-		{"sideways is only the cursor", []string{"\x1b[C", "\x1b[D", "\x1bOC"}, true},
-		{"home and end are only the cursor", []string{"\x1b[H", "\x1b[F"}, true},
-		// Everything that is not a character and is not known to leave the box alone is
-		// read as having changed it by some amount: Ctrl-Y pastes back what was killed,
-		// Tab completes a path in, Delete takes one out.
-		{"ctrl-y pastes back whatever was last killed", []string{"\x19"}, false},
-		{"tab can complete a path into the box", []string{"\t"}, false},
-		{"the delete key takes a character out", []string{"\x1b[3~"}, false},
-		{"but ctrl-a and ctrl-e only move", []string{"\x01", "\x05"}, true},
-		// The binary binds Ctrl-L to clearInput and pressing it changed nothing. Evidence
-		// that disagrees with itself is not evidence that the box was left alone.
-		{"ctrl-l is not known to leave the box alone", []string{"\x0c"}, false},
-		{"escape alone is not a character", []string{"\x1b"}, true},
-
-		{"a pasted line is characters in the box", []string{"\x1b[200~hello\nworld\x1b[201~"}, false},
-		{"a newline inside a paste does not submit", []string{"\x1b[200~a\nb\x1b[201~"}, false},
-		{"a paste spanning reads", []string{"\x1b[200~a\nb", "c\x1b[201~"}, false},
-		{"a paste whose end marker straddles a read", []string{"\x1b[200~ab\x1b[20", "1~"}, false},
-		{"a paste then submitted", []string{"\x1b[200~a\nb\x1b[201~", "\r"}, true},
-
-		// An ESC is both the Escape key and the first byte of every sequence, and the
-		// bytes alone do not say which. Guessing "sequence" lets a scan looking for a
-		// terminator swallow whatever the user types next and report an empty box while
-		// their words sit in it - the one mistake with no recovery. Guessing "Escape key"
-		// counts the sequence that follows as typing and holds an empty line for good.
-		// These are the cases that catch each guess.
-		{"escape, then a message that opens like a string sequence", []string{"\x1b", "P", "l", "e", "a", "s", "e"}, false},
-		{"escape, then a message that opens like another one", []string{"\x1b", "]drop the table"}, false},
-		{"escape, then the pointer moves", []string{"\x1b", "\x1b[<0;45;12M"}, true},
-		{"a box proved empty by a Return is accounted for again", []string{"\x1b[A", "\r"}, true},
-		{"and one proved empty by ctrl-c is too", []string{"\x1b[A", "\x03"}, true},
-		{"escape, then the window loses focus", []string{"\x1b", "\x1b[O"}, true},
-		{"alt-up arrives as two escapes and a history key", []string{"\x1b\x1b[A"}, false},
-		{"typed, escape, then submitted", []string{"hello", "\x1b", "\r"}, true},
-		{"typed, escape, then cleared", []string{"hello", "\x1b", "\x03"}, true},
-		{"typed, escape, then backspaced back to what might be empty",
-			[]string{"ab", "\x1b", "\x7f\x7f"}, false},
-		{"an answer longer than any key holds the line rather than freeing it", []string{"\x1b]" + strings.Repeat("A", 4095), "BBB\x07"}, false},
-		{"a terminal answer split across reads is still not typing", []string{"\x1b]11;rgb:1b1b/", "1b1b/1b1b\x07"}, true},
-		{"a terminal answer split at its terminator is still not typing", []string{"\x1b]11;rgb:1b1b/1b1b/1b1b\x1b", "\\"}, true},
-
-		// An ESC that arrived alone was the Escape key, so the next read is a new keypress
-		// rather than the rest of a chord. Fusing them swallows the character silently: the
-		// count stays at zero and the line reads free while the user's word sits in the box.
-		{"escape, then a character typed", []string{"\x1b", "a"}, false},
-		{"escape, then two typed and one taken back", []string{"\x1b", "ab", "\x7f"}, false},
-		// Alt and a letter, and the Escape key followed by that letter, are the same two
-		// bytes in the same read - ssh and tmux deliver everything typed within a round
-		// trip together. Read as a chord, the letter is lost off the count.
-		{"alt and a letter arriving together is read as the letter", []string{"\x1ba"}, false},
-		// Except when the second byte is a control byte, where the chord is real and
-		// Option-Enter puts a newline in the box instead of submitting it.
-		{"alt and Enter arriving together do not submit", []string{"abc", "\x1b\r"}, false},
-		// `O` and `[` are ordinary characters as well as the second byte of an arrow key.
-		// Read as the sequence, these count nothing and free a line holding two letters.
-		{"escape, then a word beginning with O", []string{"\x1b", "O", "k"}, false},
-		// The same, arriving in one read - over ssh or tmux, everything typed within a
-		// round trip does. It reads as an SS3, and an SS3 not known to be harmless holds.
-		{"escape and a word beginning with O arriving together", []string{"\x1bOk"}, false},
-		{"escape and a bracketed word arriving together", []string{"\x1b[x"}, false},
-		// A terminal can send any key as a CSI sequence. The kitty keyboard protocol sends
-		// Ctrl-Y, which pastes back what was last killed, as `ESC [ 121 ; 5 u`.
-		{"a key sent as a CSI sequence is not known to be harmless", []string{"\x1b[121;5u"}, false},
-		{"but the keyboard flags the terminal reports are only an answer", []string{"\x1b[?1u"}, true},
-		{"and shift-tab only cycles the mode", []string{"\x1b[Z"}, true},
-		{"escape, then a word beginning with a bracket", []string{"\x1b", "[", "x"}, false},
-		{"escape, then a word beginning with O, backspaced to one", []string{"\x1b", "Oops", "\x7f\x7f"}, false},
-		// An SS3 that ends on a control byte was never an SS3, and taking three bytes
-		// regardless swallows the Enter that was the third of them.
-		{"a half-read SS3 must not swallow the Enter after it", []string{"a\x1bO", "\r"}, true},
-
-		// Claude Code 2.1.278 reads a Return after a backslash as "keep typing": the
-		// backslash becomes a newline and everything already typed stays in the box.
-		// Measured against the running program. Read as a submit, it empties a count that
-		// is not empty and hands writes into the middle of someone's sentence.
-		{"a backslash and Return continue the line", []string{"please fix the auth bug in \\", "\r"}, false},
-		{"a backslash and Return arriving in one read", []string{"abc\\\r"}, false},
-		{"a line continued and then really submitted", []string{"abc\\", "\r", "def", "\r"}, true},
-		{"ctrl-c empties a continued line, because it empties anything", []string{"abc\\", "\r", "\x03"}, true},
-		{"but ctrl-u cannot prove it emptied one", []string{"abc\\", "\r", "\x15"}, false},
-		// Nothing comes off the remembered end any more, because nothing on stdin says how
-		// much came off the box. So what it holds is a superset of what the line really
-		// ends with - and a superset can only hold a Return that would have sent, never
-		// free one that would not.
-		{"a backslash taken back is remembered anyway, and holds", []string{"abc\\", "\x7f", "\r"}, false},
-		{"until the Return after it", []string{"abc\\", "\x7f", "\r", "\r"}, true},
-		// The child looks at the character before the cursor, and nothing here knows where
-		// that is. Measured: `ab\c`, one Left, Return, and the box kept both halves.
-		{"a backslash anywhere in the line's end holds the Return after it", []string{"a\\bc", "\r"}, false},
-		{"and the Return after that one sends it", []string{"a\\bc", "\r", "\r"}, true},
-		{"a line with no backslash in it at all is sent", []string{"abc", "\r"}, true},
-		{"a pasted line ending in a backslash continues too", []string{"\x1b[200~a\\\x1b[201~", "\r"}, false},
-		// And because it cannot shrink, it can no longer run past what it remembers, which
-		// is the whole of what the murky flag used to cover.
-		{"a Return after more was taken back than was remembered sends", []string{
-			strings.Repeat("a", 20), strings.Repeat("\x7f", 18), "\r"}, true},
-		{"one with a backslash still remembered does not", []string{
-			"abc\\" + strings.Repeat("a", 12), strings.Repeat("\x7f", 12), "\r"}, false},
-
-		// A Return with a completion list up does not send. The child calls
-		// preventDefault() and applies the highlighted entry instead, which leaves the box
-		// longer than it was and still unsent. Whether the list is up is decided by the
-		// token ending at the cursor, and neither is visible here, so what is asked is
-		// whether any cursor position in the remembered end would have opened one.
-		{"a Return picking a file completion does not send", []string{"look at @src/ha", "\r"}, false},
-		{"nor the one after it, while the token is still remembered",
-			[]string{"look at @src/ha", "\r", "\r"}, false},
-		{"a bare @ opens the list on every file there is", []string{"fix @", "\r"}, false},
-		{"an @ the cursor could have been put back inside", []string{"@foo and more", "\r"}, false},
-		{"an @ in the middle of a word opens nothing", []string{"mail bmf@example", "\r"}, true},
-		{"a # with nothing after it cannot match", []string{"see #", "\r"}, true},
-		{"and holds the Return once it has something", []string{"see #12", "\r"}, false},
-		{"a colon in ordinary prose is not a completion", []string{"note: fix this", "\r"}, true},
-		{"a colon token is", []string{"nice :smile", "\r"}, false},
-		{"a slash command runs and empties the box", []string{"/compact", "\r"}, true},
-		{"an ordinary prompt is still sent by its Return", []string{"what changed today", "\r"}, true},
-		{"ctrl-c empties a box a completion left full", []string{"look at @src/ha", "\r", "\x03"}, true},
-		{"and what it left is forgotten as the user types on", []string{
-			"look at @src/ha", "\r", "and then some more words", "\r"}, true},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			line := newLineOwner()
-			for _, r := range c.reads {
-				line.typed([]byte(r))
-			}
-			if line.free() != c.free {
-				t.Fatalf("after %q: free=%v, want %v", c.reads, line.free(), c.free)
-			}
-		})
-	}
-}
-
-func TestAChordFritterSendsMeansWhatTheSameChordMeansTyped(t *testing.T) {
-	// The line has to be recoverable without a human at the keyboard, and these are the
-	// keys that recover it. If fritter's own Enter or Ctrl-C did not count, a held line
-	// would stay held after the very request sent to clear it.
-	for _, c := range []struct {
-		name string
-		key  string
-		free bool
-	}{
-		{"enter submits the held line", "enter", true},
-		{"ctrl-c throws it away", "ctrl_c", true},
-		{"ctrl-u cannot prove it clear, so it stays held", "ctrl_u", false},
-		{"escape does not touch it", "escape", false},
-		{"an arrow key leaves it where it is", "up", false},
-		{"tab leaves it where it is", "tab", false},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			line := newLineOwner()
-			line.typed([]byte("theirs"))
-			line.sent(keystrokes[c.key])
-			if line.free() != c.free {
-				t.Fatalf("after sending %s: free=%v, want %v", c.key, line.free(), c.free)
-			}
-		})
-	}
-}
-
-func TestAKeyThatEmptiesTheBoxSettlesTheLineEvenMidSequence(t *testing.T) {
-	// The line has to be recoverable from a held state, and the held state that matters is
-	// the one the parser cannot resolve: an Escape, then a message that opens like a
-	// terminal answer, leaves it holding bytes it cannot yet call typing. Freeing the
-	// count alone is not enough - the doubt has to go with it, or the ctrl_c sent to
-	// clear the line leaves the line held by the very request sent to clear it.
-	line := newLineOwner()
-	line.typed([]byte("\x1b"))
-	line.typed([]byte("Please fix the auth bug"))
-	if line.free() {
-		t.Fatal("the user is typing and the parser cannot yet see it; the line is not free")
-	}
-	line.sent(keystrokes["ctrl_c"])
-	if !line.free() {
-		t.Fatal("the box was emptied and the line is still held; nothing can recover it")
-	}
-}
-
-func TestAKeyDoesNotTakeTheEndOfThePasteWithIt(t *testing.T) {
-	// The marker that ends a paste can be cut in half by the end of a read, and the half
-	// of it that arrived is held over. Those bytes are not an unfinished sequence, so
-	// emptying the box must not discard them: without the marker's first bytes the marker
-	// never matches, the parser stays inside a paste that has ended, and from then on
-	// every Enter counts as a pasted character instead of emptying the box. No keystroke
-	// recovers from that - the session can never be typed into again.
-	line := newLineOwner()
-	line.typed([]byte("\x1b[200~line one"))
-	line.typed([]byte(" and more\x1b[20"))
-	line.sent(keystrokes["ctrl_c"])
-	line.typed([]byte("1~"))
-	line.typed([]byte("hi"))
-	line.typed([]byte("\r"))
-	if !line.free() {
-		t.Fatal("the paste's end marker was discarded, so the paste never ended and Enter no longer empties the box")
-	}
-}
-
-func TestAKeyDoesNotTakeThePasteItDidNotEnd(t *testing.T) {
-	// Emptying the box settles what the parser was in the middle of reading, because those
-	// bytes are not in the box any more. It settles nothing about a paste the user is still
-	// making at their own keyboard: the terminal is going to send the rest of it either
-	// way, and read outside its brackets the newlines in it are Enter presses. Each one
-	// would empty a count that is not empty, and the line would read free with the tail of
-	// someone's paste sitting in the box.
-	line := newLineOwner()
-	line.typed([]byte("\x1b[200~line one"))
-	if line.free() {
-		t.Fatal("a paste in progress is characters in the box")
-	}
-	line.sent(keystrokes["ctrl_c"])
-	line.typed([]byte("\nline two\n\x1b[201~"))
-	if line.free() {
-		t.Fatal("the rest of the paste was read as typing and its newlines freed the line")
-	}
-}
 
 func TestPasteModeReadsWhatTheChildAnnounced(t *testing.T) {
 	mode := newPasteMode()
@@ -342,14 +54,14 @@ func TestEncodeBracketsOnlyWhenTheChildAcceptsItAndSaysWhichItDid(t *testing.T) 
 	// child can turn bracketing off in between, and a message accepted as one paste goes
 	// as several submitted prompts under an ok.
 	mode := newPasteMode()
-	got, bracketed := mode.encode("a\nb")
-	if string(got) != "a\nb" || bracketed {
-		t.Fatalf("with paste off, text must go as it is and say so, got %q bracketed=%v", got, bracketed)
+	body, end, bracketed := mode.encode("a\nb")
+	if string(body)+string(end) != "a\nb" || bracketed {
+		t.Fatalf("with paste off, text must go as it is and say so, got %q%q bracketed=%v", body, end, bracketed)
 	}
 	mode.Write([]byte("\x1b[?2004h"))
-	got, bracketed = mode.encode("a\nb")
-	if string(got) != "\x1b[200~a\nb\x1b[201~" || !bracketed {
-		t.Fatalf("with paste on, text must be bracketed and say so, got %q bracketed=%v", got, bracketed)
+	body, end, bracketed = mode.encode("a\nb")
+	if string(body)+string(end) != "\x1b[200~a\nb\x1b[201~" || !bracketed {
+		t.Fatalf("with paste on, text must be bracketed and say so, got %q%q bracketed=%v", body, end, bracketed)
 	}
 }
 
@@ -470,21 +182,155 @@ func wrapOnto(t *testing.T, stdout io.Writer, argv ...string) (*Wrapped, func(st
 	return wrapped, ask, exited
 }
 
-func TestInjectedTextReachesTheChildAndTheExitCodeIsTheChildsOwn(t *testing.T) {
+// recorded runs the test binary itself as the wrapped child, in the part of it that is
+// TestHelperRecorder, and hands back what the child read, one entry per read.
+//
+// The child is Claude Code's shape as far as input goes: its terminal is raw and it has
+// asked for bracketed paste. It pauses between reads, so writes fritter did not wait on
+// pile up in the queue and come out of the next read together - which is how a real child
+// a moment slow reads them, and what fritter has to prevent.
+func recorded(t *testing.T, reads int) (*Wrapped, func(string) response, func() []string) {
+	t.Helper()
+	log := filepath.Join(t.TempDir(), "reads")
+	t.Setenv("FRITTER_RECORD", log)
+	t.Setenv("FRITTER_RECORD_READS", strconv.Itoa(reads))
+	wrapped, ask, exited := wrap(t, os.Args[0], "-test.run=^TestHelperRecorder$")
+	defer func() {
+		if t.Failed() {
+			_ = wrapped.cmd.Process.Kill()
+		}
+	}()
+	// The child says it is ready by turning bracketing on, which it does once its
+	// terminal is raw; until then a Ctrl-S would be flow control and not a key.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, _, bracketed := wrapped.paste.encode(""); bracketed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the recording child never turned bracketed paste on")
+		}
+	}
+	read := func() []string {
+		t.Helper()
+		select {
+		case code := <-exited:
+			if code != 3 {
+				t.Fatalf("the recording child exited %d, not the 3 it exits with after %d reads", code, reads)
+			}
+		case <-time.After(10 * time.Second):
+			_ = wrapped.cmd.Process.Kill()
+			t.Fatalf("the recording child did not make %d reads", reads)
+		}
+		body, err := os.ReadFile(log)
+		if err != nil {
+			t.Fatalf("cannot read what the child read: %v", err)
+		}
+		var got []string
+		for _, line := range strings.Split(strings.TrimSuffix(string(body), "\n"), "\n") {
+			chunk, err := strconv.Unquote(line)
+			if err != nil {
+				t.Fatalf("cannot read the child's record %q: %v", line, err)
+			}
+			got = append(got, chunk)
+		}
+		return got
+	}
+	return wrapped, ask, read
+}
+
+func TestHelperRecorder(t *testing.T) {
+	log := os.Getenv("FRITTER_RECORD")
+	if log == "" {
+		t.Skip("not a test: run as the wrapped child by recorded")
+	}
+	if _, err := term.MakeRaw(0); err != nil {
+		os.Exit(20)
+	}
+	if _, err := os.Stdout.Write(pasteOn); err != nil {
+		os.Exit(21)
+	}
+	reads, _ := strconv.Atoi(os.Getenv("FRITTER_RECORD_READS"))
+	out, err := os.Create(log)
+	if err != nil {
+		os.Exit(22)
+	}
+	buf := make([]byte, 64*1024)
+	for i := 0; i < reads; i++ {
+		time.Sleep(50 * time.Millisecond)
+		n, err := os.Stdin.Read(buf)
+		if err != nil {
+			os.Exit(23)
+		}
+		fmt.Fprintf(out, "%q\n", buf[:n])
+	}
+	out.Close()
+	// A session does not end the instant it reads its last key, and fritter looks at the
+	// input queue to see that it was read: a terminal whose session has ended cannot be
+	// looked at, and what it last held is then not known to have been read.
+	time.Sleep(300 * time.Millisecond)
+	os.Exit(3)
+}
+
+func TestTextGoesIntoAnEmptiedBoxOneStepPerRead(t *testing.T) {
+	// Each step is read on its own. Read together, Claude Code took `a`, Ctrl-S and the
+	// paste for one paste: the Ctrl-S was stripped, the `a` stayed at the front of the
+	// message, and the Enter was held for review.
+	//
+	// Except the Enter, which is read with the marker that closes the paste: read apart from
+	// it, the session took the Enter before the paste was in the box and sent nothing.
+	_, ask, reads := recorded(t, 6)
+	if answer := ask(`{"kind":"text","text":"two\nlines","submit":true}`); !answer.OK {
+		t.Fatalf("the text was refused: %s", answer.Reason)
+	}
+	want := []string{"a\x13", "a\x13", "\x13", "\x7f", "\x1b[200~two\nlines", "\x1b[201~\r"}
+	if got := reads(); !slices.Equal(got, want) {
+		t.Fatalf("the child read %q, want %q", got, want)
+	}
+}
+
+func TestTextLeftUnsentIsClosedAndNotSent(t *testing.T) {
+	// Unsent, the paste is closed and nothing presses Enter.
+	_, ask, reads := recorded(t, 6)
+	if answer := ask(`{"kind":"text","text":"draft","submit":false}`); !answer.OK {
+		t.Fatalf("the text was refused: %s", answer.Reason)
+	}
+	want := []string{"a\x13", "a\x13", "\x13", "\x7f", "\x1b[200~draft", "\x1b[201~"}
+	if got := reads(); !slices.Equal(got, want) {
+		t.Fatalf("the child read %q, want %q", got, want)
+	}
+}
+
+func TestWhatTheUserTypedIsReadApartFromWhatFollowsIt(t *testing.T) {
+	// Keys the user typed just before a request can still be waiting when it takes the
+	// lock. Read together with the Ctrl-S after them, they are one read the child may take
+	// for a paste.
+	wrapped, ask, reads := recorded(t, 7)
+	if _, err := wrapped.Write([]byte("half a thought")); err != nil {
+		t.Fatalf("cannot type as the user: %v", err)
+	}
+	if answer := ask(`{"kind":"text","text":"mine","submit":false}`); !answer.OK {
+		t.Fatalf("the text was refused: %s", answer.Reason)
+	}
+	want := []string{"half a thought", "a\x13", "a\x13", "\x13", "\x7f", "\x1b[200~mine", "\x1b[201~"}
+	if got := reads(); !slices.Equal(got, want) {
+		t.Fatalf("the child read %q, want %q", got, want)
+	}
+}
+
+func TestTheExitCodeIsTheChildsOwn(t *testing.T) {
 	// The child reads one line and exits with 3, so the test proves both that the text
 	// arrived and that fritter did not invent an exit code of its own.
-	_, ask, exited := wrap(t, "sh", "-c", "read line; test \"$line\" = deliberate && exit 3 || exit 9")
-
-	if answer := ask(`{"kind":"text","text":"deliberate","submit":true}`); !answer.OK {
-		t.Fatalf("the write was refused: %s", answer.Reason)
+	_, ask, exited := wrap(t, "sh", "-c", "read line; sleep 0.3; exit 3")
+	if answer := ask(`{"kind":"key","key":"enter"}`); !answer.OK {
+		t.Fatalf("the key was refused: %s", answer.Reason)
 	}
 	select {
 	case code := <-exited:
 		if code != 3 {
-			t.Fatalf("exit code %d: the child did not receive %q, or fritter rewrote its code", code, "deliberate")
+			t.Fatalf("exit code %d, want the child's own 3", code)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("the child never exited; the text probably never arrived")
+		t.Fatal("the child never exited; the key probably never arrived")
 	}
 }
 
@@ -594,69 +440,11 @@ func TestTheProgramPrintsTheLastWordAndTakesItsSocketWithIt(t *testing.T) {
 	}
 }
 
-func TestTheUserKeepsTheirOwnHalfTypedLine(t *testing.T) {
-	// The child takes two lines: the one the user types and the one fritter injects once
-	// they have submitted it. Submitting is what hands the line back here; that Ctrl-C
-	// does too is asserted in the lineOwner table, where it needs no live child and no
-	// cooked-terminal signal semantics to be true.
-	wrapped, ask, exited := wrap(t, "sh", "-c", "IFS= read -r a; IFS= read -r b; exit 0")
-
-	// The user types without submitting, exactly as Wrapped.Write records it.
-	if _, err := wrapped.Write([]byte("mine")); err != nil {
-		t.Fatalf("cannot type: %v", err)
-	}
-	answer := ask(`{"kind":"text","text":"intruder","submit":true}`)
-	if answer.OK {
-		t.Fatal("a write landed in the middle of the user's line")
-	}
-	if !strings.Contains(answer.Reason, "not seen to be sent") {
-		t.Fatalf("the refusal must say why, got %q", answer.Reason)
-	}
-
-	// The user submits, so the box is empty and the line is fritter's to write into.
-	if _, err := wrapped.Write([]byte("\r")); err != nil {
-		t.Fatalf("cannot submit: %v", err)
-	}
-	if answer := ask(`{"kind":"text","text":"now ok","submit":true}`); !answer.OK {
-		t.Fatalf("the line was handed back but the write was still refused: %s", answer.Reason)
-	}
-	select {
-	case <-exited:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the child never took the injected line")
-	}
-}
-
-func TestAKeyGoesThroughAHeldLineAndGivesItBack(t *testing.T) {
-	// Text yields to the person at the keyboard; a key does not. Gating keys too would
-	// lock the door from the inside, because Enter and Ctrl-C are the keys that free a
-	// line: a session whose line was held would have no way back but a human at the
-	// physical keyboard, which is the case fritter exists to avoid.
-	wrapped, ask, exited := wrap(t, "sh", "-c", "IFS= read -r a; IFS= read -r b; exit 0")
-
-	if _, err := wrapped.Write([]byte("theirs")); err != nil {
-		t.Fatalf("cannot type: %v", err)
-	}
-	if answer := ask(`{"kind":"text","text":"intruder","submit":true}`); answer.OK {
-		t.Fatal("text landed in the middle of the user's line")
-	}
-	if answer := ask(`{"kind":"key","key":"enter"}`); !answer.OK {
-		t.Fatalf("a key was refused into a held line, so nothing can ever free it: %s", answer.Reason)
-	}
-	if answer := ask(`{"kind":"text","text":"now ok","submit":true}`); !answer.OK {
-		t.Fatalf("the key submitted the line but fritter still thinks it is held: %s", answer.Reason)
-	}
-	select {
-	case <-exited:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the child never took both lines")
-	}
-}
-
 func TestMultiLineTextIsRefusedWhenTheSessionWillNotBracketIt(t *testing.T) {
 	// A shell never turns bracketed paste on, so a newline here is an Enter. Answering ok
 	// would tell hands one message was sent where several separate prompts were.
-	_, ask, _ := wrap(t, "sh", "-c", "IFS= read -r a; exit 0")
+	wrapped, ask, exited := wrap(t, "sh", "-c", "sleep 30")
+	defer ending(t, wrapped, exited)
 
 	answer := ask(`{"kind":"text","text":"first\nsecond","submit":true}`)
 	if answer.OK {
@@ -665,17 +453,37 @@ func TestMultiLineTextIsRefusedWhenTheSessionWillNotBracketIt(t *testing.T) {
 	if !strings.Contains(answer.Reason, "bracketed paste") {
 		t.Fatalf("the refusal must say why, got %q", answer.Reason)
 	}
-	if answer := ask(`{"kind":"text","text":"one line","submit":true}`); !answer.OK {
-		t.Fatalf("the child could not be let go: %s", answer.Reason)
+}
+
+// ending kills a child that reads nothing on purpose, which nothing else would ever end,
+// and waits for run to let go of the test's terminal.
+func ending(t *testing.T, wrapped *Wrapped, exited chan int) {
+	t.Helper()
+	_ = wrapped.cmd.Process.Kill()
+	select {
+	case <-exited:
+	case <-time.After(10 * time.Second):
+		t.Error("the child outlived being killed")
 	}
 }
 
+// onlyEnterArrived presses Enter and checks it is the one thing the child ever read, which
+// is how a test shows that every request before it was turned away untyped.
+func onlyEnterArrived(t *testing.T, ask func(string) response, reads func() []string) {
+	t.Helper()
+	if answer := ask(`{"kind":"key","key":"enter"}`); !answer.OK {
+		t.Fatalf("the Enter was refused: %s", answer.Reason)
+	}
+	if got := reads(); !slices.Equal(got, []string{"\r"}) {
+		t.Fatalf("the child read %q; something refused above reached it", got)
+	}
+}
 func TestTextThatIsNotCharactersIsRefusedRatherThanTyped(t *testing.T) {
 	// text is characters and newlines. A control byte in it is a keystroke in text's
 	// clothes: an ESC ends the bracketing early, so everything after it is typed and
 	// submitted on its own, and a 0x03 is a Ctrl-C. Answered ok, one message would arrive
 	// as several, or as something nobody asked to send.
-	_, ask, _ := wrap(t, "sh", "-c", "IFS= read -r a; exit 0")
+	_, ask, reads := recorded(t, 1)
 
 	for _, c := range []struct{ name, body string }{
 		{"the marker that ends a paste", `{"kind":"text","text":"look at \u001b[201~ this","submit":true}`},
@@ -693,47 +501,33 @@ func TestTextThatIsNotCharactersIsRefusedRatherThanTyped(t *testing.T) {
 			}
 		})
 	}
-	if answer := ask(`{"kind":"text","text":"ordinary words","submit":true}`); !answer.OK {
-		t.Fatalf("the child could not be let go: %s", answer.Reason)
-	}
+	onlyEnterArrived(t, ask, reads)
 }
 
 func TestASessionThatIsNotReadingItsInputIsSaidSoRatherThanWaitedOn(t *testing.T) {
-	// A pty in raw mode holds a kilobyte of input, and a write that fills it blocks until
-	// the child reads - which a stopped or wedged session never does. Waiting there with
-	// no bound hangs the request and everything behind it: the next caller in is hands
-	// sending the ctrl_c that was supposed to be the way back.
+	// Every write waits for the child to read it, which a stopped or wedged session never
+	// does. Waiting there with no bound hangs the request and everything behind it: the next
+	// caller in is hands sending the ctrl_c that was supposed to be the way back.
 	//
-	// Measured on macOS: a cooked pty takes 300 KB without blocking, a raw one blocks at
-	// 1024 bytes. Claude Code runs raw, so raw is the configuration this has to hold in,
-	// and the test puts the pty there rather than testing the one that cannot fail.
+	// Raw, because a cooked terminal counts nothing until a line is in and the wait would
+	// be no wait; Claude Code runs raw.
 	wrapped, ask, exited := wrap(t, "sh", "-c", "sleep 30")
 	if _, err := term.MakeRaw(int(wrapped.master.Fd())); err != nil {
 		t.Fatalf("cannot put the session's terminal into raw mode: %v", err)
 	}
-	// The child is killed at the end whatever happens: it reads nothing on purpose, so
-	// nothing else will ever end it, and run would still hold the test's terminal.
-	defer func() {
-		_ = wrapped.cmd.Process.Kill()
-		select {
-		case <-exited:
-		case <-time.After(10 * time.Second):
-			t.Error("the child outlived being killed")
-		}
-	}()
+	defer ending(t, wrapped, exited)
 
-	stuck := ask(`{"kind":"text","text":"` + strings.Repeat("x", 2000) + `","submit":false}`)
+	stuck := ask(`{"kind":"text","text":"hello","submit":true}`)
 	if stuck.OK {
-		t.Fatal("a session that reads nothing took two kilobytes")
+		t.Fatal("a session that reads nothing was reported as taking the text")
 	}
 	if !strings.Contains(stuck.Reason, "not reading its input") {
 		t.Fatalf("the reason must say the session is not reading, got %q", stuck.Reason)
 	}
-	// The write went into a kilobyte-deep queue before it blocked, so part of the message
-	// is in front of the user. "Nothing was typed" reads as "send it again", which doubles
-	// the half that is already there.
-	if strings.Contains(stuck.Reason, "nothing was typed") {
-		t.Fatalf("a write that may have landed partly was reported as landing not at all: %q", stuck.Reason)
+	// The first emptying step is in the queue, unread. The caller has to hear that the box
+	// was being changed under the user, and that none of its text is there.
+	if !strings.Contains(stuck.Reason, "none of the text was typed") || !strings.Contains(stuck.Reason, "may be gone") {
+		t.Fatalf("the reason must say the box was being emptied and the text not typed, got %q", stuck.Reason)
 	}
 
 	// The write is still out there and cannot be taken back, so the next request is
@@ -744,7 +538,7 @@ func TestASessionThatIsNotReadingItsInputIsSaidSoRatherThanWaitedOn(t *testing.T
 	if behind.OK {
 		t.Fatal("a chord was reported as delivered while a write was still stuck")
 	}
-	if waited := time.Since(started); waited > writeGrace {
+	if waited := time.Since(started); waited > typeGrace {
 		t.Fatalf("the next request waited %s behind the stuck one", waited)
 	}
 	if !strings.Contains(behind.Reason, "has not finished") {
@@ -753,7 +547,7 @@ func TestASessionThatIsNotReadingItsInputIsSaidSoRatherThanWaitedOn(t *testing.T
 }
 
 func TestRequestsThatNameNothingRealAreRefusedWithAReason(t *testing.T) {
-	_, ask, _ := wrap(t, "sh", "-c", "read line; exit 0")
+	_, ask, reads := recorded(t, 1)
 
 	for _, c := range []struct{ name, body, says string }{
 		{"an unknown key", `{"kind":"key","key":"f13"}`, "no key named"},
@@ -770,18 +564,13 @@ func TestRequestsThatNameNothingRealAreRefusedWithAReason(t *testing.T) {
 			}
 		})
 	}
-	// Every request above was refused, so the child is still waiting on its line. Give it
-	// one, or the wrapper never finishes and the test tears its terminal down underneath.
-	if answer := ask(`{"kind":"text","text":"done","submit":true}`); !answer.OK {
-		t.Fatalf("the child could not be let go: %s", answer.Reason)
-	}
+	onlyEnterArrived(t, ask, reads)
 }
 
 func TestARequestForAnotherProcessIsNotTypedIntoThisOne(t *testing.T) {
 	// The address is inherited, and so is carried by any session started from inside
 	// this one. A request naming that other session's process must not land here.
-	wrapped, ask, _ := wrap(t, "sh", "-c", "IFS= read -r line; test \"$line\" = mine && exit 3 || exit 9")
-	defer func() { _ = wrapped.cmd.Process.Kill() }()
+	wrapped, ask, reads := recorded(t, 1)
 
 	for _, c := range []struct{ name, body string }{
 		{"another process", fmt.Sprintf(`{"pid":%d,"kind":"text","text":"intruder","submit":true}`, wrapped.cmd.Process.Pid+1)},
@@ -797,16 +586,13 @@ func TestARequestForAnotherProcessIsNotTypedIntoThisOne(t *testing.T) {
 			}
 		})
 	}
-	if answer := ask(`{"kind":"text","text":"mine","submit":true}`); !answer.OK {
-		t.Fatalf("a request for this process was refused: %s", answer.Reason)
-	}
+	onlyEnterArrived(t, ask, reads)
 }
 
 func TestASubmitTheSessionWouldNotSendIsRefusedBeforeAnythingIsTyped(t *testing.T) {
 	// A Return after a backslash is a newline, and one under a completion list picks an
 	// entry; either way the text would sit in the box under an ok that said it was sent.
-	wrapped, ask, exited := wrap(t, "sh", "-c", "IFS= read -r line; test \"$line\" = \"note: fix this\" && exit 3 || exit 9")
-	defer func() { _ = wrapped.cmd.Process.Kill() }()
+	_, ask, reads := recorded(t, 1)
 
 	for _, text := range []string{`continue me \`, "look at @src/ha", "fix @", "see #12", "run :ab"} {
 		t.Run(text, func(t *testing.T) {
@@ -820,18 +606,7 @@ func TestASubmitTheSessionWouldNotSendIsRefusedBeforeAnythingIsTyped(t *testing.
 			}
 		})
 	}
-	// Nothing above reached the child, so the first line it reads is this one.
-	if answer := ask(`{"kind":"text","text":"note: fix this","submit":true}`); !answer.OK {
-		t.Fatalf("ordinary prose was refused: %s", answer.Reason)
-	}
-	select {
-	case code := <-exited:
-		if code != 3 {
-			t.Fatalf("exit code %d: something refused above reached the child first", code)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the child never exited")
-	}
+	onlyEnterArrived(t, ask, reads)
 }
 
 func TestTheControlSocketIsTheUsersAlone(t *testing.T) {

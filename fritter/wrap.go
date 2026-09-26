@@ -22,12 +22,11 @@ type Wrapped struct {
 	master *os.File
 	cmd    *exec.Cmd
 	paste  *pasteMode
-	line   *lineOwner
+	queue  inputQueue
 	// The right to write into the child's input, held by one writer at a time: a request
-	// for its check and its one or two writes, the user's keyboard for each read of it, and
-	// a write fritter stopped waiting on until the child takes it. Two writers at once put
-	// half of each into the input box, and a check that was true before someone else wrote
-	// is not true after.
+	// for all of its writes, the user's keyboard for each read of it, and a write fritter
+	// stopped waiting on until the child takes it. Two writers at once put half of each into
+	// the input box, and a request's steps only mean what they say read one at a time.
 	//
 	// A channel of one rather than a mutex, because a request's wait for it is bounded,
 	// and because the write that takes it over from a request is what lets it go.
@@ -42,11 +41,22 @@ type Wrapped struct {
 func start(argv []string, env []string) (*Wrapped, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), env...)
-	master, err := pty.Start(cmd)
+	// Opened here rather than by pty.Start, which starts the child the same way but keeps
+	// the slave's name to itself - and the name is how the input queue is read.
+	master, slave, err := pty.Open()
 	if err != nil {
+		return nil, fmt.Errorf("cannot open a pty for %s: %w", argv[0], err)
+	}
+	// The slave is the child's, and fritter lets go of it once the child has it: the
+	// master's reader sees the session end only when no one holds the slave open.
+	defer slave.Close()
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+	if err := cmd.Start(); err != nil {
+		master.Close()
 		return nil, fmt.Errorf("cannot start %s on a pty: %w", argv[0], err)
 	}
-	return &Wrapped{master: master, cmd: cmd, paste: newPasteMode(), line: newLineOwner(), writing: make(chan struct{}, 1)}, nil
+	return &Wrapped{master: master, cmd: cmd, paste: newPasteMode(), queue: inputQueue{path: slave.Name()}, writing: make(chan struct{}, 1)}, nil
 }
 
 // run pumps the terminal and the child into each other until the child exits, and
@@ -162,19 +172,13 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer, killed <-chan os.Signal)
 // How long run waits for the child's last output after the child is gone.
 const drainGrace = 2 * time.Second
 
-// Write forwards what arrived on the user's stdin to the child, and lets the line owner
-// read it for the one fact about the input box that only fritter knows.
-//
-// Not everything here is typing. A terminal in raw mode also answers the child's own
-// questions on this same stream, so the line owner parses rather than counts - see
-// input.go, which exists because counting was wrong.
+// Write forwards what arrived on the user's stdin to the child.
 func (w *Wrapped) Write(input []byte) (int, error) {
 	// Waited for rather than refused: these are the user's own keys, and nothing may drop
 	// them. The wait is behind one request's writes, or behind a child that is reading
 	// nothing, in which case these would have blocked in the pty just the same.
 	w.writing <- struct{}{}
 	defer func() { <-w.writing }()
-	w.line.typed(input)
 	return w.master.Write(input)
 }
 
