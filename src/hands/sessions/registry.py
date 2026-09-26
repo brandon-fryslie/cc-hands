@@ -6,9 +6,11 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from hands.core.drafts import DraftOutcome, DraftRequest, DraftSent, NotSent, decide
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Narrate, Note, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Type, Unregistered, Withdraw
+from hands.core import drafts, keyboard
+from hands.core.drafts import DraftOutcome, DraftRequest
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, Note, NotTyped, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Type, Typed, Unregistered, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
+from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Membership, Registry, RequestId, Session, SessionId
@@ -26,7 +28,7 @@ class Listing:
 
 
 class Sessions:
-    """Applies events, draft requests, and answers to waiting sessions through the core, performs their effects, and answers who is running."""
+    """Applies events, draft and keyboard requests, and answers to waiting sessions through the core, performs their effects, and answers who is running."""
 
     def __init__(
         self,
@@ -34,7 +36,7 @@ class Sessions:
         clock: Callable[[], Instant],
         record: Record,
         changes: Changes | None = None,
-        typist: Callable[[Type], None] = type_into,
+        typist: Callable[[Type[Input]], None] = type_into,
     ) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
         self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={})
@@ -108,19 +110,31 @@ class Sessions:
 
     async def draft(self, request: DraftRequest) -> DraftOutcome:
         """Apply a draft request. A send is typed into its session, and the outcome is whether that was done."""
-        self._registry, decided = decide(self._registry, request)
+        self._registry, decided = drafts.decide(self._registry, request)
         match decided:
-            case Type(session=session, input=input) as effect:
-                self._record(Typing(effect))
-                try:
-                    await asyncio.to_thread(self._typist, effect)
-                except Untyped as error:
-                    # [LAW:no-silent-failure] said, with the draft's text, which is nowhere else now.
-                    logger.error(f"the draft for session {session} was not sent: {error}")
-                    return NotSent(session, input.prompt, str(error))
-                return DraftSent(session)
+            case Type() as effect:
+                return await self._type(effect)
             case outcome:
                 return outcome
+
+    async def keyboard(self, request: KeyboardRequest) -> KeyboardOutcome:
+        """Apply a command or an interrupt. It is typed into its session, and the outcome is whether that was done."""
+        match keyboard.decide(self._registry, request):
+            case Type() as effect:
+                return await self._type(effect)
+            case outcome:
+                return outcome
+
+    async def _type[I: Input](self, effect: Type[I]) -> Typed[I] | NotTyped[I]:
+        # [LAW:single-enforcer] everything typed into a session passes here, so every one is in the log before it is typed.
+        self._record(Typing(effect))
+        try:
+            await asyncio.to_thread(self._typist, effect)
+        except Untyped as error:
+            # [LAW:no-silent-failure] said, with what was to be typed, which is nowhere else now.
+            logger.error(f"{effect.input} was not typed into session {effect.session}: {error}")
+            return NotTyped(effect.session, effect.input, str(error))
+        return Typed(effect.session, effect.input)
 
     async def keep_time(self, period: float) -> None:
         """Tell the reducer the time once a period, until cancelled. The period is how late a deadline can be heard."""

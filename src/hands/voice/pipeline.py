@@ -47,6 +47,8 @@ SPOKEN_REPLY_INSTRUCTION = (
     "doing, and say what it amounts to rather than reading its steps out. "
     "When the user dictates something for a session, stage it "
     "with stage_draft and say the readback; call send_draft only when they say to send it. "
+    "When they ask for a slash command by name, such as compact or clear, call send_command; when they "
+    "say to stop a session, call interrupt_session. "
     "When a session asks permission, explain what it wants and ask; call "
     "answer_permission only with the decision the user gave. When a session asks the user questions, "
     "put them to the user and call answer_question only with the answers the user gave. When a session "

@@ -1252,8 +1252,9 @@ answers "which one did you mean".
 generated from the stored resolutions, never from the model repeating itself:
 "Draft for cc-hands, reading 'auth middleware' as `authMiddleware.ts`: refactor the
 auth middleware to use the new token helper." Speak what changed, not what you said.
-A draft is staged, amended, discarded, and sent with `send_draft`, as the Type effect
-(`hands-keyboard-gxr.i5n` is the commands and keys beside it). fritter holds the session's
+A draft is staged, amended, discarded, and sent with `send_draft`, as the Type effect;
+`send_command` and `interrupt_session` emit the same effect with a `Command` or the Escape
+`Key` (`hands.core.keyboard`). fritter holds the session's
 pseudo-terminal and `Typist` types into it over a unix socket, so there is no window to
 find, no focus to steal and no macOS permission to ask for. A send appends a `Typing`
 audit record before it types, so "did it send something I didn't approve" is answered by
@@ -1296,8 +1297,7 @@ it, taken from Happy's `skip_turn`. Push-to-talk rarely needs it; the wake-word 
 which opens the mic without a hand, does.
 
 `send_command` exists so that `/clear`, `/compact`, and `/model` reach the target as
-commands, with their sigil intact, once the Type effect can send them.
-`stage_draft` text always has a leading sigil escaped. The two never share a code path that inspects the first character; the
+commands, with their sigil intact. `stage_draft` text always has a leading sigil escaped. The two never share a code path that inspects the first character; the
 `Input` variant already knows. Claude Code reads three sigils at the start of a
 prompt: `/` a command, `@` a file mention, `!` shell mode. Behind a space each is
 plain text, so `Text` is always typed with a leading space, whatever it starts with,

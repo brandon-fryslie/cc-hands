@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.effects import Text, Type
-from hands.core.session import PromptText, SessionId
+from hands.core.effects import Command, Input, Key, Text, Type
+from hands.core.session import CommandName, PromptText, SessionId
 from hands.sessions import typing
 from hands.sessions.typing import Typist, Untyped, type_into
 
@@ -84,6 +84,18 @@ def test_a_type_effect_is_typed_behind_a_space(short_dir: Path) -> None:
         fritter.close()
     assert fritter.asked is not None
     assert json.loads(fritter.asked)["text"] == " /compact now"
+
+
+@pytest.mark.parametrize(
+    ("input", "sent"),
+    [
+        (Command(CommandName("model"), PromptText("opus")), {"pid": 4242, "kind": "text", "text": "/model opus"}),
+        (Key("escape"), {"pid": 4242, "kind": "key", "key": "escape"}),
+    ],
+)
+def test_a_command_is_typed_as_itself_and_a_key_is_pressed(input: Input, sent: dict[str, object], short_dir: Path) -> None:
+    path = short_dir / "f.sock"
+    assert asked(path, b'{"ok":true}\n', lambda _: type_into(Type(SID, path, pid=4242, input=input))) == sent
 
 
 def test_a_named_key_is_sent_as_a_key_and_never_as_text(short_dir: Path) -> None:

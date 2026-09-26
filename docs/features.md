@@ -174,13 +174,12 @@ closes.
 
 Need 1. The acts a keyboard performs that the foundation does not yet cover.
 
-- **The `Input` union on the virtual keyboard.** Planned under
-  `hands-harness-5nb`, whose design is open: how keys reach the right session's
-  window, the macOS permission it needs, and confirming a send through the
-  `UserPromptSubmit` hook. `Text` escapes a leading sigil, `Command` keeps it, `Key`
-  sends a named chord; `send_command` and `interrupt_session` are the tools. Done
-  when "/compact" reaches the target as a command, "slash compact" as text, and
-  "stop it" sends Escape, each verified in a live session.
+- **The `Input` union, through fritter.** `Text` escapes a leading sigil, `Command`
+  keeps it, `Key` sends a named chord; `send_command` and `interrupt_session` are the
+  tools. A command is refused at a dialog, and an interrupt is Escape even there.
+  Built: on 2.1.283 "/compact" reached a live session as a command, "slash compact"
+  as text, and "stop it" sent Escape, which ended a working turn and closed a
+  question dialog.
 - **Questions through the permission hook.** `AskUserQuestion` arrives as a
   `PermissionRequest`; the `Blocked.on` becomes `Question`; the pipeline reads the
   options; `answer_question` replies with the answers in `updatedInput`. Done when a

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from hands.core.events import SessionEvent
-from hands.core.session import Blocker, Mode, PromptId, PromptText, RequestId, SessionId
+from hands.core.session import Blocker, CommandName, Keystroke, Mode, PromptId, PromptText, RequestId, SessionId
 
 
 @dataclass(frozen=True)
@@ -242,13 +242,59 @@ class Text:
 
 
 @dataclass(frozen=True)
-class Type:
+class Command:
+    """A slash command, typed into a session's input as `/name` and its arguments, and sent with Return."""
+
+    name: CommandName
+    args: PromptText | None
+
+    @property
+    def typed(self) -> PromptText:
+        """The command with its slash, which is what makes Claude Code run it rather than read it as a prompt."""
+        match self.args:
+            case None:
+                return PromptText(f"/{self.name}")
+            case args:
+                return PromptText(f"/{self.name} {args}")
+
+
+@dataclass(frozen=True)
+class Key:
+    """One named chord, pressed in a session as the user would press it."""
+
+    key: Keystroke
+
+
+# [LAW:types-are-the-program] what is typed into a session, as what it is: the variant decides whether a leading sigil
+# is escaped, so nothing that types asks what the input starts with.
+Input = Text | Command | Key
+
+
+@dataclass(frozen=True)
+class Type[I: Input]:
     """Typed into a session through the fritter that wrapped it, which listens at `socket` and wrapped process `pid`.
 
-    Not in Effect: a draft request emits it, and what came of it is the request's answer.
+    Not in Effect: a draft, command, or interrupt request emits it, and what came of it is the request's answer.
     """
 
     session: SessionId
     socket: Path
     pid: int
-    input: Text
+    input: I
+
+
+@dataclass(frozen=True)
+class Typed[I: Input]:
+    """fritter typed the input into its session."""
+
+    session: SessionId
+    input: I
+
+
+@dataclass(frozen=True)
+class NotTyped[I: Input]:
+    """fritter could not be reached, or refused, or could not write: `reason` says which."""
+
+    session: SessionId
+    input: I
+    reason: str

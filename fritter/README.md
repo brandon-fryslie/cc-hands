@@ -11,8 +11,9 @@ fritter [--socket-dir DIR] -- COMMAND [ARGS...]
 ```
 
 hands is what it was built for, and hands' client for it - `hands.sessions.typing` - is
-written and tested against it; hands' `send_draft` is what dials it. Nothing in fritter
-knows any of that; Claude Code is simply the first program it wraps.
+written and tested against it; hands' `send_draft`, `send_command` and `interrupt_session`
+are what dial it. Nothing in fritter knows any of that; Claude Code is simply the first
+program it wraps.
 
 ## Why a pseudo-terminal and not a pipe
 

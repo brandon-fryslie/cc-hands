@@ -14,14 +14,15 @@ from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftRequest, SendDraft, StageDraft
-from hands.core.effects import Allow, Answers, Approve, Decision, Deny, KeepPlanning, ModeAfterPlan
-from hands.core.session import AtDialog, Blocked, Blocker, Gone, Idle, Permission, Plan, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Submitted, Working
+from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
+from hands.core.keyboard import Interrupt, KeyboardRequest, SendCommand
+from hands.core.session import AtDialog, Blocked, Blocker, CommandName, Gone, Idle, Permission, Plan, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Submitted, Working
 from hands.core.turn import Budget, Happening, Ref, describe
 from hands.sessions.backfill import Unseen, read_since
 from hands.sessions.audit import Called, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.registry import Listing, Sessions
-from hands.voice.readback import readback, spoken_mode, spoken_name, spoken_title
+from hands.voice.readback import keyboard_readback, readback, spoken_mode, spoken_name, spoken_title
 from hands.voice.speech import answer_readback
 
 # A Pipecat direct function: its signature and docstring are the schema the model sees.
@@ -48,6 +49,9 @@ _APPROVALS: Mapping[str, ModeAfterPlan] = {"approve": "resume", "auto-accept edi
 # tab - typed into a session it cycles the mode, and fritter refuses it by name at the socket.
 # Refusing it here instead means the model is told while it still has the words to fix.
 _CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+
+# A slash command's name, with the slash the model may have kept from what the user said.
+_COMMAND_NAME = re.compile(r"/?([A-Za-z0-9][A-Za-z0-9_:-]*)")
 
 
 def audited(tool: Tool, record: Record) -> Tool:
@@ -288,6 +292,50 @@ async def _answer(
     await params.result_callback({"readback": readback(outcome, spoken_name(sessions, id))})
 
 
+def keyboard_tools(sessions: Sessions) -> list[Tool]:
+    """send_command, interrupt_session: what the user would otherwise do at a session's keyboard besides send it a prompt."""
+
+    async def send_command(params: FunctionCallParams, session: str, command: str, args: str = "") -> None:
+        """Run a slash command in a session, such as compact, clear, or model. Call it only when the user asks for a command by name.
+
+        What the user dictates as a prompt is a draft, even when it begins with a slash; this is only for commands.
+        Say the returned readback to the user.
+
+        Args:
+            session: The session's id, from list_sessions.
+            command: The command's name, such as "compact" or "model".
+            args: What follows the name, such as "opus" for model. Empty when the user gave nothing.
+        """
+        await _type(params, sessions, session, lambda id: SendCommand(id, parse_command(command, args)))
+
+    async def interrupt_session(params: FunctionCallParams, session: str) -> None:
+        """Stop what a session is doing, as pressing Escape at its keyboard does. At a permission dialog that is the dialog's no.
+
+        Say the returned readback to the user.
+
+        Args:
+            session: The session's id, from list_sessions.
+        """
+        await _type(params, sessions, session, Interrupt)
+
+    # A barge-in must not cancel either part way: it would be typed without its readback heard.
+    return [_uncancelled_by_interruption(tool) for tool in (send_command, interrupt_session)]
+
+
+async def _type(
+    params: FunctionCallParams, sessions: Sessions, session: object, request: Callable[[SessionId], KeyboardRequest]
+) -> None:
+    # [LAW:no-silent-failure] the model hears each failure and says it; the log keeps it.
+    try:
+        id = _session_id(session)
+        outcome = await sessions.keyboard(request(id))
+    except Rejected as error:
+        logger.error(f"{params.function_name} refused its arguments: {error}")
+        await params.result_callback({"error": str(error)})
+        return
+    await params.result_callback({"readback": keyboard_readback(outcome, spoken_name(sessions, id))})
+
+
 def permission_tools(sessions: Sessions) -> list[Tool]:
     """answer_permission, answer_question, answer_plan: the only ways a voice answer reaches a session waiting on its dialog."""
 
@@ -408,21 +456,39 @@ def _session_id(session: object) -> SessionId:
 def parse_draft(text: object, resolutions: object) -> Staged:
     """The model's arguments, parsed once into a draft whose text is safe to type."""
     # [LAW:parse-dont-validate] PromptText is made here and nowhere else.
-    return Staged(_prompt_text(text), tuple(_resolution(item) for item in _items(resolutions, "resolutions")))
+    return Staged(_prompt_text(text, "the draft text"), tuple(_resolution(item) for item in _items(resolutions, "resolutions")))
 
 
-def _prompt_text(text: object) -> PromptText:
+def parse_command(name: object, args: object) -> Command:
+    """The model's arguments, parsed once into a command whose name and arguments are safe to type after a slash."""
+    return Command(_command_name(name), None if args == "" else _prompt_text(args, "the command's arguments"))
+
+
+def _command_name(name: object) -> CommandName:
+    # [LAW:parse-dont-validate] CommandName is made here and nowhere else. A slash the model kept from what the user
+    # said is the one the command is typed with, not a second.
+    match name:
+        case str():
+            named = _COMMAND_NAME.fullmatch(name)
+            if named is None:
+                raise Rejected(f"command should be a slash command's name, such as compact, got {name!r}")
+            return CommandName(named.group(1))
+        case other:
+            raise Rejected(f"command should be a string, got {type(other).__name__}")
+
+
+def _prompt_text(text: object, what: str) -> PromptText:
     match text:
         case str() if not text.strip():
-            raise Rejected("the draft text is empty")
+            raise Rejected(f"{what} is empty")
         case str() if _CONTROL.search(text):
-            raise Rejected("the draft text holds a control character, which would press a key when the draft is typed")
+            raise Rejected(f"{what} holds a control character, which would press a key when it is typed")
         case str() if text.endswith("\\"):
-            raise Rejected("the draft text ends with a backslash, which turns the Return that sends it into a newline")
+            raise Rejected(f"{what} ends with a backslash, which turns the Return that sends it into a newline")
         case str():
             return PromptText(text)
         case other:
-            raise Rejected(f"the draft text should be a string, got {type(other).__name__}")
+            raise Rejected(f"{what} should be a string, got {type(other).__name__}")
 
 
 def _items(value: object, what: str) -> list[object]:

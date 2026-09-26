@@ -7,7 +7,7 @@ of hands' dependence on fritter is the name `FRITTER_SOCKET`, which
 `hands.sessions.shim` reads out of a wrapped session's environment.
 
 It decides nothing about *what* to type. Whether a draft is ready, whether a session can
-be sent to, and what a leading slash means are all settled in the core before anything
+be sent to, and whether a leading slash is escaped are all settled in the core before anything
 reaches here `[LAW:single-enforcer]`.
 """
 
@@ -16,7 +16,7 @@ import socket
 from dataclasses import dataclass
 from pathlib import Path
 
-from hands.core.effects import Type
+from hands.core.effects import Command, Input, Key, Text, Type
 from hands.core.session import Keystroke, PromptText, SessionId
 
 # How long the exchange may take. fritter answers as soon as its one write is done.
@@ -63,6 +63,11 @@ class Typist:
                 raise Untyped(f"the fritter for session {self.session} answered {other!r}")
 
 
-def type_into(effect: Type) -> None:
-    """Perform a Type: its text typed into the session, and Return."""
-    Typist(effect.session, effect.socket, effect.pid).type(effect.input.typed)
+def type_into(effect: Type[Input]) -> None:
+    """Perform a Type: text or a command typed into the session and sent with Return, or a key pressed."""
+    typist = Typist(effect.session, effect.socket, effect.pid)
+    match effect.input:
+        case Text() | Command() as typed:
+            typist.type(typed.typed)
+        case Key(key=key):
+            typist.press(key)

@@ -1,22 +1,13 @@
-"""What the user hears about a draft, built from what happened to it, never from the model repeating itself."""
+"""What the user hears about a draft, a command, or an interrupt, built from what happened to it, never from the model repeating itself."""
 
 import difflib
 import re
 from collections.abc import Iterable, Mapping
 
-from hands.core.drafts import (
-    AtItsDialog,
-    DraftAmended,
-    DraftDiscarded,
-    DraftOutcome,
-    DraftSent,
-    DraftStaged,
-    NothingStaged,
-    NotSent,
-    SessionEnded,
-    UnknownSession,
-    Unwrapped,
-)
+from hands.core.drafts import DraftAmended, DraftDiscarded, DraftOutcome, DraftStaged, NothingStaged
+from hands.core.effects import Command, Key, NotTyped, Text, Typed
+from hands.core.keyboard import KeyboardOutcome, NothingRunning
+from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
 from hands.core.session import Mode, PermissionMode, Resolution, SessionId, UnknownMode
 from hands.sessions.registry import Listing, Sessions
 
@@ -42,14 +33,41 @@ def readback(outcome: DraftOutcome, name: str) -> str:
             return f"There is no draft for {name}."
         case SessionEnded():
             return f"{name} has ended, so its draft cannot be staged, changed, or sent."
-        case DraftSent():
+        case Typed():
             return f"Sent the draft to {name}."
-        case NotSent(text=text, reason=reason):
+        case NotTyped(input=Text(prompt=text), reason=reason):
             return f"The draft for {name} was not sent, and is no longer staged: {reason}. It said: {text}"
         case Unwrapped():
             return f"{name} was not started under fritter, so hands cannot type into it. The draft is still staged."
         case AtItsDialog():
             return f"{name} is waiting at a dialog, which would take the draft as its answer. The draft is still staged."
+
+
+def keyboard_readback(outcome: KeyboardOutcome, name: str) -> str:
+    """One spoken reply for what came of a command or an interrupt; `name` is how the user knows the session."""
+    match outcome:
+        case Typed(input=input):
+            return f"Typed {_spoken_input(input)} into {name}."
+        case NotTyped(input=input, reason=reason):
+            return f"{_spoken_input(input)} was not typed into {name}: {reason}."
+        case NothingRunning():
+            return f"{name} is at its prompt, so there is nothing to interrupt."
+        case UnknownSession(session=session):
+            return f"There is no session {session}."
+        case SessionEnded():
+            return f"{name} has ended."
+        case Unwrapped():
+            return f"{name} was not started under fritter, so hands cannot type into it."
+        case AtItsDialog():
+            return f"{name} is waiting at a dialog, which would take the command as its answer. Nothing was sent."
+
+
+def _spoken_input(input: Command | Key) -> str:
+    match input:
+        case Command():
+            return input.typed
+        case Key(key=key):
+            return key.replace("_", " ").capitalize()
 
 
 def spoken_title(listing: Listing) -> str:
