@@ -52,7 +52,7 @@ import anthropic
 import openai
 from loguru import logger
 from anthropic import AsyncAnthropic
-from anthropic.types.beta import BetaTextBlock, BetaToolUseBlock
+from anthropic.types.beta import BetaMessage, BetaTextBlock, BetaToolUseBlock
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 from pipecat.processors.aggregators.llm_context import LLMContext, LLMContextMessage
@@ -161,9 +161,9 @@ def asker(backend: LLMBackend) -> Ask:
                 # its adapter call, and the thinking it turns off for a Sonnet that would otherwise think.
                 params: dict[str, Any] = {"model": model, "max_tokens": MAX_REPLY_TOKENS, **service_._get_llm_invocation_params(context)}  # pyright: ignore[reportPrivateUsage]
                 service_._maybe_disable_thinking(params)  # pyright: ignore[reportPrivateUsage]
-                reply = await client_.beta.messages.create(**params, betas=["interleaved-thinking-2025-05-14"])
+                reply = cast(BetaMessage, await client_.beta.messages.create(**params, betas=["interleaved-thinking-2025-05-14"]))
                 said = " ".join(block.text for block in reply.content if isinstance(block, BetaTextBlock))
-                calls = tuple(Call(block.name, cast(dict[str, object], block.input)) for block in reply.content if isinstance(block, BetaToolUseBlock))
+                calls = tuple(Call(block.name, block.input) for block in reply.content if isinstance(block, BetaToolUseBlock))
                 return said, calls
 
             return from_anthropic
