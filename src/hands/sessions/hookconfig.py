@@ -1,6 +1,6 @@
 """The hooks hands' Claude Code plugin installs, and the one number every permission time comes from.
 
-    <hands python> -m hands.sessions.hookconfig > hooks/hooks.json     # regenerates the plugin's hook file
+    <hands python> -m hands.sessions.hookconfig > plugin/hooks/hooks.json     # regenerates the plugin's hook file
 
 It is imported by the shim, so it holds only the standard library and hands' data modules.
 """
@@ -25,6 +25,9 @@ SHIM_MODULE = "hands.sessions.shim"
 LAUNCHER = "hooks/python"
 # Where the plugin's hook file lives, relative to the plugin root; Claude Code loads it from there unasked.
 HOOKS_FILE = "hooks/hooks.json"
+# The plugin, relative to the repository, which is its marketplace. A directory of its own, so an install copies the
+# hooks and a link to src, never the repository's venv.
+PLUGIN_DIR = "plugin"
 
 SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "Notification", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd")
 

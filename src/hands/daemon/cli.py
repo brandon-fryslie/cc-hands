@@ -12,11 +12,17 @@ from pathlib import Path
 from hands.daemon import launchd
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home, default_home
+from hands.sessions.payload import Rejected
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        fallback = default_home()
+    except Rejected as error:
+        print(f"hands: {error}", file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(prog="hands")
-    parser.add_argument("--home", type=Path, default=default_home().root, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
+    parser.add_argument("--home", type=Path, default=fallback.root, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("run", help="run the daemon in the foreground (launchd runs it this way)")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")

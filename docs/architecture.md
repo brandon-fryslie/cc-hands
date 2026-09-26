@@ -265,7 +265,7 @@ period only bounds how late a deadline is heard; no correctness property depends
 a `sleep`.
 
 The deadline itself comes from one number. `hands.sessions.hookconfig` declares the
-`PermissionRequest` hook's timeout (90 seconds) in the plugin's `hooks/hooks.json`; the shim
+`PermissionRequest` hook's timeout (90 seconds) in the plugin's `plugin/hooks/hooks.json`; the shim
 waits on the daemon that long for that hook alone, and the daemon denies 5 seconds
 earlier, so the deny reaches Claude Code before Claude Code kills the hook
 `[LAW:single-enforcer]`.
@@ -461,19 +461,28 @@ daemon is still waiting on a permission for has run, because its dialog was answ
 at the keyboard. They are declared `async`, so the shim they spawn on every tool call
 never holds the agent up.
 
-**Installing the hooks.** The repository is a Claude Code plugin, and its own
-marketplace: `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and
-`hooks/hooks.json`. Installing the plugin installs the hooks; disabling or
-uninstalling it removes them, and no settings file is edited by hands. `hooks.json`
-is generated from `hookconfig` (`python -m hands.sessions.hookconfig > hooks/hooks.json`),
-and a test fails when the checked-in file differs from what `hookconfig` declares.
-Every hook is exec form: `${CLAUDE_PLUGIN_ROOT}/hooks/python -m hands.sessions.shim`,
-spawned by Claude Code with no shell between. The plugin has no venv, so
-`hooks/python` finds the first Python 3.12 or newer on `PATH`, puts the plugin's own
-`src` on `PYTHONPATH`, and execs it; the shim runs as the process Claude Code spawned,
-so its parent is the claude process. A launcher that ran Python as its child, as
-`uv run` does, would record its own pid instead. The shim's home is `HANDS_HOME`, or
-`~/.hands`, found the way the `hands` CLI finds it.
+**Installing the hooks.** The repository is a Claude Code marketplace
+(`.claude-plugin/marketplace.json`) holding one plugin, `plugin/`:
+`plugin/.claude-plugin/plugin.json`, `plugin/hooks/hooks.json`, the launcher
+`plugin/hooks/python`, and `plugin/src`, a link to the repository's `src`. The plugin is
+a directory of its own so that an install copies those and not the repository's venv.
+Installing the plugin installs the hooks; disabling or uninstalling it removes them,
+and no settings file is edited by hands. `hooks.json` is generated from `hookconfig`
+(`python -m hands.sessions.hookconfig > plugin/hooks/hooks.json`), and a test fails
+when the checked-in file differs from what `hookconfig` declares. Every hook is exec
+form: `${CLAUDE_PLUGIN_ROOT}/hooks/python -m hands.sessions.shim`, spawned by Claude
+Code with no shell between. The plugin has no venv, so the launcher takes the first of
+`python3.14`, `python3.13`, `python3.12` on `PATH` (the name says the version, so none
+is started to ask), then a `python3` that says it is 3.12 or newer. It puts the
+plugin's `src` on `PYTHONPATH` and execs it with `-P`, so the session's directory,
+where Claude Code runs the hook, is never on the path and a project's own `json.py`
+cannot stand in for the standard library's. The shim runs as the process Claude Code
+spawned, so its parent is the claude process. A launcher that ran Python as its child,
+as `uv run` does, would record its own pid instead. The shim's home is `HANDS_HOME`,
+or `~/.hands`, found the way the `hands` CLI finds it; a relative `HANDS_HOME` is
+refused, since a hook runs in its session's directory. With no Python new enough, every
+hook fails saying so: the plugin cannot run at all, which is not the same as hands
+being off.
 
 **The shims.** Each is one process per hook: POST stdin to the daemon socket, exit.
 At `SessionStart` the shim also writes
@@ -484,7 +493,9 @@ later finds the sessions already running. The hooks are installed whether or not
 hands is running, so a shim that cannot reach the socket asks the heartbeat why
 (`hands.sessions.heartbeat.look`, the judge `hands status` uses). A hands that was
 stopped or never ran is off, not broken: the shim exits 0 and prints nothing, and a
-permission request falls through to Claude Code's own dialog. A hands whose heartbeat
+permission request falls through to Claude Code's own dialog. So is one still
+starting: `hands run` writes its first heartbeat before it imports Pipecat and serves
+the socket, and it reads the session files once it does. A hands whose heartbeat
 says it died, hung, or is up but not answering, or whose heartbeat cannot be read,
 makes the shim exit 1 with the socket error and the verdict on stderr, so Claude Code
 shows the failure in the session where it happened rather than letting a dead daemon

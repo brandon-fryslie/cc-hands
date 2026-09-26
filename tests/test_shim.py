@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import socket
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -17,7 +17,7 @@ import pytest
 
 from hands.core.session import Idle, Membership, PromptId, Session, SessionId, Submitted
 from hands.sessions import heartbeat
-from hands.sessions.hookconfig import LAUNCHER, SHIM_MODULE
+from hands.sessions.hookconfig import LAUNCHER, PLUGIN_DIR, SHIM_MODULE
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership
 from hands.sessions.registry import Sessions
@@ -29,7 +29,7 @@ START = {**COMMON, "hook_event_name": "SessionStart", "source": "startup"}
 PROMPT = {**COMMON, "hook_event_name": "UserPromptSubmit", "prompt": "hi", "prompt_id": "p1"}
 END = {**COMMON, "hook_event_name": "SessionEnd", "reason": "other"}
 ASK = {**COMMON, "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "ls"}}
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent / PLUGIN_DIR
 
 
 @pytest.fixture
@@ -68,12 +68,6 @@ def beat(home: Home, pid: int, written_ago: timedelta, pipeline: heartbeat.Pipel
     heartbeat.write(home.status, heartbeat.Status(pid, now, now - written_ago, heartbeat.HEARTBEAT, pipeline, None, 0))
 
 
-def dead_pid() -> int:
-    process = subprocess.Popen(["true"])
-    process.wait()
-    return process.pid
-
-
 @pytest.mark.parametrize("payload", [START, PROMPT, ASK], ids=["start", "prompt", "permission"])
 async def test_a_hands_that_never_ran_costs_the_session_nothing(home: Home, payload: Mapping[str, object]) -> None:
     # Nothing on stdout, so a permission request falls through to Claude Code's own dialog.
@@ -90,7 +84,7 @@ async def test_a_session_started_while_hands_is_off_is_still_recorded_for_when_i
     assert read_membership(home, SID).pid == os.getpid()
 
 
-async def test_a_hands_that_died_is_reported_with_the_socket_and_the_heartbeat(home: Home) -> None:
+async def test_a_hands_that_died_is_reported_with_the_socket_and_the_heartbeat(home: Home, dead_pid: Callable[[], int]) -> None:
     beat(home, dead_pid(), timedelta(seconds=1))
     code, stdout, stderr = await shim(home, PROMPT)
     assert (code, stdout) == (1, "")
@@ -112,6 +106,22 @@ async def test_a_heartbeat_nothing_can_read_is_reported(home: Home) -> None:
     assert "hands is unknown" in stderr
 
 
+async def test_a_hands_still_starting_has_not_served_its_socket_yet_and_costs_the_session_nothing(home: Home) -> None:
+    beat(home, os.getpid(), timedelta(seconds=0), pipeline="starting")
+    assert await shim(home, ASK) == (0, "", "")
+
+
+async def test_a_relative_home_is_refused_rather_than_made_in_every_project(home: Home, tmp_path: Path) -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", SHIM_MODULE, cwd=tmp_path, env={**os.environ, "HANDS_HOME": "relhome"},
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await process.communicate(json.dumps(START).encode())
+    assert process.returncode == 1
+    assert "HANDS_HOME must be an absolute path, got 'relhome'" in stderr.decode()
+    assert list(tmp_path.iterdir()) == []
+
+
 async def test_a_hands_that_says_it_is_up_but_does_not_answer_is_reported(home: Home) -> None:
     beat(home, os.getpid(), timedelta(seconds=0))
     code, _, stderr = await shim(home, PROMPT)
@@ -119,17 +129,41 @@ async def test_a_hands_that_says_it_is_up_but_does_not_answer_is_reported(home: 
     assert "cannot reach the hands daemon" in stderr and "hands is up" in stderr
 
 
-def test_the_plugin_launcher_runs_the_shim_from_the_plugin_as_the_process_claude_code_spawned(home: Home, tmp_path: Path) -> None:
-    # No venv, and no hands on the path but the plugin's own src. A python3 too old for hands comes first on PATH, as
-    # /usr/bin/python3 (3.9) does on macOS, and the launcher passes over it to a 3.12.
+def launch(home: Home, cwd: Path, path: str) -> subprocess.CompletedProcess[bytes]:
+    """The plugin's hook as Claude Code spawns it: its launcher, run directly in the session's directory, with no venv."""
+    environment = {"HANDS_HOME": str(home.root), "PATH": path, "HOME": str(cwd)}
+    return subprocess.run([PLUGIN_ROOT / LAUNCHER, "-m", SHIM_MODULE], input=json.dumps(START).encode(), env=environment, cwd=cwd, capture_output=True)
+
+
+@pytest.fixture
+def python312(tmp_path: Path) -> str:
+    """A PATH whose only Python new enough is a python3.12 outside any venv; /usr/bin's python3 on macOS is 3.9."""
     interpreters = tmp_path / "bin"
     interpreters.mkdir()
     (interpreters / "python3.12").symlink_to(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
-    environment = {"HANDS_HOME": str(home.root), "PATH": f"/usr/bin:/bin:{interpreters}", "HOME": str(tmp_path)}
-    # Spawned directly, as Claude Code spawns an exec-form hook, so the pid recorded must be this process's.
-    ran = subprocess.run([PLUGIN_ROOT / LAUNCHER, "-m", SHIM_MODULE], input=json.dumps(START).encode(), env=environment, capture_output=True)
+    return f"/usr/bin:/bin:{interpreters}"
+
+
+def test_the_plugin_launcher_runs_the_shim_from_the_plugin_as_the_process_claude_code_spawned(home: Home, tmp_path: Path, python312: str) -> None:
+    ran = launch(home, tmp_path, python312)
     assert (ran.returncode, ran.stdout, ran.stderr) == (0, b"", b"")
+    # Spawned directly, as Claude Code spawns an exec-form hook, so the pid recorded must be this process's.
     assert read_membership(home, SID).pid == os.getpid()
+
+
+def test_a_project_s_own_modules_cannot_stand_in_for_the_shim_s(home: Home, tmp_path: Path, python312: str) -> None:
+    project = tmp_path / "project"
+    (project / "hands").mkdir(parents=True)
+    (project / "json.py").write_text("raise SystemExit('shadowed json')\n")
+    (project / "hands" / "__init__.py").write_text("raise SystemExit('shadowed hands')\n")
+    ran = launch(home, project, python312)
+    assert (ran.returncode, ran.stdout, ran.stderr) == (0, b"", b"")
+
+
+def test_with_no_python_new_enough_the_launcher_says_so(home: Home, tmp_path: Path) -> None:
+    ran = launch(home, tmp_path, "/usr/bin:/bin")
+    assert ran.returncode == 1
+    assert ran.stderr.startswith(b"hands: no Python 3.12 or newer on PATH")
 
 
 async def test_a_start_records_membership_and_joins_the_registry(home: Home, sessions: Sessions) -> None:

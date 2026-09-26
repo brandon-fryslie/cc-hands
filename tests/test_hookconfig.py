@@ -14,6 +14,7 @@ from hands.sessions.hookconfig import (
     LAUNCHER,
     PERMISSION_DEADLINE_SECONDS,
     PERMISSION_HOOK_TIMEOUT_SECONDS,
+    PLUGIN_DIR,
     POST_TIMEOUT_SECONDS,
     SUBSCRIBED,
     plugin_hooks,
@@ -22,7 +23,7 @@ from hands.sessions.hookconfig import (
 )
 from hands.sessions.hooks import hook_output
 
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent / PLUGIN_DIR
 
 
 def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_tool_hooks_run_in_the_background_and_only_idle_notifies() -> None:
@@ -41,7 +42,7 @@ def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_tool_hook
 
 def test_the_checked_in_hooks_json_is_what_hookconfig_declares() -> None:
     # [LAW:one-source-of-truth] hooks.json is generated from hookconfig; a hand edit, or a change to hookconfig not
-    # regenerated with `python -m hands.sessions.hookconfig > hooks/hooks.json`, fails here.
+    # regenerated with `python -m hands.sessions.hookconfig > plugin/hooks/hooks.json`, fails here.
     assert (PLUGIN_ROOT / HOOKS_FILE).read_text(encoding="utf-8") == rendered()
 
 

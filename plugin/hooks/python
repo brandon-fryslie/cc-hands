@@ -1,0 +1,22 @@
+#!/bin/sh
+# Runs Python on hands' own source, under a Python 3.12 or newer from PATH:
+#
+#     hooks/python -m hands.sessions.shim
+#
+# The plugin has no venv, and the shim needs only the standard library and hands' data modules, so hands' src (the
+# plugin's src, a link to the repository's) is the whole path it needs. -P keeps the session's directory, where Claude
+# Code runs the hook, off the path, so a project's own json.py or hands/ cannot stand in for the shim's modules.
+# Claude Code spawns this with no shell between (hooks.json is exec form) and the last step execs, so the shim is the
+# process Claude Code spawned: its parent is the claude process whose pid it records. A launcher that ran Python as
+# its child, as `uv run` does, would record its own pid instead.
+root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
+run() { interpreter=$1; shift; PYTHONPATH="$root/src" exec "$interpreter" -s -P "$@"; }
+# A versioned name says its version, so it is taken without starting it; only a bare python3 is asked.
+for python in python3.14 python3.13 python3.12; do
+  command -v "$python" >/dev/null && run "$python" "$@"
+done
+if command -v python3 >/dev/null && python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
+  run python3 "$@"
+fi
+echo "hands: no Python 3.12 or newer on PATH, so hands' hook cannot run; PATH is $PATH" >&2
+exit 1

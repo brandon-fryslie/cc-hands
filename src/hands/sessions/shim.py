@@ -80,8 +80,10 @@ def post(home: Home, body: bytes, timeout: float) -> str:
         connection.request("POST", "/hook", body, {"Content-Type": "application/json"})
         response = connection.getresponse()
         detail = response.read().decode(errors="replace")
-    except OSError as error:
-        raise Unreached(f"cannot reach the hands daemon at {home.socket}: {error}") from error
+    # A reply cut off halfway (the daemon died answering) is an HTTPException, not an OSError; both leave the hook
+    # unanswered, and the heartbeat says why.
+    except (OSError, http.client.HTTPException) as error:
+        raise Unreached(f"cannot reach the hands daemon at {home.socket}: {type(error).__name__}: {error}") from error
     finally:
         connection.close()
     if response.status >= 300:
@@ -90,15 +92,21 @@ def post(home: Home, body: bytes, timeout: float) -> str:
 
 
 def unreached(home: Home, error: Unreached) -> int:
-    """The exit for a hook no daemon answered: silent when hands is off, loud when it is broken."""
+    """The exit for a hook no daemon answered: silent when hands is off or starting, loud when it is broken."""
     now = datetime.now(UTC)
-    verdict = heartbeat.look(home.status, now)
+    try:
+        verdict = heartbeat.look(home.status, now)
+    except OSError as judging:
+        # [LAW:no-silent-failure] the kernel would not say whether the heartbeat's pid still runs: nothing is known.
+        print(f"hands: {error}; and whether hands is running could not be judged: {judging}", file=sys.stderr)
+        return FAILED
     match verdict:
         # Off is a state the user chose, not a failure. Nothing is printed, so a permission request falls through
-        # to Claude Code's own dialog.
-        case heartbeat.NeverRan() | heartbeat.Stopped():
+        # to Claude Code's own dialog. A daemon still starting writes its first heartbeat before it serves the
+        # socket, and reads the session files when it does, so it is quiet too.
+        case heartbeat.NeverRan() | heartbeat.Stopped() | heartbeat.Up(status=heartbeat.Status(pipeline="starting")):
             return 0
-        # [LAW:no-silent-failure] a daemon that died, hung, or cannot be judged, and one that says it is up but
+        # [LAW:no-silent-failure] a daemon that died, hung, or cannot be judged, and one running its pipeline that
         # does not answer, are each reported with what the heartbeat says of it.
         case heartbeat.Down() | heartbeat.Unresponsive() | heartbeat.Unreadable() | heartbeat.Up():
             print(f"hands: {error}; {heartbeat.describe(verdict, now)}", file=sys.stderr)
@@ -108,11 +116,16 @@ def unreached(home: Home, error: Unreached) -> int:
 def main(argv: Sequence[str]) -> int:
     match argv:
         case [_]:
-            home = default_home()
+            pass  # everything the shim is told comes on stdin and in HANDS_HOME
         case _:
             print("usage: python -m hands.sessions.shim  (the home is HANDS_HOME, or ~/.hands)", file=sys.stderr)
             return USAGE
     body = sys.stdin.buffer.read()
+    try:
+        home = default_home()
+    except Rejected as error:
+        print(f"hands: {error}", file=sys.stderr)
+        return FAILED
     try:
         payload = Payload.parse(body)
         record(home, payload)
