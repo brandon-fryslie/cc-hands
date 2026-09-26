@@ -15,7 +15,7 @@ def notification_command(text: str) -> list[str]:
 async def post_notification(text: str) -> bool:
     """True when the screen took it, so a caller records as given only what was given."""
     # [LAW:no-silent-failure] when speech and the screen have both failed, the log is the path left — and the
-    # refusal is told to the caller as well, because under launchd there may be no GUI session to post into.
+    # refusal is told to the caller as well, because a run started over ssh may have no GUI session to post into.
     try:
         process = await asyncio.create_subprocess_exec(
             *notification_command(text), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE

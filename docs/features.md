@@ -137,11 +137,10 @@ Need 6, and the restart half of need 9. The first epic after narration. Its
 tickets depend on nothing past the reducer, so it can start the moment that ticket
 closes.
 
-- **Daemon under launchd with a heartbeat.** `hands run` is the entry point; a
-  launchd plist with `KeepAlive` supervises it; every heartbeat rewrites
+- **Daemon in a terminal with a heartbeat.** `hands run` is the entry point and
+  runs in the foreground of a terminal; every heartbeat rewrites
   `~/.hands/status.json`; `hands status` prints it. Done when killing the daemon
-  produces a restart within the launchd interval and `hands status` shows the new
-  pid and uptime.
+  reads as down in `hands status`, and running it again shows the new pid and uptime.
 - **System speech channel.** The `Speak` effect becomes a `TTSSpeakFrame`; the
   daemon speaks its own start and restart, an unreachable LLM, an empty Whisper
   result, and a TTS error posts a macOS notification instead. Done when stopping
@@ -154,8 +153,8 @@ closes.
 - **Audit log.** Every effect and every failure is one JSONL line; `hands log`
   tails it. Done when a dictation can be traced in the log from the transcribed
   words to the readback.
-- **Screen path.** A hands menu-bar status item, run by its own launchd agent
-  rather than the daemon, reads `status.json` and shows the verdict as its icon, and
+- **Screen path.** A hands menu-bar status item, a process of its own that `hands
+  run` starts and that outlives the daemon long enough to announce it, reads `status.json` and shows the verdict as its icon, and
   a macOS notification is posted when the daemon stops being up. Done when killing
   the daemon changes the icon and posts the notification within a few seconds.
 - **Audio device loss.** Unplugging the headset does not kill the pipeline: the

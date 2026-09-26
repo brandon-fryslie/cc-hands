@@ -3,8 +3,9 @@
 # that touches AppKit.
 """`hands indicator`: the daemon's verdict as a menu-bar status item, in a process of its own.
 
-It reads the heartbeat file and nothing else, so whatever becomes of the daemon — dead, hung, never started — this
-process is still here to show it, whichever terminal the user runs or none.
+It reads the heartbeat file and nothing else, so a daemon that hangs is shown as stuck, and one that dies is announced
+by this process on its way out: it lives as long as the process that started it, `hands run` in a terminal, and then
+until the heartbeat stops saying up.
 """
 
 import asyncio
@@ -24,15 +25,17 @@ from hands.sessions.home import Home
 
 # How often the heartbeat is looked at: a daemon that dies is shown within this of the verdict changing.
 LOOK_SECONDS = 1.0
+# How long the notice posted on the way out may take before the indicator exits without it.
+LAST_POST_SECONDS = 5.0
 
 
-def show(home: Home) -> None:
-    """Run the status item until the process is told to stop."""
+def show(home: Home, run: int) -> None:
+    """Run the status item until `run`, the process that started this one, is gone and the heartbeat has said so."""
     app = AppKit.NSApplication.sharedApplication()
     # A menu-bar item only: no Dock icon, no menu bar of its own, never the active app.
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
     item = AppKit.NSStatusBar.systemStatusBar().statusItemWithLength_(AppKit.NSVariableStatusItemLength)
-    # No Quit item: launchd keeps the indicator up, and the surface that says hands is down is not one click from gone.
+    # No Quit item: the indicator goes when the run does, and the surface that says hands is down is not one click from gone.
     menu = AppKit.NSMenu.alloc().init()
     verdict_line = menu.addItemWithTitle_action_keyEquivalent_("", None, "")
     verdict_line.setEnabled_(False)
@@ -43,16 +46,24 @@ def show(home: Home) -> None:
         nonlocal before
         try:
             now = datetime.now(UTC)
-            seen = indicator.show(before, heartbeat.look(home.status, now), now)
+            verdict = heartbeat.look(home.status, now)
+            seen = indicator.show(before, verdict, now)
             before = seen
             item.button().setTitle_(seen.title)
             item.button().setToolTip_(seen.text)
             verdict_line.setTitle_(seen.text)
+            # Once `run` is gone, this process has been handed to another parent, and never back.
+            if indicator.finished(verdict, orphaned=os.getppid() != run, run=run):
+                # Posted before exiting, not beside it: the notice that the run went is the last thing this process
+                # does, bounded so that an osascript that never returns cannot keep the process up in its place.
+                for notice in indicator.last_words(seen):
+                    asyncio.run(post_last(notice))
+                os._exit(0)
             for notice in seen.notices:
                 post(notice)
         except Exception:
             # [LAW:no-silent-failure] AppKit would log a failed timer and carry on showing a stale light; exiting
-            # instead is seen in the log and ends in launchd starting a fresh indicator.
+            # instead puts the failure in the terminal the run prints to, and takes the stale light away.
             logger.exception("the indicator failed to look at the heartbeat")
             os._exit(1)
 
@@ -67,3 +78,11 @@ def post(notice: str) -> None:
     """Post off the main thread: osascript takes a moment, and the status item must keep up meanwhile."""
     # post_notification logs its own failure; nothing here waits on it.
     threading.Thread(target=lambda: asyncio.run(post_notification(notice)), name="notice", daemon=True).start()
+
+
+async def post_last(notice: str) -> None:
+    """Post a notice on the way out, or say that it could not be posted in time; the indicator exits either way."""
+    try:
+        await asyncio.wait_for(post_notification(notice), LAST_POST_SECONDS)
+    except TimeoutError:
+        logger.error(f"osascript did not post {notice!r} within {LAST_POST_SECONDS:.0f}s; the indicator exits without it")

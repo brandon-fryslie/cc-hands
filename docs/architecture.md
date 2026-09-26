@@ -1,6 +1,6 @@
 # Architecture
 
-`hands` is one launchd-supervised Python process built from four packages in a strict
+`hands` is one Python process, run in a terminal, built from four packages in a strict
 downhill order: `daemon` → `voice` → `sessions` → `core`. Every decision below serves
 one of the nine needs in [needs.md](needs.md); the work that delivers it is planned in
 [features.md](features.md). The catalogue of what goes wrong, and the rule each entry
@@ -251,7 +251,7 @@ Each timing fact has one owner.
 | That a session's end is heard after its last turn | the story queue: `Summarise` and `SessionGone` wait in one queue, and the narrator tells each in turn |
 | When a permission deadline warns and expires | the reducer, from `Blocked.deadline`, driven by one `Tick` source |
 | Whether text typed mid-turn is queued or lost | Claude Code's own input queue, measured to queue it |
-| When the daemon is up, and restarting it | launchd, with `KeepAlive` |
+| When the daemon is up, and restarting it | you, with `hands run` in a terminal |
 
 Deadlines are data. The `Blocked` state carries the instant it expires and whether
 the warning has been spoken. A single ticker sends `Tick(now)` once a second; the
@@ -1278,14 +1278,14 @@ It then says `Audio moved: listening on …, speaking on …` through the system
 on the new speaker, or posts it if speech is down. Closing a microphone whose device is
 gone takes 3 to 4 s, so the whole move took about 5.5 s from unplug to the sentence.
 The next turn ran end to end on the built-in devices. Every step that touches a device runs off the event loop.
-A reopen that takes longer than 10 s, or one that fails, stops the run, and launchd's restart opens on whatever
-devices there are. The same path follows a headset plugged in, or a default changed in
+A reopen that takes longer than 10 s, or one that fails, stops the run, which reads as down, and the next
+`hands run` opens on whatever devices there are. The same path follows a headset plugged in, or a default changed in
 Control Center. A Mac with no built-in microphone (a mini, a Studio) can
 lose its only input device. Then the microphone holds a stream of nothing (`NoInput`),
 which is opened, started, stopped, and closed like any other. The move is said as
 `No microphone: hands cannot hear you. Speaking on …`. A daemon that starts that way
 says `hands is up, but there is no microphone, so it cannot hear you.` instead of
-failing its setup and crash-looping under launchd. With no stream, no frame reaches the
+failing its setup and stopping. With no stream, no frame reaches the
 VAD and no turn starts, so the key edge answers a press itself:
 `There is no microphone, so hands cannot hear you.` A microphone plugged in later
 changes the default input, so the follower opens it like any other move. This is
@@ -1367,13 +1367,14 @@ thing that failed `[LAW:no-silent-failure]`:
    uptime, pipeline state, last audio out, and the count of live sessions. `hands
    status` prints it. When TTS itself is down, a macOS notification is posted through
    `osascript`. `hands indicator` is a menu-bar status item in a process of its own,
-   under its own launchd agent (`hands.indicator`), so the daemon dying cannot take it
-   down too. Once a second it judges the heartbeat through `heartbeat.look`, the one
+   which `hands run` starts in a session of its own, so neither the daemon dying nor the
+   terminal's Ctrl-C takes it down first. It lives while the process that started it does,
+   and once that is gone, until the light leaves up: it posts that notice and exits. Once a second it judges the heartbeat through `heartbeat.look`, the one
    read-and-judge that `hands status`, the crash check at start, and the hook shim also use. Its title
    shows one of five lights: up, not responding, down, off (stopped or never ran), and
    unreadable. An unreadable heartbeat is warned of as loudly as a dead daemon. It
-   posts a notification when the light leaves up, at most once a minute, so a daemon that
-   crashes on every start is not announced on every restart. A departure inside that
+   posts a notification when the light leaves up, at most once a minute, so a loop that
+   stalls and recovers over and over is not announced every time. A departure inside that
    minute is held, and posted when the minute is up if hands is still not up. A daemon it finds already
    down on its first look is shown but not announced. A heartbeat whose pid is outside
    macOS's `1..99999` does not parse, since no process can have it. A pid counts as the
@@ -1403,18 +1404,19 @@ thing that failed `[LAW:no-silent-failure]`:
    a value it cannot encode is a `Failure` line instead, and the draft, the question, or the tick it described goes on. `hands log` follows
    the file by inode and offset, so a log moved aside is read from its first line.
 
-The daemon runs under launchd with `KeepAlive`, so a crash is a restart, and the
-restart re-reads the session files and speaks that it is back. A hook shim that cannot
-reach the socket fails visibly in the target session, unless the heartbeat says hands
-was stopped or never ran. Two clocks are never allowed to
+The daemon runs in the foreground of a terminal, so a crash is seen there, as down by
+`hands status`, and as a notice from the indicator. Nothing restarts it: running it
+again is `hands run`, which re-reads the session files and speaks that it is back. A
+hook shim that cannot reach the socket fails visibly in the target session, unless the
+heartbeat says hands was stopped or never ran, so a daemon that died or hung is loud in
+every session while one that was stopped costs them nothing. Two clocks are never allowed to
 disagree about whether the daemon is up: the heartbeat file is written by the daemon
 alone, and everything else reads it.
 
 The heartbeat is honest at both ends of a run. `hands run` writes its first heartbeat,
 `pipeline starting`, before it imports Pipecat. The models load off the event loop,
-which keeps beating, so a restart shows its new pid within half a second of launchd starting it
-(launchd waits out its 10-second throttle when the process it replaces had only just launched),
-and only a loop that is actually stuck reads as not responding. launchd's SIGTERM,
+which keeps beating, so a new run shows its pid within half a second of starting,
+and only a loop that is actually stuck reads as not responding. A SIGTERM,
 Ctrl-C, the `q` key, and a failed background task all set one quit event. Its handler
 is in place before the models load, so a stop during the load does not wait for them.
 Shutdown lets every permission hook still waiting go undecided, including one that
@@ -1423,7 +1425,7 @@ in under a second. After the socket is released, a stop writes a last heartbeat 
 says `stopped`, and a stopped daemon reads as stopped even if its pid is later reused.
 A crash writes nothing more, so its last heartbeat names a pid that is gone, and it
 reads as down. A background task that failed or a pipeline that ended on its own
-counts as a crash: the run raises, exits nonzero, and launchd starts it again.
+counts as a crash: the run raises, exits nonzero, and reads as down until it is run again.
 
 ## Endurance
 
