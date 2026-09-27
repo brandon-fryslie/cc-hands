@@ -4,14 +4,14 @@ Pipecat's turn machinery, and the segmented Whisper service that decides when
 to transcribe, both run off VAD frames. So the key *is* the VAD: every
 microphone frame carries the key it was captured under, and Whisper
 (`hands.voice.whisper`) says the user started or stopped speaking where those
-keys change. Whisper also keeps the last second of audio from before the turn
-opened, so the key is also the mute: the microphone bytes are silence while the
-key is up (applied where they are captured, in `hands.voice.microphone`). Audio
-frames always flow; only their content and their key follow the key. The stock
-VAD turn strategies open and close the user turn on those frames and broadcast
-the interruption that flushes queued speech on barge-in. While the key is up,
-whatever the microphone hears, including the pipeline's own speech, is silence
-to the pipeline.
+keys change. The key is also the mute: the microphone bytes are silence unless
+the key is pressed (applied where they are captured, in
+`hands.voice.microphone`), and a hold's audio begins at its press, so what was
+said before the hold meant talk is kept. Audio frames always flow; only their
+content and their key follow the key. The stock VAD turn strategies open and
+close the user turn on those frames and broadcast the interruption that flushes
+queued speech on barge-in. While the key is up, whatever the microphone hears,
+including the pipeline's own speech, is silence to the pipeline.
 """
 
 from dataclasses import dataclass
@@ -21,10 +21,11 @@ from pipecat.frames.frames import InputAudioRawFrame
 
 from hands.voice.hold import Move
 
-# [LAW:types-are-the-program] the key is up, down, or up with the turn it held thrown away: `dropped` hears and says
-# nothing, like up, and tells Whisper not to transcribe what the turn recorded. The hold (`hands.voice.hold`) decides
-# every move, so the gate never sees a press or a release that is not a transition.
-Key = Literal["up", "down", "dropped"]
+# [LAW:types-are-the-program] the key is up; arming, pressed but not yet meaning talk, which hears so the words said
+# before it does are kept; down, a hold; or dropped, up with the hold thrown away, which tells Whisper not to transcribe
+# what it recorded. The hold (`hands.voice.hold`) decides every move, so the gate never sees one that is not a
+# transition.
+Key = Literal["up", "arming", "down", "dropped"]
 
 @dataclass(kw_only=True)
 class KeyedAudio(InputAudioRawFrame):
@@ -46,6 +47,10 @@ class Gate:
     def after(self, move: Move) -> "Gate":
         """The gate once the hold has moved the turn."""
         match move:
+            case "arm":
+                return Gate("arming")
+            case "disarm":
+                return Gate("up")
             case "start":
                 return Gate("down")
             case "stop":
@@ -54,11 +59,11 @@ class Gate:
                 return Gate("dropped")
 
     def audible(self, audio: bytes) -> bytes:
-        """The microphone bytes as the pipeline hears them: intact or silence."""
+        """The microphone bytes as the pipeline hears them: intact while the key is pressed, silence otherwise."""
         # [LAW:dataflow-not-control-flow] a frame of the same length always
         # goes out, so Whisper sees an unbroken stream; the key
         # only decides its content.
-        return audio if self.key == "down" else bytes(len(audio))
+        return audio if self.key in ("arming", "down") else bytes(len(audio))
 
 
 class PushToTalk:

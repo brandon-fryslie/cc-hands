@@ -16,6 +16,7 @@ from pipecat.frames.frames import (
     InputAudioRawFrame,
     LLMContextFrame,
     TranscriptionFrame,
+    UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -27,7 +28,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from hands.voice import pipeline as built
 from hands.voice.ptt import Key, KeyedAudio
-from hands.voice.turnstop import TurnOpened
+from hands.voice.turnstop import TurnOpened, TurnResolved
 from hands.voice.whisper import Whisper
 
 CLOSING = "that is all"
@@ -42,8 +43,10 @@ class Recorded(FrameProcessor):
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self.sent: list[str] = []
+        self.started = 0
         self.stopped = 0
         self.holds: list[int] = []
+        self.resolved: list[int] = []
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -53,8 +56,12 @@ class Recorded(FrameProcessor):
                 # The aggregator writes the user's turn as a plain message, never a provider's own.
                 assert not isinstance(said, LLMSpecificMessage)
                 self.sent.append(str(said.get("content")))
+            case UserStartedSpeakingFrame():
+                self.started += 1
             case UserStoppedSpeakingFrame():
                 self.stopped += 1
+            case TurnResolved(hold=hold):
+                self.resolved.append(hold)
             case TurnOpened(hold=hold):
                 self.holds.append(hold)
             case _:
@@ -78,22 +85,28 @@ class Rig:
     out: Recorded
     # What each transcription, oldest first, will find; it waits for the test to say.
     texts: asyncio.Queue[str] = field(default_factory=asyncio.Queue[str])
+    # The audio each transcription was given.
+    heard: list[bytes] = field(default_factory=list[bytes])
 
-    async def hold(self, keys: Sequence[Key]) -> None:
-        await self.worker.queue_frames([KeyedAudio(audio=b"\x00\x00" * 320, sample_rate=16000, num_channels=1, key=key) for key in keys])
+    async def hold(self, keys: Sequence[Key], sound: bytes = b"\x00\x00" * 320) -> None:
+        await self.worker.queue_frames([KeyedAudio(audio=sound, sample_rate=16000, num_channels=1, key=key) for key in keys])
 
     async def until(self, what: Callable[[], bool]) -> None:
         async with asyncio.timeout(PATIENCE_SECS):
             while not what():
                 await asyncio.sleep(0.01)
 
-    async def everything_sent(self, turns: int) -> list[str]:
-        """What the model was sent once `turns` turns have ended, closed by one more spoken hold of its own.
+    async def everything_sent(self, holds: int) -> list[str]:
+        """What the model was sent once the test's `holds` holds are all resolved, closed by one more spoken hold.
 
-        The aggregator says a turn stopped, a system frame, ahead of what it sends the model, a data frame, which
-        keeps its order among the data; so once the closing hold's words are in, so is everything sent before them.
+        Whether a hold joins the turn the one before it is still open in depends on whether its opening, a system
+        frame, overtakes the last one's resolution, a data frame, so what is waited for is every hold resolved and
+        every turn that started ended, not a number of turns. The aggregator says a turn stopped, a system frame,
+        ahead of what it sends the model, a data frame, which keeps its order among the data; so once the closing
+        hold's words are in, so is everything sent before them.
         """
-        await self.until(lambda: self.out.stopped == turns)
+        out = self.out
+        await self.until(lambda: len(out.holds) == len(out.resolved) == holds and out.started == out.stopped)
         await self.hold(["down", "up"])
         await self.texts.put(CLOSING)
         await self.until(lambda: CLOSING in self.out.sent)
@@ -111,7 +124,8 @@ async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
     worker = PipelineWorker(Pipeline([voice.stt, voice.user_turns, out]), idle_timeout_secs=None)
     made = Rig(worker, voice.stt, out)
 
-    async def transcribe(_self: WhisperSTTServiceMLX, _audio: bytes) -> AsyncGenerator[Frame, None]:
+    async def transcribe(_self: WhisperSTTServiceMLX, audio: bytes) -> AsyncGenerator[Frame, None]:
+        made.heard.append(audio)
         text = await made.texts.get()
         for heard in [text] if text else []:
             yield TranscriptionFrame(heard, "user", "now")
@@ -135,18 +149,31 @@ async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
     await rig.hold(["down", "down", "up"])
     await rig.texts.put("what time is it")
-    assert await rig.everything_sent(turns=1) == ["what time is it"]
+    assert await rig.everything_sent(holds=1) == ["what time is it"]
+
+
+async def test_a_hold_hears_from_its_press_and_nothing_before_it(rig: Rig) -> None:
+    shift, early, held = (bytes([n, n]) * 320 for n in (1, 2, 3))
+    # A press that was Shift after all, then one said into before it meant talk.
+    await rig.hold(["arming"], sound=shift)
+    await rig.hold(["up"])
+    await rig.hold(["arming", "arming"], sound=early)
+    await rig.hold(["down", "up"], sound=held)
+    await rig.texts.put("what time is it")
+    assert await rig.everything_sent(holds=1) == ["what time is it"]
+    assert rig.heard[0].startswith(early + early + held)
+    assert shift not in rig.heard[0]
 
 
 async def test_a_dropped_hold_ends_its_turn_and_sends_nothing(rig: Rig) -> None:
     await rig.hold(["down", "down", "dropped"])
-    assert await rig.everything_sent(turns=1) == []
+    assert await rig.everything_sent(holds=1) == []
 
 
 async def test_a_hold_that_heard_nothing_ends_its_turn_and_sends_nothing(rig: Rig) -> None:
     await rig.hold(["down", "up"])
     await rig.texts.put("")
-    assert await rig.everything_sent(turns=1) == []
+    assert await rig.everything_sent(holds=1) == []
 
 
 async def test_a_hold_released_to_a_whisper_that_cannot_transcribe_ends_its_turn_and_sends_nothing(rig: Rig) -> None:
@@ -154,7 +181,14 @@ async def test_a_hold_released_to_a_whisper_that_cannot_transcribe_ends_its_turn
     await rig.hold(["down", "up"])
     await rig.until(lambda: rig.out.stopped == 1)
     await rig.stt.set_usable(True)
-    assert await rig.everything_sent(turns=1) == []
+    assert await rig.everything_sent(holds=1) == []
+
+
+async def test_a_hold_dropped_by_a_press_is_thrown_away_and_the_press_is_a_hold_of_its_own(rig: Rig) -> None:
+    # A press that finds the key down drops the hold and arms again between two frames, so no frame sees it dropped.
+    await rig.hold(["down", "arming", "down", "up"])
+    await rig.texts.put("what time is it")
+    assert await rig.everything_sent(holds=2) == ["what time is it"]
 
 
 async def test_a_hold_dropped_while_the_last_is_transcribed_leaves_the_last_to_be_sent(rig: Rig) -> None:
@@ -163,7 +197,7 @@ async def test_a_hold_dropped_while_the_last_is_transcribed_leaves_the_last_to_b
     await rig.hold(["down", "down", "up", "down", "dropped"])
     await rig.until(lambda: rig.out.holds == [1, 2])
     await rig.texts.put("what time is it")
-    assert await rig.everything_sent(turns=1) == ["what time is it"]
+    assert await rig.everything_sent(holds=2) == ["what time is it"]
 
 
 async def test_a_hold_that_heard_nothing_does_not_end_the_hold_pressed_after_it(rig: Rig) -> None:
@@ -173,7 +207,7 @@ async def test_a_hold_that_heard_nothing_does_not_end_the_hold_pressed_after_it(
     await rig.texts.put("")
     await rig.hold(["up"])
     await rig.texts.put("how many sessions are running")
-    assert await rig.everything_sent(turns=1) == ["how many sessions are running"]
+    assert await rig.everything_sent(holds=2) == ["how many sessions are running"]
 
 
 async def test_whisper_hears_only_the_keyed_microphone() -> None:

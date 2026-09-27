@@ -3,6 +3,8 @@
 Right Shift is also Shift, so the key cannot mean talk the moment it goes down. It means talk once it has been held
 alone for `HOLD_SECONDS`; a quick tap is nothing, and a key pressed while it is held is typing: no turn starts, and a
 turn already started is dropped, never sent. Right Shift itself is never swallowed, so Shift keeps working as Shift.
+The microphone opens on the press all the same, so words said before the hold means talk are kept: they reach a turn
+only if the hold opens one, and are thrown away if it turns out to be Shift.
 """
 
 from dataclasses import dataclass
@@ -64,30 +66,33 @@ class Typing:
 
 Hold = Idle | Arming | Talking | Typing
 
-# What the hold does to the turn: opens it, closes it and sends it, or closes it and throws it away.
-Move = Literal["start", "stop", "drop"]
+# What the hold does: opens the microphone on a press, closes it on a press that was Shift after all, and to the turn:
+# opens it, closes it and sends it, or closes it and throws it away.
+Move = Literal["arm", "disarm", "start", "stop", "drop"]
 
 
 def step(hold: Hold, event: KeyEvent) -> tuple[Hold, tuple[Move, ...]]:
-    """The hold after `event`, and what it does to the turn: most keystrokes do nothing to it."""
+    """The hold after `event`, and what it does: most keystrokes do nothing."""
     match hold, event:
         # A press is a fresh start whatever came before: one that finds the key already down proves a release went by
         # unseen, while macOS had the tap switched off, and a turn still open is dropped rather than sent.
         case Talking(), Pressed(at=at):
-            return Arming(at), ("drop",)
+            return Arming(at), ("drop", "arm")
         case _, Pressed(at=at):
-            return Arming(at), ()
+            return Arming(at), ("arm",)
         # [LAW:no-ambient-temporal-coupling] a Ripe counts only for the press it was scheduled for: one left over
         # from an earlier press, released and pressed again since, names another instant and changes nothing.
         case Arming(since=since), Ripe(pressed_at=pressed_at) if pressed_at == since:
             return Talking(), ("start",)
         case Arming(), Typed():
-            return Typing(), ()
+            return Typing(), ("disarm",)
         case Talking(), Typed():
             return Typing(), ("drop",)
         case Talking(), Released():
             return Idle(), ("stop",)
-        case Arming() | Typing(), Released():
+        case Arming(), Released():
+            return Idle(), ("disarm",)
+        case Typing(), Released():
             return Idle(), ()
         case _:
             return hold, ()

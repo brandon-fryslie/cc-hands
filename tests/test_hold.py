@@ -24,47 +24,49 @@ def moves(events: Sequence[KeyEvent]) -> list[Move]:
     ("events", "made"),
     [
         # Held alone past the hold, then released: a whole turn, sent.
-        ([Pressed(1.0), Ripe(1.0), Released()], ["start", "stop"]),
-        # A quick tap is nothing.
-        ([Pressed(1.0), Released(), Ripe(1.0)], []),
+        ([Pressed(1.0), Ripe(1.0), Released()], ["arm", "start", "stop"]),
+        # A quick tap opens the microphone and closes it again: no turn.
+        ([Pressed(1.0), Released(), Ripe(1.0)], ["arm", "disarm"]),
         # A capital typed with Right Shift never starts a turn, however long the key is then held.
-        ([Pressed(1.0), Typed(), Ripe(1.0), Released()], []),
+        ([Pressed(1.0), Typed(), Ripe(1.0), Released()], ["arm", "disarm"]),
         # A key pressed during a started turn drops it, and the release after sends nothing.
-        ([Pressed(1.0), Ripe(1.0), Typed(), Released()], ["start", "drop"]),
+        ([Pressed(1.0), Ripe(1.0), Typed(), Released()], ["arm", "start", "drop"]),
         # A Ripe left over from an earlier press does not open the press after it; its own Ripe does.
-        ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Released()], []),
-        ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Ripe(1.1), Released()], ["start", "stop"]),
+        ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Released()], ["arm", "disarm", "arm", "disarm"]),
+        ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Ripe(1.1), Released()], ["arm", "disarm", "arm", "start", "stop"]),
         # Typing with Right Shift up is nothing to the turn.
         ([Typed(), Typed()], []),
         # A press that finds the key already down proves a release went by unseen: an open turn is dropped, and the
         # press starts afresh, from Typing too.
-        ([Pressed(1.0), Ripe(1.0), Pressed(2.0), Ripe(2.0), Released()], ["start", "drop", "start", "stop"]),
-        ([Pressed(1.0), Typed(), Pressed(2.0), Ripe(2.0), Released()], ["start", "stop"]),
+        ([Pressed(1.0), Ripe(1.0), Pressed(2.0), Ripe(2.0), Released()], ["arm", "start", "drop", "arm", "start", "stop"]),
+        ([Pressed(1.0), Typed(), Pressed(2.0), Ripe(2.0), Released()], ["arm", "disarm", "arm", "start", "stop"]),
         # After a dropped turn the key works again from the next press.
-        ([Pressed(1.0), Ripe(1.0), Typed(), Released(), Pressed(2.0), Ripe(2.0), Released()], ["start", "drop", "start", "stop"]),
+        ([Pressed(1.0), Ripe(1.0), Typed(), Released(), Pressed(2.0), Ripe(2.0), Released()], ["arm", "start", "drop", "arm", "start", "stop"]),
     ],
 )
 def test_the_hold_moves_the_turn(events: list[KeyEvent], made: list[Move]) -> None:
     assert moves(events) == made
 
 
-LEFT_SHIFT_ONLY = talkkey.SHIFT | 0x2  # NX_DEVICELSHIFTKEYMASK
+KEY_DOWN = talkkey.WATCHED_KINDS[0]
+SHIFT = 0x20000  # kCGEventFlagMaskShift, set by either Shift
+LEFT_SHIFT_ONLY = SHIFT | 0x2  # NX_DEVICELSHIFTKEYMASK
 
 
 @pytest.mark.parametrize(
     ("kind", "keycode", "flags", "event"),
     [
-        (talkkey.FLAGS_CHANGED, talkkey.RIGHT_SHIFT, talkkey.SHIFT | talkkey.RIGHT_SHIFT_DOWN, Pressed(5.0)),
+        (talkkey.FLAGS_CHANGED, talkkey.RIGHT_SHIFT, SHIFT | talkkey.RIGHT_SHIFT_DOWN, Pressed(5.0)),
         # Right Shift let go while Left Shift is still held: the Shift flag stays, Right Shift's own bit goes.
         (talkkey.FLAGS_CHANGED, talkkey.RIGHT_SHIFT, LEFT_SHIFT_ONLY, Released()),
         (talkkey.FLAGS_CHANGED, talkkey.RIGHT_SHIFT, 0, Released()),
         (talkkey.FLAGS_CHANGED, 56, LEFT_SHIFT_ONLY, Typed()),  # Left Shift
-        (talkkey.KEY_DOWN, 0, talkkey.RIGHT_SHIFT_DOWN, Typed()),  # A, as Shift+A
+        (KEY_DOWN, 0, talkkey.RIGHT_SHIFT_DOWN, Typed()),  # A, as Shift+A
         # Right Shift pressed inside a chord, Cmd already down (Cmd+Shift+4), is Shift, not talk.
-        (talkkey.FLAGS_CHANGED, talkkey.RIGHT_SHIFT, talkkey.SHIFT | talkkey.RIGHT_SHIFT_DOWN | 0x100000, Typed()),
-        (talkkey.FLAGS_CHANGED, talkkey.RIGHT_SHIFT, talkkey.SHIFT | talkkey.RIGHT_SHIFT_DOWN | 0x2, Typed()),
+        (talkkey.FLAGS_CHANGED, talkkey.RIGHT_SHIFT, SHIFT | talkkey.RIGHT_SHIFT_DOWN | 0x100000, Typed()),
+        (talkkey.FLAGS_CHANGED, talkkey.RIGHT_SHIFT, SHIFT | talkkey.RIGHT_SHIFT_DOWN | 0x2, Typed()),
         # A shift-click and a shift-scroll are Shift too.
-        *((kind, 0, talkkey.SHIFT | talkkey.RIGHT_SHIFT_DOWN, Typed()) for kind in talkkey.WATCHED_KINDS[2:]),
+        *((kind, 0, SHIFT | talkkey.RIGHT_SHIFT_DOWN, Typed()) for kind in talkkey.WATCHED_KINDS[2:]),
     ],
 )
 def test_each_tapped_event_is_what_it_means_to_the_hold(kind: int, keycode: int, flags: int, event: KeyEvent) -> None:
@@ -86,7 +88,8 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
 
     async def on_move(move: Move) -> None:
         made.append(move)
-        started.set()
+        if move == "start":
+            started.set()
 
     driving = asyncio.create_task(keys.drive_talk_key(on_move))
     while not taps:
@@ -94,12 +97,12 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
     taps[0](Pressed(1.0))
     await asyncio.wait_for(started.wait(), 1.0)
     taps[0](Released())
-    while len(made) < 2:
+    while len(made) < 3:
         await asyncio.sleep(0.01)
     driving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await driving
-    assert made == ["start", "stop"]
+    assert made == ["arm", "start", "stop"]
     assert stopped == [None]
 
 

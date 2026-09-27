@@ -288,7 +288,8 @@ async def converse(
 
     async def on_move(move: Move) -> None:
         voice.key.move(move)
-        logger.info(f"talk key: {move}")
+        # Debug, not info: every press of Right Shift arms the microphone, a capital letter included.
+        logger.debug(f"talk key: {move}")
         for fact in unheard(move, voice.audio.devices):
             await channel.say(fact)
 
@@ -313,7 +314,7 @@ async def converse(
     quitting = asyncio.create_task(quit_event.wait())
     try:
         await asyncio.wait({pipeline_run, quitting}, return_when=asyncio.FIRST_COMPLETED)
-        # A run told to stop takes no more turns: the key is let go before the pipeline tears down, not after.
+        # A run told to stop takes no more turns: the key stops being watched before the pipeline tears down, not after.
         talk_key.cancel()
         # [LAW:no-ambient-temporal-coupling] the follower holds the streams while it reopens them, and Pipecat's
         # cleanup closes them; the follower is done before the cleanup starts, so the two never hold them at once.

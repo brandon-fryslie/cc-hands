@@ -1321,12 +1321,16 @@ and its newlines stay inside the prompt because fritter pastes it.
 **The gate is the turn boundary and the mute.** Pipecat's turn strategies act on
 voice-activity frames, so the key is the VAD: every microphone frame carries the key
 it was captured under, and Whisper pushes the VAD frames where those keys change,
-numbering each turn, so the turn the strategies see and the audio Whisper transcribes
-are cut at the same frame. Whisper keeps a second of pre-roll, so the
-key is also the mute: microphone bytes become silence of the same length while the
-key is up. Frames flow at full rate either way; only their content changes. The press
-starts the turn, the release ends it and is final, and a press during playback
-broadcasts the interruption that flushes queued audio. That is barge-in.
+numbering each hold, so the turn the strategies see and the audio Whisper transcribes
+are cut at the same frame. The key is also the mute: microphone bytes become silence
+of the same length unless the key is pressed. Frames flow at full rate either way;
+only their content changes. The microphone opens on the press, and a hold's audio
+begins there, so words said before the hold means talk are kept; they are thrown
+away if the press turns out to be Shift. The hold opens the turn, the release ends
+it and is final, and a hold opened during playback broadcasts the interruption that
+flushes queued audio. That is barge-in. A turn ends once Whisper is done with every
+hold it took in (`KeyTurnStop`): a press while the last hold is still being
+transcribed joins that turn, so no hold's words are left out of it.
 
 **The mute is decided where sound is captured, and waits out the speaker.** Measured
 on 2026-09-14 with MacBook Pro speakers and microphone: the interruption stops writes
@@ -1382,7 +1386,7 @@ tested against a PortAudio that lists no default input. A MacBook cannot be put 
 that state, since macOS always falls back to the built-in microphone.
 
 **The gate has one owner and several edges.** `PushToTalk` holds the key position;
-whatever reads the physical world calls `move_key`. The edges are variants of one
+whatever reads the physical world calls `PushToTalk.move`. The edges are variants of one
 config value, not modes of the gate `[LAW:one-type-per-behavior]`:
 
 | Edge | Down | Up |

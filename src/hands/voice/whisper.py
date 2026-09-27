@@ -4,12 +4,17 @@ each hold, transcribes a hold the key sent, throws away one the key dropped, and
 from collections import deque
 from collections.abc import AsyncGenerator
 
-from pipecat.frames.frames import Frame, InputAudioRawFrame, VADUserStoppedSpeakingFrame
+from pipecat.frames.frames import (
+    Frame,
+    InputAudioRawFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
 from hands.voice.ptt import Key, KeyedAudio
-from hands.voice.turnstop import TurnOpened, TurnResolved
+from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved
 
 NOTHING_TRANSCRIBED = "on_nothing_transcribed"
 
@@ -34,29 +39,40 @@ class Whisper(WhisperSTTServiceMLX):
         # Sync, so the handler runs as the turn's transcription ends rather than after the stop timeout gives up on it.
         self._register_event_handler(NOTHING_TRANSCRIBED, sync=True)
 
+    # Only the key cuts holds: a VAD frame from anywhere else, which Pipecat's segmenting would act on, moves nothing.
+    async def _handle_user_started_speaking(self, frame: VADUserStartedSpeakingFrame) -> None:
+        pass
+
+    async def _handle_user_stopped_speaking(self, frame: VADUserStoppedSpeakingFrame) -> None:
+        pass
+
     async def process_audio_frame(self, frame: InputAudioRawFrame, direction: FrameDirection) -> None:
         # [LAW:parse-dont-validate] the microphone makes every frame this sees, and it tags each one.
         if not isinstance(frame, KeyedAudio):
             raise TypeError(f"{type(frame).__name__} carries no key; the keyed microphone makes every frame Whisper hears")
         match self._captured, frame.key:
-            case "up" | "dropped", "down":
+            case "up" | "dropped", "arming":
+                # A hold's audio begins at its press: nothing heard before it is any part of it.
+                self._audio_buffer.clear()
+            case "up" | "arming" | "dropped", "down":
                 self._opened += 1
                 opened = TurnOpened(hold=self._opened)
-                await self._handle_user_started_speaking(opened)
+                await super()._handle_user_started_speaking(opened)
                 await self.push_frame(opened)
             case "down", "up" if self.is_usable:
                 # The key was let go: the hold's audio is queued, to be transcribed and sent.
                 stopped = VADUserStoppedSpeakingFrame()
                 self._transcribing.append(self._opened)
-                await self._handle_user_stopped_speaking(stopped)
+                await super()._handle_user_stopped_speaking(stopped)
                 await self.push_frame(stopped)
-            case "down", "up" | "dropped":
-                # Another key was pressed, so the hold was typing, not speech; or the key was let go of a Whisper that
-                # can no longer transcribe, which Pipecat would give nothing to. What the hold recorded is thrown
-                # away, so nothing is transcribed, sent, or reported as empty, and Whisper is done with it at once.
+            case "down", "up" | "arming" | "dropped":
+                # Another key was pressed, so the hold was typing, not speech (and the key may already be pressed
+                # again); or the key was let go of a Whisper that can no longer transcribe, which Pipecat would give
+                # nothing to. What the hold recorded is thrown away, so nothing is transcribed, sent, or reported as
+                # empty, and Whisper is done with it at once.
                 self._user_speaking = False
                 self._audio_buffer.clear()
-                await self.push_frame(VADUserStoppedSpeakingFrame())
+                await self.push_frame(HoldDiscarded())
                 await self.push_frame(TurnResolved(hold=self._opened))
             case _:
                 pass
@@ -65,9 +81,9 @@ class Whisper(WhisperSTTServiceMLX):
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         hold = self._transcribing.popleft()
-        produced: list[Frame] = []
+        produced = False
         async for frame in super().run_stt(audio):
-            produced.append(frame)
+            produced = True
             yield frame
         if not produced:
             # A failed transcription yields an ErrorFrame, so only a hold Whisper heard nothing in reaches here.

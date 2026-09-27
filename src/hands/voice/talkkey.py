@@ -22,10 +22,8 @@ from hands.voice.hold import Instant, KeyEvent, Pressed, Released, Typed
 RIGHT_SHIFT = 60
 # NX_DEVICERSHIFTKEYMASK: set in an event's flags while Right Shift itself is down, whatever Left Shift is doing.
 RIGHT_SHIFT_DOWN = 0x4
-# Declared, so the strict code that uses them sees ints: the event kinds the tap watches, and the flag every Shift sets.
-KEY_DOWN: int = Quartz.kCGEventKeyDown
+# Declared, so the strict code that uses it sees an int.
 FLAGS_CHANGED: int = Quartz.kCGEventFlagsChanged
-SHIFT: int = Quartz.kCGEventFlagMaskShift
 # Set in Right Shift's flags when it goes down inside a chord (Cmd+Shift+4 begun with Cmd): Left Shift's own bit
 # (NX_DEVICELSHIFTKEYMASK), Control, Option, Command, and fn. Right Shift alone is never any of them.
 OTHER_MODIFIERS: int = (

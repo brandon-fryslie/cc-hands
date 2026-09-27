@@ -26,9 +26,14 @@ def test_an_ended_turn_is_silence_of_the_same_length(ended: Move) -> None:
     assert gate.audible(LOUD) == QUIET
 
 
+def test_a_press_is_heard_before_it_means_talk_and_silence_once_it_is_shift() -> None:
+    assert Gate().after("arm").audible(LOUD) == LOUD
+    assert Gate().after("arm").after("disarm").audible(LOUD) == QUIET
+
+
 def test_only_a_dropped_turn_leaves_the_key_dropped_and_the_next_turn_clears_it() -> None:
     assert Gate().after("start").after("stop").key == "up"
     dropped = Gate().after("start").after("drop")
     assert dropped.key == "dropped"
-    assert dropped.after("start").key == "down"
+    assert dropped.after("arm").after("start").key == "down"
 

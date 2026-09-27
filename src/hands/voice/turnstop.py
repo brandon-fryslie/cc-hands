@@ -9,7 +9,7 @@ words ends it as promptly as one with.
 
 from dataclasses import dataclass
 
-from pipecat.frames.frames import DataFrame, Frame, VADUserStartedSpeakingFrame
+from pipecat.frames.frames import DataFrame, Frame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
 from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_stop import BaseUserTurnStopStrategy
 
@@ -19,6 +19,10 @@ class TurnOpened(VADUserStartedSpeakingFrame):
     """The user started speaking: the key went down, opening the hold with this number."""
 
     hold: int
+
+
+class HoldDiscarded(VADUserStoppedSpeakingFrame):
+    """The user stopped speaking, and what the hold recorded is thrown away: nothing of it is transcribed or sent."""
 
 
 @dataclass(kw_only=True)
