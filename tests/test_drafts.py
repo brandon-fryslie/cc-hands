@@ -20,43 +20,49 @@ from hands.core.drafts import (
 from hands.core.effects import Text, Type
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
 from hands.core.session import (
-    AtDialog,
-    Blocked,
     Gone,
     Idle,
     Membership,
-    Permission,
     PromptText,
     Registry,
-    RequestId,
     Resolution,
     Session,
     SessionId,
     SessionState,
     Staged,
-    Submitted,
-    Working,
+    Unreported,
+    Running,
 )
+from hands.core.status import Busy, Going, Shell, Stamp, UnknownReason, Waiting
 
 ONE = Membership(SessionId("s1"), pid=1, cwd=Path("/code/a"), transcript=Path("/t/s1.jsonl"))
 TWO = Membership(SessionId("s2"), pid=2, cwd=Path("/code/b"), transcript=Path("/t/s2.jsonl"))
 FIX = Staged(PromptText("/fix the auth middleware"), (Resolution("auth middleware", "authMiddleware.ts"),))
 BETTER = Staged(PromptText("fix the token helper"), ())
-BLOCKED = Blocked(on=Permission(tool="Bash", input={"command": "ls"}), request=RequestId("r"), deadline=9.0, warned=False)
 
 
 WRAPPED = replace(ONE, fritter=Path("/tmp/fritter-1/session.sock"))
 
 
-def registry(state: SessionState = Idle(), drafts: dict[SessionId, Staged] | None = None, member: Membership = ONE) -> Registry:
-    return Registry(permission_deadline=60.0, sessions={ONE.id: Session(member, state, mode=None, turn=None)}, drafts=drafts or {})
+def running(going: Going = Busy()) -> Running:
+    return Running(going, Stamp(1), idled=Stamp(1))
 
 
-def staged(state: SessionState = Idle()) -> Registry:
+AT_DIALOG = running(Waiting("permission prompt"))
+
+
+IDLE = Idle(Stamp(1), due=61.0, after=None)
+
+
+def registry(state: SessionState = IDLE, drafts: dict[SessionId, Staged] | None = None, member: Membership = ONE) -> Registry:
+    return Registry(permission_deadline=60.0, sessions={ONE.id: Session(member, state, mode=None)}, drafts=drafts or {})
+
+
+def staged(state: SessionState = IDLE) -> Registry:
     return registry(state, {ONE.id: FIX})
 
 
-@pytest.mark.parametrize("state", [Idle(), Working(since=1.0), BLOCKED])
+@pytest.mark.parametrize("state", [IDLE, running(), AT_DIALOG])
 def test_staging_holds_the_draft(state: SessionState) -> None:
     assert decide(registry(state), StageDraft(ONE.id, FIX)) == (staged(state), DraftStaged(ONE.id, FIX, replaced=None))
 
@@ -91,18 +97,18 @@ def test_a_session_that_never_joined_is_named_unknown(request_: DraftRequest) ->
 def test_a_discard_touches_only_its_own_session() -> None:
     both = Registry(
         permission_deadline=60.0,
-        sessions={ONE.id: Session(ONE, Idle(), mode=None, turn=None), TWO.id: Session(TWO, Idle(), mode=None, turn=None)},
+        sessions={ONE.id: Session(ONE, IDLE, mode=None), TWO.id: Session(TWO, IDLE, mode=None)},
         drafts={ONE.id: FIX, TWO.id: BETTER},
     )
     after, _ = decide(both, DiscardDraft(TWO.id))
     assert after.drafts == {ONE.id: FIX}
 
 
-def wrapped(state: SessionState = Idle(), drafts: dict[SessionId, Staged] | None = None) -> Registry:
+def wrapped(state: SessionState = IDLE, drafts: dict[SessionId, Staged] | None = None) -> Registry:
     return registry(state, drafts, member=WRAPPED)
 
 
-@pytest.mark.parametrize("state", [Idle(), Submitted(since=1.0), Working(since=1.0)])
+@pytest.mark.parametrize("state", [IDLE, running(), running(Shell()), Unreported()])
 def test_a_send_is_typed_into_the_fritter_that_wrapped_the_session_and_the_draft_is_gone_at_once(state: SessionState) -> None:
     typed = Type(ONE.id, Path("/tmp/fritter-1/session.sock"), pid=1, input=Text(FIX.text))
     assert decide(wrapped(state, {ONE.id: FIX}), SendDraft(ONE.id)) == (wrapped(state), typed)
@@ -116,7 +122,7 @@ def test_a_session_nobody_wrapped_is_refused_by_name_and_keeps_its_draft() -> No
     assert decide(staged(), SendDraft(ONE.id)) == (staged(), Unwrapped(ONE.id))
 
 
-@pytest.mark.parametrize("state", [BLOCKED, AtDialog(on=BLOCKED.on)])
+@pytest.mark.parametrize("state", [AT_DIALOG, running(Waiting(UnknownReason("a dialog this version does not know")))])
 def test_a_session_at_a_dialog_is_sent_nothing_and_keeps_its_draft(state: SessionState) -> None:
     before = wrapped(state, {ONE.id: FIX})
     assert decide(before, SendDraft(ONE.id)) == (before, AtItsDialog(ONE.id))

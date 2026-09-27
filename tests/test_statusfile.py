@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 from loguru import logger
-from hands.core.session import Idle as Resting, Membership, Session, SessionId
+from hands.core.reducer import reduce
+from hands.core.session import Membership, Registry, Session, SessionId, Unreported
 from hands.core.status import Busy, Idle, Report, Shell, Stamp, Status, Unknown, UnknownReason, Waiting
 from hands.sessions.payload import Rejected
 from hands.sessions.statusfile import Statuses, parse_report, status_file
@@ -87,10 +88,10 @@ def test_the_file_is_found_in_the_config_directory_the_session_keeps_its_transcr
 
 class Live:
     """A live session whose status file lives under tmp_path, rewritten as Claude Code rewrites it, and whose registry
-    entry keeps each report it is handed, as the reducer does."""
+    entry is moved by each report it is handed, by the reducer."""
 
     def __init__(self, tmp_path: Path) -> None:
-        self.session = Session(member_of(written("idle"), tmp_path), Resting(), mode=None, turn=None)
+        self.session = Session(member_of(written("idle"), tmp_path), Unreported(), mode=None)
         status_file(self.member).parent.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -108,10 +109,9 @@ class Live:
     def heard(self, statuses: Statuses) -> list[Report]:
         heard = list(statuses.read([self.member.id], lambda _: self.session))
         assert {reported.session for reported in heard} <= {self.member.id}
-        reports = [reported.report for reported in heard]
-        for report in reports:
-            self.session = replace(self.session, report=report)
-        return reports
+        for reported in heard:
+            self.session = reduce(Registry(60.0, {self.member.id: self.session}, {}), reported)[0].sessions[self.member.id]
+        return [reported.report for reported in heard]
 
 
 def test_each_time_the_stamp_moves_the_status_is_heard_once(tmp_path: Path) -> None:
@@ -136,7 +136,7 @@ def test_a_report_the_registry_does_not_hold_is_heard_again(tmp_path: Path) -> N
     live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
     idle = live.sets("idle", 1000)
     live.heard(statuses)
-    live.session = replace(live.session, report=None)
+    live.session = replace(live.session, state=Unreported())
     assert live.heard(statuses) == [idle]
 
 
@@ -149,7 +149,7 @@ def test_a_session_with_no_status_file_is_heard_once_it_has_one(tmp_path: Path) 
 
 
 def test_a_transcript_outside_any_config_directory_is_refused_not_raised(tmp_path: Path) -> None:
-    session = Session(replace(member_of(written("idle")), transcript=Path("/s.jsonl")), Resting(), mode=None, turn=None)
+    session = Session(replace(member_of(written("idle")), transcript=Path("/s.jsonl")), Unreported(), mode=None)
     assert list(Statuses(clock=lambda: 5.0).read([session.membership.id], lambda _: session)) == []
 
 

@@ -55,6 +55,8 @@ class Unknown:
 
 # [LAW:types-are-the-program] one variant a status, each carrying only what is true of it: only a waiting session has a reason.
 Status = Idle | Busy | Waiting | Shell | Unknown
+# Every status but idle: whatever the session is doing, it is not at its prompt.
+Going = Busy | Waiting | Shell | Unknown
 
 
 @dataclass(frozen=True)

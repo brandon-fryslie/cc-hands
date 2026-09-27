@@ -98,30 +98,35 @@ class Membership:
 @dataclass(frozen=True)
 class Session:
     membership: Membership
+    state: SessionState       # what Claude Code says it is doing
     mode: PermissionMode      # from each hook payload that carries it
-    state: SessionState
+    turn: Turn                # which turn it is, as hooks and records say
+    dialog: Dialog | None     # the dialog it is at, as its hooks say; an idle ends it
 
-# One session is in exactly one of these. A session waiting on you and a session
-# working are different things, and the type says which.
-SessionState = Idle | Submitted | Working | Blocked | AtDialog | Gone
+# Only a status read moves a session between these: whether it runs is Claude Code's
+# word, never inferred from a hook or a record.
+SessionState = Unreported | Idle | Running | Gone
+@dataclass(frozen=True)
+class Idle:      stamp: Stamp; due: Instant | None; after: PromptId | None; nudged: bool  # one idle period
+@dataclass(frozen=True)
+class Running:   status: Busy | Waiting | Shell | Unknown; stamp: Stamp; idled: Stamp
 
-# Sent, but not taken until its UserPromptSubmit hooks finish; an Escape before then
-# cancels it with no hook or record, so only the transcript's record of the turn makes
-# it Working, and only Claude Code's idle ends it.
+# Each fact about the turn lives on the phase it is true in.
+Turn = Opened | Untold | Told
 @dataclass(frozen=True)
-class Submitted: since: Instant
+class Opened:    turn: PromptId; others: frozenset[PromptId]; queued: bool
 @dataclass(frozen=True)
-class Working:   since: Instant
+class Untold:    turn: PromptId; others: frozenset[PromptId]; by: Instant; asking: bool
 @dataclass(frozen=True)
-class Idle:      last: Uuid | None        # the record that ended the last turn
+class Told:      turn: PromptId | None; others: frozenset[PromptId]; asking: bool
+
+Dialog = Held | LetGo | Unanswered
 @dataclass(frozen=True)
-class Blocked:
+class Held:
     on: Blocker
     request: RequestId                    # the shim call waiting for a reply
     deadline: Instant                     # derived from the hook config's timeout
     warned: bool                          # the deadline warning has been spoken
-@dataclass(frozen=True)
-class Gone:      reason: Literal["exited", "terminal_closed", "pid_dead"]
 
 # Everything Claude Code stops for arrives through the same PermissionRequest hook.
 Blocker = Permission | Question | Plan
@@ -258,17 +263,17 @@ Each timing fact has one owner.
 | Which utterance plays next, and that two never overlap | Pipecat's output transport |
 | Where a narration resumes after you cut in | the player's bookmark stack, from the segment the output transport was playing |
 | That a session's end is heard after its last turn | the story queue: `Summarise` and `SessionGone` wait in one queue, and the narrator tells each in turn |
-| When a permission deadline warns and expires | the reducer, from `Blocked.deadline`, driven by one `Tick` source |
+| When a permission deadline warns and expires | the reducer, from `Held.deadline`, driven by one `Tick` source |
 | Whether text typed mid-turn is queued or lost | Claude Code's own input queue, measured to queue it |
 | When the daemon is up, and restarting it | you, with `hands run` in a terminal |
 
-Deadlines are data. The `Blocked` state carries the instant it expires and whether
+Deadlines are data. The `Held` dialog carries the instant it expires and whether
 the warning has been spoken. A single ticker sends `Tick(now)` once a second; the
 reducer compares, and emits `Speak("ten seconds on that permission")` exactly once,
 because the transition from `warned=False` to `warned=True` is a state change, not a
 timer callback. At the deadline it emits `Reply(deny)` for a permission and says so;
 a question, which silence cannot answer, is withdrawn instead and left to its dialog,
-where the user may be answering it at the keyboard. The session is then `AtDialog`: still
+where the user may be answering it at the keyboard. Its dialog is then `LetGo`: still
 waiting, now on the keyboard alone, until the answered call comes back. The ticker's
 period only bounds how late a deadline is heard; no correctness property depends on
 a `sleep`.
@@ -284,8 +289,8 @@ Claude Code queues messages submitted while a turn is running and shows them wit
 session and submitted lands in that queue and runs when the turn ends, so a send to a
 working target is an ordinary send and the daemon holds nothing. A permission dialog
 is the exception: it swallows pasted text and takes the Enter as "Yes". So when the
-drafts are sent, a send to a `Blocked` target is refused, the draft stays staged, and
-the user hears why.
+drafts are sent, a send to a session whose status says `waiting` is refused, the draft
+stays staged, and the user hears why.
 
 The workspace-trust dialog swallows a paste the same way, measured on 2.1.278, and needs
 no rule of its own: Claude Code runs no hook until a startup dialog is answered, so a
@@ -345,16 +350,19 @@ Today no table chooses; two queues stand in for it. `Heard` carries permission
 announcements and the idle nudge as `Speak` and permission requests as `Narrate`,
 relayed as soon as the reducer emits them. The nudge is the `idle_prompt`
 notification, the only one the `Notification` hook's matcher lets through; it is
-spoken once per idle period, because `Idle.nudged` turns true as it is said and every
-way into `Idle` builds a fresh one. Claude Code sends no `idle_prompt` after an
-interrupted turn, so that one idle period carries `Idle.due`, and the tick nudges it
-when the notification would have come. `Idle.asking` makes the nudge "X has a question
-for you." rather than "X is waiting for you." It is true for the two things the telling
+spoken once per idle period, because `Idle.nudged` turns true as it is said and an
+idle read after a run, or with a turn heard since `Idle.after`, builds a fresh one. Claude
+Code sends no `idle_prompt` after an interrupted turn, so an idle period that ends a turn
+carries `Idle.due`, and the tick nudges it when the notification would have come, if it
+has not. A session first read at its prompt went idle before hands followed it: its
+`due` is None, and only `idle_prompt` nudges it. A session with a turn opened that the
+status is yet to say runs is not nudged. `asking` on the last turn (`Told` or `Untold`)
+makes the nudge "X has a question for you." rather than "X is waiting for you." It is true for the two things the telling
 counts as waiting: a reply the `Stop` carried that the narration's own `reported_and_asked`
 reads as asking, and a turn that ended at an `AskUserQuestion` dialog with nothing run
-after it, the dialog still up or escaped. An Escape kills the dialog's hook, so the session
-goes to `Working` with the question `unanswered`, and a tool running, a message typed, or
-another permission clears it. The reducer cannot call `open_questions` itself, since the
+after it, the dialog still up or escaped. An Escape kills the dialog's hook, so the session's
+dialog becomes `Unanswered`, and a tool running, a message typed, or another permission
+clears it. The reducer cannot call `open_questions` itself, since the
 `Questioned` steps it reads live only in the transcript. The two still differ where a dialog
 was declined with a message and Claude answered in text alone before stopping: that is heard
 as the Escape it looks like, the common case. `Story` carries finished turns and sessions gone in one ordered
@@ -431,20 +439,21 @@ ends nothing: Claude Code sets the session `idle` ~100 ms before it writes the r
 what the turn's telling waits for. Only the prompt names the turn: a background
 subagent's hooks keep the `prompt_id` of the turn that started it after that turn is over.
 
-Only a `Stop` and Claude Code's status move a session out of `Submitted`, `Working`,
-`Blocked`, or `AtDialog`. Hooks and records name turns and fill them in, and never end
-them. A turn opens from the prompt: a `UserPromptSubmit` applied to a session at its
-prompt opens one, sent, and marks it. A message queued into a running turn fires
-`UserPromptSubmit` with the running turn's `prompt_id`, the id that turn went on under
-after a flush included (2.1.281), so one applied to a busy session is in the turn it names.
-Any other id it or a record carries while a turn runs joins the ids the turn goes by: a
-flush's, taken seconds before Claude answers under it, which a message queued in between
-carries; or, should Claude Code's idle go unread between two turns, the next turn's. A
-`Stop` carries the `prompt_id` of the turn it ends, which is how that turn is found in the
-tail, and it ends only a busy turn that goes by that id, so a `Stop` applied late never
-ends the turn after it. A `Stop` at the prompt tells a turn hands never had running,
-such as the one a session was in when it was attached, and ends nothing of the last one,
-which was told already. A turn a background task's notification opens fires
+Only Claude Code's status moves a session between running and at its prompt. Hooks and
+records say which turn it is and what it did: a turn is `Opened`, `Untold` once Claude
+Code's idle ends it, and `Told`. A turn opens from a prompt heard with no turn open, which
+marks it, whether or not the busy that prompt set has been read yet. A message queued into
+an open turn fires `UserPromptSubmit` with that turn's `prompt_id`, the id it went on
+under after a flush included (2.1.281), so it is in the turn it names. Any other id it or
+a record carries while a turn is open joins the ids the turn goes by: a flush's, taken
+seconds before Claude answers under it, which a message queued in between carries; or,
+should Claude Code's idle go unread between two turns, the next turn's. A `Stop` carries
+the `prompt_id` of the turn it ends, which is how that turn is found in the tail, and it
+ends only an open turn that goes by that id, so a `Stop` applied late never ends the turn
+after it. A `Stop` with no turn open tells a turn hands never had open, such as the one a
+session was in when it was attached, or the last one stopping again after another Stop
+hook blocked its Stop, and ends nothing of a last turn told already. The session runs on
+past a `Stop` until Claude Code says it is idle. A turn a background task's notification opens fires
 `UserPromptSubmit` with an id of its own, as a typed prompt does.
 
 The reply a `PermissionRequest` hook may give is printed on its stdout as
@@ -454,7 +463,7 @@ where the decision is `{"behavior": "allow", "updatedInput"?: object}` or
 the 2.1.270 bundle, and verified live: an allow runs the tool, and the agent reads a
 deny's message as the tool's error). Permission
 prompts, plan approval, and `AskUserQuestion` all arrive through this one hook, which
-is why `Blocked.on` is a union of three and the answer path is one adapter. A question
+is why `Held.on` is a union of three and the answer path is one adapter. A question
 is answered by allowing it with its own input and an `answers` object added, each
 question's text keying the label chosen or the user's own words, several labels
 joined with ", " — the shape Claude Code's own dialog answers with (read out of the
@@ -1193,17 +1202,16 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
   never read as idle. A file that names another pid or another session is refused. A file
 that is missing or refused is logged as an error, once per reason: without it a turn
 stopped with Escape, which fires no Stop, is never heard to end. The
-  registry keeps the last one as `Session.report`. It is the source of whether a
-  session's turn is over: an `idle` applied to a session in `Submitted`, `Working`,
-  `Blocked`, or `AtDialog` ends its turn, however the turn was stopped, with no case for
-  any one way of stopping it. A prompt still `Submitted` was cancelled by an Escape during
-  its hooks, which sets `idle` ~70 ms later, or taken and stopped before the tail read its
-  record: either way its turn ends here, and is told as itself only if a record says it
-  ran. The session is `Idle` at once, with its nudge timed by hands (no `idle_prompt`
-  follows a double Escape). Claude Code sets `idle`
+  registry holds it as the session's state, `Idle` or `Running`, and only a status read
+  moves a session between them. An `idle` ends the open turn, however the turn was
+  stopped, with no case for any one way of stopping it. A prompt whose turn is open and
+  unread was cancelled by an Escape during its hooks, which sets `idle` ~70 ms later, or
+  taken and stopped before the tail read its record: either way its turn ends here, and is
+  told as itself only if a record says it ran. The session is `Idle` at once, with its
+  nudge timed by hands (no `idle_prompt` follows a double Escape). Claude Code sets `idle`
   before the transcript says how the turn ended: an Escape's interrupt record is
   written ~100 ms after, and an Escape'd turn's Stop can fire after it. So the turn is
-  kept as `Session.untold` and is told, once, at the first of five events: its Stop
+  kept `Untold` and is told, once, at the first of five events: its Stop
   (told with the reply the Stop carries), its interrupt record (one naming its prompt), a turn after it
   opening (told before that turn's mark), the session ending, or the tick `UNTOLD_SECONDS` after the
   status, which is what tells a double Escape that leaves no record. Which came first

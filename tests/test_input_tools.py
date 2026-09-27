@@ -14,8 +14,9 @@ from pipecat.processors.aggregators.llm_response_universal import AssistantTurnS
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Command, Input, Key, Text, Type
-from hands.core.events import Ended, Joined, PermissionRequested, Prompted
-from hands.core.session import CommandName, Membership, Permission, PromptId, PromptText, RequestId, SessionId
+from hands.core.events import Ended, Joined, StatusReported
+from hands.core.session import CommandName, Membership, PromptText, SessionId
+from hands.core.status import Busy, Idle, Report, Stamp, Waiting
 from hands.sessions.typing import Untyped
 from hands.sessions.audit import AuditLog, Record
 from hands.sessions.registry import Sessions
@@ -187,7 +188,8 @@ async def test_a_session_waiting_at_a_permission_dialog_is_sent_nothing(tmp_path
     sessions, id = await wrapped(tmp_path, typed.append)
     tools = draft_tools(sessions)
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
-    await sessions.apply(PermissionRequested(id, 0.0, RequestId("r1"), Permission("Bash", {"command": "ls"}), None))
+    # Claude Code says it waits at a dialog, whether or not hands holds the dialog's hook.
+    await sessions.apply(StatusReported(id, Report(Waiting("permission prompt"), Stamp(1)), 0.0))
     assert await call(tools, "send_draft", session=id) == {
         "readback": "untitled in cc-hands is waiting at a dialog, which would take the draft as its answer. The draft is still staged."
     }
@@ -225,8 +227,9 @@ async def test_stop_presses_escape_in_a_working_session_and_nothing_in_one_at_it
     typed: list[Type[Input]] = []
     sessions, id = await wrapped(tmp_path, typed.append)
     tools = keyboard_tools(sessions)
+    await sessions.apply(StatusReported(id, Report(Idle(), Stamp(1)), 0.0))
     assert await call(tools, "interrupt_session", session=id) == {"readback": "untitled in cc-hands is at its prompt, so there is nothing to interrupt."}
-    await sessions.apply(Prompted(id, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(StatusReported(id, Report(Busy(), Stamp(2)), 1.0))
     assert await call(tools, "interrupt_session", session=id) == {"readback": "Typed Escape into untitled in cc-hands."}
     assert typed == [Type(id, tmp_path / "f.sock", 4242, Key("escape"))]
 
@@ -244,7 +247,7 @@ async def test_a_command_fritter_could_not_type_is_said_with_why(tmp_path: Path)
 async def test_a_session_at_a_permission_dialog_is_sent_no_command(tmp_path: Path) -> None:
     typed: list[Type[Input]] = []
     sessions, id = await wrapped(tmp_path, typed.append)
-    await sessions.apply(PermissionRequested(id, 0.0, RequestId("r1"), Permission("Bash", {"command": "ls"}), None))
+    await sessions.apply(StatusReported(id, Report(Waiting("permission prompt"), Stamp(1)), 0.0))
     assert await call(keyboard_tools(sessions), "send_command", session=id, command="compact") == {
         "readback": "untitled in cc-hands is waiting at a dialog, which would take the command as its answer. Nothing was sent."
     }
