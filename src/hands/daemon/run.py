@@ -45,7 +45,7 @@ from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
 from hands.voice.devices import follow_default_devices
-from hands.voice.hold import Move
+from hands.voice.hold import Move, turn_lines
 from hands.voice.keys import drive_quit, drive_talk_key
 from hands.voice.pipeline import (
     AnthropicBackend,
@@ -288,8 +288,8 @@ async def converse(
 
     async def on_move(move: Move) -> None:
         voice.key.move(move)
-        # Debug, not info: every press of Right Shift arms the microphone, a capital letter included.
-        logger.debug(f"talk key: {move}")
+        for line in turn_lines(move):
+            logger.info(line)
         for fact in unheard(move, voice.audio.devices):
             await channel.say(fact)
 

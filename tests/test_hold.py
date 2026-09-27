@@ -8,7 +8,7 @@ import pytest
 
 from hands.daemon import cli
 from hands.voice import keys, talkkey
-from hands.voice.hold import Hold, Idle, KeyEvent, Move, Pressed, Released, Ripe, Typed, step
+from hands.voice.hold import Hold, Idle, KeyEvent, Move, Pressed, Released, Ripe, Typed, step, turn_lines
 
 
 def moves(events: Sequence[KeyEvent]) -> list[Move]:
@@ -115,3 +115,9 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
     assert asked == [None]
     # Refused before the first heartbeat: nothing says a run is starting, so nothing later reads as a crash.
     assert not (tmp_path / "status.json").exists()
+
+
+def test_the_terminal_hears_of_a_turn_opening_and_closing_and_never_of_shift() -> None:
+    assert [line for move in ("arm", "start", "stop") for line in turn_lines(move)] == ["turn: listening", "turn: sent"]
+    assert [line for move in ("arm", "start", "drop") for line in turn_lines(move)] == ["turn: listening", "turn: dropped, not sent"]
+    assert turn_lines("arm") + turn_lines("disarm") == ()

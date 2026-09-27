@@ -290,3 +290,24 @@ def test_a_departure_the_quiet_window_held_back_goes_out_as_the_indicator_finish
     # A departure already posted is not posted twice, and a light that is up has nothing to say.
     assert indicator.last_words(indicator.show(None, down, NOW)) == ()
     assert indicator.last_words(indicator.show(before, up, NOW + timedelta(seconds=21))) == ()
+
+
+def test_the_terminal_shows_hands_from_info_and_everything_else_from_warning() -> None:
+    from loguru import logger
+
+    from hands.daemon.cli import TERMINAL_LEVELS
+
+    shown: list[str] = []
+    sink = logger.add(lambda message: shown.append(message.record["message"]), filter=TERMINAL_LEVELS)
+    try:
+        for module in ("hands.sessions.tail", "pipecat.services.anthropic.llm"):
+            patched = logger.patch(lambda record, module=module: record.update(name=module))
+            for level in ("DEBUG", "INFO", "WARNING"):
+                patched.log(level, f"{module} {level}")
+    finally:
+        logger.remove(sink)
+    assert shown == [
+        "hands.sessions.tail INFO",
+        "hands.sessions.tail WARNING",
+        "pipecat.services.anthropic.llm WARNING",
+    ]

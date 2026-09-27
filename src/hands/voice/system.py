@@ -1,7 +1,7 @@
 """The system channel: what hands says about itself, from a template, with no model in the way.
 
 A failure of the model is spoken without the model, and a failure of speech is posted to the
-screen instead. Every fact is logged as well, which is the path that needs neither.
+screen instead. A fact that neither took is logged as an error, the path that needs neither.
 """
 
 import time
@@ -186,7 +186,8 @@ class SystemChannel:
 
     async def say(self, fact: SystemFact) -> None:
         text = system_text(fact)
-        logger.info(f"system: {text}")
+        # Debug: the terminal is not where a spoken sentence is read again, and the audit records what was announced.
+        logger.debug(f"system: {text}")
         if not self._claim(text):
             # [LAW:no-silent-failure] the log line above is the knowing, which a burst never costs.
             return
@@ -197,6 +198,9 @@ class SystemChannel:
             self._record(Announced(text, "speech"))
         elif await self._notify(f"hands cannot speak, so: {text}"):
             self._record(Announced(text, "screen"))
+        else:
+            # [LAW:no-silent-failure] neither speech nor the screen took it, so the terminal is the one place left.
+            logger.error(f"hands could neither say nor post: {text}")
 
     def _claim(self, fault: str) -> bool:
         """True when this fault may be said now, taking its window as it answers.
