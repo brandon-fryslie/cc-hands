@@ -165,7 +165,8 @@ def config_from_env() -> VoiceConfig:
 QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 
-async def run(config: VoiceConfig, home: Home, heart: heartbeat.Heart, after_crash: bool) -> None:
+async def run(configure: Callable[[], VoiceConfig], home: Home, heart: heartbeat.Heart, after_crash: bool) -> None:
+    config = await _configured(configure, heart)
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
     # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
     failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
@@ -195,6 +196,26 @@ async def run(config: VoiceConfig, home: Home, heart: heartbeat.Heart, after_cra
         logger.remove(failures)
     # Written only by a stop: a crash leaves the last heartbeat naming a pid that is gone, which reads as down.
     heart.beat("stopped", None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
+
+
+async def _configured(configure: Callable[[], VoiceConfig], heart: heartbeat.Heart) -> VoiceConfig:
+    """The configuration, read off the loop while the loop beats "starting".
+
+    Reading it can wait on the user: a keychain prompt to allow access to the Anthropic key. A start that waits on
+    someone reads as starting, and only a stuck loop as not responding.
+    """
+    reading = asyncio.create_task(off_loop(configure, "the configuration read"))
+    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, 0), heart.period.total_seconds()))
+    try:
+        await asyncio.wait({reading, starting}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in (reading, starting):
+            if not task.done():
+                task.cancel()
+    # [LAW:no-silent-failure] the heartbeat only ends by raising, and that error stops the start, as a failed read does.
+    if starting.done():
+        starting.result()
+    return reading.result()
 
 
 async def load(config: VoiceConfig, sessions: Sessions, heart: heartbeat.Heart, quit_event: asyncio.Event, record: Record) -> Voice | None:

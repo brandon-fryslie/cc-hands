@@ -1,9 +1,15 @@
 """The process boundary: which LLM backend the environment names."""
 
+import asyncio
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
 import pytest
 
 from hands.daemon import run
 from hands.daemon.run import ANTHROPIC_MODEL, LOCAL_LLM_KEY, LOCAL_LLM_MODEL, LOCAL_LLM_URL, OPENAI_MODEL, OPENAI_URL, backend_from_env
+from hands.sessions import heartbeat
 from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 
 
@@ -84,3 +90,30 @@ def test_unknown_choice_stops_at_the_door(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("HANDS_LLM", "gpt")
     with pytest.raises(SystemExit):
         backend_from_env()
+
+
+async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path) -> None:
+    # A keychain prompt answered slowly is a start that is waiting, never one that looks stuck.
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.05))
+    config = run.VoiceConfig(llm=AnthropicBackend(api_key="k", model=ANTHROPIC_MODEL), whisper_model="w", voice="v")
+    asked = datetime.now(UTC)
+
+    def slow() -> run.VoiceConfig:
+        time.sleep(0.3)
+        return config
+
+    assert await run._configured(slow, heart) == config  # pyright: ignore[reportPrivateUsage]
+    status = heartbeat.read(heart.path)
+    assert status is not None and status.pipeline == "starting"
+    assert status.written_at - asked >= timedelta(seconds=0.2)
+
+
+def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
+    # Run as the CLI runs it: a SystemExit from a task leaves the event loop itself, so only asyncio.run's caller sees it.
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.05))
+
+    def refused() -> run.VoiceConfig:
+        raise SystemExit("no key")
+
+    with pytest.raises(SystemExit, match="no key"):
+        asyncio.run(run._configured(refused, heart))  # pyright: ignore[reportPrivateUsage]
