@@ -16,6 +16,12 @@ from loguru import logger
 from hands.sessions import audit, heartbeat, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.payload import Rejected
+from hands.voice import talkkey
+
+NOT_GRANTED = (
+    "hands: Input Monitoring is not granted, so hands cannot hear the talk key (Right Shift). Grant it to the app this "
+    "terminal runs in, in System Settings > Privacy & Security > Input Monitoring, restart that app, and run hands again."
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -39,6 +45,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     match arguments.command:
         case "run":
+            # [LAW:no-silent-failure] no run without its talk key: a missing grant is named at the door, before a
+            # heartbeat says starting, and macOS is asked to show the prompt that adds the terminal to the list.
+            if not talkkey.granted():
+                talkkey.ask()
+                print(NOT_GRANTED, file=sys.stderr)
+                return 1
             # Read before this run's first heartbeat replaces it.
             after_crash = crashed_before(home)
             heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)

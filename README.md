@@ -143,7 +143,7 @@ uv run python -m hands.sessions.hookconfig > plugin/hooks/hooks.json
 
 ```
 uv sync
-uv run hands run                        # in a terminal: space to talk, space again to stop, q to quit
+uv run hands run                        # hold Right Shift in any app to talk, release to send; q in its terminal quits
 HANDS_LLM=anthropic uv run hands run     # the key from the keychain's HANDS_LLM_ANT_KEY
 HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
@@ -153,6 +153,9 @@ uv run pytest && uv run pyright
 uv run python evals/narration.py       # real turns through the real summariser; needs the model to be up
 uv run python evals/intermediary.py    # conversations through the intermediary's prompt and tools; same
 ```
+
+`hands run` needs the Input Monitoring grant for the terminal app it runs in (System Settings > Privacy &
+Security > Input Monitoring) to hear Right Shift from other apps; without it, it names the grant and exits.
 
 `pytest` and `pyright` judge the code. The eval judges what a listener hears: it tells four
 real turns, lifted whole out of real transcripts, and checks that the facts are there, that

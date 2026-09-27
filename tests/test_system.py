@@ -38,7 +38,8 @@ from hands.voice.system import (
     system_text,
 )
 from hands.voice.microphone import Devices
-from hands.voice.ptt import Turn
+from hands.voice.hold import Move
+from hands.voice.ptt import PushToTalk
 from hands.voice.whisper import NOTHING_TRANSCRIBED, Whisper
 
 
@@ -66,16 +67,16 @@ def test_each_fact_is_said_from_its_template(fact: SystemFact, said: str) -> Non
 
 
 @pytest.mark.parametrize(
-    ("turn", "devices", "said"),
+    ("move", "devices", "said"),
     [
         ("start", DEAF, (NoMicrophone(),)),
         ("stop", DEAF, ()),
-        ("none", DEAF, ()),
+        ("drop", DEAF, ()),
         ("start", BUILT_IN, ()),
     ],
 )
-def test_a_press_to_talk_with_no_microphone_is_answered(turn: Turn, devices: Devices, said: tuple[NoMicrophone, ...]) -> None:
-    assert unheard(turn, devices) == said
+def test_a_press_to_talk_with_no_microphone_is_answered(move: Move, devices: Devices, said: tuple[NoMicrophone, ...]) -> None:
+    assert unheard(move, devices) == said
 
 
 class Services:
@@ -277,7 +278,7 @@ async def test_whisper_reports_a_turn_it_transcribed_to_nothing_and_only_that(mo
             yield frame
 
     monkeypatch.setattr(WhisperSTTServiceMLX, "run_stt", transcribe)
-    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"))
+    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), key=PushToTalk())
     reports: list[None] = []
 
     @whisper.event_handler(NOTHING_TRANSCRIBED)

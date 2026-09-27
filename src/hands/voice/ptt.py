@@ -18,11 +18,12 @@ from typing import Literal
 
 from pipecat.audio.vad.vad_analyzer import VADAnalyzer, VADParams
 
-# [LAW:types-are-the-program] the key has exactly two positions and a move is
-# only a transition when the position changes; a repeated press or release is
-# a no-op by construction, not by a guard at the call site.
-Key = Literal["up", "down"]
-Turn = Literal["start", "stop", "none"]
+from hands.voice.hold import Move
+
+# [LAW:types-are-the-program] the key is up, down, or up with the turn it held thrown away: `dropped` hears and says
+# nothing, like up, and tells Whisper not to transcribe what the turn recorded. The hold (`hands.voice.hold`) decides
+# every move, so the gate never sees a press or a release that is not a transition.
+Key = Literal["up", "down", "dropped"]
 
 # A 20 ms analysis frame. The VAD counts frames against start_secs/stop_secs,
 # so this is also the resolution of the turn boundary.
@@ -40,11 +41,15 @@ class Gate:
 
     key: Key = "up"
 
-    def moved(self, to: Key) -> tuple["Gate", Turn]:
-        """Return the gate after the key moves and the turn event that implies."""
-        if to == self.key:
-            return self, "none"
-        return Gate(key=to), "start" if to == "down" else "stop"
+    def after(self, move: Move) -> "Gate":
+        """The gate once the hold has moved the turn."""
+        match move:
+            case "start":
+                return Gate("down")
+            case "stop":
+                return Gate("up")
+            case "drop":
+                return Gate("dropped")
 
     @property
     def confidence(self) -> float:
@@ -60,17 +65,16 @@ class Gate:
 
 
 class PushToTalk:
-    """The one owner of the key position; the keyboard edge writes, the microphone and the VAD read."""
+    """The one owner of the key position; the talk key's edge writes, the microphone, the VAD, and Whisper read."""
 
-    # [LAW:no-shared-mutable-globals] two pipeline components consult the key,
+    # [LAW:no-shared-mutable-globals] three pipeline components consult the key,
     # so it lives here once with one writer, not once in each of them.
     def __init__(self) -> None:
         self._gate = Gate()
 
-    def move_key(self, to: Key) -> Turn:
-        """Report a key position; the edge that reads the keyboard calls this."""
-        self._gate, turn = self._gate.moved(to)
-        return turn
+    def move(self, move: Move) -> None:
+        """Report what the hold did to the turn; the edge that reads the keyboard calls this."""
+        self._gate = self._gate.after(move)
 
     @property
     def gate(self) -> Gate:

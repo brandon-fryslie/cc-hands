@@ -131,7 +131,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
     # the release is final, so there is no wait for the user to "say more".
     key = PushToTalk()
     transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key)
-    stt = Whisper(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model))
+    stt = Whisper(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model), key=key)
     llm = build_llm(
         config.llm, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens
     )

@@ -9,9 +9,10 @@ HANDS_HOME when that is set). A Claude Code session is registered when the hands
 plugin is installed and enabled; its hooks are plugin/hooks/hooks.json.
 
 Every heartbeat rewrites ~/.hands/status.json, which `hands status` and the
-menu-bar indicator read. The space bar holds the conversation: press once to
-start talking, press again to stop, `q` quits. With stdin not a terminal there is
-no key edge: sessions are registered and spoken about, but not answered by voice.
+menu-bar indicator read. Right Shift held by itself, in any app, is the talk
+key: held for a moment it opens a turn, released it sends it, and any other key
+pressed while it is held drops the turn unsent. It needs the Input Monitoring
+grant, checked before the run starts. `q` in hands' own terminal quits.
 Latency from key release to the first audio out is logged for every turn.
 """
 
@@ -44,7 +45,8 @@ from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
 from hands.voice.devices import follow_default_devices
-from hands.voice.keys import drive_key
+from hands.voice.hold import Move
+from hands.voice.keys import drive_quit, drive_talk_key
 from hands.voice.pipeline import (
     AnthropicBackend,
     LLMBackend,
@@ -53,7 +55,6 @@ from hands.voice.pipeline import (
     VoiceConfig,
     build_voice,
 )
-from hands.voice.ptt import Key
 from hands.voice.narrator import narrate
 from hands.voice.speech import relay
 from hands.voice.summary import Summariser, summariser
@@ -263,7 +264,7 @@ async def converse(
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
         # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
-        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the key edge no turn starts, so any of
+        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
         # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
@@ -285,23 +286,27 @@ async def converse(
     for task in background:
         task.add_done_callback(stop_if_failed)
 
-    async def on_key(position: Key) -> None:
-        turn = voice.key.move_key(position)
-        logger.info(f"key {position}: turn {turn}")
-        for fact in unheard(turn, voice.audio.devices):
+    async def on_move(move: Move) -> None:
+        voice.key.move(move)
+        logger.info(f"talk key: {move}")
+        for fact in unheard(move, voice.audio.devices):
             await channel.say(fact)
 
-    async def drive_key_once_started() -> None:
-        # [LAW:no-ambient-temporal-coupling] a press reads the devices, which are known once the pipeline has opened
-        # its streams; keys typed before then wait in the terminal.
+    async def drive_talk_key_once_started() -> None:
+        # [LAW:no-ambient-temporal-coupling] a move reads the devices, which are known once the pipeline has opened
+        # its streams; the key is watched from then on.
         await pipeline.started.wait()
-        await drive_key(on_key, quit_event)
+        await drive_talk_key(on_move)
 
+    talk_key = asyncio.create_task(drive_talk_key_once_started(), name="the talk key")
+    talk_key.add_done_callback(stop_if_failed)
+    background.append(talk_key)
+    logger.info("hold Right Shift to talk, release to send; a key pressed while it is held drops the turn.")
     if sys.stdin.isatty():
-        key_edge = asyncio.create_task(drive_key_once_started(), name="the terminal key edge")
-        key_edge.add_done_callback(stop_if_failed)
-        background.append(key_edge)
-        logger.info("space: press to talk, press again to stop. q: quit.")
+        quit_key = asyncio.create_task(drive_quit(quit_event), name="the terminal quit key")
+        quit_key.add_done_callback(stop_if_failed)
+        background.append(quit_key)
+        logger.info("q: quit.")
     # The run's own signal handler stops the pipeline, so Pipecat installs none of its own.
     runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
     pipeline_run = asyncio.create_task(runner.run(voice.worker))

@@ -87,7 +87,7 @@ async def test_the_reply_already_given_to_the_speaker_is_not_heard_after_a_press
     devices = Rig()
     await devices.play(LOUD, at=1.0)
     await devices.capture(at=1.0)  # key up
-    devices.key.move_key("down")
+    devices.key.move("start")
     await devices.capture(at=1.0 + CHUNK + ECHO_PATH_SECS - 0.01)  # the reply still in the room
     await devices.capture(at=1.0 + CHUNK + ECHO_PATH_SECS)  # gone
     assert devices.pushed == [QUIET, QUIET, LOUD]
@@ -95,7 +95,7 @@ async def test_the_reply_already_given_to_the_speaker_is_not_heard_after_a_press
 
 async def test_silence_written_to_the_speaker_keeps_nothing_shut() -> None:
     devices = Rig()
-    devices.key.move_key("down")
+    devices.key.move("start")
     await devices.play(QUIET, at=1.0)
     await devices.capture(at=1.01)
     assert devices.pushed == [LOUD]
@@ -103,7 +103,7 @@ async def test_silence_written_to_the_speaker_keeps_nothing_shut() -> None:
 
 async def test_a_late_callback_is_judged_by_when_its_sound_was_recorded() -> None:
     devices = Rig()
-    devices.key.move_key("down")
+    devices.key.move("start")
     await devices.play(LOUD, at=1.0)
     # Delivered after the speaker went quiet, but recorded 50 ms before: the reply's tail.
     await devices.capture(at=1.0 + CHUNK + ECHO_PATH_SECS + 0.01, age=0.05)
@@ -118,7 +118,7 @@ def test_a_buffer_the_host_cannot_date_is_as_old_as_its_callback() -> None:
 
 async def test_a_chunk_whose_write_an_interruption_cancels_still_holds_the_microphone_shut() -> None:
     devices = Rig()
-    devices.key.move_key("down")
+    devices.key.move("start")
     devices.stream.blocking = True
     devices.now = 1.0
     writing = asyncio.create_task(devices.speaker.write_audio_frame(OutputAudioRawFrame(audio=LOUD, sample_rate=16000, num_channels=1)))
