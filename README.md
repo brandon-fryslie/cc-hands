@@ -105,6 +105,12 @@ The same commands work as `/plugin ...` inside a session. A session picks up a c
 when it starts, or on `/reload-plugins`. Installed from a local directory, the plugin
 runs from this checkout, so a `git pull` here updates the hooks too.
 
+The plugin also holds one skill, `/hands:summaries on|off`. It decides whether every
+finished turn is summarised aloud. Summaries are off until you turn them on, and while
+they are off a finished turn is spoken only when it asks you something. Permission
+requests and plans are spoken either way. The setting lasts across restarts and takes
+effect from the next turn.
+
 The hooks need a Python 3.12 or newer on `PATH` (`python3.14`, `python3.13`,
 `python3.12`, or a `python3` that is new enough); they run hands' own `src` and need no
 venv. Without one, every hook fails saying so. The shim finds hands' home as the CLI

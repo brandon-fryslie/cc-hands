@@ -144,15 +144,6 @@ def launch(home: Home, cwd: Path, path: str) -> subprocess.CompletedProcess[byte
     return subprocess.run([PLUGIN_ROOT / LAUNCHER, "-m", SHIM_MODULE], input=json.dumps(START).encode(), env=environment, cwd=cwd, capture_output=True)
 
 
-@pytest.fixture
-def python312(tmp_path: Path) -> str:
-    """A PATH whose only Python new enough is a python3.12 outside any venv; /usr/bin's python3 on macOS is 3.9."""
-    interpreters = tmp_path / "bin"
-    interpreters.mkdir()
-    (interpreters / "python3.12").symlink_to(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
-    return f"/usr/bin:/bin:{interpreters}"
-
-
 def test_the_plugin_launcher_runs_the_shim_from_the_plugin_as_the_process_claude_code_spawned(home: Home, tmp_path: Path, python312: str) -> None:
     ran = launch(home, tmp_path, python312)
     assert (ran.returncode, ran.stdout, ran.stderr) == (0, b"", b"")

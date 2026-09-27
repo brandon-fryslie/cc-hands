@@ -47,7 +47,9 @@ Nothing here reads text verbatim, and tool calls are content, not noise to filte
 The first eight tickets are the first working version; progress while working and
 subagent narration follow it. A first slice of them runs today: each turn a session
 finishes is summarised in one to three sentences and spoken with the session's name,
-and a session's end is spoken after its last turn. The notes on the items below say
+and a session's end is spoken after its last turn. That summary plays only while
+`/hands:summaries on` has turned it on; off, the default, a finished turn plays only
+what it is waiting on the user to answer. The notes on the items below say
 what each has and what remains.
 
 - **Transcript tail and step recognisers.** While a session is registered, the

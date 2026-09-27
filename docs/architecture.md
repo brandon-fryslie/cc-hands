@@ -513,7 +513,8 @@ never holds the agent up.
 **Installing the hooks.** The repository is a Claude Code marketplace
 (`.claude-plugin/marketplace.json`) holding one plugin, `plugin/`:
 `plugin/.claude-plugin/plugin.json`, `plugin/hooks/hooks.json`, the launcher
-`plugin/hooks/python`, and `plugin/src`, a link to the repository's `src`. The plugin is
+`plugin/hooks/python`, the `/hands:summaries` skill in `plugin/skills/summaries`, and
+`plugin/src`, a link to the repository's `src`. The plugin is
 a directory of its own so that an install copies those and not the repository's venv.
 Installing the plugin installs the hooks; disabling or uninstalling it removes them,
 and no settings file is edited by hands. `hooks.json` is generated from `hookconfig`
