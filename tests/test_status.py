@@ -1,6 +1,7 @@
 """The heartbeat file and what `hands status` concludes from it, with no daemon running."""
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -43,6 +44,13 @@ def test_a_heartbeat_reads_back_as_it_was_written(tmp_path: Path) -> None:
     heartbeat.write(tmp_path / "status.json", written)
     assert heartbeat.read(tmp_path / "status.json") == written
     assert [path.name for path in tmp_path.iterdir()] == ["status.json"]  # nothing left of the replacement
+
+
+def test_a_heartbeat_from_before_turns_were_written_reads_as_no_turn_open(tmp_path: Path) -> None:
+    written = beat(listening=False)
+    old = {key: value for key, value in json.loads(heartbeat.encode(written)).items() if key != "listening"}
+    (tmp_path / "status.json").write_text(json.dumps(old))
+    assert heartbeat.read(tmp_path / "status.json") == written
 
 
 def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -> None:

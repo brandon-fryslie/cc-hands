@@ -206,13 +206,18 @@ class Speaker(LocalAudioOutputTransport):
         # the new stream, so a reply carries on over the move instead of losing its middle.
         await self._attached.wait()
         stream = cast(Playback, self._out_stream)
-        if frame.audio.count(0) != len(frame.audio):
-            # [LAW:no-ambient-temporal-coupling] recorded before the write is awaited: an interruption cancels
-            # the await, but the chunk already handed to PortAudio's thread plays out all the same.
-            # Silence padding makes no sound, so it holds nothing shut.
-            self.sounded_at = self._clock()
-            self.quiet_at = self.sounded_at + _duration(frame) + self._fade
-        await self._writes.run(lambda: stream.write(frame.audio))
+
+        def write() -> None:
+            if frame.audio.count(0) != len(frame.audio):
+                # [LAW:no-ambient-temporal-coupling] dated on the writer thread as the chunk goes to the device, not
+                # when it was handed over: a turn's cue queued ahead of it plays first. An interruption cancels the
+                # await, but the chunk already handed to that thread plays out all the same.
+                # Silence padding makes no sound, so it holds nothing shut.
+                self.sounded_at = self._clock()
+                self.quiet_at = self.sounded_at + _duration(frame) + self._fade
+            stream.write(frame.audio)
+
+        await self._writes.run(write)
         return True
 
     def cue(self, cue: Cue) -> None:

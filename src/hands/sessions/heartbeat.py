@@ -67,7 +67,7 @@ def parse(raw: bytes) -> Status:
         pipeline=_pipeline(fields.text("pipeline")),
         last_audio_out=None if last_audio_out is None else _instant(last_audio_out),
         live_sessions=fields.integer("live_sessions"),
-        listening=fields.flag("listening"),
+        listening=fields.optional_flag("listening"),
     )
 
 

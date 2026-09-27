@@ -345,3 +345,19 @@ async def test_a_tone_that_fails_to_play_loses_only_the_tone() -> None:
     devices.stream.write = written
     await devices.play(LOUD, at=1.0)
     assert devices.stream.written == [LOUD]
+
+
+async def test_a_chunk_queued_behind_a_cue_holds_the_microphone_shut_from_when_it_plays() -> None:
+    devices = Rig()
+    devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
+    devices.key.move("start")
+    devices.stream.blocking = True
+    devices.now = 1.0
+    devices.speaker.cue(OPENED)  # the barge-in's tone, still going to the device
+    writing = asyncio.create_task(devices.speaker.write_audio_frame(OutputAudioRawFrame(audio=LOUD, sample_rate=16000, num_channels=1)))
+    await asyncio.sleep(0.01)
+    devices.now = 1.2  # the tone has gone out; the chunk behind it plays only now
+    devices.stream.blocking = False
+    await writing
+    await devices.capture(at=1.2 + CHUNK + ECHO_PATH_SECS - 0.01)
+    assert devices.pushed == [QUIET]
