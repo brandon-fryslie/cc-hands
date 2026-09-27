@@ -60,7 +60,7 @@ def tailing(transcript: Path) -> Tails:
     return Tails(Registry(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript)))
 
 
-async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_did(tmp_path: Path) -> None:
+async def test_a_session_that_stops_is_heard_by_its_title_and_project_saying_what_the_turn_did(tmp_path: Path) -> None:
     transcript = tmp_path / "s1.jsonl"
     shutil.copy(FIXTURE, transcript)
     recorded: list[Entry] = []
@@ -81,7 +81,7 @@ async def test_a_session_that_stops_is_heard_by_its_title_saying_what_the_turn_d
     finally:
         narrating.cancel()
     assert isinstance(spoken, TTSSpeakFrame)
-    assert spoken.text == "Hands-free interactive coding agent architecture: Loaded the repo conventions and hit an API error."
+    assert spoken.text == "Hands-free interactive coding agent architecture, in cc-hands: Loaded the repo conventions and hit an API error."
     assert spoken.append_to_context
     [turn] = shown
     assert turn.startswith("The user asked:\nI'd like you to go a bit further") and "(Inspect repo layout and remotes)" in turn
@@ -115,8 +115,8 @@ async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_aft
     finally:
         narrating.cancel()
     assert [frame.text for frame in spoken if isinstance(frame, TTSSpeakFrame)] == [
-        "Hands-free interactive coding agent architecture: Hit an API error.",
-        "The session Hands-free interactive coding agent architecture is gone.",
+        "Hands-free interactive coding agent architecture, in cc-hands: Hit an API error.",
+        "The session Hands-free interactive coding agent architecture, in cc-hands is gone.",
     ]
 
 

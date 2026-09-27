@@ -43,7 +43,7 @@ async def call(sessions: Sessions) -> object:
     return result
 
 
-async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: Path) -> None:
+async def test_live_sessions_are_labelled_with_their_newest_ai_title_and_their_project(tmp_path: Path) -> None:
     working, untitled, blocked, asking, ended = (membership(tmp_path, n) for n in ("working", "untitled", "blocked", "asking", "ended"))
     titled(working.transcript, "first guess", "pipeline spike")
     titled(blocked.transcript, "auth refactor")
@@ -65,9 +65,9 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title(tmp_path: P
 
     assert await call(sessions) == {
         "sessions": [
-            {"id": "working", "title": "pipeline spike", "state": "working", "mode": "accept edits mode"},
+            {"id": "working", "title": "pipeline spike, in working", "state": "working", "mode": "accept edits mode"},
             {"id": "untitled", "title": "untitled, in untitled", "state": "idle", "mode": "not reported yet"},
-            {"id": "blocked", "title": "auth refactor", "state": "waiting for permission to use Bash", "mode": "manual mode"},
+            {"id": "blocked", "title": "auth refactor, in blocked", "state": "waiting for permission to use Bash", "mode": "manual mode"},
             {"id": "asking", "title": "untitled, in asking", "state": "waiting for the user to answer its question", "mode": "not reported yet"},
         ]
     }
