@@ -165,8 +165,9 @@ def _stated(event: SessionEvent, was: Session) -> SessionState:
     it is, what it did, and which request it waits on, never whether the session runs.
     """
     match (event, was.state):
-        case (StatusReported(report=Report(status=status.Idle(), stamp=stamp)), Idle() as idle):
-            # Set idle again, or idle, busy, and idle between two reads: the same idle period, still nudged or not.
+        case (StatusReported(report=Report(status=status.Idle(), stamp=stamp)), Idle() as idle) if _waiting(was.turn):
+            # Set idle again with no turn heard since: the same idle period, still nudged or not. One with a turn heard
+            # since, as a prompt cancelled during its hooks, is a new period, and falls to the case below.
             return replace(idle, stamp=stamp)
         case (StatusReported(report=Report(status=status.Idle(), stamp=stamp), at=at), _):
             # Nudged on hands' clock, and by idle_prompt if it comes first: Claude Code sends none in 75 s after some.

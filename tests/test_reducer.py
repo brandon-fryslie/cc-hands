@@ -644,7 +644,7 @@ def test_a_prompt_cancelled_while_its_hooks_ran_is_over_when_claude_code_says_id
     """As seen live on 2.1.282: Escape during UserPromptSubmit puts the prompt back in the box and sets idle ~70 ms
     later, with no Stop and no record. Resent, it is a prompt of its own."""
     state, tellings = told([Prompted(ONE.id, at=5.0, mode=None, prompt=TURN), said(status.Idle(), at=5.1)], holding(IDLE))
-    assert state == holding(replace(IDLE, stamp=Stamp(2000)), Untold(TURN, frozenset(), by=5.1 + UNTOLD_SECONDS, asking=False))
+    assert state == holding(Idle(Stamp(2000), due=5.1 + IDLE_NUDGE_SECONDS), Untold(TURN, frozenset(), by=5.1 + UNTOLD_SECONDS, asking=False))
     state, tellings = told([Prompted(ONE.id, at=9.0, mode=None, prompt=NEXT), Taken(ONE.id, NEXT, None, 9.0)], state)
     # Told as itself, which says nothing of a prompt that never ran: no record carries its id.
     assert (state.sessions[ONE.id].turn, tellings) == (Opened(NEXT), [*TOLD, Snapshot(ONE.id, ONE.cwd)])
@@ -1048,3 +1048,10 @@ def test_a_compaction_between_a_turns_telling_and_its_late_stop_tells_it_once() 
 def test_a_late_record_of_a_session_gone_is_not_audited_as_after_its_end(event: Event) -> None:
     state, _ = told([said(status.Idle()), Ended(ONE.id, "prompt_input_exit")])
     assert reduce(state, event) == (state, [])
+
+
+def test_a_turn_heard_and_ended_inside_one_idle_read_starts_an_idle_period_nudged_again() -> None:
+    """A prompt cancelled during its hooks after a nudge: Claude Code's busy is never read, and the next idle is new."""
+    state, _ = told([Prompted(ONE.id, at=100.0, mode=None, prompt=NEXT), said(status.Idle(), at=100.1)], holding(replace(IDLE, nudged=True), Told(TURN)))
+    assert state.sessions[ONE.id].state == Idle(Stamp(2000), due=100.1 + IDLE_NUDGE_SECONDS)
+    assert nudged(state) == [NUDGE]
