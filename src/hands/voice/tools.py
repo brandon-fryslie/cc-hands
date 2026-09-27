@@ -228,13 +228,19 @@ def _spoken_state(state: SessionState, dialog: Dialog | None) -> str:
             return _waiting_on(on)
         case (LetGo(on=on), _):
             return f"{_waiting_on(on)} at the keyboard, too late to answer by voice"
-        case (Unanswered() | None, Unreported()):
+        case (Unanswered() | None, _):
+            return _stated(state)
+
+
+def _stated(state: SessionState) -> str:
+    match state:
+        case Unreported():
             return "not reported yet"
-        case (Unanswered() | None, Idle()):
+        case Idle():
             return "idle"
-        case (Unanswered() | None, Running(status=going)):
+        case Running(status=going):
             return _running(going)
-        case (Unanswered() | None, Gone()):
+        case Gone():
             return "ended"
 
 
