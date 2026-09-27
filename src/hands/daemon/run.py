@@ -166,7 +166,6 @@ QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 
 async def run(configure: Callable[[], VoiceConfig], home: Home, heart: heartbeat.Heart, after_crash: bool) -> None:
-    config = await _configured(configure, heart)
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
     # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
     failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
@@ -176,15 +175,15 @@ async def run(configure: Callable[[], VoiceConfig], home: Home, heart: heartbeat
     hooks = await serve_hooks(home, sessions)
     quit_event = asyncio.Event()
     # [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the q key, and a failed
-    # background task all set this one event, and it is installed before the models load, so a stop is heard in every phase of the run.
+    # background task all set this one event, and it is installed before the start, so a stop is heard in every phase of the run.
     loop = asyncio.get_running_loop()
     for signal_number in QUIT_SIGNALS:
         loop.add_signal_handler(signal_number, quit_event.set)
+    voice: Voice | None = None
     try:
-        # A restart is back where it was before the models load: every session with a file and a running process is listed.
-        await sweep(home, sessions, frozenset())
-        voice = await load(config, sessions, heart, quit_event, audit.record)
-        if voice is not None:
+        started = await start(configure, home, sessions, heart, quit_event, audit.record)
+        if started is not None:
+            config, voice = started
             summarise = summariser(config.llm, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
             await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas)
     finally:
@@ -198,44 +197,37 @@ async def run(configure: Callable[[], VoiceConfig], home: Home, heart: heartbeat
     heart.beat("stopped", None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def _configured(configure: Callable[[], VoiceConfig], heart: heartbeat.Heart) -> VoiceConfig:
-    """The configuration, read off the loop while the loop beats "starting".
+async def start(
+    configure: Callable[[], VoiceConfig], home: Home, sessions: Sessions, heart: heartbeat.Heart, quit_event: asyncio.Event, record: Record
+) -> tuple[VoiceConfig, Voice] | None:
+    """The configuration and the voice, while the loop beats "starting"; None when told to stop first.
 
-    Reading it can wait on the user: a keychain prompt to allow access to the Anthropic key. A start that waits on
-    someone reads as starting, and only a stuck loop as not responding.
+    [LAW:single-enforcer] one beater says "starting" for the whole start. Its slow steps run off the loop: reading the
+    configuration can wait on the user at a keychain prompt, and loading the models takes seconds. A start that waits
+    reads as starting, and only a stuck loop as not responding.
     """
-    reading = asyncio.create_task(off_loop(configure, "the configuration read"))
-    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, 0), heart.period.total_seconds()))
-    try:
-        await asyncio.wait({reading, starting}, return_when=asyncio.FIRST_COMPLETED)
-    finally:
-        for task in (reading, starting):
-            if not task.done():
-                task.cancel()
-    # [LAW:no-silent-failure] the heartbeat only ends by raising, and that error stops the start, as a failed read does.
-    if starting.done():
-        starting.result()
-    return reading.result()
 
+    async def prepare() -> tuple[VoiceConfig, Voice]:
+        # A restart is back where it was before the models load: every session with a file and a running process is listed.
+        await sweep(home, sessions, frozenset())
+        config = await off_loop(configure, "the configuration read")
+        tools = [audited(tool, record) for tool in intermediary_tools(sessions)]
+        return config, await off_loop(lambda: build_voice(config, tools=tools), "the voice load")
 
-async def load(config: VoiceConfig, sessions: Sessions, heart: heartbeat.Heart, quit_event: asyncio.Event, record: Record) -> Voice | None:
-    """The voice, built off the event loop while the loop beats "starting"; None when told to stop first."""
-    tools = [audited(tool, record) for tool in intermediary_tools(sessions)]
-    # Loading the models takes seconds: off the loop, a slow start reads as starting, and only a stuck loop as not responding.
-    building = asyncio.create_task(off_loop(lambda: build_voice(config, tools=tools), "the voice load"))
+    preparing = asyncio.create_task(prepare())
     starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, sessions.live_count()), heart.period.total_seconds()))
     quitting = asyncio.create_task(quit_event.wait())
     try:
-        await asyncio.wait({building, starting, quitting}, return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait({preparing, starting, quitting}, return_when=asyncio.FIRST_COMPLETED)
     finally:
-        # A stop does not wait for the models: the load's thread is a daemon, which the process exits without.
-        for task in (building, starting, quitting):
+        # A stop does not wait for the models or the keychain: their threads are daemons, which the process exits without.
+        for task in (preparing, starting, quitting):
             if not task.done():
                 task.cancel()
     if starting.done() and not starting.cancelled():
         # [LAW:no-silent-failure] the heartbeat only ends by raising, and its error stops the run as the steady one does.
         starting.result()
-    return building.result() if building.done() and not building.cancelled() else None
+    return preparing.result() if preparing.done() and not preparing.cancelled() else None
 
 
 async def converse(
