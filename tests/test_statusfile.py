@@ -175,6 +175,17 @@ def test_why_a_status_cannot_be_read_is_said_once_not_every_read(tmp_path: Path)
     assert len(warnings) == 1 and "keeps no status" in warnings[0]
 
 
+def test_a_status_file_removed_as_its_session_exits_is_not_said(tmp_path: Path) -> None:
+    live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
+    live.sets("idle", 1000)
+    live.heard(statuses)
+    status_file(live.member).unlink()
+    heard: list[Report] = []
+    assert logged(lambda: heard.extend(live.heard(statuses))) == [] and heard == []
+    busy = live.sets("busy", 2000)
+    assert live.heard(statuses) == [busy]
+
+
 def test_a_read_that_fails_once_neither_hears_the_status_again_nor_goes_unsaid(tmp_path: Path) -> None:
     live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
     live.sets("busy", 1000)
