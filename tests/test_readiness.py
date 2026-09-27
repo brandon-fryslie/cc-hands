@@ -90,6 +90,11 @@ def test_a_claude_that_fails_to_list_is_unknown_and_says_why(root: Path) -> None
     assert isinstance(found, Unknown) and "(3)" in found.said and "not logged in" in found.said
 
 
+def test_a_listing_that_is_not_text_is_unknown(root: Path) -> None:
+    executable(root / "real" / "claude", "#!/bin/sh\nprintf '\\377\\376'\n")
+    assert isinstance(readiness.plugin(f"{root / 'real'}:/usr/bin:/bin"), Unknown)
+
+
 def test_no_claude_to_ask_is_unknown(root: Path) -> None:
     assert isinstance(readiness.plugin(f"{root / 'empty'}:/usr/bin:/bin"), Unknown)
 
@@ -176,7 +181,7 @@ def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: 
             sleeper.kill()
             sleeper.wait()
     assert isinstance(found, Missing)
-    assert found.said.startswith("running sessions hands knows of: 3, and these cannot be typed into")
+    assert found.said.startswith("running sessions hands knows of: 3, and hands cannot reach these:")
     assert f"/code/unwrapped (pid {sleepers[1].pid}) was started outside fritter" in found.said
     assert f"/code/orphaned (pid {sleepers[2].pid}) has lost its fritter, whose socket {root / 'gone.sock'} is gone" in found.said
     assert "/code/wrapped" not in found.said

@@ -43,9 +43,15 @@ def fritter_of(path: Path) -> Path | None:
     except OSError:
         return None
     marked, assigned = lines[1].rstrip(b"\n"), lines[2].rstrip(b"\n").decode(errors="replace")
-    if marked != MARK.encode() or not assigned.startswith("fritter="):
-        return None
-    return Path(shlex.split(assigned.removeprefix("fritter="))[0])
+    try:
+        words = shlex.split(assigned.removeprefix("fritter=")) if assigned.startswith("fritter=") else []
+    except ValueError:  # an unclosed quote: not a line shim_script writes
+        words = []
+    match (marked == MARK.encode(), words):
+        case (True, [fritter]):
+            return Path(fritter)
+        case _:
+            return None
 
 
 def shim_script(fritter: Path) -> str:

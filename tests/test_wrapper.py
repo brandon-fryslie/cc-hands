@@ -122,7 +122,8 @@ def test_any_home_s_shim_names_the_fritter_it_runs_and_nothing_else_names_one(ro
     assert wrapper.fritter_of(other) == root / "it's other" / "fritter"
     unreadable = executable(root / "locked" / "claude", "#!/bin/sh\n")
     unreadable.chmod(0o111)
-    for path in (root / "real" / "claude", root / "nowhere" / "claude", unreadable, root / "bin"):
+    damaged = [executable(root / f"damaged{n}" / "claude", f"#!/bin/sh\n{wrapper.MARK}\n{line}\n") for n, line in enumerate(["fritter=", "fritter='x", "fritter=a b"])]
+    for path in (root / "real" / "claude", root / "nowhere" / "claude", unreadable, root / "bin", *damaged):
         assert wrapper.fritter_of(path) is None
 
 

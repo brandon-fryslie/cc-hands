@@ -63,7 +63,8 @@ def plugin(path: str) -> Finding:
             text=True,
             timeout=LIST_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    # A ValueError is output that is not text.
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         return Unknown(f"cannot ask `claude plugin list` whether the plugin {PLUGIN_ID} is installed: {error}")
     if listed.returncode != 0:
         return Unknown(f"`claude plugin list` failed ({listed.returncode}), so whether the plugin {PLUGIN_ID} is installed is unknown: {listed.stderr.strip()}")
@@ -136,23 +137,21 @@ def sessions_found(running: Sequence[Membership], listening: Collection[Path], u
     """What the running sessions are to hands, given which fritter sockets are there and which files did not parse."""
     unreached = [
         *(line for member in running for line in _untypable(member, listening)),
-        *(f"{file.path} names no session hands can read ({file.error}); hands run removes it" for file in unreadable),
+        *(f"{file.path} names no session hands can read ({file.error}): hands run removes it" for file in unreadable),
     ]
     known = f"running sessions hands knows of: {len(running)}"
     if unreached:
-        return Missing(
-            f"{known}, and these cannot be typed into until restarted from a PATH whose `claude` is hands' shim:"
-            + "".join(f"\n    {line}" for line in unreached)
-        )
+        return Missing(f"{known}, and hands cannot reach these:" + "".join(f"\n    {line}" for line in unreached))
     return Ready(f"{known}, and each can be typed into")
 
 
 def _untypable(member: Membership, listening: Collection[Path]) -> list[str]:
     where = f"{member.cwd} (pid {member.pid})"
+    restart = "restart it from a PATH whose `claude` is hands' shim"
     match member.fritter:
         case None:
-            return [f"{where} was started outside fritter"]
+            return [f"{where} was started outside fritter, so it cannot be typed into: {restart}"]
         case socket if socket not in listening:
-            return [f"{where} has lost its fritter, whose socket {socket} is gone"]
+            return [f"{where} has lost its fritter, whose socket {socket} is gone, so it cannot be typed into: {restart}"]
         case _:
             return []
