@@ -23,8 +23,8 @@ from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 
-# How often the heartbeat is looked at: a daemon that dies is shown within this of the verdict changing.
-LOOK_SECONDS = 1.0
+# How often the heartbeat is looked at: a turn opening, or a daemon dying, is shown within this of the file saying so.
+LOOK_SECONDS = 0.2
 # How long the notice posted on the way out may take before the indicator exits without it.
 LAST_POST_SECONDS = 5.0
 

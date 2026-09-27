@@ -74,7 +74,7 @@ async def shim(home: Home, payload: Mapping[str, object], fritter: str | None = 
 
 def beat(home: Home, pid: int, written_ago: timedelta, pipeline: heartbeat.PipelineState = "running") -> None:
     now = datetime.now(UTC)
-    heartbeat.write(home.status, heartbeat.Status(pid, now, now - written_ago, heartbeat.HEARTBEAT, pipeline, None, 0))
+    heartbeat.write(home.status, heartbeat.Status(pid, now, now - written_ago, heartbeat.HEARTBEAT, pipeline, None, 0, False))
 
 
 @pytest.mark.parametrize("payload", [START, PROMPT, ASK], ids=["start", "prompt", "permission"])

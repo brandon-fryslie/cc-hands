@@ -1,6 +1,7 @@
 """The heartbeat file and what `hands status` concludes from it, with no daemon running."""
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -32,6 +33,7 @@ def beat(**changes: object) -> heartbeat.Status:
         "pipeline": "running",
         "last_audio_out": NOW - timedelta(seconds=12),
         "live_sessions": 2,
+        "listening": False,
         **changes,
     }
     return heartbeat.Status(**fields)  # pyright: ignore[reportArgumentType]
@@ -44,15 +46,23 @@ def test_a_heartbeat_reads_back_as_it_was_written(tmp_path: Path) -> None:
     assert [path.name for path in tmp_path.iterdir()] == ["status.json"]  # nothing left of the replacement
 
 
+def test_a_heartbeat_from_before_turns_were_written_reads_as_no_turn_open(tmp_path: Path) -> None:
+    written = beat(listening=False)
+    old = {key: value for key, value in json.loads(heartbeat.encode(written)).items() if key != "listening"}
+    (tmp_path / "status.json").write_text(json.dumps(old))
+    assert heartbeat.read(tmp_path / "status.json") == written
+
+
 def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT)
-    heart.beat("starting", None, 0)
+    heart.beat("starting", None, 0, False)
     first = heartbeat.read(heart.path)
-    heart.beat("running", NOW, 2)
+    heart.beat("running", NOW, 2, True)
     second = heartbeat.read(heart.path)
     assert first is not None and second is not None
     assert (first.pid, first.started_at, first.heartbeat, first.pipeline, first.live_sessions) == (4242, NOW, BEAT, "starting", 0)
     assert (second.pid, second.started_at, second.heartbeat, second.pipeline, second.last_audio_out) == (4242, NOW, BEAT, "running", NOW)
+    assert (first.listening, second.listening) == (False, True)
     assert second.written_at >= first.written_at
 
 
@@ -222,6 +232,16 @@ def test_each_verdict_has_its_own_light_and_the_broken_ones_warn(tmp_path: Path)
     assert [seen.title.startswith("⚠︎") for seen in shown] == [False, True, True, False, True]
     assert indicator.show(None, heartbeat.Stopped(beat(pipeline="stopped")), NOW).light == "off"
     assert [seen.text for seen in shown] == [heartbeat.describe(verdict, NOW) for verdict in verdicts]
+
+
+def test_an_open_turn_shows_in_the_menu_bar_and_is_never_a_notice() -> None:
+    idle = indicator.show(None, heartbeat.Up(beat()), NOW)
+    talking = indicator.show(idle, heartbeat.Up(beat(listening=True)), NOW)
+    back = indicator.show(talking, heartbeat.Up(beat()), NOW)
+    assert (idle.title, talking.title, back.title) == ("✋", "✋ 🎙", "✋")
+    assert talking.light == "up" and talking.notices == back.notices == ()
+    # A stuck daemon's last word was a turn open, and stuck is what shows.
+    assert indicator.show(talking, heartbeat.Unresponsive(beat(listening=True)), NOW).title == "⚠︎ hands stuck"
 
 
 def shown_over(looks: Sequence[tuple[heartbeat.Verdict, datetime]]) -> list[tuple[str, ...]]:

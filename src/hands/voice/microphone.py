@@ -41,6 +41,7 @@ from pipecat.transports.local.audio import (
 )
 
 from hands.voice.coreaudio import DefaultDevices, default_devices
+from hands.voice.cues import Cue, sound
 from hands.voice.ptt import Gate, KeyedAudio, PushToTalk
 from hands.voice.threads import SerialThread, off_loop
 
@@ -205,14 +206,43 @@ class Speaker(LocalAudioOutputTransport):
         # the new stream, so a reply carries on over the move instead of losing its middle.
         await self._attached.wait()
         stream = cast(Playback, self._out_stream)
-        if frame.audio.count(0) != len(frame.audio):
-            # [LAW:no-ambient-temporal-coupling] recorded before the write is awaited: an interruption cancels
-            # the await, but the chunk already handed to PortAudio's thread plays out all the same.
-            # Silence padding makes no sound, so it holds nothing shut.
-            self.sounded_at = self._clock()
-            self.quiet_at = self.sounded_at + _duration(frame) + self._fade
-        await self._writes.run(lambda: stream.write(frame.audio))
+
+        def write() -> None:
+            if frame.audio.count(0) != len(frame.audio):
+                # [LAW:no-ambient-temporal-coupling] dated on the writer thread as the chunk goes to the device, not
+                # when it was handed over: a turn's cue queued ahead of it plays first. An interruption cancels the
+                # await, but the chunk already handed to that thread plays out all the same.
+                # Silence padding makes no sound, so it holds nothing shut.
+                self.sounded_at = self._clock()
+                self.quiet_at = self.sounded_at + _duration(frame) + self._fade
+            stream.write(frame.audio)
+
+        await self._writes.run(write)
         return True
+
+    def cue(self, cue: Cue) -> None:
+        """Hand a turn's cue to the stream attached now, ahead of the pipeline's next chunk, and not wait for it to play.
+
+        [LAW:no-ambient-temporal-coupling] the talk key's edge calls this, and the key's next move never waits on the
+        speaker, which a reopen holds for seconds. A cue belongs to the moment of its edge: with no stream attached
+        there is nothing to play it on, and a tone that fails to play loses only the tone.
+
+        It moves `sounded_at`, since it is sound given to the speaker, and never `quiet_at`: a cue is not the
+        pipeline's speech, and holding the microphone shut behind the one that opens a turn would cut the turn's first word.
+        """
+        match self._attached.is_set():
+            case False:
+                logger.warning(f"no speaker is attached; the tone for {cue.line!r} is not played")
+            case True:
+                stream = cast(Playback, self._out_stream)
+                audio = sound(cue, self.sample_rate, self._params.audio_out_channels)
+
+                def write() -> None:
+                    # A stream a reopen has stopped refuses the write; the writer thread says so and carries on.
+                    self.sounded_at = self._clock()
+                    stream.write(audio)
+
+                self._writes.give(write)
 
 
 def _duration(frame: OutputAudioRawFrame) -> float:

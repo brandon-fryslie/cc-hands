@@ -15,6 +15,7 @@ from pipecat.utils.asyncio.task_manager import TaskManager
 from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
+from hands.voice.cues import OPENED, sound
 from hands.voice.coreaudio import DefaultDevices
 from hands.voice.microphone import ECHO_PATH_SECS, Devices, Input, KeyedAudioTransport, NoInput, Output, PortAudio, buffer_age, default_input, heard
 from hands.voice.ptt import Gate, PushToTalk
@@ -303,3 +304,60 @@ def test_only_portaudios_own_no_default_input_reads_as_no_microphone() -> None:
     refusing = SimpleNamespace(get_default_input_device_info=lambda: (_ for _ in ()).throw(OSError(-9999, "Unanticipated host error")))
     with pytest.raises(OSError, match="host error"):
         default_input(cast(PortAudio, refusing))
+
+
+async def test_a_turns_cue_is_played_at_once_and_holds_nothing_shut() -> None:
+    devices = Rig()
+    devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]  # as setup sets it
+    devices.key.move("start")
+    devices.now = 1.0
+    devices.speaker.cue(OPENED)
+    await devices.capture(at=1.0)  # a word said over the cue
+    await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
+    assert devices.stream.written == [sound(OPENED, 16000, 1)]
+    assert devices.pushed == [LOUD]
+    assert devices.speaker.sounded_at == 1.0
+
+
+async def test_a_cue_never_holds_the_talk_key_on_the_speaker() -> None:
+    devices = Rig()
+    devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
+    devices.stream.blocking = True  # a write stuck on a device that is going
+    devices.speaker.cue(OPENED)
+    devices.speaker.detach()  # a reopen under way
+    devices.speaker.cue(OPENED)
+    devices.stream.blocking = False
+    await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
+    assert devices.stream.written == [sound(OPENED, 16000, 1)]
+
+
+async def test_a_tone_that_fails_to_play_loses_only_the_tone() -> None:
+    devices = Rig()
+    devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
+    written = devices.stream.write
+
+    def stopped(audio: bytes) -> None:
+        raise OSError("Stream is stopped")
+
+    devices.stream.write = stopped
+    devices.speaker.cue(OPENED)
+    await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
+    devices.stream.write = written
+    await devices.play(LOUD, at=1.0)
+    assert devices.stream.written == [LOUD]
+
+
+async def test_a_chunk_queued_behind_a_cue_holds_the_microphone_shut_from_when_it_plays() -> None:
+    devices = Rig()
+    devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
+    devices.key.move("start")
+    devices.stream.blocking = True
+    devices.now = 1.0
+    devices.speaker.cue(OPENED)  # the barge-in's tone, still going to the device
+    writing = asyncio.create_task(devices.speaker.write_audio_frame(OutputAudioRawFrame(audio=LOUD, sample_rate=16000, num_channels=1)))
+    await asyncio.sleep(0.01)
+    devices.now = 1.2  # the tone has gone out; the chunk behind it plays only now
+    devices.stream.blocking = False
+    await writing
+    await devices.capture(at=1.2 + CHUNK + ECHO_PATH_SECS - 0.01)
+    assert devices.pushed == [QUIET]
