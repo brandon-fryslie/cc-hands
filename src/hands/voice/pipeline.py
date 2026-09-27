@@ -32,7 +32,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
-from hands.voice.ptt import KeyVAD, PushToTalk
+from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import SpokenForm
 from hands.voice.tools import Tool
 from hands.voice.turnstop import KeyTurnStop
@@ -126,9 +126,11 @@ class Voice:
 def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
     """Wire mic, push-to-talk, Whisper on MLX, Claude, pocket-tts, speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
-    # it mutes the microphone at the transport and it is the VAD the turn
-    # strategies read. The turn opens on the press and closes on the release;
-    # the release is final, so there is no wait for the user to "say more".
+    # it mutes the microphone at the transport, and Whisper reads it off each
+    # frame to push the VAD frames the turn strategies act on, so the user
+    # aggregator runs no VAD of its own. The turn opens on the press and closes
+    # on the release; the release is final, so there is no wait for the user to
+    # "say more".
     key = PushToTalk()
     transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key)
     stt = Whisper(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model))
@@ -147,12 +149,12 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
 
     turns = UserTurnStrategies(
         start=[VADUserTurnStartStrategy()],
-        stop=[KeyTurnStop(user_speech_timeout=0.0)],
+        stop=[KeyTurnStop()],
     )
     context = LLMContext(tools=list(tools))
     pair = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=KeyVAD(key), user_turn_strategies=turns),
+        user_params=LLMUserAggregatorParams(user_turn_strategies=turns),
     )
     user_aggregator, assistant_aggregator = pair.user(), pair.assistant()
 

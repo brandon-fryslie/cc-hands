@@ -1319,8 +1319,10 @@ and its newlines stay inside the prompt because fritter pastes it.
 ## The audio side
 
 **The gate is the turn boundary and the mute.** Pipecat's turn strategies act on
-voice-activity frames, so the key is the VAD: a `KeyVAD` whose confidence is 1.0
-while the key is down and 0.0 otherwise. Whisper keeps a second of pre-roll, so the
+voice-activity frames, so the key is the VAD: every microphone frame carries the key
+it was captured under, and Whisper pushes the VAD frames where those keys change,
+numbering each turn, so the turn the strategies see and the audio Whisper transcribes
+are cut at the same frame. Whisper keeps a second of pre-roll, so the
 key is also the mute: microphone bytes become silence of the same length while the
 key is up. Frames flow at full rate either way; only their content changes. The press
 starts the turn, the release ends it and is final, and a press during playback
@@ -1372,8 +1374,8 @@ lose its only input device. Then the microphone holds a stream of nothing (`NoIn
 which is opened, started, stopped, and closed like any other. The move is said as
 `No microphone: hands cannot hear you. Speaking on …`. A daemon that starts that way
 says `hands is up, but there is no microphone, so it cannot hear you.` instead of
-failing its setup and stopping. With no stream, no frame reaches the
-VAD and no turn starts, so the key edge answers a press itself:
+failing its setup and stopping. With no stream, no frame reaches
+Whisper and no turn starts, so the key edge answers a press itself:
 `There is no microphone, so hands cannot hear you.` A microphone plugged in later
 changes the default input, so the follower opens it like any other move. This is
 tested against a PortAudio that lists no default input. A MacBook cannot be put in

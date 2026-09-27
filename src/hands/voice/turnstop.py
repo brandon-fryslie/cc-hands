@@ -1,50 +1,53 @@
-"""The end of a user turn that has no text: one the talk key dropped, or one Whisper heard nothing in.
+"""The end of a user turn: once Whisper is done with every hold of the key the turn took in.
 
-Pipecat's speech-timeout strategy ends a turn only once it holds a transcript, so a turn that will never have one stays
-open until the 5 s stop timeout; meanwhile a new press opens no turn of its own and interrupts nothing it should. Whisper
-says, with `TurnUnheard`, that the turn it just closed has no text, and `KeyTurnStop` ends the turn on it.
+A turn is Pipecat's; a hold is the key's. They are not one to one: Pipecat keeps a turn open until it ends, so a press
+while Whisper is still transcribing the last hold joins that turn rather than opening one. Whisper numbers each hold as
+it opens, and says when it is done with it, after pushing whatever text the hold had, or at once for a hold the key
+dropped. The turn ends when every hold it took in is done, so no hold's words are left out of it, and a hold with no
+words ends it as promptly as one with.
 """
 
 from dataclasses import dataclass
 
-from pipecat.frames.frames import DataFrame, Frame
+from pipecat.frames.frames import DataFrame, Frame, VADUserStartedSpeakingFrame
 from pipecat.turns.types import ProcessFrameResult
-from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
+from pipecat.turns.user_stop import BaseUserTurnStopStrategy
 
 
-@dataclass
-class TurnUnheard(DataFrame):
-    """The user turn Whisper just closed has no text, and never will."""
+@dataclass(kw_only=True)
+class TurnOpened(VADUserStartedSpeakingFrame):
+    """The user started speaking: the key went down, opening the hold with this number."""
+
+    hold: int
 
 
-class KeyTurnStop(SpeechTimeoutUserTurnStopStrategy):
-    """The speech-timeout strategy, which also ends a turn Whisper said has no text, once the VAD has stopped too.
+@dataclass(kw_only=True)
+class TurnResolved(DataFrame):
+    """Whisper is done with the hold with this number: whatever text it had has been pushed ahead of this."""
 
-    Whisper cuts turns by the key each frame was captured under, and the VAD by the key when the aggregator reads a
-    frame, so either may come first; Pipecat will not end a turn while the VAD says the user is speaking.
-    """
+    hold: int
 
-    def __init__(self, *, user_speech_timeout: float) -> None:
-        super().__init__(user_speech_timeout=user_speech_timeout)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
-        self._unheard = False
 
-    async def handle_user_turn_started(self) -> None:
-        await super().handle_user_turn_started()
-        self._unheard = False
+class KeyTurnStop(BaseUserTurnStopStrategy):
+    """Ends the user turn when every hold opened in it has been resolved."""
 
-    async def handle_user_turn_stopped(self) -> None:
-        await super().handle_user_turn_stopped()
-        self._unheard = False
+    def __init__(self) -> None:
+        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
+        # [LAW:one-source-of-truth] Whisper opens and resolves the holds; this is the set it has opened and not yet
+        # resolved. A set, because a dropped hold is resolved at once, ahead of an earlier one still being transcribed.
+        self._open: set[int] = set()
 
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
-        result = await super().process_frame(frame)
         match frame:
-            case TurnUnheard():
-                self._unheard = True
+            case TurnOpened(hold=hold):
+                self._open.add(hold)
+            case TurnResolved(hold=hold):
+                # Whisper opens a hold, a system frame, before it pushes anything that resolves it, and a system frame is
+                # never overtaken; a hold resolved but never opened is Whisper's bug, so it fails here.
+                self._open.remove(hold)
+                if not self._open:
+                    # A turn whose holds had no text ends with nothing aggregated, so nothing is sent to the model.
+                    await self.trigger_user_turn_stopped()
             case _:
                 pass
-        # The aggregator ends the turn with nothing aggregated, so nothing is sent to the model.
-        if self._unheard and not self._vad_user_speaking:
-            self._unheard = False
-            await self.trigger_user_turn_stopped()
-        return result
+        return ProcessFrameResult.CONTINUE

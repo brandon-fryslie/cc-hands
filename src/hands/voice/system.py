@@ -236,7 +236,7 @@ class SystemChannel:
 
 
 def unheard(move: Move, devices: Devices) -> tuple[NoMicrophone, ...]:
-    """What a key press says when nothing will hear it: with no microphone no frame reaches the VAD, so no turn
+    """What a key press says when nothing will hear it: with no microphone no frame reaches Whisper, so no turn
     starts and nothing else would answer the press."""
     match move, devices:
         case "start", Devices(input=None):
