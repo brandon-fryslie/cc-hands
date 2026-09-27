@@ -81,7 +81,7 @@ async def test_a_session_that_stops_is_heard_by_its_title_and_project_saying_wha
     finally:
         narrating.cancel()
     assert isinstance(spoken, TTSSpeakFrame)
-    assert spoken.text == "Hands-free interactive coding agent architecture, in cc-hands: Loaded the repo conventions and hit an API error."
+    assert spoken.text == "Hands-free interactive coding agent architecture in cc-hands: Loaded the repo conventions and hit an API error."
     assert spoken.append_to_context
     [turn] = shown
     assert turn.startswith("The user asked:\nI'd like you to go a bit further") and "(Inspect repo layout and remotes)" in turn
@@ -115,8 +115,8 @@ async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_aft
     finally:
         narrating.cancel()
     assert [frame.text for frame in spoken if isinstance(frame, TTSSpeakFrame)] == [
-        "Hands-free interactive coding agent architecture, in cc-hands: Hit an API error.",
-        "The session Hands-free interactive coding agent architecture, in cc-hands is gone.",
+        "Hands-free interactive coding agent architecture in cc-hands: Hit an API error.",
+        "The session Hands-free interactive coding agent architecture in cc-hands is gone.",
     ]
 
 
@@ -166,7 +166,7 @@ async def test_with_summaries_off_a_finished_turn_is_not_spoken_and_turning_them
         narrating.cancel()
         relaying.cancel()
     assert isinstance(heard, LLMMessagesAppendFrame) and "is waiting for permission to use Bash" in str(heard.messages)
-    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "untitled, in cc-hands: It fixed the test."
+    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "untitled in cc-hands: It fixed the test."
     # The model was never asked about the quiet turn, and the next telling holds nothing of it.
     [told] = shown
     assert "and push it" in told and "fix it" not in told
@@ -206,7 +206,7 @@ async def test_a_switch_that_cannot_be_read_is_logged_and_the_turn_told_as_the_d
     finally:
         narrating.cancel()
         logger.remove(sink)
-    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "untitled, in cc-hands: It said: Want me to push it?"
+    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "untitled in cc-hands: It said: Want me to push it?"
     [failure] = [entry for entry in recorded if isinstance(entry, Failure)]
     assert "cannot read whether spoken summaries are on" in failure.message and "neither on nor off" in failure.message
 

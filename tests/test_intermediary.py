@@ -23,7 +23,7 @@ sys.modules["intermediary_eval"] = evaluation
 _SPEC.loader.exec_module(evaluation)
 
 AUTH = {"id": "5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34", "title": "auth refactor", "state": "idle", "mode": "manual mode"}
-FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "title": "untitled, in cc-hands", "state": "working", "mode": "not reported yet"}
+FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "title": "untitled in cc-hands", "state": "working", "mode": "not reported yet"}
 
 
 def names(sessions: Sessions) -> list[str]:
@@ -34,7 +34,7 @@ def test_the_briefing_names_each_session_by_title_state_and_mode_with_the_id_for
     note = briefing([AUTH, FRESH])
     assert note.startswith("[hands] ")
     assert f'"auth refactor" (id {AUTH["id"]}), idle, permission mode: manual mode' in note
-    assert f'"untitled, in cc-hands" (id {FRESH["id"]}), working, permission mode: not reported yet' in note
+    assert f'"untitled in cc-hands" (id {FRESH["id"]}), working, permission mode: not reported yet' in note
     assert "Say nothing about this unless the user asks." in note
 
 
