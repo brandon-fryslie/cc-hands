@@ -42,7 +42,7 @@ def test_the_skill_turns_summaries_on_and_off_and_says_where_they_stand(tmp_path
     on = switch(home, tmp_path, python312, "on")
     assert (on.returncode, on.stdout, on.stderr) == (0, "Spoken turn summaries are on: every turn a session finishes is told aloud.\n", "")
     assert summaries(home) == "on"
-    assert switch(home, tmp_path, python312, "off").returncode == 0
+    assert switch(home, tmp_path, python312, "Off").returncode == 0
     assert summaries(home) == "off"
 
 

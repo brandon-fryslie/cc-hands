@@ -56,7 +56,8 @@ def described(to: Summaries) -> str:
 def main(argv: Sequence[str]) -> int:
     try:
         home = default_home()
-        match argv:
+        # [LAW:parse-dont-validate] read as a person types it: "On" is on.
+        match [argument.lower() for argument in argv]:
             case []:
                 print(described(summaries(home)))
             case ["on" | "off" as to]:

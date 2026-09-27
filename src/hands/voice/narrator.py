@@ -1,5 +1,6 @@
 """Sessions' stories, heard: each turn a session finishes is told from the tail, summarised, and spoken with its name, and each session gone is said after its last turn."""
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 
@@ -10,14 +11,14 @@ from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core.delta import Delta
 from hands.core.effects import SessionGone, Summarise
-from hands.core.narration import Segment, narration, shown
+from hands.core.narration import narration, shown
 from hands.core.session import PromptId, SessionId
 from hands.core.turn import Budget, Interruption
 from hands.sessions.audit import Recounted, Record
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
-from hands.sessions.summaries import Summaries
+from hands.sessions.summaries import DEFAULT, Summaries
 from hands.sessions.tail import Tails
 from hands.voice.readback import spoken_name
 from hands.voice.summary import Summariser, SummaryFailed
@@ -42,7 +43,7 @@ async def narrate(
 ) -> None:
     """Speak each finished turn and each session gone, in the order they happened, until cancelled.
 
-    `aloud` is where the summaries switch stands, asked at every finished turn so a change is heard from the next one.
+    `aloud` reads where the summaries switch stands, at every finished turn, so a change is heard from the next one told.
     """
     read = changes or NoChanges()
     while True:
@@ -50,7 +51,8 @@ async def narrate(
         name = spoken_name(sessions, story.session)
         match story:
             case Summarise(session=session, turn=turn, closing=closing):
-                spoken = await recount(tails, session, turn, closing, name, summarise, record, budget, await read.taken(session), aloud)
+                switch = await _switch(aloud)
+                spoken = await recount(tails, session, turn, closing, name, summarise, record, budget, await read.taken(session), switch)
             case SessionGone():
                 spoken = TTSSpeakFrame(f"The session {name} is gone.")
         if spoken is not None:
@@ -67,7 +69,7 @@ async def recount(
     record: Record,
     budget: Budget,
     delta: Delta,
-    aloud: Callable[[], Summaries],
+    switch: Summaries,
 ) -> Frame | None:
     """The frame that tells the user what the turn did beyond what was told before, or None when there is nothing new.
 
@@ -80,12 +82,13 @@ async def recount(
     """
     try:
         telling = await tails.tell(session, turn, closing)
-        switch = aloud()
     except _FAILURES as error:
-        return _unsummarised(session, name, error, ())
+        return _unsummarised(session, name, error, "")
     if telling is None or not (telling.turn.steps or delta):
         logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")
         return None
+    # What plays with no model: whatever the turn is waiting on the listener to answer.
+    unsaid = narration("", telling.turn, delta, HEADLINE_SENTENCES)
     match switch:
         case "on":
             began = time.monotonic()
@@ -96,7 +99,7 @@ async def recount(
                 headline = await summarise(shown(telling.turn, delta, budget)) if did else ""
             except _FAILURES as error:
                 # What the turn is waiting on is the daemon's to find and needs no model, and a question is always said.
-                return _unsummarised(session, name, error, narration("", telling.turn, delta, HEADLINE_SENTENCES).questions)
+                return _unsummarised(session, name, error, unsaid.asked())
             # The number this whole epic turns on, and until now invisible: how long a finished turn waited on the
             # model before it could be spoken at all.
             logger.info(f"session {session} was summarised in {time.monotonic() - began:.2f} s")
@@ -105,8 +108,7 @@ async def recount(
             told = narration(headline, telling.turn, delta, HEADLINE_SENTENCES)
             spoken = told.said()
         case "off":
-            told = narration("", telling.turn, delta, HEADLINE_SENTENCES)
-            spoken = told.asked()
+            told, spoken = unsaid, unsaid.asked()
             logger.info(f"session {session} finished a turn, and spoken summaries are off, so {'only its question is' if spoken else 'nothing is'} said")
     record(
         Recounted(
@@ -122,7 +124,20 @@ async def recount(
     return TTSSpeakFrame(f"{name}: {spoken}") if spoken else None
 
 
-def _unsummarised(session: SessionId, name: str, error: Exception, questions: tuple[Segment, ...]) -> Frame:
+async def _switch(aloud: Callable[[], Summaries]) -> Summaries:
+    """Where the summaries switch stands, read off the loop the speaker runs on; the default where it cannot be read.
+
+    [LAW:no-silent-failure] a switch that cannot be read is logged as the error it is, which is an audit line, and the
+    turn is still told, as the default tells it: its question is never lost to a file edited by hand.
+    """
+    try:
+        return await asyncio.to_thread(aloud)
+    except (Rejected, OSError) as error:
+        logger.error(f"cannot read whether spoken summaries are on, so this turn is told as they are by default, {DEFAULT}: {error}")
+        return DEFAULT
+
+
+def _unsummarised(session: SessionId, name: str, error: Exception, asked: str) -> Frame:
     """What is said of a turn that could not be summarised: that, and what it is waiting on the listener to answer.
 
     [LAW:no-silent-failure] said without the model, as a system fact is, and logged with the reason, which is an audit
@@ -130,4 +145,4 @@ def _unsummarised(session: SessionId, name: str, error: Exception, questions: tu
     whole.
     """
     logger.error(f"cannot summarise the turn session {session} finished: {type(error).__name__}: {error}")
-    return TTSSpeakFrame(" ".join([f"{name} finished a turn, and I could not summarise it.", *(question.text for question in questions)]), append_to_context=False)
+    return TTSSpeakFrame(" ".join(part for part in (f"{name} finished a turn, and I could not summarise it.", asked) if part), append_to_context=False)
