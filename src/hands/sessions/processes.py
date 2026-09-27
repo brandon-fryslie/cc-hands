@@ -39,7 +39,7 @@ def still_running(pid: int, seen_at: float, starts: Mapping[int, float]) -> bool
 def process_starts(pids: Collection[int]) -> dict[int, float]:
     """When each pid's process started, in wall-clock seconds; a pid no process has is absent.
 
-    One sysctl a pid, about ten microseconds, so it is asked on the event loop and once a second from the menu bar alike.
+    One sysctl a pid, about ten microseconds, so it is asked on the event loop and five times a second from the menu bar alike.
     """
     return {pid: start for pid in pids if (start := _process_start(pid)) is not None}
 

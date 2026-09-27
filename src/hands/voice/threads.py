@@ -34,11 +34,15 @@ class SerialThread:
         while True:
             self._queue.get()()
 
+    def give(self, work: Callable[[], None]) -> None:
+        """Queue work behind everything given before it, and return without waiting for it to run."""
+        self._queue.put(work)
+
     async def run[T](self, work: Callable[[], T]) -> T:
         """The result of work, once everything given before it has finished and it has run."""
         loop = asyncio.get_running_loop()
         settled: asyncio.Future[T] = loop.create_future()
-        self._queue.put(lambda: _settle(loop, settled, work))
+        self.give(lambda: _settle(loop, settled, work))
         return await settled
 
 

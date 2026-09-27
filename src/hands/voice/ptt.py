@@ -58,6 +58,11 @@ class Gate:
             case "drop":
                 return Gate("dropped")
 
+    @property
+    def turn_open(self) -> bool:
+        """The key has been held past the hold: what the microphone hears now is the user's turn."""
+        return self.key == "down"
+
     def audible(self, audio: bytes) -> bytes:
         """The microphone bytes as the pipeline hears them: intact while the key is pressed, silence otherwise."""
         # [LAW:dataflow-not-control-flow] a frame of the same length always

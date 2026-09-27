@@ -45,13 +45,14 @@ def cues(move: Move) -> tuple[Cue, ...]:
 def sound(cue: Cue, sample_rate: int, channels: int) -> bytes:
     """The cue's tones one after another as 16-bit PCM, each followed by a tone's length of silence."""
     n = round(sample_rate * CUE_SECONDS)
+    seconds = n / sample_rate
     t = np.arange(n) / sample_rate
     # A raised-cosine envelope: a tone that starts or stops at full level clicks.
     envelope = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n) / (n - 1))
     tones: list[np.ndarray] = []
     for start, end in cue.glides:
         # The phase of a linear glide from `start` to `end` Hz over the tone.
-        phase = 2 * np.pi * (start * t + (end - start) * t**2 / (2 * CUE_SECONDS))
+        phase = 2 * np.pi * (start * t + (end - start) * t**2 / (2 * seconds))
         tones += [CUE_LEVEL * envelope * np.sin(phase), np.zeros(n)]
     mono = (np.concatenate(tones) * 32767).astype(np.int16)
     return np.repeat(mono, channels).tobytes()

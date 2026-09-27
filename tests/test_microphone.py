@@ -311,8 +311,37 @@ async def test_a_turns_cue_is_played_at_once_and_holds_nothing_shut() -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]  # as setup sets it
     devices.key.move("start")
     devices.now = 1.0
-    await devices.speaker.cue(OPENED)
+    devices.speaker.cue(OPENED)
     await devices.capture(at=1.0)  # a word said over the cue
+    await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
     assert devices.stream.written == [sound(OPENED, 16000, 1)]
     assert devices.pushed == [LOUD]
     assert devices.speaker.sounded_at == 1.0
+
+
+async def test_a_cue_never_holds_the_talk_key_on_the_speaker() -> None:
+    devices = Rig()
+    devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
+    devices.stream.blocking = True  # a write stuck on a device that is going
+    devices.speaker.cue(OPENED)
+    devices.speaker.detach()  # a reopen under way
+    devices.speaker.cue(OPENED)
+    devices.stream.blocking = False
+    await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
+    assert devices.stream.written == [sound(OPENED, 16000, 1)]
+
+
+async def test_a_tone_that_fails_to_play_loses_only_the_tone() -> None:
+    devices = Rig()
+    devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
+    written = devices.stream.write
+
+    def stopped(audio: bytes) -> None:
+        raise OSError("Stream is stopped")
+
+    devices.stream.write = stopped
+    devices.speaker.cue(OPENED)
+    await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
+    devices.stream.write = written
+    await devices.play(LOUD, at=1.0)
+    assert devices.stream.written == [LOUD]

@@ -215,17 +215,32 @@ class Speaker(LocalAudioOutputTransport):
         await self._writes.run(lambda: stream.write(frame.audio))
         return True
 
-    async def cue(self, cue: Cue) -> None:
-        """Play a turn's cue now, on whatever stream is attached, ahead of the pipeline's queue.
+    def cue(self, cue: Cue) -> None:
+        """Hand a turn's cue to the stream attached now, ahead of the pipeline's next chunk, and not wait for it to play.
+
+        [LAW:no-ambient-temporal-coupling] the talk key's edge calls this, and the key's next move never waits on the
+        speaker, which a reopen holds for seconds. A cue belongs to the moment of its edge: with no stream attached
+        there is nothing to play it on, and a tone that fails to play loses only the tone.
 
         It moves `sounded_at`, since it is sound given to the speaker, and never `quiet_at`: a cue is not the
         pipeline's speech, and holding the microphone shut behind the one that opens a turn would cut the turn's first word.
         """
-        await self._attached.wait()
-        stream = cast(Playback, self._out_stream)
-        self.sounded_at = self._clock()
-        audio = sound(cue, self.sample_rate, self._params.audio_out_channels)
-        await self._writes.run(lambda: stream.write(audio))
+        match self._out_stream:
+            case None:
+                logger.warning(f"no speaker is attached; the tone for {cue.line!r} is not played")
+            case stream:
+                self.sounded_at = self._clock()
+                audio = sound(cue, self.sample_rate, self._params.audio_out_channels)
+                self._writes.give(lambda: _cueing(stream, audio))
+
+
+def _cueing(stream: Playback, audio: bytes) -> None:
+    try:
+        stream.write(audio)
+    except Exception:
+        # [LAW:no-silent-failure] said, and caught here so that the one thread every speaker write goes through
+        # outlives it: a stream stopped by a reopen refuses the write.
+        logger.exception("a turn's tone was not played")
 
 
 def _duration(frame: OutputAudioRawFrame) -> float:
