@@ -332,11 +332,14 @@ async def test_tool_calls_from_a_session_that_never_joined_are_not_warned_about(
     assert levels == ["DEBUG"]
 
 
-async def test_a_request_from_a_session_this_daemon_never_met_is_let_go_at_once(home: Home, sessions: Sessions) -> None:
-    # A session that started before the daemon did: no SessionStart reached it, so nothing can be asked aloud.
-    started = asyncio.get_running_loop().time()
-    assert await (await Shim.run(home, ASK)).finished() == (0, "", "")
-    assert asyncio.get_running_loop().time() - started < WAIT_SECONDS
+async def test_a_request_from_a_session_this_daemon_never_met_joins_it_and_is_answered_aloud(home: Home, sessions: Sessions) -> None:
+    # A session running since before the plugin was: no SessionStart ever fired, so the request is where it joins.
+    shim = await Shim.run(home, ASK)
+    heard = await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
+    assert isinstance(heard, Narrate)
+    assert await call(named(sessions, "answer_permission"), request=heard.moment.request, decision="allow") == {"readback": "Allowed Bash for untitled, in cc-hands."}
+    code, stdout, _ = await shim.finished()
+    assert (code, decision(stdout)) == (0, {"behavior": "allow"})
 
 
 async def test_a_voice_answer_after_the_hook_went_away_is_told_nothing_was_answered(home: Home, sessions: Sessions, clock: Clock) -> None:

@@ -537,7 +537,7 @@ being off.
 At `SessionStart` the shim also writes
 `~/.hands/sessions/<session_id>.json` with its parent pid, `cwd`, and
 `transcript_path`; that file is the one record of the session's membership, written
-by one writer. It is written whether or not the daemon is up, so a daemon started
+by one writer. The file is written whether or not the daemon is up, so a daemon started
 later finds the sessions already running. The hooks are installed whether or not
 hands is running, so a shim that cannot reach the socket asks the heartbeat why
 (`hands.sessions.heartbeat.look`, the judge `hands status` uses). A hands that was
@@ -549,6 +549,13 @@ says it died, hung, or is up but not answering, or whose heartbeat cannot be rea
 makes the shim exit 1 with the socket error and the verdict on stderr, so Claude Code
 shows the failure in the session where it happened rather than letting a dead daemon
 look like a quiet one `[LAW:no-silent-failure]`.
+
+A session running before the plugin was installed, or reloaded with `/reload-plugins`,
+never fires `SessionStart`. So every other hook writes the file when no membership file
+names the shim's parent process, and the daemon attaches the session its file names
+before it applies the hook: such a session joins on whatever it fires first. Keying on
+the process keeps a late hook from a session the process has moved on from (a `/clear`,
+a resume) from writing a file that would outrank the new session's.
 
 **The constraint that will bite.** Hooks run in the agent's critical path with a
 timeout, and `MessageDisplay` and `SessionStart` dispatch synchronously. A shim that
@@ -573,8 +580,8 @@ hook, and the closed connection releases the session (measured on 2.1.270). What
 is a tool approved at the keyboard that is still running at the deadline: its warning
 and its deny, which Claude Code ignores, are still heard, so the expiry is spoken as
 what hands did ("so I told it no"), never as what happened to the tool. A permission
-request from a session the daemon does not know, such as one started before the
-daemon was, is let go at once.
+request from a session the daemon has not heard of joins the session first, so it is
+asked aloud like any other.
 
 ## Transcripts: the live tail, and backfill
 
@@ -1164,7 +1171,8 @@ Three facts about a session have three different sources, and the registry deriv
 from all three rather than storing any of them twice `[LAW:one-source-of-truth]`.
 
 - **Membership** is the set of files in `~/.hands/sessions/`. The shim writes one at
-  `SessionStart` and removes it at `SessionEnd`. The daemon sweeps the directory once
+  `SessionStart`, or at the first hook of a session that fired none, and removes it at
+  `SessionEnd`. The daemon sweeps the directory once
   before its models load and every 2 seconds after (`hands.sessions.liveness`). A file
   whose process is running becomes `Attached`, which registers a session the registry
   has never heard of in `Idle` and changes nothing for one it knows: a hook heard first

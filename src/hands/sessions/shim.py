@@ -25,7 +25,7 @@ from hands.core.session import Membership
 from hands.sessions import heartbeat
 from hands.sessions.home import Home, default_home
 from hands.sessions.hookconfig import post_timeout
-from hands.sessions.membership import remove_membership, write_membership
+from hands.sessions.membership import held, remove_membership, write_membership
 from hands.sessions.payload import Payload, Rejected
 
 # [LAW:no-silent-failure] Claude Code shows a hook's stderr for exit 1 and carries
@@ -58,25 +58,37 @@ class _UnixConnection(http.client.HTTPConnection):
 def record(home: Home, payload: Payload) -> None:
     match payload.text("hook_event_name"):
         case "SessionStart":
-            membership = Membership(
-                id=payload.session_id(),
-                # The hook's shell execs a single simple command, so this is the claude
-                # process. A compound hook command (`a; b`) would make it that shell.
-                pid=os.getppid(),
-                cwd=Path(payload.text("cwd")),
-                transcript=Path(payload.text("transcript_path")),
-                # [LAW:one-source-of-truth] fritter publishes its own address and nothing
-                # else names it. The claude process it wrapped has it in its environment
-                # and this hook inherited that environment, so the address arrives here
-                # without fritter and hands agreeing on a path or a filename. Empty or
-                # unset both mean this session was not wrapped.
-                fritter=Path(address) if (address := os.environ.get("FRITTER_SOCKET")) else None,
-            )
-            write_membership(home, membership)
+            write_membership(home, _membership(payload))
         case "SessionEnd":
             remove_membership(home, payload.session_id())
+        case _ if not held(home, os.getppid()):
+            # A session running before the plugin was installed, or before `/reload-plugins`, never fires its start
+            # hook, so its first hook of any kind is where it joins. The daemon reads this file for every hook but a
+            # start or an end [LAW:one-source-of-truth], so it is written before the post.
+            # Keyed on the process, not the session: a late hook of a session this process has since moved on from
+            # (a /clear, a resume) finds the start's file naming the process and writes nothing, since the newest
+            # file naming a process is the session it holds. A file left by a dead process under this session's id
+            # names another pid, so it is replaced.
+            write_membership(home, _membership(payload))
         case _:
             pass
+
+
+def _membership(payload: Payload) -> Membership:
+    return Membership(
+        id=payload.session_id(),
+        # The hook's shell execs a single simple command, so this is the claude
+        # process. A compound hook command (`a; b`) would make it that shell.
+        pid=os.getppid(),
+        cwd=Path(payload.text("cwd")),
+        transcript=Path(payload.text("transcript_path")),
+        # [LAW:one-source-of-truth] fritter publishes its own address and nothing
+        # else names it. The claude process it wrapped has it in its environment
+        # and this hook inherited that environment, so the address arrives here
+        # without fritter and hands agreeing on a path or a filename. Empty or
+        # unset both mean this session was not wrapped.
+        fritter=Path(address) if (address := os.environ.get("FRITTER_SOCKET")) else None,
+    )
 
 
 def post(home: Home, body: bytes, timeout: float) -> str:

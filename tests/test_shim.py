@@ -15,11 +15,13 @@ from pathlib import Path
 
 import pytest
 
+from hands.core.effects import Summarise
 from hands.core.session import Idle, Membership, PromptId, Session, SessionId, Submitted
 from hands.sessions import heartbeat
 from hands.sessions.hookconfig import LAUNCHER, PLUGIN_DIR, SHIM_MODULE
 from hands.sessions.home import Home
-from hands.sessions.membership import read_membership
+from hands.sessions.liveness import sweep
+from hands.sessions.membership import read_membership, write_membership
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
 
@@ -27,6 +29,7 @@ SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
 COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/code/a"}
 START = {**COMMON, "hook_event_name": "SessionStart", "source": "startup"}
 PROMPT = {**COMMON, "hook_event_name": "UserPromptSubmit", "prompt": "hi", "prompt_id": "p1"}
+STOP = {**COMMON, "hook_event_name": "Stop", "stop_hook_active": False, "last_assistant_message": "done", "prompt_id": "p1"}
 END = {**COMMON, "hook_event_name": "SessionEnd", "reason": "other"}
 ASK = {**COMMON, "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "ls"}}
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent / PLUGIN_DIR
@@ -178,6 +181,54 @@ async def test_a_start_records_membership_and_joins_the_registry(home: Home, ses
     membership = Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl"))
     assert [listing.session for listing in sessions.live()] == [Session(membership, Submitted(since=10.0), mode=None, turn=PromptId("p1"))]
     assert home.membership(SID).exists()
+
+
+async def test_a_session_running_before_the_plugin_joins_on_its_first_hook_and_its_turn_is_told(home: Home, sessions: Sessions) -> None:
+    """/reload-plugins in a running session fires no start hook: its first prompt is where hands hears of it."""
+    assert await shim(home, PROMPT) == (0, "", "")
+    membership = Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl"))
+    assert [listing.session for listing in sessions.live()] == [Session(membership, Submitted(since=10.0), mode=None, turn=PromptId("p1"))]
+    assert read_membership(home, SID) == membership
+    assert await shim(home, STOP) == (0, "", "")
+    assert await asyncio.wait_for(sessions.story(), 1.0) == Summarise(SID, PromptId("p1"), "done")
+
+
+async def test_a_later_hook_leaves_the_membership_its_start_wrote(home: Home, sessions: Sessions) -> None:
+    await shim(home, START, fritter="/tmp/fritter-abc.sock")
+    await shim(home, {**PROMPT, "cwd": "/code/a/sub"})
+    assert read_membership(home, SID).fritter == Path("/tmp/fritter-abc.sock")
+    assert read_membership(home, SID).cwd == Path("/code/a")
+
+
+async def test_a_late_hook_of_a_session_its_process_has_moved_on_from_writes_nothing(home: Home, sessions: Sessions) -> None:
+    """After a /clear the start's file names the process, and it must stay the newest file naming it, or the sweep would
+    take the old session for the one the process holds and end the new one."""
+    cleared = SessionId("0f1e2d3c-aaaa-bbbb-cccc-00000000000c")
+    await shim(home, {**START, "session_id": cleared})
+    await shim(home, {**END, "session_id": cleared})
+    await shim(home, START)
+    assert await shim(home, {**PROMPT, "session_id": cleared}) == (0, "", "")
+    assert not home.membership(cleared).exists()
+    assert [listing.session.membership.id for listing in sessions.live()] == [SID]
+
+
+async def test_a_hook_that_lands_after_its_session_ended_does_not_bring_it_back(home: Home, sessions: Sessions) -> None:
+    """A shim racing its session's end can write the file again; the registry holds the session as gone, so attaching it
+    is nothing, and the sweep that finds its process over says nothing either."""
+    await shim(home, START)
+    await shim(home, END)
+    assert await shim(home, PROMPT) == (0, "", "")
+    await sweep(home, sessions, frozenset())
+    assert sessions.live() == []
+    assert sessions.live_session(SID) is None
+
+
+async def test_a_file_a_dead_process_left_under_this_session_is_replaced_on_its_first_hook(home: Home, sessions: Sessions, dead_pid: Callable[[], int]) -> None:
+    """A session killed while hands was off, resumed with the plugin off, and joined by /reload-plugins."""
+    write_membership(home, Membership(SID, pid=dead_pid(), cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl")))
+    assert await shim(home, PROMPT) == (0, "", "")
+    assert read_membership(home, SID).pid == os.getpid()
+    assert [listing.session.membership.pid for listing in sessions.live()] == [os.getpid()]
 
 
 async def test_an_end_removes_membership_and_leaves_the_listing(home: Home, sessions: Sessions) -> None:

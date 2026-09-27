@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.events import Ended, Joined, PermissionRequested, Prompted, Stopped, ToolFinished, Waited
+from hands.core.events import Attached, Ended, Event, Joined, PermissionRequested, Prompted, Stopped, ToolFinished, Waited
 from hands.core.session import AskedQuestion, Membership, Mode, Option, Permission, Plan, PlanApproved, PromptId, Question, RequestId, SessionId, UnknownMode
 from hands.sessions.home import Home
-from hands.sessions.hooks import parse_hook
+from hands.sessions.hooks import Hook, parse_hook
 from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
 
@@ -22,25 +22,59 @@ def body(**fields: object) -> bytes:
     return json.dumps({**COMMON, **fields}).encode()
 
 
-def parse(home: Home, raw: bytes):  # noqa: ANN201 - the event union
-    return parse_hook(raw, home=home, at=12.5, request=REQUEST)
+MEMBER = Membership(SID, pid=51810, cwd=Path("/code/a"), transcript=Path(TRANSCRIPT))
+
+
+def parse(home: Home, raw: bytes) -> Event:
+    """What the hook says happened, past the session it may join."""
+    return parse_hook(raw, home=home, at=12.5, request=REQUEST).happened
 
 
 @pytest.fixture
 def home(tmp_path: Path) -> Home:
-    return Home(tmp_path)
+    """A home holding the session's membership file, as the shim leaves it before it posts any hook but an end."""
+    home = Home(tmp_path)
+    write_membership(home, MEMBER)
+    return home
 
 
 def test_a_start_reads_the_membership_the_shim_wrote(home: Home) -> None:
-    membership = Membership(SID, pid=51810, cwd=Path("/code/a"), transcript=Path(TRANSCRIPT))
-    write_membership(home, membership)
-    assert parse(home, body(hook_event_name="SessionStart", source="startup")) == Joined(membership, "startup")
-    assert parse(home, body(hook_event_name="SessionStart", source="compact")) == Joined(membership, "compact")
+    assert parse_hook(body(hook_event_name="SessionStart", source="startup"), home=home, at=12.5, request=REQUEST) == Hook(None, Joined(MEMBER, "startup"))
+    assert parse(home, body(hook_event_name="SessionStart", source="compact")) == Joined(MEMBER, "compact")
 
 
 def test_a_start_with_no_membership_file_is_rejected(home: Home) -> None:
+    home.membership(SID).unlink()
     with pytest.raises(Rejected, match="no membership file"):
         parse(home, body(hook_event_name="SessionStart", source="startup"))
+
+
+def test_a_hook_whose_session_has_no_file_joins_nothing_and_still_says_what_happened(home: Home) -> None:
+    """It ended, or its process moved on to another session: the registry says which, as it did before hooks joined."""
+    home.membership(SID).unlink()
+    raw = body(hook_event_name="UserPromptSubmit", prompt="hi", prompt_id="p", permission_mode="default")
+    assert parse_hook(raw, home=home, at=12.5, request=REQUEST) == Hook(None, Prompted(SID, at=12.5, mode="default", prompt=PromptId("p")))
+
+
+@pytest.mark.parametrize(
+    "hook",
+    [
+        {"hook_event_name": "UserPromptSubmit", "prompt": "hi", "prompt_id": "p"},
+        {"hook_event_name": "Stop", "stop_hook_active": False, "last_assistant_message": "ok", "prompt_id": "p"},
+        {"hook_event_name": "Notification", "notification_type": "idle_prompt"},
+        {"hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "ls"}},
+        {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}},
+    ],
+    ids=["prompt", "stop", "idle", "permission", "tool"],
+)
+def test_every_hook_of_a_running_session_brings_the_session_so_one_that_never_started_here_joins_on_it(home: Home, hook: dict[str, object]) -> None:
+    """/reload-plugins in a session already running fires no start hook, so whatever it fires first is where it joins."""
+    assert parse_hook(body(**hook), home=home, at=12.5, request=REQUEST).joining == Attached(MEMBER)
+
+
+def test_an_end_needs_no_membership_file_the_shim_has_already_removed(home: Home) -> None:
+    home.membership(SID).unlink()
+    assert parse_hook(body(hook_event_name="SessionEnd", reason="other"), home=home, at=12.5, request=REQUEST) == Hook(None, Ended(SID, "other"))
 
 
 def test_the_turn_hooks(home: Home) -> None:

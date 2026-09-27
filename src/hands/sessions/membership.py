@@ -1,9 +1,10 @@
-"""The membership file: written by the shim at SessionStart, read by the daemon.
+"""The membership file: written by the shim at SessionStart, or at the first hook of a session that never fired one; read by the daemon.
 
 The file's name is the session id, so the id is not repeated inside it.
 """
 
 import json
+import os
 from pathlib import Path
 
 from hands.core.session import Membership, SessionId
@@ -26,8 +27,9 @@ def write_membership(home: Home, membership: Membership) -> None:
         }
     )
     # [LAW:no-ambient-temporal-coupling] written beside and renamed into place,
-    # so the daemon reading it never sees half a file.
-    staging = path.with_suffix(".tmp")
+    # so the daemon reading it never sees half a file. Named for the writing shim:
+    # a session's first hooks can run at once, parallel tool calls each firing one.
+    staging = path.with_suffix(f".{os.getpid()}.tmp")
     staging.write_text(body)
     staging.replace(path)
 
@@ -48,13 +50,34 @@ def remove_ended_membership(home: Home, ended: Membership) -> None:
         home.membership(ended.id).unlink(missing_ok=True)
 
 
-def read_membership(home: Home, session: SessionId) -> Membership:
-    path = home.membership(session)
+def held(home: Home, pid: int) -> bool:
+    """Whether any membership file names this process."""
+    for path in home.memberships.glob("*.json"):
+        try:
+            if Payload.parse(path.read_bytes()).integer("pid") == pid:
+                return True
+        # Ended since the listing, or unreadable, which the daemon's sweep reports and removes: either way it names
+        # no process.
+        except (FileNotFoundError, Rejected):
+            continue
+    return False
+
+
+def recorded_membership(home: Home, session: SessionId) -> Membership | None:
+    """The session's membership, or None when it has no file: it ended, or its process holds another session now."""
     try:
-        raw = path.read_bytes()
+        raw = home.membership(session).read_bytes()
     except FileNotFoundError:
-        raise Rejected(f"no membership file for session {session} at {path}") from None
+        return None
     return parse_membership(session, raw)
+
+
+def read_membership(home: Home, session: SessionId) -> Membership:
+    match recorded_membership(home, session):
+        case None:
+            raise Rejected(f"no membership file for session {session} at {home.membership(session)}")
+        case membership:
+            return membership
 
 
 def parse_membership(session: SessionId, raw: bytes) -> Membership:

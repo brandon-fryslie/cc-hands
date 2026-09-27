@@ -254,7 +254,7 @@ def _listing(session: Session) -> Listing:
 def _audited(record: AuditRecord) -> tuple[str, str]:
     match record:
         case Unregistered(event=ToolFinished() as event):
-            # Every tool call of a session started before the daemon lands here; its prompts and stops already warn.
+            # Every tool call of a session with no membership file lands here, as its prompts and stops do, which already warn.
             return "DEBUG", f"ToolFinished for session {event.session}, which never joined"
         case Unregistered(event=event):
             return "WARNING", f"{type(event).__name__} for session {event.session}, which never joined"

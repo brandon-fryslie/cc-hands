@@ -1,19 +1,32 @@
 """A hook's POST body, parsed once into a core event, and the reply a blocking hook prints."""
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import get_args
 
 from loguru import logger
 
 from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
-from hands.core.events import Ended, EndReason, Event, Joined, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished, Waited
+from hands.core.events import Attached, Ended, EndReason, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished, Waited
 from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.sessions.home import Home
-from hands.sessions.membership import read_membership
+from hands.sessions.membership import read_membership, recorded_membership
 from hands.sessions.payload import Payload, Rejected
 
 
-def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Event:
+@dataclass(frozen=True)
+class Hook:
+    """What one hook says, applied in this order."""
+
+    # The session as its file names it, for a daemon that may not have heard of it: a session running since before
+    # the plugin never fired its start hook, and joins on whatever hook it fires first. One the registry holds is left
+    # as it is. None for a start, which joins by itself; for an end, whose file the shim has removed; and for a hook
+    # whose session has no file, which ended or whose process has moved on to another session.
+    joining: Attached | None
+    happened: Event
+
+
+def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Hook:
     """Raises Rejected, naming the problem, for anything that is not a hook hands handles."""
     # [LAW:parse-dont-validate] past this function nothing looks at hook JSON again.
     payload = Payload.parse(raw)
@@ -22,7 +35,18 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
         case "SessionStart":
             # The shim writes the membership file before it posts, so the start reads it.
             source = _start_source(payload.text("source"))
-            return Joined(read_membership(home, session), source)
+            return Hook(None, Joined(read_membership(home, session), source))
+        case "SessionEnd":
+            return Hook(None, Ended(session, _end_reason(payload.text("reason"))))
+        case _:
+            happened = _happened(payload, session, at, request)
+            recorded = recorded_membership(home, session)
+            return Hook(None if recorded is None else Attached(recorded), happened)
+
+
+def _happened(payload: Payload, session: SessionId, at: Instant, request: RequestId) -> SessionEvent:
+    """What a hook of a running session says happened in it."""
+    match payload.text("hook_event_name"):
         case "UserPromptSubmit":
             return Prompted(session, at, _mode(payload), _prompt(payload))
         case "Stop":
@@ -33,8 +57,6 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ev
             return PermissionRequested(session, at, request, _call(payload), _mode(payload))
         case "PostToolUse" | "PostToolUseFailure":
             return ToolFinished(session, at, _ran(payload), _mode(payload))
-        case "SessionEnd":
-            return Ended(session, _end_reason(payload.text("reason")))
         case other:
             raise Rejected(f"hook event {other!r} is not one hands handles")
 
