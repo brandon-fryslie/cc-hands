@@ -115,12 +115,15 @@ def test_an_empty_path_entry_is_the_current_directory(root: Path, entries: str) 
     assert ran.stdout == "claude  socket=unset\n"
 
 
-def test_any_home_s_shim_is_a_shim_and_nothing_else_is(root: Path) -> None:
+def test_any_home_s_shim_names_the_fritter_it_runs_and_nothing_else_names_one(root: Path) -> None:
     shim = installed_shim(root)
-    other = executable(root / "other" / "claude", shim_script(root / "other" / "fritter"))
-    assert wrapper.is_shim(shim) and wrapper.is_shim(other)
-    assert not wrapper.is_shim(root / "real" / "claude")
-    assert not wrapper.is_shim(root / "nowhere" / "claude")
+    other = executable(root / "it's other" / "claude", shim_script(root / "it's other" / "fritter"))
+    assert wrapper.fritter_of(shim) == root / "bin" / "fritter"
+    assert wrapper.fritter_of(other) == root / "it's other" / "fritter"
+    unreadable = executable(root / "locked" / "claude", "#!/bin/sh\n")
+    unreadable.chmod(0o111)
+    for path in (root / "real" / "claude", root / "nowhere" / "claude", unreadable, root / "bin"):
+        assert wrapper.fritter_of(path) is None
 
 
 def test_no_real_claude_on_path_is_said_and_runs_nothing(root: Path) -> None:

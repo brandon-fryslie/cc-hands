@@ -41,8 +41,8 @@ def claude_listing(root: Path, plugins: object) -> str:
     return f"{root / 'real'}:/usr/bin:/bin"
 
 
-def listed(id: str, enabled: bool) -> dict[str, object]:
-    return {"id": id, "version": "f24447053e9c", "scope": "user", "enabled": enabled}
+def listed(id: str, enabled: bool, scope: str = "user") -> dict[str, object]:
+    return {"id": id, "version": "f24447053e9c", "scope": scope, "enabled": enabled}
 
 
 # The plugin
@@ -59,7 +59,7 @@ def test_a_plugin_enabled_at_any_scope_is_ready() -> None:
 
 def test_a_disabled_plugin_is_missing_and_says_how_to_enable_it() -> None:
     found = readiness.plugin_listed(json.dumps([listed(PLUGIN_ID, False)]))
-    assert isinstance(found, Missing) and f"claude plugin enable {PLUGIN_ID}" in found.said
+    assert isinstance(found, Missing) and f"claude plugin enable --scope user {PLUGIN_ID}" in found.said
 
 
 def test_a_plugin_not_installed_is_missing_and_says_how_to_install_it(root: Path) -> None:
@@ -67,7 +67,19 @@ def test_a_plugin_not_installed_is_missing_and_says_how_to_install_it(root: Path
     assert isinstance(found, Missing) and f"claude plugin install {PLUGIN_ID}" in found.said
 
 
-@pytest.mark.parametrize("printed", ["not json", '{"plugins": []}', '[{"id": "hands@cc-hands"}]'], ids=["text", "object", "no-enabled"])
+def test_an_install_for_one_project_is_not_one_for_every_session() -> None:
+    project = {**listed(PLUGIN_ID, True, "local"), "projectPath": "/code/cc-hands"}
+    found = readiness.plugin_listed(json.dumps([project]))
+    assert isinstance(found, Missing) and f"`claude plugin install {PLUGIN_ID}`" in found.said
+
+
+def test_another_plugin_listed_unreadably_says_nothing_of_hands() -> None:
+    assert isinstance(readiness.plugin_listed(json.dumps([{"broken": True}, listed(PLUGIN_ID, True)])), Ready)
+
+
+@pytest.mark.parametrize(
+    "printed", ["not json", '{"plugins": []}', '[{"id": "hands@cc-hands", "scope": "user"}]'], ids=["text", "object", "no-enabled"]
+)
 def test_a_listing_hands_cannot_read_is_unknown_not_missing(printed: str) -> None:
     assert isinstance(readiness.plugin_listed(printed), Unknown)
 
@@ -95,6 +107,7 @@ def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -
 
 def test_the_shim_first_on_path_is_ready(root: Path) -> None:
     home = Home(root / "home")
+    executable(home.bin / "fritter", "#!/bin/sh\n")
     executable(home.shim, shim_script(home.bin / "fritter"))
     executable(root / "real" / "claude", "#!/bin/sh\n")
     assert isinstance(readiness.shim(home, f"{home.bin}:{root / 'real'}"), Ready)
@@ -108,6 +121,13 @@ def test_an_installed_shim_behind_the_real_claude_wants_only_the_path(root: Path
     assert isinstance(found, Missing)
     assert f"`claude` on this PATH is {root / 'real' / 'claude'}" in found.said
     assert f'export PATH="{home.bin}:$PATH"' in found.said and "install-fritter" not in found.said
+
+
+def test_a_shim_whose_fritter_is_gone_is_missing(root: Path) -> None:
+    home = Home(root / "home")
+    executable(home.shim, shim_script(home.bin / "fritter"))
+    found = readiness.shim(home, f"{home.bin}")
+    assert isinstance(found, Missing) and f"its fritter {home.bin / 'fritter'} is not there to run" in found.said
 
 
 def test_no_shim_installed_says_to_install_it(root: Path) -> None:
@@ -135,7 +155,7 @@ def joined(home: Home, name: str, pid: int, fritter: Path | None) -> Membership:
 
 
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
-    assert readiness.sessions(Home(root / "home")) == Ready("all 0 running sessions hands knows of can be typed into")
+    assert readiness.sessions(Home(root / "home")) == Ready("running sessions hands knows of: 0, and each can be typed into")
 
 
 def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: Path) -> None:
@@ -156,7 +176,7 @@ def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: 
             sleeper.kill()
             sleeper.wait()
     assert isinstance(found, Missing)
-    assert found.said.startswith("2 of 3 running sessions cannot be typed into")
+    assert found.said.startswith("running sessions hands knows of: 3, and these cannot be typed into")
     assert f"/code/unwrapped (pid {sleepers[1].pid}) was started outside fritter" in found.said
     assert f"/code/orphaned (pid {sleepers[2].pid}) has lost its fritter, whose socket {root / 'gone.sock'} is gone" in found.said
     assert "/code/wrapped" not in found.said
@@ -167,7 +187,26 @@ def test_a_session_whose_process_has_ended_is_not_running(root: Path) -> None:
     ended = subprocess.Popen(["true"])
     ended.wait()
     joined(home, "ended", ended.pid, None)
-    assert readiness.sessions(home) == Ready("all 0 running sessions hands knows of can be typed into")
+    assert readiness.sessions(home) == Ready("running sessions hands knows of: 0, and each can be typed into")
+
+
+def test_an_unreadable_membership_file_is_named_and_left_where_it_is(root: Path) -> None:
+    home = Home(root / "home")
+    home.memberships.mkdir(parents=True)
+    bad = home.membership(SessionId("bad"))
+    bad.write_text("{not json")
+    found = readiness.sessions(home)
+    assert isinstance(found, Missing) and f"{bad} names no session hands can read" in found.said
+    assert bad.exists()
+
+
+def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def refused(_pids: object) -> dict[int, float]:
+        raise OSError(1, "sysctl refused")
+
+    monkeypatch.setattr(readiness, "process_starts", refused)
+    found = readiness.sessions(Home(root / "home"))
+    assert isinstance(found, Unknown) and "sysctl refused" in found.said
 
 
 # hands check
@@ -187,6 +226,7 @@ def test_check_says_every_piece_and_exits_by_the_worst(
     root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], granted: bool, plugins: object, code: int, marks: list[str]
 ) -> None:
     home = Home(root / "home")
+    executable(home.bin / "fritter", "#!/bin/sh\n")
     executable(home.shim, shim_script(home.bin / "fritter"))
     monkeypatch.setenv("PATH", f"{home.bin}:{claude_listing(root, plugins)}")
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: granted)

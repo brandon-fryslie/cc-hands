@@ -34,14 +34,18 @@ class Installed:
     fritter: Path
 
 
-def is_shim(path: Path) -> bool:
-    """Whether path is a hands shim: this home's, or another's, which wraps a session just as well."""
+def fritter_of(path: Path) -> Path | None:
+    """The fritter a hands shim at path runs, this home's or another's; None when path is not a hands shim."""
+    # Read as the shim reads each claude on PATH: a file it cannot read is not a shim to it either.
     try:
         with path.open("rb") as found:
-            found.readline()
-            return found.readline().rstrip(b"\n") == MARK.encode()
-    except FileNotFoundError:
-        return False
+            lines = [found.readline() for _ in range(3)]
+    except OSError:
+        return None
+    marked, assigned = lines[1].rstrip(b"\n"), lines[2].rstrip(b"\n").decode(errors="replace")
+    if marked != MARK.encode() or not assigned.startswith("fritter="):
+        return None
+    return Path(shlex.split(assigned.removeprefix("fritter="))[0])
 
 
 def shim_script(fritter: Path) -> str:

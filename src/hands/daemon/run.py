@@ -176,7 +176,7 @@ def config_from_env() -> VoiceConfig:
 QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 
-async def run(configure: Callable[[], VoiceConfig], home: Home, heart: heartbeat.Heart, after_crash: bool) -> None:
+async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, after_crash: bool) -> None:
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
     # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
     failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
@@ -192,7 +192,7 @@ async def run(configure: Callable[[], VoiceConfig], home: Home, heart: heartbeat
         loop.add_signal_handler(signal_number, quit_event.set)
     voice: Voice | None = None
     try:
-        started = await start(configure, home, sessions, heart, quit_event, audit.record)
+        started = await start(configure, survey, home, sessions, heart, quit_event, audit.record)
         if started is not None:
             config, voice = started
             summarise = summariser(config.llm, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
@@ -209,16 +209,23 @@ async def run(configure: Callable[[], VoiceConfig], home: Home, heart: heartbeat
 
 
 async def start(
-    configure: Callable[[], VoiceConfig], home: Home, sessions: Sessions, heart: heartbeat.Heart, quit_event: asyncio.Event, record: Record
+    configure: Callable[[], VoiceConfig],
+    survey: Callable[[], None],
+    home: Home,
+    sessions: Sessions,
+    heart: heartbeat.Heart,
+    quit_event: asyncio.Event,
+    record: Record,
 ) -> tuple[VoiceConfig, Voice] | None:
     """The configuration and the voice, while the loop beats "starting"; None when told to stop first.
 
-    [LAW:single-enforcer] one beater says "starting" for the whole start. Its slow steps run off the loop: reading the
-    configuration can wait on the user at a keychain prompt, and loading the models takes seconds. A start that waits
-    reads as starting, and only a stuck loop as not responding.
+    [LAW:single-enforcer] one beater says "starting" for the whole start. Its slow steps run off the loop: saying what
+    hands is missing asks `claude`, reading the configuration can wait on the user at a keychain prompt, and loading
+    the models takes seconds. A start that waits reads as starting, and only a stuck loop as not responding.
     """
 
     async def prepare() -> tuple[VoiceConfig, Voice]:
+        await off_loop(survey, "the readiness check")
         # A restart is back where it was before the models load: every session with a file and a running process is listed.
         await sweep(home, sessions, frozenset())
         config = await off_loop(configure, "the configuration read")

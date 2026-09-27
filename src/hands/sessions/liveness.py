@@ -22,6 +22,15 @@ class Recorded:
     written_at: float  # wall-clock seconds: the file's modification time
 
 
+@dataclass(frozen=True)
+class Unreadable:
+    """A membership file that does not parse, as it was read: it names no session hands can reach."""
+
+    path: Path
+    raw: bytes
+    error: Rejected
+
+
 # Sessions listed while their files were missing at one sweep, which the next one may conclude have ended.
 Unfiled = frozenset[SessionId]
 
@@ -31,7 +40,9 @@ async def sweep(home: Home, sessions: Sessions, unfiled_before: Unfiled) -> Unfi
     # [LAW:no-ambient-temporal-coupling] taken before the directory is read: a session joins only after its shim
     # has written its file, so one that joins while the sweep runs is never taken for a session whose file is gone.
     listed = sessions.live_members()
-    records = recorded(home)
+    records, unreadable = recorded(home)
+    for file in unreadable:
+        _remove_unreadable(file)
     started = process_starts({record.membership.pid for record in records})
     seen_all, unfiled = observations(listed, records, started, unfiled_before)
     for seen in seen_all:
@@ -86,9 +97,10 @@ def _observed(membership: Membership, holder: Membership | None) -> Observed:
             return MovedOn(membership)
 
 
-def recorded(home: Home) -> list[Recorded]:
-    """Every membership file that parses; one that does not is reported and removed, since it names no session hands can reach."""
+def recorded(home: Home) -> tuple[list[Recorded], list[Unreadable]]:
+    """Every membership file that parses, and every one that does not; nothing is removed here."""
     records: list[Recorded] = []
+    unreadable: list[Unreadable] = []
     # A shim's staging file ends in .tmp until it is renamed into place.
     for path in sorted(home.memberships.glob("*.json")):
         try:
@@ -100,17 +112,17 @@ def recorded(home: Home) -> list[Recorded]:
         try:
             records.append(Recorded(parse_membership(SessionId(path.stem), raw), written_at))
         except Rejected as error:
-            _remove_unreadable(path, raw, error)
-    return records
+            unreadable.append(Unreadable(path, raw, error))
+    return records, unreadable
 
 
-def _remove_unreadable(path: Path, raw: bytes, error: Rejected) -> None:
+def _remove_unreadable(file: Unreadable) -> None:
     try:
         # A shim that rewrote the file since it was read wrote a good one, which stays.
-        if path.read_bytes() != raw:
+        if file.path.read_bytes() != file.raw:
             return
     except FileNotFoundError:
         return
     # [LAW:no-silent-failure] said once, as it is removed, rather than every sweep.
-    logger.error(f"removing the membership file {path}, which names no session hands can attach: {error}")
-    path.unlink(missing_ok=True)
+    logger.error(f"removing the membership file {file.path}, which names no session hands can attach: {file.error}")
+    file.path.unlink(missing_ok=True)

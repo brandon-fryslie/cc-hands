@@ -118,7 +118,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         answered.wait()
         return config
 
-    starting = asyncio.create_task(run.start(prompted, home, sessions, heart, asyncio.Event(), lambda _event: None))
+    starting = asyncio.create_task(run.start(prompted, lambda: None, home, sessions, heart, asyncio.Event(), lambda _event: None))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -140,7 +140,7 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
 
     quit_event = asyncio.Event()
     quit_event.set()
-    assert await run.start(prompted, home, sessions, heart, quit_event, lambda _event: None) is None
+    assert await run.start(prompted, lambda: None, home, sessions, heart, quit_event, lambda _event: None) is None
     never.set()
 
 
@@ -152,4 +152,4 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
         raise SystemExit("no key")
 
     with pytest.raises(SystemExit, match="no key"):
-        asyncio.run(run.start(refused, home, sessions, heart, asyncio.Event(), lambda _event: None))
+        asyncio.run(run.start(refused, lambda: None, home, sessions, heart, asyncio.Event(), lambda _event: None))

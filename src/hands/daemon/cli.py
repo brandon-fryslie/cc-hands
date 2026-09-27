@@ -65,13 +65,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             # models load, seconds of silence in which the file would otherwise still name the process that died.
             heart.beat("starting", None, 0, False)
             start_indicator(home)
-            # [LAW:nothing-unseen] an up daemon says nothing of what it cannot reach, so every run starts by saying it.
-            for finding in readiness.check(home, os.environ.get("PATH", ""), granted):
-                logger.log(display(finding)[1], finding.said)
             # Imported here, after that heartbeat, and so that `hands status` answers without loading Pipecat.
             from hands.daemon.run import config_from_env, run
 
-            asyncio.run(run(config_from_env, home, heart, after_crash))
+            path = os.environ.get("PATH", "")
+            asyncio.run(run(config_from_env, lambda: survey(readiness.check(home, path, granted)), home, heart, after_crash))
             return 0
         case "status":
             return report(home)
@@ -136,6 +134,12 @@ def check(home: Home, granted: bool) -> int:
     kinds = {type(finding) for finding in findings}
     # A piece known to be missing outranks one that could not be looked at: hands is not set up, whatever that one is.
     return 1 if readiness.Missing in kinds else 2 if readiness.Unknown in kinds else 0
+
+
+def survey(findings: Sequence[readiness.Finding]) -> None:
+    """Say each finding as a run starts: [LAW:nothing-unseen] an up daemon says nothing of what it cannot reach."""
+    for finding in findings:
+        logger.log(display(finding)[1], finding.said)
 
 
 def display(finding: readiness.Finding) -> tuple[str, str]:

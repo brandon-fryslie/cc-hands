@@ -22,11 +22,17 @@ class Payload:
 
     @classmethod
     def parse(cls, raw: bytes) -> Self:
-        try:
-            value: object = json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError) as error:
-            raise Rejected(f"not JSON: {error}") from error
-        return cls.of(value, "the JSON")
+        return cls.of(_decoded(raw), "the JSON")
+
+    @classmethod
+    def parse_list(cls, raw: bytes, each: str) -> list[Self]:
+        """A JSON list of objects; `each` names one when it is not an object."""
+        value = _decoded(raw)
+        match value:
+            case list():
+                return [cls.of(entry, each) for entry in cast(list[object], value)]
+            case _:
+                raise Rejected(f"the JSON should be a list, got {type(value).__name__}")
 
     def text(self, key: str) -> str:
         match self._field(key):
@@ -109,3 +115,10 @@ class Payload:
     @staticmethod
     def _wrong(key: str, expected: str, got: object) -> Rejected:
         return Rejected(f"field {key!r} should be {expected}, got {type(got).__name__}")
+
+
+def _decoded(raw: bytes) -> object:
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise Rejected(f"not JSON: {error}") from error
