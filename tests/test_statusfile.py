@@ -182,6 +182,8 @@ def test_a_status_file_removed_as_its_session_exits_is_not_said(tmp_path: Path) 
     status_file(live.member).unlink()
     heard: list[Report] = []
     assert logged(lambda: heard.extend(live.heard(statuses))) == [] and heard == []
+    busy = live.sets("busy", 2000)
+    assert live.heard(statuses) == [busy]
 
 
 def test_a_read_that_fails_once_neither_hears_the_status_again_nor_goes_unsaid(tmp_path: Path) -> None:
