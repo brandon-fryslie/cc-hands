@@ -52,6 +52,12 @@ Instant = float  # seconds on the monotonic clock
 # about 40 ms of margin.
 ECHO_PATH_SECS = 0.15
 
+# The speaker stream's period, which sizes the buffer PortAudio keeps ahead of the device. Left to PortAudio, it is the
+# device's low-latency default: 7 ms on BlackHole, 76 ms on a MacBook's speakers. Every chunk reaches the device through
+# the event loop and the writer thread, so a stall longer than the buffer is a gap in the sound, and a reply broken by
+# one every chunk is crunchy. 20 ms opens 105 ms on BlackHole and 138 ms on the speakers (measured, 24 kHz mono).
+SPEAKER_PERIOD_SECS = 0.02
+
 # How long a reopen may take before the run gives up on reopening in place. Closing a microphone whose device is
 # gone was measured at 2.7 to 3.7 s; a reopen that never finishes fails the run, which reads as down, and the next
 # `hands run` opens on the new defaults.
@@ -153,6 +159,7 @@ class Speaker(LocalAudioOutputTransport):
             format=py_audio.get_format_from_width(2),
             channels=self._params.audio_out_channels,
             rate=self.sample_rate,
+            frames_per_buffer=int(self.sample_rate * SPEAKER_PERIOD_SECS),
             output=True,
             output_device_index=self._params.output_device_index,
         )
