@@ -261,7 +261,7 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
 
         Args:
             session: The session's id, from list_sessions.
-            text: The prompt, cleaned up from what the user said.
+            text: The prompt.
             resolutions: Each spoken phrase you turned into something exact, such as a file name, with what you made of it. Empty when you resolved nothing.
         """
         await _answer(params, sessions, session, lambda id: StageDraft(id, parse_draft(text, resolutions)), sessions.draft, readback)
