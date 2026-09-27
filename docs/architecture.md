@@ -537,10 +537,7 @@ being off.
 At `SessionStart` the shim also writes
 `~/.hands/sessions/<session_id>.json` with its parent pid, `cwd`, and
 `transcript_path`; that file is the one record of the session's membership, written
-by one writer. A session running before the plugin was installed, or reloaded with
-`/reload-plugins`, never fires `SessionStart`, so every other hook writes the file
-when there is none, and the daemon attaches the session named in it before it applies
-the hook: such a session joins on whatever it fires first. It is written whether or not the daemon is up, so a daemon started
+by one writer. The file is written whether or not the daemon is up, so a daemon started
 later finds the sessions already running. The hooks are installed whether or not
 hands is running, so a shim that cannot reach the socket asks the heartbeat why
 (`hands.sessions.heartbeat.look`, the judge `hands status` uses). A hands that was
@@ -552,6 +549,13 @@ says it died, hung, or is up but not answering, or whose heartbeat cannot be rea
 makes the shim exit 1 with the socket error and the verdict on stderr, so Claude Code
 shows the failure in the session where it happened rather than letting a dead daemon
 look like a quiet one `[LAW:no-silent-failure]`.
+
+A session running before the plugin was installed, or reloaded with `/reload-plugins`,
+never fires `SessionStart`. So every other hook writes the file when no membership file
+names the shim's parent process, and the daemon attaches the session its file names
+before it applies the hook: such a session joins on whatever it fires first. Keying on
+the process keeps a late hook from a session the process has moved on from (a `/clear`,
+a resume) from writing a file that would outrank the new session's.
 
 **The constraint that will bite.** Hooks run in the agent's critical path with a
 timeout, and `MessageDisplay` and `SessionStart` dispatch synchronously. A shim that

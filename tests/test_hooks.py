@@ -39,15 +39,21 @@ def home(tmp_path: Path) -> Home:
 
 
 def test_a_start_reads_the_membership_the_shim_wrote(home: Home) -> None:
-    assert parse_hook(body(hook_event_name="SessionStart", source="startup"), home=home, at=12.5, request=REQUEST) == Hook((), Joined(MEMBER, "startup"))
+    assert parse_hook(body(hook_event_name="SessionStart", source="startup"), home=home, at=12.5, request=REQUEST) == Hook(None, Joined(MEMBER, "startup"))
     assert parse(home, body(hook_event_name="SessionStart", source="compact")) == Joined(MEMBER, "compact")
 
 
-@pytest.mark.parametrize("hook", [{"hook_event_name": "SessionStart", "source": "startup"}, {"hook_event_name": "UserPromptSubmit", "prompt": "hi", "prompt_id": "p"}], ids=["start", "prompt"])
-def test_a_hook_with_no_membership_file_is_rejected(home: Home, hook: dict[str, object]) -> None:
+def test_a_start_with_no_membership_file_is_rejected(home: Home) -> None:
     home.membership(SID).unlink()
     with pytest.raises(Rejected, match="no membership file"):
-        parse(home, body(**hook))
+        parse(home, body(hook_event_name="SessionStart", source="startup"))
+
+
+def test_a_hook_whose_session_has_no_file_joins_nothing_and_still_says_what_happened(home: Home) -> None:
+    """It ended, or its process moved on to another session: the registry says which, as it did before hooks joined."""
+    home.membership(SID).unlink()
+    raw = body(hook_event_name="UserPromptSubmit", prompt="hi", prompt_id="p", permission_mode="default")
+    assert parse_hook(raw, home=home, at=12.5, request=REQUEST) == Hook(None, Prompted(SID, at=12.5, mode="default", prompt=PromptId("p")))
 
 
 @pytest.mark.parametrize(
@@ -63,12 +69,12 @@ def test_a_hook_with_no_membership_file_is_rejected(home: Home, hook: dict[str, 
 )
 def test_every_hook_of_a_running_session_brings_the_session_so_one_that_never_started_here_joins_on_it(home: Home, hook: dict[str, object]) -> None:
     """/reload-plugins in a session already running fires no start hook, so whatever it fires first is where it joins."""
-    assert parse_hook(body(**hook), home=home, at=12.5, request=REQUEST).joining == (Attached(MEMBER),)
+    assert parse_hook(body(**hook), home=home, at=12.5, request=REQUEST).joining == Attached(MEMBER)
 
 
 def test_an_end_needs_no_membership_file_the_shim_has_already_removed(home: Home) -> None:
     home.membership(SID).unlink()
-    assert parse_hook(body(hook_event_name="SessionEnd", reason="other"), home=home, at=12.5, request=REQUEST) == Hook((), Ended(SID, "other"))
+    assert parse_hook(body(hook_event_name="SessionEnd", reason="other"), home=home, at=12.5, request=REQUEST) == Hook(None, Ended(SID, "other"))
 
 
 def test_the_turn_hooks(home: Home) -> None:

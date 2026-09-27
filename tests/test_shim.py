@@ -20,7 +20,7 @@ from hands.core.session import Idle, Membership, PromptId, Session, SessionId, S
 from hands.sessions import heartbeat
 from hands.sessions.hookconfig import LAUNCHER, PLUGIN_DIR, SHIM_MODULE
 from hands.sessions.home import Home
-from hands.sessions.membership import read_membership
+from hands.sessions.membership import read_membership, write_membership
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
 
@@ -197,6 +197,26 @@ async def test_a_later_hook_leaves_the_membership_its_start_wrote(home: Home, se
     await shim(home, {**PROMPT, "cwd": "/code/a/sub"})
     assert read_membership(home, SID).fritter == Path("/tmp/fritter-abc.sock")
     assert read_membership(home, SID).cwd == Path("/code/a")
+
+
+async def test_a_late_hook_of_a_session_its_process_has_moved_on_from_writes_nothing(home: Home, sessions: Sessions) -> None:
+    """After a /clear the start's file names the process, and it must stay the newest file naming it, or the sweep would
+    take the old session for the one the process holds and end the new one."""
+    cleared = SessionId("0f1e2d3c-aaaa-bbbb-cccc-00000000000c")
+    await shim(home, {**START, "session_id": cleared})
+    await shim(home, {**END, "session_id": cleared})
+    await shim(home, START)
+    assert await shim(home, {**PROMPT, "session_id": cleared}) == (0, "", "")
+    assert not home.membership(cleared).exists()
+    assert [listing.session.membership.id for listing in sessions.live()] == [SID]
+
+
+async def test_a_file_a_dead_process_left_under_this_session_is_replaced_on_its_first_hook(home: Home, sessions: Sessions, dead_pid: Callable[[], int]) -> None:
+    """A session killed while hands was off, resumed with the plugin off, and joined by /reload-plugins."""
+    write_membership(home, Membership(SID, pid=dead_pid(), cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl")))
+    assert await shim(home, PROMPT) == (0, "", "")
+    assert read_membership(home, SID).pid == os.getpid()
+    assert [listing.session.membership.pid for listing in sessions.live()] == [os.getpid()]
 
 
 async def test_an_end_removes_membership_and_leaves_the_listing(home: Home, sessions: Sessions) -> None:

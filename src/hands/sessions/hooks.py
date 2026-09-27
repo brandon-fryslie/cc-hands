@@ -10,7 +10,7 @@ from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeA
 from hands.core.events import Attached, Ended, EndReason, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished, Waited
 from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.sessions.home import Home
-from hands.sessions.membership import read_membership
+from hands.sessions.membership import read_membership, recorded_membership
 from hands.sessions.payload import Payload, Rejected
 
 
@@ -18,10 +18,11 @@ from hands.sessions.payload import Payload, Rejected
 class Hook:
     """What one hook says, applied in this order."""
 
-    # The session the hook came from, for a daemon that may not have heard of it: a session running since before the
-    # plugin was never fired its start hook, and joins on whatever hook it fires first. One the registry holds is left
-    # as it is. Empty for a start, which joins by itself, and for an end, which needs nothing.
-    joining: tuple[Attached, ...]
+    # The session as its file names it, for a daemon that may not have heard of it: a session running since before
+    # the plugin never fired its start hook, and joins on whatever hook it fires first. One the registry holds is left
+    # as it is. None for a start, which joins by itself; for an end, whose file the shim has removed; and for a hook
+    # whose session has no file, which ended or whose process has moved on to another session.
+    joining: Attached | None
     happened: Event
 
 
@@ -34,14 +35,13 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ho
         case "SessionStart":
             # The shim writes the membership file before it posts, so the start reads it.
             source = _start_source(payload.text("source"))
-            return Hook((), Joined(read_membership(home, session), source))
+            return Hook(None, Joined(read_membership(home, session), source))
         case "SessionEnd":
-            # The shim has removed the file before it posts.
-            return Hook((), Ended(session, _end_reason(payload.text("reason"))))
+            return Hook(None, Ended(session, _end_reason(payload.text("reason"))))
         case _:
             happened = _happened(payload, session, at, request)
-            # The shim wrote the file before it posted, if it was not there already.
-            return Hook((Attached(read_membership(home, session)),), happened)
+            recorded = recorded_membership(home, session)
+            return Hook(None if recorded is None else Attached(recorded), happened)
 
 
 def _happened(payload: Payload, session: SessionId, at: Instant, request: RequestId) -> SessionEvent:
