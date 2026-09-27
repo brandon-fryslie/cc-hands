@@ -30,7 +30,9 @@ from hands.core.events import (
     Attached,
     Died,
     Ended,
+    EndReason,
     MovedOn,
+    Moving,
     Event,
     Interrupted,
     Continued,
@@ -138,32 +140,46 @@ def _end(registry: Registry, was: Session, membership: Membership, said: list[Ef
 
 
 def _enter(registry: Registry, event: SessionEvent) -> tuple[Registry, list[Effect]]:
-    """The event moves a live session on each of its axes: what Claude Code says it is doing, the dialog, and the turn."""
-    match (registry.sessions.get(event.session), event):
-        case (None, _):
+    """An event of one session: it moves or ends a live one, and is recorded of any other."""
+    match registry.sessions.get(event.session):
+        case None:
             # [LAW:no-silent-failure] an event for a session that never joined is a record, not a drop.
             return registry, _unheard(event, Unregistered(event))
-        case (Gone(), _):
+        case Gone():
             # Ended is final until the session starts again; a hook that lands late cannot revive it.
             return registry, _unheard(event, AfterEnd(event))
-        case (Session() as was, Ended(reason="other")):
+        case Session() as was:
+            match event:
+                case Ended(reason=reason):
+                    return _end(registry, was, was.membership, _said_at_end(was.membership.id, reason))
+                case _:
+                    return _moved(registry, was, event)
+
+
+def _said_at_end(session: SessionId, reason: EndReason) -> list[Effect]:
+    match reason:
+        case "other":
             # Nobody ended it at the keyboard: its terminal closed. Spoken, as a process found dead is.
-            return _end(registry, was, was.membership, [SessionGone(was.membership.id)])
-        case (Session() as was, Ended()):
-            return _end(registry, was, was.membership, [])
-        case (Session(membership=membership, mode=held) as was, _):
-            turn, told = _turned(event, was)
-            reported = _reported(event)
-            # [LAW:dataflow-not-control-flow] every hook that carries a mode sets it, so a mode changed at the keyboard
-            # is heard at the session's next hook, whatever that hook moves the session to.
-            mode = held if reported is None else reported
-            after = replace(was, state=_stated(event, was), mode=mode, turn=turn, dialog=_dialog(event, was.dialog, registry.permission_deadline))
-            # The mode is noted before the transition's effects, so a request it narrates is explained knowing the mode
-            # it was asked in; a turn left untold is told before what the event calls for, so before a prompt marks the next.
-            return registry.put(after), [*_remoded(membership.id, held, mode), *_transition(was, after), *told]
+            return [SessionGone(session)]
+        case "clear" | "resume" | "logout" | "prompt_input_exit" | "bypass_permissions_disabled":
+            return []
 
 
-def _stated(event: SessionEvent, was: Session) -> SessionState:
+def _moved(registry: Registry, was: Session, event: Moving) -> tuple[Registry, list[Effect]]:
+    """The event moves a live session on each of its axes: what Claude Code says it is doing, the dialog, and the turn."""
+    membership, held = was.membership, was.mode
+    turn, told = _turned(event, was)
+    reported = _reported(event)
+    # [LAW:dataflow-not-control-flow] every hook that carries a mode sets it, so a mode changed at the keyboard
+    # is heard at the session's next hook, whatever that hook moves the session to.
+    mode = held if reported is None else reported
+    after = replace(was, state=_stated(event, was), mode=mode, turn=turn, dialog=_dialog(event, was.dialog, registry.permission_deadline))
+    # The mode is noted before the transition's effects, so a request it narrates is explained knowing the mode
+    # it was asked in; a turn left untold is told before what the event calls for, so before a prompt marks the next.
+    return registry.put(after), [*_remoded(membership.id, held, mode), *_transition(was, after), *told]
+
+
+def _stated(event: Moving, was: Session) -> SessionState:
     """What Claude Code says the session is doing after the event.
 
     [LAW:one-source-of-truth] only a status read moves it between idle and running: a hook or a record says which turn
@@ -196,7 +212,7 @@ def _stated(event: SessionEvent, was: Session) -> SessionState:
             return state
 
 
-def _dialog(event: SessionEvent, dialog: Dialog | None, deadline: float) -> Dialog | None:
+def _dialog(event: Moving, dialog: Dialog | None, deadline: float) -> Dialog | None:
     """The dialog the session is at after the event, as its hooks and Claude Code's idle tell it."""
     match (event, dialog):
         case (StatusReported(report=Report(status=status.Idle())), _):
@@ -217,7 +233,7 @@ def _dialog(event: SessionEvent, dialog: Dialog | None, deadline: float) -> Dial
             return dialog
 
 
-def _turned(event: SessionEvent, was: Session) -> tuple[Turn, list[Effect]]:
+def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
     """The turn after the event, and what the event calls for of it: told, compared, marked."""
     id, turn = was.membership.id, was.turn
     match (event, turn):
@@ -272,12 +288,12 @@ def _turned(event: SessionEvent, was: Session) -> tuple[Turn, list[Effect]]:
             return turn, []
 
 
-def _reported(event: SessionEvent) -> Mode | None:
+def _reported(event: Moving) -> Mode | None:
     """The mode the event's hook reported; None from the hooks that carry none."""
     match event:
         case Prompted(mode=mode) | Stopped(mode=mode) | PermissionRequested(mode=mode) | ToolFinished(mode=mode):
             return mode
-        case Taken() | Interrupted() | Continued() | Waited() | StatusReported() | Ended():
+        case Taken() | Interrupted() | Continued() | Waited() | StatusReported():
             return None
 
 

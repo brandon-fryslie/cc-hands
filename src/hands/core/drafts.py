@@ -69,8 +69,8 @@ def decide(registry: Registry, request: DraftRequest) -> tuple[Registry, DraftOu
             # This is also what keeps a draft out of a session at a startup dialog - workspace trust, a project's new MCP
             # servers - since Claude Code runs no hook, SessionStart included, until they are answered (measured on 2.1.283).
             return registry, UnknownSession(request.session)
-        case Session() | Gone() as session:
-            return _decide(registry, request, session, registry.drafts.get(request.session))
+        case known:
+            return _decide(registry, request, known, registry.drafts.get(request.session))
 
 
 def _decide(registry: Registry, request: DraftRequest, session: Known, staged: Staged | None) -> tuple[Registry, DraftOutcome | Type[Text]]:

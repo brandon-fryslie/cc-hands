@@ -54,12 +54,15 @@ AT_DIALOG = running(Waiting("permission prompt"))
 IDLE = Idle(Stamp(1), due=61.0, after=None)
 
 
-def registry(state: SessionState | Gone = IDLE, drafts: dict[SessionId, Staged] | None = None, member: Membership = ONE) -> Registry:
-    session = state if isinstance(state, Gone) else Session(member, state, mode=None)
-    return Registry(permission_deadline=60.0, sessions={ONE.id: session}, drafts=drafts or {})
+def registry(state: SessionState = IDLE, drafts: dict[SessionId, Staged] | None = None, member: Membership = ONE) -> Registry:
+    return Registry(permission_deadline=60.0, sessions={ONE.id: Session(member, state, mode=None)}, drafts=drafts or {})
 
 
-def staged(state: SessionState | Gone = IDLE) -> Registry:
+def gone(drafts: dict[SessionId, Staged] | None = None, member: Membership = ONE) -> Registry:
+    return Registry(permission_deadline=60.0, sessions={ONE.id: Gone(member)}, drafts=drafts or {})
+
+
+def staged(state: SessionState = IDLE) -> Registry:
     return registry(state, {ONE.id: FIX})
 
 
@@ -82,12 +85,12 @@ def test_with_nothing_staged_there_is_nothing_to_amend_or_discard(request_: Draf
 
 
 def test_discarding_clears_the_draft_even_after_the_session_ended() -> None:
-    assert decide(staged(Gone(ONE)), DiscardDraft(ONE.id)) == (registry(Gone(ONE)), DraftDiscarded(ONE.id, FIX))
+    assert decide(gone({ONE.id: FIX}), DiscardDraft(ONE.id)) == (gone(), DraftDiscarded(ONE.id, FIX))
 
 
 @pytest.mark.parametrize("request_", [StageDraft(ONE.id, BETTER), AmendDraft(ONE.id, BETTER)])
 def test_an_ended_session_takes_no_draft(request_: DraftRequest) -> None:
-    assert decide(staged(Gone(ONE)), request_) == (staged(Gone(ONE)), SessionEnded(ONE.id))
+    assert decide(gone({ONE.id: FIX}), request_) == (gone({ONE.id: FIX}), SessionEnded(ONE.id))
 
 
 @pytest.mark.parametrize("request_", [StageDraft(TWO.id, FIX), AmendDraft(TWO.id, FIX), DiscardDraft(TWO.id)])
@@ -105,7 +108,7 @@ def test_a_discard_touches_only_its_own_session() -> None:
     assert after.drafts == {ONE.id: FIX}
 
 
-def wrapped(state: SessionState | Gone = IDLE, drafts: dict[SessionId, Staged] | None = None) -> Registry:
+def wrapped(state: SessionState = IDLE, drafts: dict[SessionId, Staged] | None = None) -> Registry:
     return registry(state, drafts, member=WRAPPED)
 
 
@@ -130,7 +133,7 @@ def test_a_session_at_a_dialog_is_sent_nothing_and_keeps_its_draft(state: Sessio
 
 
 def test_an_ended_session_is_sent_nothing() -> None:
-    before = wrapped(Gone(WRAPPED), {ONE.id: FIX})
+    before = gone({ONE.id: FIX}, WRAPPED)
     assert decide(before, SendDraft(ONE.id)) == (before, SessionEnded(ONE.id))
 
 
