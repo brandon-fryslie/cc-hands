@@ -55,7 +55,7 @@ class Gate:
                 return Gate("down")
             case "stop":
                 return Gate("up")
-            case "drop":
+            case "drop" | "expire":
                 return Gate("dropped")
 
     @property

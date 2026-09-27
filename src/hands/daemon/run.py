@@ -62,7 +62,7 @@ from hands.voice.summary import Summariser, summariser
 from hands.voice.summary_instruction import TURN_SUMMARY_INSTRUCTION
 from hands.voice.briefing import brief
 from hands.voice.conversation import record_turns
-from hands.voice.system import SystemChannel, listen, unheard
+from hands.voice.system import SystemChannel, listen, told
 from hands.voice.threads import off_loop
 from hands.voice.tools import audited, intermediary_tools
 
@@ -294,7 +294,7 @@ async def converse(
             voice.audio.output().cue(cue)
         # The indicator reads the key from the heartbeat, so the edge is written now rather than at the next beat.
         beat()
-        for fact in unheard(move, voice.audio.devices):
+        for fact in told(move, voice.audio.devices):
             await channel.say(fact)
 
     async def drive_talk_key_once_started() -> None:

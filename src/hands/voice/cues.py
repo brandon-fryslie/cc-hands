@@ -9,7 +9,7 @@ from functools import cache
 
 import numpy as np
 
-from hands.voice.hold import Move
+from hands.voice.hold import TURN_LIMIT_SECONDS, Move
 
 CUE_SECONDS = 0.06
 # About -16 dBFS against replies that peak near full scale: heard over the room, never louder than the voice.
@@ -28,6 +28,7 @@ class Cue:
 OPENED = Cue("turn: started", ((660.0, 990.0),))
 SENT = Cue("turn: ended", ((990.0, 660.0),))
 DROPPED = Cue("turn: dropped", ((330.0, 330.0), (330.0, 330.0)))
+EXPIRED = Cue(f"turn: dropped, open {TURN_LIMIT_SECONDS:.0f}s", DROPPED.glides)
 
 
 def cues(move: Move) -> tuple[Cue, ...]:
@@ -39,6 +40,8 @@ def cues(move: Move) -> tuple[Cue, ...]:
             return (SENT,)
         case "drop":
             return (DROPPED,)
+        case "expire":
+            return (EXPIRED,)
         case "arm" | "disarm":
             return ()
 

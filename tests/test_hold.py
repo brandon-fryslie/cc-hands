@@ -8,7 +8,7 @@ import pytest
 
 from hands.daemon import cli
 from hands.voice import keys, talkkey
-from hands.voice.hold import Hold, Idle, KeyEvent, Move, Pressed, Released, Ripe, Typed, step
+from hands.voice.hold import Hold, Idle, KeyEvent, Move, Overlong, Pressed, Released, Ripe, Typed, step
 
 
 def moves(events: Sequence[KeyEvent]) -> list[Move]:
@@ -40,6 +40,11 @@ def moves(events: Sequence[KeyEvent]) -> list[Move]:
         # press starts afresh, from Typing too.
         ([Pressed(1.0), Ripe(1.0), Pressed(2.0), Ripe(2.0), Released()], ["arm", "start", "drop", "arm", "start", "stop"]),
         ([Pressed(1.0), Typed(), Pressed(2.0), Ripe(2.0), Released()], ["arm", "disarm", "arm", "start", "stop"]),
+        # A turn open past the limit is thrown away, and the release after it, whenever it comes, sends nothing.
+        ([Pressed(1.0), Ripe(1.0), Overlong(1.0), Released()], ["arm", "start", "expire"]),
+        # The limit counts only for the press it was scheduled for, and a turn already sent has nothing left to expire.
+        ([Pressed(1.0), Released(), Pressed(2.0), Ripe(2.0), Overlong(1.0), Released()], ["arm", "disarm", "arm", "start", "stop"]),
+        ([Pressed(1.0), Ripe(1.0), Released(), Overlong(1.0)], ["arm", "start", "stop"]),
         # After a dropped turn the key works again from the next press.
         ([Pressed(1.0), Ripe(1.0), Typed(), Released(), Pressed(2.0), Ripe(2.0), Released()], ["arm", "start", "drop", "arm", "start", "stop"]),
     ],
@@ -94,7 +99,7 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
     driving = asyncio.create_task(keys.drive_talk_key(on_move))
     while not taps:
         await asyncio.sleep(0)
-    taps[0](Pressed(1.0))
+    taps[0](Pressed(asyncio.get_running_loop().time()))  # dated as the tap dates it, on the loop's clock
     await asyncio.wait_for(started.wait(), 1.0)
     taps[0](Released())
     while len(made) < 3:
@@ -104,6 +109,34 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
         await driving
     assert made == ["arm", "start", "stop"]
     assert stopped == [None]
+
+
+async def test_a_turn_held_past_the_limit_is_thrown_away_without_a_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    taps: list[Callable[[KeyEvent], None]] = []
+
+    def tap(heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
+        taps.append(heard)
+        return lambda: None
+
+    monkeypatch.setattr(talkkey, "tap", tap)
+    monkeypatch.setattr(keys, "HOLD_SECONDS", 0.05)
+    monkeypatch.setattr(keys, "TURN_LIMIT_SECONDS", 0.1)
+    made: list[Move] = []
+
+    async def on_move(move: Move) -> None:
+        made.append(move)
+
+    driving = asyncio.create_task(keys.drive_talk_key(on_move))
+    while not taps:
+        await asyncio.sleep(0)
+    taps[0](Pressed(asyncio.get_running_loop().time()))  # and never released: a key stuck down
+    async with asyncio.timeout(1.0):
+        while len(made) < 3:
+            await asyncio.sleep(0.01)
+    driving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await driving
+    assert made == ["arm", "start", "expire"]
 
 
 def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
