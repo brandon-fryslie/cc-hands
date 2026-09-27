@@ -130,8 +130,9 @@ async def test_a_turn_held_past_the_limit_is_thrown_away_without_a_release(monke
     while not taps:
         await asyncio.sleep(0)
     taps[0](Pressed(asyncio.get_running_loop().time()))  # and never released: a key stuck down
-    while len(made) < 3:
-        await asyncio.sleep(0.01)
+    async with asyncio.timeout(1.0):
+        while len(made) < 3:
+            await asyncio.sleep(0.01)
     driving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await driving

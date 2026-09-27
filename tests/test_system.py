@@ -77,7 +77,7 @@ def test_each_fact_is_said_from_its_template(fact: SystemFact, said: str) -> Non
         ("drop", DEAF, ()),
         ("start", BUILT_IN, ()),
         ("expire", BUILT_IN, (TurnExpired(),)),
-        ("expire", DEAF, (TurnExpired(),)),
+        ("expire", DEAF, ()),
     ],
 )
 def test_a_move_the_tone_alone_would_leave_unexplained_is_said(move: Move, devices: Devices, said: tuple[SystemFact, ...]) -> None:
