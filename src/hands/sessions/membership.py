@@ -1,9 +1,10 @@
-"""The membership file: written by the shim at SessionStart, read by the daemon.
+"""The membership file: written by the shim at SessionStart, or at the first hook of a session that never fired one; read by the daemon.
 
 The file's name is the session id, so the id is not repeated inside it.
 """
 
 import json
+import os
 from pathlib import Path
 
 from hands.core.session import Membership, SessionId
@@ -26,8 +27,9 @@ def write_membership(home: Home, membership: Membership) -> None:
         }
     )
     # [LAW:no-ambient-temporal-coupling] written beside and renamed into place,
-    # so the daemon reading it never sees half a file.
-    staging = path.with_suffix(".tmp")
+    # so the daemon reading it never sees half a file. Named for the writing shim:
+    # a session's first hooks can run at once, parallel tool calls each firing one.
+    staging = path.with_suffix(f".{os.getpid()}.tmp")
     staging.write_text(body)
     staging.replace(path)
 

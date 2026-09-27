@@ -21,18 +21,20 @@ async def serve_hooks(home: Home, sessions: Sessions) -> web.AppRunner:
     async def hook(request: web.Request) -> web.Response:
         body = await request.read()
         try:
-            event = parse_hook(body, home=home, at=sessions.now(), request=RequestId(uuid4().hex))
+            said = parse_hook(body, home=home, at=sessions.now(), request=RequestId(uuid4().hex))
         except Rejected as error:
             # The shim prints this reply, so the session that sent the hook shows why.
             logger.error(f"rejected hook: {error}")
             return web.Response(status=400, text=str(error))
-        match event:
-            case PermissionRequested():
+        for joining in said.joining:
+            await sessions.apply(joining)
+        match said.happened:
+            case PermissionRequested() as asked:
                 # The one hook that waits: the response body is the answer Claude Code reads.
-                output = hook_output(await sessions.ask(event))
+                output = hook_output(await sessions.ask(asked))
                 return web.Response(status=204) if output is None else web.json_response(output)
-            case _:
-                await sessions.apply(event)
+            case happened:
+                await sessions.apply(happened)
                 return web.Response(status=204)
 
     app = web.Application()

@@ -537,7 +537,10 @@ being off.
 At `SessionStart` the shim also writes
 `~/.hands/sessions/<session_id>.json` with its parent pid, `cwd`, and
 `transcript_path`; that file is the one record of the session's membership, written
-by one writer. It is written whether or not the daemon is up, so a daemon started
+by one writer. A session running before the plugin was installed, or reloaded with
+`/reload-plugins`, never fires `SessionStart`, so every other hook writes the file
+when there is none, and the daemon attaches the session named in it before it applies
+the hook: such a session joins on whatever it fires first. It is written whether or not the daemon is up, so a daemon started
 later finds the sessions already running. The hooks are installed whether or not
 hands is running, so a shim that cannot reach the socket asks the heartbeat why
 (`hands.sessions.heartbeat.look`, the judge `hands status` uses). A hands that was
@@ -573,8 +576,8 @@ hook, and the closed connection releases the session (measured on 2.1.270). What
 is a tool approved at the keyboard that is still running at the deadline: its warning
 and its deny, which Claude Code ignores, are still heard, so the expiry is spoken as
 what hands did ("so I told it no"), never as what happened to the tool. A permission
-request from a session the daemon does not know, such as one started before the
-daemon was, is let go at once.
+request from a session the daemon has not heard of joins the session first, so it is
+asked aloud like any other.
 
 ## Transcripts: the live tail, and backfill
 
@@ -1164,7 +1167,8 @@ Three facts about a session have three different sources, and the registry deriv
 from all three rather than storing any of them twice `[LAW:one-source-of-truth]`.
 
 - **Membership** is the set of files in `~/.hands/sessions/`. The shim writes one at
-  `SessionStart` and removes it at `SessionEnd`. The daemon sweeps the directory once
+  `SessionStart`, or at the first hook of a session that fired none, and removes it at
+  `SessionEnd`. The daemon sweeps the directory once
   before its models load and every 2 seconds after (`hands.sessions.liveness`). A file
   whose process is running becomes `Attached`, which registers a session the registry
   has never heard of in `Idle` and changes nothing for one it knows: a hook heard first

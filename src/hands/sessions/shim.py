@@ -58,25 +58,33 @@ class _UnixConnection(http.client.HTTPConnection):
 def record(home: Home, payload: Payload) -> None:
     match payload.text("hook_event_name"):
         case "SessionStart":
-            membership = Membership(
-                id=payload.session_id(),
-                # The hook's shell execs a single simple command, so this is the claude
-                # process. A compound hook command (`a; b`) would make it that shell.
-                pid=os.getppid(),
-                cwd=Path(payload.text("cwd")),
-                transcript=Path(payload.text("transcript_path")),
-                # [LAW:one-source-of-truth] fritter publishes its own address and nothing
-                # else names it. The claude process it wrapped has it in its environment
-                # and this hook inherited that environment, so the address arrives here
-                # without fritter and hands agreeing on a path or a filename. Empty or
-                # unset both mean this session was not wrapped.
-                fritter=Path(address) if (address := os.environ.get("FRITTER_SOCKET")) else None,
-            )
-            write_membership(home, membership)
+            write_membership(home, _membership(payload))
         case "SessionEnd":
             remove_membership(home, payload.session_id())
+        case _ if not home.membership(payload.session_id()).exists():
+            # A session running before the plugin was installed, or before `/reload-plugins`, never fires its start
+            # hook, so its first hook of any kind is where it joins. The daemon reads this file for every hook but a
+            # start or an end [LAW:one-source-of-truth], so it is written before the post.
+            write_membership(home, _membership(payload))
         case _:
             pass
+
+
+def _membership(payload: Payload) -> Membership:
+    return Membership(
+        id=payload.session_id(),
+        # The hook's shell execs a single simple command, so this is the claude
+        # process. A compound hook command (`a; b`) would make it that shell.
+        pid=os.getppid(),
+        cwd=Path(payload.text("cwd")),
+        transcript=Path(payload.text("transcript_path")),
+        # [LAW:one-source-of-truth] fritter publishes its own address and nothing
+        # else names it. The claude process it wrapped has it in its environment
+        # and this hook inherited that environment, so the address arrives here
+        # without fritter and hands agreeing on a path or a filename. Empty or
+        # unset both mean this session was not wrapped.
+        fritter=Path(address) if (address := os.environ.get("FRITTER_SOCKET")) else None,
+    )
 
 
 def post(home: Home, body: bytes, timeout: float) -> str:

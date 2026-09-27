@@ -33,7 +33,7 @@ CommandName = NewType("CommandName", str)
 
 @dataclass(frozen=True)
 class Membership:
-    """Which process a session is, and where it works, as the shim recorded it at SessionStart."""
+    """Which process a session is, and where it works, as the shim recorded it at SessionStart or at the first hook of a session that fired none."""
 
     id: SessionId
     pid: int
