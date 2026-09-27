@@ -86,6 +86,10 @@ class Statuses:
             path = status_file(member)
             report = parse_report(member, path.read_bytes())
         except FileNotFoundError:
+            if session.report is not None:
+                # Claude Code removes the file it was read from as its process exits, before the end hook lands (330 to
+                # 640 ms on 2.1.283): the session is ending, which the end hook or the sweep says, not a status unread.
+                return None
             return self._said(member, f"Claude Code keeps no status for it at {status_file(member)}")
         except (Rejected, OSError) as error:
             return self._said(member, f"its status file is refused: {error}")
