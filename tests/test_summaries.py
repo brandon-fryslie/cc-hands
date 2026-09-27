@@ -22,9 +22,10 @@ def test_summaries_are_off_until_turned_on(tmp_path: Path) -> None:
     assert summaries(home) == "off"
 
 
-def test_a_switch_that_says_neither_is_refused_rather_than_read_as_the_default(tmp_path: Path) -> None:
+@pytest.mark.parametrize("written", [b"yes\n", b"", b"\xffon"])
+def test_a_switch_that_says_neither_is_refused_rather_than_read_as_the_default(tmp_path: Path, written: bytes) -> None:
     home = Home(tmp_path)
-    home.summaries.write_text("yes\n")
+    home.summaries.write_bytes(written)
     with pytest.raises(Rejected, match="neither on nor off"):
         summaries(home)
 

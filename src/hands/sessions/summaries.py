@@ -27,12 +27,15 @@ DEFAULT: Summaries = "off"
 def summaries(home: Home) -> Summaries:
     """Where the switch stands; the default where it was never set."""
     try:
-        written = home.summaries.read_text().strip()
+        # Bytes, not text: a file edited by hand can hold anything, and whatever is not on or off is refused alike.
+        written = home.summaries.read_bytes().strip()
     except FileNotFoundError:
         return DEFAULT
     match written:
-        case "on" | "off":
-            return written
+        case b"on":
+            return "on"
+        case b"off":
+            return "off"
         case _:
             raise Rejected(f"{home.summaries} says {written!r}, which is neither on nor off")
 
