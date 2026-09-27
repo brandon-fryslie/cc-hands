@@ -230,22 +230,19 @@ class Speaker(LocalAudioOutputTransport):
         It moves `sounded_at`, since it is sound given to the speaker, and never `quiet_at`: a cue is not the
         pipeline's speech, and holding the microphone shut behind the one that opens a turn would cut the turn's first word.
         """
-        match self._out_stream:
-            case None:
+        match self._attached.is_set():
+            case False:
                 logger.warning(f"no speaker is attached; the tone for {cue.line!r} is not played")
-            case stream:
-                self.sounded_at = self._clock()
+            case True:
+                stream = cast(Playback, self._out_stream)
                 audio = sound(cue, self.sample_rate, self._params.audio_out_channels)
-                self._writes.give(lambda: _cueing(stream, audio))
 
+                def write() -> None:
+                    # A stream a reopen has stopped refuses the write; the writer thread says so and carries on.
+                    self.sounded_at = self._clock()
+                    stream.write(audio)
 
-def _cueing(stream: Playback, audio: bytes) -> None:
-    try:
-        stream.write(audio)
-    except Exception:
-        # [LAW:no-silent-failure] said, and caught here so that the one thread every speaker write goes through
-        # outlives it: a stream stopped by a reopen refuses the write.
-        logger.exception("a turn's tone was not played")
+                self._writes.give(write)
 
 
 def _duration(frame: OutputAudioRawFrame) -> float:

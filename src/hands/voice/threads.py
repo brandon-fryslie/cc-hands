@@ -10,6 +10,8 @@ import queue
 import threading
 from collections.abc import Callable
 
+from loguru import logger
+
 
 async def off_loop[T](work: Callable[[], T], name: str) -> T:
     """The result of work run on a daemon thread of its own."""
@@ -27,12 +29,18 @@ class SerialThread:
     """
 
     def __init__(self, name: str) -> None:
+        self._name = name
         self._queue: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
         threading.Thread(target=self._serve, name=name, daemon=True).start()
 
     def _serve(self) -> None:
         while True:
-            self._queue.get()()
+            try:
+                self._queue.get()()
+            except Exception:
+                # [LAW:single-enforcer] work given without a waiter fails here, said, and the thread outlives it:
+                # everything queued behind it, and everything given later, still runs.
+                logger.exception(f"work on {self._name} failed")
 
     def give(self, work: Callable[[], None]) -> None:
         """Queue work behind everything given before it, and return without waiting for it to run."""

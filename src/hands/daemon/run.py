@@ -289,11 +289,11 @@ async def converse(
 
     async def on_move(move: Move) -> None:
         voice.key.move(move)
-        # The indicator reads the key from the heartbeat, so the edge is written now rather than at the next beat.
-        beat()
         for cue in cues(move):
             logger.info(cue.line)
             voice.audio.output().cue(cue)
+        # The indicator reads the key from the heartbeat, so the edge is written now rather than at the next beat.
+        beat()
         for fact in unheard(move, voice.audio.devices):
             await channel.say(fact)
 

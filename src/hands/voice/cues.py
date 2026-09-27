@@ -5,6 +5,7 @@ is not the pipeline's speech, so it holds nothing shut, and a word said over it 
 """
 
 from dataclasses import dataclass
+from functools import cache
 
 import numpy as np
 
@@ -42,6 +43,7 @@ def cues(move: Move) -> tuple[Cue, ...]:
             return ()
 
 
+@cache
 def sound(cue: Cue, sample_rate: int, channels: int) -> bytes:
     """The cue's tones one after another as 16-bit PCM, each followed by a tone's length of silence."""
     n = round(sample_rate * CUE_SECONDS)
