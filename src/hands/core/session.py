@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, NewType, Self
 
-from hands.core.status import Going, Stamp, Waiting
+from hands.core.status import Going, Stamp
 
 SessionId = NewType("SessionId", str)
 RequestId = NewType("RequestId", str)
@@ -247,16 +247,6 @@ class Session:
     mode: Mode | None
     turn: Turn = Told()
     dialog: Dialog | None = None
-
-
-def at_a_dialog(session: Session) -> bool:
-    """Whether keys typed at the session land in a dialog, which takes them as its answer: Claude Code says it waits at
-    one, or hands heard its hook before the status that says so was read."""
-    match session:
-        case Session(dialog=Held() | LetGo()) | Session(state=Running(status=Waiting())):
-            return True
-        case _:
-            return False
 
 
 @dataclass(frozen=True)

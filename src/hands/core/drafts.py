@@ -5,7 +5,8 @@ from pathlib import Path
 
 from hands.core.effects import NotTyped, Text, Type, Typed
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped
-from hands.core.session import Gone, Registry, Session, SessionId, Staged, at_a_dialog
+from hands.core.session import Gone, Registry, Running, Session, SessionId, Staged
+from hands.core.status import Waiting
 
 
 @dataclass(frozen=True)
@@ -88,7 +89,7 @@ def _decide(registry: Registry, request: DraftRequest, session: Session, staged:
             return registry.stage(id, after), DraftAmended(id, before, after)
         case (SendDraft(), Staged(), _, None):
             return registry, Unwrapped(id)
-        case (SendDraft(), Staged(), _, Path()) if at_a_dialog(session):
+        case (SendDraft(), Staged(), Running(status=Waiting()), Path()):
             return registry, AtItsDialog(id)
         case (SendDraft(), Staged() as draft, _, Path() as socket):
             # Sent the moment it is decided: the draft leaves the registry here, so there is never a second send of it.

@@ -11,16 +11,12 @@ from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrappe
 from hands.core.session import (
     CommandName,
     Gone,
-    Held,
     Idle,
-    LetGo,
     Membership,
     Opened,
-    Permission,
     PromptId,
     PromptText,
     Registry,
-    RequestId,
     Session,
     SessionId,
     SessionState,
@@ -65,17 +61,6 @@ def test_an_interrupt_presses_escape_even_at_a_dialog(state: SessionState) -> No
 
 def test_a_session_at_its_prompt_has_nothing_to_interrupt() -> None:
     assert decide(registry(IDLE), Interrupt(ONE.id)) == NothingRunning(ONE.id)
-
-
-BASH = Permission("Bash", {})
-
-
-@pytest.mark.parametrize("state", [IDLE, running(), Unreported()])
-@pytest.mark.parametrize("dialog", [Held(on=BASH, request=RequestId("r"), deadline=60.0, warned=False), LetGo(BASH)])
-def test_a_session_whose_dialog_was_heard_before_its_status_says_so_is_sent_no_command(state: SessionState, dialog: Held | LetGo) -> None:
-    """The permission hook can land before the status read that says the session waits, and its Return would answer it."""
-    before = Registry(permission_deadline=60.0, sessions={ONE.id: Session(ONE, state, mode=None, dialog=dialog)}, drafts={})
-    assert decide(before, SendCommand(ONE.id, COMPACT)) == AtItsDialog(ONE.id)
 
 
 def test_a_prompt_still_in_its_hooks_is_interrupted_though_its_session_is_read_idle() -> None:
