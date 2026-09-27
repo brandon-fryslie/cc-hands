@@ -9,7 +9,6 @@ stay unwrapped until they end.
 
 import os
 import shlex
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -33,17 +32,26 @@ class Uninstallable(Exception):
 class Installed:
     shim: Path
     fritter: Path
-    # What `claude` names on the PATH the install ran under: the shim, or the claude it would be ahead of.
-    found: Path | None
 
-    @property
-    def on_path(self) -> bool:
-        """Whether that `claude` is a hands shim: this one, or another home's, which wraps a session just as well."""
-        if self.found is None:
-            return False
-        with self.found.open("rb") as found:
-            found.readline()
-            return found.readline().rstrip(b"\n") == MARK.encode()
+
+def fritter_of(path: Path) -> Path | None:
+    """The fritter a hands shim at path runs, this home's or another's; None when path is not a hands shim."""
+    # Read as the shim reads each claude on PATH: a file it cannot read is not a shim to it either.
+    try:
+        with path.open("rb") as found:
+            lines = [found.readline() for _ in range(3)]
+    except OSError:
+        return None
+    marked, assigned = lines[1].rstrip(b"\n"), lines[2].rstrip(b"\n").decode(errors="replace")
+    try:
+        words = shlex.split(assigned.removeprefix("fritter=")) if assigned.startswith("fritter=") else []
+    except ValueError:  # an unclosed quote: not a line shim_script writes
+        words = []
+    match (marked == MARK.encode(), words):
+        case (True, [fritter]):
+            return Path(fritter)
+        case _:
+            return None
 
 
 def shim_script(fritter: Path) -> str:
@@ -96,10 +104,10 @@ esac
 """
 
 
-def install(home: Home, path: str) -> Installed:
-    """Build fritter and write the shim into the home's bin; `path` is the PATH whose `claude` is reported."""
+def install(home: Home) -> Installed:
+    """Build fritter and write the shim into the home's bin."""
     fritter = home.bin / "fritter"
-    shim = home.bin / "claude"
+    shim = home.shim
     if not (FRITTER_SOURCE / "go.mod").is_file():
         raise Uninstallable(f"no fritter source at {FRITTER_SOURCE}: hands install-fritter builds it from a checkout of cc-hands")
     try:
@@ -112,8 +120,7 @@ def install(home: Home, path: str) -> Installed:
         replace_whole(shim, shim_script(fritter), 0o755)
     except OSError as error:
         raise Uninstallable(f"cannot install into {home.bin}: {error}") from error
-    found = shutil.which("claude", path=path)
-    return Installed(shim, fritter, None if found is None else Path(found))
+    return Installed(shim, fritter)
 
 
 def _build_fritter(target: Path) -> None:

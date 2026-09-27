@@ -153,12 +153,19 @@ uv run hands run                        # hold Right Shift in any app to talk, r
 HANDS_LLM=anthropic uv run hands run     # the key from the keychain's HANDS_LLM_ANT_KEY
 HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
+uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run pytest && uv run pyright
 uv run python evals/narration.py       # real turns through the real summariser; needs the model to be up
 uv run python evals/intermediary.py    # conversations through the intermediary's prompt and tools; same
 ```
+
+`hands check` looks at each piece hands needs and says it is there or what puts it
+there: the plugin, installed and enabled; `claude` on this `PATH` being hands' shim; this
+terminal's Input Monitoring grant; and each running session hands knows of that cannot
+be typed into, by its directory and pid. `hands run` says the same lines as it starts. An
+up daemon is not a working hands: `hands status` says only whether the daemon is running.
 
 `hands run` needs the Input Monitoring grant for the terminal app it runs in (System Settings > Privacy &
 Security > Input Monitoring) to hear Right Shift from other apps; without it, it names the grant and exits.

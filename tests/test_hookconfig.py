@@ -15,6 +15,7 @@ from hands.sessions.hookconfig import (
     PERMISSION_DEADLINE_SECONDS,
     PERMISSION_HOOK_TIMEOUT_SECONDS,
     PLUGIN_DIR,
+    PLUGIN_ID,
     POST_TIMEOUT_SECONDS,
     SUBSCRIBED,
     plugin_hooks,
@@ -69,3 +70,10 @@ def test_a_reply_is_printed_in_the_shape_claude_code_reads() -> None:
     assert hook_output(Withdraw()) is None
     answered: dict[str, object] = {"questions": [{"question": "Which?", "options": []}], "answers": {"Which?": "this"}}
     assert hook_output(AllowWith(answered)) == {"hookSpecificOutput": {**decided, "decision": {"behavior": "allow", "updatedInput": answered}}}
+
+
+def test_the_plugin_id_is_the_plugin_s_name_at_the_marketplace_s() -> None:
+    marketplace = json.loads((PLUGIN_ROOT.parent / ".claude-plugin" / "marketplace.json").read_text())
+    plugin = json.loads((PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text())
+    assert f"{plugin['name']}@{marketplace['name']}" == PLUGIN_ID
+    assert [entry["source"] for entry in marketplace["plugins"] if entry["name"] == plugin["name"]] == [f"./{PLUGIN_DIR}"]

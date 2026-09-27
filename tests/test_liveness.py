@@ -93,7 +93,12 @@ def test_an_unreadable_file_is_removed_and_a_staging_file_is_not_read(tmp_path: 
     write_membership(home, member("good", os.getpid()))
     home.membership(SessionId("bad")).write_text("{not json")
     (home.memberships / "half.tmp").write_text("{")
-    assert [record.membership.id for record in recorded(home)] == ["good"]
+    records, unreadable = recorded(home)
+    assert [record.membership.id for record in records] == ["good"]
+    assert [file.path for file in unreadable] == [home.membership(SessionId("bad"))]
+    # Reading removes nothing; the sweep removes what it read as unreadable.
+    assert home.membership(SessionId("bad")).exists()
+    asyncio.run(sweep(home, sessions(), frozenset()))
     assert not home.membership(SessionId("bad")).exists()
     assert (home.memberships / "half.tmp").exists()
 
@@ -174,7 +179,8 @@ def test_a_file_naming_no_possible_pid_is_removed_before_the_process_table_is_as
     home = Home(tmp_path)
     home.memberships.mkdir()
     home.membership(SessionId("bad")).write_text(json.dumps({"pid": pid, "cwd": "/c", "transcript_path": "/t.jsonl"}))
-    assert recorded(home) == []
+    assert recorded(home)[0] == []
+    asyncio.run(sweep(home, sessions(), frozenset()))
     assert not home.membership(SessionId("bad")).exists()
 
 

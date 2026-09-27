@@ -28,6 +28,9 @@ HOOKS_FILE = "hooks/hooks.json"
 # The plugin, relative to the repository, which is its marketplace. A directory of its own, so an install copies the
 # hooks and a link to src, never the repository's venv.
 PLUGIN_DIR = "plugin"
+# The plugin as Claude Code names it: its name in plugin/.claude-plugin/plugin.json, at the marketplace's name in
+# .claude-plugin/marketplace.json.
+PLUGIN_ID = "hands@cc-hands"
 
 SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "Notification", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd")
 
