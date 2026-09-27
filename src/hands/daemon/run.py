@@ -16,6 +16,7 @@ Latency from key release to the first audio out is logged for every turn.
 """
 
 import asyncio
+import atexit
 import os
 import signal
 import subprocess
@@ -140,16 +141,23 @@ def _keychain_key(service: str, var: str, choice: str) -> str:
 def keychain_password(service: str) -> str | None:
     """The generic password the keychains on the search list hold for `service`, or None when they hold none."""
     bypass = "set ANTHROPIC_API_KEY to start without the keychain"
-    try:
-        found = subprocess.run(["security", "find-generic-password", "-s", service, "-w"], capture_output=True, text=True, timeout=KEYCHAIN_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        sys.exit(f"reading {service} from the keychain waited {KEYCHAIN_TIMEOUT_SECONDS:.0f}s, likely on a prompt to allow access; {bypass}.")
+    with subprocess.Popen(["security", "find-generic-password", "-s", service, "-w"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as found:
+        # The read runs on a daemon thread, which a stop mid-prompt exits without: the prompt goes with the process
+        # that asked, not left on screen for a daemon that is gone.
+        atexit.register(found.kill)
+        try:
+            out, err = found.communicate(timeout=KEYCHAIN_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            found.kill()
+            sys.exit(f"reading {service} from the keychain waited {KEYCHAIN_TIMEOUT_SECONDS:.0f}s, likely on a prompt to allow access; {bypass}.")
+        finally:
+            atexit.unregister(found.kill)
     # [LAW:no-silent-failure] 44 is `security`'s "not found"; any other failure, a locked keychain or a denied prompt, is not an absence.
     if found.returncode == 44:
         return None
     if found.returncode != 0:
-        sys.exit(f"reading {service} from the keychain failed: {found.stderr.strip()}; {bypass}.")
-    return found.stdout.strip() or None
+        sys.exit(f"reading {service} from the keychain failed: {err.strip()}; {bypass}.")
+    return out.strip() or None
 
 
 def config_from_env() -> VoiceConfig:
