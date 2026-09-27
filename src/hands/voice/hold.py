@@ -4,13 +4,15 @@ Right Shift is also Shift, so the key cannot mean talk the moment it goes down. 
 alone for `HOLD_SECONDS`; a quick tap is nothing, and a key pressed while it is held is typing: no turn starts, and a
 turn already started is dropped, never sent. Right Shift itself is never swallowed, so Shift keeps working as Shift.
 The microphone opens on the press all the same, so words said before the hold means talk are kept: they reach a turn
-only if the hold opens one, and are thrown away if it turns out to be Shift.
+only if the hold opens one, and are thrown away if it turns out to be Shift. A turn still open `TURN_LIMIT_SECONDS`
+after its press is dropped: a key stuck down, or a release macOS never reported, would otherwise record the room forever.
 """
 
 from dataclasses import dataclass
 from typing import Literal
 
 HOLD_SECONDS = 0.3
+TURN_LIMIT_SECONDS = 120.0
 
 Instant = float  # seconds on the monotonic clock
 
@@ -39,7 +41,14 @@ class Ripe:
     pressed_at: Instant
 
 
-KeyEvent = Pressed | Released | Typed | Ripe
+@dataclass(frozen=True)
+class Overlong:
+    """`TURN_LIMIT_SECONDS` have passed since the press made at `pressed_at`, whatever happened in between."""
+
+    pressed_at: Instant
+
+
+KeyEvent = Pressed | Released | Typed | Ripe | Overlong
 
 
 @dataclass(frozen=True)
@@ -56,7 +65,9 @@ class Arming:
 
 @dataclass(frozen=True)
 class Talking:
-    pass
+    """A turn is open, from the press made at `since`."""
+
+    since: Instant
 
 
 @dataclass(frozen=True)
@@ -67,8 +78,8 @@ class Typing:
 Hold = Idle | Arming | Talking | Typing
 
 # What the hold does: opens the microphone on a press, closes it on a press that was Shift after all, and to the turn:
-# opens it, closes it and sends it, or closes it and throws it away.
-Move = Literal["arm", "disarm", "start", "stop", "drop"]
+# opens it, closes it and sends it, closes it and throws it away, or throws it away for being open too long.
+Move = Literal["arm", "disarm", "start", "stop", "drop", "expire"]
 
 
 def step(hold: Hold, event: KeyEvent) -> tuple[Hold, tuple[Move, ...]]:
@@ -83,7 +94,10 @@ def step(hold: Hold, event: KeyEvent) -> tuple[Hold, tuple[Move, ...]]:
         # [LAW:no-ambient-temporal-coupling] a Ripe counts only for the press it was scheduled for: one left over
         # from an earlier press, released and pressed again since, names another instant and changes nothing.
         case Arming(since=since), Ripe(pressed_at=pressed_at) if pressed_at == since:
-            return Talking(), ("start",)
+            return Talking(since), ("start",)
+        # The key may still be down: its release, when it comes, ends nothing.
+        case Talking(since=since), Overlong(pressed_at=pressed_at) if pressed_at == since:
+            return Typing(), ("expire",)
         case Arming(), Typed():
             return Typing(), ("disarm",)
         case Talking(), Typed():

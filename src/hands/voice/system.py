@@ -20,7 +20,7 @@ from pipecat.utils.errors import ErrorCategory
 from hands.sessions.audit import Announced, Record
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
-from hands.voice.hold import Move
+from hands.voice.hold import TURN_LIMIT_SECONDS, Move
 from hands.voice.whisper import NOTHING_TRANSCRIBED, Whisper
 
 
@@ -58,13 +58,18 @@ class NoMicrophone:
 
 
 @dataclass(frozen=True)
+class TurnExpired:
+    """A turn was open `TURN_LIMIT_SECONDS`, and what it recorded was thrown away."""
+
+
+@dataclass(frozen=True)
 class AudioMoved:
     """The system's default devices changed, and the transport was reopened on these."""
 
     devices: Devices
 
 
-SystemFact = Started | ModelUnreachable | ModelFailed | TranscriptionFailed | NothingTranscribed | NoMicrophone | AudioMoved
+SystemFact = Started | ModelUnreachable | ModelFailed | TranscriptionFailed | NothingTranscribed | NoMicrophone | TurnExpired | AudioMoved
 
 
 def system_text(fact: SystemFact) -> str:
@@ -82,6 +87,8 @@ def system_text(fact: SystemFact) -> str:
             return "Whisper returned nothing for that turn."
         case NoMicrophone():
             return "There is no microphone, so hands cannot hear you."
+        case TurnExpired():
+            return f"That turn was open for {TURN_LIMIT_SECONDS:.0f} seconds, so hands threw it away."
         case AudioMoved(devices=Devices(input=None, output=output)):
             # [LAW:no-silent-failure] said on whatever speaker is left, since nothing will be heard until a microphone is back.
             return f"No microphone: hands cannot hear you. Speaking on {output}."
@@ -234,12 +241,14 @@ class SystemChannel:
                 logger.error(f"{source} failed: {error}")
 
 
-def unheard(move: Move, devices: Devices) -> tuple[NoMicrophone, ...]:
-    """What a key press says when nothing will hear it: with no microphone no frame reaches Whisper, so no turn
-    starts and nothing else would answer the press."""
+def told(move: Move, devices: Devices) -> tuple[NoMicrophone | TurnExpired, ...]:
+    """What a move of the key says aloud, beyond its tone: a press to talk with no microphone, which no turn will
+    answer since no frame reaches Whisper, and a turn thrown away for being open too long."""
     match move, devices:
         case "start", Devices(input=None):
             return (NoMicrophone(),)
+        case "expire", _:
+            return (TurnExpired(),)
         case _:
             return ()
 

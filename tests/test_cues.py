@@ -10,6 +10,7 @@ RATE = 24000
 def test_a_turn_shows_its_edges_and_nothing_of_shift() -> None:
     assert [cue.line for move in ("arm", "start", "stop") for cue in cues(move)] == ["turn: started", "turn: ended"]
     assert [cue.line for move in ("arm", "start", "drop") for cue in cues(move)] == ["turn: started", "turn: dropped"]
+    assert [cue.line for move in ("arm", "start", "expire") for cue in cues(move)] == ["turn: started", "turn: dropped, open 120s"]
     assert cues("arm") + cues("disarm") == ()
 
 

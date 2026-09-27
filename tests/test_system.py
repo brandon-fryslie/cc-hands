@@ -21,7 +21,8 @@ from hands.daemon.notify import notification_command
 from hands.sessions.home import Home
 from hands.voice.system import (
     NoMicrophone,
-    unheard,
+    TurnExpired,
+    told,
     AudioMoved,
     BURST_SECONDS,
     ModelFailed,
@@ -61,6 +62,7 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
         (TranscriptionFailed(), "Speech recognition failed for that turn."),
         (NothingTranscribed(), "Whisper returned nothing for that turn."),
+        (TurnExpired(), "That turn was open for 120 seconds, so hands threw it away."),
     ],
 )
 def test_each_fact_is_said_from_its_template(fact: SystemFact, said: str) -> None:
@@ -74,10 +76,12 @@ def test_each_fact_is_said_from_its_template(fact: SystemFact, said: str) -> Non
         ("stop", DEAF, ()),
         ("drop", DEAF, ()),
         ("start", BUILT_IN, ()),
+        ("expire", BUILT_IN, (TurnExpired(),)),
+        ("expire", DEAF, (TurnExpired(),)),
     ],
 )
-def test_a_press_to_talk_with_no_microphone_is_answered(move: Move, devices: Devices, said: tuple[NoMicrophone, ...]) -> None:
-    assert unheard(move, devices) == said
+def test_a_move_the_tone_alone_would_leave_unexplained_is_said(move: Move, devices: Devices, said: tuple[SystemFact, ...]) -> None:
+    assert told(move, devices) == said
 
 
 class Services:

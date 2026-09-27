@@ -20,7 +20,7 @@ def test_a_started_turn_is_heard() -> None:
     assert gate.audible(LOUD) == LOUD
 
 
-@pytest.mark.parametrize("ended", ["stop", "drop"])
+@pytest.mark.parametrize("ended", ["stop", "drop", "expire"])
 def test_an_ended_turn_is_silence_of_the_same_length(ended: Move) -> None:
     gate = Gate().after("start").after(ended)
     assert gate.audible(LOUD) == QUIET
@@ -35,5 +35,6 @@ def test_only_a_dropped_turn_leaves_the_key_dropped_and_the_next_turn_clears_it(
     assert Gate().after("start").after("stop").key == "up"
     dropped = Gate().after("start").after("drop")
     assert dropped.key == "dropped"
+    assert Gate().after("start").after("expire").key == "dropped"  # thrown away, never sent
     assert dropped.after("arm").after("start").key == "down"
 
