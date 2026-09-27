@@ -37,7 +37,7 @@ class Whisper(WhisperSTTServiceMLX):
 
     def __init__(self, *, settings: WhisperSTTServiceMLX.Settings) -> None:
         super().__init__(settings=settings)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
-        self._load()
+        self._warm()
         # The key the last frame of microphone audio was captured under.
         self._captured: Key = "up"
         # The number of the last hold the key opened.
@@ -48,14 +48,15 @@ class Whisper(WhisperSTTServiceMLX):
         # Sync, so the handler runs as the turn's transcription ends rather than after the stop timeout gives up on it.
         self._register_event_handler(NOTHING_TRANSCRIBED, sync=True)
 
-    def _load(self) -> None:
-        """Fetch the model, load it, and compile it now, while hands is starting, rather than in the first turn.
+    def _warm(self) -> None:
+        """Fetch the model, load it, and run it once now, while hands is starting, rather than in the first turn.
 
         MLX Whisper loads its model inside the first transcription it is asked for, downloading it first if it was
-        never fetched: the first turn of the first run waited 28 s on a 1.6 GB download (2026-09-26), and the first
-        turn of every later run waits about 1.5 s more than the rest. The model it loads is kept for the process,
-        keyed on the name it was asked for, so silence transcribed here with the arguments Pipecat's `run_stt` passes
-        leaves every turn finding it loaded [LAW:no-ambient-temporal-coupling].
+        never fetched: the first turn of the first run waited 28 s on a 1.6 GB download (2026-09-26). Once fetched,
+        loading takes 0.5 s and the first run after it 1.3 s against 0.3 s for every later one, so loading alone
+        would leave the first turn a second slower than the rest. The model is kept for the process, keyed on the
+        name it was asked for, so silence transcribed here with the arguments Pipecat's `run_stt` passes leaves every
+        turn finding it loaded and run [LAW:no-ambient-temporal-coupling].
         """
         model = require_given(self._settings.model, "Whisper model")
         began = time.monotonic()
