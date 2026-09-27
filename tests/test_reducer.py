@@ -34,6 +34,7 @@ from hands.core.session import (
     Gone,
     Held,
     Idle,
+    Known,
     LetGo,
     Membership,
     Mode,
@@ -95,8 +96,20 @@ HEARD: list[SessionEvent] = [
 ]
 
 
-def registry(*sessions: Session) -> Registry:
+def registry(*sessions: Known) -> Registry:
     return Registry(permission_deadline=TIMEOUT, sessions={s.membership.id: s for s in sessions}, drafts={})
+
+
+GONE = Registry(permission_deadline=TIMEOUT, sessions={ONE.id: Gone(ONE)}, drafts={})
+
+
+def live(registry: Registry) -> Session:
+    """Session one as the registry holds it, which the test expects to be live."""
+    match registry.sessions[ONE.id]:
+        case Session() as session:
+            return session
+        case Gone():
+            raise AssertionError("session one ended")
 
 
 def holding(state: SessionState, turn: Turn = Told(), dialog: Dialog | None = None) -> Registry:
@@ -120,7 +133,7 @@ def test_a_start_registers_the_session_with_no_status_read_yet() -> None:
 @pytest.mark.parametrize("event", HEARD)
 def test_no_hook_or_record_moves_a_session_between_running_and_not(before: SessionState, turn: Turn, event: SessionEvent) -> None:
     """[LAW:one-source-of-truth] hooks and records say which turn it is and what it did, never whether it runs."""
-    assert reduce(holding(before, turn), event)[0].sessions[ONE.id].state == before
+    assert live(reduce(holding(before, turn), event)[0]).state == before
 
 
 @pytest.mark.parametrize(
@@ -145,7 +158,7 @@ def test_a_status_read_moves_the_session_to_what_claude_code_says_it_is_doing(be
 
 @pytest.mark.parametrize("before", LIVE)
 def test_an_end_is_gone_from_any_state(before: SessionState) -> None:
-    assert reduce(holding(before), Ended(ONE.id, "prompt_input_exit"))[0] == holding(Gone())
+    assert reduce(holding(before), Ended(ONE.id, "prompt_input_exit"))[0] == GONE
 
 
 def test_a_prompt_opens_a_turn_and_one_inside_an_open_turn_is_queued_in_it() -> None:
@@ -204,7 +217,7 @@ def test_a_prompt_heard_after_the_busy_it_set_was_read_opens_and_marks_its_turn(
 @pytest.mark.parametrize("before", [holding(IDLE), holding(BUSY), in_turn()])
 def test_a_finished_turn_is_summarised_from_the_session_transcript(before: Registry) -> None:
     """The turn it names, whether hands had it open or never heard it open. It runs until Claude Code says it is idle."""
-    state = before.sessions[ONE.id].state
+    state = live(before).state
     assert reduce(before, Stopped(ONE.id, "Done.", mode=None, prompt=TURN, again=False)) == (holding(state, Told(TURN)), [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done.")])
 
 
@@ -236,7 +249,7 @@ def test_a_turn_that_goes_on_after_another_stop_hook_blocked_its_stop_runs_until
     for event in [Stopped(ONE.id, "First.", mode=None, prompt=TURN, again=False), Stopped(ONE.id, "Second.", mode=None, prompt=TURN, again=True)]:
         state, effects = reduce(state, event)
         heard += effects
-        assert state.sessions[ONE.id].state == BUSY
+        assert live(state).state == BUSY
     assert heard == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "First."), Compare(ONE.id, again=True), Summarise(ONE.id, TURN, "Second.")]
     assert reduce(state, said(status.Idle())) == (holding(Idle(Stamp(2000), due=10.0 + IDLE_NUDGE_SECONDS, after=TURN), Told(TURN)), [])
 
@@ -305,20 +318,20 @@ def test_a_compacted_session_is_kept_whole_under_its_new_membership(before: Sess
     assert reduce(registry(before), Joined(moved, "compact")) == (registry(replace(before, membership=moved)), [])
 
 
-@pytest.mark.parametrize("before", [*LIVE, Gone()])
+@pytest.mark.parametrize("before", [*[holding(state, Opened(TURN)) for state in LIVE], GONE])
 @pytest.mark.parametrize("source", ["startup", "resume", "clear"])
-def test_any_start_but_compaction_waits_for_its_status_to_be_read(before: SessionState, source: StartSource) -> None:
+def test_any_start_but_compaction_waits_for_its_status_to_be_read(before: Registry, source: StartSource) -> None:
     # a session resumed after a crash never sent the Stop or SessionEnd the registry is still waiting for
-    assert reduce(holding(before, Opened(TURN)), Joined(ONE, source))[0] == holding(Unreported())
+    assert reduce(before, Joined(ONE, source))[0] == holding(Unreported())
 
 
 def test_an_ended_session_compacting_waits_for_its_status_to_be_read() -> None:
-    assert reduce(holding(Gone()), Joined(ONE, "compact")) == (holding(Unreported()), [])
+    assert reduce(GONE, Joined(ONE, "compact")) == (holding(Unreported()), [])
 
 
 @pytest.mark.parametrize("event", SESSION_EVENTS)
 def test_an_ended_session_ignores_late_hooks_and_audits_them(event: SessionEvent) -> None:
-    assert reduce(holding(Gone()), event) == (holding(Gone()), [Audit(AfterEnd(event)), *let_go(event)])
+    assert reduce(GONE, event) == (GONE, [Audit(AfterEnd(event)), *let_go(event)])
 
 
 @pytest.mark.parametrize("event", SESSION_EVENTS)
@@ -362,7 +375,7 @@ def test_a_hook_that_went_away_ends_the_wait_with_nothing_to_reply_to() -> None:
     assert reduce(holding(AT_DIALOG, dialog=HELD), Abandoned(ONE.id, RequestId("r0"), at=30.0)) == (holding(AT_DIALOG), [])
 
 
-@pytest.mark.parametrize("before", [holding(AT_DIALOG, dialog=replace(HELD, request=RequestId("newer"))), holding(IDLE), holding(Gone())])
+@pytest.mark.parametrize("before", [holding(AT_DIALOG, dialog=replace(HELD, request=RequestId("newer"))), holding(IDLE), GONE])
 def test_an_abandoned_request_the_session_no_longer_waits_on_changes_nothing(before: Registry) -> None:
     assert reduce(before, Abandoned(ONE.id, RequestId("r0"), at=30.0)) == (before, [])
 
@@ -374,7 +387,7 @@ def test_an_event_moves_only_its_own_session() -> None:
 
 
 def test_live_is_every_session_that_has_not_ended() -> None:
-    both = registry(Session(ONE, AT_DIALOG, mode=None, dialog=HELD), Session(TWO, Gone(), mode=None))
+    both = registry(Session(ONE, AT_DIALOG, mode=None, dialog=HELD), Gone(TWO))
     assert both.live() == [Session(ONE, AT_DIALOG, mode=None, dialog=HELD)]
 
 
@@ -382,10 +395,10 @@ def test_a_file_for_a_session_never_heard_of_attaches_it_to_be_read() -> None:
     assert reduce(registry(), Attached(ONE)) == (holding(Unreported()), [])
 
 
-@pytest.mark.parametrize("before", [*LIVE, Gone()])
-def test_a_file_for_a_session_already_known_changes_nothing(before: SessionState) -> None:
+@pytest.mark.parametrize("before", [*[holding(state) for state in LIVE], GONE])
+def test_a_file_for_a_session_already_known_changes_nothing(before: Registry) -> None:
     moved = replace(ONE, cwd=Path("/code/elsewhere"))
-    assert reduce(holding(before), Attached(moved)) == (holding(before), [])
+    assert reduce(before, Attached(moved)) == (before, [])
 
 
 @pytest.mark.parametrize("ended", [Died(ONE), MovedOn(ONE)])
@@ -397,11 +410,11 @@ def test_a_session_this_run_never_listed_ending_says_nothing(ended: Event) -> No
 @pytest.mark.parametrize("before", LIVE)
 def test_a_live_session_whose_process_died_is_gone_and_spoken_and_its_hook_let_go(before: SessionState, dialog: Dialog | None) -> None:
     released = [] if dialog is None else [Reply(ONE.id, HELD.request, Withdraw())]
-    assert reduce(holding(before, dialog=dialog), Died(ONE)) == (holding(Gone()), [*released, SessionGone(ONE.id)])
+    assert reduce(holding(before, dialog=dialog), Died(ONE)) == (GONE, [*released, SessionGone(ONE.id)])
 
 
 def test_a_session_already_gone_dying_again_says_nothing() -> None:
-    assert reduce(holding(Gone()), Died(ONE)) == (holding(Gone()), [])
+    assert reduce(GONE, Died(ONE)) == (GONE, [])
 
 
 def test_a_dead_process_that_is_no_longer_the_sessions_changes_nothing() -> None:
@@ -413,7 +426,7 @@ def test_a_dead_process_that_is_no_longer_the_sessions_changes_nothing() -> None
 @pytest.mark.parametrize("before", LIVE)
 def test_a_session_whose_process_moved_on_is_gone_silently_and_its_hook_let_go(before: SessionState, dialog: Dialog | None) -> None:
     released = [] if dialog is None else [Reply(ONE.id, HELD.request, Withdraw())]
-    assert reduce(holding(before, dialog=dialog), MovedOn(ONE)) == (holding(Gone()), released)
+    assert reduce(holding(before, dialog=dialog), MovedOn(ONE)) == (GONE, released)
 
 
 def test_a_file_on_a_pid_another_session_holds_attaches_beside_it_the_sweep_decides_which_is_over() -> None:
@@ -425,17 +438,17 @@ def test_a_file_on_a_pid_another_session_holds_attaches_beside_it_the_sweep_deci
 @pytest.mark.parametrize("before", LIVE)
 def test_a_session_whose_terminal_closed_is_gone_and_spoken(before: SessionState, dialog: Dialog | None) -> None:
     released = [] if dialog is None else [Reply(ONE.id, HELD.request, Withdraw())]
-    assert reduce(holding(before, dialog=dialog), Ended(ONE.id, "other")) == (holding(Gone()), [*released, SessionGone(ONE.id)])
+    assert reduce(holding(before, dialog=dialog), Ended(ONE.id, "other")) == (GONE, [*released, SessionGone(ONE.id)])
 
 
 @pytest.mark.parametrize("reason", ["clear", "resume", "logout", "prompt_input_exit", "bypass_permissions_disabled"])
 def test_a_session_ended_at_the_keyboard_is_not_spoken(reason: EndReason) -> None:
-    assert reduce(holding(IDLE), Ended(ONE.id, reason)) == (holding(Gone()), [])
+    assert reduce(holding(IDLE), Ended(ONE.id, reason)) == (GONE, [])
 
 
 def test_a_closed_terminal_after_the_sweep_found_the_session_dead_says_nothing_more() -> None:
     event = Ended(ONE.id, "other")
-    assert reduce(holding(Gone()), event) == (holding(Gone()), [Audit(AfterEnd(event))])
+    assert reduce(GONE, event) == (GONE, [Audit(AfterEnd(event))])
 
 
 NUDGE = Speak(WaitingForYou(ONE.id, asking=False))
@@ -580,14 +593,14 @@ def moded(state: SessionState, mode: Mode | None, dialog: Dialog | None = None) 
 @pytest.mark.parametrize("event", REPORTING)
 def test_every_hook_that_reports_a_mode_sets_the_sessions_mode(before: SessionState, event: SessionEvent) -> None:
     after, effects = reduce(moded(before, "default"), event)
-    assert after.sessions[ONE.id].mode == "plan"
+    assert live(after).mode == "plan"
     assert Note(ModeChanged(ONE.id, "plan")) in effects
 
 
 @pytest.mark.parametrize("event", [Waited(ONE.id), Stopped(ONE.id, None, mode=None, prompt=TURN, again=False)])
 def test_a_hook_that_reports_no_mode_keeps_the_one_last_reported(event: SessionEvent) -> None:
     after, effects = reduce(moded(BUSY, "acceptEdits"), event)
-    assert after.sessions[ONE.id].mode == "acceptEdits"
+    assert live(after).mode == "acceptEdits"
     assert not [effect for effect in effects if isinstance(effect, Note)]
 
 
@@ -598,7 +611,7 @@ def test_a_mode_reported_again_unchanged_is_not_noted() -> None:
 
 def test_a_mode_reported_for_the_first_time_is_noted_because_a_resumed_session_may_be_in_another_mode() -> None:
     after, effects = reduce(moded(IDLE, None), Prompted(ONE.id, at=5.0, mode="auto", prompt=TURN))
-    assert after.sessions[ONE.id].mode == "auto"
+    assert live(after).mode == "auto"
     assert Note(ModeChanged(ONE.id, "auto")) in effects
 
 
@@ -614,19 +627,17 @@ def test_a_mode_hands_does_not_know_is_noted_like_any_other() -> None:
 
 @pytest.mark.parametrize("before", LIVE)
 def test_compaction_keeps_the_mode_because_it_keeps_the_process(before: SessionState) -> None:
-    assert reduce(moded(before, "acceptEdits"), Joined(replace(ONE, pid=7777), "compact"))[0].sessions[ONE.id].mode == "acceptEdits"
+    assert live(reduce(moded(before, "acceptEdits"), Joined(replace(ONE, pid=7777), "compact"))[0]).mode == "acceptEdits"
 
 
 @pytest.mark.parametrize("source", ["startup", "resume", "clear"])
 def test_any_other_start_has_not_reported_a_mode(source: StartSource) -> None:
-    assert reduce(moded(IDLE, "acceptEdits"), Joined(ONE, source))[0].sessions[ONE.id].mode is None
+    assert live(reduce(moded(IDLE, "acceptEdits"), Joined(ONE, source))[0]).mode is None
 
 
-def test_a_session_keeps_its_mode_through_a_deadline_an_abandoned_hook_and_its_end() -> None:
-    assert reduce(moded(AT_DIALOG, "plan", HELD), Tick(at=100.0))[0].sessions[ONE.id].mode == "plan"
-    assert reduce(moded(AT_DIALOG, "plan", HELD), Abandoned(ONE.id, RequestId("r0"), at=9.0))[0].sessions[ONE.id].mode == "plan"
-    assert reduce(moded(IDLE, "plan"), Died(ONE))[0].sessions[ONE.id].mode == "plan"
-    assert reduce(moded(IDLE, "plan"), Ended(ONE.id, "other"))[0].sessions[ONE.id].mode == "plan"
+def test_a_session_keeps_its_mode_through_a_deadline_and_an_abandoned_hook() -> None:
+    assert live(reduce(moded(AT_DIALOG, "plan", HELD), Tick(at=100.0))[0]).mode == "plan"
+    assert live(reduce(moded(AT_DIALOG, "plan", HELD), Abandoned(ONE.id, RequestId("r0"), at=9.0))[0]).mode == "plan"
 
 
 def test_a_prompt_names_the_turn_it_opens() -> None:
@@ -647,16 +658,16 @@ def test_a_prompt_cancelled_while_its_hooks_ran_is_over_when_claude_code_says_id
     assert state == holding(Idle(Stamp(2000), due=5.1 + IDLE_NUDGE_SECONDS, after=TURN), Untold(TURN, frozenset(), by=5.1 + UNTOLD_SECONDS, asking=False))
     state, tellings = told([Prompted(ONE.id, at=9.0, mode=None, prompt=NEXT), Taken(ONE.id, NEXT, None, 9.0)], state)
     # Told as itself, which says nothing of a prompt that never ran: no record carries its id.
-    assert (state.sessions[ONE.id].turn, tellings) == (Opened(NEXT), [*TOLD, Snapshot(ONE.id, ONE.cwd)])
+    assert (live(state).turn, tellings) == (Opened(NEXT), [*TOLD, Snapshot(ONE.id, ONE.cwd)])
 
 
 def test_a_prompt_taken_and_stopped_before_any_of_it_was_read_is_told_as_itself() -> None:
     """hands-keyboard-gxr.90g: p1 is taken and interrupted inside one tail period, so Claude Code's idle finds it still
     unread. Its record and its interrupt, read after, tell it once, as itself; the next prompt opens its own turn."""
     state, tellings = told([Prompted(ONE.id, at=5.0, mode=None, prompt=TURN), said(status.Idle()), Taken(ONE.id, TURN, None, 9.0)], holding(IDLE))
-    assert (state.sessions[ONE.id].turn, tellings) == (Untold(TURN, frozenset(), by=10.0 + UNTOLD_SECONDS, asking=False), [Snapshot(ONE.id, ONE.cwd)])
+    assert (live(state).turn, tellings) == (Untold(TURN, frozenset(), by=10.0 + UNTOLD_SECONDS, asking=False), [Snapshot(ONE.id, ONE.cwd)])
     state, tellings = told([INTERRUPT, STOP, PROMPT, Tick(20.0)], state)
-    assert (state.sessions[ONE.id].turn, tellings) == (Opened(NEXT), [*TOLD, Snapshot(ONE.id, ONE.cwd)])
+    assert (live(state).turn, tellings) == (Opened(NEXT), [*TOLD, Snapshot(ONE.id, ONE.cwd)])
 
 
 def test_a_stop_is_told_as_the_turn_its_hook_names() -> None:
@@ -666,7 +677,7 @@ def test_a_stop_is_told_as_the_turn_its_hook_names() -> None:
 def test_the_stop_of_a_turn_over_before_the_next_prompt_ends_nothing() -> None:
     """Applied late, it would end the turn now open and spend its mark."""
     after, effects = reduce(in_turn(turn=NEXT), Stopped(ONE.id, "Done.", mode="plan", prompt=TURN, again=False))
-    assert effects == [Note(ModeChanged(ONE.id, "plan"))] and after.sessions[ONE.id].turn == Opened(NEXT)
+    assert effects == [Note(ModeChanged(ONE.id, "plan"))] and live(after).turn == Opened(NEXT)
 
 
 @pytest.mark.parametrize(("turn", "again"), [(TURN, False), (None, False), (PromptId("q"), True)])
@@ -690,7 +701,7 @@ def test_a_stop_naming_an_id_the_open_turn_does_not_go_by_leaves_its_end_to_clau
     state, tellings = told([Stopped(ONE.id, "Done.", mode=None, prompt=PromptId("q"), again=False)])
     assert (state, tellings) == (in_turn(), [])
     state, tellings = told([said(status.Idle()), Tick(20.0)], state)
-    assert (state.sessions[ONE.id].turn, tellings) == (Told(TURN), TOLD)
+    assert (live(state).turn, tellings) == (Told(TURN), TOLD)
 
 
 def test_the_stop_of_a_turn_gone_on_under_a_flushed_id_ends_it_before_claude_answered_under_it() -> None:
@@ -705,10 +716,10 @@ def test_a_prompt_or_record_naming_another_turn_while_one_is_open_ends_nothing(b
     open turn's id (2.1.281), so another one means an idle hands has not read yet: the id joins the turn's, and its
     Stop ends it."""
     after, effects = reduce(before, event)
-    turn = after.sessions[ONE.id].turn
+    turn = live(after).turn
     assert isinstance(turn, Opened) and (turn.turn, turn.others) == (TURN, {NEXT})
     assert not any(isinstance(effect, Compare | Summarise | Snapshot) for effect in effects)
-    assert reduce(after, Stopped(ONE.id, "Next.", mode=None, prompt=NEXT, again=False))[0].sessions[ONE.id].turn == Told(TURN, frozenset({NEXT}))
+    assert live(reduce(after, Stopped(ONE.id, "Next.", mode=None, prompt=NEXT, again=False))[0]).turn == Told(TURN, frozenset({NEXT}))
 
 
 def test_a_message_queued_under_a_flushed_id_before_claude_answers_under_it_is_queued_into_the_turn() -> None:
@@ -716,14 +727,14 @@ def test_a_message_queued_under_a_flushed_id_before_claude_answers_under_it_is_q
     later. A message queued in between carries the new id (2.1.281), and is queued, not the turn ended."""
     flushed = PromptId("q")
     state, effects = reduce(in_turn(), Taken(ONE.id, flushed, None, 9.0))
-    assert effects == [] and state.sessions[ONE.id].turn == Opened(TURN, frozenset({flushed}))
+    assert effects == [] and live(state).turn == Opened(TURN, frozenset({flushed}))
     state, effects = reduce(state, Prompted(ONE.id, at=9.0, mode=None, prompt=flushed))
-    assert effects == [] and state.sessions[ONE.id].turn == Opened(TURN, frozenset({flushed}), queued=True)
+    assert effects == [] and live(state).turn == Opened(TURN, frozenset({flushed}), queued=True)
 
 
 def test_a_turn_a_prompt_opens_has_gone_on_under_no_other_id_yet() -> None:
     state, _ = told([Taken(ONE.id, PromptId("q"), None, 9.0), said(status.Idle()), PROMPT])
-    assert state.sessions[ONE.id].turn == Opened(NEXT)
+    assert live(state).turn == Opened(NEXT)
 
 
 def test_a_prompt_that_cannot_be_told_from_one_queued_into_the_open_turn_is_queued_into_it() -> None:
@@ -738,7 +749,7 @@ def test_a_prompt_that_cannot_be_told_from_one_queued_into_the_open_turn_is_queu
 ])
 def test_only_a_prompt_or_a_record_moves_the_turn(event: SessionEvent) -> None:
     """A background subagent's hooks carry the prompt_id of the turn that started it, long after that turn is over."""
-    assert reduce(in_turn(), event)[0].sessions[ONE.id].turn == Opened(TURN)
+    assert live(reduce(in_turn(), event)[0]).turn == Opened(TURN)
 
 
 @pytest.mark.parametrize("before", [in_turn(), in_turn(AT_DIALOG, HELD), in_turn(AT_DIALOG, LetGo(BASH))])
@@ -753,7 +764,7 @@ def test_an_interrupt_read_after_the_next_prompt_leaves_the_next_turn_open() -> 
     assert reduce(running, Interrupted(ONE.id, TURN, at=10.0)) == (running, [])
 
 
-@pytest.mark.parametrize("before", [holding(IDLE, Told(TURN)), holding(replace(IDLE, nudged=True), Told(TURN)), holding(Gone(), Told(TURN))])
+@pytest.mark.parametrize("before", [holding(IDLE, Told(TURN)), holding(replace(IDLE, nudged=True), Told(TURN)), GONE])
 def test_an_interrupt_of_a_turn_already_over_changes_nothing(before: Registry) -> None:
     assert reduce(before, Interrupted(ONE.id, TURN, at=10.0)) == (before, [])
 
@@ -808,7 +819,7 @@ def test_the_turn_a_queued_prompt_goes_on_as_is_ended_by_the_escape_that_stops_i
     for event in [Interrupted(ONE.id, NEXT, at=3.0), Continued(ONE.id, was=TURN, now=NEXT)]:
         state, _ = reduce(state, event)
     assert state == in_turn(turn=NEXT)
-    assert reduce(state, said(status.Idle(), at=9.0))[0].sessions[ONE.id].turn == Untold(NEXT, frozenset(), 9.0 + UNTOLD_SECONDS, asking=False)
+    assert live(reduce(state, said(status.Idle(), at=9.0))[0]).turn == Untold(NEXT, frozenset(), 9.0 + UNTOLD_SECONDS, asking=False)
 
 
 @pytest.mark.parametrize("session", [in_turn(turn=PromptId("p3")), holding(IDLE, Told(TURN))])
@@ -837,7 +848,7 @@ def test_an_open_turn_claude_code_says_is_idle_is_over_at_once_and_nudged_on_the
     is answered. The telling waits for the transcript to say how it ended."""
     after, effects = reduce(before, said(status.Idle()))
     assert after == holding(Idle(Stamp(2000), due=10.0 + IDLE_NUDGE_SECONDS, after=TURN), Untold(TURN, frozenset(), 10.0 + UNTOLD_SECONDS, asking=False))
-    assert effects == ([Reply(ONE.id, RequestId("r0"), Withdraw())] if before.sessions[ONE.id].dialog == HELD else [])
+    assert effects == ([Reply(ONE.id, RequestId("r0"), Withdraw())] if live(before).dialog == HELD else [])
 
 
 @pytest.mark.parametrize("state", [replace(IDLE, after=TURN), replace(IDLE, after=TURN, nudged=True)])
@@ -870,7 +881,7 @@ def test_an_interrupt_record_of_another_turn_leaves_the_untold_one_waiting_for_i
 def test_a_stop_that_fires_after_claude_code_said_idle_tells_the_turn_with_its_closing_reply() -> None:
     state, tellings = told([said(status.Idle()), Stopped(ONE.id, "done", mode="plan", prompt=TURN, again=False), Tick(20.0)])
     assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done")]
-    assert (state.sessions[ONE.id].state, state.sessions[ONE.id].mode) == (Idle(Stamp(2000), due=10.0 + IDLE_NUDGE_SECONDS, after=TURN), "plan")
+    assert (live(state).state, live(state).mode) == (Idle(Stamp(2000), due=10.0 + IDLE_NUDGE_SECONDS, after=TURN), "plan")
 
 
 @pytest.mark.parametrize("ending", [STOP, INTERRUPT])
@@ -884,13 +895,13 @@ def test_a_turn_nothing_says_how_it_ended_is_told_at_its_deadline_with_what_was_
     assert tellings == []
     state, tellings = told([Tick(10.0 + UNTOLD_SECONDS), INTERRUPT, STOP, Tick(30.0)], state)
     assert tellings == TOLD
-    assert state.sessions[ONE.id].turn == Told(TURN)
+    assert live(state).turn == Told(TURN)
 
 
 def test_a_turn_left_untold_is_told_before_the_next_prompt_marks_its_own() -> None:
     state, tellings = told([said(status.Idle()), PROMPT, INTERRUPT, Tick(20.0)])
     assert tellings == [*TOLD, Snapshot(ONE.id, ONE.cwd)]
-    assert state.sessions[ONE.id].turn == Opened(NEXT)
+    assert live(state).turn == Opened(NEXT)
 
 
 def test_the_record_of_the_turn_left_untold_waits_with_it_for_how_it_ended() -> None:
@@ -915,14 +926,14 @@ def test_a_double_escape_before_claude_answers_a_flushed_message_leaves_the_sess
         state, effects = reduce(state, event)
         heard += [effect for effect in effects if isinstance(effect, Summarise | Speak)]
     assert heard == [Summarise(ONE.id, TURN, None), NUDGE]
-    assert state.sessions[ONE.id].state == Idle(Stamp(2000), due=10.0 + IDLE_NUDGE_SECONDS, after=TURN, nudged=True)
+    assert live(state).state == Idle(Stamp(2000), due=10.0 + IDLE_NUDGE_SECONDS, after=TURN, nudged=True)
 
 
 def test_a_single_escape_that_flushes_a_queued_message_leaves_the_turn_running_on_to_its_stop() -> None:
     """Measured on 2.1.282: the flush sets busy again, not idle, and Claude answers under the flushed id."""
     state, tellings = told([Taken(ONE.id, NEXT, None, 9.0), said(Busy()), Continued(ONE.id, was=TURN, now=NEXT), Stopped(ONE.id, "done", mode=None, prompt=NEXT, again=False), said(status.Idle(), 3000, at=20.0), Tick(30.0)])
     assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "done")]
-    assert isinstance(state.sessions[ONE.id].state, Idle)
+    assert isinstance(live(state).state, Idle)
 
 
 # Claude Code set the session running at 1000, after its last idle, and last set its status at 1100.
@@ -954,20 +965,20 @@ def test_a_prompt_taken_at_the_prompt_opens_a_turn_only_if_written_since_claude_
     """Claude Code sets idle for ~3 ms between a turn and the one queued behind it (2.1.282), and a read can land on it.
     An idle set after the record was written is that turn over, before any of it was read."""
     state, _ = told([STOP, said(status.Idle()), taken(NEXT, written)], in_turn(RUNNING))
-    assert isinstance(state.sessions[ONE.id].turn, Opened) == opens
+    assert isinstance(live(state).turn, Opened) == opens
 
 
 @pytest.mark.parametrize(("written", "opens"), [(Stamp(1500), True), (Stamp(1000), True), (Stamp(990), False), (None, False)])
 def test_a_prompt_taken_while_running_with_no_turn_open_opens_one_only_if_written_since_the_idle_before_the_run(written: Stamp | None, opens: bool) -> None:
     """A record written before the idle the run began from is of a turn over by then."""
     state, _ = told([taken(NEXT, written)], holding(RUNNING, Told(TURN)))
-    assert isinstance(state.sessions[ONE.id].turn, Opened) == opens
+    assert isinstance(live(state).turn, Opened) == opens
 
 
 def test_a_queued_turn_whose_stop_lands_before_its_record_is_read_is_told_once() -> None:
     state, tellings = told([QUEUED, STOP, Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False), taken(NEXT, Stamp(1500)), said(status.Idle(), at=14.0), Tick(20.0)], in_turn(RUNNING))
     assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done"), Snapshot(ONE.id, ONE.cwd), Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two")]
-    assert state.sessions[ONE.id].turn == Told(NEXT)
+    assert live(state).turn == Told(NEXT)
 
 
 def test_a_bang_command_is_running_from_its_status_and_claudes_answer_to_it_is_told_as_itself() -> None:
@@ -976,9 +987,9 @@ def test_a_bang_command_is_running_from_its_status_and_claudes_answer_to_it_is_t
     bang = PromptId("bang")
     at_prompt = holding(Idle(Stamp(2000), due=70.0, after=TURN), Told(TURN))
     state, tellings = told([said(Busy(), 3000, at=20.0)], at_prompt)
-    assert (state.sessions[ONE.id].state, tellings) == (Running(Busy(), Stamp(3000), idled=Stamp(2000)), [])
+    assert (live(state).state, tellings) == (Running(Busy(), Stamp(3000), idled=Stamp(2000)), [])
     state, tellings = told([taken(bang, Stamp(2900), at=24.0)], state)
-    assert (state.sessions[ONE.id].turn, tellings) == (Opened(bang), [])
+    assert (live(state).turn, tellings) == (Opened(bang), [])
     state, tellings = told([Stopped(ONE.id, "It slept.", mode=None, prompt=bang, again=False)], state)
     assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, bang, "It slept.")]
 
@@ -991,7 +1002,7 @@ def test_a_command_claude_code_runs_at_the_prompt_is_running_while_it_runs_and_t
     state, _ = told([said(Busy(), 3000, at=20.0), taken(compact, Stamp(3001), at=20.1), Joined(ONE, "compact")], at_prompt)
     assert state == holding(Running(Busy(), Stamp(3000), idled=Stamp(2000)), Opened(compact))
     state, tellings = told([said(status.Idle(), 9000, at=30.0), Tick(40.0)], state)
-    assert (state.sessions[ONE.id].state, tellings) == (Idle(Stamp(9000), due=30.0 + IDLE_NUDGE_SECONDS, after=compact), [Compare(ONE.id, again=False), Summarise(ONE.id, compact, None)])
+    assert (live(state).state, tellings) == (Idle(Stamp(9000), due=30.0 + IDLE_NUDGE_SECONDS, after=compact), [Compare(ONE.id, again=False), Summarise(ONE.id, compact, None)])
 
 
 def test_a_stop_with_nothing_queued_behind_it_marks_nothing() -> None:
@@ -999,7 +1010,7 @@ def test_a_stop_with_nothing_queued_behind_it_marks_nothing() -> None:
     would be read, however much later, as the start of the next turn no prompt marks."""
     state, tellings = told([QUEUED, taken(NEXT, Stamp(1200)), Stopped(ONE.id, "done", mode=None, prompt=NEXT, again=False)], in_turn(RUNNING))
     assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "done")]
-    assert state.sessions[ONE.id].turn == Told(TURN, frozenset({NEXT}))
+    assert live(state).turn == Told(TURN, frozenset({NEXT}))
 
 
 def test_a_prompt_taken_before_any_status_is_read_opens_nothing() -> None:
@@ -1020,7 +1031,7 @@ def test_attached_mid_turn_it_is_running_and_the_turn_running_and_the_one_queued
 @pytest.mark.parametrize("stop", [Stopped(ONE.id, "other", mode=None, prompt=NEXT, again=False), Stopped(ONE.id, "done", mode=None, prompt=TURN, again=False)])
 def test_a_stop_while_a_telling_waits_tells_that_turn_and_takes_no_name_from_it(stop: Stopped) -> None:
     state, _ = told([said(status.Idle()), stop])
-    assert state.sessions[ONE.id].turn == Told(TURN)
+    assert live(state).turn == Told(TURN)
 
 
 @pytest.mark.parametrize("end", [Ended(ONE.id, "other"), Ended(ONE.id, "prompt_input_exit"), Died(ONE), MovedOn(ONE)])
@@ -1062,12 +1073,12 @@ def test_a_turn_told_before_its_idle_is_read_starts_an_idle_period_nudged_again(
     """Its busy fell between two reads: the prompt and the Stop are heard, then an idle with a new stamp."""
     after_nudge = holding(replace(IDLE, after=TURN, nudged=True), Told(TURN))
     state, _ = told([Prompted(ONE.id, at=100.0, mode=None, prompt=NEXT), Stopped(ONE.id, "Done.", mode=None, prompt=NEXT, again=False), said(status.Idle(), 3000, at=100.1)], after_nudge)
-    assert state.sessions[ONE.id].state == Idle(Stamp(3000), due=100.1 + IDLE_NUDGE_SECONDS, after=NEXT)
+    assert live(state).state == Idle(Stamp(3000), due=100.1 + IDLE_NUDGE_SECONDS, after=NEXT)
     assert nudged(state) == [NUDGE]
 
 
 def test_a_turn_heard_and_ended_inside_one_idle_read_starts_an_idle_period_nudged_again() -> None:
     """A prompt cancelled during its hooks after a nudge: Claude Code's busy is never read, and the next idle is new."""
     state, _ = told([Prompted(ONE.id, at=100.0, mode=None, prompt=NEXT), said(status.Idle(), at=100.1)], holding(replace(IDLE, nudged=True), Told(TURN)))
-    assert state.sessions[ONE.id].state == Idle(Stamp(2000), due=100.1 + IDLE_NUDGE_SECONDS, after=NEXT)
+    assert live(state).state == Idle(Stamp(2000), due=100.1 + IDLE_NUDGE_SECONDS, after=NEXT)
     assert nudged(state) == [NUDGE]

@@ -46,7 +46,7 @@ from hands.core.events import (
     ToolFinished,
     Waited,
 )
-from hands.core.session import Blocker, Dialog, Gone, Held, Idle, Instant, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, Unanswered, UnknownMode, Unreported, Untold
+from hands.core.session import Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, Unanswered, UnknownMode, Unreported, Untold
 from hands.core import status
 from hands.core.narration import reported_and_asked
 from hands.core.status import Report, Stamp
@@ -88,10 +88,6 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
         case MovedOn(membership=membership):
             # The user moved the process on at the keyboard, so there is nothing to tell them.
             return _ended_unheard(registry, membership, [])
-        case Ended(session=session, reason="other") if session in registry.sessions and not isinstance(registry.sessions[session].state, Gone):
-            # Nobody ended it at the keyboard: its terminal closed. Spoken, as a process found dead is.
-            after, effects = _enter(registry, event)
-            return after, [*effects, SessionGone(session)]
         case Abandoned(session=session, request=request):
             return _abandoned(registry, session, request), []
         case Tick(at=at):
@@ -100,7 +96,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _enter(registry, event)
 
 
-def _started(membership: Membership, source: StartSource, previous: Session | None) -> Session:
+def _started(membership: Membership, source: StartSource, previous: Known | None) -> Session:
     # Compaction starts a session again in the middle of what it was doing, in the same process, so all of it carries
     # over. Every other start is a new process, or a new session in one, whose status is read afresh: a session resumed
     # after a crash was never told it stopped. SessionStart carries no permission_mode, and a session started or resumed
@@ -109,7 +105,7 @@ def _started(membership: Membership, source: StartSource, previous: Session | No
         case ("compact", Session(state=Unreported() | Idle() | Running()) as previous):
             return replace(previous, membership=membership)
         case (_, Session(turn=Untold() as untold)):
-            # A turn ended before the restart is still told.
+            # A turn ended before the restart is still told. One that ended was told as it ended.
             return Session(membership, Unreported(), mode=None, turn=untold)
         case _:
             return Session(membership, Unreported(), mode=None)
@@ -123,30 +119,39 @@ def _join(registry: Registry, session: Session) -> tuple[Registry, list[Effect]]
 def _ended_unheard(registry: Registry, membership: Membership, said: list[Effect]) -> tuple[Registry, list[Effect]]:
     """A session the sweep found over, though no end hook said so; `said` is what the user hears about it."""
     match registry.sessions.get(membership.id):
-        case None | Session(state=Gone()):
+        case None | Gone():
             # A session this run never listed ended while the daemon was down, or before a reboot: the user was not told
             # of it here, so there is nothing to take back.
             return registry, []
         case Session(membership=held) if held.pid != membership.pid:
             # Started again in a new process since the sweep looked; what it saw ending is not this session.
             return registry, []
-        case Session(turn=turn) as was:
-            # A turn ended and not told yet is told before the session is said to be gone: it happened first.
-            told, telling = _told(membership.id, turn, None)
-            gone = replace(was, membership=membership, state=Gone(), turn=told, dialog=None)
-            return registry.put(gone), [*_transition(was, gone), *telling, *said]
+        case Session() as was:
+            return _end(registry, was, membership, said)
+
+
+def _end(registry: Registry, was: Session, membership: Membership, said: list[Effect]) -> tuple[Registry, list[Effect]]:
+    """The session is over, however that was heard: the hook it was held on is let go, and a turn ended and not told yet
+    is told before the session is said to be gone, since it happened first."""
+    _, telling = _told(membership.id, was.turn, None)
+    return registry.put(Gone(membership)), [*_dialogs(membership.id, was.dialog, None), *telling, *said]
 
 
 def _enter(registry: Registry, event: SessionEvent) -> tuple[Registry, list[Effect]]:
     """The event moves a live session on each of its axes: what Claude Code says it is doing, the dialog, and the turn."""
-    match registry.sessions.get(event.session):
-        case None:
+    match (registry.sessions.get(event.session), event):
+        case (None, _):
             # [LAW:no-silent-failure] an event for a session that never joined is a record, not a drop.
             return registry, _unheard(event, Unregistered(event))
-        case Session(state=Gone()):
+        case (Gone(), _):
             # Ended is final until the session starts again; a hook that lands late cannot revive it.
             return registry, _unheard(event, AfterEnd(event))
-        case Session(membership=membership, mode=held) as was:
+        case (Session() as was, Ended(reason="other")):
+            # Nobody ended it at the keyboard: its terminal closed. Spoken, as a process found dead is.
+            return _end(registry, was, was.membership, [SessionGone(was.membership.id)])
+        case (Session() as was, Ended()):
+            return _end(registry, was, was.membership, [])
+        case (Session(membership=membership, mode=held) as was, _):
             turn, told = _turned(event, was)
             reported = _reported(event)
             # [LAW:dataflow-not-control-flow] every hook that carries a mode sets it, so a mode changed at the keyboard
@@ -185,8 +190,6 @@ def _stated(event: SessionEvent, was: Session) -> SessionState:
             return Running(going, stamp, idled=stamp)
         case (Waited(), Idle(nudged=False) as idle) if _waiting(was.turn):
             return replace(idle, nudged=True)
-        case (Ended(), _):
-            return Gone()
         case (_, state):
             # No hook or record moves it. [LAW:no-ambient-temporal-coupling] each hook posts from its own process, so an
             # idle_prompt sent as the user typed can land after the prompt it raced, and nudges nothing for the turn it opened.
@@ -196,8 +199,8 @@ def _stated(event: SessionEvent, was: Session) -> SessionState:
 def _dialog(event: SessionEvent, dialog: Dialog | None, deadline: float) -> Dialog | None:
     """The dialog the session is at after the event, as its hooks and Claude Code's idle tell it."""
     match (event, dialog):
-        case (StatusReported(report=Report(status=status.Idle())), _) | (Ended(), _):
-            # At its prompt, or over: no dialog is up, whether it was answered at the keyboard or escaped.
+        case (StatusReported(report=Report(status=status.Idle())), _):
+            # At its prompt: no dialog is up, whether it was answered at the keyboard or escaped.
             return None
         case (PermissionRequested(at=at, request=request, on=on), _):
             return Held(on=on, request=request, deadline=at + deadline, warned=False)
@@ -263,9 +266,6 @@ def _turned(event: SessionEvent, was: Session) -> tuple[Turn, list[Effect]]:
             # The record of how the turn Claude Code said is over ended: what its telling waits for. [LAW:one-source-of-truth]
             # the transcript says how a turn ended, never that it did.
             return _told(id, turn, None)
-        case (Ended(), _):
-            # Told before the session is said to be gone: it happened first.
-            return _told(id, turn, None)
         case _:
             # Read after the turn it names ended, or of one this registry never heard open; or a Stop applied after the
             # next turn opened, which ending would end that turn and spend its mark: nothing to move.
@@ -317,7 +317,7 @@ def _opens(state: SessionState, turn: Turn, prompt: PromptId, written: Stamp | N
     match state:
         case Idle(stamp=idled) | Running(idled=idled):
             return written is not None and written >= idled and not _names(turn, prompt)
-        case Unreported() | Gone():
+        case Unreported():
             return False
 
 
@@ -416,14 +416,15 @@ def _abandoned(registry: Registry, session: SessionId, request: RequestId) -> Re
             return registry
 
 
-def _transition(before: Session | None, after: Session) -> list[Effect]:
-    # [LAW:dataflow-not-control-flow] every change of a session passes through here, so no event
+def _transition(before: Known | None, after: Session) -> list[Effect]:
+    # [LAW:dataflow-not-control-flow] every change of a live session passes through here, so no event
     # can leave a hook waiting or a request unspoken by taking a path that forgot to.
     id = after.membership.id
-    return [
-        *_dialogs(id, None if before is None else before.dialog, after.dialog),
-        *_nudges(id, None if before is None else before.state, after.state, after.turn),
-    ]
+    match before:
+        case Session(dialog=dialog, state=state):
+            return [*_dialogs(id, dialog, after.dialog), *_nudges(id, state, after.state, after.turn)]
+        case None | Gone():
+            return _dialogs(id, None, after.dialog)
 
 
 def _dialogs(session: SessionId, before: Dialog | None, after: Dialog | None) -> list[Effect]:
@@ -464,7 +465,7 @@ def _expiry(on: Blocker) -> tuple[Dialog | None, HookReply]:
 
 def _ticked(registry: Registry, at: Instant) -> tuple[Registry, list[Effect]]:
     after, effects = registry, list[Effect]()
-    for session in registry.sessions.values():
+    for session in registry.live():
         id = session.membership.id
         dialog, expiring = _expiring(id, session.dialog, at)
         state, nudge = _nudged(id, session.state, session.turn, at)

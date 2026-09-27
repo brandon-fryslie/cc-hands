@@ -3,7 +3,7 @@
 from dataclasses import dataclass, replace
 
 from hands.core.effects import Allow, AllowWith, Answers, Approve, Decision, Deny, Effect, HookReply, KeepPlanning, Reply
-from hands.core.session import Blocker, Held, Permission, Plan, Question, Registry, RequestId, Session, SessionId
+from hands.core.session import Blocker, Held, Known, Permission, Plan, Question, Registry, RequestId, Session, SessionId
 
 
 @dataclass(frozen=True)
@@ -72,9 +72,9 @@ def _reply(on: Blocker, decision: Decision) -> HookReply | None:
             return None
 
 
-def _waits_on(session: Session, request: RequestId) -> bool:
-    match session.dialog:
-        case Held(request=held):
+def _waits_on(session: Known, request: RequestId) -> bool:
+    match session:
+        case Session(dialog=Held(request=held)):
             return held == request
         case _:
             return False

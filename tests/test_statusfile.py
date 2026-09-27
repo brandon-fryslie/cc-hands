@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from loguru import logger
 from hands.core.reducer import reduce
-from hands.core.session import Membership, Registry, Session, SessionId, Unreported
+from hands.core.session import Gone, Membership, Registry, Session, SessionId, Unreported
 from hands.core.status import Busy, Idle, Report, Shell, Stamp, Status, Unknown, UnknownReason, Waiting
 from hands.sessions.payload import Rejected
 from hands.sessions.statusfile import Statuses, parse_report, status_file
@@ -110,7 +110,11 @@ class Live:
         heard = list(statuses.read([self.member.id], lambda _: self.session))
         assert {reported.session for reported in heard} <= {self.member.id}
         for reported in heard:
-            self.session = reduce(Registry(60.0, {self.member.id: self.session}, {}), reported)[0].sessions[self.member.id]
+            match reduce(Registry(60.0, {self.member.id: self.session}, {}), reported)[0].sessions[self.member.id]:
+                case Session() as session:
+                    self.session = session
+                case Gone():
+                    raise AssertionError("a status read ended the session")
         return [reported.report for reported in heard]
 
 

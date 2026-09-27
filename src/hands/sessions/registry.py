@@ -13,7 +13,7 @@ from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolF
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
-from hands.core.session import Gone, Instant, Membership, Registry, RequestId, Session, SessionId
+from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId
 from hands.sessions.audit import Applied, EffectFailed, Performed, Record, Typing
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.payload import Rejected
@@ -22,8 +22,8 @@ from hands.sessions.typing import Untyped, type_into
 
 
 @dataclass(frozen=True)
-class Listing:
-    session: Session
+class Listing[S: Known]:
+    session: S
     title: str | None  # Claude Code's ai-title, absent until it has named the session
 
 
@@ -165,12 +165,12 @@ class Sessions:
     def live_session(self, session: SessionId) -> Session | None:
         """The session as the registry holds it now, or None once it has ended or if it never joined."""
         match self._registry.sessions.get(session):
-            case Session(state=Gone()) | None:
+            case Gone() | None:
                 return None
-            case known:
-                return known
+            case Session() as live:
+                return live
 
-    def live(self) -> list[Listing]:
+    def live(self) -> list[Listing[Session]]:
         return [_listing(session) for session in self._registry.live()]
 
     def membership(self, session: SessionId) -> Membership | None:
@@ -178,7 +178,7 @@ class Sessions:
         known = self._registry.sessions.get(session)
         return None if known is None else known.membership
 
-    def listing(self, session: SessionId) -> Listing | None:
+    def listing(self, session: SessionId) -> Listing[Known] | None:
         """Any session the registry has heard of, ended or not; None for one it never has."""
         known = self._registry.sessions.get(session)
         return None if known is None else _listing(known)
@@ -240,7 +240,7 @@ class Sessions:
         waiting.set_result(reply)
 
 
-def _listing(session: Session) -> Listing:
+def _listing[S: Known](session: S) -> Listing[S]:
     try:
         title = ai_title(session.membership.transcript)
     except (Rejected, OSError) as error:

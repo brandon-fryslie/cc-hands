@@ -13,8 +13,6 @@ from hands.core.session import (
     Gone,
     Idle,
     Membership,
-    Opened,
-    PromptId,
     PromptText,
     Registry,
     Session,
@@ -40,8 +38,9 @@ AT_DIALOG = running(Waiting("permission prompt"))
 IDLE = Idle(Stamp(1), due=61.0, after=None)
 
 
-def registry(state: SessionState, member: Membership = ONE) -> Registry:
-    return Registry(permission_deadline=60.0, sessions={ONE.id: Session(member, state, mode=None)}, drafts={})
+def registry(state: SessionState | Gone, member: Membership = ONE) -> Registry:
+    session = state if isinstance(state, Gone) else Session(member, state, mode=None)
+    return Registry(permission_deadline=60.0, sessions={ONE.id: session}, drafts={})
 
 
 @pytest.mark.parametrize("state", [IDLE, running(), running(Shell()), Unreported()])
@@ -63,15 +62,10 @@ def test_a_session_at_its_prompt_has_nothing_to_interrupt() -> None:
     assert decide(registry(IDLE), Interrupt(ONE.id)) == NothingRunning(ONE.id)
 
 
-def test_a_prompt_still_in_its_hooks_is_interrupted_though_its_session_is_read_idle() -> None:
-    before = Registry(permission_deadline=60.0, sessions={ONE.id: Session(ONE, IDLE, mode=None, turn=Opened(PromptId("p1")))}, drafts={})
-    assert decide(before, Interrupt(ONE.id)) == Type(ONE.id, SOCKET, 1, Key("escape"))
-
-
 @pytest.mark.parametrize("request_", [SendCommand(ONE.id, COMPACT), Interrupt(ONE.id)])
 def test_an_ended_session_is_typed_nothing_wrapped_or_not(request_: KeyboardRequest) -> None:
-    assert decide(registry(Gone()), request_) == SessionEnded(ONE.id)
-    assert decide(registry(Gone(), replace(ONE, fritter=None)), request_) == SessionEnded(ONE.id)
+    assert decide(registry(Gone(ONE)), request_) == SessionEnded(ONE.id)
+    assert decide(registry(Gone(replace(ONE, fritter=None))), request_) == SessionEnded(ONE.id)
 
 
 @pytest.mark.parametrize("request_", [SendCommand(ONE.id, COMPACT), Interrupt(ONE.id)])

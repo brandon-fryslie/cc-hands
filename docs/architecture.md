@@ -103,9 +103,15 @@ class Session:
     turn: Turn                # which turn it is, as hooks and records say
     dialog: Dialog | None     # the dialog it is at, as its hooks say; an idle ends it
 
+# An ended session has no status, turn, or dialog: its last turn was told and its held
+# hook let go as it ended. It starts again as a new Session.
+@dataclass(frozen=True)
+class Gone:      membership: Membership
+Known = Session | Gone        # what the registry holds per session
+
 # Only a status read moves a session between these: whether it runs is Claude Code's
 # word, never inferred from a hook or a record.
-SessionState = Unreported | Idle | Running | Gone
+SessionState = Unreported | Idle | Running
 @dataclass(frozen=True)
 class Idle:      stamp: Stamp; due: Instant | None; after: PromptId | None; nudged: bool  # one idle period
 @dataclass(frozen=True)
