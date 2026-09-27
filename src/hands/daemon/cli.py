@@ -49,7 +49,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Imported here, after that heartbeat, and so that `hands status` answers without loading Pipecat.
             from hands.daemon.run import config_from_env, run
 
-            asyncio.run(run(config_from_env(), home, heart, after_crash))
+            asyncio.run(run(config_from_env, home, heart, after_crash))
             return 0
         case "status":
             return report(home)
