@@ -8,6 +8,7 @@ dependencies = [
     "loguru>=0.7",
     "pyobjc-framework-cocoa>=11",
     "pyobjc-framework-coreaudio>=11",
+    "pyobjc-framework-quartz>=12.2.2",
 ]
 
 [project.scripts]

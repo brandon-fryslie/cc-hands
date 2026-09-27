@@ -13,6 +13,7 @@ from pipecat.frames.frames import (
 from pipecat.observers.base_observer import FramePushed
 
 from hands.voice.latency import LatencyObserver
+from hands.voice.turnstop import HoldDiscarded
 
 
 async def logged(*frames: Frame) -> list[str]:
@@ -55,6 +56,11 @@ async def test_speech_that_answers_a_user_turn_is_measured_from_the_release_inst
 async def test_nothing_is_measured_from_a_release_that_never_happened(frame: Frame) -> None:
     """A transcript with no user turn open has no release to be late from, so it is not reported as instant."""
     assert all("after key release" not in line for line in await logged(frame))
+
+
+async def test_a_hold_thrown_away_is_no_release_to_measure_a_narration_from() -> None:
+    lines = await logged(VADUserStartedSpeakingFrame(), HoldDiscarded(), BotStartedSpeakingFrame())
+    assert lines == ["latency: first audio, answering no user turn"]
 
 
 async def test_a_narration_after_a_user_turn_is_still_measured_as_answering_nobody() -> None:

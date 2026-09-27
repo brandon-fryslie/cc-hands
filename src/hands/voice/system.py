@@ -20,7 +20,7 @@ from pipecat.utils.errors import ErrorCategory
 from hands.sessions.audit import Announced, Record
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
-from hands.voice.ptt import Turn
+from hands.voice.hold import Move
 from hands.voice.whisper import NOTHING_TRANSCRIBED, Whisper
 
 
@@ -235,10 +235,10 @@ class SystemChannel:
                 logger.error(f"{source} failed: {error}")
 
 
-def unheard(turn: Turn, devices: Devices) -> tuple[NoMicrophone, ...]:
-    """What a key press says when nothing will hear it: with no microphone no frame reaches the VAD, so no turn
+def unheard(move: Move, devices: Devices) -> tuple[NoMicrophone, ...]:
+    """What a key press says when nothing will hear it: with no microphone no frame reaches Whisper, so no turn
     starts and nothing else would answer the press."""
-    match turn, devices:
+    match move, devices:
         case "start", Devices(input=None):
             return (NoMicrophone(),)
         case _:

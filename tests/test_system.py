@@ -38,7 +38,9 @@ from hands.voice.system import (
     system_text,
 )
 from hands.voice.microphone import Devices
-from hands.voice.ptt import Turn
+from hands.voice.hold import Move
+from hands.voice.ptt import Key, KeyedAudio
+from hands.voice.turnstop import TurnResolved
 from hands.voice.whisper import NOTHING_TRANSCRIBED, Whisper
 
 
@@ -66,16 +68,16 @@ def test_each_fact_is_said_from_its_template(fact: SystemFact, said: str) -> Non
 
 
 @pytest.mark.parametrize(
-    ("turn", "devices", "said"),
+    ("move", "devices", "said"),
     [
         ("start", DEAF, (NoMicrophone(),)),
         ("stop", DEAF, ()),
-        ("none", DEAF, ()),
+        ("drop", DEAF, ()),
         ("start", BUILT_IN, ()),
     ],
 )
-def test_a_press_to_talk_with_no_microphone_is_answered(turn: Turn, devices: Devices, said: tuple[NoMicrophone, ...]) -> None:
-    assert unheard(turn, devices) == said
+def test_a_press_to_talk_with_no_microphone_is_answered(move: Move, devices: Devices, said: tuple[NoMicrophone, ...]) -> None:
+    assert unheard(move, devices) == said
 
 
 class Services:
@@ -278,17 +280,28 @@ async def test_whisper_reports_a_turn_it_transcribed_to_nothing_and_only_that(mo
 
     monkeypatch.setattr(WhisperSTTServiceMLX, "run_stt", transcribe)
     whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"))
+
+    async def push(_frame: Frame, _direction: object = None) -> None:
+        pass
+
+    monkeypatch.setattr(whisper, "push_frame", push)
+    # Three turns sent, one for each transcription below.
+    keys: list[Key] = ["down", "up"] * 3
+    for key in keys:
+        await whisper.process_audio_frame(KeyedAudio(audio=b"\x00\x00", sample_rate=16000, num_channels=1, key=key), FrameDirection.DOWNSTREAM)
     reports: list[None] = []
 
     @whisper.event_handler(NOTHING_TRANSCRIBED)
     async def empty(_stt: Whisper) -> None:  # pyright: ignore[reportUnusedFunction]
         reports.append(None)
 
-    assert [frame async for frame in whisper.run_stt(b"")] == []
+    # Every transcription ends with Whisper done with its hold; only one Whisper heard nothing in is reported as empty.
+    # (Every frame has an id of its own, so frames made here are told by their kind.)
+    assert [type(frame) async for frame in whisper.run_stt(b"")] == [TurnResolved]
     yielded.append(TranscriptionFrame("what time is it", "user", "now"))
-    assert [frame async for frame in whisper.run_stt(b"")] == yielded
+    assert [type(frame) async for frame in whisper.run_stt(b"")] == [TranscriptionFrame, TurnResolved]
     yielded[:] = [ErrorFrame("model failed")]
-    assert [frame async for frame in whisper.run_stt(b"")] == yielded
+    assert [type(frame) async for frame in whisper.run_stt(b"")] == [ErrorFrame, TurnResolved]
     assert reports == [None]
 
 

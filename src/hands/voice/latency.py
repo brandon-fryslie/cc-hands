@@ -23,6 +23,8 @@ from pipecat.frames.frames import (
 )
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 
+from hands.voice.turnstop import HoldDiscarded
+
 Mark = str
 
 FIRST_AUDIO: Mark = "first audio"
@@ -83,6 +85,10 @@ class LatencyObserver(BaseObserver):
         frame = data.frame
         if isinstance(frame, VADUserStartedSpeakingFrame):
             self._holding = True
+            return
+        if isinstance(frame, HoldDiscarded):
+            # A hold thrown away is no release: nothing of it is sent, so there is no reply to time from it.
+            self._holding = False
             return
         if isinstance(frame, VADUserStoppedSpeakingFrame):
             if self._holding:
