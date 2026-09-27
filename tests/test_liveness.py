@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from hands.core.effects import SessionGone
 from hands.core.events import Attached, Died, Joined, MovedOn, Observed
-from hands.core.session import Gone, Idle, Membership, SessionId
+from hands.core.session import Gone, Membership, SessionId, Unreported
 from hands.sessions.home import Home
 from hands.sessions.liveness import Recorded, observations, recorded, sweep
 from hands.sessions.payload import Rejected
@@ -170,7 +170,7 @@ async def test_a_restarted_daemon_lists_the_sessions_the_last_one_did(tmp_path: 
     await sweep(home, before, frozenset())
     await sweep(home, after, frozenset())
     assert [listing.session for listing in after.live()] == [listing.session for listing in before.live()]
-    assert {listing.session.state for listing in after.live()} == {Idle()}
+    assert {listing.session.state for listing in after.live()} == {Unreported()}
     assert len(after.live()) == 2
 
 

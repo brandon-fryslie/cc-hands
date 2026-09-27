@@ -16,7 +16,8 @@ from pipecat.services.llm_service import FunctionCallParams
 from hands.core.drafts import AmendDraft, DiscardDraft, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
-from hands.core.session import AtDialog, Blocked, Blocker, CommandName, Gone, Idle, Permission, Plan, PromptText, Question, RequestId, Resolution, SessionId, SessionState, Staged, Submitted, Working
+from hands.core.session import Blocker, CommandName, Dialog, Gone, Held, Idle, LetGo, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, SessionId, SessionState, Staged, Unanswered, Unreported
+from hands.core.status import Busy, Going, Reason, Shell, Unknown, UnknownReason, Waiting
 from hands.core.turn import Budget, Happening, Ref, describe
 from hands.sessions.backfill import Unseen, read_since
 from hands.sessions.audit import Called, Record
@@ -215,25 +216,43 @@ def describe_listing(listing: Listing) -> dict[str, str]:
     return {
         "id": listing.session.membership.id,
         "title": spoken_title(listing),
-        "state": _spoken_state(listing.session.state),
+        "state": _spoken_state(listing.session.state, listing.session.dialog),
         "mode": "not reported yet" if listing.session.mode is None else spoken_mode(listing.session.mode),
     }
 
 
-def _spoken_state(state: SessionState) -> str:
+def _spoken_state(state: SessionState, dialog: Dialog | None) -> str:
     match state:
+        case Unreported():
+            return "not reported yet"
         case Idle():
             return "idle"
-        case Submitted():
-            return "idle, with a prompt sent that Claude has not started on"
-        case Working():
-            return "working"
-        case Blocked(on=on):
-            return _waiting_on(on)
-        case AtDialog(on=on):
-            return f"{_waiting_on(on)} at the keyboard, too late to answer by voice"
+        case Running(status=going):
+            return _running(going, dialog)
         case Gone():
             return "ended"
+
+
+def _running(going: Going, dialog: Dialog | None) -> str:
+    match going:
+        case Waiting(reason=reason):
+            return _at_dialog(reason, dialog)
+        case Busy() | Shell():
+            return "working"
+        case Unknown(name=name):
+            return f"in a state hands does not know: {name}"
+
+
+def _at_dialog(reason: Reason | UnknownReason, dialog: Dialog | None) -> str:
+    match (dialog, reason):
+        case (Held(on=on), _):
+            return _waiting_on(on)
+        case (LetGo(on=on), _):
+            return f"{_waiting_on(on)} at the keyboard, too late to answer by voice"
+        case (Unanswered() | None, UnknownReason(name=name)):
+            return f"waiting at a dialog: {name}"
+        case (Unanswered() | None, str()):
+            return f"waiting at a dialog: {reason}"
 
 
 def _waiting_on(on: Blocker) -> str:

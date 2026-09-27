@@ -9,8 +9,9 @@ from typing import cast
 from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.events import Ended, Joined, PermissionRequested, Prompted, Taken
+from hands.core.events import Ended, Joined, PermissionRequested, Prompted, StatusReported, Taken
 from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId, Question
+from hands.core.status import Busy, Idle, Report, Stamp, Waiting
 from hands.sessions.registry import Sessions
 from hands.sessions.transcript import ai_title
 from hands.voice.tools import list_sessions_tool
@@ -51,12 +52,16 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title_and_their_p
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     for event in (
         Joined(working, "startup"),
+        StatusReported(working.id, Report(Busy(), Stamp(1)), at=1.0),
         Prompted(working.id, at=1.0, mode="acceptEdits", prompt=PromptId("p1")),
         Taken(working.id, PromptId("p1"), None, 5.0),
         Joined(untitled, "startup"),
+        StatusReported(untitled.id, Report(Idle(), Stamp(1)), at=1.0),
         Joined(blocked, "startup"),
+        StatusReported(blocked.id, Report(Waiting("permission prompt"), Stamp(1)), at=2.0),
         PermissionRequested(blocked.id, at=2.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default"),
         Joined(asking, "startup"),
+        StatusReported(asking.id, Report(Waiting("input needed"), Stamp(1)), at=3.0),
         PermissionRequested(asking.id, at=3.0, request=RequestId("q"), on=Question((), {}), mode=None),
         Joined(ended, "startup"),
         Ended(ended.id, "prompt_input_exit"),
@@ -87,7 +92,7 @@ async def test_a_transcript_whose_title_cannot_be_read_lists_the_session_untitle
     broken.transcript.write_text('{"type":"ai-title","sessionId":"broken"}\n')
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(broken, "startup"))
-    assert await call(sessions) == {"sessions": [{"id": "broken", "title": "untitled in broken", "state": "idle", "mode": "not reported yet"}]}
+    assert await call(sessions) == {"sessions": [{"id": "broken", "title": "untitled in broken", "state": "not reported yet", "mode": "not reported yet"}]}
 
 
 def test_the_tool_is_a_valid_pipecat_direct_function() -> None:

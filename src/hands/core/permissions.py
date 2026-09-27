@@ -3,14 +3,13 @@
 from dataclasses import dataclass, replace
 
 from hands.core.effects import Allow, AllowWith, Answers, Approve, Decision, Deny, Effect, HookReply, KeepPlanning, Reply
-from hands.core.session import Blocked, Blocker, Instant, Permission, Plan, Question, Registry, RequestId, Session, SessionId, Working
+from hands.core.session import Blocker, Held, Permission, Plan, Question, Registry, RequestId, Session, SessionId
 
 
 @dataclass(frozen=True)
 class Answer:
     request: RequestId
     decision: Decision
-    at: Instant
 
 
 @dataclass(frozen=True)
@@ -43,13 +42,13 @@ def answer(registry: Registry, request: Answer) -> tuple[Registry, Outcome, list
     """One answer in; the next registry, what came of it, and the reply it calls for out. No I/O."""
     waiting = [session for session in registry.sessions.values() if _waits_on(session, request.request)]
     match waiting:
-        case [Session(state=Blocked(on=on)) as session]:
+        case [Session(dialog=Held(on=on)) as session]:
             match _reply(on, request.decision):
                 case None:
                     return registry, Unfit(request.request, on, request.decision), []
                 case reply:
                     # The turn carries on from here, with the tool run or refused.
-                    answered = registry.put(replace(session, state=Working(since=request.at)))
+                    answered = registry.put(replace(session, dialog=None))
                     return answered, Answered(session.membership.id, on, request.decision), [Reply(session.membership.id, request.request, reply)]
         case _:
             return registry, NotWaiting(request.request), []
@@ -74,8 +73,8 @@ def _reply(on: Blocker, decision: Decision) -> HookReply | None:
 
 
 def _waits_on(session: Session, request: RequestId) -> bool:
-    match session.state:
-        case Blocked(request=held):
+    match session.dialog:
+        case Held(request=held):
             return held == request
         case _:
             return False

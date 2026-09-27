@@ -18,9 +18,10 @@ from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Allow, Narrate, Withdraw, Asking, DeadlineNear, Expired, Speak
-from hands.core.events import PermissionRequested, Tick, ToolFinished
+from hands.core.events import PermissionRequested, StatusReported, Tick, ToolFinished
 from hands.core.reducer import EXPIRED_MESSAGE
-from hands.core.session import AskedQuestion, AtDialog, Blocked, Option, Permission, Plan, Question, RequestId, SessionId, Working
+from hands.core.session import AskedQuestion, Held, LetGo, Option, Permission, Plan, Question, RequestId, SessionId
+from hands.core.status import Busy, Idle, Report, Stamp
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
@@ -32,8 +33,10 @@ COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/cod
 START = {**COMMON, "hook_event_name": "SessionStart", "source": "startup"}
 ASK: dict[str, object] = {**COMMON, "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "rm -r build"}, "permission_suggestions": []}
 PROMPT = {**COMMON, "hook_event_name": "UserPromptSubmit", "prompt": "clean the build", "prompt_id": "p"}
-STOP = {**COMMON, "hook_event_name": "Stop", "stop_hook_active": False, "prompt_id": "p"}
 DEADLINE = 30.0
+BUSY = Report(Busy(), Stamp(1))
+
+
 WAIT_SECONDS = 5.0
 
 
@@ -109,6 +112,8 @@ async def asked(home: Home, sessions: Sessions, payload: Mapping[str, object] = 
     assert await (await Shim.run(home, START)).finished() == (0, "", "")
     # A request is asked inside the turn a prompt opened, and the Stop that ends that turn names it.
     assert await (await Shim.run(home, PROMPT)).finished() == (0, "", "")
+    # Claude Code set the session busy before the prompt's hooks ran: only a running session can be held at a dialog.
+    await sessions.apply(StatusReported(SID, BUSY, at=0.0))
     shim = await Shim.run(home, payload)
     heard = await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
     assert isinstance(heard, Narrate)
@@ -138,14 +143,14 @@ def decision(stdout: str) -> object:
 
 async def test_a_voice_allow_is_what_the_waiting_hook_prints(home: Home, sessions: Sessions) -> None:
     shim, moment = await asked(home, sessions)
-    assert [listing.session.state for listing in sessions.live()] == [Blocked(on=moment.on, request=moment.request, deadline=DEADLINE, warned=False)]
+    assert [listing.session.dialog for listing in sessions.live()] == [Held(on=moment.on, request=moment.request, deadline=DEADLINE, warned=False)]
     assert shim.process.returncode is None, "the hook returned before anyone answered"
 
     tool = named(sessions, "answer_permission")
     assert await call(tool, request=moment.request, decision="allow") == {"readback": "Allowed Bash for untitled in cc-hands."}
     code, stdout, _ = await shim.finished()
     assert (code, decision(stdout)) == (0, {"behavior": "allow"})
-    assert [listing.session.state for listing in sessions.live()] == [Working(since=0.0)]
+    assert [listing.session.dialog for listing in sessions.live()] == [None]
     assert await call(tool, request=moment.request, decision="deny") == {
         "readback": "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
     }
@@ -176,7 +181,7 @@ async def test_an_answer_that_does_not_fit_the_question_sends_nothing_and_it_sti
     assert readback in str((await call(named(sessions, tool), request=moment.request, **arguments))["readback"])
     await asyncio.sleep(0.2)
     assert shim.process.returncode is None, "the hook was answered with something that does not answer it"
-    assert [listing.session.state for listing in sessions.live()] == [Blocked(on=moment.on, request=moment.request, deadline=DEADLINE, warned=False)]
+    assert [listing.session.dialog for listing in sessions.live()] == [Held(on=moment.on, request=moment.request, deadline=DEADLINE, warned=False)]
     await call(named(sessions, "answer_question"), request=moment.request, answers=["red", "pear"])
     await shim.finished()
 
@@ -196,12 +201,12 @@ async def test_a_question_nobody_answers_by_its_deadline_is_left_to_its_dialog_a
         "Nobody answered quiz about its question in time, so it is left waiting at its dialog.",
     ]
     # Still at its dialog, and said to be; a voice answer now is refused out loud rather than sent late.
-    assert [listing.session.state for listing in sessions.live()] == [AtDialog(moment.on)]
+    assert [listing.session.dialog for listing in sessions.live()] == [LetGo(moment.on)]
     assert str((await call(named(sessions, "answer_question"), request=moment.request, answers=["red", "pear"]))["readback"]).startswith("That request is no longer waiting")
     # Answered at the keyboard after all, it comes back through PostToolUse and the session goes on.
     answered = Question(QUESTIONS_ASKED, {**QUESTIONS, "answers": {"Which color?": "red", "Which fruits?": "pear"}})
     await sessions.apply(ToolFinished(SID, at=DEADLINE + 5.0, call=answered, mode=None))
-    assert [listing.session.state for listing in sessions.live()] == [Working(since=DEADLINE + 5.0)]
+    assert [listing.session.dialog for listing in sessions.live()] == [None]
 
 
 async def test_an_empty_answer_leaves_its_question_unanswered(home: Home, sessions: Sessions) -> None:
@@ -266,7 +271,8 @@ async def test_an_unanswered_request_is_denied_at_its_deadline_after_one_warning
 
 async def test_a_session_that_moves_on_lets_its_hook_return_undecided(home: Home, sessions: Sessions) -> None:
     shim, _ = await asked(home, sessions)
-    assert await (await Shim.run(home, STOP)).finished() == (0, "", "")
+    # Claude Code says it is at its prompt: the dialog was answered at the keyboard, or escaped, and the turn is over.
+    await sessions.apply(StatusReported(SID, Report(Idle(), Stamp(2)), at=1.0))
     # Empty output decides nothing, so Claude Code's own dialog, or the keyboard answer it already had, stands.
     assert await shim.finished() == (0, "", "")
 
@@ -293,6 +299,7 @@ async def test_a_reply_decided_as_the_hook_closes_is_logged_as_never_delivered(h
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
     try:
         assert await (await Shim.run(home, START)).finished() == (0, "", "")
+        await sessions.apply(StatusReported(SID, BUSY, at=0.0))
         request = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
         waiting = asyncio.create_task(sessions.ask(request))
         await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
@@ -347,7 +354,7 @@ async def test_a_voice_answer_after_the_hook_went_away_is_told_nothing_was_answe
     shim.process.kill()
     await shim.process.wait()
     await asyncio.sleep(0.2)  # the daemon notices the closed connection
-    assert [listing.session.state for listing in sessions.live()] == [Working(since=0.0)]
+    assert [listing.session.dialog for listing in sessions.live()] == [None]
     assert await call(named(sessions, "answer_permission"), request=moment.request, decision="allow") == {
         "readback": "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
     }
@@ -471,7 +478,7 @@ async def test_a_plan_nobody_answers_by_its_deadline_is_left_to_its_dialog(home:
         "10 seconds left to answer planner about its plan.",
         "Nobody answered planner about its plan in time, so it is left waiting at its dialog.",
     ]
-    assert [listing.session.state for listing in sessions.live()] == [AtDialog(moment.on)]
+    assert [listing.session.dialog for listing in sessions.live()] == [LetGo(moment.on)]
 
 
 @pytest.mark.parametrize(

@@ -5,7 +5,8 @@ from pathlib import Path
 
 from hands.core.effects import Command, Key, NotTyped, Type, Typed
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped
-from hands.core.session import AtDialog, Blocked, Gone, Idle, Registry, Session, SessionId
+from hands.core.session import Gone, Idle, Registry, Running, Session, SessionId
+from hands.core.status import Waiting
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,7 @@ def decide(registry: Registry, request: KeyboardRequest) -> KeyboardOutcome | Ty
                     return SessionEnded(id)
                 case (_, _, None):
                     return Unwrapped(id)
-                case (SendCommand(), Blocked() | AtDialog(), Path()):
+                case (SendCommand(), Running(status=Waiting()), Path()):
                     # A dialog takes the command's characters and its Return as the answer to what it asked.
                     return AtItsDialog(id)
                 case (SendCommand(command=command), _, Path() as socket):

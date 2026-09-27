@@ -21,7 +21,7 @@ If any of those has no spoken form, the first time you need it you go back to th
 desk. Completeness is the need, and it is checked by enumeration: the list of acts is
 finite and each one is either reachable or it is a known gap.
 
-Carried by the `Input` union, the `Blocked` state with its three blockers, and the
+Carried by the `Input` union, the `Held` dialog with its three blockers, and the
 tool surface. Delivered by the drafts and permissions tickets in the foundation epic,
 then **Whole keyboard by voice** and **Ending a session by voice**.
 

@@ -183,11 +183,11 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
   as text, and "stop it" sent Escape, which ended a working turn and closed a
   question dialog.
 - **Questions through the permission hook.** `AskUserQuestion` arrives as a
-  `PermissionRequest`; the `Blocked.on` becomes `Question`; the pipeline reads the
+  `PermissionRequest`; the `Held.on` becomes `Question`; the pipeline reads the
   options; `answer_question` replies with the answers in `updatedInput`. Done when a
   real `AskUserQuestion` in a target session is answered by voice and the agent
   proceeds with that answer. Built: the hook carries the answer, so no key chords.
-- **Plan approval.** `ExitPlanMode` arrives the same way; the `Blocked.on` becomes
+- **Plan approval.** `ExitPlanMode` arrives the same way; the `Held.on` becomes
   `Plan`, and the model tells the plan at summary depth. `answer_plan` approves it
   back into the mode the session had before it planned, or into the mode the user
   names (edits auto-accepted, or each edit asked about), or keeps planning with

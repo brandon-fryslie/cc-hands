@@ -104,7 +104,7 @@ class Sessions:
                 waiting.set_result(Withdraw())
 
     async def answer(self, request: RequestId, decision: Decision) -> Outcome:
-        self._registry, outcome, effects = answer(self._registry, Answer(request, decision, at=self._clock()))
+        self._registry, outcome, effects = answer(self._registry, Answer(request, decision))
         await self._perform_all(effects)
         return outcome
 

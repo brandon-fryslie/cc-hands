@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, NewType, Self
 
-from hands.core.status import Report, Stamp
+from hands.core.status import Going, Stamp
 
 SessionId = NewType("SessionId", str)
 RequestId = NewType("RequestId", str)
@@ -114,41 +114,10 @@ class PlanApproved:
 FinishedCall = Permission | Question | PlanApproved
 
 
-# [LAW:types-are-the-program] a session is in exactly one of these, and each
-# carries only what is true of that state: a working session has a start, a
-# blocked one has the request it waits on and when that request expires.
 @dataclass(frozen=True)
-class Idle:
-    # [LAW:no-ambient-temporal-coupling] one idle period is one Idle value: the nudge is spoken once because speaking
-    # it is this value changing, and every way into Idle builds a fresh one, so the next period can be nudged again.
-    nudged: bool = False
-    # When hands says the session is waiting on its own clock, for an idle period Claude Code sends no idle_prompt for:
-    # one a turn the user interrupted began (2.1.281). None where idle_prompt will say it, or already has.
-    due: Instant | None = None
-    # Whether the turn that left it here ended on a question or an offer, so the nudge can say it has one rather than
-    # only that it waits: its dialog question left unanswered, or its closing reply asking. See `_asking` in the reducer.
-    asking: bool = False
+class Held:
+    """At a dialog whose PermissionRequest hook hands holds open, waiting on a reply by voice."""
 
-
-@dataclass(frozen=True)
-class Submitted:
-    """Sent from the prompt while its UserPromptSubmit hooks run: Claude Code has not taken it, and never will if the user
-    presses Escape before they finish, which puts it back in the input box with no hook and no record to say so, and sets
-    the session idle (2.1.282)."""
-
-    since: Instant
-
-
-@dataclass(frozen=True)
-class Working:
-    since: Instant
-    # Its question dialog was closed unanswered, by an Escape at it, which kills the hook and fires no post-tool hook
-    # and no Stop, and it has run nothing since: what the turn is waiting on if it ends here. See `_asking` in the reducer.
-    unanswered: bool = False
-
-
-@dataclass(frozen=True)
-class Blocked:
     on: Blocker
     request: RequestId
     deadline: Instant
@@ -158,10 +127,52 @@ class Blocked:
 
 
 @dataclass(frozen=True)
-class AtDialog:
-    """Still at its dialog after hands let go of the hook at the deadline, so only the keyboard can answer it now."""
+class LetGo:
+    """At a dialog hands let go of at its deadline, so only the keyboard can answer it now."""
 
     on: Blocker
+
+
+@dataclass(frozen=True)
+class Unanswered:
+    """Its question dialog was closed unanswered, by an Escape at it, which kills the hook and fires no post-tool hook
+    and no Stop, and it has run nothing since: what the turn is waiting on if it ends here. See `_asking` in the reducer."""
+
+
+# The dialog the session is at, or left behind it, as its hooks tell it: Claude Code's idle ends it.
+Dialog = Held | LetGo | Unanswered
+
+
+# [LAW:one-source-of-truth] whether a session runs, waits at a dialog, or sits at its prompt is Claude Code's status, and
+# only a status read moves a session between these. Hooks and records say which turn it is and what it did (see Turn),
+# never whether it runs. [LAW:types-are-the-program] each variant carries only what is true under it.
+@dataclass(frozen=True)
+class Unreported:
+    """Heard of, with no status read for it yet."""
+
+
+@dataclass(frozen=True)
+class Idle:
+    """Claude Code says the session is at its prompt."""
+
+    stamp: Stamp
+    # When hands says the session waits, on its own clock: Claude Code sends no idle_prompt at all for some idle periods
+    # (none in 75 s after an interrupt, 2.1.282), and its own comes 61 s after a Stop (2.1.281).
+    due: Instant
+    # [LAW:no-ambient-temporal-coupling] one idle period is one Idle value: the nudge is spoken once because speaking
+    # it is this value changing, and an idle read after a run builds a fresh one, so the next period can be nudged again.
+    nudged: bool = False
+
+
+@dataclass(frozen=True)
+class Running:
+    """Claude Code says a turn or a `!` command runs, or it waits at a dialog, or it said a status hands does not know."""
+
+    status: Going
+    stamp: Stamp
+    # When Claude Code last set it idle before this run, or, first read running, when it set that status: a record
+    # written before then is of a turn over by then, or begun before hands followed the session.
+    idled: Stamp
 
 
 @dataclass(frozen=True)
@@ -169,7 +180,31 @@ class Gone:
     pass
 
 
-SessionState = Idle | Submitted | Working | Blocked | AtDialog | Gone
+SessionState = Unreported | Idle | Running | Gone
+
+
+def status_stamp(state: SessionState) -> Stamp | None:
+    """When Claude Code set the status the session is held in; None when no status has been read for it."""
+    match state:
+        case Idle(stamp=stamp) | Running(stamp=stamp):
+            return stamp
+        case Unreported() | Gone():
+            return None
+
+
+# [LAW:types-are-the-program] the turn as hooks and records tell it, one phase at a time, each carrying the ids the turn
+# goes by: its prompt's, or the one Claude went on answering under, and every other id it was read going on under (a
+# flush's is taken seconds before Claude answers under it and the turn is moved to it, and a message queued in between
+# carries it, 2.1.281). A Stop ends only a turn it names, so one applied late never ends the turn after it.
+@dataclass(frozen=True)
+class Opened:
+    """A turn a prompt or its record opened, and no end of it heard."""
+
+    turn: PromptId
+    others: frozenset[PromptId] = frozenset()
+    # A message the user sent while it ran, waiting behind it: Claude Code runs it once the turn's Stop hook returns,
+    # under an id no hook names (2.1.282).
+    queued: bool = False
 
 
 @dataclass(frozen=True)
@@ -178,8 +213,25 @@ class Untold:
     the turn ended (an interrupt's record lands ~100 ms after, 2.1.282), so the turn is told once that record or its Stop
     is read, or a turn after it opens, or at `by` with what was read by then."""
 
-    turn: PromptId | None
+    turn: PromptId
+    others: frozenset[PromptId]
     by: Instant
+    # Whether it ended on a question or an offer, so the nudge can say it has one rather than only that it waits: see
+    # `_asking` in the reducer.
+    asking: bool
+
+
+@dataclass(frozen=True)
+class Told:
+    """The last turn is told: None until one is. At the prompt, a Stop of this turn ends it again only when the turn went
+    on after another Stop hook blocked its Stop (see _ends)."""
+
+    turn: PromptId | None = None
+    others: frozenset[PromptId] = frozenset()
+    asking: bool = False
+
+
+Turn = Opened | Untold | Told
 
 
 @dataclass(frozen=True)
@@ -189,26 +241,8 @@ class Session:
     # [LAW:one-source-of-truth] the permission_mode of the last hook that carried one. None until one does:
     # SessionStart, idle_prompt, and SessionEnd carry none (verified live on 2.1.281).
     mode: Mode | None
-    # [LAW:no-ambient-temporal-coupling] the id the session's last turn goes by: its prompt's, or the one Claude went on
-    # answering under, which names the turn a busy session is in. A Stop ends a busy session's turn only when it names
-    # it, so one applied late never ends the turn after it; at the prompt, a Stop of this turn ends it again only when
-    # the turn went on after another Stop hook blocked its Stop (see _ends). None until a prompt is heard.
-    turn: PromptId | None
-    # Every other id the running turn has been read going on under: a flush's is taken seconds before Claude answers
-    # under it and the turn is moved to it, and a message queued in between carries it (2.1.281).
-    taken: frozenset[PromptId] = frozenset()
-    # [LAW:one-source-of-truth] what Claude Code last said the session is doing, as it said it. None until it is read.
-    report: Report | None = None
-    # When Claude Code last set the session idle, of the statuses read: a prompt taken under an id no hook named opens a
-    # turn only when written since. Until an idle is read, when it set the first status read. None until any is read, so
-    # a transcript read from its start opens nothing.
-    idled: Stamp | None = None
-    # A message the user sent while the running turn ran, waiting behind it: Claude Code runs it once the turn's Stop hook
-    # returns, under an id no hook names (2.1.282). False at the prompt.
-    queued: bool = False
-    # [LAW:no-ambient-temporal-coupling] the one wait on the transcript, as a value the clock settles: None when every
-    # turn that ended has been told.
-    untold: Untold | None = None
+    turn: Turn = Told()
+    dialog: Dialog | None = None
 
 
 @dataclass(frozen=True)

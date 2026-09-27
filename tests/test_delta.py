@@ -11,7 +11,7 @@ from hands.core.effects import Summarise
 from hands.core.events import Joined, Prompted, StatusReported, Stopped, Taken
 from hands.core import status
 from hands.core.status import Report, Stamp
-from hands.core.session import Membership, PromptId, SessionId, Submitted
+from hands.core.session import Membership, Opened, PromptId, SessionId
 from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Deltas
 from hands.sessions.registry import Sessions
 
@@ -315,7 +315,7 @@ async def test_a_mark_that_fails_outright_still_lets_the_prompt_through(tmp_path
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
     # The mark is gone, the prompt is not: it went through, and the hook that said so was answered.
-    assert [listing.session.state for listing in sessions.live()] == [Submitted(since=1.0)]
+    assert [listing.session.turn for listing in sessions.live()] == [Opened(PromptId("p1"))]
 
 
 async def test_a_repository_with_no_commit_yet_still_says_what_the_turn_did(tmp_path: Path) -> None:

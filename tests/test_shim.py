@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from hands.core.effects import Summarise
-from hands.core.session import Idle, Membership, PromptId, Session, SessionId, Submitted
+from hands.core.session import Membership, Opened, PromptId, Session, SessionId, Unreported
 from hands.sessions import heartbeat
 from hands.sessions.hookconfig import LAUNCHER, PLUGIN_DIR, SHIM_MODULE
 from hands.sessions.home import Home
@@ -170,7 +170,7 @@ async def test_a_start_records_membership_and_joins_the_registry(home: Home, ses
     assert await shim(home, START) == (0, "", "")
     assert await shim(home, PROMPT) == (0, "", "")
     membership = Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl"))
-    assert [listing.session for listing in sessions.live()] == [Session(membership, Submitted(since=10.0), mode=None, turn=PromptId("p1"))]
+    assert [listing.session for listing in sessions.live()] == [Session(membership, Unreported(), mode=None, turn=Opened(PromptId("p1")))]
     assert home.membership(SID).exists()
 
 
@@ -178,7 +178,7 @@ async def test_a_session_running_before_the_plugin_joins_on_its_first_hook_and_i
     """/reload-plugins in a running session fires no start hook: its first prompt is where hands hears of it."""
     assert await shim(home, PROMPT) == (0, "", "")
     membership = Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl"))
-    assert [listing.session for listing in sessions.live()] == [Session(membership, Submitted(since=10.0), mode=None, turn=PromptId("p1"))]
+    assert [listing.session for listing in sessions.live()] == [Session(membership, Unreported(), mode=None, turn=Opened(PromptId("p1")))]
     assert read_membership(home, SID) == membership
     assert await shim(home, STOP) == (0, "", "")
     assert await asyncio.wait_for(sessions.story(), 1.0) == Summarise(SID, PromptId("p1"), "done")
@@ -240,7 +240,7 @@ async def test_a_second_daemon_will_not_take_a_live_socket(home: Home, sessions:
     with pytest.raises(RuntimeError, match="already listening"):
         await serve_hooks(home, Sessions(60.0, clock=lambda: 0.0, record=lambda _: None))
     await shim(home, START)
-    assert [listing.session.state for listing in sessions.live()] == [Idle()]
+    assert [listing.session.state for listing in sessions.live()] == [Unreported()]
 
 
 async def test_a_socket_left_by_a_dead_daemon_is_reclaimed(home: Home) -> None:

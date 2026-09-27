@@ -12,7 +12,7 @@ from typing import get_args
 from loguru import logger
 
 from hands.core.events import StatusReported
-from hands.core.session import Instant, Membership, Session, SessionId
+from hands.core.session import Instant, Membership, Session, SessionId, status_stamp
 from hands.core.status import Busy, Idle, Reason, Report, Shell, Stamp, Status, Unknown, UnknownReason, Waiting
 from hands.sessions.payload import Payload, Rejected
 
@@ -86,7 +86,7 @@ class Statuses:
             path = status_file(member)
             report = parse_report(member, path.read_bytes())
         except FileNotFoundError:
-            if session.report is not None:
+            if status_stamp(session.state) is not None:
                 # Claude Code removes the file it kept as its process exits, then runs the end hook, which lands 330 to
                 # 640 ms later (2.1.283); a process killed before its hook runs is found dead by the sweep. Only a file
                 # never read is a status hands cannot have.
@@ -98,7 +98,7 @@ class Statuses:
         # [LAW:one-source-of-truth] edge-triggered on the stamp the registry holds, not a copy kept here: a status the
         # registry let go of is heard again. [LAW:no-ambient-temporal-coupling] the stamp, not the status, so an idle,
         # busy, idle between two reads is still a status set, and still heard.
-        if session.report is not None and session.report.stamp == report.stamp:
+        if status_stamp(session.state) == report.stamp:
             return None
         _unknown(member, report.status)
         return StatusReported(member.id, report, self._clock())

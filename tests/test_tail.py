@@ -15,7 +15,7 @@ from hands.core.effects import Summarise
 from hands.core.events import Joined, Prompted, StatusReported, Stopped
 from hands.core import status
 from hands.core.status import Report, Stamp
-from hands.core.session import Idle, Submitted, Working
+from hands.core.session import Idle, Opened, Told, Untold
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.tail import KEPT, Tails, Telling, keep_tailing
@@ -588,9 +588,9 @@ async def test_a_record_that_names_no_prompt_does_not_lose_the_turn_claude_is_an
     assert await Tails(Registry([member(transcript)])).catch_up() == [Taken(SID, PromptId("p1"), None, 7.0), Taken(SID, PromptId("p2"), None, 7.0), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
 
 
-async def test_a_prompt_cancelled_while_its_hooks_ran_never_makes_the_session_working_and_the_one_resent_does(tmp_path: Path) -> None:
-    """Escape during UserPromptSubmit writes nothing (2.1.281): only the record of a turn says its prompt was taken, and
-    only Claude Code's idle that it is over."""
+async def test_a_prompt_cancelled_while_its_hooks_ran_ends_at_the_idle_and_the_one_resent_opens_its_own_turn(tmp_path: Path) -> None:
+    """Escape during UserPromptSubmit writes nothing (2.1.281): the prompt's hook opens its turn, and Claude Code's idle
+    ends it, so the prompt sent again is a turn of its own."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
@@ -600,16 +600,16 @@ async def test_a_prompt_cancelled_while_its_hooks_ran_never_makes_the_session_wo
     for _ in range(3):
         for transcribed in await tails.catch_up():
             await sessions.apply(transcribed)
-    listing = sessions.listing(SID)
-    assert listing is not None and listing.session.state == Submitted(since=1.0)
     # The Escape puts the prompt back in the box and sets the session idle (2.1.282).
     await sessions.apply(said_idle(at=2.0))
+    listing = sessions.listing(SID)
+    assert listing is not None and isinstance(listing.session.state, Idle) and isinstance(listing.session.turn, Untold)
     await sessions.apply(Prompted(SID, at=4.0, mode=None, prompt=PromptId("p1")))
     transcript.write_text(lines(ASKED))
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
     listing = sessions.listing(SID)
-    assert listing is not None and listing.session.state == Working(since=4.0)
+    assert listing is not None and listing.session.turn == Opened(PromptId("p1"))
 
 
 async def test_a_prompt_whose_first_record_is_its_interrupt_is_heard_taken_before_it_is_heard_stopped(tmp_path: Path) -> None:
@@ -750,7 +750,7 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
     second = await tails.tell(SID, PromptId("p2"), "Done.")
     assert second is not None and second.turn == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
     listing = sessions.listing(SID)
-    assert listing is not None and listing.session.state == Idle()
+    assert listing is not None and isinstance(listing.session.turn, Told) and listing.session.turn.turn == PromptId("p2")
 
 
 async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_itself_with_its_own_changes(tmp_path: Path) -> None:
@@ -788,7 +788,7 @@ async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_
     assert second is not None and second.turn == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
     assert changed == [["rivers.md"], ["shorter.md"]]
     listing = sessions.listing(SID)
-    assert listing is not None and listing.session.state == Idle()
+    assert listing is not None and isinstance(listing.session.turn, Told) and listing.session.turn.turn == PromptId("p2")
 
 
 async def test_a_telling_that_names_no_turn_lets_go_of_none_that_ended(tmp_path: Path) -> None:
