@@ -27,6 +27,11 @@ class Home:
         return self.root / "audit.jsonl"
 
     @property
+    def summaries(self) -> Path:
+        """Whether finished turns are spoken, written by `/hands:summaries` alone."""
+        return self.root / "summaries"
+
+    @property
     def memberships(self) -> Path:
         """One file per session, written by its shim: the set of sessions hands is attached to."""
         return self.root / "sessions"

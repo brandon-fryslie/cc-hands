@@ -166,6 +166,10 @@ class Narration:
         # A turn stopped before it did anything has an empty headline, which adds nothing rather than a space.
         return " ".join(part.text for part in parts if part.text)
 
+    def asked(self) -> str:
+        """What plays when the turn stops and its summary is not wanted: only what it is waiting on the listener to answer."""
+        return " ".join(question.text for question in self.questions)
+
 
 def narration(said: str, turn: Turn, delta: Delta, sentences: int) -> Narration:
     """The tree for one turn: `said` is what a summariser made of the whole of it, and the rest is arithmetic.

@@ -1,8 +1,10 @@
 """Fixtures more than one test module needs."""
 
 import subprocess
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from aiohttp import web
@@ -18,6 +20,15 @@ def _dead_pid() -> int:
 def dead_pid() -> Callable[[], int]:
     """Makes the pid of a process that has just exited, which no process holds for now, fresh at each call."""
     return _dead_pid
+
+
+@pytest.fixture
+def python312(tmp_path: Path) -> str:
+    """A PATH whose only Python new enough is a python3.12 outside any venv, as the plugin's launcher finds one; /usr/bin's python3 on macOS is 3.9."""
+    interpreters = tmp_path / "bin"
+    interpreters.mkdir()
+    (interpreters / "python3.12").symlink_to(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+    return f"/usr/bin:/bin:{interpreters}"
 
 
 @dataclass
