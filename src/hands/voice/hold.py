@@ -71,19 +71,6 @@ Hold = Idle | Arming | Talking | Typing
 Move = Literal["arm", "disarm", "start", "stop", "drop"]
 
 
-def turn_lines(move: Move) -> tuple[str, ...]:
-    """What the terminal says of a move: the turn's edges, and nothing of the microphone arming, which every Shift does."""
-    match move:
-        case "start":
-            return ("turn: started",)
-        case "stop":
-            return ("turn: ended",)
-        case "drop":
-            return ("turn: dropped",)
-        case "arm" | "disarm":
-            return ()
-
-
 def step(hold: Hold, event: KeyEvent) -> tuple[Hold, tuple[Move, ...]]:
     """The hold after `event`, and what it does: most keystrokes do nothing."""
     match hold, event:

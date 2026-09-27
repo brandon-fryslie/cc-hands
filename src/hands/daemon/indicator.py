@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from hands.sessions.heartbeat import Down, NeverRan, Stopped, Unreadable, Unresponsive, Up, Verdict, describe
+from hands.sessions.heartbeat import Down, NeverRan, Status, Stopped, Unreadable, Unresponsive, Up, Verdict, describe
 
 # Stopped and never ran are one light: in both, nothing is running and nothing went wrong on the way to that.
 Light = Literal["up", "not responding", "down", "off", "unreadable"]
@@ -17,11 +17,21 @@ TITLES: dict[Light, str] = {
     "unreadable": "⚠︎ hands unreadable",
     "off": "✋ off",
 }
+# Up with a turn open: the same light, so a turn is never news to the notices, only to the eye.
+LISTENING = "✋ 🎙"
 
 
 # After a notice, how long another departure from up is shown and not posted: a daemon whose loop stalls and recovers
 # over and over leaves up each time, and a notice for each would bury the screen.
 QUIET = timedelta(seconds=60)
+
+
+def title(verdict: Verdict, light: Light) -> str:
+    match verdict:
+        case Up(status=Status(listening=True)):
+            return LISTENING
+        case _:
+            return TITLES[light]
 
 
 def light(verdict: Verdict) -> Light:
@@ -52,18 +62,19 @@ class Shown:
 def show(before: Shown | None, verdict: Verdict, now: datetime) -> Shown:
     """The indicator after this look, given what it showed at the look before (None on its first look)."""
     after = light(verdict)
+    shown = title(verdict, after)
     text = describe(verdict, now)
     match before:
         case None:
             # A daemon found already down at the first look is shown, not announced: only a departure from up is news.
-            return Shown(after, TITLES[after], text, (), False, None)
+            return Shown(after, shown, text, (), False, None)
         case Shown(light=was, owed=owed, posted_at=posted_at):
             # A departure held back by the quiet window is owed, not dropped: it goes out when the window closes,
             # unless hands has come back up by then and there is nothing left to tell.
             owing = after != "up" and (owed or was == "up")
             quiet = posted_at is not None and now - posted_at < QUIET
             notices = (text,) if owing and not quiet else ()
-            return Shown(after, TITLES[after], text, notices, owing and not notices, now if notices else posted_at)
+            return Shown(after, shown, text, notices, owing and not notices, now if notices else posted_at)
 
 
 def finished(verdict: Verdict, orphaned: bool, run: int) -> bool:

@@ -66,7 +66,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
             # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its
             # models load, seconds of silence in which the file would otherwise still name the process that died.
-            heart.beat("starting", None, 0)
+            heart.beat("starting", None, 0, False)
             start_indicator(home)
             # Imported here, after that heartbeat, and so that `hands status` answers without loading Pipecat.
             from hands.daemon.run import config_from_env, run

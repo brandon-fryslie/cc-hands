@@ -45,7 +45,8 @@ from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
 from hands.voice.devices import follow_default_devices
-from hands.voice.hold import Move, turn_lines
+from hands.voice.cues import cues
+from hands.voice.hold import Move
 from hands.voice.keys import drive_quit, drive_talk_key
 from hands.voice.pipeline import (
     AnthropicBackend,
@@ -203,7 +204,7 @@ async def run(configure: Callable[[], VoiceConfig], home: Home, heart: heartbeat
             loop.remove_signal_handler(signal_number)
         logger.remove(failures)
     # Written only by a stop: a crash leaves the last heartbeat naming a pid that is gone, which reads as down.
-    heart.beat("stopped", None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
+    heart.beat("stopped", None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count(), False)
 
 
 async def start(
@@ -224,7 +225,7 @@ async def start(
         return config, await off_loop(lambda: build_voice(config, tools=tools), "the voice load")
 
     preparing = asyncio.create_task(prepare())
-    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, sessions.live_count()), heart.period.total_seconds()))
+    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, sessions.live_count(), False), heart.period.total_seconds()))
     quitting = asyncio.create_task(quit_event.wait())
     try:
         await asyncio.wait({preparing, starting, quitting}, return_when=asyncio.FIRST_COMPLETED)
@@ -259,7 +260,7 @@ async def converse(
     failures: list[BaseException] = []
 
     def beat() -> None:
-        heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count())
+        heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count(), voice.key.gate.key == "down")
 
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
@@ -288,8 +289,11 @@ async def converse(
 
     async def on_move(move: Move) -> None:
         voice.key.move(move)
-        for line in turn_lines(move):
-            logger.info(line)
+        # The indicator reads the key from the heartbeat, so the edge is written now rather than at the next beat.
+        beat()
+        for cue in cues(move):
+            logger.info(cue.line)
+            await voice.audio.output().cue(cue)
         for fact in unheard(move, voice.audio.devices):
             await channel.say(fact)
 

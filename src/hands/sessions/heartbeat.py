@@ -35,6 +35,7 @@ class Status:
     pipeline: PipelineState
     last_audio_out: datetime | None
     live_sessions: int
+    listening: bool  # a turn is open: the talk key is held and has been held long enough to mean talk
 
 
 def encode(status: Status) -> str:
@@ -47,6 +48,7 @@ def encode(status: Status) -> str:
             "pipeline": status.pipeline,
             "last_audio_out": None if status.last_audio_out is None else status.last_audio_out.isoformat(),
             "live_sessions": status.live_sessions,
+            "listening": status.listening,
         },
         indent=2,
     )
@@ -65,6 +67,7 @@ def parse(raw: bytes) -> Status:
         pipeline=_pipeline(fields.text("pipeline")),
         last_audio_out=None if last_audio_out is None else _instant(last_audio_out),
         live_sessions=fields.integer("live_sessions"),
+        listening=fields.flag("listening"),
     )
 
 
@@ -84,8 +87,8 @@ class Heart:
     started_at: datetime
     period: timedelta
 
-    def beat(self, pipeline: PipelineState, last_audio_out: datetime | None, live_sessions: int) -> None:
-        write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions))
+    def beat(self, pipeline: PipelineState, last_audio_out: datetime | None, live_sessions: int, listening: bool) -> None:
+        write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions, listening))
 
 
 def read(path: Path) -> Status | None:

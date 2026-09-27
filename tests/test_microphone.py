@@ -15,6 +15,7 @@ from pipecat.utils.asyncio.task_manager import TaskManager
 from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
+from hands.voice.cues import OPENED, sound
 from hands.voice.coreaudio import DefaultDevices
 from hands.voice.microphone import ECHO_PATH_SECS, Devices, Input, KeyedAudioTransport, NoInput, Output, PortAudio, buffer_age, default_input, heard
 from hands.voice.ptt import Gate, PushToTalk
@@ -303,3 +304,15 @@ def test_only_portaudios_own_no_default_input_reads_as_no_microphone() -> None:
     refusing = SimpleNamespace(get_default_input_device_info=lambda: (_ for _ in ()).throw(OSError(-9999, "Unanticipated host error")))
     with pytest.raises(OSError, match="host error"):
         default_input(cast(PortAudio, refusing))
+
+
+async def test_a_turns_cue_is_played_at_once_and_holds_nothing_shut() -> None:
+    devices = Rig()
+    devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]  # as setup sets it
+    devices.key.move("start")
+    devices.now = 1.0
+    await devices.speaker.cue(OPENED)
+    await devices.capture(at=1.0)  # a word said over the cue
+    assert devices.stream.written == [sound(OPENED, 16000, 1)]
+    assert devices.pushed == [LOUD]
+    assert devices.speaker.sounded_at == 1.0

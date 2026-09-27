@@ -41,6 +41,7 @@ from pipecat.transports.local.audio import (
 )
 
 from hands.voice.coreaudio import DefaultDevices, default_devices
+from hands.voice.cues import Cue, sound
 from hands.voice.ptt import Gate, KeyedAudio, PushToTalk
 from hands.voice.threads import SerialThread, off_loop
 
@@ -213,6 +214,18 @@ class Speaker(LocalAudioOutputTransport):
             self.quiet_at = self.sounded_at + _duration(frame) + self._fade
         await self._writes.run(lambda: stream.write(frame.audio))
         return True
+
+    async def cue(self, cue: Cue) -> None:
+        """Play a turn's cue now, on whatever stream is attached, ahead of the pipeline's queue.
+
+        It moves `sounded_at`, since it is sound given to the speaker, and never `quiet_at`: a cue is not the
+        pipeline's speech, and holding the microphone shut behind the one that opens a turn would cut the turn's first word.
+        """
+        await self._attached.wait()
+        stream = cast(Playback, self._out_stream)
+        self.sounded_at = self._clock()
+        audio = sound(cue, self.sample_rate, self._params.audio_out_channels)
+        await self._writes.run(lambda: stream.write(audio))
 
 
 def _duration(frame: OutputAudioRawFrame) -> float:
