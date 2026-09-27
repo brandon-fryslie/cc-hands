@@ -75,11 +75,11 @@ def turn_lines(move: Move) -> tuple[str, ...]:
     """What the terminal says of a move: the turn's edges, and nothing of the microphone arming, which every Shift does."""
     match move:
         case "start":
-            return ("turn: listening",)
+            return ("turn: started",)
         case "stop":
-            return ("turn: sent",)
+            return ("turn: ended",)
         case "drop":
-            return ("turn: dropped, not sent",)
+            return ("turn: dropped",)
         case "arm" | "disarm":
             return ()
 

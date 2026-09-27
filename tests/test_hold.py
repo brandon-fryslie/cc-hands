@@ -118,6 +118,27 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
 
 
 def test_the_terminal_hears_of_a_turn_opening_and_closing_and_never_of_shift() -> None:
-    assert [line for move in ("arm", "start", "stop") for line in turn_lines(move)] == ["turn: listening", "turn: sent"]
-    assert [line for move in ("arm", "start", "drop") for line in turn_lines(move)] == ["turn: listening", "turn: dropped, not sent"]
+    assert [line for move in ("arm", "start", "stop") for line in turn_lines(move)] == ["turn: started", "turn: ended"]
+    assert [line for move in ("arm", "start", "drop") for line in turn_lines(move)] == ["turn: started", "turn: dropped"]
     assert turn_lines("arm") + turn_lines("disarm") == ()
+
+
+def test_the_terminal_shows_hands_from_info_and_everything_else_from_warning() -> None:
+    from loguru import logger
+
+    from hands.daemon.cli import TERMINAL_LEVELS
+
+    shown: list[str] = []
+    sink = logger.add(lambda message: shown.append(message.record["message"]), filter=TERMINAL_LEVELS)
+    try:
+        for module in ("hands.sessions.tail", "pipecat.services.anthropic.llm"):
+            patched = logger.patch(lambda record, module=module: record.update(name=module))
+            for level in ("DEBUG", "INFO", "WARNING"):
+                patched.log(level, f"{module} {level}")
+    finally:
+        logger.remove(sink)
+    assert shown == [
+        "hands.sessions.tail INFO",
+        "hands.sessions.tail WARNING",
+        "pipecat.services.anthropic.llm WARNING",
+    ]

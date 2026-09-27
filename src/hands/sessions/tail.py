@@ -171,9 +171,8 @@ class Tails:
                 try:
                     await asyncio.to_thread(self._read, member.id, following)
                 except FileNotFoundError:
-                    # Claude Code creates the transcript with its first record, which a new session has not written
-                    # until its first prompt: nothing to read yet, and nothing wrong, so nothing is logged 10 times a second.
-                    pass
+                    # Claude Code creates the transcript with its first record, which a session may not have written yet.
+                    logger.debug(f"session {member.id} has not written {following.path} yet")
                 except OSError as error:
                     # [LAW:no-silent-failure] the offset does not move, so the same bytes are read again at the next catch-up.
                     logger.error(f"cannot read the transcript of session {member.id} from {following.path}: {error}")

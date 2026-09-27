@@ -799,16 +799,3 @@ async def test_a_telling_that_names_no_turn_lets_go_of_none_that_ended(tmp_path:
     assert await tails.tell(SID, None, None) is not None
     kept = await tails.tell(SID, PromptId("p1"), None)
     assert kept is not None and kept.turn == RIVERS
-
-
-async def test_a_session_that_has_not_written_its_transcript_yet_is_caught_up_on_in_silence(tmp_path: Path) -> None:
-    # Caught up on ten times a second until its first prompt: a line each time was the terminal's flood.
-    logged: list[str] = []
-    sink = logger.add(lambda message: logged.append(message.record["message"]), level="DEBUG")
-    try:
-        tails = Tails(Registry([member(tmp_path / "not-yet.jsonl")]))
-        assert await tails.catch_up() == []
-        assert await tails.catch_up() == []
-    finally:
-        logger.remove(sink)
-    assert logged == []

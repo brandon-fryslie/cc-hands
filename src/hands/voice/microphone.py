@@ -159,7 +159,7 @@ class Speaker(LocalAudioOutputTransport):
             format=py_audio.get_format_from_width(2),
             channels=self._params.audio_out_channels,
             rate=self.sample_rate,
-            frames_per_buffer=int(self.sample_rate * SPEAKER_PERIOD_SECS),
+            frames_per_buffer=round(self.sample_rate * SPEAKER_PERIOD_SECS),
             output=True,
             output_device_index=self._params.output_device_index,
         )
