@@ -142,7 +142,7 @@ async def test_a_voice_allow_is_what_the_waiting_hook_prints(home: Home, session
     assert shim.process.returncode is None, "the hook returned before anyone answered"
 
     tool = named(sessions, "answer_permission")
-    assert await call(tool, request=moment.request, decision="allow") == {"readback": "Allowed Bash for untitled, in cc-hands."}
+    assert await call(tool, request=moment.request, decision="allow") == {"readback": "Allowed Bash for untitled in cc-hands."}
     code, stdout, _ = await shim.finished()
     assert (code, decision(stdout)) == (0, {"behavior": "allow"})
     assert [listing.session.state for listing in sessions.live()] == [Working(since=0.0)]
@@ -155,7 +155,7 @@ async def test_voice_answers_to_a_question_are_what_the_waiting_hook_prints_in_i
     shim, moment = await asked(home, sessions, QUESTION)
     assert shim.process.returncode is None, "the hook returned before anyone answered"
     assert await call(named(sessions, "answer_question"), request=moment.request, answers=["green", "pear, plum"]) == {
-        "readback": "Answered green; pear, plum for untitled, in cc-hands."
+        "readback": "Answered green; pear, plum for untitled in cc-hands."
     }
     code, stdout, _ = await shim.finished()
     answers = {"Which color?": "green", "Which fruits?": "pear, plum"}
@@ -207,7 +207,7 @@ async def test_a_question_nobody_answers_by_its_deadline_is_left_to_its_dialog_a
 async def test_an_empty_answer_leaves_its_question_unanswered(home: Home, sessions: Sessions) -> None:
     shim, moment = await asked(home, sessions, QUESTION)
     assert await call(named(sessions, "answer_question"), request=moment.request, answers=["green", ""]) == {
-        "readback": "Answered green; nothing for untitled, in cc-hands."
+        "readback": "Answered green; nothing for untitled in cc-hands."
     }
     _, stdout, _ = await shim.finished()
     assert decision(stdout) == {"behavior": "allow", "updatedInput": {**QUESTIONS, "answers": {"Which color?": "green", "Which fruits?": ""}}}
@@ -242,7 +242,7 @@ def test_a_question_reaches_the_model_whole_with_its_options_and_request_id() ->
 async def test_a_voice_deny_carries_its_message_to_the_agent(home: Home, sessions: Sessions, message: str, agent_reads: str) -> None:
     shim, moment = await asked(home, sessions)
     assert await call(named(sessions, "answer_permission"), request=moment.request, decision="deny", message=message) == {
-        "readback": "Denied Bash for untitled, in cc-hands."
+        "readback": "Denied Bash for untitled in cc-hands."
     }
     code, stdout, _ = await shim.finished()
     assert (code, decision(stdout)) == (0, {"behavior": "deny", "message": agent_reads})
@@ -337,7 +337,7 @@ async def test_a_request_from_a_session_this_daemon_never_met_joins_it_and_is_an
     shim = await Shim.run(home, ASK)
     heard = await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
     assert isinstance(heard, Narrate)
-    assert await call(named(sessions, "answer_permission"), request=heard.moment.request, decision="allow") == {"readback": "Allowed Bash for untitled, in cc-hands."}
+    assert await call(named(sessions, "answer_permission"), request=heard.moment.request, decision="allow") == {"readback": "Allowed Bash for untitled in cc-hands."}
     code, stdout, _ = await shim.finished()
     assert (code, decision(stdout)) == (0, {"behavior": "allow"})
 
@@ -395,8 +395,8 @@ async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the
     # The request itself was taken off the queue by asked(); what follows it is spoken as written.
     [spoken_warning, spoken_expiry] = frames
     assert isinstance(spoken_warning, TTSSpeakFrame) and isinstance(spoken_expiry, TTSSpeakFrame)
-    assert spoken_warning.text == "10 seconds left to answer untitled, in cc-hands about Bash."
-    assert spoken_expiry.text == "Nobody answered untitled, in cc-hands about Bash in time, so I told it no."
+    assert spoken_warning.text == "10 seconds left to answer untitled in cc-hands about Bash."
+    assert spoken_expiry.text == "Nobody answered untitled in cc-hands about Bash in time, so I told it no."
 
 
 def test_a_request_reaches_the_model_with_its_tool_input_and_request_id() -> None:
@@ -416,9 +416,9 @@ SET_MODE = [{"type": "setMode", "mode": "acceptEdits", "destination": "session"}
     ("choice", "permissions", "readback"),
     [
         # No mode set: ExitPlanMode goes back to the mode the session had before it planned, bypass or auto included.
-        ("approve", [], "Approved its plan for untitled, in cc-hands, in the mode it had before planning."),
-        ("auto-accept edits", SET_MODE[0], "Approved its plan for untitled, in cc-hands, with its edits accepted automatically."),
-        ("manually approve edits", SET_MODE[1], "Approved its plan for untitled, in cc-hands, asking you about each edit."),
+        ("approve", [], "Approved its plan for untitled in cc-hands, in the mode it had before planning."),
+        ("auto-accept edits", SET_MODE[0], "Approved its plan for untitled in cc-hands, with its edits accepted automatically."),
+        ("manually approve edits", SET_MODE[1], "Approved its plan for untitled in cc-hands, asking you about each edit."),
     ],
 )
 async def test_a_plan_approved_by_voice_leaves_plan_mode_for_the_mode_chosen(
@@ -436,7 +436,7 @@ async def test_a_plan_approved_by_voice_leaves_plan_mode_for_the_mode_chosen(
 async def test_a_plan_sent_back_by_voice_tells_the_agent_what_to_change(home: Home, sessions: Sessions, message: str, agent_reads: str) -> None:
     shim, moment = await asked(home, sessions, PLAN)
     assert await call(named(sessions, "answer_plan"), request=moment.request, decision="keep planning", message=message) == {
-        "readback": "Sent its plan back to keep planning for untitled, in cc-hands."
+        "readback": "Sent its plan back to keep planning for untitled in cc-hands."
     }
     code, stdout, _ = await shim.finished()
     assert (code, decision(stdout)) == (0, {"behavior": "deny", "message": agent_reads})

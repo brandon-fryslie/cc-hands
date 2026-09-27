@@ -71,7 +71,7 @@ def _spoken_input(input: Command | Key) -> str:
 
 
 def spoken_title(listing: Listing) -> str:
-    return listing.title or f"untitled, in {listing.session.membership.cwd.name}"
+    return f"{listing.title or 'untitled'} in {listing.session.membership.cwd.name}"
 
 
 # Each mode as the footer of a session's own screen names it, so what is heard is what the user would read there:
@@ -95,7 +95,7 @@ def spoken_mode(mode: Mode) -> str:
 
 
 def spoken_name(sessions: Sessions, session: SessionId) -> str:
-    """How the user knows a session: its title, or its id when the registry has never heard of it."""
+    """How the user knows a session: its title and project, or its id when the registry has never heard of it."""
     listing = sessions.listing(session)
     return session if listing is None else spoken_title(listing)
 
