@@ -2,7 +2,7 @@
 
     uv run hands run              # Qwen on inferno (HANDS_LLM=local, the default)
     HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
-    HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
+    HANDS_LLM=anthropic uv run hands run     # Sonnet 5; ANTHROPIC_API_KEY, else the keychain's HANDS_LLM_ANT_KEY
 
 Sessions join through the hook socket at ~/.hands/hands.sock (the home is
 HANDS_HOME when that is set). A Claude Code session is registered when the hands
@@ -66,7 +66,9 @@ from hands.voice.tools import audited, intermediary_tools
 # The model lives on inferno, the M4 Max on the LAN, served by mlx_lm.server.
 LOCAL_LLM_URL = "http://inferno.local:8080/v1"
 ANTHROPIC_MODEL = "claude-sonnet-5"
-# Where the Anthropic key lives when ANTHROPIC_API_KEY is not set: a generic password in the login keychain.
+# Where the Anthropic key lives when ANTHROPIC_API_KEY is not set: a generic password in the keychain.
+# A prompt to allow access that nobody answers is a failed read, not a daemon that never starts.
+KEYCHAIN_TIMEOUT_SECONDS = 30.0
 ANTHROPIC_KEYCHAIN_SERVICE = "HANDS_LLM_ANT_KEY"
 LOCAL_LLM_MODEL = "mlx-community/Qwen3-30B-A3B-Instruct-2507-8bit"
 # mlx_lm.server checks no key, but the OpenAI client will not send a request without one.
@@ -108,7 +110,7 @@ def backend_from_env() -> LLMBackend:
         )
     if choice == "anthropic":
         return AnthropicBackend(
-            api_key=os.environ.get("ANTHROPIC_API_KEY", "").strip() or _keychain_key(ANTHROPIC_KEYCHAIN_SERVICE, "ANTHROPIC_API_KEY", choice),
+            api_key=_environment_key("ANTHROPIC_API_KEY") or _keychain_key(ANTHROPIC_KEYCHAIN_SERVICE, "ANTHROPIC_API_KEY", choice),
             model=os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL),
         )
     sys.exit(f"HANDS_LLM={choice!r} is not one of: local, openai, anthropic.")
@@ -116,15 +118,19 @@ def backend_from_env() -> LLMBackend:
 
 def _key(var: str, choice: str) -> str:
     """The API key a keyed variant cannot run without, or the process stops naming the variable."""
-    # A key has no whitespace in it: space around one in a .env is dropped, and a blank one is no key.
-    key = os.environ.get(var, "").strip()
+    key = _environment_key(var)
     if not key:
         sys.exit(f"{var} is not set; HANDS_LLM={choice} needs it to reach its model.")
     return key
 
 
+def _environment_key(var: str) -> str:
+    # A key has no whitespace in it: space around one in a .env is dropped, and a blank one is no key.
+    return os.environ.get(var, "").strip()
+
+
 def _keychain_key(service: str, var: str, choice: str) -> str:
-    """The key kept in the login keychain under `service`, for when the environment names none; neither stops the process naming both."""
+    """The key the keychain holds under `service`; when it holds none, the process stops naming both places a key can be."""
     key = keychain_password(service)
     if not key:
         sys.exit(f"{var} is not set and the keychain holds no {service}; HANDS_LLM={choice} needs one to reach its model.")
@@ -132,13 +138,17 @@ def _keychain_key(service: str, var: str, choice: str) -> str:
 
 
 def keychain_password(service: str) -> str | None:
-    """The generic password the login keychain holds for `service`, or None when it holds none."""
-    found = subprocess.run(["security", "find-generic-password", "-s", service, "-w"], capture_output=True, text=True)
+    """The generic password the keychains on the search list hold for `service`, or None when they hold none."""
+    bypass = "set ANTHROPIC_API_KEY to start without the keychain"
+    try:
+        found = subprocess.run(["security", "find-generic-password", "-s", service, "-w"], capture_output=True, text=True, timeout=KEYCHAIN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        sys.exit(f"reading {service} from the keychain waited {KEYCHAIN_TIMEOUT_SECONDS:.0f}s, likely on a prompt to allow access; {bypass}.")
     # [LAW:no-silent-failure] 44 is `security`'s "not found"; any other failure, a locked keychain or a denied prompt, is not an absence.
     if found.returncode == 44:
         return None
     if found.returncode != 0:
-        sys.exit(f"reading {service} from the keychain failed: {found.stderr.strip()}")
+        sys.exit(f"reading {service} from the keychain failed: {found.stderr.strip()}; {bypass}.")
     return found.stdout.strip() or None
 
 

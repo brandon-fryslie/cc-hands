@@ -72,14 +72,14 @@ mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts �
 The LLM is a backend variant: `HANDS_LLM=local`, the default, is Qwen3-30B-A3B on
 inferno through `mlx_lm.server`; `HANDS_LLM=openai` is `gpt-4.1-mini` through OpenAI's
 API; `HANDS_LLM=anthropic` is Claude Sonnet 5 through the API, keyed by `ANTHROPIC_API_KEY` or, when that is
-not set, by the login keychain's `HANDS_LLM_ANT_KEY`. `HANDS_LLM_MODEL` names another
+not set, by the keychain's `HANDS_LLM_ANT_KEY`. `HANDS_LLM_MODEL` names another
 model for any of them. `HANDS_LLM_URL` moves `local` or `openai` to another
 OpenAI-compatible server; it is the base URL the client appends `/chat/completions` to,
 so it usually ends in `/v1` (`https://api-chicago.codexapi.pro/v1`: the bare host answers
 404). Such a server must stream tool calls, because the pipeline's service always
 streams: api-chicago.codexapi.pro streams replies but drops tool calls (2026-09-25). A
-keyed variant stops at start, naming the variable, when its key (`OPENAI_API_KEY` or
-`ANTHROPIC_API_KEY`) is not set. The key can live in a `.env` at the repository root,
+keyed variant stops at start, naming where its key can be, when it has none: `OPENAI_API_KEY`, or for
+`anthropic` both `ANTHROPIC_API_KEY` and the keychain's `HANDS_LLM_ANT_KEY`. The key can live in a `.env` at the repository root,
 which git ignores, and `uv run --env-file .env` puts it in the environment; uv stops if
 the file is not there. The gate is push-to-talk: the key is the voice activity detector and the microphone mute,
 so the turn boundary is the key and the pipeline can never transcribe itself. Measured
