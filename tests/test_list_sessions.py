@@ -78,6 +78,15 @@ async def test_live_sessions_are_labelled_with_their_newest_ai_title_and_their_p
     }
 
 
+async def test_a_session_that_joins_on_its_permission_request_is_listed_as_waiting_on_it(tmp_path: Path) -> None:
+    """Its status is not read yet, and what it waits on is what its hook asked."""
+    lagging = membership(tmp_path, "lagging")
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    for event in (Joined(lagging, "startup"), PermissionRequested(lagging.id, at=1.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default")):
+        await sessions.apply(event)
+    assert await call(sessions) == {"sessions": [{"id": "lagging", "title": "untitled in lagging", "state": "waiting for permission to use Bash", "mode": "manual mode"}]}
+
+
 def test_a_title_record_still_being_written_is_not_read(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     titled(transcript, "finished title")

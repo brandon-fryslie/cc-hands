@@ -107,9 +107,9 @@ class Session:
 # word, never inferred from a hook or a record.
 SessionState = Unreported | Idle | Running | Gone
 @dataclass(frozen=True)
-class Idle:      stamp: Stamp; due: Instant; nudged: bool     # one idle period
+class Idle:      stamp: Stamp; due: Instant | None; after: PromptId | None; nudged: bool  # one idle period
 @dataclass(frozen=True)
-class Running:   status: Busy | Waiting | Shell | Unknown; stamp: Stamp; since: Stamp
+class Running:   status: Busy | Waiting | Shell | Unknown; stamp: Stamp; idled: Stamp
 
 # Each fact about the turn lives on the phase it is true in.
 Turn = Opened | Untold | Told
@@ -350,10 +350,12 @@ Today no table chooses; two queues stand in for it. `Heard` carries permission
 announcements and the idle nudge as `Speak` and permission requests as `Narrate`,
 relayed as soon as the reducer emits them. The nudge is the `idle_prompt`
 notification, the only one the `Notification` hook's matcher lets through; it is
-spoken once per idle period, because `Idle.nudged` turns true as it is said and every
-idle read after a run builds a fresh one. Claude Code sends no `idle_prompt` after an
-interrupted turn, so every idle period carries `Idle.due`, and the tick nudges it
-when the notification would have come, if it has not. A session with a turn opened that the
+spoken once per idle period, because `Idle.nudged` turns true as it is said and an
+idle read after a run, or with a turn heard since `Idle.after`, builds a fresh one. Claude
+Code sends no `idle_prompt` after an interrupted turn, so an idle period that ends a turn
+carries `Idle.due`, and the tick nudges it when the notification would have come, if it
+has not. A session first read at its prompt went idle before hands followed it: its
+`due` is None, and only `idle_prompt` nudges it. A session with a turn opened that the
 status is yet to say runs is not nudged. `asking` on the last turn (`Told` or `Untold`)
 makes the nudge "X has a question for you." rather than "X is waiting for you." It is true for the two things the telling
 counts as waiting: a reply the `Stop` carried that the narration's own `reported_and_asked`

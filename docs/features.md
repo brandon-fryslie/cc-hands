@@ -178,7 +178,8 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
 
 - **The `Input` union, through fritter.** `Text` escapes a leading sigil, `Command`
   keeps it, `Key` sends a named chord; `send_command` and `interrupt_session` are the
-  tools. A command is refused at a dialog, and an interrupt is Escape even there.
+  tools. A command is refused at a dialog, one its status says or its held hook does, and
+  an interrupt is Escape even there, and at a prompt still in its hooks.
   Built: on 2.1.283 "/compact" reached a live session as a command, "slash compact"
   as text, and "stop it" sent Escape, which ended a working turn and closed a
   question dialog.

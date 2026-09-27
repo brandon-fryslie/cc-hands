@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, NewType, Self
 
-from hands.core.status import Going, Stamp
+from hands.core.status import Going, Stamp, Waiting
 
 SessionId = NewType("SessionId", str)
 RequestId = NewType("RequestId", str)
@@ -157,8 +157,12 @@ class Idle:
 
     stamp: Stamp
     # When hands says the session waits, on its own clock: Claude Code sends no idle_prompt at all for some idle periods
-    # (none in 75 s after an interrupt, 2.1.282), and its own comes 61 s after a Stop (2.1.281).
-    due: Instant
+    # (none in 75 s after an interrupt, 2.1.282), and its own comes 61 s after a Stop (2.1.281). None for a session that
+    # sat at its prompt before hands followed it: no turn's end was heard to time one from, so only idle_prompt says it.
+    due: Instant | None
+    # The turn last heard when the period began. An idle read with another turn heard since begins a new period, though
+    # no busy was read between, as for a turn that ran between two reads.
+    after: PromptId | None
     # [LAW:no-ambient-temporal-coupling] one idle period is one Idle value: the nudge is spoken once because speaking
     # it is this value changing, and an idle read after a run builds a fresh one, so the next period can be nudged again.
     nudged: bool = False
@@ -224,7 +228,7 @@ class Untold:
 @dataclass(frozen=True)
 class Told:
     """The last turn is told: None until one is. At the prompt, a Stop of this turn ends it again only when the turn went
-    on after another Stop hook blocked its Stop (see _ends)."""
+    on after another Stop hook blocked its Stop (see _turned)."""
 
     turn: PromptId | None = None
     others: frozenset[PromptId] = frozenset()
@@ -243,6 +247,16 @@ class Session:
     mode: Mode | None
     turn: Turn = Told()
     dialog: Dialog | None = None
+
+
+def at_a_dialog(session: Session) -> bool:
+    """Whether keys typed at the session land in a dialog, which takes them as its answer: Claude Code says it waits at
+    one, or hands heard its hook before the status that says so was read."""
+    match session:
+        case Session(dialog=Held() | LetGo()) | Session(state=Running(status=Waiting())):
+            return True
+        case _:
+            return False
 
 
 @dataclass(frozen=True)

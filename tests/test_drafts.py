@@ -21,10 +21,13 @@ from hands.core.effects import Text, Type
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
 from hands.core.session import (
     Gone,
+    Held,
     Idle,
     Membership,
+    Permission,
     PromptText,
     Registry,
+    RequestId,
     Resolution,
     Session,
     SessionId,
@@ -51,7 +54,7 @@ def running(going: Going = Busy()) -> Running:
 AT_DIALOG = running(Waiting("permission prompt"))
 
 
-IDLE = Idle(Stamp(1), due=61.0)
+IDLE = Idle(Stamp(1), due=61.0, after=None)
 
 
 def registry(state: SessionState = IDLE, drafts: dict[SessionId, Staged] | None = None, member: Membership = ONE) -> Registry:
@@ -125,6 +128,13 @@ def test_a_session_nobody_wrapped_is_refused_by_name_and_keeps_its_draft() -> No
 @pytest.mark.parametrize("state", [AT_DIALOG, running(Waiting(UnknownReason("a dialog this version does not know")))])
 def test_a_session_at_a_dialog_is_sent_nothing_and_keeps_its_draft(state: SessionState) -> None:
     before = wrapped(state, {ONE.id: FIX})
+    assert decide(before, SendDraft(ONE.id)) == (before, AtItsDialog(ONE.id))
+
+
+@pytest.mark.parametrize("state", [IDLE, running(), Unreported()])
+def test_a_session_whose_permission_hook_is_held_before_its_status_says_it_waits_is_sent_nothing(state: SessionState) -> None:
+    held = Held(on=Permission("Bash", {}), request=RequestId("r"), deadline=60.0, warned=False)
+    before = Registry(permission_deadline=60.0, sessions={ONE.id: Session(WRAPPED, state, mode=None, dialog=held)}, drafts={ONE.id: FIX})
     assert decide(before, SendDraft(ONE.id)) == (before, AtItsDialog(ONE.id))
 
 

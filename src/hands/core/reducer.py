@@ -92,8 +92,8 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             # Nobody ended it at the keyboard: its terminal closed. Spoken, as a process found dead is.
             after, effects = _enter(registry, event)
             return after, [*effects, SessionGone(session)]
-        case Abandoned(session=session, request=request, at=at):
-            return _abandoned(registry, session, request, at), []
+        case Abandoned(session=session, request=request):
+            return _abandoned(registry, session, request), []
         case Tick(at=at):
             return _ticked(registry, at)
         case _:
@@ -165,13 +165,17 @@ def _stated(event: SessionEvent, was: Session) -> SessionState:
     it is, what it did, and which request it waits on, never whether the session runs.
     """
     match (event, was.state):
-        case (StatusReported(report=Report(status=status.Idle(), stamp=stamp)), Idle() as idle) if _waiting(was.turn):
+        case (StatusReported(report=Report(status=status.Idle(), stamp=stamp)), Idle(after=after) as idle) if was.turn.turn == after:
             # Set idle again with no turn heard since: the same idle period, still nudged or not. One with a turn heard
-            # since, as a prompt cancelled during its hooks, is a new period, and falls to the case below.
+            # since, as a prompt cancelled during its hooks or a turn over between two reads, is a new period, below.
             return replace(idle, stamp=stamp)
+        case (StatusReported(report=Report(status=status.Idle(), stamp=stamp)), Unreported()) if _waiting(was.turn):
+            # First read at its prompt, ending no turn hands heard open: it sat there before hands followed it, as one
+            # attached after a restart does, and any nudge its idle was due came before hands was there to give it.
+            return Idle(stamp, due=None, after=was.turn.turn)
         case (StatusReported(report=Report(status=status.Idle(), stamp=stamp), at=at), _):
             # Nudged on hands' clock, and by idle_prompt if it comes first: Claude Code sends none in 75 s after some.
-            return Idle(stamp, due=at + IDLE_NUDGE_SECONDS)
+            return Idle(stamp, due=at + IDLE_NUDGE_SECONDS, after=was.turn.turn)
         case (StatusReported(report=Report(status=status.Busy() | status.Waiting() | status.Shell() | status.Unknown() as going, stamp=stamp)), Running() as running):
             return replace(running, status=going, stamp=stamp)
         case (StatusReported(report=Report(status=status.Busy() | status.Waiting() | status.Shell() | status.Unknown() as going, stamp=stamp)), Idle(stamp=idled)):
@@ -402,7 +406,7 @@ def _unwaited(event: SessionEvent) -> list[Effect]:
             return []
 
 
-def _abandoned(registry: Registry, session: SessionId, request: RequestId, at: Instant) -> Registry:
+def _abandoned(registry: Registry, session: SessionId, request: RequestId) -> Registry:
     match registry.sessions.get(session):
         case Session(dialog=Held(request=held, on=on)) as was if held == request:
             # No hook waits for a reply, so there is nothing to withdraw, answer, or deny. A question closed this way was
@@ -485,7 +489,7 @@ def _expiring(session: SessionId, dialog: Dialog | None, at: Instant) -> tuple[D
 
 def _nudged(session: SessionId, state: SessionState, turn: Turn, at: Instant) -> tuple[SessionState, list[Effect]]:
     match state:
-        case Idle(nudged=False, due=due) if at >= due and _waiting(turn):
+        case Idle(nudged=False, due=float() as due) if at >= due and _waiting(turn):
             # Nudged as an idle_prompt nudges, through the one place a nudge is said.
             nudged = replace(state, nudged=True)
             return nudged, _nudges(session, state, nudged, turn)

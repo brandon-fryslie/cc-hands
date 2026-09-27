@@ -36,7 +36,7 @@ def running(going: Going = Busy()) -> Running:
 AT_DIALOG = running(Waiting("permission prompt"))
 
 
-IDLE = Idle(Stamp(1), due=61.0)
+IDLE = Idle(Stamp(1), due=61.0, after=None)
 
 
 def registry(*sessions: Session) -> Registry:
