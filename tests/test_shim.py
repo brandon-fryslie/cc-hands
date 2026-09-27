@@ -20,6 +20,7 @@ from hands.core.session import Idle, Membership, PromptId, Session, SessionId, S
 from hands.sessions import heartbeat
 from hands.sessions.hookconfig import LAUNCHER, PLUGIN_DIR, SHIM_MODULE
 from hands.sessions.home import Home
+from hands.sessions.liveness import sweep
 from hands.sessions.membership import read_membership, write_membership
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
@@ -209,6 +210,17 @@ async def test_a_late_hook_of_a_session_its_process_has_moved_on_from_writes_not
     assert await shim(home, {**PROMPT, "session_id": cleared}) == (0, "", "")
     assert not home.membership(cleared).exists()
     assert [listing.session.membership.id for listing in sessions.live()] == [SID]
+
+
+async def test_a_hook_that_lands_after_its_session_ended_does_not_bring_it_back(home: Home, sessions: Sessions) -> None:
+    """A shim racing its session's end can write the file again; the registry holds the session as gone, so attaching it
+    is nothing, and the sweep that finds its process over says nothing either."""
+    await shim(home, START)
+    await shim(home, END)
+    assert await shim(home, PROMPT) == (0, "", "")
+    await sweep(home, sessions, frozenset())
+    assert sessions.live() == []
+    assert sessions.live_session(SID) is None
 
 
 async def test_a_file_a_dead_process_left_under_this_session_is_replaced_on_its_first_hook(home: Home, sessions: Sessions, dead_pid: Callable[[], int]) -> None:
