@@ -71,7 +71,8 @@ mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts �
 
 The LLM is a backend variant: `HANDS_LLM=local`, the default, is Qwen3-30B-A3B on
 inferno through `mlx_lm.server`; `HANDS_LLM=openai` is `gpt-4.1-mini` through OpenAI's
-API; `HANDS_LLM=anthropic` is Claude through the API. `HANDS_LLM_MODEL` names another
+API; `HANDS_LLM=anthropic` is Claude Sonnet 5 through the API, keyed by `ANTHROPIC_API_KEY` or, when that is
+not set, by the login keychain's `HANDS_LLM_ANT_KEY`. `HANDS_LLM_MODEL` names another
 model for any of them. `HANDS_LLM_URL` moves `local` or `openai` to another
 OpenAI-compatible server; it is the base URL the client appends `/chat/completions` to,
 so it usually ends in `/v1` (`https://api-chicago.codexapi.pro/v1`: the bare host answers
@@ -143,7 +144,7 @@ uv run python -m hands.sessions.hookconfig > plugin/hooks/hooks.json
 ```
 uv sync
 uv run hands run                        # in a terminal: space to talk, space again to stop, q to quit
-HANDS_LLM=anthropic ANTHROPIC_API_KEY=... uv run hands run
+HANDS_LLM=anthropic uv run hands run     # the key from the keychain's HANDS_LLM_ANT_KEY
 HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at

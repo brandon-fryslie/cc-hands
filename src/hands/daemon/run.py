@@ -18,6 +18,7 @@ Latency from key release to the first audio out is logged for every turn.
 import asyncio
 import os
 import signal
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -64,6 +65,9 @@ from hands.voice.tools import audited, intermediary_tools
 
 # The model lives on inferno, the M4 Max on the LAN, served by mlx_lm.server.
 LOCAL_LLM_URL = "http://inferno.local:8080/v1"
+ANTHROPIC_MODEL = "claude-sonnet-5"
+# Where the Anthropic key lives when ANTHROPIC_API_KEY is not set: a generic password in the login keychain.
+ANTHROPIC_KEYCHAIN_SERVICE = "HANDS_LLM_ANT_KEY"
 LOCAL_LLM_MODEL = "mlx-community/Qwen3-30B-A3B-Instruct-2507-8bit"
 # mlx_lm.server checks no key, but the OpenAI client will not send a request without one.
 LOCAL_LLM_KEY = "unused"
@@ -104,8 +108,8 @@ def backend_from_env() -> LLMBackend:
         )
     if choice == "anthropic":
         return AnthropicBackend(
-            api_key=_key("ANTHROPIC_API_KEY", choice),
-            model=os.environ.get("HANDS_LLM_MODEL", "claude-haiku-4-5-20251001"),
+            api_key=os.environ.get("ANTHROPIC_API_KEY", "").strip() or _keychain_key(ANTHROPIC_KEYCHAIN_SERVICE, "ANTHROPIC_API_KEY", choice),
+            model=os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL),
         )
     sys.exit(f"HANDS_LLM={choice!r} is not one of: local, openai, anthropic.")
 
@@ -117,6 +121,25 @@ def _key(var: str, choice: str) -> str:
     if not key:
         sys.exit(f"{var} is not set; HANDS_LLM={choice} needs it to reach its model.")
     return key
+
+
+def _keychain_key(service: str, var: str, choice: str) -> str:
+    """The key kept in the login keychain under `service`, for when the environment names none; neither stops the process naming both."""
+    key = keychain_password(service)
+    if not key:
+        sys.exit(f"{var} is not set and the keychain holds no {service}; HANDS_LLM={choice} needs one to reach its model.")
+    return key
+
+
+def keychain_password(service: str) -> str | None:
+    """The generic password the login keychain holds for `service`, or None when it holds none."""
+    found = subprocess.run(["security", "find-generic-password", "-s", service, "-w"], capture_output=True, text=True)
+    # [LAW:no-silent-failure] 44 is `security`'s "not found"; any other failure, a locked keychain or a denied prompt, is not an absence.
+    if found.returncode == 44:
+        return None
+    if found.returncode != 0:
+        sys.exit(f"reading {service} from the keychain failed: {found.stderr.strip()}")
+    return found.stdout.strip() or None
 
 
 def config_from_env() -> VoiceConfig:
