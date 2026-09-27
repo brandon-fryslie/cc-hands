@@ -295,3 +295,14 @@ async def test_a_turn_stopped_before_it_did_anything_is_said_to_be_interrupted_w
 
     spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta())
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: You interrupted it."
+
+
+def test_a_summary_turns_thinking_off_only_for_a_model_that_would_think_unasked() -> None:
+    from anthropic import omit
+
+    from hands.voice.summary import thinking
+
+    assert thinking("claude-sonnet-5") == {"type": "disabled"}
+    # Haiku does not think unless asked, and Opus 5.5 rejects thinking turned off, so neither is sent the setting.
+    assert thinking("claude-haiku-4-5") is omit
+    assert thinking("claude-opus-5-5") is omit

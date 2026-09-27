@@ -2,7 +2,8 @@
 
 import pytest
 
-from hands.daemon.run import LOCAL_LLM_KEY, LOCAL_LLM_MODEL, LOCAL_LLM_URL, OPENAI_MODEL, OPENAI_URL, backend_from_env
+from hands.daemon import run
+from hands.daemon.run import ANTHROPIC_MODEL, LOCAL_LLM_KEY, LOCAL_LLM_MODEL, LOCAL_LLM_URL, OPENAI_MODEL, OPENAI_URL, backend_from_env
 from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 
 
@@ -21,14 +22,18 @@ def test_local_url_and_model_come_from_the_environment_and_no_real_key_is_sent(m
     assert backend_from_env() == OpenAICompatibleBackend(base_url="http://elsewhere:9/v1", api_key=LOCAL_LLM_KEY, model="some/model")
 
 
-def test_anthropic_needs_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_anthropic_needs_its_key_from_the_environment_or_the_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HANDS_LLM", "anthropic")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set"):
-        backend_from_env()
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.delenv("HANDS_LLM_MODEL", raising=False)
-    assert backend_from_env() == AnthropicBackend(api_key="k", model="claude-haiku-4-5-20251001")
+    kept: dict[str, str] = {}
+    monkeypatch.setattr(run, "keychain_password", kept.get)
+    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set and the keychain holds no HANDS_LLM_ANT_KEY"):
+        backend_from_env()
+    kept["HANDS_LLM_ANT_KEY"] = "from-keychain"
+    assert backend_from_env() == AnthropicBackend(api_key="from-keychain", model=ANTHROPIC_MODEL)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    assert backend_from_env() == AnthropicBackend(api_key="k", model=ANTHROPIC_MODEL)
 
 
 def test_openai_needs_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -70,7 +75,7 @@ def test_a_backend_printed_does_not_print_its_key() -> None:
     """The eval prints the backend it runs on, and a key printed is a key leaked."""
     for backend in (
         OpenAICompatibleBackend(base_url=OPENAI_URL, api_key="sk-secret", model=OPENAI_MODEL),
-        AnthropicBackend(api_key="sk-secret", model="claude-haiku-4-5-20251001"),
+        AnthropicBackend(api_key="sk-secret", model=ANTHROPIC_MODEL),
     ):
         assert "sk-secret" not in repr(backend) and "sk-secret" not in str(backend)
 
