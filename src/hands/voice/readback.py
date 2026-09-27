@@ -8,7 +8,7 @@ from hands.core.drafts import DraftAmended, DraftDiscarded, DraftOutcome, DraftS
 from hands.core.effects import Command, Key, NotTyped, Text, Typed
 from hands.core.keyboard import KeyboardOutcome, NothingRunning
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
-from hands.core.session import Mode, PermissionMode, Resolution, SessionId, UnknownMode
+from hands.core.session import Known, Mode, PermissionMode, Resolution, SessionId, UnknownMode
 from hands.sessions.registry import Listing, Sessions
 
 _WORDS = re.compile(r"[^\s]+|\n")
@@ -70,7 +70,7 @@ def _spoken_input(input: Command | Key) -> str:
             return key.replace("_", " ").capitalize()
 
 
-def spoken_title(listing: Listing) -> str:
+def spoken_title(listing: Listing[Known]) -> str:
     return f"{listing.title or 'untitled'} in {listing.session.membership.cwd.name}"
 
 

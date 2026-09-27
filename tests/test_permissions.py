@@ -58,7 +58,7 @@ def test_an_answer_replies_to_the_waiting_hook_and_the_turn_carries_on(decision:
     [
         Session(ONE, IDLE, mode=None),
         Session(ONE, running(), mode=None),
-        Session(ONE, Gone(), mode=None),
+        Gone(ONE),
         Session(ONE, AT_DIALOG, mode=None, dialog=Held(on=BASH, request=RequestId("another"), deadline=61.0, warned=False)),
     ],
 )

@@ -16,7 +16,7 @@ from pipecat.services.llm_service import FunctionCallParams
 from hands.core.drafts import AmendDraft, DiscardDraft, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
-from hands.core.session import Blocker, CommandName, Dialog, Gone, Held, Idle, LetGo, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, SessionId, SessionState, Staged, Unanswered, Unreported
+from hands.core.session import Blocker, CommandName, Dialog, Held, Idle, LetGo, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unanswered, Unreported
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.turn import Budget, Happening, Ref, describe
 from hands.sessions.backfill import Unseen, read_since
@@ -137,11 +137,11 @@ def read_session_tool(sessions: Sessions) -> Tool:
             session: The session's id, from list_sessions.
             since: The record id you last read to, from an earlier call's `more_since`. Empty reads from the start.
         """
-        listing = sessions.listing(SessionId(session))
-        if listing is None:
+        member = sessions.membership(SessionId(session))
+        if member is None:
             await params.result_callback({"error": f"there is no session {session}"})
             return
-        transcript = listing.session.membership.transcript
+        transcript = member.transcript
         try:
             reading = await asyncio.to_thread(read_since, transcript, Ref(since) if since else None)
         except Unseen:
@@ -162,7 +162,7 @@ def read_session_tool(sessions: Sessions) -> Tool:
         # [LAW:one-source-of-truth] whether a session can still answer a call is the registry's to say, not the
         # file's. One that has ended will never write the result of the call it was killed inside, and a mark
         # held behind that call would leave the intermediary saying a dead session is still running something.
-        ended = isinstance(listing.session.state, Gone)
+        ended = sessions.live_session(member.id) is None
         settled = shown if ended else shown[: min(reading.settled, len(shown))]
         # [LAW:one-source-of-truth] the mark names a record, and one record can carry both a settled happening
         # and the call the session is still inside — the text and the call it introduces are written together.
@@ -212,7 +212,7 @@ def _page(happenings: list[Happening]) -> list[Happening]:
     return happenings[:end]
 
 
-def describe_listing(listing: Listing) -> dict[str, str]:
+def describe_listing(listing: Listing[Session]) -> dict[str, str]:
     return {
         "id": listing.session.membership.id,
         "title": spoken_title(listing),
@@ -240,8 +240,6 @@ def _stated(state: SessionState) -> str:
             return "idle"
         case Running(status=going):
             return _running(going)
-        case Gone():
-            return "ended"
 
 
 def _running(going: Going) -> str:

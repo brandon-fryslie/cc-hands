@@ -179,12 +179,7 @@ class Running:
     idled: Stamp
 
 
-@dataclass(frozen=True)
-class Gone:
-    pass
-
-
-SessionState = Unreported | Idle | Running | Gone
+SessionState = Unreported | Idle | Running
 
 
 def status_stamp(state: SessionState) -> Stamp | None:
@@ -192,7 +187,7 @@ def status_stamp(state: SessionState) -> Stamp | None:
     match state:
         case Idle(stamp=stamp) | Running(stamp=stamp):
             return stamp
-        case Unreported() | Gone():
+        case Unreported():
             return None
 
 
@@ -250,6 +245,18 @@ class Session:
 
 
 @dataclass(frozen=True)
+class Gone:
+    """A session that ended. [LAW:types-are-the-program] it has no status, turn, or dialog: its last turn was told and its
+    held hook let go as it ended, and it starts again as a new Session."""
+
+    membership: Membership
+
+
+# Every session the registry has heard of, live or ended.
+Known = Session | Gone
+
+
+@dataclass(frozen=True)
 class Resolution:
     """A spoken phrase the model turned into something exact, such as a file name."""
 
@@ -268,11 +275,11 @@ class Staged:
 @dataclass(frozen=True)
 class Registry:
     permission_deadline: float  # seconds from a permission request to its default deny
-    sessions: Mapping[SessionId, Session]
+    sessions: Mapping[SessionId, Known]
     # [LAW:types-are-the-program] a session with no entry has nothing staged; there is no empty draft.
     drafts: Mapping[SessionId, Staged]
 
-    def put(self, session: Session) -> Self:
+    def put(self, session: Known) -> Self:
         return replace(self, sessions={**self.sessions, session.membership.id: session})
 
     def stage(self, session: SessionId, draft: Staged) -> Self:
@@ -282,4 +289,4 @@ class Registry:
         return replace(self, drafts={id: draft for id, draft in self.drafts.items() if id != session})
 
     def live(self) -> list[Session]:
-        return [session for session in self.sessions.values() if not isinstance(session.state, Gone)]
+        return [session for session in self.sessions.values() if isinstance(session, Session)]

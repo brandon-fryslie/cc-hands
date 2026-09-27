@@ -167,7 +167,9 @@ class Tick:
 
 
 # Events about a session the registry must already know; a join is how it comes to.
-SessionEvent = Prompted | Stopped | Interrupted | Taken | Continued | Waited | StatusReported | PermissionRequested | ToolFinished | Ended
+# What moves a live session on its axes; its end is the one session event that moves none of them.
+Moving = Prompted | Stopped | Interrupted | Taken | Continued | Waited | StatusReported | PermissionRequested | ToolFinished
+SessionEvent = Moving | Ended
 # What a session's transcript says of its turn that none of its hooks do.
 Transcribed = Taken | Interrupted | Continued
 # What the liveness sweep saw in one membership file.

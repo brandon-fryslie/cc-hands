@@ -126,7 +126,7 @@ async def test_a_sweep_attaches_the_running_ends_the_dead_and_the_reused_and_spe
 
     await sweep(home, registry, frozenset())
     assert [listing.session.membership.id for listing in registry.live()] == [running.id]
-    assert registry.listing(dead.id).session.state == Gone()  # pyright: ignore[reportOptionalMemberAccess]
+    assert isinstance(registry.listing(dead.id).session, Gone)  # pyright: ignore[reportOptionalMemberAccess]
     told = {await registry.story(), await registry.story()}
     assert told == {SessionGone(dead.id), SessionGone(reused.id)}
     assert sorted(path.stem for path in home.memberships.glob("*.json")) == [running.id]

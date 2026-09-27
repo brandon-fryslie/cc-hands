@@ -568,8 +568,8 @@ async def test_an_escape_in_the_turn_a_queued_prompt_went_on_as_leaves_the_sessi
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
     assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p2"), None)
-    listing = sessions.listing(SID)
-    assert listing is not None and isinstance(listing.session.state, Idle)
+    live = sessions.live_session(SID)
+    assert live is not None and isinstance(live.state, Idle)
 
 
 async def test_the_stand_in_claude_code_writes_after_a_question_it_stopped_is_not_what_claude_said(tmp_path: Path) -> None:
@@ -602,14 +602,14 @@ async def test_a_prompt_cancelled_while_its_hooks_ran_ends_at_the_idle_and_the_o
             await sessions.apply(transcribed)
     # The Escape puts the prompt back in the box and sets the session idle (2.1.282).
     await sessions.apply(said_idle(at=2.0))
-    listing = sessions.listing(SID)
-    assert listing is not None and isinstance(listing.session.state, Idle) and isinstance(listing.session.turn, Untold)
+    live = sessions.live_session(SID)
+    assert live is not None and isinstance(live.state, Idle) and isinstance(live.turn, Untold)
     await sessions.apply(Prompted(SID, at=4.0, mode=None, prompt=PromptId("p1")))
     transcript.write_text(lines(ASKED))
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
-    listing = sessions.listing(SID)
-    assert listing is not None and listing.session.turn == Opened(PromptId("p1"))
+    live = sessions.live_session(SID)
+    assert live is not None and live.turn == Opened(PromptId("p1"))
 
 
 async def test_a_prompt_whose_first_record_is_its_interrupt_is_heard_taken_before_it_is_heard_stopped(tmp_path: Path) -> None:
@@ -632,8 +632,8 @@ async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_which_tell
         assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p1"), None)
     finally:
         tailing.cancel()
-    listing = sessions.listing(SID)
-    assert listing is not None and isinstance(listing.session.state, Idle)
+    live = sessions.live_session(SID)
+    assert live is not None and isinstance(live.state, Idle)
 
 
 # The next prompt, read before the turn before it is told: the narrator is seconds behind on another session's summary.
@@ -749,8 +749,8 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
     assert stopped == Summarise(SID, PromptId("p2"), "Done.")
     second = await tails.tell(SID, PromptId("p2"), "Done.")
     assert second is not None and second.turn == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
-    listing = sessions.listing(SID)
-    assert listing is not None and isinstance(listing.session.turn, Told) and listing.session.turn.turn == PromptId("p2")
+    live = sessions.live_session(SID)
+    assert live is not None and isinstance(live.turn, Told) and live.turn.turn == PromptId("p2")
 
 
 async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_itself_with_its_own_changes(tmp_path: Path) -> None:
@@ -787,8 +787,8 @@ async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_
     second = await tails.tell(SID, PromptId("p2"), "Done.")
     assert second is not None and second.turn == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
     assert changed == [["rivers.md"], ["shorter.md"]]
-    listing = sessions.listing(SID)
-    assert listing is not None and isinstance(listing.session.turn, Told) and listing.session.turn.turn == PromptId("p2")
+    live = sessions.live_session(SID)
+    assert live is not None and isinstance(live.turn, Told) and live.turn.turn == PromptId("p2")
 
 
 async def test_a_telling_that_names_no_turn_lets_go_of_none_that_ended(tmp_path: Path) -> None:
