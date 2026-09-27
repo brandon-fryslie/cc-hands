@@ -1,8 +1,9 @@
 """Assemble the voice pipeline from a configuration.
 
-Pure with respect to the world: nothing here opens a microphone, loads a
-model, or calls an API until the returned worker is run. The daemon's edges do
-that. `VoiceConfig` is the whole variability of the pipeline as data.
+Building it loads the two local models, Whisper's and pocket-tts's, so a
+built voice answers its first turn as fast as its tenth; nothing here opens a
+microphone or calls an API until the returned worker is run. `VoiceConfig` is
+the whole variability of the pipeline as data.
 """
 
 from collections.abc import Sequence

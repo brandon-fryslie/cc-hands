@@ -1,9 +1,13 @@
 """Whisper on MLX, cutting holds where the key cut them: it says where the user started and stopped speaking, numbering
 each hold, transcribes a hold the key sent, throws away one the key dropped, and says when it is done with each."""
 
+import time
 from collections import deque
 from collections.abc import AsyncGenerator
 
+import mlx_whisper
+import numpy as np
+from loguru import logger
 from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
@@ -12,11 +16,15 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
+from pipecat.utils.types import assert_given, require_given
 
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved
 
 NOTHING_TRANSCRIBED = "on_nothing_transcribed"
+
+# What the model is loaded by: a second of silence at the 16 kHz Whisper hears at.
+_SILENCE = np.zeros(16_000, dtype=np.float32)
 
 
 class Whisper(WhisperSTTServiceMLX):
@@ -29,6 +37,7 @@ class Whisper(WhisperSTTServiceMLX):
 
     def __init__(self, *, settings: WhisperSTTServiceMLX.Settings) -> None:
         super().__init__(settings=settings)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
+        self._load()
         # The key the last frame of microphone audio was captured under.
         self._captured: Key = "up"
         # The number of the last hold the key opened.
@@ -38,6 +47,25 @@ class Whisper(WhisperSTTServiceMLX):
         self._transcribing: deque[int] = deque()
         # Sync, so the handler runs as the turn's transcription ends rather than after the stop timeout gives up on it.
         self._register_event_handler(NOTHING_TRANSCRIBED, sync=True)
+
+    def _load(self) -> None:
+        """Fetch the model, load it, and compile it now, while hands is starting, rather than in the first turn.
+
+        MLX Whisper loads its model inside the first transcription it is asked for, downloading it first if it was
+        never fetched: the first turn of the first run waited 28 s on a 1.6 GB download (2026-09-26), and the first
+        turn of every later run waits about 1.5 s more than the rest. The model it loads is kept for the process,
+        keyed on the name it was asked for, so silence transcribed here with the arguments Pipecat's `run_stt` passes
+        leaves every turn finding it loaded [LAW:no-ambient-temporal-coupling].
+        """
+        model = require_given(self._settings.model, "Whisper model")
+        began = time.monotonic()
+        mlx_whisper.transcribe(  # pyright: ignore[reportUnknownMemberType]  (untyped in mlx_whisper)
+            _SILENCE,
+            path_or_hf_repo=model,
+            temperature=assert_given(self._settings.temperature),
+            language=assert_given(self._settings.language),
+        )
+        logger.info(f"Whisper loaded {model} in {time.monotonic() - began:.1f} s")
 
     # Only the key cuts holds: a VAD frame from anywhere else, which Pipecat's segmenting would act on, moves nothing.
     async def _handle_user_started_speaking(self, frame: VADUserStartedSpeakingFrame) -> None:

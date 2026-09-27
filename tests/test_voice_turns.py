@@ -10,6 +10,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field
 
+import mlx_whisper
 import pytest
 from pipecat.frames.frames import (
     Frame,
@@ -208,6 +209,23 @@ async def test_a_hold_that_heard_nothing_does_not_end_the_hold_pressed_after_it(
     await rig.hold(["up"])
     await rig.texts.put("how many sessions are running")
     assert await rig.everything_sent(holds=2) == ["how many sessions are running"]
+
+
+async def test_whisper_has_loaded_the_model_its_turns_transcribe_with_once_built(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MLX Whisper keeps the model it loaded for the process, keyed on what it was asked for, so the first turn pays
+    for no load only if the one done at construction asked for exactly what a turn's transcription asks for."""
+    asked: list[dict[str, object]] = []
+
+    def transcribe(_audio: object, **options: object) -> dict[str, object]:
+        asked.append(options)
+        return {"segments": []}
+
+    monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
+    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="mlx-community/whisper-tiny"))
+    assert [options["path_or_hf_repo"] for options in asked] == ["mlx-community/whisper-tiny"]
+    whisper._transcribing.append(1)  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
+    [frame async for frame in whisper.run_stt(b"\x00\x00" * 16_000)]
+    assert len(asked) == 2 and asked[1] == asked[0]
 
 
 async def test_whisper_hears_only_the_keyed_microphone() -> None:
