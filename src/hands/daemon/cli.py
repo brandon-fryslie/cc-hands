@@ -23,6 +23,10 @@ NOT_GRANTED = (
 )
 
 
+# The lowest level each module's lines reach the terminal at, by loguru's module prefix: "" is every module not named.
+TERMINAL_LEVELS: dict[str | None, str | int | bool] = {"": "WARNING", "hands": "INFO"}  # loguru's FilterDict
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hands")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
@@ -53,6 +57,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 talkkey.ask()
                 print(NOT_GRANTED, file=sys.stderr)
                 return 1
+            # [LAW:single-enforcer] the one terminal sink, in place of loguru's DEBUG default: hands' own lines from
+            # INFO, and Pipecat's and every other library's only from WARNING, so a run's terminal is hands' to read.
+            logger.remove()
+            logger.add(sys.stderr, filter=TERMINAL_LEVELS)
             # Read before this run's first heartbeat replaces it.
             after_crash = crashed_before(home)
             heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)

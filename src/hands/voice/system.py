@@ -1,7 +1,7 @@
 """The system channel: what hands says about itself, from a template, with no model in the way.
 
 A failure of the model is spoken without the model, and a failure of speech is posted to the
-screen instead. Every fact is logged as well, which is the path that needs neither.
+screen instead. A fact that neither took is logged as an error by the notifier, the path that needs neither.
 """
 
 import time
@@ -164,7 +164,7 @@ class SystemChannel:
 
     It says a burst once: a sentence is not said again until `BURST_SECONDS` have passed since it last was, because
     is the one channel that reports the daemon's own faults and a fault that recurs recurs in bursts. What a burst
-    costs is the saying and never the knowing — every occurrence is still a log line — and `Announced` is written
+    costs is the repeats: the first is said and audited, the rest inside its window are dropped — and `Announced` is written
     where the sentence was taken: handed to a working TTS, or accepted by the screen, never where it was refused.
     """
 
@@ -181,14 +181,13 @@ class SystemChannel:
         self._record = record
         self._clock = clock
         self._burst = burst
-        # When each sentence last reached the user, so the rest of its burst is logged and not said.
+        # When each sentence last reached the user, so the rest of its burst is not said again.
         self._said: dict[str, float] = {}
 
     async def say(self, fact: SystemFact) -> None:
         text = system_text(fact)
-        logger.info(f"system: {text}")
         if not self._claim(text):
-            # [LAW:no-silent-failure] the log line above is the knowing, which a burst never costs.
+            # Said and audited once already inside this window; the terminal is not where it is read again.
             return
         if self._tts.is_usable:
             # [LAW:effects-at-boundaries] queued at the TTS, past the model, because this channel reports the model's own failures;

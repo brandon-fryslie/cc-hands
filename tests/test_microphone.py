@@ -251,7 +251,10 @@ async def test_the_streams_are_opened_as_pipecat_opens_them() -> None:
         await output.setup(setup)
         await input_.setup(setup)
     assert len(ours.opened) == 2
-    assert [{k: v for k, v in opened.items() if k != "stream_callback"} for opened in ours.opened] == [
+    # The one difference is chosen: the speaker's period, which Pipecat leaves to the device's low-latency default.
+    speaker, microphone = ours.opened
+    assert speaker.pop("frames_per_buffer") == 480
+    assert [{k: v for k, v in opened.items() if k != "stream_callback"} for opened in (speaker, microphone)] == [
         {k: v for k, v in opened.items() if k != "stream_callback"} for opened in pipecats.opened
     ]
 
