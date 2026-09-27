@@ -41,6 +41,11 @@ class Home:
         """fritter, and the claude that runs every interactive session under it, written by `hands install-fritter`."""
         return self.root / "bin"
 
+    @property
+    def shim(self) -> Path:
+        """The claude that runs every interactive session under fritter."""
+        return self.bin / "claude"
+
     def membership(self, session: SessionId) -> Path:
         return self.memberships / f"{session}.json"
 

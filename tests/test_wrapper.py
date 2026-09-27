@@ -115,12 +115,12 @@ def test_an_empty_path_entry_is_the_current_directory(root: Path, entries: str) 
     assert ran.stdout == "claude  socket=unset\n"
 
 
-def test_another_home_s_shim_first_on_path_wraps_as_this_one_would(root: Path) -> None:
+def test_any_home_s_shim_is_a_shim_and_nothing_else_is(root: Path) -> None:
     shim = installed_shim(root)
     other = executable(root / "other" / "claude", shim_script(root / "other" / "fritter"))
-    assert wrapper.Installed(shim, root / "bin" / "fritter", other).on_path
-    assert not wrapper.Installed(shim, root / "bin" / "fritter", root / "real" / "claude").on_path
-    assert not wrapper.Installed(shim, root / "bin" / "fritter", None).on_path
+    assert wrapper.is_shim(shim) and wrapper.is_shim(other)
+    assert not wrapper.is_shim(root / "real" / "claude")
+    assert not wrapper.is_shim(root / "nowhere" / "claude")
 
 
 def test_no_real_claude_on_path_is_said_and_runs_nothing(root: Path) -> None:
@@ -148,13 +148,13 @@ def test_install_builds_a_fritter_that_gives_the_session_an_address_and_says_whe
     monkeypatch.setenv("PATH", tools)
     assert main(["--home", str(home.root), "install-fritter"]) == 1
     said = capsys.readouterr().err
-    assert f"`claude` on this PATH is {root / 'real' / 'claude'}, not the shim" in said
-    assert f'export PATH="{home.bin}:$PATH"' in said
+    assert f"`claude` on this PATH is {root / 'real' / 'claude'}, not hands' shim" in said
+    assert f'export PATH="{home.bin}:$PATH"' in said and "install-fritter" not in said
     first = (home.bin / "claude").read_bytes()
 
     monkeypatch.setenv("PATH", f"{home.bin}:{tools}")
     assert main(["--home", str(home.root), "install-fritter"]) == 0
-    assert "every interactive claude started from this PATH runs under fritter" in capsys.readouterr().out
+    assert f"`claude` on this PATH is hands' shim, {home.shim}" in capsys.readouterr().out
     assert (home.bin / "claude").read_bytes() == first
     assert sorted(entry.name for entry in home.bin.iterdir()) == ["claude", "fritter"]
 
@@ -167,7 +167,7 @@ def test_a_relative_home_is_this_directory_s(root: Path, monkeypatch: pytest.Mon
     monkeypatch.chdir(root)
     homes: list[Home] = []
 
-    def install(home: Home, path: str) -> wrapper.Installed:
+    def install(home: Home) -> wrapper.Installed:
         homes.append(home)
         raise wrapper.Uninstallable("enough")
 

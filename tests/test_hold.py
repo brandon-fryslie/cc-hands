@@ -144,7 +144,7 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
     monkeypatch.setattr(talkkey, "granted", lambda: False)
     monkeypatch.setattr(talkkey, "ask", lambda: asked.append(None))
     assert cli.main(["--home", str(tmp_path), "run"]) == 1
-    assert "Input Monitoring is not granted" in capsys.readouterr().err
+    assert "has no Input Monitoring grant" in capsys.readouterr().err
     assert asked == [None]
     # Refused before the first heartbeat: nothing says a run is starting, so nothing later reads as a crash.
     assert not (tmp_path / "status.json").exists()

@@ -9,7 +9,6 @@ stay unwrapped until they end.
 
 import os
 import shlex
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -33,17 +32,16 @@ class Uninstallable(Exception):
 class Installed:
     shim: Path
     fritter: Path
-    # What `claude` names on the PATH the install ran under: the shim, or the claude it would be ahead of.
-    found: Path | None
 
-    @property
-    def on_path(self) -> bool:
-        """Whether that `claude` is a hands shim: this one, or another home's, which wraps a session just as well."""
-        if self.found is None:
-            return False
-        with self.found.open("rb") as found:
+
+def is_shim(path: Path) -> bool:
+    """Whether path is a hands shim: this home's, or another's, which wraps a session just as well."""
+    try:
+        with path.open("rb") as found:
             found.readline()
             return found.readline().rstrip(b"\n") == MARK.encode()
+    except FileNotFoundError:
+        return False
 
 
 def shim_script(fritter: Path) -> str:
@@ -96,10 +94,10 @@ esac
 """
 
 
-def install(home: Home, path: str) -> Installed:
-    """Build fritter and write the shim into the home's bin; `path` is the PATH whose `claude` is reported."""
+def install(home: Home) -> Installed:
+    """Build fritter and write the shim into the home's bin."""
     fritter = home.bin / "fritter"
-    shim = home.bin / "claude"
+    shim = home.shim
     if not (FRITTER_SOURCE / "go.mod").is_file():
         raise Uninstallable(f"no fritter source at {FRITTER_SOURCE}: hands install-fritter builds it from a checkout of cc-hands")
     try:
@@ -112,8 +110,7 @@ def install(home: Home, path: str) -> Installed:
         replace_whole(shim, shim_script(fritter), 0o755)
     except OSError as error:
         raise Uninstallable(f"cannot install into {home.bin}: {error}") from error
-    found = shutil.which("claude", path=path)
-    return Installed(shim, fritter, None if found is None else Path(found))
+    return Installed(shim, fritter)
 
 
 def _build_fritter(target: Path) -> None:
