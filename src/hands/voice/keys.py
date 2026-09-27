@@ -20,11 +20,12 @@ async def drive_talk_key(on_move: Callable[[Move], Awaitable[None]]) -> None:
 
     def arrived(event: KeyEvent) -> None:
         heard.put_nowait(event)
-        # [LAW:no-ambient-temporal-coupling] every press asks to be told when it has been held for HOLD_SECONDS; the
-        # hold is the one owner of what that means, and ignores the ones a release has made stale.
+        # [LAW:no-ambient-temporal-coupling] every press asks to be told when it has been held for HOLD_SECONDS,
+        # counted from the press itself on the loop's own clock, the monotonic one; the hold is the one owner of what
+        # that means, and ignores the ones a release has made stale.
         match event:
             case Pressed(at=at):
-                loop.call_later(HOLD_SECONDS, heard.put_nowait, Ripe(at))
+                loop.call_at(at + HOLD_SECONDS, heard.put_nowait, Ripe(at))
             case _:
                 pass
 

@@ -27,7 +27,7 @@ class Released:
 
 @dataclass(frozen=True)
 class Typed:
-    """Any other key, a modifier included, went down or changed."""
+    """Anything else the hand did: another key or modifier, a click, a scroll; or Right Shift pressed in a chord."""
 
 
 @dataclass(frozen=True)
@@ -71,7 +71,11 @@ Move = Literal["start", "stop", "drop"]
 def step(hold: Hold, event: KeyEvent) -> tuple[Hold, tuple[Move, ...]]:
     """The hold after `event`, and what it does to the turn: most keystrokes do nothing to it."""
     match hold, event:
-        case Idle(), Pressed(at=at):
+        # A press is a fresh start whatever came before: one that finds the key already down proves a release went by
+        # unseen, while macOS had the tap switched off, and a turn still open is dropped rather than sent.
+        case Talking(), Pressed(at=at):
+            return Arming(at), ("drop",)
+        case _, Pressed(at=at):
             return Arming(at), ()
         # [LAW:no-ambient-temporal-coupling] a Ripe counts only for the press it was scheduled for: one left over
         # from an earlier press, released and pressed again since, names another instant and changes nothing.

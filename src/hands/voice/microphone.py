@@ -41,7 +41,7 @@ from pipecat.transports.local.audio import (
 )
 
 from hands.voice.coreaudio import DefaultDevices, default_devices
-from hands.voice.ptt import Gate, PushToTalk
+from hands.voice.ptt import Gate, KeyedAudio, PushToTalk
 from hands.voice.threads import SerialThread, off_loop
 
 Instant = float  # seconds on the monotonic clock
@@ -279,8 +279,16 @@ class KeyedMicrophone(LocalAudioInputTransport):
         # frame, and dated by when the sound was recorded, not when the callback ran: a callback held up behind
         # other work delivers audio from well before it, which may still be the speaker's.
         captured = self._clock() - buffer_age(time_info)
-        audio = heard(in_data, self._key.gate, captured=captured, speaker_quiet_at=self._speaker.quiet_at)
-        return _deliver(self, audio, frame_count, time_info, status)
+        # One read of the gate: what the frame holds and the key it says it was captured under always agree.
+        gate = self._key.gate
+        frame = KeyedAudio(
+            audio=heard(in_data, gate, captured=captured, speaker_quiet_at=self._speaker.quiet_at),
+            sample_rate=self._sample_rate,
+            num_channels=self._params.audio_in_channels,
+            key=gate.key,
+        )
+        asyncio.run_coroutine_threadsafe(self.push_audio_frame(frame), self.get_event_loop())
+        return None, pyaudio.paContinue
 
 
 def buffer_age(time_info: object) -> float:
@@ -292,13 +300,6 @@ def buffer_age(time_info: object) -> float:
             return max(0.0, now - recorded)
         case _:
             return 0.0
-
-
-# Pipecat's callback is untyped; this names what it takes and returns.
-_deliver = cast(
-    Callable[[LocalAudioInputTransport, bytes, int, object, int], tuple[None, int]],
-    LocalAudioInputTransport._audio_in_callback,  # pyright: ignore[reportPrivateUsage, reportUnknownMemberType]
-)
 
 
 @dataclass(frozen=True)

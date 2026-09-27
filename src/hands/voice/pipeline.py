@@ -27,7 +27,6 @@ from pipecat.services.pocket_tts.tts import PocketTTSService
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 from pipecat.transports.local.audio import LocalAudioTransportParams
 from pipecat.turns.user_start import VADUserTurnStartStrategy
-from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
@@ -36,6 +35,7 @@ from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.ptt import KeyVAD, PushToTalk
 from hands.voice.spoken import SpokenForm
 from hands.voice.tools import Tool
+from hands.voice.turnstop import KeyTurnStop
 from hands.voice.whisper import Whisper
 
 # [LAW:types-are-the-program] the two ways to reach a model differ in what
@@ -131,7 +131,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
     # the release is final, so there is no wait for the user to "say more".
     key = PushToTalk()
     transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key)
-    stt = Whisper(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model), key=key)
+    stt = Whisper(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model))
     llm = build_llm(
         config.llm, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens
     )
@@ -147,7 +147,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
 
     turns = UserTurnStrategies(
         start=[VADUserTurnStartStrategy()],
-        stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.0)],
+        stop=[KeyTurnStop(user_speech_timeout=0.0)],
     )
     context = LLMContext(tools=list(tools))
     pair = LLMContextAggregatorPair(

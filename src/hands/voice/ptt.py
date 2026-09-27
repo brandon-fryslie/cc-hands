@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from pipecat.audio.vad.vad_analyzer import VADAnalyzer, VADParams
+from pipecat.frames.frames import InputAudioRawFrame
 
 from hands.voice.hold import Move
 
@@ -24,6 +25,17 @@ from hands.voice.hold import Move
 # nothing, like up, and tells Whisper not to transcribe what the turn recorded. The hold (`hands.voice.hold`) decides
 # every move, so the gate never sees a press or a release that is not a transition.
 Key = Literal["up", "down", "dropped"]
+
+@dataclass(kw_only=True)
+class KeyedAudio(InputAudioRawFrame):
+    """Microphone audio, and the key position it was captured under.
+
+    [LAW:no-ambient-temporal-coupling] the key travels with the audio, in capture order, so whatever reads it later
+    reads the key as it was when this sound was recorded, never as it is by the time the frame arrives.
+    """
+
+    key: Key
+
 
 # A 20 ms analysis frame. The VAD counts frames against start_secs/stop_secs,
 # so this is also the resolution of the turn boundary.

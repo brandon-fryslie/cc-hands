@@ -39,7 +39,7 @@ from hands.voice.system import (
 )
 from hands.voice.microphone import Devices
 from hands.voice.hold import Move
-from hands.voice.ptt import PushToTalk
+from hands.voice.turnstop import TurnUnheard
 from hands.voice.whisper import NOTHING_TRANSCRIBED, Whisper
 
 
@@ -278,18 +278,20 @@ async def test_whisper_reports_a_turn_it_transcribed_to_nothing_and_only_that(mo
             yield frame
 
     monkeypatch.setattr(WhisperSTTServiceMLX, "run_stt", transcribe)
-    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), key=PushToTalk())
+    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"))
     reports: list[None] = []
 
     @whisper.event_handler(NOTHING_TRANSCRIBED)
     async def empty(_stt: Whisper) -> None:  # pyright: ignore[reportUnusedFunction]
         reports.append(None)
 
-    assert [frame async for frame in whisper.run_stt(b"")] == []
+    # A turn with no text says so, so it ends at once; only one Whisper heard nothing in is reported as empty.
+    # (Every frame has an id of its own, so frames made here are told by their kind.)
+    assert [type(frame) async for frame in whisper.run_stt(b"")] == [TurnUnheard]
     yielded.append(TranscriptionFrame("what time is it", "user", "now"))
     assert [frame async for frame in whisper.run_stt(b"")] == yielded
     yielded[:] = [ErrorFrame("model failed")]
-    assert [frame async for frame in whisper.run_stt(b"")] == yielded
+    assert [type(frame) async for frame in whisper.run_stt(b"")] == [ErrorFrame, TurnUnheard]
     assert reports == [None]
 
 
