@@ -1448,7 +1448,8 @@ thing that failed `[LAW:no-silent-failure]`:
    template and queues it at the TTS processor, past the LLM and out of its context,
    so the model never reads a system line as a reply it gave. The worker's
    `on_pipeline_error` routes every error by the processor that raised it: the LLM's
-   become "unreachable" or "failed: <category>", Whisper's become "speech recognition
+   become "unreachable", "usage limit reached, until <when it lifts>" (read from the
+   API's message, never spoken from it), or "failed: <category>", Whisper's become "speech recognition
    failed", and a TTS error goes to the screen. Pipecat files an SDK connection error
    under UNKNOWN, so "unreachable" is recognised from the exception type. A turn Whisper
    transcribed to nothing is not said (Brandon, 2026-09-27: "I do not need to hear
