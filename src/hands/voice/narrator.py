@@ -21,11 +21,15 @@ from hands.sessions.registry import Sessions
 from hands.sessions.summaries import DEFAULT, Summaries
 from hands.sessions.tail import Tails
 from hands.voice.readback import spoken_name
+from hands.voice.refusal import UsageLimitReached, usage_limit
 from hands.voice.summary import Summariser, SummaryFailed
 from hands.voice.summary_instruction import HEADLINE_SENTENCES
 
 # How much of a turn the summariser is shown: enough to name its results, few enough tokens for a local model to answer in seconds.
 TURN_BUDGET = Budget(opening=600, said=1500, input=200, result=400, steps=40, files=25, commits=10, changes=2000)
+
+# Where a model refusal the listener can act on goes: the system channel, which says it once a burst.
+Refused = Callable[[UsageLimitReached], Awaitable[None]]
 
 # Everything reading and summarising a turn is expected to fail with; each is said, and the next turn is still heard.
 _FAILURES = (Rejected, OSError, SummaryFailed, openai.OpenAIError, anthropic.AnthropicError)
@@ -38,6 +42,7 @@ async def narrate(
     queue_frame: Callable[[Frame], Awaitable[None]],
     record: Record,
     aloud: Callable[[], Summaries],
+    refused: Refused,
     budget: Budget = TURN_BUDGET,
     changes: Changes | None = None,
 ) -> None:
@@ -52,7 +57,7 @@ async def narrate(
         match story:
             case Summarise(session=session, turn=turn, closing=closing):
                 switch = await _switch(aloud)
-                spoken = await recount(tails, session, turn, closing, name, summarise, record, budget, await read.taken(session), switch)
+                spoken = await recount(tails, session, turn, closing, name, summarise, record, budget, await read.taken(session), switch, refused)
             case SessionGone():
                 spoken = TTSSpeakFrame(f"The session {name} is gone.")
         if spoken is not None:
@@ -70,6 +75,7 @@ async def recount(
     budget: Budget,
     delta: Delta,
     switch: Summaries,
+    refused: Refused,
 ) -> Frame | None:
     """The frame that tells the user what the turn did beyond what was told before, or None when there is nothing new.
 
@@ -98,6 +104,13 @@ async def recount(
             try:
                 headline = await summarise(shown(telling.turn, delta, budget)) if did else ""
             except _FAILURES as error:
+                # A spent usage limit fails every summary until a stated date, so it goes to the system channel, which
+                # says it once a burst however many sessions finish a turn inside one.
+                match usage_limit(error):
+                    case UsageLimitReached() as limit:
+                        await refused(limit)
+                    case None:
+                        pass
                 # What the turn is waiting on is the daemon's to find and needs no model, and a question is always said.
                 return _unsummarised(session, name, error, unsaid.asked())
             # The number this whole epic turns on, and until now invisible: how long a finished turn waited on the
