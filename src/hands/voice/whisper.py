@@ -83,6 +83,10 @@ class Whisper(WhisperSTTServiceMLX):
             case "up" | "dropped", "arming":
                 # A hold's audio begins at its press: nothing heard before it is any part of it.
                 self._audio_buffer.clear()
+            case "arming", "up" | "dropped":
+                # The press was Shift after all: what it heard is no part of any turn.
+                self._user_speaking = False
+                self._audio_buffer.clear()
             case "up" | "arming" | "dropped", "down":
                 self._opened += 1
                 opened = TurnOpened(hold=self._opened)
@@ -106,6 +110,10 @@ class Whisper(WhisperSTTServiceMLX):
             case _:
                 pass
         self._captured = frame.key
+        if frame.key == "arming":
+            # [LAW:no-ambient-temporal-coupling] Pipecat keeps only the last second of audio nobody is speaking in, so a
+            # press is heard as speech from the start: nothing it hears is trimmed while HOLD_SECONDS runs, however long.
+            self._user_speaking = True
         await super().process_audio_frame(frame, direction)
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:

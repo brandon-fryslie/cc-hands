@@ -166,6 +166,30 @@ async def test_a_hold_hears_from_its_press_and_nothing_before_it(rig: Rig) -> No
     assert shift not in rig.heard[0]
 
 
+async def test_a_hold_keeps_everything_from_its_press_however_long_it_takes_to_mean_talk(rig: Rig) -> None:
+    # Pipecat keeps the last second of audio nobody is speaking in; 60 frames of 20 ms arm for 1.2 s.
+    early, held = (bytes([n, n]) * 320 for n in (2, 3))
+    arming: list[Key] = ["arming"] * 60
+    await rig.hold(arming, sound=early)
+    await rig.hold(["down", "up"], sound=held)
+    await rig.texts.put("what time is it")
+    assert await rig.everything_sent(holds=1) == ["what time is it"]
+    assert rig.heard[0].startswith(early * 60 + held)
+
+
+async def test_a_press_that_was_shift_leaves_nothing_behind_for_the_next_hold(rig: Rig) -> None:
+    shift, held = (bytes([n, n]) * 320 for n in (1, 3))
+    arming: list[Key] = ["arming"] * 60
+    up: list[Key] = ["up"] * 60
+    await rig.hold(arming, sound=shift)
+    await rig.hold(up)
+    await rig.hold(["arming", "down", "up"], sound=held)
+    await rig.texts.put("what time is it")
+    assert await rig.everything_sent(holds=1) == ["what time is it"]
+    assert shift not in rig.heard[0]
+    assert rig.heard[0].startswith(held * 2)
+
+
 async def test_a_dropped_hold_ends_its_turn_and_sends_nothing(rig: Rig) -> None:
     await rig.hold(["down", "down", "dropped"])
     assert await rig.everything_sent(holds=1) == []
