@@ -21,8 +21,6 @@ from pipecat.utils.types import assert_given, require_given
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved
 
-NOTHING_TRANSCRIBED = "on_nothing_transcribed"
-
 # What the model is loaded by: a second of silence at the 16 kHz Whisper hears at.
 _SILENCE = np.zeros(16_000, dtype=np.float32)
 
@@ -45,8 +43,6 @@ class Whisper(WhisperSTTServiceMLX):
         # The holds whose audio is queued for transcription, oldest first. Pipecat transcribes its queue one segment at
         # a time, in order, so each transcription is of the oldest.
         self._transcribing: deque[int] = deque()
-        # Sync, so the handler runs as the turn's transcription ends rather than after the stop timeout gives up on it.
-        self._register_event_handler(NOTHING_TRANSCRIBED, sync=True)
 
     def _warm(self) -> None:
         """Fetch the model, load it, and run it once now, while hands is starting, rather than in the first turn.
@@ -101,8 +97,8 @@ class Whisper(WhisperSTTServiceMLX):
             case "down", "up" | "arming" | "dropped":
                 # Another key was pressed, so the hold was typing, not speech (and the key may already be pressed
                 # again); or the key was let go of a Whisper that can no longer transcribe, which Pipecat would give
-                # nothing to. What the hold recorded is thrown away, so nothing is transcribed, sent, or reported as
-                # empty, and Whisper is done with it at once.
+                # nothing to. What the hold recorded is thrown away, so nothing is transcribed or sent, and Whisper is
+                # done with it at once.
                 self._user_speaking = False
                 self._audio_buffer.clear()
                 await self.push_frame(HoldDiscarded())
@@ -118,12 +114,13 @@ class Whisper(WhisperSTTServiceMLX):
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         hold = self._transcribing.popleft()
-        produced = False
+        heard = False
         async for frame in super().run_stt(audio):
-            produced = True
+            heard = True
             yield frame
-        if not produced:
-            # A failed transcription yields an ErrorFrame, so only a hold Whisper heard nothing in reaches here.
-            await self._call_event_handler(NOTHING_TRANSCRIBED)  # pyright: ignore[reportUnknownMemberType]  (its *args are untyped)
+        if not heard:
+            # Not said: Brandon does not need to hear it (2026-09-27). Logged, so "I spoke and nothing happened" can
+            # still be looked into; a failed transcription yields an ErrorFrame and is heard.
+            logger.info(f"Whisper heard nothing in hold {hold}")
         # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
         yield TurnResolved(hold=hold)
