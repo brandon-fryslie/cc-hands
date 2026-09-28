@@ -1414,7 +1414,7 @@ config value, not modes of the gate `[LAW:one-type-per-behavior]`:
 
 | Edge | Down | Up |
 |---|---|---|
-| `hotkey` | Right Shift held alone for 300 ms, in any app (`hands.voice.hold`) | released; another key pressed while it is held drops the turn unsent |
+| `hotkey` | Right Shift held alone for 600 ms, in any app (`hands.voice.hold`) | released; another key pressed while it is held drops the turn unsent |
 | `button` | a HID button or headset button pressed | released |
 | `web` | the phone page's talk button pressed | released |
 | `wakeword` | the wake word heard | Silero VAD reports silence for the configured gap |
