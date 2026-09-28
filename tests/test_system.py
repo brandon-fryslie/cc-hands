@@ -128,13 +128,18 @@ def test_a_spent_usage_limit_is_said_as_itself_and_every_other_refusal_by_its_ca
     assert services.alarm(error) == Say(fact)
 
 
-def test_the_limit_is_said_to_lift_in_the_listeners_own_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TZ", "America/Denver")
+def test_the_limit_is_said_to_lift_in_the_listeners_own_time() -> None:
+    # The zone is the process's, so it is put back exactly as found, and re-read, before any other test runs.
+    before = os.environ.get("TZ")
+    os.environ["TZ"] = "America/Denver"
     time.tzset()
     try:
         assert system_text(UsageLimitReached(RETURNS)) == "The language model's usage limit is reached, until September 30 at 6:00 PM."
     finally:
-        monkeypatch.delenv("TZ")
+        if before is None:
+            del os.environ["TZ"]
+        else:
+            os.environ["TZ"] = before
         time.tzset()
 
 
