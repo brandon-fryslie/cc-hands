@@ -7,6 +7,7 @@ screen instead. A fact that neither took is logged as an error by the notifier, 
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import ClassVar
 
 import anthropic
@@ -20,7 +21,7 @@ from pipecat.utils.errors import ErrorCategory
 from hands.sessions.audit import Announced, Record
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
-from hands.voice.refusal import UsageLimitReached, reached, usage_limit
+from hands.voice.refusal import UsageLimitReached, usage_limit
 from hands.voice.hold import TURN_LIMIT_SECONDS, Move
 
 
@@ -77,8 +78,7 @@ def system_text(fact: SystemFact) -> str:
         case ModelFailed(category=category):
             return f"The language model failed: {category.value.replace('_', ' ')}."
         case UsageLimitReached() as limit:
-            clause = reached(limit)
-            return f"{clause[0].upper()}{clause[1:]}."
+            return f"The language model's usage limit is reached{_until(limit.returns)}."
         case TranscriptionFailed():
             return "Speech recognition failed for that turn."
         case NoMicrophone():
@@ -153,6 +153,16 @@ def model_fact(error: ErrorFrame) -> ModelUnreachable | UsageLimitReached | Mode
             return limit
         case None:
             return ModelFailed(error.category or ErrorCategory.UNKNOWN)
+
+
+def _until(returns: datetime | None) -> str:
+    """When access comes back, in the listener's own time, for the end of a sentence."""
+    match returns:
+        case None:
+            return ""
+        case datetime():
+            local = returns.astimezone()
+            return f", until {local:%B} {local.day} at {local:%-I:%M %p}"
 
 
 # Posts to the screen. True when the screen took it, so nothing is recorded as given that was not given.

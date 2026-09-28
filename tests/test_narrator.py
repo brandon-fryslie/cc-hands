@@ -9,6 +9,7 @@ from pathlib import Path
 
 import anthropic
 import httpx2
+import openai
 import pytest
 from loguru import logger
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
@@ -23,6 +24,7 @@ from hands.sessions.home import Home
 from hands.sessions.summaries import Summaries, set_summaries, summaries
 from hands.sessions.tail import Tails
 from hands.voice.narrator import narrate, recount
+from hands.voice.refusal import UsageLimitReached
 from hands.voice.speech import relay
 from hands.voice.pipeline import OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
@@ -32,6 +34,10 @@ from conftest import ServeChat
 FIXTURE = Path(__file__).parent / "fixtures" / "turn.jsonl"
 BUDGET = Budget(opening=100, said=100, input=100, result=100, steps=10, files=10, commits=10, changes=500)
 SID = SessionId("s1")
+
+
+async def unrefused(fact: UsageLimitReached) -> None:
+    raise AssertionError(f"no refusal was expected here, got {fact}")
 
 
 def on() -> Summaries:
@@ -75,7 +81,7 @@ async def test_a_session_that_stops_is_heard_by_its_title_and_project_saying_wha
         return "Loaded the repo conventions and hit an API error."
 
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, recorded.append, on, BUDGET))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, recorded.append, on, unrefused, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
@@ -104,7 +110,7 @@ async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_aft
         return "Hit an API error."
 
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, lambda _: None, on, BUDGET))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, lambda _: None, on, unrefused, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
@@ -145,7 +151,7 @@ async def test_with_summaries_off_a_finished_turn_is_not_spoken_and_turning_them
         return "It fixed the test."
 
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, record, lambda: summaries(home), BUDGET))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, record, lambda: summaries(home), unrefused, BUDGET))
     relaying = asyncio.create_task(relay(sessions, frames.put))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
@@ -183,7 +189,7 @@ async def test_with_summaries_off_a_turn_waiting_on_an_answer_still_asks_it_with
     async def never(turn: str) -> str:
         raise AssertionError("with summaries off no model is asked")
 
-    spoken = await recount(tailing(transcript), SID, PromptId("p1"), None, "cc-hands", never, lambda _: None, BUDGET, Delta(), "off")
+    spoken = await recount(tailing(transcript), SID, PromptId("p1"), None, "cc-hands", never, lambda _: None, BUDGET, Delta(), "off", unrefused)
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: It said: Want me to push it?"
 
 
@@ -200,7 +206,7 @@ async def test_a_switch_that_cannot_be_read_is_logged_and_the_turn_told_as_the_d
 
     frames: asyncio.Queue[Frame] = asyncio.Queue()
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), never, frames.put, recorded.append, lambda: summaries(home), BUDGET))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), never, frames.put, recorded.append, lambda: summaries(home), unrefused, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
@@ -238,7 +244,7 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
         return f"summary {len(shown)}"
 
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, lambda _: None, on, BUDGET))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, lambda _: None, on, unrefused, BUDGET))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
@@ -272,7 +278,7 @@ async def test_a_turn_that_cannot_be_summarised_is_said_to_have_failed_and_logge
     unreachable = summariser(OpenAICompatibleBackend(base_url="http://127.0.0.1:9/v1", api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
-        spoken = await recount(tailing(FIXTURE), SID, None, None, "cc-hands", unreachable, recorded.append, BUDGET, Delta(), "on")
+        spoken = await recount(tailing(FIXTURE), SID, None, None, "cc-hands", unreachable, recorded.append, BUDGET, Delta(), "on", unrefused)
     finally:
         logger.remove(sink)
     assert isinstance(spoken, TTSSpeakFrame)
@@ -293,37 +299,45 @@ async def test_a_turn_that_cannot_be_summarised_still_says_what_it_is_waiting_on
     async def failing(turn: str) -> str:
         raise SummaryFailed("the model returned no summary")
 
-    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", failing, lambda _: None, BUDGET, Delta(), "on")
+    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", failing, lambda _: None, BUDGET, Delta(), "on", unrefused)
     assert isinstance(spoken, TTSSpeakFrame)
     assert spoken.text == "cc-hands finished a turn, and I could not summarise it. It said: Want me to push it?"
 
 
-async def test_a_turn_not_summarised_for_a_spent_usage_limit_says_so_and_when_it_lifts(tmp_path: Path) -> None:
+@pytest.mark.parametrize("backend", ["anthropic", "openai"])
+async def test_a_turn_not_summarised_for_a_spent_usage_limit_hands_the_limit_to_the_system_channel(tmp_path: Path, backend: str) -> None:
+    """Every session's summary fails alike until the limit lifts, so the limit is the system channel's to say, once a
+    burst, and each turn says only that it was not summarised."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(
         '{"uuid":"u1","type":"user","message":{"role":"user","content":"fix the test"}}\n'
         '{"uuid":"u2","type":"assistant","message":{"content":[{"type":"text","text":"Fixed it."}]}}\n'
     )
     limit = "You have reached your specified API usage limits. You will regain access on 2026-10-01 at 00:00 UTC."
+    request = httpx2.Request("POST", "https://api.example/v1")
 
     async def spent(turn: str) -> str:
-        response = httpx2.Response(400, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
-        raise anthropic.BadRequestError(limit, response=response, body={"type": "error", "error": {"type": "invalid_request_error", "message": limit}})
+        match backend:
+            case "anthropic":
+                raise anthropic.BadRequestError(limit, response=httpx2.Response(400, request=request), body={"type": "error", "error": {"message": limit}})
+            case _:
+                raise openai.BadRequestError(limit, response=httpx2.Response(400, request=request), body={"message": limit})
 
-    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", spent, lambda _: None, BUDGET, Delta(), "on")
-    returns = datetime(2026, 10, 1, tzinfo=UTC).astimezone()
-    assert isinstance(spoken, TTSSpeakFrame)
-    assert spoken.text == (
-        "cc-hands finished a turn, and I could not summarise it, because the language model's usage limit is reached, "
-        f"until {returns:%B} {returns.day} at {returns:%-I:%M %p}."
-    )
+    heard: list[UsageLimitReached] = []
+
+    async def refused(fact: UsageLimitReached) -> None:
+        heard.append(fact)
+
+    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", spent, lambda _: None, BUDGET, Delta(), "on", refused)
+    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands finished a turn, and I could not summarise it."
+    assert heard == [UsageLimitReached(datetime(2026, 10, 1, tzinfo=UTC))]
 
 
 async def test_a_missing_transcript_is_said_to_have_failed_too(tmp_path: Path) -> None:
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    spoken = await recount(tailing(tmp_path / "gone.jsonl"), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta(), "on")
+    spoken = await recount(tailing(tmp_path / "gone.jsonl"), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta(), "on", unrefused)
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands finished a turn, and I could not summarise it."
 
 
@@ -334,7 +348,7 @@ async def test_a_session_that_stops_before_any_prompt_says_nothing(tmp_path: Pat
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    assert await recount(tailing(transcript), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta(), "on") is None
+    assert await recount(tailing(transcript), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta(), "on", unrefused) is None
 
 
 async def test_a_turn_that_only_a_shell_command_changed_is_still_told_by_what_the_repository_says(tmp_path: Path) -> None:
@@ -352,7 +366,7 @@ async def test_a_turn_that_only_a_shell_command_changed_is_still_told_by_what_th
         return "it reformatted the whole package"
 
     delta = Delta(files=(Changed("src/a.py", 12, 9), Changed("src/b.py", 3, 3)), commits=(), patch="@@\n-x\n+y\n")
-    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", summarise, lambda _: None, BUDGET, delta, "on")
+    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", summarise, lambda _: None, BUDGET, delta, "on", unrefused)
 
     # What git says is said after the summary and out of the narration's own words: the two files are the whole
     # result of the turn, and no step of it names them.
@@ -369,7 +383,7 @@ async def test_a_turn_that_did_nothing_and_changed_nothing_is_still_silent(tmp_p
     async def never(turn: str) -> str:
         raise AssertionError("nothing to summarise")
 
-    assert await recount(tailing(transcript), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta(), "on") is None
+    assert await recount(tailing(transcript), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta(), "on", unrefused) is None
 
 
 async def test_the_openai_compatible_summariser_sends_the_instruction_and_the_turn_with_its_key_and_returns_the_text(
@@ -405,7 +419,7 @@ async def test_a_model_that_answers_with_nothing_is_said_to_have_failed_rather_t
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
         summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
-        spoken = await recount(tailing(FIXTURE), SID, None, None, "cc-hands", summarise, recorded.append, BUDGET, Delta(), "on")
+        spoken = await recount(tailing(FIXTURE), SID, None, None, "cc-hands", summarise, recorded.append, BUDGET, Delta(), "on", unrefused)
     finally:
         logger.remove(sink)
     assert isinstance(spoken, TTSSpeakFrame)
@@ -424,7 +438,7 @@ async def test_a_turn_stopped_before_it_did_anything_is_said_to_be_interrupted_w
     async def never(turn: str) -> str:
         raise AssertionError("a model told not to say it was interrupted has nothing else to report")
 
-    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta(), "on")
+    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", never, lambda _: None, BUDGET, Delta(), "on", unrefused)
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: You interrupted it."
 
 

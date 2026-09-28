@@ -1,8 +1,7 @@
 """What a model's API answered when it refused a call, read for the one case a listener can act on: a spent usage limit.
 
 [LAW:single-enforcer] the pipeline's own model calls and the summariser's reach the same API, so both read a refusal
-here. The API's text is read and never said: what is said comes from a closed set, so it stays short, and a burst of the
-same refusal stays one burst.
+here and hand what they found to the system channel, which says it. The API's text is read and never said.
 """
 
 import re
@@ -12,8 +11,9 @@ from datetime import UTC, datetime
 import anthropic
 import openai
 
-# Anthropic's words for an account that has spent its limit (2026-09-27), and the instant it names.
-_USAGE_LIMIT = re.compile(r"usage limit", re.IGNORECASE)
+# Anthropic's words for an account that has spent its limit (2026-09-27), and the instant it names. Matched exactly: a
+# throttle that mentions a per-minute usage limit lifts in seconds and is not this.
+_USAGE_LIMIT = re.compile(r"You have reached your specified API usage limits")
 _RETURNS = re.compile(r"regain access on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2}) UTC")
 
 
@@ -31,16 +31,6 @@ def usage_limit(exception: BaseException | None) -> UsageLimitReached | None:
             return UsageLimitReached(_returns(message))
         case _:
             return None
-
-
-def reached(limit: UsageLimitReached) -> str:
-    """The limit as a clause, with when it lifts in the listener's own time: "the language model's usage limit is reached, until ..."."""
-    match limit.returns:
-        case None:
-            return "the language model's usage limit is reached"
-        case datetime() as returns:
-            local = returns.astimezone()
-            return f"the language model's usage limit is reached, until {local:%B} {local.day} at {local:%-I:%M %p}"
 
 
 def _message(exception: BaseException | None) -> str | None:
