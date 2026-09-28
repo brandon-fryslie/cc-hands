@@ -11,7 +11,8 @@ after its press is dropped: a key stuck down, or a release macOS never reported,
 from dataclasses import dataclass
 from typing import Literal
 
-HOLD_SECONDS = 0.3
+# 0.3 s opened turns while typing: a rest on Right Shift before a capital, which Whisper filled with "you" or "Okay.".
+HOLD_SECONDS = 0.6
 TURN_LIMIT_SECONDS = 120.0
 
 Instant = float  # seconds on the monotonic clock
