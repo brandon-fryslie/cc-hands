@@ -21,6 +21,7 @@ from hands.sessions.registry import Sessions
 from hands.sessions.summaries import DEFAULT, Summaries
 from hands.sessions.tail import Tails
 from hands.voice.readback import spoken_name
+from hands.voice.refusal import UsageLimitReached, reached, usage_limit
 from hands.voice.summary import Summariser, SummaryFailed
 from hands.voice.summary_instruction import HEADLINE_SENTENCES
 
@@ -145,4 +146,10 @@ def _unsummarised(session: SessionId, name: str, error: Exception, asked: str) -
     whole.
     """
     logger.error(f"cannot summarise the turn session {session} finished: {type(error).__name__}: {error}")
-    return TTSSpeakFrame(" ".join(part for part in (f"{name} finished a turn, and I could not summarise it.", asked) if part), append_to_context=False)
+    # A spent usage limit fails every summary until a stated date, so it is the one reason worth saying.
+    match usage_limit(error):
+        case UsageLimitReached() as limit:
+            failed = f"{name} finished a turn, and I could not summarise it, because {reached(limit)}."
+        case None:
+            failed = f"{name} finished a turn, and I could not summarise it."
+    return TTSSpeakFrame(" ".join(part for part in (failed, asked) if part), append_to_context=False)

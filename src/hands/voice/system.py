@@ -4,11 +4,9 @@ A failure of the model is spoken without the model, and a failure of speech is p
 screen instead. A fact that neither took is logged as an error by the notifier, the path that needs neither.
 """
 
-import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import ClassVar
 
 import anthropic
@@ -22,6 +20,7 @@ from pipecat.utils.errors import ErrorCategory
 from hands.sessions.audit import Announced, Record
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
+from hands.voice.refusal import UsageLimitReached, reached, usage_limit
 from hands.voice.hold import TURN_LIMIT_SECONDS, Move
 
 
@@ -41,13 +40,6 @@ class ModelUnreachable:
 @dataclass(frozen=True)
 class ModelFailed:
     category: ErrorCategory
-
-
-@dataclass(frozen=True)
-class UsageLimitReached:
-    """The model's API account has reached its usage limit; `returns` is when access comes back, if the API said."""
-
-    returns: datetime | None
 
 
 @dataclass(frozen=True)
@@ -84,8 +76,9 @@ def system_text(fact: SystemFact) -> str:
             return "The language model is unreachable."
         case ModelFailed(category=category):
             return f"The language model failed: {category.value.replace('_', ' ')}."
-        case UsageLimitReached(returns=returns):
-            return f"The language model's usage limit is reached{_until(returns)}."
+        case UsageLimitReached() as limit:
+            clause = reached(limit)
+            return f"{clause[0].upper()}{clause[1:]}."
         case TranscriptionFailed():
             return "Speech recognition failed for that turn."
         case NoMicrophone():
@@ -149,52 +142,17 @@ def alarm(error: ErrorFrame, *, stt: FrameProcessor, llm: FrameProcessor, tts: F
             return Unrouted(str(processor), error.error)
 
 
-def _until(returns: datetime | None) -> str:
-    """When access comes back, in the listener's own time, for the end of a sentence."""
-    match returns:
-        case None:
-            return ""
-        case datetime():
-            local = returns.astimezone()
-            return f", until {local:%B} {local.day} at {local:%-I:%M %p}"
-
-
-# Anthropic's words for an account that has spent its limit (2026-09-27), and the instant it names.
-_USAGE_LIMIT = re.compile(r"usage limit", re.IGNORECASE)
-_RETURNS = re.compile(r"regain access on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2}) UTC")
-
-
 def model_fact(error: ErrorFrame) -> ModelUnreachable | UsageLimitReached | ModelFailed:
     if isinstance(error.exception, _UNREACHABLE) or error.category is ErrorCategory.CONNECTIVITY:
         return ModelUnreachable()
     # [LAW:no-silent-failure] a spent usage limit fails every call until a stated date, and its category alone said
     # "invalid request" (2026-09-27). The API's text is read for that one case and never spoken: what the channel says
     # comes from a closed set (see SystemChannel._claim), so it stays short and a burst of it stays one burst.
-    match _message(error.exception):
-        case str() as message if _USAGE_LIMIT.search(message):
-            return UsageLimitReached(_returns(message))
-        case _:
-            return ModelFailed(error.category or ErrorCategory.UNKNOWN)
-
-
-def _message(exception: BaseException | None) -> str | None:
-    """The message an API put in the body of its error, streamed or not: Anthropic nests it under `error`, and the
-    OpenAI SDK hands over that inner object as the body."""
-    match exception:
-        case anthropic.APIError(body={"error": {"message": str() as message}}):
-            return message
-        case openai.APIError(body={"message": str() as message}):
-            return message
-        case _:
-            return None
-
-
-def _returns(message: str) -> datetime | None:
-    match _RETURNS.search(message):
-        case re.Match() as found:
-            return datetime.fromisoformat(f"{found[1]}T{found[2]}").replace(tzinfo=UTC)
+    match usage_limit(error.exception):
+        case UsageLimitReached() as limit:
+            return limit
         case None:
-            return None
+            return ModelFailed(error.category or ErrorCategory.UNKNOWN)
 
 
 # Posts to the screen. True when the screen took it, so nothing is recorded as given that was not given.

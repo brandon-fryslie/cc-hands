@@ -4,8 +4,11 @@ import asyncio
 import json
 import shutil
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
+import anthropic
+import httpx2
 import pytest
 from loguru import logger
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
@@ -293,6 +296,27 @@ async def test_a_turn_that_cannot_be_summarised_still_says_what_it_is_waiting_on
     spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", failing, lambda _: None, BUDGET, Delta(), "on")
     assert isinstance(spoken, TTSSpeakFrame)
     assert spoken.text == "cc-hands finished a turn, and I could not summarise it. It said: Want me to push it?"
+
+
+async def test_a_turn_not_summarised_for_a_spent_usage_limit_says_so_and_when_it_lifts(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        '{"uuid":"u1","type":"user","message":{"role":"user","content":"fix the test"}}\n'
+        '{"uuid":"u2","type":"assistant","message":{"content":[{"type":"text","text":"Fixed it."}]}}\n'
+    )
+    limit = "You have reached your specified API usage limits. You will regain access on 2026-10-01 at 00:00 UTC."
+
+    async def spent(turn: str) -> str:
+        response = httpx2.Response(400, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
+        raise anthropic.BadRequestError(limit, response=response, body={"type": "error", "error": {"type": "invalid_request_error", "message": limit}})
+
+    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", spent, lambda _: None, BUDGET, Delta(), "on")
+    returns = datetime(2026, 10, 1, tzinfo=UTC).astimezone()
+    assert isinstance(spoken, TTSSpeakFrame)
+    assert spoken.text == (
+        "cc-hands finished a turn, and I could not summarise it, because the language model's usage limit is reached, "
+        f"until {returns:%B} {returns.day} at {returns:%-I:%M %p}."
+    )
 
 
 async def test_a_missing_transcript_is_said_to_have_failed_too(tmp_path: Path) -> None:
