@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -27,7 +28,7 @@ from hands.voice.system import (
     AudioMoved,
     BURST_SECONDS,
     ModelFailed,
-    ModelRefused,
+    UsageLimitReached,
     ModelUnreachable,
     Post,
     Say,
@@ -61,7 +62,7 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
         (NoMicrophone(), "There is no microphone, so hands cannot hear you."),
         (ModelUnreachable(), "The language model is unreachable."),
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
-        (ModelRefused("You have reached your specified API usage limits."), "The language model refused: You have reached your specified API usage limits."),
+        (UsageLimitReached(None), "The language model's usage limit is reached."),
         (TranscriptionFailed(), "Speech recognition failed for that turn."),
         (TurnExpired(), "That turn was open for 120 seconds, so hands threw it away."),
     ],
@@ -97,32 +98,44 @@ REFUSED = openai.APIConnectionError(request=httpx2.Request("POST", "http://192.1
 
 # What Anthropic answered every call with from 15:07 on 2026-09-27, which hands said as "invalid request".
 LIMIT = "You have reached your specified API usage limits. You will regain access on 2026-10-01 at 00:00 UTC."
+RETURNS = datetime(2026, 10, 1, tzinfo=UTC)
 
 
-def anthropic_refusal(message: str) -> anthropic.BadRequestError:
-    response = httpx2.Response(400, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
-    return anthropic.BadRequestError(f"Error code: 400 - {message}", response=response, body={"type": "error", "error": {"type": "invalid_request_error", "message": message}})
+def anthropic_error(status: int, message: str) -> anthropic.APIStatusError:
+    response = httpx2.Response(status, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
+    return anthropic.APIStatusError(f"Error code: {status} - {message}", response=response, body={"type": "error", "error": {"type": "api_error", "message": message}})
 
 
-def openai_refusal(message: str) -> openai.BadRequestError:
-    response = httpx2.Response(400, request=httpx2.Request("POST", "https://api.openai.com/v1/chat/completions"))
-    return openai.BadRequestError(f"Error code: 400 - {message}", response=response, body={"type": "invalid_request_error", "message": message})
+def openai_streamed_error(message: str) -> openai.APIError:
+    return openai.APIError(message, httpx2.Request("POST", "http://inferno.local:8080/v1/chat/completions"), body={"message": message})
 
 
 @pytest.mark.parametrize(
-    ("exception", "fact"),
+    ("exception", "category", "fact"),
     [
-        (anthropic_refusal(LIMIT), ModelRefused(LIMIT)),
-        (openai_refusal("Unsupported value: 'temperature'"), ModelRefused("Unsupported value: 'temperature'.")),
-        # A refusal that gives no reason of its own is told by its category, as before.
-        (anthropic_refusal("  "), ModelFailed(ErrorCategory.INVALID_REQUEST)),
-        (RuntimeError("boom"), ModelFailed(ErrorCategory.INVALID_REQUEST)),
+        (anthropic_error(400, LIMIT), ErrorCategory.INVALID_REQUEST, UsageLimitReached(RETURNS)),
+        (anthropic_error(400, "You have reached your specified API usage limits."), ErrorCategory.INVALID_REQUEST, UsageLimitReached(None)),
+        (openai_streamed_error(LIMIT), ErrorCategory.UNKNOWN, UsageLimitReached(RETURNS)),
+        # Anything else keeps its category, and none of the API's own text is said: it can carry ids, counts and URLs.
+        (anthropic_error(400, "prompt is too long: 205113 tokens > 200000 maximum"), ErrorCategory.INVALID_REQUEST, ModelFailed(ErrorCategory.INVALID_REQUEST)),
+        (anthropic_error(529, "Overloaded"), ErrorCategory.SERVER, ModelFailed(ErrorCategory.SERVER)),
+        (RuntimeError("boom"), ErrorCategory.UNKNOWN, ModelFailed(ErrorCategory.UNKNOWN)),
     ],
 )
-def test_a_model_refusal_is_said_with_the_apis_own_reason(exception: Exception, fact: SystemFact) -> None:
+def test_a_spent_usage_limit_is_said_as_itself_and_every_other_refusal_by_its_category(exception: Exception, category: ErrorCategory, fact: SystemFact) -> None:
     services = Services()
-    error = ErrorFrame(f"Unknown error occurred: {exception}", exception=exception, processor=services.llm, category=ErrorCategory.INVALID_REQUEST)
+    error = ErrorFrame(f"Unknown error occurred: {exception}", exception=exception, processor=services.llm, category=category)
     assert services.alarm(error) == Say(fact)
+
+
+def test_the_limit_is_said_to_lift_in_the_listeners_own_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TZ", "America/Denver")
+    time.tzset()
+    try:
+        assert system_text(UsageLimitReached(RETURNS)) == "The language model's usage limit is reached, until September 30 at 6:00 PM."
+    finally:
+        monkeypatch.delenv("TZ")
+        time.tzset()
 
 
 def test_an_error_is_told_by_the_processor_that_raised_it() -> None:
@@ -247,9 +260,9 @@ async def test_two_model_failures_of_different_kinds_are_both_heard() -> None:
     for fact in (ModelFailed(ErrorCategory.CONNECTIVITY), ModelFailed(ErrorCategory.CONNECTIVITY), ModelFailed(ErrorCategory.RATE_LIMIT)):
         await channel.say(fact)
     assert len(tts.frames) == 2
-    for fact in (ModelRefused(LIMIT), ModelRefused(LIMIT), ModelRefused("Your credit balance is too low.")):
+    for fact in (UsageLimitReached(RETURNS), UsageLimitReached(RETURNS)):
         await channel.say(fact)
-    assert len(tts.frames) == 4
+    assert len(tts.frames) == 3
 
 
 async def test_the_screen_is_not_filled_by_a_burst_either() -> None:

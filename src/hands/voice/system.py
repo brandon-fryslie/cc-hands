@@ -4,9 +4,11 @@ A failure of the model is spoken without the model, and a failure of speech is p
 screen instead. A fact that neither took is logged as an error by the notifier, the path that needs neither.
 """
 
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import ClassVar
 
 import anthropic
@@ -42,10 +44,10 @@ class ModelFailed:
 
 
 @dataclass(frozen=True)
-class ModelRefused:
-    """The API answered the call with a reason of its own, such as a usage limit and when access returns."""
+class UsageLimitReached:
+    """The model's API account has reached its usage limit; `returns` is when access comes back, if the API said."""
 
-    reason: str
+    returns: datetime | None
 
 
 @dataclass(frozen=True)
@@ -70,7 +72,7 @@ class AudioMoved:
     devices: Devices
 
 
-SystemFact = Started | ModelUnreachable | ModelFailed | ModelRefused | TranscriptionFailed | NoMicrophone | TurnExpired | AudioMoved
+SystemFact = Started | ModelUnreachable | ModelFailed | UsageLimitReached | TranscriptionFailed | NoMicrophone | TurnExpired | AudioMoved
 
 
 def system_text(fact: SystemFact) -> str:
@@ -82,8 +84,8 @@ def system_text(fact: SystemFact) -> str:
             return "The language model is unreachable."
         case ModelFailed(category=category):
             return f"The language model failed: {category.value.replace('_', ' ')}."
-        case ModelRefused(reason=reason):
-            return f"The language model refused: {reason}"
+        case UsageLimitReached(returns=returns):
+            return f"The language model's usage limit is reached{_until(returns)}."
         case TranscriptionFailed():
             return "Speech recognition failed for that turn."
         case NoMicrophone():
@@ -147,27 +149,51 @@ def alarm(error: ErrorFrame, *, stt: FrameProcessor, llm: FrameProcessor, tts: F
             return Unrouted(str(processor), error.error)
 
 
-def model_fact(error: ErrorFrame) -> ModelUnreachable | ModelRefused | ModelFailed:
+def _until(returns: datetime | None) -> str:
+    """When access comes back, in the listener's own time, for the end of a sentence."""
+    match returns:
+        case None:
+            return ""
+        case datetime():
+            local = returns.astimezone()
+            return f", until {local:%B} {local.day} at {local:%-I:%M %p}"
+
+
+# Anthropic's words for an account that has spent its limit (2026-09-27), and the instant it names.
+_USAGE_LIMIT = re.compile(r"usage limit", re.IGNORECASE)
+_RETURNS = re.compile(r"regain access on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2}) UTC")
+
+
+def model_fact(error: ErrorFrame) -> ModelUnreachable | UsageLimitReached | ModelFailed:
     if isinstance(error.exception, _UNREACHABLE) or error.category is ErrorCategory.CONNECTIVITY:
         return ModelUnreachable()
-    # [LAW:no-silent-failure] the API's own sentence says what happened and what ends it; the category alone said
-    # "invalid request" for a usage limit that lifts on a stated date (2026-09-27).
-    match _reason(error.exception):
-        case str() as reason:
-            return ModelRefused(reason if reason.endswith((".", "!", "?")) else f"{reason}.")
-        case None:
+    # [LAW:no-silent-failure] a spent usage limit fails every call until a stated date, and its category alone said
+    # "invalid request" (2026-09-27). The API's text is read for that one case and never spoken: what the channel says
+    # comes from a closed set (see SystemChannel._claim), so it stays short and a burst of it stays one burst.
+    match _message(error.exception):
+        case str() as message if _USAGE_LIMIT.search(message):
+            return UsageLimitReached(_returns(message))
+        case _:
             return ModelFailed(error.category or ErrorCategory.UNKNOWN)
 
 
-def _reason(exception: BaseException | None) -> str | None:
-    """The message an API put in the body of the error it answered with: Anthropic nests it under `error`, and the
+def _message(exception: BaseException | None) -> str | None:
+    """The message an API put in the body of its error, streamed or not: Anthropic nests it under `error`, and the
     OpenAI SDK hands over that inner object as the body."""
     match exception:
-        case anthropic.APIStatusError(body={"error": {"message": str() as message}}) if message.strip():
-            return message.strip()
-        case openai.APIStatusError(body={"message": str() as message}) if message.strip():
-            return message.strip()
+        case anthropic.APIError(body={"error": {"message": str() as message}}):
+            return message
+        case openai.APIError(body={"message": str() as message}):
+            return message
         case _:
+            return None
+
+
+def _returns(message: str) -> datetime | None:
+    match _RETURNS.search(message):
+        case re.Match() as found:
+            return datetime.fromisoformat(f"{found[1]}T{found[2]}").replace(tzinfo=UTC)
+        case None:
             return None
 
 
