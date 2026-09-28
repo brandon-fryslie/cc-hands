@@ -21,7 +21,6 @@ from hands.sessions.audit import Announced, Record
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
 from hands.voice.hold import TURN_LIMIT_SECONDS, Move
-from hands.voice.whisper import NOTHING_TRANSCRIBED, Whisper
 
 
 @dataclass(frozen=True)
@@ -48,11 +47,6 @@ class TranscriptionFailed:
 
 
 @dataclass(frozen=True)
-class NothingTranscribed:
-    pass
-
-
-@dataclass(frozen=True)
 class NoMicrophone:
     """The key was pressed to talk, and there is no microphone to hear it."""
 
@@ -69,7 +63,7 @@ class AudioMoved:
     devices: Devices
 
 
-SystemFact = Started | ModelUnreachable | ModelFailed | TranscriptionFailed | NothingTranscribed | NoMicrophone | TurnExpired | AudioMoved
+SystemFact = Started | ModelUnreachable | ModelFailed | TranscriptionFailed | NoMicrophone | TurnExpired | AudioMoved
 
 
 def system_text(fact: SystemFact) -> str:
@@ -83,8 +77,6 @@ def system_text(fact: SystemFact) -> str:
             return f"The language model failed: {category.value.replace('_', ' ')}."
         case TranscriptionFailed():
             return "Speech recognition failed for that turn."
-        case NothingTranscribed():
-            return "Whisper returned nothing for that turn."
         case NoMicrophone():
             return "There is no microphone, so hands cannot hear you."
         case TurnExpired():
@@ -257,7 +249,7 @@ def told(move: Move, devices: Devices) -> tuple[NoMicrophone | TurnExpired, ...]
 
 
 def listen(voice: Voice, channel: SystemChannel, after_crash: bool) -> None:
-    """Connect the pipeline's own reports to the channel: its start, its errors, and a turn with nothing in it."""
+    """Connect the pipeline's own reports to the channel: its start and its errors."""
 
     @voice.worker.event_handler("on_pipeline_started")
     async def announce(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
@@ -267,7 +259,3 @@ def listen(voice: Voice, channel: SystemChannel, after_crash: bool) -> None:
     @voice.worker.event_handler("on_pipeline_error")
     async def failed(_worker: PipelineWorker, error: ErrorFrame) -> None:  # pyright: ignore[reportUnusedFunction]
         await channel.sound(alarm(error, stt=voice.stt, llm=voice.llm, tts=voice.tts))
-
-    @voice.stt.event_handler(NOTHING_TRANSCRIBED)
-    async def empty(_stt: Whisper) -> None:  # pyright: ignore[reportUnusedFunction]
-        await channel.say(NothingTranscribed())

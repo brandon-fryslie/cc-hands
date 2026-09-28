@@ -21,8 +21,6 @@ from pipecat.utils.types import assert_given, require_given
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved
 
-NOTHING_TRANSCRIBED = "on_nothing_transcribed"
-
 # What the model is loaded by: a second of silence at the 16 kHz Whisper hears at.
 _SILENCE = np.zeros(16_000, dtype=np.float32)
 
@@ -45,8 +43,6 @@ class Whisper(WhisperSTTServiceMLX):
         # The holds whose audio is queued for transcription, oldest first. Pipecat transcribes its queue one segment at
         # a time, in order, so each transcription is of the oldest.
         self._transcribing: deque[int] = deque()
-        # Sync, so the handler runs as the turn's transcription ends rather than after the stop timeout gives up on it.
-        self._register_event_handler(NOTHING_TRANSCRIBED, sync=True)
 
     def _warm(self) -> None:
         """Fetch the model, load it, and run it once now, while hands is starting, rather than in the first turn.
@@ -118,12 +114,8 @@ class Whisper(WhisperSTTServiceMLX):
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         hold = self._transcribing.popleft()
-        produced = False
         async for frame in super().run_stt(audio):
-            produced = True
             yield frame
-        if not produced:
-            # A failed transcription yields an ErrorFrame, so only a hold Whisper heard nothing in reaches here.
-            await self._call_event_handler(NOTHING_TRANSCRIBED)  # pyright: ignore[reportUnknownMemberType]  (its *args are untyped)
-        # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
+        # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold. A hold it
+        # heard nothing in is not said: the turn's closing tone is all the user needs of it.
         yield TurnResolved(hold=hold)

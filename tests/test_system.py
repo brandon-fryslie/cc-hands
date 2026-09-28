@@ -27,7 +27,6 @@ from hands.voice.system import (
     BURST_SECONDS,
     ModelFailed,
     ModelUnreachable,
-    NothingTranscribed,
     Post,
     Say,
     Started,
@@ -42,7 +41,7 @@ from hands.voice.microphone import Devices
 from hands.voice.hold import Move
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.turnstop import TurnResolved
-from hands.voice.whisper import NOTHING_TRANSCRIBED, Whisper
+from hands.voice.whisper import Whisper
 
 
 BUILT_IN = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
@@ -61,7 +60,6 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
         (ModelUnreachable(), "The language model is unreachable."),
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
         (TranscriptionFailed(), "Speech recognition failed for that turn."),
-        (NothingTranscribed(), "Whisper returned nothing for that turn."),
         (TurnExpired(), "That turn was open for 120 seconds, so hands threw it away."),
     ],
 )
@@ -131,13 +129,13 @@ async def test_a_fact_goes_to_speech_while_it_works_and_to_the_screen_when_it_do
         (TTSSpeakFrame, "The language model is unreachable.", False)
     ]
     await tts.set_usable(False)
-    await channel.say(NothingTranscribed())
+    await channel.say(TranscriptionFailed())
     await channel.sound(Post("no voice"))
     assert len(tts.frames) == 1
-    assert posted == ["hands cannot speak, so: Whisper returned nothing for that turn.", "hands cannot speak: no voice"]
+    assert posted == ["hands cannot speak, so: Speech recognition failed for that turn.", "hands cannot speak: no voice"]
     assert recorded == [
         Announced("The language model is unreachable.", "speech"),
-        Announced("Whisper returned nothing for that turn.", "screen"),
+        Announced("Speech recognition failed for that turn.", "screen"),
         Announced("hands cannot speak: no voice", "screen"),
     ]
 
@@ -173,11 +171,11 @@ async def test_a_fact_repeated_through_one_burst_is_said_once() -> None:
     clock = Clock()
     tts, recorded, channel = speaking(clock)
     for _ in range(200):
-        await channel.say(NothingTranscribed())
+        await channel.say(TranscriptionFailed())
         clock.now += 0.43
-    assert said(tts) == ["Whisper returned nothing for that turn."] * 9  # 200 turns over 86 s, not 200 sentences
+    assert said(tts) == ["Speech recognition failed for that turn."] * 9  # 200 turns over 86 s, not 200 sentences
     # The audit says a thing was announced only where it was: what a burst costs is the saying, not the knowing.
-    assert recorded == [Announced("Whisper returned nothing for that turn.", "speech")] * 9
+    assert recorded == [Announced("Speech recognition failed for that turn.", "speech")] * 9
 
 
 async def test_a_fault_that_is_still_happening_is_said_again_once_its_burst_has_passed() -> None:
@@ -185,28 +183,28 @@ async def test_a_fault_that_is_still_happening_is_said_again_once_its_burst_has_
     something else was said would leave a user pressing a key at a daemon that has gone permanently silent."""
     clock = Clock()
     tts, _, channel = speaking(clock)
-    await channel.say(NothingTranscribed())
+    await channel.say(TranscriptionFailed())
     clock.now += BURST_SECONDS - 0.01
-    await channel.say(NothingTranscribed())
-    assert said(tts) == ["Whisper returned nothing for that turn."]
+    await channel.say(TranscriptionFailed())
+    assert said(tts) == ["Speech recognition failed for that turn."]
     clock.now += 0.01
-    await channel.say(NothingTranscribed())
-    assert said(tts) == ["Whisper returned nothing for that turn."] * 2
+    await channel.say(TranscriptionFailed())
+    assert said(tts) == ["Speech recognition failed for that turn."] * 2
 
 
 async def test_two_faults_taking_turns_do_not_between_them_defeat_the_burst() -> None:
-    """The drain interleaves: some queued turns transcribe to nothing and some raise. Were the window one slot
+    """Two faults can interleave, as a turn that fails and a press with no microphone. Were the window one slot
     wide, each would be news to the other and the pair would speak at the full jammed cadence."""
     clock = Clock()
     tts, _, channel = speaking(clock)
-    for fact in (NothingTranscribed(), TranscriptionFailed()) * 20:
+    for fact in (TranscriptionFailed(), NoMicrophone()) * 20:
         await channel.say(fact)
         clock.now += 0.43
     assert said(tts) == [
-        "Whisper returned nothing for that turn.",
         "Speech recognition failed for that turn.",
-        "Whisper returned nothing for that turn.",
+        "There is no microphone, so hands cannot hear you.",
         "Speech recognition failed for that turn.",
+        "There is no microphone, so hands cannot hear you.",
     ]
 
 
@@ -251,9 +249,9 @@ async def test_a_post_the_screen_refused_is_not_taken_for_one_the_user_saw() -> 
     await tts.set_usable(False)
     channel = SystemChannel(tts, notify, recorded.append, clock)
     for _ in range(200):
-        await channel.say(NothingTranscribed())
+        await channel.say(TranscriptionFailed())
         clock.now += 0.43
-    assert attempts == ["hands cannot speak, so: Whisper returned nothing for that turn."] * 9
+    assert attempts == ["hands cannot speak, so: Speech recognition failed for that turn."] * 9
     assert recorded == []
 
 
@@ -271,11 +269,11 @@ async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
     channel = SystemChannel(tts, notify, lambda _: None, Clock())
     await asyncio.gather(*(channel.sound(Post(f"TTS context 0000-{turn:04d} completed with no audio")) for turn in range(200)))
     assert posted == ["hands cannot speak: TTS context 0000-0000 completed with no audio"]
-    await asyncio.gather(*(channel.say(NothingTranscribed()) for _ in range(200)))
-    assert said(tts) == ["Whisper returned nothing for that turn."]
+    await asyncio.gather(*(channel.say(TranscriptionFailed()) for _ in range(200)))
+    assert said(tts) == ["Speech recognition failed for that turn."]
 
 
-async def test_whisper_reports_a_turn_it_transcribed_to_nothing_and_only_that(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_nothing_in(monkeypatch: pytest.MonkeyPatch) -> None:
     yielded: list[Frame] = []
 
     async def transcribe(_self: WhisperSTTServiceMLX, _audio: bytes) -> AsyncGenerator[Frame, None]:
@@ -293,20 +291,13 @@ async def test_whisper_reports_a_turn_it_transcribed_to_nothing_and_only_that(mo
     keys: list[Key] = ["down", "up"] * 3
     for key in keys:
         await whisper.process_audio_frame(KeyedAudio(audio=b"\x00\x00", sample_rate=16000, num_channels=1, key=key), FrameDirection.DOWNSTREAM)
-    reports: list[None] = []
-
-    @whisper.event_handler(NOTHING_TRANSCRIBED)
-    async def empty(_stt: Whisper) -> None:  # pyright: ignore[reportUnusedFunction]
-        reports.append(None)
-
-    # Every transcription ends with Whisper done with its hold; only one Whisper heard nothing in is reported as empty.
-    # (Every frame has an id of its own, so frames made here are told by their kind.)
+    # Every transcription ends with Whisper done with its hold, and one it heard nothing in yields nothing else: no
+    # frame that could reach the speaker. (Every frame has an id of its own, so frames made here are told by their kind.)
     assert [type(frame) async for frame in whisper.run_stt(b"")] == [TurnResolved]
     yielded.append(TranscriptionFrame("what time is it", "user", "now"))
     assert [type(frame) async for frame in whisper.run_stt(b"")] == [TranscriptionFrame, TurnResolved]
     yielded[:] = [ErrorFrame("model failed")]
     assert [type(frame) async for frame in whisper.run_stt(b"")] == [ErrorFrame, TurnResolved]
-    assert reports == [None]
 
 
 def test_the_notification_text_is_an_argument_not_part_of_the_script() -> None:

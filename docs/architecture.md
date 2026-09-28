@@ -1442,18 +1442,19 @@ In an audio system the default output is silence, and silence is what "thinking"
 sounds like too. So every failure has a path to the user that does not depend on the
 thing that failed `[LAW:no-silent-failure]`:
 
-1. **Speech.** The system channel says "the language model is unreachable", "Whisper
-   returned nothing for that turn", "the session cc-hands is gone". These are
+1. **Speech.** The system channel says "the language model is unreachable", "speech
+   recognition failed for that turn", "the session cc-hands is gone". These are
    `Speak` effects and need no model. `hands.voice.system` renders each fact from a
    template and queues it at the TTS processor, past the LLM and out of its context,
    so the model never reads a system line as a reply it gave. The worker's
    `on_pipeline_error` routes every error by the processor that raised it: the LLM's
    become "unreachable" or "failed: <category>", Whisper's become "speech recognition
    failed", and a TTS error goes to the screen. Pipecat files an SDK connection error
-   under UNKNOWN, so "unreachable" is recognised from the exception type. Pipecat drops
-   a turn Whisper transcribed to nothing without a word, so a thin `Whisper` subclass
-   reports it as the transcription ends, rather than after the user turn's 5-second
-   stop timeout. The channel says a burst once: a fault is not said again until ten
+   under UNKNOWN, so "unreachable" is recognised from the exception type. A turn Whisper
+   transcribed to nothing is not said (Brandon, 2026-09-27: "I do not need to hear
+   it"); the turn's closing tone is its answer, and the `Whisper` subclass resolves
+   the hold as the transcription ends, so the turn closes then rather than after the
+   user turn's 5-second stop timeout. The channel says a burst once: a fault is not said again until ten
    seconds have passed since it last was. A fault that recurs recurs in bursts, and
    on 2026-09-22 a held key queued hundreds of empty turns whose reports went out
    every 0.43 s for as long as they drained — which is not a loud failure but a
