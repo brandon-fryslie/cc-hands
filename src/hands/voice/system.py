@@ -42,6 +42,13 @@ class ModelFailed:
 
 
 @dataclass(frozen=True)
+class ModelRefused:
+    """The API answered the call with a reason of its own, such as a usage limit and when access returns."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
 class TranscriptionFailed:
     pass
 
@@ -63,7 +70,7 @@ class AudioMoved:
     devices: Devices
 
 
-SystemFact = Started | ModelUnreachable | ModelFailed | TranscriptionFailed | NoMicrophone | TurnExpired | AudioMoved
+SystemFact = Started | ModelUnreachable | ModelFailed | ModelRefused | TranscriptionFailed | NoMicrophone | TurnExpired | AudioMoved
 
 
 def system_text(fact: SystemFact) -> str:
@@ -75,6 +82,8 @@ def system_text(fact: SystemFact) -> str:
             return "The language model is unreachable."
         case ModelFailed(category=category):
             return f"The language model failed: {category.value.replace('_', ' ')}."
+        case ModelRefused(reason=reason):
+            return f"The language model refused: {reason}"
         case TranscriptionFailed():
             return "Speech recognition failed for that turn."
         case NoMicrophone():
@@ -138,10 +147,28 @@ def alarm(error: ErrorFrame, *, stt: FrameProcessor, llm: FrameProcessor, tts: F
             return Unrouted(str(processor), error.error)
 
 
-def model_fact(error: ErrorFrame) -> ModelUnreachable | ModelFailed:
+def model_fact(error: ErrorFrame) -> ModelUnreachable | ModelRefused | ModelFailed:
     if isinstance(error.exception, _UNREACHABLE) or error.category is ErrorCategory.CONNECTIVITY:
         return ModelUnreachable()
-    return ModelFailed(error.category or ErrorCategory.UNKNOWN)
+    # [LAW:no-silent-failure] the API's own sentence says what happened and what ends it; the category alone said
+    # "invalid request" for a usage limit that lifts on a stated date (2026-09-27).
+    match _reason(error.exception):
+        case str() as reason:
+            return ModelRefused(reason if reason.endswith((".", "!", "?")) else f"{reason}.")
+        case None:
+            return ModelFailed(error.category or ErrorCategory.UNKNOWN)
+
+
+def _reason(exception: BaseException | None) -> str | None:
+    """The message an API put in the body of the error it answered with: Anthropic nests it under `error`, and the
+    OpenAI SDK hands over that inner object as the body."""
+    match exception:
+        case anthropic.APIStatusError(body={"error": {"message": str() as message}}) if message.strip():
+            return message.strip()
+        case openai.APIStatusError(body={"message": str() as message}) if message.strip():
+            return message.strip()
+        case _:
+            return None
 
 
 # Posts to the screen. True when the screen took it, so nothing is recorded as given that was not given.
