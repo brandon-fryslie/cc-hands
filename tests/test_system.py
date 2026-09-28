@@ -165,9 +165,9 @@ def said(tts: Recorder) -> list[str | None]:
 
 
 async def test_a_fact_repeated_through_one_burst_is_said_once() -> None:
-    """A key held down on 2026-09-22 queued hundreds of empty turns, and this channel said "Whisper returned
-    nothing for that turn." every 0.43 s for as long as they drained. A fault that recurs recurs in bursts, and a
-    burst that fills the only channel the daemon has is not a loud failure but a jammed one."""
+    """A key held down on 2026-09-22 queued hundreds of empty turns, and this channel reported each one every 0.43 s
+    for as long as they drained. A fault that recurs recurs in bursts, and a burst that fills the only channel the
+    daemon has is not a loud failure but a jammed one."""
     clock = Clock()
     tts, recorded, channel = speaking(clock)
     for _ in range(200):
@@ -179,7 +179,7 @@ async def test_a_fact_repeated_through_one_burst_is_said_once() -> None:
 
 
 async def test_a_fault_that_is_still_happening_is_said_again_once_its_burst_has_passed() -> None:
-    """Nothing else is ever said while the microphone is muted, so only time can end the burst. Suppressing until
+    """Nothing else is ever said while a model is down, so only time can end the burst. Suppressing until
     something else was said would leave a user pressing a key at a daemon that has gone permanently silent."""
     clock = Clock()
     tts, _, channel = speaking(clock)

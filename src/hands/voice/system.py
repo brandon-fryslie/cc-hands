@@ -151,10 +151,10 @@ BURST_SECONDS = 10.0
 """How long a fault stays said, counted from the last time it was said and not from its last occurrence.
 
 A fault that recurs recurs in bursts: a key held down on 2026-09-22 queued hundreds of empty turns whose reports
-went out every 0.43 s for as long as they drained, which is not a loud failure but a jammed one, because nothing
+then went out every 0.43 s for as long as they drained, which is not a loud failure but a jammed one, because nothing
 else could have been heard while it ran. Ten seconds is twenty-odd times quieter than that cadence and still
 answers a user who pressed the key again. It is a span of quiet rather than "until something else was said"
-because in the case this exists for — a muted microphone, a model that is down — nothing else ever is.
+because in the case this exists for — no microphone, a model that is down — nothing else ever is.
 """
 
 

@@ -97,8 +97,8 @@ class Whisper(WhisperSTTServiceMLX):
             case "down", "up" | "arming" | "dropped":
                 # Another key was pressed, so the hold was typing, not speech (and the key may already be pressed
                 # again); or the key was let go of a Whisper that can no longer transcribe, which Pipecat would give
-                # nothing to. What the hold recorded is thrown away, so nothing is transcribed, sent, or reported as
-                # empty, and Whisper is done with it at once.
+                # nothing to. What the hold recorded is thrown away, so nothing is transcribed or sent, and Whisper is
+                # done with it at once.
                 self._user_speaking = False
                 self._audio_buffer.clear()
                 await self.push_frame(HoldDiscarded())
@@ -114,8 +114,13 @@ class Whisper(WhisperSTTServiceMLX):
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         hold = self._transcribing.popleft()
+        heard = False
         async for frame in super().run_stt(audio):
+            heard = True
             yield frame
-        # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold. A hold it
-        # heard nothing in is not said: the turn's closing tone is all the user needs of it.
+        if not heard:
+            # Not said: Brandon does not need to hear it (2026-09-27). Logged, so "I spoke and nothing happened" can
+            # still be looked into; a failed transcription yields an ErrorFrame and is heard.
+            logger.info(f"Whisper heard nothing in hold {hold}")
+        # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
         yield TurnResolved(hold=hold)

@@ -1452,15 +1452,16 @@ thing that failed `[LAW:no-silent-failure]`:
    failed", and a TTS error goes to the screen. Pipecat files an SDK connection error
    under UNKNOWN, so "unreachable" is recognised from the exception type. A turn Whisper
    transcribed to nothing is not said (Brandon, 2026-09-27: "I do not need to hear
-   it"); the turn's closing tone is its answer, and the `Whisper` subclass resolves
-   the hold as the transcription ends, so the turn closes then rather than after the
-   user turn's 5-second stop timeout. The channel says a burst once: a fault is not said again until ten
-   seconds have passed since it last was. A fault that recurs recurs in bursts, and
-   on 2026-09-22 a held key queued hundreds of empty turns whose reports went out
-   every 0.43 s for as long as they drained — which is not a loud failure but a
+   it"), only logged, and so neither is a muted microphone, whose every turn comes back
+   empty. The `Whisper` subclass resolves the hold as the transcription ends, so the
+   turn closes then rather than after the user turn's 5-second stop timeout. The
+   channel says a burst once: a fault is not said again until ten seconds have passed
+   since it last was. A fault that recurs recurs in bursts, and on 2026-09-22 a held
+   key queued hundreds of empty turns whose reports then went out every 0.43 s for as
+   long as they drained — which is not a loud failure but a
    jammed one, because nothing else could have been heard while it ran. What ends a
    burst is a span of quiet and not some other announcement, because in the case this
-   exists for there is never another one: with the microphone muted, staying quiet
+   exists for there is never another one: with no microphone, staying quiet
    until something else was said would leave a user pressing the key at a daemon that
    has gone permanently silent. What a burst costs is the saying and never the
    knowing — every occurrence is still a log line. `Announced` is written where the
