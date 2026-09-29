@@ -10,9 +10,9 @@ from loguru import logger
 from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.effects import Reply, Withdraw
-from hands.core.events import Joined, Tick
-from hands.core.session import Membership, RequestId, SessionId
+from hands.core.effects import Reply, Unmatched, Withdraw
+from hands.core.events import Joined, Stopped, Tick
+from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.daemon import cli
 from hands.sessions.audit import (
     Applied,
@@ -164,6 +164,18 @@ async def test_an_event_that_changed_nothing_is_not_a_line_and_one_that_did_is()
     assert recorded == []
     await sessions.apply(Joined(member(), "startup"))
     assert recorded == [Applied(Joined(member(), "startup"))]
+
+
+async def test_a_stop_that_ends_no_turn_is_a_line_saying_so() -> None:
+    recorded: list[Entry] = []
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    await sessions.apply(Joined(member(), "startup"))
+    stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False)
+    await sessions.apply(stop)
+    assert Unmatched(stop) not in recorded
+    # Heard again once its turn was told, as an interrupted turn's late Stop is.
+    await sessions.apply(stop)
+    assert recorded[-1] == Unmatched(stop)
 
 
 async def test_an_audited_tool_keeps_its_schema_and_writes_its_call_beside_its_result() -> None:

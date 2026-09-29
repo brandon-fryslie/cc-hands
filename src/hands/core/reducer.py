@@ -26,6 +26,7 @@ from hands.core.effects import (
     Compare,
     Snapshot,
     Summarise,
+    Unmatched,
     Unregistered,
     WaitingForYou,
     Withdraw,
@@ -284,8 +285,9 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
         case (Stopped(prompt=prompt, closing=closing, again=again), Opened() as opened) if _names(opened, prompt):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
             return Told(opened.turn, opened.others, _asking(closing, was.dialog)), [Compare(id, again), Summarise(id, prompt, closing), *_following(was.membership, opened)]
-        case (Stopped(closing=closing), Untold()):
-            # Its Stop fired after Claude Code set idle, as an Escape's can: told with the reply it carries.
+        case (Stopped(prompt=prompt, closing=closing), Untold() as untold) if _names(untold, prompt):
+            # Its Stop fired after Claude Code set idle, as an Escape's can: told with the reply it carries. A late Stop of
+            # an older turn is not what this one waits for, and would tell it with that turn's reply (below).
             return _told(id, turn, closing)
         case (Stopped(prompt=prompt, closing=closing, again=again), Told(turn=last) as told) if last is None or not _names(told, prompt) or again:
             # A turn hands never had open, such as the one a session was in when it was attached, or the last turn
@@ -303,6 +305,9 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
         case (Read(through=through), Untold(by=by)) if through >= by:
             # Read through the point where the record of how it ended would be, and it was not there: told with what was read.
             return _told(id, turn, None)
+        case (Stopped() as stopped, _):
+            # [LAW:nothing-unseen] a Stop is a hook Claude Code fired: one that ends nothing is still a line.
+            return turn, [Audit(Unmatched(stopped))]
         case _:
             # A record or a Stop of a turn that is neither the one open nor the one waiting to be told: read after that
             # turn ended, or of one this registry never heard open. Ending it would end another turn and spend its
