@@ -255,8 +255,8 @@ changes the design:
 So the proxy timestamps every request on the wire from its first version (request in,
 request out, first byte, last byte), and those numbers fall out the first time the brain
 answers a question. The stdin and stdout ends are not on the wire; the brain's launcher
-sees them. The measurement happens last, by construction, as the acceptance check of the
-brain launch.
+sees them. The wire's numbers are the acceptance check of the brain launch, so the
+measurement happens last, by construction.
 
 ## Implementation plan
 
@@ -352,6 +352,8 @@ request). The transport is rewritten on asyncio, since cc-dump's is threaded
   turn lands in its history.
 - The four experiment intervals; none can be read from the existing recordings.
 - What tells a fork, compaction included, from a main turn on the wire.
+- That Claude Code's retry after a 529 or a dropped stream is byte-identical to the
+  request it retries.
 - Which settings switch off auto-memory, LSP, and background prefetches without
   `--bare`.
 - That the ~300 ms requests are `count_tokens` calls: their body and response have that
