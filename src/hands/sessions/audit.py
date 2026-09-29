@@ -114,6 +114,26 @@ class BrainAnswered:
 
 
 @dataclass(frozen=True)
+class BrainInterrupted:
+    """The user barged in on a brain turn: the tools it had in flight, and whether it was told to stop at once.
+
+    Not stopped means a tool whose effect must land was running: it runs to its end, and the turn's next request is held.
+    """
+
+    running: tuple[str, ...]
+    stopped: bool
+
+
+@dataclass(frozen=True)
+class BrainSpoke:
+    """What a brain turn handed to the speaker, and the exchanges on the wire its words came from."""
+
+    exchanges: tuple[str, ...]
+    text: str
+    interrupted: bool
+
+
+@dataclass(frozen=True)
 class BrainExited:
     """The brain's process ended: its exit code, and the last of what it wrote to stderr."""
 
@@ -192,6 +212,8 @@ Entry = (
     | BrainReady
     | BrainAsked
     | BrainAnswered
+    | BrainInterrupted
+    | BrainSpoke
     | BrainExited
     | Transcribed
     | Replied

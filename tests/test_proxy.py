@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import gzip
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 
@@ -11,22 +12,30 @@ import brotli
 import pytest
 import zstandard
 from aiohttp import web
+from loguru import logger
 
 from hands.core.session import SessionId
 from hands.core.wire import (
     Answered,
     CountTokens,
     Exchanged,
+    Forward,
     Garbled,
     Heard,
+    Held,
+    Hold,
     MainTurn,
     Observed,
     Reached,
+    Route,
     Sent,
     Streamed,
     Text,
     TextDelta,
     Unreached,
+    assemble,
+    frames,
+    parse,
 )
 from hands.daemon.run import wire_to
 from hands.sessions.audit import Entry
@@ -62,11 +71,17 @@ class Upstream:
     asked: list[tuple[str, dict[str, str], bytes]] = field(default_factory=lambda: [])
 
 
+def forward(_sent: Sent) -> Route:
+    return Forward()
+
+
 @dataclass
 class Wire:
     proxy: Proxy
     seen: list[Observed]
     exchanged: asyncio.Event
+    # Where each request goes; a test that holds one sets it before the request is sent.
+    route: Callable[[Sent], Route] = forward
 
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
@@ -97,9 +112,13 @@ async def serve() -> AsyncIterator[Callable[[Handler], Awaitable[tuple[Upstream,
             if isinstance(observed, Exchanged):
                 exchanged.set()
 
-        proxy = await serve_proxy(upstream.url, observe, clock=lambda: next(ticks))
+        def route(sent: Sent) -> Route:
+            return made.route(sent)
+
+        proxy = await serve_proxy(upstream.url, observe, route, clock=lambda: next(ticks))
         cleanups.extend([proxy.close, runner.cleanup])
-        return upstream, Wire(proxy, seen, exchanged)
+        made = Wire(proxy, seen, exchanged)
+        return upstream, made
 
     yield start
     for cleanup in cleanups:
@@ -239,7 +258,7 @@ async def test_an_api_that_cannot_be_reached_is_a_502_and_an_unreached_exchange(
     await web.TCPSite(probe, "127.0.0.1", 0).start()
     dead = f"http://127.0.0.1:{probe.addresses[0][1]}"
     await probe.cleanup()
-    proxy = await serve_proxy(dead, seen.append, clock=lambda: 7.0)
+    proxy = await serve_proxy(dead, seen.append, forward, clock=lambda: 7.0)
     try:
         status, _, body = await post(proxy.url)
     finally:
@@ -294,6 +313,76 @@ async def test_closing_the_proxy_mid_stream_stops_at_once_and_records_the_reply(
             await asyncio.wait_for(wire.proxy.close(), timeout=5)
     reply = only_exchange(wire).reply
     assert isinstance(reply, Reached) and reply.body == Garbled("the proxy stopped reading the reply: its client hung up or hands stopped")
+
+
+async def test_a_chunk_is_heard_before_the_client_can_have_it(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    # Whatever the client does once it has the bytes, its result line on stdout included, comes after hands heard them.
+    rest = asyncio.Event()
+
+    async def paused(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        for chunk in STREAM[:3]:
+            await response.write(chunk)
+        await rest.wait()
+        for chunk in STREAM[3:]:
+            await response.write(chunk)
+        await response.write_eof()
+        return response
+
+    _, wire = await serve(paused)
+    async with aiohttp.ClientSession() as client:
+        async with client.post(wire.proxy.url + "/v1/messages", data=REQUEST, headers=HEADERS) as response:
+            got = b""
+            while not got.endswith(STREAM[2]):
+                got += await response.content.readany()
+            heard = [seen.event for seen in wire.seen if isinstance(seen, Heard)]
+            assert TextDelta(0, "hello ") in heard
+            rest.set()
+            await response.read()
+
+
+async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_routes_words(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    upstream, wire = await serve(streamed)
+    wire.route = lambda _sent: Hold("(stayed silent)")
+    status, headers, body = await post(wire.proxy.url)
+    assert upstream.asked == []
+    assert status == 200 and headers["Content-Type"].startswith("text/event-stream")
+    # A whole message with the one text block, ended, as the API would have streamed it.
+    whole, rest = frames(body)
+    assert rest == b""
+    reply = assemble([parse(frame) for frame in whole])
+    assert isinstance(reply, Streamed)
+    assert (reply.message.model, reply.message.content, reply.message.stop_reason) == ("claude-opus-5-5", (Text("(stayed silent)"),), "end_turn")
+    exchange = only_exchange(wire)
+    assert exchange.kind == MainTurn() and isinstance(exchange.reply, Held) and exchange.reply.said == "(stayed silent)"
+    assert [type(seen) for seen in wire.seen] == [Sent, Exchanged]
+
+
+async def test_a_held_request_that_did_not_ask_for_a_stream_is_answered_whole(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    upstream, wire = await serve(streamed)
+    wire.route = lambda _sent: Hold("(interrupted)")
+    status, headers, body = await post(wire.proxy.url, REQUEST.replace(b'"stream": true', b'"stream": false'))
+    assert upstream.asked == [] and status == 200 and headers["Content-Type"].startswith("application/json")
+    answer = json.loads(body)
+    assert (answer["content"], answer["stop_reason"], answer["model"]) == ([{"type": "text", "text": "(interrupted)"}], "end_turn", "claude-opus-5-5")
+
+
+async def test_a_route_that_raises_is_logged_and_the_request_goes_on_as_it_came(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    upstream, wire = await serve(streamed)
+
+    def broken(_sent: Sent) -> Route:
+        raise RuntimeError("the stage fell over")
+
+    wire.route = broken
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
+    try:
+        status, _, body = await post(wire.proxy.url)
+    finally:
+        logger.remove(sink)
+    assert (status, body) == (200, b"".join(STREAM)) and len(upstream.asked) == 1
+    assert [error.startswith("the proxy's route failed") for error in errors] == [True]
 
 
 def test_the_daemon_keeps_one_audit_line_per_exchange_and_nothing_per_event() -> None:

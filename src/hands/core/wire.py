@@ -94,6 +94,10 @@ def _list(value: object) -> list[object]:
     return cast(list[object], value) if isinstance(value, list) else []
 
 
+def _role(message: object) -> object:
+    return cast(Mapping[str, object], message).get("role") if isinstance(message, Mapping) else None
+
+
 def _content(message: object) -> object:
     return cast(Mapping[str, object], message).get("content") if isinstance(message, Mapping) else None
 
@@ -113,6 +117,37 @@ def _texts(message: object) -> list[str]:
         return [content]
     texts = [cast(Mapping[str, object], block).get("text") for block in _blocks(message) if isinstance(block, Mapping)]
     return [text for text in texts if isinstance(text, str)]
+
+
+@dataclass(frozen=True)
+class ToolAnswer:
+    """A tool call's result as a request hands it back to the model: the tool it answers, its text, and whether it failed."""
+
+    name: str
+    text: str
+    is_error: bool
+
+
+def tool_answers(body: object) -> tuple[ToolAnswer, ...]:
+    """The tool results a messages request hands back after the model's last reply, each named by the call it answers.
+
+    After the reply, not in the last message: Claude Code 2.1.285 follows the results with a `system` message of its own.
+    """
+    messages = _list(cast(Mapping[str, object], body).get("messages")) if isinstance(body, Mapping) else []
+    replied = max((index for index, message in enumerate(messages) if _role(message) == "assistant"), default=-1)
+    calls = {
+        block.get("id"): block.get("name")
+        for message in messages[: replied + 1]
+        for block in (cast(Mapping[str, object], item) for item in _blocks(message) if isinstance(item, Mapping))
+        if block.get("type") == "tool_use"
+    }
+    results = [cast(Mapping[str, object], item) for message in messages[replied + 1 :] for item in _blocks(message) if isinstance(item, Mapping)]
+    # A result whose call is not in the request answers no tool hands can name, and the API refuses such a request anyway.
+    return tuple(
+        ToolAnswer(name, "".join(_texts(result)), result.get("is_error") is True)
+        for result in results
+        if result.get("type") == "tool_result" and isinstance(name := calls.get(result.get("tool_use_id")), str)
+    )
 
 
 SESSION_HEADER = "x-claude-code-session-id"
@@ -562,6 +597,14 @@ class Unreached:
 
 
 @dataclass(frozen=True)
+class Held:
+    """hands answered the request itself and the API never saw it: the model was not asked, and is recorded as saying `said`."""
+
+    said: str
+    answered_at: Seconds
+
+
+@dataclass(frozen=True)
 class Exchanged:
     """One request and its reply, whole: the wide record of one unit of the proxy's work."""
 
@@ -573,7 +616,30 @@ class Exchanged:
     request_bytes: int
     requested_at: Seconds
     sent_at: Seconds
-    reply: Reached | Unreached
+    reply: Reached | Unreached | Held
 
 
 Observed = Sent | Heard | Exchanged
+
+
+# ── Where a request goes ─────────────────────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Forward:
+    """The request goes to the API as it came."""
+
+
+@dataclass(frozen=True)
+class Hold:
+    """The request is answered by hands and never reaches the API, with `said` as the model's whole reply.
+
+    Kept in the client's history as the model's own words and never spoken. Not empty: to an empty reply Claude Code
+    2.1.285 answers "[Your previous response had no visible output. Please continue ...]" and asks again, and its
+    history keeps the tool results with no reply after them.
+    """
+
+    said: str
+
+
+Route = Forward | Hold

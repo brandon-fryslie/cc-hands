@@ -28,10 +28,12 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
+from uuid import uuid4
 
 from loguru import logger
 from pipecat.frames.frames import Frame
 from pipecat.pipeline.worker import PipelineWorker
+from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.services.whisper.stt import MLXModel
 from pipecat.workers.runner import WorkerRunner
 
@@ -46,7 +48,7 @@ from hands.sessions.statusfile import keep_reading_statuses
 from hands.sessions.tail import Tails, keep_tailing
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
-from hands.sessions.proxy import UPSTREAM, serve_proxy
+from hands.sessions.proxy import UPSTREAM, Wire, serve_proxy
 from hands.sessions.server import serve_hooks
 from hands.sessions.summaries import summaries
 from hands.voice.devices import follow_default_devices
@@ -60,6 +62,7 @@ from hands.voice.pipeline import (
     OpenAICompatibleBackend,
     Voice,
     VoiceConfig,
+    build_llm,
     build_voice,
 )
 from hands.voice.narrator import narrate
@@ -74,6 +77,8 @@ from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.tools import Tool, audited, intermediary_tools
 from hands.brain.mcp import serve_mcp
 from hands.brain.process import Brain, Launch, NotLoggedIn, logged_in, start as start_brain, workdir
+from hands.brain.stage import BrainStage
+from hands.core.session import SessionId
 
 # The SDK appends /v1/messages to this, so an Anthropic-compatible server's URL has no /v1 of its own.
 ANTHROPIC_URL = "https://api.anthropic.com"
@@ -200,19 +205,32 @@ class Watch:
     run: Callable[[], Coroutine[object, object, None]]
 
 
+@dataclass(frozen=True)
+class Mind:
+    """The pipeline's LLM stage for the model's variant, and what that variant runs beside the pipeline."""
+
+    llm: FrameProcessor
+    watches: Sequence[Watch]
+
+
 @asynccontextmanager
-async def mind(backend: LLMBackend, tools: Sequence[Tool], proxy_url: str, record: Record) -> AsyncGenerator[Sequence[Watch]]:
-    """What the model's variant runs beside the pipeline for the whole conversation: for the brain, its process and the MCP server it reaches hands through."""
-    match backend:
-        case AnthropicBackend() | OpenAICompatibleBackend():
-            yield ()
+async def mind(config: VoiceConfig, tools: Sequence[Tool], proxy_url: str, wire: Wire, record: Record) -> AsyncGenerator[Mind]:
+    """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
+    through, and the stage that speaks for it from the wire."""
+    # [LAW:single-enforcer] the one place the backend's variant decides the LLM stage.
+    match config.llm:
+        case AnthropicBackend() | OpenAICompatibleBackend() as backend:
+            yield Mind(build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens), ())
         case ClaudeCodeBackend(model=model, config_dir=config_dir):
             server = await serve_mcp(tools, record)
             try:
-                launch = Launch(config_dir, workdir(config_dir), model, INTERMEDIARY_INSTRUCTION, proxy_url, server.config())
+                session = SessionId(str(uuid4()))
+                launch = Launch(config_dir, workdir(config_dir), model, INTERMEDIARY_INSTRUCTION, proxy_url, server.config(), session)
                 brain = await start_brain(launch, record)
                 try:
-                    yield (Watch("the brain", lambda: outlived(brain)),)
+                    stage = BrainStage(brain, tools, record)
+                    with wire.joined(stage):
+                        yield Mind(stage, (Watch("the brain", lambda: outlived(brain)),))
                 finally:
                     await brain.stop()
             finally:
@@ -246,7 +264,8 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     deltas = Deltas()
     sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record, changes=deltas)
     hooks = await serve_hooks(home, sessions)
-    proxy = await serve_proxy(UPSTREAM, wire_to(audit.record), clock=time.time)
+    wire = Wire(wire_to(audit.record))
+    proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=time.time)
     audit.record(ProxyListening(url=proxy.url, upstream=UPSTREAM))
     quit_event = asyncio.Event()
     # [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the q key, and a failed
@@ -257,12 +276,14 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     voice: Voice | None = None
     tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions)]
     try:
-        started = await start(configure, survey, home, sessions, tools, heart, quit_event, audit.record)
-        if started is not None:
-            config, voice = started
-            async with mind(config.llm, tools, proxy.url, audit.record) as watches:
-                summarise = summariser(config.llm, proxy.url, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
-                await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas, watches)
+        config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions, quit_event)
+        if config is not None:
+            # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
+            async with mind(config, tools, proxy.url, wire, audit.record) as minded:
+                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm), "the voice load"), heart, sessions, quit_event)
+                if voice is not None:
+                    summarise = summariser(config.llm, proxy.url, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
+                    await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas, minded.watches)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -275,32 +296,24 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     heart.beat("stopped", None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count(), False)
 
 
-async def start(
-    configure: Callable[[], VoiceConfig],
-    survey: Callable[[], None],
-    home: Home,
-    sessions: Sessions,
-    tools: Sequence[Tool],
-    heart: heartbeat.Heart,
-    quit_event: asyncio.Event,
-    record: Record,
-) -> tuple[VoiceConfig, Voice] | None:
-    """The configuration and the voice, while the loop beats "starting"; None when told to stop first.
+async def configured(configure: Callable[[], VoiceConfig], survey: Callable[[], None], home: Home, sessions: Sessions, record: Record) -> VoiceConfig:
+    """The configuration, once what hands is missing has been said and the sessions already running are listed."""
+    await off_loop(survey, "the readiness check")
+    # A restart is back where it was before the models load: every session with a file and a running process is listed.
+    await sweep(home, sessions, frozenset())
+    config = await off_loop(configure, "the configuration read")
+    # [LAW:nothing-unseen] which server and model the environment chose is read from the log, not re-derived from a shell.
+    record(LLMChosen(backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model))
+    return config
 
-    [LAW:single-enforcer] one beater says "starting" for the whole start. Its slow steps run off the loop: saying what
-    hands is missing asks `claude`, reading the configuration can wait on the user at a keychain prompt, and loading
+
+async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: heartbeat.Heart, sessions: Sessions, quit_event: asyncio.Event) -> T | None:
+    """What `prepare` makes, while the loop beats "starting"; None when told to stop first.
+
+    [LAW:single-enforcer] one beater says "starting" for each step of the start. Its slow steps run off the loop: saying
+    what hands is missing asks `claude`, reading the configuration can wait on the user at a keychain prompt, and loading
     the models takes seconds. A start that waits reads as starting, and only a stuck loop as not responding.
     """
-
-    async def prepare() -> tuple[VoiceConfig, Voice]:
-        await off_loop(survey, "the readiness check")
-        # A restart is back where it was before the models load: every session with a file and a running process is listed.
-        await sweep(home, sessions, frozenset())
-        config = await off_loop(configure, "the configuration read")
-        # [LAW:nothing-unseen] which server and model the environment chose is read from the log, not re-derived from a shell.
-        record(LLMChosen(backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model))
-        return config, await off_loop(lambda: build_voice(config, tools=tools), "the voice load")
-
     preparing = asyncio.create_task(prepare())
     starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, sessions.live_count(), False), heart.period.total_seconds()))
     quitting = asyncio.create_task(quit_event.wait())
@@ -315,7 +328,6 @@ async def start(
         # [LAW:no-silent-failure] the heartbeat only ends by raising, and its error stops the run as the steady one does.
         starting.result()
     return preparing.result() if preparing.done() and not preparing.cancelled() else None
-
 
 async def converse(
     voice: Voice,

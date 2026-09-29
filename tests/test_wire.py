@@ -5,6 +5,8 @@ from typing import cast
 
 from hands.core.session import SessionId
 from hands.core.wire import (
+    ToolAnswer,
+    tool_answers,
     COMPACTION_OPENING,
     Answered,
     BlockStarted,
@@ -225,3 +227,30 @@ def test_a_reply_that_is_not_a_stream_is_its_json_or_else_its_text() -> None:
     assert answered(b"<html>bad gateway</html>") == Answered("<html>bad gateway</html>")
     assert is_stream("text/event-stream; charset=utf-8")
     assert not is_stream("application/json")
+
+
+def test_tool_answers_are_named_by_the_calls_they_answer() -> None:
+    body: dict[str, object] = {
+        "messages": [
+            {"role": "user", "content": "file it"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Filing."},
+                {"type": "tool_use", "id": "a", "name": "mcp__hands__stage_draft", "input": {}},
+                {"type": "tool_use", "id": "b", "name": "Bash", "input": {}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "a", "content": [{"type": "text", "text": '{"readback": "staged"}'}]},
+                {"type": "tool_result", "tool_use_id": "b", "content": "exit 1", "is_error": True},
+                {"type": "tool_result", "tool_use_id": "nobody", "content": "lost"},
+                {"type": "text", "text": "<system-reminder>noted</system-reminder>"},
+            ]},
+            # Claude Code 2.1.285 follows the results with a message of its own, as the brain's requests showed.
+            {"role": "system", "content": [{"type": "text", "text": "<system-reminder>tokens left</system-reminder>", "cache_control": {"type": "ephemeral"}}]},
+        ]
+    }
+    assert tool_answers(body) == (ToolAnswer("mcp__hands__stage_draft", '{"readback": "staged"}', False), ToolAnswer("Bash", "exit 1", True))
+    assert tool_answers({"messages": [{"role": "user", "content": "hi"}]}) == ()
+    assert tool_answers(None) == ()
+    # A result the model has already replied to is not handed back again.
+    answered_before = cast(list[object], body["messages"]) + [{"role": "assistant", "content": [{"type": "text", "text": "Filed."}]}, {"role": "user", "content": "thanks"}]
+    assert tool_answers({"messages": answered_before}) == ()

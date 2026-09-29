@@ -20,10 +20,12 @@ from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from loguru import logger
 
 from hands.brain.mcp import SERVER_NAME
+from hands.core.session import SessionId
 from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainReady, Record
 from hands.sessions.payload import Payload, Rejected
 
@@ -62,6 +64,9 @@ class Launch:
     instruction: str
     proxy_url: str
     mcp_config: str
+    # [LAW:one-source-of-truth] chosen by hands, so the brain's requests are known as its own from the first one on the
+    # wire, before its init line is read off stdout.
+    session: SessionId
 
 
 def command(launch: Launch) -> list[str]:
@@ -75,6 +80,7 @@ def command(launch: Launch) -> list[str]:
         # stream-json output under -p is refused without it.
         "--verbose",
         "--model", launch.model,
+        "--session-id", launch.session,
         "--system-prompt", launch.instruction,
         # Variadic: it would swallow a positional prompt after it, and none follows, since the prompt comes on stdin.
         "--tools", ",".join(BUILTIN_TOOLS),
@@ -137,8 +143,9 @@ def logged_in(config_dir: Path, base_url: str) -> None:
 class Brain:
     """A running brain: a turn is asked with `ask`, which returns once the brain has said the turn is over."""
 
-    def __init__(self, process: asyncio.subprocess.Process, record: Record) -> None:
+    def __init__(self, process: asyncio.subprocess.Process, session: SessionId, record: Record) -> None:
         self._process = process
+        self.session = session
         self._record = record
         # [LAW:no-ambient-temporal-coupling] the turn in flight is the brain's own state, not its asker's: it is over
         # when its result line is read, whether or not anyone still waits on it, and the next is written only then, so
@@ -166,6 +173,13 @@ class Brain:
         await stdin.drain()
         # An asker that stops waiting leaves the turn running to its result line, which is still the brain's to read.
         return await asyncio.shield(turn)
+
+    async def interrupt(self) -> None:
+        """Tell the turn in flight to stop. It still ends at its result line, which the brain writes once it has stopped."""
+        stdin = self._process.stdin
+        assert stdin is not None, "the brain is started with a stdin pipe"
+        stdin.write(json.dumps({"type": "control_request", "request_id": uuid4().hex, "request": {"subtype": "interrupt"}}).encode() + b"\n")
+        await stdin.drain()
 
     async def exited(self) -> int:
         """Waits for the brain to end, and returns its exit code; the line that says it ended is written once, however many wait."""
@@ -272,4 +286,4 @@ async def start(launch: Launch, record: Record) -> Brain:
         limit=16 * 1024 * 1024,
     )
     record(BrainLaunched(process.pid, launch.config_dir, launch.cwd, launch.model))
-    return Brain(process, record)
+    return Brain(process, launch.session, record)

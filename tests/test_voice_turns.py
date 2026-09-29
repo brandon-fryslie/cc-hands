@@ -120,6 +120,7 @@ async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
     voice = built.build_voice(
         built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), whisper_model="unused", voice="unused"),
         tools=[],
+        llm=FrameProcessor(),
     )
     out = Recorded()
     worker = PipelineWorker(Pipeline([voice.stt, voice.user_turns, out]), idle_timeout_secs=None)

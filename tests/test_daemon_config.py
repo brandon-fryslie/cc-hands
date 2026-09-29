@@ -5,7 +5,6 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -175,12 +174,6 @@ def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.Voic
 async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # A keychain prompt answered slowly is a start that is waiting, never one that looks stuck.
     home, sessions, heart, config = _starting(tmp_path)
-    voice = cast(run.Voice, object())
-
-    def built(_config: run.VoiceConfig, tools: object) -> run.Voice:
-        return voice
-
-    monkeypatch.setattr(run, "build_voice", built)
     answered = threading.Event()
 
     def prompted() -> run.VoiceConfig:
@@ -188,7 +181,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         return config
 
     recorded: list[Entry] = []
-    starting = asyncio.create_task(run.start(prompted, lambda: None, home, sessions, [], heart, asyncio.Event(), recorded.append))
+    starting = asyncio.create_task(run.start(lambda: run.configured(prompted, lambda: None, home, sessions, recorded.append), heart, sessions, asyncio.Event()))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -197,7 +190,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
             beats.add(status.written_at)
         await asyncio.sleep(0.005)
     answered.set()
-    assert await starting == (config, voice)
+    assert await starting == config
     # The log says which server and model the run reaches, and never with what key.
     assert recorded == [LLMChosen(backend="AnthropicBackend", base_url=ANTHROPIC_URL, model=ANTHROPIC_MODEL)]
     assert "sk-secret" not in str([encoded(entry) for entry in recorded])
@@ -213,7 +206,7 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
 
     quit_event = asyncio.Event()
     quit_event.set()
-    assert await run.start(prompted, lambda: None, home, sessions, [], heart, quit_event, lambda _event: None) is None
+    assert await run.start(lambda: run.configured(prompted, lambda: None, home, sessions, lambda _event: None), heart, sessions, quit_event) is None
     never.set()
 
 
@@ -225,4 +218,4 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
         raise SystemExit("no key")
 
     with pytest.raises(SystemExit, match="no key"):
-        asyncio.run(run.start(refused, lambda: None, home, sessions, [], heart, asyncio.Event(), lambda _event: None))
+        asyncio.run(run.start(lambda: run.configured(refused, lambda: None, home, sessions, lambda _event: None), heart, sessions, asyncio.Event()))
