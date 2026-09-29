@@ -1,0 +1,233 @@
+"""The proxy: the client gets the API's bytes unchanged, the API gets the client's request unchanged, and each exchange is one record."""
+
+import asyncio
+import gzip
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass, field
+
+import aiohttp
+import pytest
+from aiohttp import web
+
+from hands.core.session import SessionId
+from hands.core.wire import (
+    Answered,
+    CountTokens,
+    Exchanged,
+    Garbled,
+    Heard,
+    MainTurn,
+    Observed,
+    Reached,
+    Sent,
+    Streamed,
+    Text,
+    TextDelta,
+    Unreached,
+)
+from hands.daemon.run import wire_to
+from hands.sessions.audit import Entry
+from hands.sessions.proxy import Proxy, serve_proxy
+
+REQUEST = (
+    b'{"model": "claude-opus-5-5", "tools": [{"name": "Read"}], "stream": true, "messages": '
+    b'[{"role": "user", "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}]}]}'
+)
+HEADERS = {"Authorization": "Bearer the-clients-own", "X-Claude-Code-Session-Id": "s1", "Content-Type": "application/json"}
+
+
+def sse(event: str, data: str) -> bytes:
+    return f"event: {event}\ndata: {data}\n\n".encode()
+
+
+STREAM = [
+    sse("message_start", '{"type":"message_start","message":{"id":"msg_1","model":"m","usage":{"input_tokens":2}}}'),
+    sse("content_block_start", '{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}'),
+    sse("content_block_delta", '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello "}}'),
+    sse("content_block_delta", '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"from the wire"}}'),
+    sse("content_block_stop", '{"type":"content_block_stop","index":0}'),
+    sse("message_delta", '{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}'),
+    sse("message_stop", '{"type":"message_stop"}'),
+]
+
+
+@dataclass
+class Upstream:
+    """A stand-in for the API: what it was asked, and a handler per path."""
+
+    url: str
+    asked: list[tuple[str, dict[str, str], bytes]] = field(default_factory=lambda: [])
+
+
+@dataclass
+class Wire:
+    proxy: Proxy
+    seen: list[Observed]
+    exchanged: asyncio.Event
+
+
+Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
+
+
+@pytest.fixture
+async def serve() -> AsyncIterator[Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]]:
+    cleanups: list[Callable[[], Awaitable[None]]] = []
+    ticks = iter(float(second) for second in range(1_000))
+
+    async def start(handler: Handler) -> tuple[Upstream, Wire]:
+        runner = web.AppRunner(web.Application())
+        upstream = Upstream(url="")
+
+        async def recorded(request: web.Request) -> web.StreamResponse:
+            upstream.asked.append((request.path_qs, dict(request.headers), await request.read()))
+            return await handler(request)
+
+        runner.app.router.add_route("*", "/{path:.*}", recorded)
+        await runner.setup()
+        await web.TCPSite(runner, "127.0.0.1", 0).start()
+        upstream.url = f"http://127.0.0.1:{runner.addresses[0][1]}"
+        seen: list[Observed] = []
+        exchanged = asyncio.Event()
+
+        def observe(observed: Observed) -> None:
+            seen.append(observed)
+            if isinstance(observed, Exchanged):
+                exchanged.set()
+
+        proxy = await serve_proxy(upstream.url, observe, clock=lambda: next(ticks))
+        cleanups.extend([proxy.close, runner.cleanup])
+        return upstream, Wire(proxy, seen, exchanged)
+
+    yield start
+    for cleanup in cleanups:
+        await cleanup()
+
+
+async def streamed(request: web.Request) -> web.StreamResponse:
+    response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "request-id": "req_1"})
+    await response.prepare(request)
+    for chunk in STREAM:
+        # Each frame split in two, so the proxy reads frames across chunk boundaries as the API sends them.
+        await response.write(chunk[:10])
+        await response.write(chunk[10:])
+    await response.write_eof()
+    return response
+
+
+async def post(url: str, body: bytes = REQUEST, path: str = "/v1/messages?beta=true") -> tuple[int, dict[str, str], bytes]:
+    async with aiohttp.ClientSession(auto_decompress=False) as client:
+        async with client.post(url + path, data=body, headers=HEADERS) as response:
+            return response.status, dict(response.headers), await response.read()
+
+
+def only_exchange(wire: Wire) -> Exchanged:
+    exchanges = [seen for seen in wire.seen if isinstance(seen, Exchanged)]
+    assert len(exchanges) == 1
+    return exchanges[0]
+
+
+async def test_a_stream_passes_byte_for_byte_and_is_one_classified_timed_exchange(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    upstream, wire = await serve(streamed)
+    status, headers, body = await post(wire.proxy.url)
+
+    assert (status, body, headers["request-id"]) == (200, b"".join(STREAM), "req_1")
+    [(path, asked_headers, asked_body)] = upstream.asked
+    # The request goes on as it came: its path, its body, and the client's own credentials for its own request.
+    assert (path, asked_body, asked_headers["Authorization"]) == ("/v1/messages?beta=true", REQUEST, "Bearer the-clients-own")
+    exchange = only_exchange(wire)
+    assert (exchange.session, exchange.kind, exchange.method, exchange.path, exchange.request_bytes) == (
+        SessionId("s1"), MainTurn(), "POST", "/v1/messages?beta=true", len(REQUEST)
+    )
+    assert isinstance(exchange.reply, Reached)
+    assert exchange.reply.status == 200 and exchange.reply.reply_bytes == len(body)
+    assert exchange.requested_at < exchange.sent_at < exchange.reply.first_byte_at < exchange.reply.last_byte_at
+    assert isinstance(exchange.reply.body, Streamed)
+    assert exchange.reply.body.message.content == (Text("hello from the wire"),)
+
+
+async def test_the_request_is_heard_before_the_reply_and_text_as_it_arrives(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    _, wire = await serve(streamed)
+    await post(wire.proxy.url)
+    assert isinstance(wire.seen[0], Sent) and wire.seen[0].kind == MainTurn()
+    texts = [seen.event.text for seen in wire.seen if isinstance(seen, Heard) and isinstance(seen.event, TextDelta)]
+    assert texts == ["hello ", "from the wire"]
+    assert isinstance(wire.seen[-1], Exchanged)
+
+
+async def test_a_compressed_answer_reaches_the_client_compressed_and_is_read_decompressed(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    packed = gzip.compress(b'{"input_tokens": 5583}')
+
+    async def counted(_request: web.Request) -> web.Response:
+        return web.Response(body=packed, headers={"Content-Type": "application/json", "Content-Encoding": "gzip"})
+
+    _, wire = await serve(counted)
+    status, headers, body = await post(wire.proxy.url, path="/v1/messages/count_tokens?beta=true")
+    assert (status, body, headers["Content-Encoding"]) == (200, packed, "gzip")
+    exchange = only_exchange(wire)
+    assert exchange.kind == CountTokens()
+    assert isinstance(exchange.reply, Reached) and exchange.reply.body == Answered({"input_tokens": 5583})
+
+
+async def test_an_error_status_passes_through_with_its_body_read(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    error = b'{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'
+
+    async def overloaded(_request: web.Request) -> web.Response:
+        return web.Response(status=529, body=error, headers={"Content-Type": "application/json"})
+
+    _, wire = await serve(overloaded)
+    assert (await post(wire.proxy.url))[::2] == (529, error)
+    reply = only_exchange(wire).reply
+    assert isinstance(reply, Reached) and (reply.status, reply.body) == (529, Answered({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}))
+
+
+async def test_an_api_that_cannot_be_reached_is_a_502_and_an_unreached_exchange() -> None:
+    seen: list[Observed] = []
+    # A port just released, so nothing listens on it.
+    probe = web.AppRunner(web.Application())
+    await probe.setup()
+    await web.TCPSite(probe, "127.0.0.1", 0).start()
+    dead = f"http://127.0.0.1:{probe.addresses[0][1]}"
+    await probe.cleanup()
+    proxy = await serve_proxy(dead, seen.append, clock=lambda: 7.0)
+    try:
+        status, _, body = await post(proxy.url)
+    finally:
+        await proxy.close()
+    assert status == 502 and dead.encode() in body
+    [exchange] = [observed for observed in seen if isinstance(observed, Exchanged)]
+    assert isinstance(exchange.reply, Unreached) and exchange.reply.failed_at == 7.0
+
+
+async def test_a_client_that_hangs_up_mid_stream_ends_the_upstream_reply_and_is_recorded(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    upstream_ended = asyncio.Event()
+
+    async def endless(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(STREAM[0])
+        try:
+            while True:
+                await response.write(sse("ping", '{"type":"ping"}'))
+                await asyncio.sleep(0.01)
+        except (ConnectionError, aiohttp.ClientConnectionResetError):
+            upstream_ended.set()
+        return response
+
+    _, wire = await serve(endless)
+    async with aiohttp.ClientSession() as client:
+        async with client.post(wire.proxy.url + "/v1/messages", data=REQUEST, headers=HEADERS) as response:
+            await response.content.readany()
+    # The hang-up is the only way the rest stops coming, so both ends are waited on rather than timed.
+    await asyncio.wait_for(asyncio.gather(wire.exchanged.wait(), upstream_ended.wait()), timeout=10)
+    reply = only_exchange(wire).reply
+    assert isinstance(reply, Reached) and isinstance(reply.body, Garbled) and reply.body.reason.startswith("the reply ended after")
+
+
+def test_the_daemon_keeps_one_audit_line_per_exchange_and_nothing_per_event() -> None:
+    lines: list[Entry] = []
+    observe = wire_to(lines.append)
+    exchange = Exchanged("e1", None, MainTurn(), "POST", "/v1/messages", 1, 1.0, 2.0, Unreached("refused", 3.0))
+    observe(Sent("e1", None, MainTurn(), None))
+    observe(Heard("e1", TextDelta(0, "hi")))
+    observe(exchange)
+    assert lines == [exchange]

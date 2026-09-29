@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 from hands.core.effects import AuditRecord, Effect, Input, Type
 from hands.core.events import Event
+from hands.core.wire import Exchanged
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,14 @@ class LLMChosen:
     backend: str
     base_url: str
     model: str
+
+
+@dataclass(frozen=True)
+class ProxyListening:
+    """Where the wire proxy took requests for this run: the url a Claude Code process's ANTHROPIC_BASE_URL is set to."""
+
+    url: str
+    upstream: str
 
 
 @dataclass(frozen=True)
@@ -116,7 +125,22 @@ class Failure:
     message: str
 
 
-Entry = AuditRecord | Applied | Performed | Typing | EffectFailed | LLMChosen | Transcribed | Replied | Called | Announced | Recounted | Failure
+Entry = (
+    AuditRecord
+    | Applied
+    | Performed
+    | Typing
+    | EffectFailed
+    | LLMChosen
+    | ProxyListening
+    | Exchanged
+    | Transcribed
+    | Replied
+    | Called
+    | Announced
+    | Recounted
+    | Failure
+)
 Record = Callable[[Entry], None]
 
 
