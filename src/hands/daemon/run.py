@@ -98,13 +98,13 @@ def backend_from_env() -> LLMBackend:
     choice = os.environ.get("HANDS_LLM", "anthropic")
     if choice == "openai":
         return OpenAICompatibleBackend(
-            base_url=os.environ.get("HANDS_LLM_URL", OPENAI_URL),
+            base_url=_environment_url() or OPENAI_URL,
             api_key=_key("OPENAI_API_KEY", choice),
             model=os.environ.get("HANDS_LLM_MODEL", OPENAI_MODEL),
         )
     if choice == "anthropic":
         model = os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL)
-        url = os.environ.get("HANDS_LLM_URL")
+        url = _environment_url()
         if url is None:
             key = _environment_key("ANTHROPIC_API_KEY") or _keychain_key(ANTHROPIC_KEYCHAIN_SERVICE, "ANTHROPIC_API_KEY", choice)
             return AnthropicBackend(base_url=ANTHROPIC_URL, api_key=key, model=model)
@@ -121,6 +121,11 @@ def _key(var: str, choice: str) -> str:
     if not key:
         sys.exit(f"{var} is not set; HANDS_LLM={choice} needs it to reach its model.")
     return key
+
+
+def _environment_url() -> str | None:
+    """The server HANDS_LLM_URL names, or None when it names none: a blank line in a .env is no URL, as a blank key is no key."""
+    return os.environ.get("HANDS_LLM_URL", "").strip() or None
 
 
 def _environment_key(var: str) -> str:

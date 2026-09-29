@@ -42,6 +42,18 @@ def test_the_keychain_key_never_leaves_for_another_server(monkeypatch: pytest.Mo
         backend_from_env()
 
 
+def test_a_blank_url_is_no_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("HANDS_LLM_MODEL", raising=False)
+    monkeypatch.setenv("HANDS_LLM_URL", "  ")
+    monkeypatch.setattr(run, "keychain_password", {"HANDS_LLM_ANT_KEY": "anthropic-own"}.get)
+    monkeypatch.setenv("HANDS_LLM", "anthropic")
+    assert backend_from_env() == AnthropicBackend(base_url=ANTHROPIC_URL, api_key="anthropic-own", model=ANTHROPIC_MODEL)
+    monkeypatch.setenv("HANDS_LLM", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    assert backend_from_env() == OpenAICompatibleBackend(base_url=OPENAI_URL, api_key="k", model=OPENAI_MODEL)
+
+
 def test_an_anthropic_url_with_its_own_v1_stops_at_the_door(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HANDS_LLM", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
