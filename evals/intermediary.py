@@ -64,7 +64,7 @@ from hands.sessions.registry import Sessions
 from hands.voice.briefing import briefing
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.pipeline import AnthropicBackend, LLMBackend, OpenAICompatibleBackend, VoiceConfig, build_llm
-from hands.voice.tools import intermediary_tools
+from hands.voice.tools import intermediary_tools, pipecat_function
 
 CONVERSATIONS = Path(__file__).parent / "conversations"
 
@@ -132,7 +132,7 @@ def asker(backend: LLMBackend) -> Ask:
             client = AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=0, timeout=TIMEOUT_SECONDS)
 
             async def from_openai(messages: list[LLMContextMessage]) -> tuple[str, tuple[Call, ...]]:
-                context = LLMContext(messages=list(messages), tools=list(tools))
+                context = LLMContext(messages=list(messages), tools=[pipecat_function(tool) for tool in tools])
                 invocation = service.get_llm_adapter().get_llm_invocation_params(
                     context, system_instruction=INTERMEDIARY_INSTRUCTION, convert_developer_to_user=not service.supports_developer_role
                 )
@@ -154,7 +154,7 @@ def asker(backend: LLMBackend) -> Ask:
             client_ = AsyncAnthropic(base_url=base_url, api_key=api_key, max_retries=0, timeout=TIMEOUT_SECONDS)
 
             async def from_anthropic(messages: list[LLMContextMessage]) -> tuple[str, tuple[Call, ...]]:
-                context = LLMContext(messages=list(messages), tools=list(tools))
+                context = LLMContext(messages=list(messages), tools=[pipecat_function(tool) for tool in tools])
                 # Pipecat assembles this request inside its streaming call, with no builder to borrow as the OpenAI
                 # path does, so these are that assembly's steps the daemon's settings reach, each the service's own:
                 # its adapter call, and the thinking it turns off for a Sonnet that would otherwise think.

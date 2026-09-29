@@ -7,14 +7,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
-from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
+from collections.abc import Awaitable, Callable
 from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.sessions.registry import Sessions
 from hands.voice.briefing import briefing
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
-from hands.voice.tools import intermediary_tools, stay_silent_tool
+from hands.voice.tools import intermediary_tools, pipecat_function, stay_silent_tool
 
 _SPEC = importlib.util.spec_from_file_location("intermediary_eval", Path(__file__).parents[1] / "evals" / "intermediary.py")
 assert _SPEC is not None and _SPEC.loader is not None
@@ -27,7 +27,7 @@ FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "title": "untitled in cc-
 
 
 def names(sessions: Sessions) -> list[str]:
-    return [DirectFunctionWrapper(tool).name for tool in intermediary_tools(sessions)]
+    return [tool.name for tool in intermediary_tools(sessions)]
 
 
 def test_the_briefing_names_each_session_by_title_state_and_mode_with_the_id_for_the_tools() -> None:
@@ -48,7 +48,8 @@ async def test_stay_silent_ends_the_turn_without_running_the_model_again() -> No
     async def capture(result: object, *, properties: FunctionCallResultProperties | None = None) -> None:
         answered.append((result, properties))
 
-    await stay_silent_tool()(cast(FunctionCallParams, SimpleNamespace(result_callback=capture)))
+    handler = cast(Callable[[FunctionCallParams], Awaitable[None]], pipecat_function(stay_silent_tool())._handler)  # pyright: ignore[reportPrivateUsage]
+    await handler(cast(FunctionCallParams, SimpleNamespace(result_callback=capture, arguments={})))
     [(result, properties)] = answered
     assert result == {"silent": True}
     assert properties is not None and properties.run_llm is False

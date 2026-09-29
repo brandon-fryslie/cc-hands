@@ -12,6 +12,7 @@ dependencies = [
     "pyobjc-framework-quartz>=12.2.2",
     "brotli>=1.2.0",
     "zstandard>=0.25.0",
+    "docstring-parser>=0.18.0",
 ]
 
 [project.scripts]

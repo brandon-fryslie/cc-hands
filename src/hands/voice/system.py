@@ -129,7 +129,7 @@ Alarm = Say | Post | Unrouted
 _UNREACHABLE = (openai.APIConnectionError, anthropic.APIConnectionError, ConnectionError, TimeoutError)
 
 
-def alarm(error: ErrorFrame, *, stt: FrameProcessor, llm: FrameProcessor, tts: FrameProcessor) -> Alarm:
+def alarm(error: ErrorFrame, *, stt: FrameProcessor, llm: FrameProcessor | None, tts: FrameProcessor) -> Alarm:
     """What the user is told about a pipeline error, decided by the processor that raised it."""
     match error.processor:
         case processor if processor is tts:

@@ -8,14 +8,11 @@ import sys
 import tempfile
 from collections.abc import AsyncIterator, Iterator, Mapping
 from pathlib import Path
-from types import SimpleNamespace
 from typing import cast
 
 import pytest
 from loguru import logger
-from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
-from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Allow, Narrate, Withdraw, Asking, DeadlineNear, Expired, Speak
 from hands.core.events import PermissionRequested, StatusReported, Tick, ToolFinished
@@ -121,20 +118,12 @@ async def asked(home: Home, sessions: Sessions, payload: Mapping[str, object] = 
 
 
 def named(sessions: Sessions, name: str) -> Tool:
-    [tool] = [tool for tool in permission_tools(sessions) if tool.__name__ == name]
+    [tool] = [tool for tool in permission_tools(sessions) if tool.name == name]
     return tool
 
 
 async def call(tool: Tool, **arguments: object) -> dict[str, object]:
-    results: list[dict[str, object]] = []
-
-    async def capture(result: dict[str, object], **_: object) -> None:
-        results.append(result)
-
-    params = SimpleNamespace(result_callback=capture, function_name=tool.__name__)
-    await DirectFunctionWrapper(tool).invoke(arguments, cast(FunctionCallParams, params))
-    [result] = results
-    return result
+    return dict(await tool.body(**arguments))
 
 
 def decision(stdout: str) -> object:
@@ -379,10 +368,10 @@ async def test_an_answer_that_does_not_parse_is_refused_out_loud(sessions: Sessi
     assert error in str((await call(named(sessions, "answer_permission"), **arguments))["error"])
 
 
-def test_the_tools_are_valid_direct_functions_that_a_barge_in_cannot_cancel(sessions: Sessions) -> None:
-    schemas = [(DirectFunctionWrapper(tool).to_function_schema(), tool) for tool in permission_tools(sessions)]
-    assert [(schema.name, schema.required) for schema, _ in schemas] == [("answer_permission", ["request", "decision"]), ("answer_question", ["request", "answers"]), ("answer_plan", ["request", "decision"])]
-    assert all(getattr(tool, "_pipecat_cancel_on_interruption") is False for _, tool in schemas)
+def test_the_tools_say_their_arguments_and_complete_through_a_barge_in(sessions: Sessions) -> None:
+    tools = permission_tools(sessions)
+    assert [(tool.name, tool.required) for tool in tools] == [("answer_permission", ("request", "decision")), ("answer_question", ("request", "answers")), ("answer_plan", ("request", "decision"))]
+    assert all(tool.completes for tool in tools)
 
 
 async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the_speaker(home: Home, sessions: Sessions, clock: Clock) -> None:

@@ -879,6 +879,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "brotli" },
+    { name = "docstring-parser" },
     { name = "loguru" },
     { name = "pipecat-ai", extra = ["anthropic", "local", "mlx-whisper", "pocket-tts", "whisper"] },
     { name = "pyobjc-framework-cocoa" },
@@ -898,6 +899,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.10" },
     { name = "brotli", specifier = ">=1.2.0" },
+    { name = "docstring-parser", specifier = ">=0.18.0" },
     { name = "loguru", specifier = ">=0.7" },
     { name = "pipecat-ai", extras = ["anthropic", "local", "mlx-whisper", "whisper", "pocket-tts"], specifier = ">=1.9.0,<2" },
     { name = "pyobjc-framework-cocoa", specifier = ">=11" },
