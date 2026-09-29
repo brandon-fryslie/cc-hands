@@ -1230,9 +1230,10 @@ stopped with Escape, which fires no Stop, is never heard to end. The
   transcript through `UNTOLD` ms past the `idle`'s stamp, which is what tells a double
   Escape that leaves no record. That wait is on Claude Code's clock: each reading says how
   far it read (`Read`), stamped before it opened the file, so a transcript hands reads late
-  delays the telling and never leaves the record out of it. Claude Code sets `idle` only once a Stop's hooks have returned, and the shim
-  waits (up to its 2 s post timeout) until the Stop is applied, so a stopped turn is
-  normally ended by its Stop. It sets `busy` before a prompt's hooks run, so no `idle`
+  delays the telling and never leaves the record out of it. Claude Code sets `idle` only once a Stop's hooks have returned, and the
+  daemon answers a Stop's hook only once the Stop is decided, so a stopped turn is normally ended by its Stop. A Stop under an
+  id no record read yet names is held until one is (`Holding`), for at most `STOP_HOLD_SECONDS`; past that its hook is let go
+  and the Stop still tells its turn once a record names it, or is a line once the transcript is read through it without one. It sets `busy` before a prompt's hooks run, so no `idle`
   read after a prompt is applied predates it. A single Escape that flushes a queued
   message sets `busy` again, not `idle`. All three were seen live on 2.1.282. The
   ordering holds only if a file is read at the moment its report is applied, so the
