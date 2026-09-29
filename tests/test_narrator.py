@@ -26,7 +26,7 @@ from hands.sessions.tail import Tails
 from hands.voice.narrator import narrate, recount
 from hands.voice.refusal import UsageLimitReached
 from hands.voice.speech import relay
-from hands.voice.pipeline import OpenAICompatibleBackend
+from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
 
 from conftest import ServeChat
@@ -395,6 +395,18 @@ async def test_the_openai_compatible_summariser_sends_the_instruction_and_the_tu
     [request] = server.asked
     assert request["model"] == "m" and request["max_tokens"] == 50
     assert request["messages"] == [{"role": "system", "content": "Summarise."}, {"role": "user", "content": "The user asked:\nfix it"}]
+    assert server.keys == ["k"]
+
+
+async def test_the_anthropic_summariser_sends_the_instruction_and_the_turn_with_its_key_to_its_url_and_returns_the_text(
+    chat_server: ServeChat,
+) -> None:
+    server = await chat_server("  Fixed the test.  ")
+    summarise = summariser(AnthropicBackend(base_url=server.anthropic_url, api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
+    assert await summarise("The user asked:\nfix it") == "Fixed the test."
+    [request] = server.asked
+    assert request["model"] == "m" and request["max_tokens"] == 50 and request["system"] == "Summarise."
+    assert request["messages"] == [{"role": "user", "content": "The user asked:\nfix it"}]
     assert server.keys == ["k"]
 
 

@@ -10,40 +10,48 @@ from typing import cast
 import pytest
 
 from hands.daemon import run
-from hands.daemon.run import ANTHROPIC_MODEL, LOCAL_LLM_KEY, LOCAL_LLM_MODEL, LOCAL_LLM_URL, OPENAI_MODEL, OPENAI_URL, backend_from_env
+from hands.daemon.run import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, backend_from_env
 from hands.sessions import heartbeat
+from hands.sessions.audit import Entry, LLMChosen, encoded
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 
 
-def test_default_is_the_local_server(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in ("HANDS_LLM", "HANDS_LLM_URL", "HANDS_LLM_MODEL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+def test_default_is_claude_on_the_anthropic_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in ("HANDS_LLM", "HANDS_LLM_URL", "HANDS_LLM_MODEL", "OPENAI_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    assert backend_from_env() == OpenAICompatibleBackend(base_url=LOCAL_LLM_URL, api_key=LOCAL_LLM_KEY, model=LOCAL_LLM_MODEL)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    assert backend_from_env() == AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model=ANTHROPIC_MODEL)
 
 
-def test_local_url_and_model_come_from_the_environment_and_no_real_key_is_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_anthropic_url_and_model_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HANDS_LLM", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("HANDS_LLM_URL", "https://api-chicago.codexapi.pro")
+    monkeypatch.setenv("HANDS_LLM_MODEL", "claude-other")
+    assert backend_from_env() == AnthropicBackend(base_url="https://api-chicago.codexapi.pro", api_key="k", model="claude-other")
+
+
+def test_the_local_variant_is_gone(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HANDS_LLM", "local")
-    monkeypatch.setenv("HANDS_LLM_URL", "http://elsewhere:9/v1")
-    monkeypatch.setenv("HANDS_LLM_MODEL", "some/model")
-    # An OpenAI key in the environment is not handed to the local server: it gets the placeholder it always got.
-    monkeypatch.setenv("OPENAI_API_KEY", "real")
-    assert backend_from_env() == OpenAICompatibleBackend(base_url="http://elsewhere:9/v1", api_key=LOCAL_LLM_KEY, model="some/model")
+    with pytest.raises(SystemExit, match="HANDS_LLM='local' is not one of: anthropic, openai"):
+        backend_from_env()
 
 
 def test_anthropic_needs_its_key_from_the_environment_or_the_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HANDS_LLM", "anthropic")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("HANDS_LLM_URL", raising=False)
     monkeypatch.delenv("HANDS_LLM_MODEL", raising=False)
     kept: dict[str, str] = {}
     monkeypatch.setattr(run, "keychain_password", kept.get)
     with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set and the keychain holds no HANDS_LLM_ANT_KEY"):
         backend_from_env()
     kept["HANDS_LLM_ANT_KEY"] = "from-keychain"
-    assert backend_from_env() == AnthropicBackend(api_key="from-keychain", model=ANTHROPIC_MODEL)
+    assert backend_from_env() == AnthropicBackend(base_url=ANTHROPIC_URL, api_key="from-keychain", model=ANTHROPIC_MODEL)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    assert backend_from_env() == AnthropicBackend(api_key="k", model=ANTHROPIC_MODEL)
+    assert backend_from_env() == AnthropicBackend(base_url=ANTHROPIC_URL, api_key="k", model=ANTHROPIC_MODEL)
 
 
 def test_openai_needs_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,7 +93,7 @@ def test_a_backend_printed_does_not_print_its_key() -> None:
     """The eval prints the backend it runs on, and a key printed is a key leaked."""
     for backend in (
         OpenAICompatibleBackend(base_url=OPENAI_URL, api_key="sk-secret", model=OPENAI_MODEL),
-        AnthropicBackend(api_key="sk-secret", model=ANTHROPIC_MODEL),
+        AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL),
     ):
         assert "sk-secret" not in repr(backend) and "sk-secret" not in str(backend)
 
@@ -99,7 +107,7 @@ def test_unknown_choice_stops_at_the_door(monkeypatch: pytest.MonkeyPatch) -> No
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01))
     sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=lambda _event: None)
-    config = run.VoiceConfig(llm=AnthropicBackend(api_key="k", model=ANTHROPIC_MODEL), whisper_model="w", voice="v")
+    config = run.VoiceConfig(llm=AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL), whisper_model="w", voice="v")
     return Home(tmp_path), sessions, heart, config
 
 
@@ -118,7 +126,8 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         answered.wait()
         return config
 
-    starting = asyncio.create_task(run.start(prompted, lambda: None, home, sessions, heart, asyncio.Event(), lambda _event: None))
+    recorded: list[Entry] = []
+    starting = asyncio.create_task(run.start(prompted, lambda: None, home, sessions, heart, asyncio.Event(), recorded.append))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -128,6 +137,9 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         await asyncio.sleep(0.005)
     answered.set()
     assert await starting == (config, voice)
+    # The log says which server and model the run reaches, and never with what key.
+    assert recorded == [LLMChosen(backend="AnthropicBackend", base_url=ANTHROPIC_URL, model=ANTHROPIC_MODEL)]
+    assert "sk-secret" not in str([encoded(entry) for entry in recorded])
 
 
 async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Path) -> None:

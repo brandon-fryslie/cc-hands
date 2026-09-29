@@ -69,21 +69,21 @@ mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts �
                   hook shims ──► unix socket ──► sessions
 ```
 
-The LLM is a backend variant: `HANDS_LLM=local`, the default, is Qwen3-30B-A3B on
-inferno through `mlx_lm.server`; `HANDS_LLM=openai` is `gpt-4.1-mini` through OpenAI's
-API; `HANDS_LLM=anthropic` is Claude Sonnet 5 through the API, keyed by `ANTHROPIC_API_KEY` or, when that is
-not set, by the keychain's `HANDS_LLM_ANT_KEY`. `HANDS_LLM_MODEL` names another
-model for any of them. `HANDS_LLM_URL` moves `local` or `openai` to another
-OpenAI-compatible server; it is the base URL the client appends `/chat/completions` to,
-so it usually ends in `/v1` (`https://api-chicago.codexapi.pro/v1`: the bare host answers
-404). Such a server must stream tool calls, because the pipeline's service always
-streams: api-chicago.codexapi.pro streams replies but drops tool calls (2026-09-25). A
-keyed variant stops at start, naming where its key can be, when it has none: `OPENAI_API_KEY`, or for
-`anthropic` both `ANTHROPIC_API_KEY` and the keychain's `HANDS_LLM_ANT_KEY`. The key can live in a `.env` at the repository root,
+The LLM is a backend variant: `HANDS_LLM=anthropic`, the default, is Claude Sonnet 5, keyed by
+`ANTHROPIC_API_KEY` or, when that is not set, by the keychain's `HANDS_LLM_ANT_KEY`; `HANDS_LLM=openai`
+is `gpt-4.1-mini` through OpenAI's API, keyed by `OPENAI_API_KEY`. `HANDS_LLM_MODEL` names another
+model for either. `HANDS_LLM_URL` moves either to another server that speaks its API, and the two take
+it differently: the Anthropic client appends `/v1/messages`, so its URL has no `/v1`
+(`https://api-chicago.codexapi.pro`), while the OpenAI client appends `/chat/completions`, so its URL
+usually ends in `/v1` (`https://api-chicago.codexapi.pro/v1`: the bare host answers 404). The server
+must stream tool calls, because the pipeline's service always streams: api-chicago.codexapi.pro streams
+Anthropic `tool_use` but drops OpenAI-shape tool calls (2026-09-25), so it is reached as `anthropic`.
+A variant stops at start, naming where its key can be, when it has none. The run's audit log says which
+backend, URL, and model it reached, never the key. The key can live in a `.env` at the repository root,
 which git ignores, and `uv run --env-file .env` puts it in the environment; uv stops if
 the file is not there. The gate is push-to-talk: the key is the voice activity detector and the microphone mute,
 so the turn boundary is the key and the pipeline can never transcribe itself. Measured
-on 2026-09-12, voice to voice with the local model: 1.4 s from key release to first
+on 2026-09-12, voice to voice with a local Qwen3-30B-A3B since retired: 1.4 s from key release to first
 audio on a plain turn, 4.3 s on a turn with a tool call.
 
 ## Installing the hooks
@@ -149,8 +149,7 @@ uv run python -m hands.sessions.hookconfig > plugin/hooks/hooks.json
 
 ```
 uv sync
-uv run hands run                        # hold Right Shift in any app to talk, release to send; q in its terminal quits
-HANDS_LLM=anthropic uv run hands run     # the key from the keychain's HANDS_LLM_ANT_KEY
+uv run hands run                        # Claude, keyed from the keychain's HANDS_LLM_ANT_KEY; hold Right Shift in any app to talk, release to send; q in its terminal quits
 HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is

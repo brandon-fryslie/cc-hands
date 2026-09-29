@@ -1,8 +1,7 @@
 """`hands run`: the daemon, in the foreground of the terminal it was started in.
 
-    uv run hands run              # Qwen on inferno (HANDS_LLM=local, the default)
+    uv run hands run              # Sonnet 5 (HANDS_LLM=anthropic, the default); ANTHROPIC_API_KEY, else the keychain's HANDS_LLM_ANT_KEY
     HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
-    HANDS_LLM=anthropic uv run hands run     # Sonnet 5; ANTHROPIC_API_KEY, else the keychain's HANDS_LLM_ANT_KEY
 
 Sessions join through the hook socket at ~/.hands/hands.sock (the home is
 HANDS_HOME when that is set). A Claude Code session is registered when the hands
@@ -36,7 +35,7 @@ from pipecat.workers.runner import WorkerRunner
 from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
-from hands.sessions.audit import AuditLog, Record, failures_to
+from hands.sessions.audit import AuditLog, LLMChosen, Record, failures_to
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.statusfile import keep_reading_statuses
@@ -67,16 +66,13 @@ from hands.voice.system import SystemChannel, listen, told
 from hands.voice.threads import off_loop
 from hands.voice.tools import audited, intermediary_tools
 
-# The model lives on inferno, the M4 Max on the LAN, served by mlx_lm.server.
-LOCAL_LLM_URL = "http://inferno.local:8080/v1"
+# The SDK appends /v1/messages to this, so an Anthropic-compatible server's URL has no /v1 of its own.
+ANTHROPIC_URL = "https://api.anthropic.com"
 ANTHROPIC_MODEL = "claude-sonnet-5"
 # Where the Anthropic key lives when ANTHROPIC_API_KEY is not set: a generic password in the keychain.
 # A prompt to allow access that nobody answers is a failed read, not a daemon that never starts.
 KEYCHAIN_TIMEOUT_SECONDS = 30.0
 ANTHROPIC_KEYCHAIN_SERVICE = "HANDS_LLM_ANT_KEY"
-LOCAL_LLM_MODEL = "mlx-community/Qwen3-30B-A3B-Instruct-2507-8bit"
-# mlx_lm.server checks no key, but the OpenAI client will not send a request without one.
-LOCAL_LLM_KEY = "unused"
 OPENAI_URL = "https://api.openai.com/v1"
 # Not a reasoning model, so no thinking precedes the first spoken word; it calls tools and takes max_tokens.
 OPENAI_MODEL = "gpt-4.1-mini"
@@ -95,17 +91,11 @@ SUMMARY_TIMEOUT_SECONDS = 30.0
 
 
 def backend_from_env() -> LLMBackend:
-    """HANDS_LLM picks the variant: `local` (default), `openai`, or `anthropic`."""
+    """HANDS_LLM picks the variant: `anthropic` (default) or `openai`; HANDS_LLM_URL and HANDS_LLM_MODEL move either."""
     # [LAW:parse-dont-validate] the environment is parsed here, once, into a
     # variant that carries exactly what its service needs; an unknown choice
     # or a missing key stops the process at the door.
-    choice = os.environ.get("HANDS_LLM", "local")
-    if choice == "local":
-        return OpenAICompatibleBackend(
-            base_url=os.environ.get("HANDS_LLM_URL", LOCAL_LLM_URL),
-            api_key=LOCAL_LLM_KEY,
-            model=os.environ.get("HANDS_LLM_MODEL", LOCAL_LLM_MODEL),
-        )
+    choice = os.environ.get("HANDS_LLM", "anthropic")
     if choice == "openai":
         return OpenAICompatibleBackend(
             base_url=os.environ.get("HANDS_LLM_URL", OPENAI_URL),
@@ -114,10 +104,11 @@ def backend_from_env() -> LLMBackend:
         )
     if choice == "anthropic":
         return AnthropicBackend(
+            base_url=os.environ.get("HANDS_LLM_URL", ANTHROPIC_URL),
             api_key=_environment_key("ANTHROPIC_API_KEY") or _keychain_key(ANTHROPIC_KEYCHAIN_SERVICE, "ANTHROPIC_API_KEY", choice),
             model=os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL),
         )
-    sys.exit(f"HANDS_LLM={choice!r} is not one of: local, openai, anthropic.")
+    sys.exit(f"HANDS_LLM={choice!r} is not one of: anthropic, openai.")
 
 
 def _key(var: str, choice: str) -> str:
@@ -229,6 +220,8 @@ async def start(
         # A restart is back where it was before the models load: every session with a file and a running process is listed.
         await sweep(home, sessions, frozenset())
         config = await off_loop(configure, "the configuration read")
+        # [LAW:nothing-unseen] which server and model the environment chose is read from the log, not re-derived from a shell.
+        record(LLMChosen(backend=type(config.llm).__name__, base_url=config.llm.base_url, model=config.llm.model))
         tools = [audited(tool, record) for tool in intermediary_tools(sessions)]
         return config, await off_loop(lambda: build_voice(config, tools=tools), "the voice load")
 

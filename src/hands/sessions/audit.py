@@ -51,6 +51,15 @@ class EffectFailed:
 
 
 @dataclass(frozen=True)
+class LLMChosen:
+    """The model a run reaches and the server it reaches it on, from the configuration it started with; never its key."""
+
+    backend: str
+    base_url: str
+    model: str
+
+
+@dataclass(frozen=True)
 class Transcribed:
     """What the user said in one turn, as it went into the intermediary's context."""
 
@@ -107,7 +116,7 @@ class Failure:
     message: str
 
 
-Entry = AuditRecord | Applied | Performed | Typing | EffectFailed | Transcribed | Replied | Called | Announced | Recounted | Failure
+Entry = AuditRecord | Applied | Performed | Typing | EffectFailed | LLMChosen | Transcribed | Replied | Called | Announced | Recounted | Failure
 Record = Callable[[Entry], None]
 
 
