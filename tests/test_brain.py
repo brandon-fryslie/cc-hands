@@ -179,9 +179,9 @@ def test_the_brain_config_is_one_line_of_json_naming_only_hands() -> None:
 
 
 async def test_the_summariser_on_the_brain_asks_a_one_shot_claude_on_the_same_login_and_says_a_failed_answer(tmp_path: Path, fake_claude: Path) -> None:
-    summarise = summariser(ClaudeCodeBackend(base_url="https://api.anthropic.com", model="claude-sonnet-5", config_dir=tmp_path / "brain"), "Sum it up.", 200, 10.0)
-    # In the brain's own empty directory, never the daemon's.
-    assert await summarise("the tests ran") == f"Summed: the tests ran in {(tmp_path / 'brain' / 'cwd').resolve()}"
+    summarise = summariser(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain"), "http://127.0.0.1:9", "Sum it up.", 200, 10.0)
+    # In the brain's own empty directory, never the daemon's, and through hands' proxy, never straight to Anthropic's API.
+    assert await summarise("the tests ran") == f"Summed: the tests ran in {(tmp_path / 'brain' / 'cwd').resolve()} via http://127.0.0.1:9"
     with pytest.raises(SummaryFailed, match="claude -p failed"):
         await summarise("fail")
 
@@ -190,7 +190,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     recorded: list[Entry] = []
     async with mind(AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m"), [], "http://127.0.0.1:1", recorded.append) as watches:
         assert watches == ()
-    claude = ClaudeCodeBackend(base_url="https://api.anthropic.com", model="claude-sonnet-5", config_dir=tmp_path / "brain")
+    claude = ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain")
     async with mind(claude, [tool(echo)], "http://127.0.0.1:1", recorded.append) as watches:
         assert [watch.name for watch in watches] == ["the brain"]
         [launched] = [entry for entry in recorded if isinstance(entry, BrainLaunched)]

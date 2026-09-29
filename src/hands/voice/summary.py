@@ -22,8 +22,8 @@ class SummaryFailed(Exception):
     """The model answered, but with nothing that can be spoken."""
 
 
-def summariser(backend: LLMBackend, instruction: str, max_tokens: int, timeout: float) -> Summariser:
-    """The one place the backend variant is inspected for summaries."""
+def summariser(backend: LLMBackend, proxy_url: str, instruction: str, max_tokens: int, timeout: float) -> Summariser:
+    """The one place the backend variant is inspected for summaries; the Claude Code variant reaches the API through hands' proxy at `proxy_url`."""
     # [LAW:one-type-per-behavior] both backends take the same turn and give the same text; only the client differs.
     # No retries: a summary that fails is said at once, not after a backoff that sounds like nothing happened.
     match backend:
@@ -49,10 +49,10 @@ def summariser(backend: LLMBackend, instruction: str, max_tokens: int, timeout: 
                 return _spoken([block.text for block in message.content if isinstance(block, TextBlock)])
 
             return from_anthropic
-        case ClaudeCodeBackend(base_url=base_url, model=model, config_dir=config_dir):
+        case ClaudeCodeBackend(model=model, config_dir=config_dir):
 
             async def from_claude_code(turn: str) -> str:
-                return _spoken([await once(config_dir, base_url, model, instruction, turn, timeout)])
+                return _spoken([await once(config_dir, proxy_url, model, instruction, turn, timeout)])
 
             return from_claude_code
 

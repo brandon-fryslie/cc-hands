@@ -67,8 +67,7 @@ class OpenAICompatibleBackend:
 class ClaudeCodeBackend:
     """Claude through a slim Claude Code of hands' own, on the Claude subscription and the login in `config_dir` (hands.brain)."""
 
-    # The API the brain's requests go on to, through hands' proxy.
-    base_url: str
+    # No URL of its own: its requests go through hands' proxy, whose address is known only once the run has it listening.
     model: str
     config_dir: Path
 

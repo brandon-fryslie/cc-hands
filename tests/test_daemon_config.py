@@ -40,9 +40,13 @@ def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(mo
     for var in ("HANDS_LLM_URL", "HANDS_LLM_MODEL", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HANDS_LLM", "claude")
-    assert backend_from_env(HOME) == ClaudeCodeBackend(base_url=UPSTREAM, model=ANTHROPIC_MODEL, config_dir=Path("/Users/someone/.hands/brain"))
+    assert backend_from_env(HOME) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=Path("/Users/someone/.hands/brain"))
     monkeypatch.setenv("HANDS_LLM_MODEL", "claude-other")
     assert backend_from_env(HOME).model == "claude-other"
+
+
+def test_the_brain_is_logged_as_reaching_anthropics_api_through_the_proxy() -> None:
+    assert run._server(ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=HOME.brain)) == UPSTREAM  # pyright: ignore[reportPrivateUsage]
 
 
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:

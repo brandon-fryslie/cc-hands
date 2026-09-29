@@ -119,7 +119,7 @@ if sys.argv[1:3] == ["auth", "status"]:
     sys.exit(0)
 if "json" in sys.argv and "stream-json" not in sys.argv:
     turn = sys.stdin.read()
-    print(json.dumps({{"type": "result", "is_error": turn == "fail", "result": "Summed: " + turn + " in " + os.getcwd()}}))
+    print(json.dumps({{"type": "result", "is_error": turn == "fail", "result": "Summed: " + turn + " in " + os.getcwd() + " via " + os.environ["ANTHROPIC_BASE_URL"]}}))
     sys.exit(0)
 print(json.dumps({INIT!r}), flush=True)
 print("not json", file=sys.stderr, flush=True)

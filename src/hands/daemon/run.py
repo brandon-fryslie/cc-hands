@@ -131,7 +131,7 @@ def backend_from_env(home: Home) -> LLMBackend:
             logged_in(home.brain, UPSTREAM)
         except NotLoggedIn as error:
             sys.exit(f"hands: {error}")
-        return ClaudeCodeBackend(base_url=UPSTREAM, model=os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL), config_dir=home.brain)
+        return ClaudeCodeBackend(model=os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL), config_dir=home.brain)
     sys.exit(f"HANDS_LLM={choice!r} is not one of: anthropic, openai, claude.")
 
 
@@ -219,6 +219,15 @@ async def mind(backend: LLMBackend, tools: Sequence[Tool], proxy_url: str, recor
                 await server.close()
 
 
+def _server(backend: LLMBackend) -> str:
+    """The server a backend's model answers on: the brain's is Anthropic's, reached through hands' proxy."""
+    match backend:
+        case AnthropicBackend(base_url=base_url) | OpenAICompatibleBackend(base_url=base_url):
+            return base_url
+        case ClaudeCodeBackend():
+            return UPSTREAM
+
+
 async def outlived(brain: Brain) -> None:
     # [LAW:no-silent-failure] a brain that ends while hands runs leaves every question unanswered, so it stops the run.
     code = await brain.exited()
@@ -252,7 +261,7 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
         if started is not None:
             config, voice = started
             async with mind(config.llm, tools, proxy.url, audit.record) as watches:
-                summarise = summariser(config.llm, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
+                summarise = summariser(config.llm, proxy.url, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
                 await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas, watches)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
@@ -289,7 +298,7 @@ async def start(
         await sweep(home, sessions, frozenset())
         config = await off_loop(configure, "the configuration read")
         # [LAW:nothing-unseen] which server and model the environment chose is read from the log, not re-derived from a shell.
-        record(LLMChosen(backend=type(config.llm).__name__, base_url=config.llm.base_url, model=config.llm.model))
+        record(LLMChosen(backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model))
         return config, await off_loop(lambda: build_voice(config, tools=tools), "the voice load")
 
     preparing = asyncio.create_task(prepare())
