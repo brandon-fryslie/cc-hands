@@ -13,6 +13,10 @@ from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode
 from hands.voice.speech import frame
 from hands.voice.tools import describe_listing
+from hands.core.status import Stamp
+
+# When hands heard a Stop, on the clock Claude Code stamps a status with.
+STOP_HEARD = Stamp(1500)
 
 SID = SessionId("s1")
 ONE = Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=Path("/nonexistent/s1.jsonl"))
@@ -50,7 +54,7 @@ async def test_a_mode_changed_at_the_keyboard_is_listed_and_noted_at_the_session
     await sessions.apply(Joined(ONE, "startup"))
     assert describe_listing(sessions.live()[0])["mode"] == "not reported yet"
     await sessions.apply(Prompted(SID, at=1.0, mode="default", prompt=PromptId("p1")))
-    await sessions.apply(Stopped(SID, "ok", mode="default", prompt=PromptId("p1"), again=False))
+    await sessions.apply(Stopped(SID, "ok", mode="default", prompt=PromptId("p1"), again=False, heard=STOP_HEARD))
     assert describe_listing(sessions.live()[0])["mode"] == "manual mode"
     assert await sessions.heard() == Note(ModeChanged(SID, "default"))
     # Shift-tab at the prompt fires no hook; the next prompt reports where it landed.

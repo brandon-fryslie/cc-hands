@@ -63,6 +63,9 @@ class Stopped:
     # Whether this is the turn stopping again: another Stop hook blocked its last Stop, so Claude went on in it under the
     # same id (stop_hook_active, verified live on 2.1.282). The one Stop that ends a turn already told.
     again: bool
+    # When hands heard it, on the clock Claude Code stamps a status and a record with: every record of the turn it ends
+    # was written before it fired, so a transcript read through a moment past this holds them.
+    heard: Stamp
 
 
 @dataclass(frozen=True)

@@ -20,6 +20,9 @@ from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.tail import KEPT, Tails, Telling, keep_tailing
 
+# When hands heard a Stop, on the clock Claude Code stamps a status with.
+STOP_HEARD = Stamp(1500)
+
 SID = SessionId("bf411065-dc5c-4ec9-8302-61b84bdb5c53")
 
 # Real records from this repository's own sessions: an earlier /clear prompt, the prompt that starts the turn,
@@ -753,7 +756,7 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
         more.write(lines(CUT_OFF, NEXT_ASKED, DONE))
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
-    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD))
 
     ended = await asyncio.wait_for(sessions.story(), 2.0)
     assert ended == Summarise(SID, PromptId("p1"), None)
@@ -790,7 +793,7 @@ async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_
     transcript.write_text(lines(ASKED, WRITING, CUT_OFF, NEXT_ASKED, DONE))
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
-    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD))
     # Both readings are taken before anything is asserted, so a failure leaves no git command running.
     changed = [[file.path for file in (await deltas.taken(SID)).files] for _ in range(2)]
 
@@ -908,7 +911,7 @@ async def test_a_session_followed_from_mid_turn_works_under_its_own_prompt_and_i
         await sessions.apply(transcribed)
     live = sessions.live_session(SID)
     assert live is not None and live.turn == Opened(PromptId("p4"))
-    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p4"), again=False))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p4"), again=False, heard=STOP_HEARD))
     assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p4"), "Done.")
     live = sessions.live_session(SID)
     assert live is not None and live.turn == Told(PromptId("p4"))

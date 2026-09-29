@@ -11,7 +11,7 @@ from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Reply, Unmatched, Withdraw
-from hands.core.events import Joined, Stopped, Tick
+from hands.core.events import Joined, Prompted, Read, Stopped, Tick
 from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.daemon import cli
 from hands.sessions.audit import (
@@ -32,6 +32,10 @@ from hands.sessions.audit import (
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.tools import Tool, audited, draft_tools
+from hands.core.status import Stamp
+
+# When hands heard a Stop, on the clock Claude Code stamps a status with.
+STOP_HEARD = Stamp(1500)
 
 AT = datetime(2026, 9, 14, 12, 0, 0, 123000, tzinfo=UTC)
 
@@ -170,12 +174,26 @@ async def test_a_stop_that_ends_no_turn_is_a_line_saying_so() -> None:
     recorded: list[Entry] = []
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
-    stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False)
+    stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD)
     await sessions.apply(stop)
-    assert Unmatched(stop) not in recorded
+    assert Unmatched(stop.session, stop.prompt) not in recorded
     # Heard again once its turn was told, as an interrupted turn's late Stop is.
     await sessions.apply(stop)
-    assert recorded[-1] == Unmatched(stop)
+    assert recorded[-1] == Unmatched(stop.session, stop.prompt)
+
+
+async def test_a_stop_held_for_its_record_is_a_line_as_it_is_heard_and_again_once_read_through_without_one() -> None:
+    recorded: list[Entry] = []
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    await sessions.apply(Joined(member(), "startup"))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD)
+    await sessions.apply(stop)
+    assert recorded[-1] == Applied(stop)
+    await sessions.apply(Read(member().id, Stamp(STOP_HEARD + 999)))
+    assert recorded[-1] != Unmatched(stop.session, stop.prompt)
+    await sessions.apply(Read(member().id, Stamp(STOP_HEARD + 1000)))
+    assert recorded[-1] == Unmatched(stop.session, stop.prompt)
 
 
 async def test_an_audited_tool_keeps_its_schema_and_writes_its_call_beside_its_result() -> None:

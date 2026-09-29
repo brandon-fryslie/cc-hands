@@ -9,6 +9,7 @@ from loguru import logger
 from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
 from hands.core.events import Attached, Ended, EndReason, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished, Waited
 from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
+from hands.core.status import Stamp
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership, recorded_membership
 from hands.sessions.payload import Payload, Rejected
@@ -26,7 +27,7 @@ class Hook:
     happened: Event
 
 
-def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Hook:
+def parse_hook(raw: bytes, *, home: Home, at: Instant, heard: Stamp, request: RequestId) -> Hook:
     """Raises Rejected, naming the problem, for anything that is not a hook hands handles."""
     # [LAW:parse-dont-validate] past this function nothing looks at hook JSON again.
     payload = Payload.parse(raw)
@@ -39,18 +40,18 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, request: RequestId) -> Ho
         case "SessionEnd":
             return Hook(None, Ended(session, _end_reason(payload.text("reason"))))
         case _:
-            happened = _happened(payload, session, at, request)
+            happened = _happened(payload, session, at, heard, request)
             recorded = recorded_membership(home, session)
             return Hook(None if recorded is None else Attached(recorded), happened)
 
 
-def _happened(payload: Payload, session: SessionId, at: Instant, request: RequestId) -> SessionEvent:
+def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, request: RequestId) -> SessionEvent:
     """What a hook of a running session says happened in it."""
     match payload.text("hook_event_name"):
         case "UserPromptSubmit":
             return Prompted(session, at, _mode(payload), _prompt(payload))
         case "Stop":
-            return Stopped(session, _closing(payload), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"))
+            return Stopped(session, _closing(payload), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"), heard)
         case "Notification":
             return _notified(session, payload.text("notification_type"))
         case "PermissionRequest":

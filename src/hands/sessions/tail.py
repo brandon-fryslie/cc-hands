@@ -7,7 +7,6 @@ about where the turn started or what of it was heard.
 
 import asyncio
 import os
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +18,7 @@ from hands.core.events import Continued, Interrupted, Read, Taken, Transcribed
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.status import Stamp
 from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
+from hands.sessions.clock import stamp_now
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.transcript import prompt_of, turn_record, written_of
 from hands.sessions.turning import Turning
@@ -152,7 +152,7 @@ class Known(Protocol):
 class Tails:
     """Every live session's transcript, followed. Only the narrator asks it anything."""
 
-    def __init__(self, known: Known, clock: Callable[[], Stamp] = lambda: Stamp(time.time_ns() // 1_000_000)) -> None:
+    def __init__(self, known: Known, clock: Callable[[], Stamp] = stamp_now) -> None:
         # [LAW:one-source-of-truth] where a session's transcript is, is the registry's to say, not this one's to keep.
         self._known = known
         # The wall clock Claude Code stamps its statuses and records with, so how far a transcript was read is said on it.

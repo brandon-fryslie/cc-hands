@@ -9,6 +9,7 @@ from loguru import logger
 
 from hands.core.events import Attached, PermissionRequested
 from hands.core.session import RequestId
+from hands.sessions.clock import stamp_now
 from hands.sessions.home import Home
 from hands.sessions.hooks import hook_output, parse_hook
 from hands.sessions.payload import Rejected
@@ -21,7 +22,7 @@ async def serve_hooks(home: Home, sessions: Sessions) -> web.AppRunner:
     async def hook(request: web.Request) -> web.Response:
         body = await request.read()
         try:
-            said = parse_hook(body, home=home, at=sessions.now(), request=RequestId(uuid4().hex))
+            said = parse_hook(body, home=home, at=sessions.now(), heard=stamp_now(), request=RequestId(uuid4().hex))
         except Rejected as error:
             # The shim prints this reply, so the session that sent the hook shows why.
             logger.error(f"rejected hook: {error}")

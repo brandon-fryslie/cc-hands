@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from hands.core.events import SessionEvent, Stopped
+from hands.core.events import SessionEvent
 from hands.core.session import Blocker, CommandName, Keystroke, Mode, PromptId, PromptText, RequestId, SessionId
 
 
@@ -25,10 +25,11 @@ class AfterEnd:
 
 @dataclass(frozen=True)
 class Unmatched:
-    """A Stop that ended nothing: its turn was told already, or no record naming its id had been read while a turn was open
-    or waiting to be told."""
+    """A Stop that ended nothing: its turn was told already, or no record naming its id was read by the time the
+    transcript was read through it. The Stop itself is the line of the event it came in."""
 
-    event: Stopped
+    session: SessionId
+    prompt: PromptId
 
 
 AuditRecord = Unregistered | AfterEnd | Unmatched
