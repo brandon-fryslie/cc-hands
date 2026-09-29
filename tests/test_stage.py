@@ -31,6 +31,7 @@ from hands.brain.stage import INTERRUPTED, SILENT, BrainStage
 from hands.core.session import SessionId
 from hands.core.wire import (
     BlockStarted,
+    BlockStopped,
     Fork,
     Forward,
     Heard,
@@ -147,9 +148,10 @@ class Rig:
             self.stage.hear(Heard(exchange, TextDelta(0, text)))
 
     def calls(self, exchange: str, *calls: tuple[str, str]) -> None:
-        """The reply opening a block for each call, by id and name, as the stream carries it before the reply ends."""
+        """The reply making a whole block for each call, by id and name, as the stream carries it before the reply ends."""
         for index, (call, name) in enumerate(calls):
             self.stage.hear(Heard(exchange, BlockStarted(index, {"type": "tool_use", "id": call, "name": name, "input": {}})))
+            self.stage.hear(Heard(exchange, BlockStopped(index)))
 
     async def interrupt(self) -> None:
         await self.worker.queue_frame(InterruptionFrame())
@@ -242,7 +244,6 @@ async def test_a_turn_is_written_only_once_the_one_before_it_has_ended(rig: Rig)
     rig.context.add_message({"role": "user", "content": "second"})
     await rig.worker.queue_frame(LLMContextFrame(rig.context))
     # The stage has taken the second turn and is waiting on the first, which the brain has not ended.
-    await rig.until(lambda: rig.out.shape().count("LLMFullResponseEndFrame") == 1)
     await asyncio.sleep(0.1)
     assert rig.brain.asked == ["first"]
     rig.brain.end()
@@ -303,8 +304,9 @@ async def test_a_barge_in_while_a_draft_lands_lets_it_finish_and_speaks_its_read
     assert BrainInterrupted(("mcp__hands__stage_draft",), False) in rig.recorded
     _, route = rig.request(answering("mcp__hands__stage_draft", {"readback": "staged for api: add tests"}))
     assert route == Hold(INTERRUPTED)
-    await rig.until(lambda: rig.out.said()[-1:] == ["staged for api: add tests"])
     rig.brain.end()
+    # Said once the turn is over, after anything the model had begun to say.
+    await rig.until(lambda: rig.out.said()[-1:] == ["staged for api: add tests"])
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
     assert BrainSpoke((exchange,), "Staging it.", ("staged for api: add tests",), True) in rig.recorded
 
@@ -387,8 +389,8 @@ async def test_a_draft_that_failed_under_a_held_request_says_why(rig: Rig) -> No
     await rig.interrupt()
     _, route = rig.request(answering("mcp__hands__stage_draft", {"error": "there is no session api"}))
     assert route == Hold(INTERRUPTED)
-    await rig.until(lambda: rig.out.said() == ["there is no session api"])
     rig.brain.end()
+    await rig.until(lambda: rig.out.said() == ["there is no session api"])
 
 
 async def test_a_turn_hands_stopped_ends_in_the_error_it_asked_for_and_nothing_is_said_of_it(rig: Rig) -> None:
@@ -402,3 +404,29 @@ async def test_a_turn_hands_stopped_ends_in_the_error_it_asked_for_and_nothing_i
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
     await asyncio.sleep(0.1)
     assert rig.errors == []
+
+
+async def test_a_barge_in_while_a_drafts_input_still_streams_stops_the_brain_before_it_runs(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "tell the api session to add tests"})
+    exchange, _ = rig.request()
+    # The block is open and its input still arriving: Claude Code has not run the call, and now never will.
+    rig.stage.hear(Heard(exchange, BlockStarted(0, {"type": "tool_use", "id": "t1", "name": "mcp__hands__stage_draft", "input": {}})))
+    await rig.interrupt()
+    assert rig.brain.interrupts == 1
+    assert BrainInterrupted((), True) in rig.recorded
+    rig.brain.end()
+
+
+async def test_a_barge_in_reaches_the_pipeline_even_when_the_brain_cannot_be_told(rig: Rig) -> None:
+    async def gone() -> None:
+        raise BrokenPipeError("the brain's stdin is closed")
+
+    rig.brain.interrupt = gone  # type: ignore[method-assign]
+    await rig.say({"role": "user", "content": "tell me everything"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "First, ")
+    await rig.until(lambda: rig.out.said() == ["First, "])
+    await rig.interrupt()
+    # Nothing of the turn after the barge-in: no end that would have TTS say the sentence spoken over.
+    assert rig.out.shape() == ["LLMFullResponseStartFrame", "LLMTextFrame", "InterruptionFrame"]
+    rig.brain.end()
