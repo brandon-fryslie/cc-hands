@@ -4,14 +4,16 @@
 
 It forwards each request upstream as it came and streams the reply back byte for byte, reading a copy of the same bytes
 into typed events as they pass. It never makes a request of its own and never uses a client's credentials for
-anything but that client's own request.
+anything but that client's own request. The one request it does not forward is one its route holds: that is answered
+here, with the words the route gives it, so the model is not asked at all.
 """
 
 import json
 import zlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Generator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import uuid4
 
 import aiohttp
@@ -24,10 +26,14 @@ from multidict import CIMultiDict
 from hands.core.wire import (
     Body,
     Exchanged,
+    Forward,
     Garbled,
     Heard,
+    Held,
+    Hold,
     Observed,
     Reached,
+    Route,
     Seconds,
     Sent,
     Unknown,
@@ -48,6 +54,49 @@ UPSTREAM = "https://api.anthropic.com"
 HOP_BY_HOP = frozenset({"connection", "content-length", "host", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"})
 
 Observe = Callable[[Observed], None]
+Router = Callable[[Sent], Route]
+
+
+class Listener(Protocol):
+    """What speaks from the wire: it hears everything the proxy observes, and decides where each request goes."""
+
+    def route(self, sent: Sent) -> Route: ...
+    def hear(self, observed: Observed) -> None: ...
+
+
+class _NoOne:
+    def route(self, sent: Sent) -> Route:
+        return Forward()
+
+    def hear(self, observed: Observed) -> None:
+        pass
+
+
+class Wire:
+    """What the proxy tells and asks: the daemon's record of the wire always, and the one listener joined to it, while it is."""
+
+    def __init__(self, record: Observe) -> None:
+        self._record = record
+        # [LAW:dataflow-not-control-flow] with nobody joined, a listener that forwards everything and hears nothing.
+        self._listener: Listener = _NoOne()
+
+    def observe(self, observed: Observed) -> None:
+        self._record(observed)
+        self._listener.hear(observed)
+
+    def route(self, sent: Sent) -> Route:
+        return self._listener.route(sent)
+
+    @contextmanager
+    def joined(self, listener: Listener) -> Generator[None]:
+        # [LAW:no-shared-mutable-globals] one listener at a time, joined and left only here.
+        if not isinstance(self._listener, _NoOne):
+            raise RuntimeError(f"{listener!r} joined the wire while {self._listener!r} still listens")
+        self._listener = listener
+        try:
+            yield
+        finally:
+            self._listener = _NoOne()
 
 
 @dataclass(frozen=True)
@@ -61,7 +110,7 @@ class Proxy:
         await self.client.close()
 
 
-async def serve_proxy(upstream: str, observe: Observe, clock: Callable[[], Seconds]) -> Proxy:
+async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Callable[[], Seconds]) -> Proxy:
     """Listen on a free local port until the returned proxy is closed; its url is what ANTHROPIC_BASE_URL is set to."""
     # The client's own timeouts govern a request: a long reply streams as long as the client keeps reading it.
     # Replies are read as sent, compressed or not, so the client gets the bytes the API wrote; and no header the client
@@ -88,12 +137,28 @@ async def serve_proxy(upstream: str, observe: Observe, clock: Callable[[], Secon
         if isinstance(kind, Unknown):
             # [LAW:no-silent-failure] the set of shapes fills in from use, so an unknown one is said where it will be seen.
             logger.warning(f"the proxy saw {kind.shape} (exchange {exchange}, session {session}); nothing it says will be spoken")
-        tell(Sent(exchange, session, kind, parsed))
+        sent = Sent(exchange, session, kind, parsed)
+        tell(sent)
+        try:
+            routed = route(sent)
+        except Exception:
+            # [LAW:no-silent-failure] a route that raises is logged with its trace, and the request goes on as it came:
+            # the conversation is not broken by hands failing to decide about it.
+            logger.exception(f"the proxy's route failed on exchange {exchange}; forwarding it")
+            routed = Forward()
 
         sent_at = clock()
 
-        def exchanged(reply: Reached | Unreached) -> Exchanged:
+        def exchanged(reply: Reached | Unreached | Held) -> Exchanged:
             return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), requested_at, sent_at, reply)
+
+        match routed:
+            case Hold(said=said):
+                content_type, answer = _held(parsed, said)
+                tell(exchanged(Held(said, clock())))
+                return web.Response(status=200, body=answer, headers={"Content-Type": content_type})
+            case Forward():
+                pass
 
         try:
             reached = await client.request(request.method, upstream + request.path_qs, headers=_end_to_end(request.headers), data=body)
@@ -115,8 +180,10 @@ async def serve_proxy(upstream: str, observe: Observe, clock: Callable[[], Secon
                 async for chunk in reached.content.iter_any():
                     first = clock() if first is None else first
                     size += len(chunk)
-                    await response.write(chunk)
+                    # [LAW:no-ambient-temporal-coupling] read before it is written on: whatever the client does once it
+                    # has these bytes, its result line on stdout included, comes after hands has heard them.
                     reader.feed(chunk)
+                    await response.write(chunk)
                 ended = clock()
                 reply = reader.finish()
                 await response.write_eof()
@@ -140,6 +207,32 @@ async def serve_proxy(upstream: str, observe: Observe, clock: Callable[[], Secon
     await site.start()
     host, port = runner.addresses[0][:2]
     return Proxy(url=f"http://{host}:{port}", runner=runner, client=client)
+
+
+def _held(body: object, said: str) -> tuple[str, bytes]:
+    """A finished reply holding one text block, as a stream when the request asked for one."""
+    request: Mapping[str, object] = cast(Mapping[str, object], body) if isinstance(body, Mapping) else {}
+    message: dict[str, object] = {
+        "id": f"msg_hands_{uuid4().hex}",
+        "type": "message",
+        "role": "assistant",
+        "model": request.get("model"),
+        "content": [],
+        "stop_reason": None,
+        "stop_sequence": None,
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+    if request.get("stream") is not True:
+        return "application/json", json.dumps({**message, "content": [{"type": "text", "text": said}], "stop_reason": "end_turn"}).encode()
+    events: list[tuple[str, Mapping[str, object]]] = [
+        ("message_start", {"type": "message_start", "message": message}),
+        ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": said}}),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 0}}),
+        ("message_stop", {"type": "message_stop"}),
+    ]
+    return "text/event-stream", b"".join(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode() for name, data in events)
 
 
 def _end_to_end(headers: Mapping[str, str]) -> CIMultiDict[str]:

@@ -10,8 +10,13 @@ import pytest
 from hands.brain.mcp import McpServer, serve_mcp
 from hands.brain.process import BUILTIN_TOOLS, SLIM, BrainGone, Launch, NotLoggedIn, command, environment, logged_in, start, workdir
 from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainReady, Called, Entry, McpConnected
+from pipecat.services.anthropic.llm import AnthropicLLMService
+
+from hands.brain.stage import BrainStage
+from hands.core.session import SessionId
 from hands.daemon.run import mind
-from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend
+from hands.sessions.proxy import Wire
+from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, VoiceConfig
 from hands.voice.summary import SummaryFailed, summariser
 from hands.voice.tools import Result, audited, tool
 
@@ -91,7 +96,7 @@ async def test_a_request_without_the_brains_token_reaches_no_tool() -> None:
 
 
 def launch(tmp: Path) -> Launch:
-    return Launch(tmp / "brain", workdir(tmp / "brain"), "claude-sonnet-5", "You are hands.", "http://127.0.0.1:1", '{"mcpServers": {}}')
+    return Launch(tmp / "brain", workdir(tmp / "brain"), "claude-sonnet-5", "You are hands.", "http://127.0.0.1:1", '{"mcpServers": {}}', SessionId("b1"))
 
 
 def test_the_brain_is_slim_strict_and_never_asks_and_runs_on_its_own_login_through_the_proxy(tmp_path: Path) -> None:
@@ -100,7 +105,7 @@ def test_the_brain_is_slim_strict_and_never_asks_and_runs_on_its_own_login_throu
     assert argv[argv.index("--tools") + 1] == ",".join(BUILTIN_TOOLS)
     assert argv[argv.index("--allowedTools") + 1] == ",".join((*BUILTIN_TOOLS, "mcp__hands"))
     assert {"--strict-mcp-config", "--include-partial-messages", "--verbose"} <= set(argv)
-    assert [argv[argv.index(flag) + 1] for flag in ("--permission-mode", "--setting-sources", "--system-prompt")] == ["dontAsk", "user", "You are hands."]
+    assert [argv[argv.index(flag) + 1] for flag in ("--permission-mode", "--setting-sources", "--system-prompt", "--session-id")] == ["dontAsk", "user", "You are hands.", "b1"]
     # Nothing positional: --tools would swallow it.
     assert argv[-1] != ",".join(BUILTIN_TOOLS)
     env = environment(tmp_path / "brain", "http://127.0.0.1:1", {"PATH": "/bin", "ANTHROPIC_API_KEY": "sk", "CLAUDE_CODE_OAUTH_TOKEN": "t", "ANTHROPIC_BASE_URL": "http://elsewhere"})
@@ -188,11 +193,20 @@ async def test_the_summariser_on_the_brain_asks_a_one_shot_claude_on_the_same_lo
 
 async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_variant_alone(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
-    async with mind(AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m"), [], "http://127.0.0.1:1", recorded.append) as watches:
-        assert watches == ()
-    claude = ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain")
-    async with mind(claude, [tool(echo)], "http://127.0.0.1:1", recorded.append) as watches:
-        assert [watch.name for watch in watches] == ["the brain"]
+    wire = Wire(lambda _observed: None)
+    api = VoiceConfig(llm=AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m"), whisper_model="w", voice="v")
+    async with mind(api, [], "http://127.0.0.1:1", wire, recorded.append) as minded:
+        assert isinstance(minded.llm, AnthropicLLMService) and minded.watches == ()
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain"), whisper_model="w", voice="v")
+    async with mind(claude, [tool(echo)], "http://127.0.0.1:1", wire, recorded.append) as minded:
+        assert isinstance(minded.llm, BrainStage)
+        assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns"]
         [launched] = [entry for entry in recorded if isinstance(entry, BrainLaunched)]
         assert launched.cwd == tmp_path / "brain" / "cwd"
+        # The stage speaks from the wire while the brain runs, so a second one cannot join it.
+        with pytest.raises(RuntimeError, match="joined the wire"), wire.joined(minded.llm):
+            pass
     assert isinstance(recorded[-1], BrainExited)
+    # Gone with the brain: the wire forwards everything again.
+    with wire.joined(minded.llm):
+        pass

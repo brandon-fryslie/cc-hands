@@ -115,6 +115,30 @@ def _texts(message: object) -> list[str]:
     return [text for text in texts if isinstance(text, str)]
 
 
+@dataclass(frozen=True)
+class ToolAnswer:
+    """A tool call's result as a request hands it to the model: the id of the call it answers, its text, and whether it failed."""
+
+    call: str
+    text: str
+    is_error: bool
+
+
+def tool_answers(body: object) -> tuple[ToolAnswer, ...]:
+    """Every tool result a messages request carries, each by the id of the call it answers.
+
+    A request carries its whole history, so which of these answer the model's last reply is known only to whoever heard
+    that reply's calls.
+    """
+    messages = _list(cast(Mapping[str, object], body).get("messages")) if isinstance(body, Mapping) else []
+    results = [cast(Mapping[str, object], item) for message in messages for item in _blocks(message) if isinstance(item, Mapping)]
+    return tuple(
+        ToolAnswer(call, "".join(_texts(result)), result.get("is_error") is True)
+        for result in results
+        if result.get("type") == "tool_result" and isinstance(call := result.get("tool_use_id"), str)
+    )
+
+
 SESSION_HEADER = "x-claude-code-session-id"
 
 
@@ -562,6 +586,14 @@ class Unreached:
 
 
 @dataclass(frozen=True)
+class Held:
+    """hands answered the request itself and the API never saw it: the model was not asked, and is recorded as saying `said`."""
+
+    said: str
+    answered_at: Seconds
+
+
+@dataclass(frozen=True)
 class Exchanged:
     """One request and its reply, whole: the wide record of one unit of the proxy's work."""
 
@@ -573,7 +605,30 @@ class Exchanged:
     request_bytes: int
     requested_at: Seconds
     sent_at: Seconds
-    reply: Reached | Unreached
+    reply: Reached | Unreached | Held
 
 
 Observed = Sent | Heard | Exchanged
+
+
+# ── Where a request goes ─────────────────────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Forward:
+    """The request goes to the API as it came."""
+
+
+@dataclass(frozen=True)
+class Hold:
+    """The request is answered by hands and never reaches the API, with `said` as the model's whole reply.
+
+    Kept in the client's history as the model's own words and never spoken. Not empty: to an empty reply Claude Code
+    2.1.285 answers "[Your previous response had no visible output. Please continue ...]" and asks again, and its
+    history keeps the tool results with no reply after them.
+    """
+
+    said: str
+
+
+Route = Forward | Hold

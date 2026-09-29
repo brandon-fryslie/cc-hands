@@ -55,7 +55,9 @@ mocks.
 POST to, the session files the shims write, Claude Code's own status files, the JSONL tail, the git delta reader, the
 process-liveness check, the audit log, and the wire proxy a Claude Code process reaches
 the API through (`ANTHROPIC_BASE_URL`), which passes every byte unchanged and reads a
-copy into `core.wire`'s typed events, one `Exchanged` audit line per request. It
+copy into `core.wire`'s typed events, one `Exchanged` audit line per request. The one
+listener joined to it (the brain's stage) routes each request: forwarded as it came, or
+held and answered by hands without reaching the API. It
 parses hook input once at the socket into a `HookEvent` and rejects anything it does
 not recognise with a logged error and a non-2xx reply `[LAW:parse-dont-validate]`. It
 exposes two things upward: an async stream of events, and a small API the tools call.

@@ -16,6 +16,7 @@ from openai import AsyncOpenAI
 
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregator,
@@ -31,7 +32,6 @@ from pipecat.transports.local.audio import LocalAudioTransportParams
 from pipecat.turns.user_start import VADUserTurnStartStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
-from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.ptt import PushToTalk
@@ -121,15 +121,6 @@ def build_llm(
             )
 
 
-def _llm_stage(config: VoiceConfig) -> AnthropicLLMService | OpenAILLMService | None:
-    """The pipeline's LLM stage, or None under the brain, which is its own process, started by the daemon."""
-    match config.llm:
-        case AnthropicBackend() | OpenAICompatibleBackend() as backend:
-            return build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens)
-        case ClaudeCodeBackend():
-            return None
-
-
 @dataclass(frozen=True)
 class Voice:
     """The assembled pipeline plus the handles its edges need: the key, the audio devices, the three services that report failures, and the two sides of the conversation."""
@@ -138,14 +129,14 @@ class Voice:
     key: PushToTalk
     audio: KeyedAudioTransport
     stt: Whisper
-    llm: AnthropicLLMService | OpenAILLMService | None
+    llm: FrameProcessor
     tts: PocketTTSService
     user_turns: LLMUserAggregator
     assistant_turns: LLMAssistantAggregator
 
 
-def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
-    """Wire mic, push-to-talk, Whisper on MLX, Claude, pocket-tts, speakers."""
+def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor) -> Voice:
+    """Wire mic, push-to-talk, Whisper on MLX, the model's stage, pocket-tts, speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and Whisper reads it off each
     # frame to push the VAD frames the turn strategies act on, so the user
@@ -155,7 +146,6 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
     key = PushToTalk()
     transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key)
     stt = Whisper(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model))
-    llm = _llm_stage(config)
     # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
     # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
     # own reply alike, so this is the one place all of them meet before they are heard.
@@ -177,8 +167,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
     )
     user_aggregator, assistant_aggregator = pair.user(), pair.assistant()
 
-    stages = (transport.input(), stt, user_aggregator, llm, tts, transport.output(), assistant_aggregator)
-    pipeline = Pipeline([stage for stage in stages if stage is not None])
+    pipeline = Pipeline([transport.input(), stt, user_aggregator, llm, tts, transport.output(), assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True),
