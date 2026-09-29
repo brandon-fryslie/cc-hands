@@ -200,7 +200,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain"), whisper_model="w", voice="v")
     async with mind(claude, [tool(echo)], "http://127.0.0.1:1", wire, recorded.append) as minded:
         assert isinstance(minded.llm, BrainStage)
-        assert [watch.name for watch in minded.watches] == ["the brain"]
+        assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns"]
         [launched] = [entry for entry in recorded if isinstance(entry, BrainLaunched)]
         assert launched.cwd == tmp_path / "brain" / "cwd"
         # The stage speaks from the wire while the brain runs, so a second one cannot join it.

@@ -126,10 +126,12 @@ class BrainInterrupted:
 
 @dataclass(frozen=True)
 class BrainSpoke:
-    """What a brain turn handed to the speaker, and the exchanges on the wire its words came from."""
+    """What a brain turn handed to the speaker, and the exchanges on the wire its words came from; `readbacks` is what hands
+    said for it once its next request was held."""
 
     exchanges: tuple[str, ...]
     text: str
+    readbacks: tuple[str, ...]
     interrupted: bool
 
 

@@ -94,10 +94,6 @@ def _list(value: object) -> list[object]:
     return cast(list[object], value) if isinstance(value, list) else []
 
 
-def _role(message: object) -> object:
-    return cast(Mapping[str, object], message).get("role") if isinstance(message, Mapping) else None
-
-
 def _content(message: object) -> object:
     return cast(Mapping[str, object], message).get("content") if isinstance(message, Mapping) else None
 
@@ -121,32 +117,25 @@ def _texts(message: object) -> list[str]:
 
 @dataclass(frozen=True)
 class ToolAnswer:
-    """A tool call's result as a request hands it back to the model: the tool it answers, its text, and whether it failed."""
+    """A tool call's result as a request hands it to the model: the id of the call it answers, its text, and whether it failed."""
 
-    name: str
+    call: str
     text: str
     is_error: bool
 
 
 def tool_answers(body: object) -> tuple[ToolAnswer, ...]:
-    """The tool results a messages request hands back after the model's last reply, each named by the call it answers.
+    """Every tool result a messages request carries, each by the id of the call it answers.
 
-    After the reply, not in the last message: Claude Code 2.1.285 follows the results with a `system` message of its own.
+    A request carries its whole history, so which of these answer the model's last reply is known only to whoever heard
+    that reply's calls.
     """
     messages = _list(cast(Mapping[str, object], body).get("messages")) if isinstance(body, Mapping) else []
-    replied = max((index for index, message in enumerate(messages) if _role(message) == "assistant"), default=-1)
-    calls = {
-        block.get("id"): block.get("name")
-        for message in messages[: replied + 1]
-        for block in (cast(Mapping[str, object], item) for item in _blocks(message) if isinstance(item, Mapping))
-        if block.get("type") == "tool_use"
-    }
-    results = [cast(Mapping[str, object], item) for message in messages[replied + 1 :] for item in _blocks(message) if isinstance(item, Mapping)]
-    # A result whose call is not in the request answers no tool hands can name, and the API refuses such a request anyway.
+    results = [cast(Mapping[str, object], item) for message in messages for item in _blocks(message) if isinstance(item, Mapping)]
     return tuple(
-        ToolAnswer(name, "".join(_texts(result)), result.get("is_error") is True)
+        ToolAnswer(call, "".join(_texts(result)), result.get("is_error") is True)
         for result in results
-        if result.get("type") == "tool_result" and isinstance(name := calls.get(result.get("tool_use_id")), str)
+        if result.get("type") == "tool_result" and isinstance(call := result.get("tool_use_id"), str)
     )
 
 

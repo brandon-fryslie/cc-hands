@@ -230,7 +230,7 @@ async def mind(config: VoiceConfig, tools: Sequence[Tool], proxy_url: str, wire:
                 try:
                     stage = BrainStage(brain, tools, record)
                     with wire.joined(stage):
-                        yield Mind(stage, (Watch("the brain", lambda: outlived(brain)),))
+                        yield Mind(stage, (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each)))
                 finally:
                     await brain.stop()
             finally:

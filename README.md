@@ -86,8 +86,9 @@ whose requests go through hands' proxy and which reaches the sessions through ha
 pipeline's LLM stage (`src/hands/brain/stage.py`): the turn goes to its stdin, and what it says is spoken
 from its requests on the wire, never from its stdout; each turn's `BrainSpoke` audit line names the
 exchanges its words came from. A barge-in stops it, except while a tool whose effect must land is running,
-which finishes and has its readback spoken; after that, and after `stay_silent`, hands answers the brain's
-next request itself, so the model is not asked to go on.
+which finishes and has its readback, or why it failed, spoken; after that, and after `stay_silent`, hands
+answers the brain's next request itself, so the model is not asked to go on. A turn the brain ends in error is
+said as the other variants' model failures are.
 A variant stops at start, naming where its key can be, when it has none. The run's audit log says which
 backend, URL, and model it reached, never the key. The key can live in a `.env` at the repository root,
 which git ignores, and `uv run --env-file .env` puts it in the environment; uv stops if
