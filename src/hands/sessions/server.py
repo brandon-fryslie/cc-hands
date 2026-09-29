@@ -32,11 +32,13 @@ async def serve_hooks(home: Home, sessions: Sessions) -> web.AppRunner:
             case None:
                 pass
         match said.happened:
-            case PermissionRequested() | Stopped() as asked:
-                # The hooks that wait: the response body is the answer Claude Code reads, and a Stop is let go once it is
-                # decided, so what its deciding calls for is done while Claude Code is held [LAW:no-ambient-temporal-coupling].
+            case PermissionRequested() as asked:
+                # The one hook answered: the response body is the answer Claude Code reads.
                 output = hook_output(await sessions.ask(asked))
                 return web.Response(status=204) if output is None else web.json_response(output)
+            case Stopped() as stopped:
+                await sessions.stop(stopped)
+                return web.Response(status=204)
             case happened:
                 await sessions.apply(happened)
                 return web.Response(status=204)

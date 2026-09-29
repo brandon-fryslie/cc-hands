@@ -18,6 +18,7 @@ from hands.sessions.hookconfig import (
     PLUGIN_DIR,
     PLUGIN_ID,
     POST_TIMEOUT_SECONDS,
+    STOP_HOLD_SECONDS,
     SUBSCRIBED,
     plugin_hooks,
     post_timeout,
@@ -61,9 +62,10 @@ def test_the_launcher_every_hook_names_is_in_the_plugin_and_runnable() -> None:
 def test_the_shim_waits_as_long_as_claude_code_lets_the_hook_and_the_daemon_denies_before_that() -> None:
     assert post_timeout("PermissionRequest") == PERMISSION_HOOK_TIMEOUT_SECONDS
     assert PERMISSION_DEADLINE_SECONDS < PERMISSION_HOOK_TIMEOUT_SECONDS
-    # A Stop is held until the transcript is read through it, and a daemon that answers as fast as any other hook's
-    # answers it within that much more.
-    assert post_timeout("Stop") >= POST_TIMEOUT_SECONDS + UNTOLD / 1000
+    # A Stop's hook is held past the window the reducer waits for the record that names it, and the shim waits the
+    # hold longer than for any other hook.
+    assert STOP_HOLD_SECONDS > UNTOLD / 1000
+    assert post_timeout("Stop") == POST_TIMEOUT_SECONDS + STOP_HOLD_SECONDS
     assert post_timeout("Notification") == POST_TIMEOUT_SECONDS
 
 

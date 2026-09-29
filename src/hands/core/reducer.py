@@ -165,12 +165,17 @@ def _end(registry: Registry, was: Session, membership: Membership, said: list[Ef
 def _unsettled(session: SessionId, held: Iterable[Unnamed]) -> list[Effect]:
     """Stops held for a record that will not be read now: each ends nothing, is a line, and its hook is let go."""
     # [LAW:nothing-unseen] said as what it is, never as a Stop the transcript was read through without naming.
-    return [effect for stop in held for effect in (Audit(Unsettled(session, stop.prompt)), _let_go(session, stop))]
+    return [effect for stop in held for effect in (Audit(Unsettled(session, stop.prompt)), *_let_go(session, stop))]
 
 
-def _let_go(session: SessionId, stop: Unnamed) -> Effect:
-    """The Stop is decided, after whatever its deciding called for, so Claude Code goes on only once that is done."""
-    return Reply(session, stop.request, Withdraw())
+def _let_go(session: SessionId, stop: Unnamed) -> list[Effect]:
+    """The Stop is decided, after whatever its deciding called for, so Claude Code goes on only once that is done: its
+    hook is answered, unless it stopped waiting."""
+    match stop.hook:
+        case None:
+            return []
+        case hook:
+            return [Reply(session, hook, Withdraw())]
 
 
 def _enter(registry: Registry, event: SessionEvent) -> tuple[Registry, list[Effect]]:
@@ -229,7 +234,7 @@ def _stopped(session: Session, event: Moving) -> tuple[Session, list[Effect]]:
                     # Its hook is held with it, so what its deciding calls for is done before Claude Code goes on.
                     return replace(session, unnamed=(*session.unnamed, stop)), [Audit(Holding(id, prompt))]
                 case (turn, effects):
-                    return replace(session, turn=turn), [*effects, _let_go(id, stop)]
+                    return replace(session, turn=turn), [*effects, *_let_go(id, stop)]
         case _:
             return session, []
 
@@ -243,11 +248,11 @@ def _settled(session: Session, event: Moving) -> tuple[Session, list[Effect]]:
     for stop in session.unnamed:
         match (_ending(replace(session, turn=turn), stop), event):
             case (None, Read(through=through)) if through >= stop.by:
-                effects += [Audit(Unmatched(id, stop.prompt)), _let_go(id, stop)]
+                effects += [Audit(Unmatched(id, stop.prompt)), *_let_go(id, stop)]
             case (None, _):
                 held.append(stop)
             case ((turn, ending), _):
-                effects += [*ending, _let_go(id, stop)]
+                effects += [*ending, *_let_go(id, stop)]
     return replace(session, turn=turn, unnamed=tuple(held)), effects
 
 
@@ -564,6 +569,9 @@ def _abandoned(registry: Registry, session: SessionId, request: RequestId) -> Re
             # No hook waits for a reply, so there is nothing to withdraw, answer, or deny. A question closed this way was
             # escaped at its dialog, and is what the turn waits on until it runs something else.
             return registry.put(replace(was, dialog=Unanswered() if isinstance(on, Question) else None))
+        case Session(unnamed=unnamed) as was if any(stop.hook == request for stop in unnamed):
+            # A held Stop's hook stopped waiting: the Stop still tells its turn once decided, and answers no hook.
+            return registry.put(replace(was, unnamed=tuple(replace(stop, hook=None) if stop.hook == request else stop for stop in unnamed)))
         case _:
             return registry
 

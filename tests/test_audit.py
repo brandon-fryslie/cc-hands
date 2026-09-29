@@ -12,8 +12,8 @@ from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Holding, Reply, Unmatched, Withdraw
-from hands.core.events import Joined, Prompted, Read, StatusReported, Stopped, Tick
-from hands.core.session import Membership, PromptId, RequestId, SessionId
+from hands.core.events import Abandoned, Joined, Prompted, Read, StatusReported, Stopped, Tick
+from hands.core.session import Membership, PromptId, RequestId, SessionId, Told
 from hands.daemon import cli
 from hands.sessions.audit import (
     Applied,
@@ -208,11 +208,36 @@ async def test_a_stop_hook_is_answered_only_once_its_stop_is_decided() -> None:
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
     # Its transcript is read once a status is, so a record could name the Stop.
     await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
-    hook = asyncio.create_task(sessions.ask(Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)))
+    hook = asyncio.create_task(sessions.stop(Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)))
     await asyncio.sleep(0)
     assert not hook.done()
     await sessions.apply(Read(member().id, Stamp(STOP_HEARD + 1000)))
-    assert await asyncio.wait_for(hook, 1.0) == Withdraw()
+    await asyncio.wait_for(hook, 1.0)
+
+
+async def test_a_stop_hook_is_let_go_once_the_hold_passes_and_the_stop_decided_later_answers_no_hook() -> None:
+    """The hold bounds how long Claude Code waits, however slowly the transcript is read."""
+    recorded: list[Entry] = []
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append, stop_hold=0.01)
+    await sessions.apply(Joined(member(), "startup"))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
+    stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
+    await asyncio.wait_for(sessions.stop(stop), 1.0)
+    assert recorded[-1] == Applied(Abandoned(stop.session, stop.request, 0.0))
+    await sessions.apply(Read(member().id, Stamp(STOP_HEARD + 1000)))
+    assert recorded[-1] == Unmatched(stop.session, stop.prompt)
+
+
+async def test_a_stop_heard_as_the_daemon_shuts_down_is_still_applied() -> None:
+    """Letting every hook go at shutdown lets go of its wait, not of what it says happened."""
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member(), "startup"))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    sessions.release_waiting()
+    await asyncio.wait_for(sessions.stop(Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)), 3.0)
+    live = sessions.live_session(member().id)
+    assert live is not None and live.turn == Told(PromptId("p1"))
 
 
 async def test_an_audited_tool_keeps_its_schema_and_writes_its_call_beside_its_result() -> None:

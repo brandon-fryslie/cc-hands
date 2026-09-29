@@ -19,9 +19,11 @@ PERMISSION_DEADLINE_SECONDS = float(PERMISSION_HOOK_TIMEOUT_SECONDS - REPLY_MARG
 # Every other hook posts and returns, so a daemon slower than this is reported as unreachable.
 POST_TIMEOUT_SECONDS = 2.0
 
-# A Stop is held until the transcript says whose it is, at most a second past it (UNTOLD, in the reducer), and is let
-# go once what that calls for is done: so the shim waits that much longer for it.
-STOP_POST_TIMEOUT_SECONDS = POST_TIMEOUT_SECONDS + 1.0
+# [LAW:single-enforcer] how long the daemon holds a Stop's hook for the transcript to say whose Stop it is: past the
+# second the reducer waits for that record (UNTOLD), and a tail read after it. Past this the hook is let go, and the
+# Stop tells its turn once decided, with nothing holding Claude Code. The shim waits that much longer for a Stop.
+STOP_HOLD_SECONDS = 1.5
+STOP_POST_TIMEOUT_SECONDS = POST_TIMEOUT_SECONDS + STOP_HOLD_SECONDS
 
 # [LAW:one-source-of-truth] the module every hook runs, and the launcher, inside the plugin, that runs it under a
 # Python new enough for hands. The plugin has no venv, so the launcher puts the plugin's own src on the path.
