@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from hands.core.events import SessionEvent, Stopped
+from hands.core.events import SessionEvent
 from hands.core.session import Blocker, CommandName, Keystroke, Mode, PromptId, PromptText, RequestId, SessionId
 
 
@@ -25,13 +25,30 @@ class AfterEnd:
 
 @dataclass(frozen=True)
 class Unmatched:
-    """A Stop that ended nothing: its turn was told already, or no record naming its id had been read while a turn was open
-    or waiting to be told."""
+    """A Stop that ended nothing: its turn was told already, or no record naming its id was read by the time the
+    transcript was read through it. The Stop itself is the line of the event it came in."""
 
-    event: Stopped
+    session: SessionId
+    prompt: PromptId
 
 
-AuditRecord = Unregistered | AfterEnd | Unmatched
+@dataclass(frozen=True)
+class Holding:
+    """A Stop under an id no record read yet names, held until one is: Claude Code waits on its hook meanwhile."""
+
+    session: SessionId
+    prompt: PromptId
+
+
+@dataclass(frozen=True)
+class Unsettled:
+    """A Stop still held when its session ended or started again: nothing read from here on says whose it was."""
+
+    session: SessionId
+    prompt: PromptId
+
+
+AuditRecord = Unregistered | AfterEnd | Unmatched | Holding | Unsettled
 
 
 @dataclass(frozen=True)
@@ -87,7 +104,8 @@ class AllowWith:
 
 @dataclass(frozen=True)
 class Withdraw:
-    """hands lets go of the request without deciding it, so Claude Code's own dialog is the only answer left."""
+    """hands lets go of the hook without deciding anything: a permission request is left to Claude Code's own dialog,
+    and a Stop lets Claude Code go on."""
 
 
 # [LAW:types-are-the-program] what a person can decide is not what the daemon replies: nothing the user or the
@@ -98,7 +116,7 @@ HookReply = Allow | AllowWith | Approve | Deny | Withdraw
 
 @dataclass(frozen=True)
 class Reply:
-    """The answer to a blocking PermissionRequest hook, sent back down the socket it is waiting on."""
+    """The answer to a hook Claude Code waits on, a PermissionRequest or a Stop, sent back down the socket it is waiting on."""
 
     session: SessionId
     request: RequestId

@@ -11,9 +11,13 @@ from hands.core.effects import Summarise
 from hands.core.events import Joined, Prompted, StatusReported, Stopped, Taken
 from hands.core import status
 from hands.core.status import Report, Stamp
-from hands.core.session import Membership, Opened, PromptId, SessionId
+from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
 from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Deltas
 from hands.sessions.registry import Sessions
+
+# When hands heard a Stop, on the clock Claude Code stamps a status with.
+STOP_HEARD = Stamp(1500)
+STOP_REQUEST = RequestId("stop")
 
 SID = SessionId("s1")
 
@@ -223,7 +227,7 @@ async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed
 
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
     subprocess.run(("sed", "-i", "", "s/x = 1/x = 99/", str(root / "a.py")), check=True)
-    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p1"), again=False))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
 
     # The story is queued, and by the time anyone takes it the delta is already read and waiting.
     story = await sessions.story()
@@ -299,7 +303,7 @@ async def test_a_reading_that_fails_outright_still_lets_the_turn_be_told(tmp_pat
     """
     sessions = attached(tmp_path)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
-    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p1"), again=False))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
     story = await asyncio.wait_for(sessions.story(), 2.0)
     assert isinstance(story, Summarise) and story.session == SID
 
@@ -549,7 +553,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
     await sessions.apply(StatusReported(SID, Report(status.Idle(), Stamp(1)), at=4.0))
     await sessions.apply(Prompted(SID, at=5.0, mode=None, prompt=PromptId("p2")))
     (root / "second.py").write_text("turn two\n")
-    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
 
     assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), None)
     assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
@@ -568,10 +572,10 @@ async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_cha
     await sessions.apply(Taken(SID, PromptId("p1"), Stamp(2), 1.5))
     await sessions.apply(Prompted(SID, at=2.0, mode=None, prompt=PromptId("p1")))
     (root / "first.py").write_text("turn one\n")
-    await sessions.apply(Stopped(SID, "One.", mode=None, prompt=PromptId("p1"), again=False))
+    await sessions.apply(Stopped(SID, "One.", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
     await sessions.apply(Taken(SID, PromptId("p2"), Stamp(4), 4.0))
     (root / "queued.py").write_text("the queued turn\n")
-    await sessions.apply(Stopped(SID, "Two.", mode=None, prompt=PromptId("p2"), again=False))
+    await sessions.apply(Stopped(SID, "Two.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
 
     assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "One.")
     assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]

@@ -237,6 +237,21 @@ Turn = Opened | Untold | Told
 
 
 @dataclass(frozen=True)
+class Unnamed:
+    """A Stop under an id no record hands has read names yet. Claude Code writes a turn's records before it fires the
+    turn's Stop, and they reach the transcript within ~40 ms of it (2.1.285, measured), so the transcript says whose it
+    is: the turn a record carried onto its id, or opened under it. Held until one is read, or until the transcript is
+    read through `by` without one."""
+
+    prompt: PromptId
+    closing: str | None
+    again: bool
+    by: Stamp
+    # The hook Claude Code waits on meanwhile, let go once the Stop is decided; None once it stopped waiting.
+    hook: RequestId | None
+
+
+@dataclass(frozen=True)
 class Session:
     membership: Membership
     state: SessionState
@@ -249,6 +264,8 @@ class Session:
     # nothing, in whatever phase the turn now is. [LAW:types-are-the-program] kept here, and not on the turn, so every
     # phase answers "was this turn told" the same way, across a restart too.
     earlier: frozenset[PromptId] = frozenset()
+    # [LAW:no-ambient-temporal-coupling] Stops heard before the records that say whose they are, in the order heard.
+    unnamed: tuple[Unnamed, ...] = ()
 
 
 @dataclass(frozen=True)

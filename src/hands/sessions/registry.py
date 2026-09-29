@@ -8,13 +8,16 @@ from loguru import logger
 
 from hands.core import drafts, keyboard
 from hands.core.drafts import DraftOutcome, DraftRequest
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, Note, NotTyped, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Type, Typed, Unmatched, Unregistered, Withdraw
-from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, Note, NotTyped, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Type, Typed, Holding, Unmatched, Unregistered, Unsettled, Withdraw
+from hands.core.events import Abandoned, Event, PermissionRequested, Stopped, Tick, ToolFinished
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
+from hands.core.status import Stamp
 from hands.sessions.audit import Applied, EffectFailed, Performed, Record, Typing
+from hands.sessions.clock import stamp_now
+from hands.sessions.hookconfig import STOP_HOLD_SECONDS
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import ai_title
@@ -37,11 +40,17 @@ class Sessions:
         record: Record,
         changes: Changes | None = None,
         typist: Callable[[Type[Input]], None] = type_into,
+        stamp: Callable[[], Stamp] = stamp_now,
+        stop_hold: float = STOP_HOLD_SECONDS,
     ) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
         self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={})
         # [LAW:effects-at-boundaries] the one clock: hooks, answers, and ticks are all stamped from it.
         self._clock = clock
+        # [LAW:one-source-of-truth] the wall clock Claude Code stamps its statuses and records with: a Stop is heard on
+        # it and a transcript read through on it, and the two are compared.
+        self._stamp = stamp
+        self._stop_hold = stop_hold
         # [LAW:single-enforcer] every event and every effect passes through here, so here is where each becomes an audit line.
         self._record = record
         # What a turn did to the repository it ran in. A daemon given none tells every turn by its steps alone.
@@ -59,12 +68,37 @@ class Sessions:
     def now(self) -> Instant:
         return self._clock()
 
+    def stamp(self) -> Stamp:
+        return self._stamp()
+
     async def apply(self, event: Event) -> None:
         before = self._registry
         self._registry, effects = reduce(before, event)
         if effects or self._registry != before:
             self._record(Applied(event))
         await self._perform_all(effects)
+
+    async def stop(self, event: Stopped) -> None:
+        """Apply a Stop, and return once the reducer has decided whose it is, or once the hold has passed without that.
+
+        Claude Code waits on the hook meanwhile, so what deciding it calls for, a comparison and the mark of a turn
+        queued behind it, is done before Claude Code goes on [LAW:no-ambient-temporal-coupling]. The hold is the one
+        bound on that wait, whatever the transcript's reading costs: past it, the hook is let go.
+        """
+        waiting = asyncio.get_running_loop().create_future()
+        self._waiting[event.request] = waiting
+        try:
+            await self.apply(event)
+            await asyncio.wait_for(asyncio.shield(waiting), self._stop_hold)
+        except TimeoutError:
+            # [LAW:nothing-unseen] the branch taken: Claude Code goes on before the Stop is decided.
+            logger.info(f"the Stop of turn {event.prompt} in session {event.session} is undecided after {self._stop_hold}s, so its hook is let go")
+            await self.apply(Abandoned(event.session, event.request, self._clock()))
+        except asyncio.CancelledError:
+            await self.apply(Abandoned(event.session, event.request, self._clock()))
+            raise
+        finally:
+            del self._waiting[event.request]
 
     async def ask(self, event: PermissionRequested) -> HookReply:
         """Apply a permission request and wait for its reply: an answer, a withdrawal, or the deny at its deadline."""
@@ -265,5 +299,9 @@ def _audited(record: AuditRecord) -> tuple[str, str]:
             return "WARNING", f"{type(event).__name__} for session {event.session}, which never joined"
         case AfterEnd(event=event):
             return "WARNING", f"{type(event).__name__} for session {event.session}, which had already ended"
-        case Unmatched(event=event):
-            return "INFO", f"Stop of turn {event.prompt} in session {event.session}, which names no turn hands has read open or waiting to be told"
+        case Unmatched(session=session, prompt=prompt):
+            return "INFO", f"Stop of turn {prompt} in session {session} ended nothing: its turn was told, or no record read through it names its id"
+        case Holding(session=session, prompt=prompt):
+            return "DEBUG", f"Stop of turn {prompt} in session {session} is held until a record names its id"
+        case Unsettled(session=session, prompt=prompt):
+            return "INFO", f"Stop of turn {prompt} in session {session} ended nothing: its session ended or started again before a record named its id"

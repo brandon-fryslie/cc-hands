@@ -30,6 +30,11 @@ from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
 
 from conftest import ServeChat
+from hands.core.status import Stamp
+
+# When hands heard a Stop, on the clock Claude Code stamps a status with.
+STOP_HEARD = Stamp(1500)
+STOP_REQUEST = RequestId("stop")
 
 FIXTURE = Path(__file__).parent / "fixtures" / "turn.jsonl"
 BUDGET = Budget(opening=100, said=100, input=100, result=100, steps=10, files=10, commits=10, changes=500)
@@ -58,6 +63,9 @@ class Registry:
 
     def now(self) -> float:
         return 0.0
+
+    def stamp(self) -> Stamp:
+        return Stamp(0)
 
     def membership(self, session: SessionId) -> Membership | None:
         return self.member if session == self.member.id else None
@@ -88,7 +96,7 @@ async def test_a_session_that_stops_is_heard_by_its_title_and_project_saying_wha
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
-        await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN, again=False))
+        await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))
         spoken = await asyncio.wait_for(frames.get(), 5.0)
     finally:
         narrating.cancel()
@@ -117,7 +125,7 @@ async def test_a_session_that_ends_as_its_turn_is_summarised_is_heard_ending_aft
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
-        await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN, again=False))
+        await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))
         # `claude -p` exits the moment its turn stops, so the end lands while the model is still summarising.
         await sessions.apply(Ended(SID, "other"))
         with pytest.raises(asyncio.TimeoutError):
@@ -159,7 +167,7 @@ async def test_with_summaries_off_a_finished_turn_is_not_spoken_and_turning_them
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
-        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1"), again=False))
+        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
         # Told, and nothing spoken of it: the switch is flipped only after the quiet turn was read against it.
         await asyncio.wait_for(quiet.wait(), 5.0)
         assert frames.empty()
@@ -172,7 +180,7 @@ async def test_with_summaries_off_a_finished_turn_is_not_spoken_and_turning_them
         with transcript.open("a") as more:
             more.write(f"{_prompt('p2', 'and push it')}\n{_said('u4', 'Pushed.')}\n")
         await sessions.apply(Prompted(SID, at=3.0, mode=None, prompt=PromptId("p2")))
-        await sessions.apply(Stopped(SID, "Pushed.", mode=None, prompt=PromptId("p2"), again=False))
+        await sessions.apply(Stopped(SID, "Pushed.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
         spoken = await asyncio.wait_for(frames.get(), 5.0)
     finally:
         narrating.cancel()
@@ -213,7 +221,7 @@ async def test_a_switch_that_cannot_be_read_is_logged_and_the_turn_told_as_the_d
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
-        await sessions.apply(Stopped(SID, "Fixed it. Want me to push it?", mode=None, prompt=PromptId("p1"), again=False))
+        await sessions.apply(Stopped(SID, "Fixed it. Want me to push it?", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
         spoken = await asyncio.wait_for(frames.get(), 5.0)
     finally:
         narrating.cancel()
@@ -251,14 +259,14 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
-        await sessions.apply(Stopped(SID, "Looked.", mode=None, prompt=PromptId("p1"), again=False))
+        await sessions.apply(Stopped(SID, "Looked.", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
         await asyncio.wait_for(frames.get(), 5.0)
         with transcript.open("a") as more:
             more.write(f"{call}\n{result}\n{fixed}\n")
-        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1"), again=True))
+        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1"), again=True, heard=STOP_HEARD, request=STOP_REQUEST))
         await asyncio.wait_for(frames.get(), 5.0)
         # A third Stop with nothing written since is not a turn to tell.
-        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1"), again=True))
+        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1"), again=True, heard=STOP_HEARD, request=STOP_REQUEST))
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(frames.get(), 0.2)
     finally:

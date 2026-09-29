@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import cast
 
 from hands.core.effects import AllowWith, Allow, Deny, Withdraw
+from hands.core.reducer import UNTOLD
 from hands.sessions.hookconfig import (
     HOOKS_FILE,
     LAUNCHER,
@@ -17,6 +18,7 @@ from hands.sessions.hookconfig import (
     PLUGIN_DIR,
     PLUGIN_ID,
     POST_TIMEOUT_SECONDS,
+    STOP_HOLD_SECONDS,
     SUBSCRIBED,
     plugin_hooks,
     post_timeout,
@@ -60,7 +62,11 @@ def test_the_launcher_every_hook_names_is_in_the_plugin_and_runnable() -> None:
 def test_the_shim_waits_as_long_as_claude_code_lets_the_hook_and_the_daemon_denies_before_that() -> None:
     assert post_timeout("PermissionRequest") == PERMISSION_HOOK_TIMEOUT_SECONDS
     assert PERMISSION_DEADLINE_SECONDS < PERMISSION_HOOK_TIMEOUT_SECONDS
-    assert post_timeout("Stop") == POST_TIMEOUT_SECONDS
+    # A Stop's hook is held past the window the reducer waits for the record that names it, and the shim waits the
+    # hold longer than for any other hook.
+    assert STOP_HOLD_SECONDS > UNTOLD / 1000
+    assert post_timeout("Stop") == POST_TIMEOUT_SECONDS + STOP_HOLD_SECONDS
+    assert post_timeout("Notification") == POST_TIMEOUT_SECONDS
 
 
 def test_a_reply_is_printed_in_the_shape_claude_code_reads() -> None:
