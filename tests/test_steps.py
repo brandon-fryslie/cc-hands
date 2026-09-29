@@ -32,6 +32,9 @@ class Registry:
     def live_members(self) -> list[Membership]:
         return [self.member]
 
+    def status_read(self, session: SessionId) -> bool:
+        return True
+
     def now(self) -> float:
         return 0.0
 

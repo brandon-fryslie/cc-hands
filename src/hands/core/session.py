@@ -174,9 +174,10 @@ class Running:
 
     status: Going
     stamp: Stamp
-    # When Claude Code last set it idle before this run, or, first read running, when it set that status: a record
-    # written before then is of a turn over by then, or begun before hands followed the session.
-    idled: Stamp
+    # When Claude Code last set it idle before this run: a record written before then is of a turn over by then. None
+    # when it was first read running, as when hands follows it mid-turn: no idle of it was read, and the tail hands on
+    # no record from before the turn it is in.
+    idled: Stamp | None
 
 
 SessionState = Unreported | Idle | Running

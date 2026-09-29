@@ -209,8 +209,8 @@ def _stated(event: Moving, was: Session) -> SessionState:
         case (StatusReported(report=Report(status=status.Busy() | status.Waiting() | status.Shell() | status.Unknown() as going, stamp=stamp)), Idle(stamp=idled)):
             return Running(going, stamp, idled=idled)
         case (StatusReported(report=Report(status=status.Busy() | status.Waiting() | status.Shell() | status.Unknown() as going, stamp=stamp)), _):
-            # First read running, as when hands attaches mid-turn: that status stands in for the idle before it.
-            return Running(going, stamp, idled=stamp)
+            # First read running, as when hands attaches mid-turn: no idle before it was read.
+            return Running(going, stamp, idled=None)
         case (Waited(), Idle(nudged=False) as idle) if _waiting(was.turn):
             return replace(idle, nudged=True)
         case (_, state):
@@ -351,11 +351,15 @@ def _opens(state: SessionState, turn: Turn, prompt: PromptId, written: Stamp | N
     # [LAW:one-source-of-truth] Claude Code's own two clocks, never the order hands read them in: a record written before
     # the idle it set is of a turn over by then. It sets idle for ~3 ms between a turn and the message queued behind it
     # (2.1.282), which a read can land on, and which came first; and it stamps a `!` command's record before the busy it
-    # sets for it. With no status read yet, a transcript read from its start opens nothing.
+    # sets for it. Whether a record is from before hands followed the session is the tail's to say (see Tails._read).
     match state:
         case Idle(stamp=idled) | Running(idled=idled):
-            return written is not None and written >= idled and not _names(turn, prompt)
+            # With no idle read, as for a session running since hands first read it, the turn its transcript is in is
+            # the one running.
+            return not _names(turn, prompt) and (idled is None or (written is not None and written >= idled))
         case Unreported():
+            # No status says whether any turn runs. The catch-up reads no session before its status (see Tails.catch_up); a
+            # Stop's telling may, of the turn that Stop ends.
             return False
 
 
