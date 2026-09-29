@@ -12,7 +12,8 @@ import pytest
 from hands.brain.mcp import McpServer, serve_mcp
 from hands.brain.process import BUILTIN_TOOLS, SLIM, BrainGone, Launch, NotLoggedIn, command, environment, start
 from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainReady, Called, Entry, McpConnected
-from hands.voice.pipeline import ClaudeCodeBackend
+from hands.daemon.run import mind
+from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend
 from hands.voice.summary import SummaryFailed, summariser
 from hands.voice.tools import Result, audited, tool
 
@@ -174,3 +175,23 @@ async def test_the_summariser_on_the_brain_asks_a_one_shot_claude_on_the_same_lo
     assert await summarise("the tests ran") == "Summed: the tests ran"
     with pytest.raises(SummaryFailed, match="claude -p failed"):
         await summarise("fail")
+
+
+async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_variant_alone(tmp_path: Path, fake_claude: Path) -> None:
+    recorded: list[Entry] = []
+    async with mind(AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m"), [], "http://127.0.0.1:1", recorded.append) as watches:
+        assert watches == ()
+    claude = ClaudeCodeBackend(base_url="https://api.anthropic.com", model="claude-sonnet-5", config_dir=tmp_path / "brain")
+    async with mind(claude, [tool(echo)], "http://127.0.0.1:1", recorded.append) as watches:
+        assert [watch.name for watch in watches] == ["the brain"]
+        [launched] = [entry for entry in recorded if isinstance(entry, BrainLaunched)]
+        assert launched.cwd == tmp_path / "brain" / "cwd"
+    assert isinstance(recorded[-1], BrainExited)
+
+
+async def test_a_run_on_a_brain_with_no_login_stops_naming_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOGGED_IN", "0")
+    claude = ClaudeCodeBackend(base_url="https://api.anthropic.com", model="claude-sonnet-5", config_dir=tmp_path / "brain")
+    with pytest.raises(SystemExit, match="claude auth login"):
+        async with mind(claude, [], "http://127.0.0.1:1", lambda _: None):
+            pass
