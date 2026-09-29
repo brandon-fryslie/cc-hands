@@ -51,10 +51,12 @@ from hands.core.narration import Narration, narration, open_questions, reported_
 from hands.core.spoken import spoken
 from hands.core.turn import Answering, Asked, Budget, Continuing, Interruption, Notified, Opening, Step, Turn
 from hands.sessions.home import default_home
+from hands.sessions.proxy import UPSTREAM, serve_proxy
 from hands.daemon.run import SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS, backend_from_env
 from hands.sessions.transcript import turn_record
 from hands.sessions.turning import Turning
 from hands.voice.narrator import TURN_BUDGET
+from hands.voice.pipeline import LLMBackend
 from hands.voice.summary import SummaryFailed, Summariser, summariser
 from hands.voice.summary_instruction import HEADLINE_SENTENCES, TURN_SUMMARY_INSTRUCTION
 
@@ -327,7 +329,15 @@ async def main() -> int:
     args = parsed.parse_args()
 
     backend = backend_from_env(default_home())
-    summarise = summariser(backend, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
+    # The daemon's own proxy, so the brain's summaries reach the API by the route they take in a run; the other backends never use it.
+    proxy = await serve_proxy(UPSTREAM, lambda _: None, clock=time.time)
+    try:
+        return await told(args, backend, summariser(backend, proxy.url, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS))
+    finally:
+        await proxy.close()
+
+
+async def told(args: argparse.Namespace, backend: LLMBackend, summarise: Summariser) -> int:
     chosen = [case for case in cases() if args.only in case.name]
     if not chosen:
         raise SystemExit(f"no case under {FIXTURES} holds {args.only!r}")
