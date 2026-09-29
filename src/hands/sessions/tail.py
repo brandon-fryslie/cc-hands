@@ -7,6 +7,7 @@ about where the turn started or what of it was heard.
 
 import asyncio
 import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Protocol
 
 from loguru import logger
 
-from hands.core.events import Continued, Interrupted, Taken, Transcribed
+from hands.core.events import Continued, Interrupted, Read, Taken, Transcribed
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.status import Stamp
 from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
@@ -138,9 +139,11 @@ class Known(Protocol):
 class Tails:
     """Every live session's transcript, followed. Only the narrator asks it anything."""
 
-    def __init__(self, known: Known) -> None:
+    def __init__(self, known: Known, clock: Callable[[], Stamp] = lambda: Stamp(time.time_ns() // 1_000_000)) -> None:
         # [LAW:one-source-of-truth] where a session's transcript is, is the registry's to say, not this one's to keep.
         self._known = known
+        # The wall clock Claude Code stamps its statuses and records with, so how far a transcript was read is said on it.
+        self._clock = clock
         self._following: dict[SessionId, Following] = {}
         # [LAW:no-ambient-temporal-coupling] reading happens off the loop in a thread, and a Stop reads the same
         # transcript the catch-up is reading. [LAW:single-enforcer] everything that touches a Following waits on
@@ -154,7 +157,8 @@ class Tails:
         """Read what has been appended to every live session's transcript, and forget the sessions that are gone.
 
         Returns what was read of each turn since the last catch-up that no hook says — where its prompt was taken, where
-        it was interrupted, and where it went on under a queued message's id — in the order it was read.
+        it was interrupted, and where it went on under a queued message's id — in the order it was read, each reading
+        followed by how far it read.
         """
         async with self._reading:
             members = self._known.live_members()
@@ -253,14 +257,22 @@ class Tails:
 
     def _read(self, session: SessionId, following: Following) -> None:
         """Raises OSError, which the caller decides what to make of: a file not written yet, or one that cannot be read."""
-        with following.path.open("rb") as file:
-            size = file.seek(0, os.SEEK_END)
-            if size < following.offset:
-                # Reset in place: the narrator may be holding this very following while a summary comes back.
-                logger.warning(f"the transcript of session {session} is shorter than what was read of it, so it is read again from its start")
-                following.restart()
-            file.seek(following.offset)
-            raw = file.read()
+        # Before the file is opened, so every record Claude Code had written by then is in what is read.
+        through = self._clock()
+        try:
+            with following.path.open("rb") as file:
+                size = file.seek(0, os.SEEK_END)
+                if size < following.offset:
+                    # Reset in place: the narrator may be holding this very following while a summary comes back.
+                    logger.warning(f"the transcript of session {session} is shorter than what was read of it, so it is read again from its start")
+                    following.restart()
+                file.seek(following.offset)
+                raw = file.read()
+        except OSError:
+            # Nothing written yet is nothing left unread, and a transcript that cannot be read gives nothing more to wait
+            # for: the turn is told, and its telling says why it could not read it [LAW:no-silent-failure].
+            self._transcribed.append(Read(session, through))
+            raise
         # [LAW:no-ambient-temporal-coupling] a record is whole only once its newline is written, so the bytes after
         # the last newline stay unread and unconsumed until the write that ends them.
         *complete, unfinished = raw.split(b"\n")
@@ -280,12 +292,16 @@ class Tails:
                     self._transcribed.append(prompted)
                 if following.consume(record) is not None:
                     self._interrupt(session, record)
+        # [LAW:no-ambient-temporal-coupling] after the records it covers, so a telling decided by how far the transcript
+        # was read has what that reading found; and not while a record is half written, which may have been begun before.
+        if not unfinished:
+            self._transcribed.append(Read(session, through))
 
     def _interrupt(self, session: SessionId, record: Payload) -> None:
         prompt = prompt_of(record)
         if prompt is None:
-            # [LAW:no-silent-failure] a record that names no turn is the record of none, so the turn it stopped is told at
-            # the deadline Claude Code's idle set, without it.
+            # [LAW:no-silent-failure] a record that names no turn is the record of none, so the turn it stopped is told once
+            # the transcript is read past the window Claude Code's idle set, without it.
             logger.error(f"session {session} was interrupted, but the record of it names no prompt, so its turn is told without it")
             return
         # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.

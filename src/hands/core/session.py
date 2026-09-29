@@ -209,12 +209,14 @@ class Opened:
 @dataclass(frozen=True)
 class Untold:
     """A turn Claude Code said is over and hands has not told yet. Claude Code sets idle before the transcript says how
-    the turn ended (an interrupt's record lands ~100 ms after, 2.1.282), so the turn is told once that record or its Stop
-    is read, or a turn after it opens, or at `by` with what was read by then."""
+    the turn ended (an interrupt's record is written 37 ms after, 2.1.283), so the turn is told once that record or its
+    Stop is read, or a turn after it opens, or with what was read once the transcript has been read through `by`."""
 
     turn: PromptId
     others: frozenset[PromptId]
-    by: Instant
+    # On Claude Code's clock, from the idle it set: [LAW:no-ambient-temporal-coupling] how late hands reads the transcript
+    # moves when the telling goes out, never what it holds.
+    by: Stamp
     # Whether it ended on a question or an offer, so the nudge can say it has one rather than only that it waits: see
     # `_asking` in the reducer.
     asking: bool
