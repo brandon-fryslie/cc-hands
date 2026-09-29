@@ -389,3 +389,16 @@ async def test_a_draft_that_failed_under_a_held_request_says_why(rig: Rig) -> No
     assert route == Hold(INTERRUPTED)
     await rig.until(lambda: rig.out.said() == ["there is no session api"])
     rig.brain.end()
+
+
+async def test_a_turn_hands_stopped_ends_in_the_error_it_asked_for_and_nothing_is_said_of_it(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "tell me everything"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "First, ")
+    await rig.until(lambda: rig.out.said() == ["First, "])
+    await rig.interrupt()
+    # As Claude Code 2.1.285 ends a turn it was told to stop.
+    rig.brain.end(BrainAnswered("error_during_execution", True, 1, 10))
+    await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
+    await asyncio.sleep(0.1)
+    assert rig.errors == []

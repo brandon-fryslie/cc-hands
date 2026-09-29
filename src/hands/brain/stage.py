@@ -87,6 +87,8 @@ class _Turn:
     # What hands said for the calls of a held request, since the model is not asked to say it.
     readbacks: list[str] = field(default_factory=list[str])
     interrupted: bool = False
+    # Told to stop by hands, which Claude Code 2.1.285 ends with an error_during_execution result: asked for, not a failure.
+    stopped: bool = False
 
 
 class BrainStage(FrameProcessor):
@@ -139,7 +141,7 @@ class BrainStage(FrameProcessor):
         if (error := asked.exception()) is not None:
             # [LAW:no-silent-failure] a brain that is gone stops the run from its own watch; this says which turn it took.
             logger.opt(exception=error).error("the brain failed a turn")
-        elif (answered := asked.result()).is_error:
+        elif (answered := asked.result()).is_error and not turn.stopped:
             # [LAW:no-silent-failure] said as the API services' failures are: an error from the model's stage.
             await self.push_error(f"the brain's turn ended in error: {answered.subtype}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
@@ -171,9 +173,9 @@ class BrainStage(FrameProcessor):
         # A tool whose effect must land runs to its end; stopped by the harness, it would land and be written in
         # history as refused. Its turn's next request is held instead, so the model is not asked to go on either way.
         running = tuple(turn.calls.values())
-        stopped = not any(name in self._completes for name in running)
-        self._record(BrainInterrupted(running, stopped))
-        if stopped:
+        turn.stopped = not any(name in self._completes for name in running)
+        self._record(BrainInterrupted(running, turn.stopped))
+        if turn.stopped:
             await self._brain.interrupt()
 
     def route(self, sent: Sent) -> Route:
