@@ -56,13 +56,14 @@ Each of these was a concern while the proxy was imagined as overhearing. Under c
 they are policy.
 
 **Retries.** The proxy sees the 529 or the dropped upstream stream before Claude Code
-does. It decides whether to retry upstream itself, so Claude Code never sees a failure,
-or to pass the error through and recognise the byte-identical re-request. Either way
-hands knows which attempt is which, because it made the choice.
+does. It passes the error through and recognises Claude Code's byte-identical
+re-request, so hands knows which attempt is which. Retrying upstream itself would be a
+request of the proxy's own on Claude Code's credentials, which it never makes (below).
 
 **Compaction and utility calls.** The proxy sees the request before any response bytes
-exist. A compaction request carries a different system prompt from the one we set; a
-utility call has no tools and a different model. Classification happens on the way out
+exist. A utility call has no tools and a different model. A compaction is a fork (below),
+which shares the brain's prefix as a main turn does; what marks it is found by use.
+Classification happens on the way out
 and the response is already tagged when it arrives. This does not need to be exhaustive
 up front. Brandon: "Simply using the application should reveal this quickly with no
 effort." The one thing that must exist from the first line is the default: an
@@ -89,8 +90,10 @@ everything after N. So:
   history. The proxy never rewrites the front or the middle per turn.
 - **Per-turn material goes only at the tail.** Session status, a fresh note from hands,
   appended to or inside the newest user message. On the next turn Claude Code's history
-  will not contain what the proxy added, so the prefix diverges at that message and one
-  turn's worth of tokens goes uncached: a few hundred, bounded, cheap. It also means
+  will not contain what the proxy added. Appended after the block that carries Claude
+  Code's breakpoint on that message, the tail is outside the cached prefix and the next
+  request misses nothing. Anywhere earlier, the rest of the message after it goes uncached
+  once, and mid tool loop that message is a tool result of any size. It also means
   stale notes never accumulate in history the way `[hands]` messages do today. If zero
   miss is ever wanted, the proxy re-inserts its own past insertions, a pure function of
   its own log.
@@ -124,11 +127,11 @@ that reuses the main loop's exact system prompt, context, tools, and messages (t
 never writes its messages into the main conversation. The same mechanism runs
 `postTurnSummary`, `promptSuggestion`, `session_memory`, and `compact`. This is the
 side request we thought the brain lacked: subscription-legit, sharing the brain's prompt
-cache so it costs only the tail and the output, and leaving no trace in history. The
-proxy sees forks on the wire as requests with the brain's prefix and a different tail,
-which is how it classifies them. `/btw` itself is an interactive command; whether a fork
-can be triggered from stdin in `-p` mode is not verified. If it cannot, exposing one is
-the first concrete reason found for a patched build.
+cache so it costs only the tail and the output, and leaving no trace in history. On the
+wire a fork shares the brain's prefix, as a main turn does; what tells the two apart is
+not verified. `/btw` itself is an interactive command; whether a fork can be triggered
+from stdin in `-p` mode is not verified. If it cannot, exposing one is one of the
+patched build's two jobs (see "What needs Claude Code modified").
 
 **Steering compaction.** Claude Code's own compaction is a fork that flows through the
 proxy. Rather than switching it off, the proxy recognises it on the way out, rewrites
@@ -159,8 +162,9 @@ mutable, and re-read constantly. So the store is worth building, in this shape:
   says and should not cost a re-summary.
 - **One sentence per ticket.** 132 × ~25 tokens is about 3K tokens: the whole backlog
   fits in a spoken-scale context, and the raw ticket is one call away.
-- **Layered.** An epic's summary is keyed by the hash of its children's summaries; the
-  backlog's by the epics'. Edit one ticket and exactly three summaries recompute. "How's
+- **Layered.** A parent's summary is keyed by the hash of its children's summaries, up to
+  the backlog, whose children are its epics and the tickets under no epic. Edit one ticket
+  and only it and what sits above it recompute. "How's
   the observability epic going?" becomes a lookup.
 - **Summarised off the voice path.** On first sight and on change, never while the user
   waits, by a fork of the brain or by the local model.
@@ -236,7 +240,7 @@ An earlier draft put a timing experiment first. It is not a gate, and it is not 
 ticket. Brandon's position on latency, which the recordings support: the same bytes on
 the wire take the same time whether Claude Code or anything else sent them; a
 short-output Opus request with a 27 KB prompt, 67 tools, and 100–200K cached tokens
-returns in 2.3–3.5 s, and a stripped request in about 300 ms. The recordings also
+returns in 2.3–3.5 s. The recordings also
 already answer how many requests a turn makes: more than one, and the section above
 says which. What they cannot supply is timing around the request, and no value of it
 changes the design:
@@ -248,9 +252,11 @@ changes the design:
   decided whether hands reads the wire or stdout, and that is decided on completeness;
 - requests per turn: handled by the classification default and discovered by use.
 
-So the proxy records these intervals on every request from its first version, and the
-numbers fall out the first time the brain answers a question. The measurement happens
-last, by construction, as the acceptance check of the brain launch.
+So the proxy timestamps every request on the wire from its first version (request in,
+request out, first byte, last byte), and those numbers fall out the first time the brain
+answers a question. The stdin and stdout ends are not on the wire; the brain's launcher
+sees them. The measurement happens last, by construction, as the acceptance check of the
+brain launch.
 
 ## Implementation plan
 
@@ -264,9 +270,10 @@ investigate mid-build.
    back byte for byte, and feeds the same bytes to an assembler ported from cc-dump's
    `response_assembler.py` and `event_types.py`. Every request is attributed to a
    session by `metadata.user_id`, classified on the way out (main turn, fork,
-   compaction, count_tokens, unknown), timestamped at stdin-write, request-out,
+   compaction, count_tokens, unknown), timestamped at request-in, request-out,
    first-byte, and last-byte, and written to the audit log. Unknown shapes are never
-   spoken and are logged loudly. Purpose in one sentence: everything one Claude Code
+   spoken and are logged loudly. The proxy never makes a request of its own and never
+   reuses the client's credentials. Purpose in one sentence: everything one Claude Code
    process says to the API and hears back, as typed events. Second consumer: the
    working sessions (ticket 10).
 2. **Question: which settings replace `--bare`.** `--bare` and `CLAUDE_CODE_SIMPLE`
@@ -288,12 +295,13 @@ investigate mid-build.
    `src/hands/voice/tools.py`, which stop being Pipecat `DirectFunction`s and become
    plain callables with schemas; the Pipecat shell stays as the first adapter and the
    `audited` wrapper stays on the bodies. Done when the brain answers a typed question
-   over stdin with its text visible on the proxy, and the four intervals are in the
-   audit log.
+   over stdin with its text visible on the proxy, and the four timestamps for that
+   turn are in the audit log.
 5. **The LLM stage.** `build_llm` in `src/hands/voice/pipeline.py` gains a processor
    that sends the aggregated transcript to the brain's stdin and emits the wire's text
    deltas as the frames TTS consumes today. Barge-in forwards the interrupt (per ticket
-   3). `stay_silent` suppresses speech for its turn; the draft tools complete their
+   3). `stay_silent` ends the turn with nothing said after it, as `run_llm=False` does
+   today; the draft tools complete their
    effect regardless of interrupt and their readback is spoken from the outcome. Done
    when a person asks by voice and hears the answer, and the audit log shows the text
    came from the wire.
@@ -302,7 +310,7 @@ investigate mid-build.
    messages carry today. Stable body untouched; one turn's tokens uncached per turn is
    the accepted cost.
 7. **The summary store.** A store keyed by content hash plus summariser version, one
-   sentence per item, layered so an epic's key is the hash of its children's
+   sentence per item, layered so a parent's key is the hash of its children's
    summaries. `read_backlog`, `read_ticket`, and `read_session` tools serve summaries
    first and raw content on request. Summarisation runs off the voice path. Purpose:
    a sentence for any content-addressed thing, kept until the thing changes. Second
@@ -343,6 +351,7 @@ request). The transport is rewritten on asyncio, since cc-dump's is threaded
 - The stdin interrupt control request against a slim `-p` brain, and how a half-finished
   turn lands in its history.
 - The four experiment intervals; none can be read from the existing recordings.
+- What tells a fork, compaction included, from a main turn on the wire.
 - Which settings switch off auto-memory, LSP, and background prefetches without
   `--bare`.
 - That the ~300 ms requests are `count_tokens` calls: their body and response have that

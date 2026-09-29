@@ -1,5 +1,8 @@
 # Claude Code as the intermediary's brain
 
+> Superseded by [control-point.md](control-point.md), which the `hands-wire-6ic` tickets build from.
+> Where the two disagree (the proxy as a tap, `--bare`, the timing experiment as a first step), it wins.
+
 Written 2026-09-28 from a conversation between Brandon and Claude. The one-page version
 is [overview.md](overview.md). This document holds every fact the conversation rested
 on, where each came from, and what was decided against. Anything not verified is marked
