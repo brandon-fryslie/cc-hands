@@ -12,7 +12,7 @@ from hands.core.events import Continued, Interrupted, Read, Taken, Transcribed
 from hands.core.session import Membership, PromptId, SessionId
 from hands.core.turn import Asked, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Turn
 from hands.core.effects import Summarise
-from hands.core.events import Joined, Prompted, StatusReported, Stopped
+from hands.core.events import Attached, Joined, Prompted, StatusReported, Stopped
 from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Idle, Opened, Told, Untold
@@ -41,12 +41,16 @@ class Registry:
     """
 
     members: list[Membership]
+    reported: bool = True
 
     def __post_init__(self) -> None:
         self.heard = list(self.members)
 
     def live_members(self) -> list[Membership]:
         return self.members
+
+    def status_read(self, session: SessionId) -> bool:
+        return self.reported
 
     def now(self) -> float:
         return 7.0
@@ -74,6 +78,11 @@ def heard(transcribed: list[Transcribed]) -> list[Transcribed]:
 def said_idle(at: float) -> StatusReported:
     """Claude Code setting the session idle, as its status file says it has when a turn is over however it ended."""
     return StatusReported(SID, Report(status.Idle(), Stamp(int(at * 1000))), at=at)
+
+
+def said_busy(at: float) -> StatusReported:
+    """Claude Code setting the session busy, as it does when a prompt is submitted: the tail reads a session once it has."""
+    return StatusReported(SID, Report(status.Busy(), Stamp(int(at * 1000))), at=at)
 
 
 def lines(*records: str) -> str:
@@ -561,6 +570,7 @@ async def test_an_escape_in_the_turn_a_queued_prompt_went_on_as_leaves_the_sessi
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(transcript), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(said_busy(at=1.0))
     tails = Tails(sessions)
     with transcript.open("a") as more:
         more.write(lines(FLUSHED, FLUSHING, QUEUED, LOOPING, REJECTED.replace('"p1"', '"p2"')))
@@ -838,3 +848,67 @@ async def test_a_transcript_that_cannot_be_read_is_waited_on_no_longer(tmp_path:
     unreadable.mkdir()
     tails = Tails(Registry([member(unreadable)]), clock=lambda: Stamp(5000))
     assert await tails.catch_up() == [Read(SID, Stamp(5000))]
+
+
+# Three turns over before hands followed the session: one a queued message was flushed into, one cut off, one answered.
+# Then the turn it is in, whose record Claude Code wrote before the busy it set again after a dialog.
+HISTORY = (ASKED, LOOPING, FLUSHED, FLUSHING, QUEUED, BANANA, NEXT_ASKED.replace('"p2"', '"p9"'), CUT_OFF.replace('"p1"', '"p9"'), PROMPT.replace('"type":"user"', '"type":"user","promptId":"p3"'), DONE)
+RUNNING = '{"type":"user","promptId":"p4","timestamp":"1970-01-01T00:00:02Z","message":{"role":"user","content":"Now the tests."}}'
+
+
+async def test_a_transcript_read_from_its_start_hands_on_only_the_turn_it_is_in(tmp_path: Path) -> None:
+    """hands-status-tlo.egc: every turn before the one the transcript ends in was over before hands followed the session."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(*HISTORY, RUNNING, LOOPING))
+    tails = Tails(Registry([member(transcript)]))
+    said: list[str] = []
+    sink = logger.add(lambda message: said.append(message.record["message"]), level="INFO", filter="hands.sessions.tail")
+    try:
+        assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p4"), Stamp(2000), 7.0), Continued(SID, was=PromptId("p3"), now=PromptId("p4"))]
+    finally:
+        logger.remove(sink)
+    assert said == [f"read the transcript of session {SID} from its start: 8 of 10 events are of turns before the one it is in, which goes by ['p4']"]
+    with transcript.open("a") as more:
+        more.write(lines(CUT_OFF_MID_TOOL.replace('"p1"', '"p4"')))
+    assert heard(await tails.catch_up()) == [Interrupted(SID, PromptId("p4"), at=7.0)]
+
+
+async def test_a_turn_a_queued_message_was_flushed_into_is_one_turn_however_many_readings_it_spans(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(NEXT_ASKED.replace('"p2"', '"p0"'), DONE, ASKED, LOOPING, FLUSHED, FLUSHING, QUEUED, BANANA))
+    assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [
+        Taken(SID, PromptId("p1"), None, 7.0),
+        Continued(SID, was=PromptId("p0"), now=PromptId("p1")),
+        Taken(SID, PromptId("p2"), None, 7.0),
+        Interrupted(SID, PromptId("p2"), at=7.0),
+        Continued(SID, was=PromptId("p1"), now=PromptId("p2")),
+    ]
+
+
+async def test_a_session_is_not_read_until_claude_code_has_said_whether_it_runs(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(RUNNING))
+    registry = Registry([member(transcript)], reported=False)
+    tails = Tails(registry)
+    assert await tails.catch_up() == []
+    registry.reported = True
+    assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p4"), Stamp(2000), 7.0)]
+
+
+async def test_a_session_followed_from_mid_turn_works_under_its_own_prompt_and_its_stop_ends_it(tmp_path: Path) -> None:
+    """hands-status-tlo.egc: a daemon restarted while the session runs attaches it from its membership file, reads it
+    running, and reads its transcript from the start."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(*HISTORY, RUNNING, LOOPING))
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Attached(member(transcript)))
+    await sessions.apply(StatusReported(SID, Report(status.Busy(), Stamp(3000)), at=3.0))
+    tails = Tails(sessions)
+    for transcribed in await tails.catch_up():
+        await sessions.apply(transcribed)
+    live = sessions.live_session(SID)
+    assert live is not None and live.turn == Opened(PromptId("p4"))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p4"), again=False))
+    assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p4"), "Done.")
+    live = sessions.live_session(SID)
+    assert live is not None and live.turn == Told(PromptId("p4"))

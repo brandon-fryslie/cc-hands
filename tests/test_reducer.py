@@ -139,7 +139,7 @@ def test_no_hook_or_record_moves_a_session_between_running_and_not(before: Sessi
 @pytest.mark.parametrize(
     ("before", "event", "after"),
     [
-        (Unreported(), said(Busy(), 3000), Running(Busy(), Stamp(3000), idled=Stamp(3000))),
+        (Unreported(), said(Busy(), 3000), Running(Busy(), Stamp(3000), idled=None)),
         # Running since the idle before it: a record written after that idle is of this run.
         (IDLE, said(Busy(), 3000), Running(Busy(), Stamp(3000), idled=IDLE.stamp)),
         (IDLE, said(Shell(), 3000), Running(Shell(), Stamp(3000), idled=IDLE.stamp)),
@@ -1052,18 +1052,21 @@ def test_a_stop_with_nothing_queued_behind_it_marks_nothing() -> None:
 
 
 def test_a_prompt_taken_before_any_status_is_read_opens_nothing() -> None:
-    """A transcript read from its start, as the daemon attaching to a session reads it: history, not a turn."""
+    """No status says whether a turn of the session runs, so no record opens one."""
     attached = holding(Unreported())
     assert reduce(attached, taken(NEXT, Stamp(1500))) == (attached, [])
 
 
-def test_attached_mid_turn_it_is_running_and_the_turn_running_and_the_one_queued_behind_it_open_and_nothing_before_them() -> None:
-    """hands-status-hjr: a session attached while busy is running from its first status read. Records written before
-    Claude Code set it are history; the queued turn's is written after the running one's Stop."""
-    state, _ = told([said(Busy(), 3000, at=1.0), taken(PromptId("old"), Stamp(1500))], holding(Unreported()))
-    assert state == holding(Running(Busy(), Stamp(3000), idled=Stamp(3000)))
-    state, _ = told([taken(TURN, Stamp(3003), at=2.0), Stopped(ONE.id, "done", mode=None, prompt=TURN, again=False), taken(NEXT, Stamp(9000), at=20.0)], state)
-    assert state == holding(Running(Busy(), Stamp(3000), idled=Stamp(3000)), Opened(NEXT))
+def test_followed_mid_turn_it_works_under_its_own_prompt_once_its_record_is_read_and_its_stop_ends_it() -> None:
+    """hands-status-tlo.egc: a daemon restarted while the session runs. Its first status read says running, set after the
+    turn's record was written (busy again after a dialog), and the tail hands on the record of the turn its transcript
+    is in, and nothing from before it. The queued turn's record is written after the running one's Stop."""
+    state, _ = told([said(Busy(), 3000, at=1.0), taken(TURN, Stamp(2000), at=1.1)], holding(Unreported()))
+    assert state == holding(Running(Busy(), Stamp(3000), idled=None), Opened(TURN))
+    state, tellings = told([Stopped(ONE.id, "done", mode=None, prompt=TURN, again=False)], state)
+    assert (live(state).turn, tellings) == (Told(TURN), [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done")])
+    state, _ = told([taken(NEXT, Stamp(9000), at=20.0)], state)
+    assert state == holding(Running(Busy(), Stamp(3000), idled=None), Opened(NEXT))
 
 
 @pytest.mark.parametrize("stop", [Stopped(ONE.id, "other", mode=None, prompt=NEXT, again=False), Stopped(ONE.id, "done", mode=None, prompt=TURN, again=False)])

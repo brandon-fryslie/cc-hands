@@ -101,6 +101,17 @@ class Following:
             return self.reading
         return next((reading for reading in [self.reading, *reversed(self.ended)] if turn in reading.ids), None)
 
+    def current(self) -> int:
+        """The number of the first reading of the turn the transcript is in: the one open, and every one before it that
+        went by a prompt id it goes by, as a turn a queued message was flushed into does."""
+        ids, first = set(self.reading.ids), self.reading.number
+        for reading in reversed(self.ended):
+            if not reading.ids & ids:
+                break
+            ids |= reading.ids
+            first = reading.number
+        return first
+
     def numbered(self, number: int) -> Reading | None:
         return next((reading for reading in [self.reading, *self.ended] if reading.number == number), None)
 
@@ -130,6 +141,8 @@ class Known(Protocol):
     """What the tail needs of the registry: who is live, and where any session it has heard of keeps its transcript."""
 
     def live_members(self) -> list[Membership]: ...
+
+    def status_read(self, session: SessionId) -> bool: ...
 
     def now(self) -> Instant: ...
 
@@ -164,7 +177,9 @@ class Tails:
             members = self._known.live_members()
             live = {member.id for member in members}
             self._following = {session: following for session, following in self._following.items() if session in live}
-            for member in members:
+            # [LAW:no-ambient-temporal-coupling] a session is read once Claude Code has said whether it runs, so the
+            # turn its transcript is in when hands begins following it lands on a status that decides whether it runs.
+            for member in [member for member in members if self._known.status_read(member.id)]:
                 following = self._following.setdefault(member.id, Following(member.transcript))
                 if following.path != member.transcript:
                     # [LAW:one-source-of-truth] where a session's transcript is, is the registry's to say. A
@@ -275,8 +290,12 @@ class Tails:
             raise
         # [LAW:no-ambient-temporal-coupling] a record is whole only once its newline is written, so the bytes after
         # the last newline stay unread and unconsumed until the write that ends them.
+        # Read from its start, the file holds what was written before hands followed the session.
+        history = following.offset == 0
         *complete, unfinished = raw.split(b"\n")
         following.offset += len(raw) - len(unfinished)
+        # What each record says that no hook does, by the turn it was read into.
+        heard: list[tuple[int, Transcribed]] = []
         for line in complete:
             try:
                 record = turn_record(line)
@@ -288,24 +307,31 @@ class Tails:
                 # The prompt first: a prompt's first record can be the one that interrupts it, and it was taken to be.
                 # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
                 prompted = following.prompted(session, record, self._known.now())
-                if prompted is not None:
-                    self._transcribed.append(prompted)
-                if following.consume(record) is not None:
-                    self._interrupt(session, record)
+                interrupted = None if following.consume(record) is None else self._interrupted(session, record)
+                heard += [(following.reading.number, event) for event in (prompted, interrupted) if event is not None]
+        # [LAW:single-enforcer] the one place a record is decided to be history: of a file read from its start, only the
+        # turn it ends in may still be running, which Claude Code's status says; every turn before it was over before
+        # hands followed the session, and says nothing to anyone.
+        current = following.current()
+        live = [event for number, event in heard if not history or number >= current]
+        if history:
+            # [LAW:nothing-unseen] the decision explained: what was held back, and the turn the reading starts from.
+            logger.info(f"read the transcript of session {session} from its start: {len(heard) - len(live)} of {len(heard)} events are of turns before the one it is in, which goes by {sorted(following.reading.ids)}")
+        self._transcribed += live
         # [LAW:no-ambient-temporal-coupling] after the records it covers, so a telling decided by how far the transcript
         # was read has what that reading found; and not while a record is half written, which may have been begun before.
         if not unfinished:
             self._transcribed.append(Read(session, through))
 
-    def _interrupt(self, session: SessionId, record: Payload) -> None:
+    def _interrupted(self, session: SessionId, record: Payload) -> Interrupted | None:
         prompt = prompt_of(record)
         if prompt is None:
             # [LAW:no-silent-failure] a record that names no turn is the record of none, so the turn it stopped is told once
             # the transcript is read past the window Claude Code's idle set, without it.
             logger.error(f"session {session} was interrupted, but the record of it names no prompt, so its turn is told without it")
-            return
+            return None
         # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
-        self._transcribed.append(Interrupted(session, prompt, self._known.now()))
+        return Interrupted(session, prompt, self._known.now())
 
 
 async def keep_tailing(tails: Tails, period: float, apply: Callable[[Transcribed], Awaitable[None]]) -> None:
