@@ -259,7 +259,13 @@ class Tails:
         """Raises OSError, which the caller decides what to make of: a file not written yet, or one that cannot be read."""
         # Before the file is opened, so every record Claude Code had written by then is in what is read.
         through = self._clock()
-        with following.path.open("rb") as file:
+        try:
+            opened = following.path.open("rb")
+        except FileNotFoundError:
+            # Nothing written yet is nothing left unread.
+            self._transcribed.append(Read(session, through))
+            raise
+        with opened as file:
             size = file.seek(0, os.SEEK_END)
             if size < following.offset:
                 # Reset in place: the narrator may be holding this very following while a summary comes back.

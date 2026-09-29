@@ -826,6 +826,7 @@ async def test_a_reading_that_stops_inside_a_record_being_written_says_nothing_o
     assert await tails.catch_up() == [Interrupted(SID, PromptId("p1"), at=7.0), Read(SID, Stamp(5000))]
 
 
-async def test_a_transcript_not_written_yet_says_nothing_of_how_far_it_was_read(tmp_path: Path) -> None:
+async def test_a_transcript_not_written_yet_is_read_through_all_there_is(tmp_path: Path) -> None:
+    """A turn whose prompt was cancelled before Claude Code wrote anything is still told once its window passes."""
     tails = Tails(Registry([member(tmp_path / "t.jsonl")]), clock=lambda: Stamp(5000))
-    assert await tails.catch_up() == []
+    assert await tails.catch_up() == [Read(SID, Stamp(5000))]

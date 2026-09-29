@@ -1221,7 +1221,7 @@ stopped with Escape, which fires no Stop, is never heard to end. The
   told as itself only if a record says it ran. The session is `Idle` at once, with its
   nudge timed by hands (no `idle_prompt` follows a double Escape). Claude Code sets `idle`
   before the transcript says how the turn ended: an Escape's interrupt record is
-  written ~100 ms after, and an Escape'd turn's Stop can fire after it. So the turn is
+  written 37 ms after (2.1.283), and an Escape'd turn's Stop can fire after it. So the turn is
   kept `Untold` and is told, once, at the first of five events: its Stop
   (told with the reply the Stop carries), its interrupt record (one naming its prompt), a turn after it
   opening (told before that turn's mark), the session ending, or a reading of the

@@ -845,8 +845,8 @@ def test_the_turn_a_queued_prompt_goes_on_as_is_ended_by_the_escape_that_stops_i
     state = in_turn()
     for event in [Interrupted(ONE.id, NEXT, at=3.0), Continued(ONE.id, was=TURN, now=NEXT)]:
         state, _ = reduce(state, event)
-    assert state == in_turn(turn=NEXT)
-    assert live(reduce(state, said(status.Idle(), at=9.0))[0]).turn == Untold(NEXT, frozenset(), WINDOW, asking=False)
+    assert state == holding(BUSY, Opened(NEXT, frozenset({TURN})))
+    assert live(reduce(state, said(status.Idle(), at=9.0))[0]).turn == Untold(NEXT, frozenset({TURN}), WINDOW, asking=False)
 
 
 @pytest.mark.parametrize("session", [in_turn(turn=PromptId("p3")), holding(IDLE, Told(TURN))])
@@ -1120,3 +1120,9 @@ def test_a_turn_heard_and_ended_inside_one_idle_read_starts_an_idle_period_nudge
     state, _ = told([Prompted(ONE.id, at=100.0, mode=None, prompt=NEXT), said(status.Idle(), at=100.1)], holding(replace(IDLE, nudged=True), Told(TURN)))
     assert live(state).state == Idle(Stamp(2000), due=100.1 + IDLE_NUDGE_SECONDS, after=NEXT)
     assert nudged(state) == [NUDGE]
+
+
+def test_a_turn_gone_on_under_a_queued_prompt_still_goes_by_the_id_it_went_on_from() -> None:
+    """A hook sent before Claude Code moved on carries the old id: it is in the turn, and ends nothing."""
+    state, _ = told([Taken(ONE.id, NEXT, None, 9.0), Continued(ONE.id, was=TURN, now=NEXT), Prompted(ONE.id, at=9.5, mode=None, prompt=TURN)])
+    assert live(state).turn == Opened(NEXT, frozenset({NEXT, TURN}), queued=True)

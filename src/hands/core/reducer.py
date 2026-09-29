@@ -260,7 +260,7 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # open turn is over, though its idle may never have been read. An Escape and the next prompt set idle and
             # busy again 93 ms apart (2.1.283), inside one status read. Told as it stands, and compared now, while this
             # prompt's hook holds Claude Code, so before the next turn has changed anything; then that turn is marked.
-            return Opened(prompt), [Compare(id, again=False), Summarise(id, opened.turn, None), Snapshot(id, was.membership.cwd)]
+            return Opened(prompt), [*_over(id, opened, None, was.dialog)[1], Snapshot(id, was.membership.cwd)]
         case (Prompted(prompt=prompt), Untold() | Told()):
             # A turn opens at the prompt, and is marked, so what it changes is read against a repository it has not
             # touched yet: after the one before is told, so that one is compared against its own mark.
@@ -278,8 +278,9 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # (see _following), and one nothing was queued for, as a `!` command's answer, is told by its steps.
             return Opened(prompt), _told(id, turn, None)[1]
         case (Continued(was=going, now=now), Opened() as opened) if _names(opened, going):
-            # Still working, now on the queued message: the turn goes by its id, so the Stop that ends it names it.
-            return replace(opened, turn=now), []
+            # Still working, now on the queued message: the turn goes by its id, so the Stop that ends it names it, and
+            # still by the one it went on from, which a hook sent before Claude Code moved on carries.
+            return replace(opened, turn=now, others=opened.others | {opened.turn}), []
         case (Stopped(prompt=prompt, closing=closing, again=again), Opened() as opened) if _names(opened, prompt):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
             return Told(opened.turn, opened.others, _asking(closing, was.dialog)), [Compare(id, again), Summarise(id, prompt, closing), *_following(was.membership, opened)]
@@ -298,7 +299,7 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # The user stopped the turn Claude was answering, and Claude Code goes on in no turn it interrupted (on every
             # interrupt record in this machine's transcripts): over, whether or not the idle it set was read, and told
             # as it stands. An interrupt that flushes a queued message names that message's id instead (see Taken).
-            return Told(opened.turn, opened.others, _asking(None, was.dialog)), [Compare(id, again=False), Summarise(id, opened.turn, None)]
+            return _over(id, opened, None, was.dialog)
         case (Read(through=through), Untold(by=by)) if through >= by:
             # Read through the point where the record of how it ended would be, and it was not there: told with what was read.
             return _told(id, turn, None)
@@ -332,6 +333,11 @@ def _told(session: SessionId, turn: Turn, closing: str | None) -> tuple[Turn, li
             return Told(prompt, others, asking), [Compare(session, again=False), Summarise(session, prompt, closing)]
         case Opened() | Told():
             return turn, []
+
+
+def _over(session: SessionId, opened: Opened, closing: str | None, dialog: Dialog | None) -> tuple[Turn, list[Effect]]:
+    """The open turn over before Claude Code's idle was read, told now as it stands."""
+    return Told(opened.turn, opened.others, _asking(closing, dialog)), [Compare(session, again=False), Summarise(session, opened.turn, closing)]
 
 
 def _names(turn: Turn, prompt: PromptId) -> bool:
