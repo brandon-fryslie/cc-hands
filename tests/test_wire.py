@@ -268,12 +268,14 @@ def test_the_tail_goes_after_every_block_of_the_newest_message_and_nothing_befor
     assert tool_result == {"role": "user", "content": [result]}
 
 
-def test_a_newest_message_written_as_a_string_is_its_one_text_block_then_the_tail() -> None:
-    amended = appended(request({"role": "user", "content": "hi"}), "tail")
-    assert amended["messages"] == [{"role": "user", "content": [{"type": "text", "text": "hi"}, {"type": "text", "text": "tail"}]}]
-
-
-REFUSED: list[object] = [None, {"messages": []}, {"messages": [{"role": "user", "content": []}]}, {"messages": [{"role": "user"}]}]
+# A string for content has no block to carry a cache marker, so no main turn's newest message is one.
+REFUSED: list[object] = [
+    None,
+    {"messages": []},
+    {"messages": [{"role": "user", "content": []}]},
+    {"messages": [{"role": "user"}]},
+    {"messages": [{"role": "user", "content": "hi"}]},
+]
 
 
 @pytest.mark.parametrize("body", REFUSED)

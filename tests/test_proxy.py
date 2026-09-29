@@ -385,7 +385,18 @@ async def test_a_request_the_tail_cannot_be_appended_to_goes_on_as_it_came(serve
         logger.remove(sink)
     [(_, _, asked_body)] = upstream.asked
     assert (status, asked_body, only_exchange(wire).appended) == (200, b"not json", "")
-    assert [error.startswith("the proxy's route failed") for error in errors] == [True]
+    assert [error.startswith("the proxy could not append the tail") for error in errors] == [True]
+
+
+async def test_a_request_holding_a_string_cut_mid_emoji_still_goes_on_with_the_tail(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    upstream, wire = await serve(streamed)
+    wire.route = lambda _sent: Append("tail")
+    # JSON.stringify writes half a surrogate pair as its escape; parsed, it is a lone surrogate UTF-8 cannot encode.
+    cut = REQUEST.replace(b'"text": "hi"', b'"text": "hi \\ud83d"')
+    status, _, _ = await post(wire.proxy.url, body=cut)
+    [(_, _, asked_body)] = upstream.asked
+    [newest] = json.loads(asked_body)["messages"]
+    assert (status, newest["content"][0]["text"], newest["content"][-1], only_exchange(wire).appended) == (200, "hi \ud83d", {"type": "text", "text": "tail"}, "tail")
 
 
 async def test_a_held_request_that_did_not_ask_for_a_stream_is_answered_whole(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:

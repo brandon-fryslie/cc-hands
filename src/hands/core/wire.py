@@ -656,9 +656,7 @@ def appended(body: object, tail: str) -> Mapping[str, object]:
     if not messages or not isinstance(messages[-1], Mapping):
         raise ValueError("a request with no newest message has nothing to append to")
     newest = cast(Mapping[str, object], messages[-1])
-    content = newest.get("content")
-    # A string is one text block written short.
-    blocks: list[object] = [{"type": "text", "text": content}] if isinstance(content, str) else _list(content)
+    blocks = _list(newest.get("content"))
     if not blocks:
-        raise ValueError(f"the newest message's content is {content!r}, not blocks to append to")
+        raise ValueError(f"the newest message's content is {newest.get('content')!r}, not blocks to append to")
     return {**request, "messages": [*messages[:-1], {**newest, "content": [*blocks, {"type": "text", "text": tail}]}]}
