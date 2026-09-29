@@ -1,6 +1,7 @@
 """The wire read as values: which kind a request is, whose it is, and what a streamed reply said."""
 
 import json
+from typing import cast
 
 from hands.core.session import SessionId
 from hands.core.wire import (
@@ -60,6 +61,9 @@ def test_a_fork_marks_the_message_before_its_own_and_is_not_a_main_turn() -> Non
 def test_the_compaction_prompt_makes_a_compaction_whatever_its_marker() -> None:
     last = said(COMPACTION_OPENING + "\n\nYour task is to create a detailed summary")
     assert classify("/v1/messages", request(said("hi"), said("ok", marked=True), last)) == Compaction()
+    # Merged after a prompt just typed, as Claude Code merges adjacent user messages.
+    merged: dict[str, object] = {"role": "user", "content": [{"type": "text", "text": "fix the test"}, *cast(list[object], last["content"])]}
+    assert classify("/v1/messages", request(said("hi"), said("ok", marked=True), merged)) == Compaction()
 
 
 def test_count_tokens_is_known_by_its_path() -> None:
@@ -144,6 +148,12 @@ def test_a_stream_reads_the_same_frames_however_its_bytes_are_cut() -> None:
 def test_crlf_line_endings_and_comment_lines_read_as_plain_ones() -> None:
     crlf = b": keepalive\r\nevent: ping\r\ndata: {\"type\": \"ping\"}\r\n\r\n"
     assert read_in_pieces(crlf, 1) == [Frame("ping", '{"type": "ping"}')]
+
+
+def test_a_block_of_comments_alone_is_no_frame_and_the_stream_still_assembles() -> None:
+    body = STREAM.replace(b"event: ping", b": keepalive\n\nevent: ping")
+    assert frames(body)[0] == frames(STREAM)[0]
+    assert assemble([parse(frame) for frame in frames(body)[0]]) == Streamed(MESSAGE)
 
 
 def test_a_whole_stream_assembles_into_the_message_it_carried() -> None:

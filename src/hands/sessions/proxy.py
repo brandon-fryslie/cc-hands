@@ -238,7 +238,8 @@ def _decoder(encoding: str) -> Callable[[bytes], bytes]:
         case "br":
             return brotli.Decompressor().process
         case "zstd":
-            return zstandard.ZstdDecompressor().decompressobj().decompress
+            # Across frames: a streamed reply may be flushed as many.
+            return zstandard.ZstdDecompressor().decompressobj(read_across_frames=True).decompress
         case other:
 
             def undecodable(_chunk: bytes) -> bytes:

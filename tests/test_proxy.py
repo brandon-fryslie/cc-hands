@@ -171,7 +171,12 @@ async def test_a_compressed_answer_reaches_the_client_compressed_and_is_read_dec
     assert isinstance(exchange.reply, Reached) and exchange.reply.body == Answered({"input_tokens": 5583})
 
 
-@pytest.mark.parametrize(("encoding", "pack"), [("br", brotli.compress), ("zstd", zstandard.ZstdCompressor().compress)])
+def zstd_frames(data: bytes) -> bytes:
+    """The reply flushed as two zstd frames, as a stream can be."""
+    return zstandard.ZstdCompressor().compress(data[:50]) + zstandard.ZstdCompressor().compress(data[50:])
+
+
+@pytest.mark.parametrize(("encoding", "pack"), [("br", brotli.compress), ("zstd", zstd_frames)])
 async def test_every_encoding_claude_code_asks_for_is_read(
     serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], encoding: str, pack: Callable[[bytes], bytes]
 ) -> None:

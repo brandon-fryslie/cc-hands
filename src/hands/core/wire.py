@@ -76,7 +76,8 @@ def _classify_messages(body: object) -> Kind:
     messages = _list(request.get("messages"))
     if not messages:
         return Unknown("a messages request with no messages")
-    if _opening(messages[-1]).startswith(COMPACTION_OPENING):
+    # Any block: Claude Code merges adjacent user messages, so the compaction prompt can follow a prompt just typed.
+    if any(text.startswith(COMPACTION_OPENING) for text in _texts(messages[-1])):
         return Compaction()
     if not _list(request.get("tools")):
         return Unknown(f"a messages request with no tools, to {request.get('model')!r}")
@@ -105,14 +106,13 @@ def _cache_marked(message: object) -> bool:
     return any(isinstance(block, Mapping) and "cache_control" in block for block in _blocks(message))
 
 
-def _opening(message: object) -> str:
-    """The text a message opens with, whether its content is a string or a list of blocks."""
-    blocks = _blocks(message)
+def _texts(message: object) -> list[str]:
+    """A message's text, whether its content is a string or a list of blocks."""
     content = _content(message)
     if isinstance(content, str):
-        return content
-    texts = [cast(Mapping[str, object], block).get("text") for block in blocks if isinstance(block, Mapping)]
-    return next((text for text in texts if isinstance(text, str)), "")
+        return [content]
+    texts = [cast(Mapping[str, object], block).get("text") for block in _blocks(message) if isinstance(block, Mapping)]
+    return [text for text in texts if isinstance(text, str)]
 
 
 SESSION_HEADER = "x-claude-code-session-id"
@@ -148,11 +148,13 @@ def frames(buffer: bytes) -> tuple[list[Frame], bytes]:
     normal = buffer.replace(b"\r\n", b"\n")
     end = normal.rfind(b"\n\n")
     whole, rest = (normal[: end + 2], normal[end + 2 :]) if end >= 0 else (b"", normal)
-    return [_frame(block) for block in whole.decode("utf-8").split("\n\n") if block.strip()], rest
+    # A block with no data field, a keepalive of comment lines or a blank one, dispatches nothing.
+    blocks = [block.split("\n") for block in whole.decode("utf-8").split("\n\n")]
+    return [_frame(lines) for lines in blocks if any(line.startswith("data") for line in lines)], rest
 
 
-def _frame(block: str) -> Frame:
-    fields = [line.partition(":") for line in block.split("\n") if not line.startswith(":")]
+def _frame(lines: list[str]) -> Frame:
+    fields = [line.partition(":") for line in lines if not line.startswith(":")]
     event = next((value.strip() for name, _, value in fields if name == "event"), "message")
     data = "\n".join(value.removeprefix(" ") for name, _, value in fields if name == "data")
     return Frame(event, data)
