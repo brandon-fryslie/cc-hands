@@ -59,12 +59,13 @@ from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.openai.llm import OpenAILLMService
 
 from hands.core.spoken import spoken
+from hands.sessions.home import default_home
 from hands.daemon.run import backend_from_env
 from hands.sessions.registry import Sessions
 from hands.voice.briefing import briefing
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
-from hands.voice.pipeline import AnthropicBackend, LLMBackend, OpenAICompatibleBackend, VoiceConfig, build_llm
-from hands.voice.tools import intermediary_tools
+from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, LLMBackend, OpenAICompatibleBackend, VoiceConfig, build_llm
+from hands.voice.tools import intermediary_tools, pipecat_function
 
 CONVERSATIONS = Path(__file__).parent / "conversations"
 
@@ -132,7 +133,7 @@ def asker(backend: LLMBackend) -> Ask:
             client = AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=0, timeout=TIMEOUT_SECONDS)
 
             async def from_openai(messages: list[LLMContextMessage]) -> tuple[str, tuple[Call, ...]]:
-                context = LLMContext(messages=list(messages), tools=list(tools))
+                context = LLMContext(messages=list(messages), tools=[pipecat_function(tool) for tool in tools])
                 invocation = service.get_llm_adapter().get_llm_invocation_params(
                     context, system_instruction=INTERMEDIARY_INSTRUCTION, convert_developer_to_user=not service.supports_developer_role
                 )
@@ -154,7 +155,7 @@ def asker(backend: LLMBackend) -> Ask:
             client_ = AsyncAnthropic(base_url=base_url, api_key=api_key, max_retries=0, timeout=TIMEOUT_SECONDS)
 
             async def from_anthropic(messages: list[LLMContextMessage]) -> tuple[str, tuple[Call, ...]]:
-                context = LLMContext(messages=list(messages), tools=list(tools))
+                context = LLMContext(messages=list(messages), tools=[pipecat_function(tool) for tool in tools])
                 # Pipecat assembles this request inside its streaming call, with no builder to borrow as the OpenAI
                 # path does, so these are that assembly's steps the daemon's settings reach, each the service's own:
                 # its adapter call, and the thinking it turns off for a Sonnet that would otherwise think.
@@ -166,6 +167,9 @@ def asker(backend: LLMBackend) -> Ask:
                 return said, calls
 
             return from_anthropic
+        case ClaudeCodeBackend():
+            # [LAW:no-silent-failure] the eval asks a Pipecat LLM stage, and the brain is a process with none.
+            sys.exit("HANDS_LLM=claude has no Pipecat LLM stage for this eval to ask; pick anthropic or openai.")
 
 
 # How many times a model may look before the step it takes is judged: once is caution, three times is lost.
@@ -306,7 +310,7 @@ async def main() -> int:
     logger.remove()
     logger.add(sys.stderr, level="WARNING")
 
-    backend = backend_from_env()
+    backend = backend_from_env(default_home())
     ask = asker(backend)
     chosen = [case for case in cases() if args.only in case.name]
     if not chosen:

@@ -46,6 +46,11 @@ class Home:
         """The claude that runs every interactive session under fritter."""
         return self.bin / "claude"
 
+    @property
+    def brain(self) -> Path:
+        """The brain's CLAUDE_CONFIG_DIR: its login, settings, and skills, and under it the empty directory it runs in."""
+        return self.root / "brain"
+
     def membership(self, session: SessionId) -> Path:
         return self.memberships / f"{session}.json"
 

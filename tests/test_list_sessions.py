@@ -3,11 +3,7 @@
 import zlib
 import json
 from pathlib import Path
-from types import SimpleNamespace
-from typing import cast
 
-from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
-from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.events import Ended, Joined, PermissionRequested, Prompted, StatusReported, Taken
 from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId, Question
@@ -33,15 +29,7 @@ def titled(path: Path, *titles: str) -> None:
 
 
 async def call(sessions: Sessions) -> object:
-    results: list[object] = []
-
-    async def capture(result: object, **_: object) -> None:
-        results.append(result)
-
-    tool = list_sessions_tool(sessions)
-    await tool(cast(FunctionCallParams, SimpleNamespace(result_callback=capture)))
-    [result] = results
-    return result
+    return await list_sessions_tool(sessions).body()
 
 
 async def test_live_sessions_are_labelled_with_their_newest_ai_title_and_their_project(tmp_path: Path) -> None:
@@ -104,7 +92,7 @@ async def test_a_transcript_whose_title_cannot_be_read_lists_the_session_untitle
     assert await call(sessions) == {"sessions": [{"id": "broken", "title": "untitled in broken", "state": "not reported yet", "mode": "not reported yet"}]}
 
 
-def test_the_tool_is_a_valid_pipecat_direct_function() -> None:
-    wrapper = DirectFunctionWrapper(list_sessions_tool(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)))
-    assert wrapper.name == "list_sessions"
-    assert "running Claude Code sessions" in (wrapper.description or "")
+def test_the_tool_is_named_and_described_from_its_body() -> None:
+    tool = list_sessions_tool(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None))
+    assert (tool.name, tool.required) == ("list_sessions", ())
+    assert "running Claude Code sessions" in tool.description

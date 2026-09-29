@@ -69,7 +69,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             from hands.daemon.run import config_from_env, run
 
             path = os.environ.get("PATH", "")
-            asyncio.run(run(config_from_env, lambda: survey(readiness.check(home, path, granted)), home, heart, after_crash))
+            asyncio.run(run(lambda: config_from_env(home), lambda: survey(readiness.check(home, path, granted)), home, heart, after_crash))
             return 0
         case "status":
             return report(home)

@@ -4,12 +4,10 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from loguru import logger
-from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
-from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Holding, Reply, Unmatched, Withdraw
 from hands.core.events import Abandoned, Joined, Prompted, Read, StatusReported, Stopped, Tick
@@ -32,7 +30,7 @@ from hands.sessions.audit import (
 )
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
-from hands.voice.tools import Tool, audited, draft_tools
+from hands.voice.tools import Result, Tool, audited, draft_tools, tool
 from hands.core.status import Busy, Report, Stamp
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
@@ -51,18 +49,7 @@ def lines(path: Path) -> list[dict[str, Any]]:
 
 
 async def invoke(tool: Tool, **arguments: object) -> object:
-    results: list[object] = []
-
-    async def capture(result: object, *, properties: object = None) -> None:
-        results.append(result)
-
-    params = FunctionCallParams(
-        function_name=DirectFunctionWrapper(tool).name, tool_call_id="call-1", arguments=arguments,
-        llm=cast(Any, None), pipeline_worker=cast(Any, None), context=cast(Any, None), result_callback=capture,
-    )
-    await DirectFunctionWrapper(tool).invoke(arguments, params)
-    [result] = results
-    return result
+    return await tool.body(**arguments)
 
 
 def test_an_entry_is_its_type_and_fields_nested_values_alike() -> None:
@@ -245,7 +232,7 @@ async def test_an_audited_tool_keeps_its_schema_and_writes_its_call_beside_its_r
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     [stage, *_] = draft_tools(sessions)
     wrapped = audited(stage, recorded.append)
-    assert DirectFunctionWrapper(wrapped).to_function_schema().to_default_dict() == DirectFunctionWrapper(stage).to_function_schema().to_default_dict()
+    assert (wrapped.name, wrapped.description, wrapped.input_schema, wrapped.completes) == (stage.name, stage.description, stage.input_schema, stage.completes)
     result = await invoke(wrapped, session="nobody", text="hi", resolutions=[])
     assert recorded == [Called("stage_draft", {"session": "nobody", "text": "hi", "resolutions": []}, result)]
 
@@ -253,14 +240,14 @@ async def test_an_audited_tool_keeps_its_schema_and_writes_its_call_beside_its_r
 async def test_a_tool_that_raises_is_a_failure_line_naming_it_and_its_arguments() -> None:
     recorded: list[Entry] = []
 
-    async def broken(params: FunctionCallParams, session: str) -> None:
+    async def broken(session: str) -> Result:
         """Fail."""
         raise RuntimeError("the transcript went away")
 
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
         with pytest.raises(RuntimeError):
-            await invoke(audited(broken, recorded.append), session="s1")
+            await invoke(audited(tool(broken), recorded.append), session="s1")
     finally:
         logger.remove(sink)
     assert recorded == [Failure(source="hands.voice.tools:call", message="the tool broken raised, called with {'session': 's1'}: RuntimeError: the transcript went away")]

@@ -2,6 +2,7 @@
 
     uv run hands run              # Sonnet 5 (HANDS_LLM=anthropic, the default); ANTHROPIC_API_KEY, else the keychain's HANDS_LLM_ANT_KEY
     HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
+    HANDS_LLM=claude uv run hands run   # a slim Claude Code on the subscription, once: CLAUDE_CONFIG_DIR=~/.hands/brain claude auth login
 
 Sessions join through the hook socket at ~/.hands/hands.sock (the home is
 HANDS_HOME when that is set). A Claude Code session is registered when the hands
@@ -22,7 +23,9 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -52,6 +55,7 @@ from hands.voice.hold import Move
 from hands.voice.keys import drive_quit, drive_talk_key
 from hands.voice.pipeline import (
     AnthropicBackend,
+    ClaudeCodeBackend,
     LLMBackend,
     OpenAICompatibleBackend,
     Voice,
@@ -66,7 +70,10 @@ from hands.voice.briefing import brief
 from hands.voice.conversation import record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.voice.threads import off_loop
-from hands.voice.tools import audited, intermediary_tools
+from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
+from hands.voice.tools import Tool, audited, intermediary_tools
+from hands.brain.mcp import serve_mcp
+from hands.brain.process import Brain, Launch, NotLoggedIn, logged_in, start as start_brain, workdir
 
 # The SDK appends /v1/messages to this, so an Anthropic-compatible server's URL has no /v1 of its own.
 ANTHROPIC_URL = "https://api.anthropic.com"
@@ -92,8 +99,8 @@ SUMMARY_MAX_TOKENS = 200
 SUMMARY_TIMEOUT_SECONDS = 30.0
 
 
-def backend_from_env() -> LLMBackend:
-    """HANDS_LLM picks the variant: `anthropic` (default) or `openai`; HANDS_LLM_URL and HANDS_LLM_MODEL move either."""
+def backend_from_env(home: Home) -> LLMBackend:
+    """HANDS_LLM picks the variant: `anthropic` (default), `openai`, or `claude`; HANDS_LLM_MODEL moves any, HANDS_LLM_URL the first two."""
     # [LAW:parse-dont-validate] the environment is parsed here, once, into a
     # variant that carries exactly what its service needs; an unknown choice
     # or a missing key stops the process at the door.
@@ -114,7 +121,18 @@ def backend_from_env() -> LLMBackend:
         if url.rstrip("/").endswith("/v1"):
             sys.exit(f"HANDS_LLM_URL={url!r} ends in /v1, and the Anthropic client appends /v1/messages itself; drop the /v1.")
         return AnthropicBackend(base_url=url, api_key=_key("ANTHROPIC_API_KEY", choice), model=model)
-    sys.exit(f"HANDS_LLM={choice!r} is not one of: anthropic, openai.")
+    if choice == "claude":
+        # [LAW:no-silent-failure] the brain reaches the API through hands' proxy, which forwards to Anthropic's; a URL
+        # named for it would be ignored, so it is refused instead.
+        if _environment_url() is not None:
+            sys.exit("HANDS_LLM_URL does not apply to HANDS_LLM=claude, whose requests go through hands' proxy to Anthropic's API; unset it.")
+        # A brain with no login is refused here, before the voice loads, rather than once every turn has failed.
+        try:
+            logged_in(home.brain, UPSTREAM)
+        except NotLoggedIn as error:
+            sys.exit(f"hands: {error}")
+        return ClaudeCodeBackend(model=os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL), config_dir=home.brain)
+    sys.exit(f"HANDS_LLM={choice!r} is not one of: anthropic, openai, claude.")
 
 
 def _key(var: str, choice: str) -> str:
@@ -165,13 +183,55 @@ def keychain_password(service: str) -> str | None:
     return out.strip() or None
 
 
-def config_from_env() -> VoiceConfig:
+def config_from_env(home: Home) -> VoiceConfig:
     """The process boundary: environment in, typed configuration out."""
     return VoiceConfig(
-        llm=backend_from_env(),
+        llm=backend_from_env(home),
         whisper_model=os.environ.get("HANDS_WHISPER_MODEL", MLXModel.LARGE_V3_TURBO),
         voice=os.environ.get("HANDS_VOICE", "alba"),
     )
+
+
+@dataclass(frozen=True)
+class Watch:
+    """A background task the model's variant brings to the run, which stops the run if it ends."""
+
+    name: str
+    run: Callable[[], Coroutine[object, object, None]]
+
+
+@asynccontextmanager
+async def mind(backend: LLMBackend, tools: Sequence[Tool], proxy_url: str, record: Record) -> AsyncGenerator[Sequence[Watch]]:
+    """What the model's variant runs beside the pipeline for the whole conversation: for the brain, its process and the MCP server it reaches hands through."""
+    match backend:
+        case AnthropicBackend() | OpenAICompatibleBackend():
+            yield ()
+        case ClaudeCodeBackend(model=model, config_dir=config_dir):
+            server = await serve_mcp(tools, record)
+            try:
+                launch = Launch(config_dir, workdir(config_dir), model, INTERMEDIARY_INSTRUCTION, proxy_url, server.config())
+                brain = await start_brain(launch, record)
+                try:
+                    yield (Watch("the brain", lambda: outlived(brain)),)
+                finally:
+                    await brain.stop()
+            finally:
+                await server.close()
+
+
+def _server(backend: LLMBackend) -> str:
+    """The server a backend's model answers on: the brain's is Anthropic's, reached through hands' proxy."""
+    match backend:
+        case AnthropicBackend(base_url=base_url) | OpenAICompatibleBackend(base_url=base_url):
+            return base_url
+        case ClaudeCodeBackend():
+            return UPSTREAM
+
+
+async def outlived(brain: Brain) -> None:
+    # [LAW:no-silent-failure] a brain that ends while hands runs leaves every question unanswered, so it stops the run.
+    code = await brain.exited()
+    raise RuntimeError(f"the brain exited ({code}) while hands was running")
 
 
 # The signals that stop a run as the q key does: closing its terminal is how a run in a terminal is most often ended.
@@ -195,12 +255,14 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     for signal_number in QUIT_SIGNALS:
         loop.add_signal_handler(signal_number, quit_event.set)
     voice: Voice | None = None
+    tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions)]
     try:
-        started = await start(configure, survey, home, sessions, heart, quit_event, audit.record)
+        started = await start(configure, survey, home, sessions, tools, heart, quit_event, audit.record)
         if started is not None:
             config, voice = started
-            summarise = summariser(config.llm, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
-            await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas)
+            async with mind(config.llm, tools, proxy.url, audit.record) as watches:
+                summarise = summariser(config.llm, proxy.url, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
+                await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas, watches)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -218,6 +280,7 @@ async def start(
     survey: Callable[[], None],
     home: Home,
     sessions: Sessions,
+    tools: Sequence[Tool],
     heart: heartbeat.Heart,
     quit_event: asyncio.Event,
     record: Record,
@@ -235,8 +298,7 @@ async def start(
         await sweep(home, sessions, frozenset())
         config = await off_loop(configure, "the configuration read")
         # [LAW:nothing-unseen] which server and model the environment chose is read from the log, not re-derived from a shell.
-        record(LLMChosen(backend=type(config.llm).__name__, base_url=config.llm.base_url, model=config.llm.model))
-        tools = [audited(tool, record) for tool in intermediary_tools(sessions)]
+        record(LLMChosen(backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model))
         return config, await off_loop(lambda: build_voice(config, tools=tools), "the voice load")
 
     preparing = asyncio.create_task(prepare())
@@ -265,6 +327,7 @@ async def converse(
     after_crash: bool,
     record: Record,
     deltas: Deltas,
+    watches: Sequence[Watch],
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
@@ -296,6 +359,7 @@ async def converse(
         asyncio.create_task(relay(sessions, voice.worker.queue_frame), name="the session speech relay"),
         asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record, lambda: summaries(home), channel.say, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
+        *(asyncio.create_task(watch.run(), name=watch.name) for watch in watches),
     ]
     following = asyncio.create_task(follow_default_devices(pipeline.started, voice.audio, channel.say), name="the audio device follower")
     background.append(following)

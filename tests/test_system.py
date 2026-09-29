@@ -151,6 +151,8 @@ def test_an_error_is_told_by_the_processor_that_raised_it() -> None:
     assert services.alarm(ErrorFrame("bad key", processor=services.llm, category=ErrorCategory.AUTHENTICATION)) == Say(ModelFailed(ErrorCategory.AUTHENTICATION))
     assert services.alarm(ErrorFrame("boom", processor=services.stt)) == Say(TranscriptionFailed())
     assert services.alarm(ErrorFrame("no voice", processor=services.tts)) == Post("no voice")
+    # Under the brain there is no model stage, and an error that names no processor is not the model's.
+    assert alarm(ErrorFrame("lost"), stt=services.stt, llm=None, tts=services.tts) == Unrouted("no processor", "lost")
     assert services.alarm(ErrorFrame("device gone", processor=services.transport)) == Unrouted(str(services.transport), "device gone")
 
 

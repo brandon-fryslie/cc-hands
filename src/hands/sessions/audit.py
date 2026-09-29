@@ -69,6 +69,59 @@ class ProxyListening:
 
 
 @dataclass(frozen=True)
+class McpConnected:
+    """A client of hands' MCP server opened with it: who it says it is, and the protocol version it asked for."""
+
+    client: Mapping[str, object]
+    protocol: str
+
+
+@dataclass(frozen=True)
+class BrainLaunched:
+    """The brain's process started, with the login and working directory it was given."""
+
+    pid: int
+    config_dir: Path
+    cwd: Path
+    model: str
+
+
+@dataclass(frozen=True)
+class BrainReady:
+    """The brain's own first line: the session its requests carry on the wire, and what it loaded."""
+
+    session: str
+    model: str
+    tools: tuple[str, ...]
+    mcp_servers: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class BrainAsked:
+    """The stdin end of a brain turn: what was written to it, at this line's time."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class BrainAnswered:
+    """The stdout end of a brain turn: the harness's result line, at this line's time. Its words are on the wire."""
+
+    subtype: str
+    is_error: bool
+    turns: int
+    duration_ms: int
+
+
+@dataclass(frozen=True)
+class BrainExited:
+    """The brain's process ended: its exit code, and the last of what it wrote to stderr."""
+
+    code: int
+    stderr: str
+
+
+@dataclass(frozen=True)
 class Transcribed:
     """What the user said in one turn, as it went into the intermediary's context."""
 
@@ -134,6 +187,12 @@ Entry = (
     | LLMChosen
     | ProxyListening
     | Exchanged
+    | McpConnected
+    | BrainLaunched
+    | BrainReady
+    | BrainAsked
+    | BrainAnswered
+    | BrainExited
     | Transcribed
     | Replied
     | Called

@@ -1,15 +1,22 @@
-"""The tools the intermediary can call."""
+"""The tools the intermediary can call, and the adapter that hands them to Pipecat.
+
+A tool is a plain async body, called with the model's arguments and returning what the model is handed back, and the
+schema the model sees, read once from the body's signature and docstring. [LAW:decomposition] what each tool does
+knows nothing of who calls it: Pipecat's LLM stage is one adapter over the bodies, hands' MCP server another.
+"""
 
 import asyncio
 import functools
+import inspect
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import replace
-from typing import TypedDict, cast
+from dataclasses import dataclass, replace
+from typing import Literal, TypedDict, cast, get_args, get_origin, get_type_hints, is_typeddict
 
+import docstring_parser
 from loguru import logger
 from pipecat.adapters.schemas import direct_function
-from pipecat.adapters.schemas.direct_function import DirectFunction
+from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
@@ -26,11 +33,75 @@ from hands.sessions.registry import Listing, Sessions
 from hands.voice.readback import keyboard_readback, readback, spoken_mode, spoken_name, spoken_title
 from hands.voice.speech import answer_readback
 
-# A Pipecat direct function: its signature and docstring are the schema the model sees.
-Tool = DirectFunction
+# What the model is handed back from a call: an object, as every tool API carries a result.
+Result = Mapping[str, object]
+Body = Callable[..., Awaitable[Result]]
+JsonSchema = Mapping[str, object]
+Handler = Callable[[FunctionCallParams], Awaitable[None]]
 
-# Pipecat's decorator is untyped; this names what it does to a tool.
-_uncancelled_by_interruption = cast(Callable[[Tool], Tool], direct_function.tool_options(cancel_on_interruption=False))  # pyright: ignore[reportUnknownMemberType]
+
+@dataclass(frozen=True)
+class Tool:
+    """One tool: the schema the model sees, the body that answers a call, and what a call means to the conversation."""
+
+    name: str
+    description: str
+    properties: Mapping[str, JsonSchema]
+    required: tuple[str, ...]
+    body: Body
+    # "reply": the model is asked to go on once it has the result. "silence": the call is the whole reply.
+    then: Literal["reply", "silence"]
+    # True when a barge-in must not stop a call part way: its effect would land without its readback heard.
+    completes: bool
+
+    @property
+    def input_schema(self) -> JsonSchema:
+        return {"type": "object", "properties": dict(self.properties), "required": list(self.required)}
+
+
+def tool(body: Body, *, then: Literal["reply", "silence"] = "reply", completes: bool = False) -> Tool:
+    """The body as a tool, its schema read once from its signature and docstring: the name, the text, and each argument's type and line."""
+    # [LAW:parse-dont-validate] a signature with a type no schema says is refused here, as the daemon builds its tools.
+    docstring = docstring_parser.parse(inspect.getdoc(body) or "")
+    lines = {param.arg_name: param.description or "" for param in docstring.params}
+    hints = get_type_hints(body)
+    parameters = inspect.signature(body).parameters.values()
+    properties = {parameter.name: {**_schema(hints[parameter.name]), "description": lines.get(parameter.name, "")} for parameter in parameters}
+    required = tuple(parameter.name for parameter in parameters if parameter.default is inspect.Parameter.empty)
+    return Tool(body.__name__, (docstring.description or "").strip(), properties, required, body, then, completes)
+
+
+def _schema(hint: object) -> JsonSchema:
+    match hint:
+        case type() if hint is str:
+            return {"type": "string"}
+        case type() if hint is bool:
+            return {"type": "boolean"}
+        case type() if hint is int:
+            return {"type": "integer"}
+        case type() if is_typeddict(hint):
+            fields = get_type_hints(hint)
+            return {"type": "object", "properties": {name: _schema(field) for name, field in fields.items()}, "required": list(fields)}
+        case _ if get_origin(hint) is list:
+            [item] = get_args(hint)
+            return {"type": "array", "items": _schema(item)}
+        case _:
+            raise TypeError(f"a tool argument typed {hint!r} has no schema here")
+
+
+def pipecat_function(tool: Tool) -> FunctionSchema:
+    """The tool as Pipecat's LLM stage calls it: the schema it advertises, and a handler that hands back the body's reply."""
+    # [LAW:single-enforcer] the one place a tool meets Pipecat, so what "silence" and "completes" mean there is said once.
+    properties = None if tool.then == "reply" else FunctionCallResultProperties(run_llm=False)
+
+    async def handler(params: FunctionCallParams) -> None:
+        await params.result_callback(await tool.body(**params.arguments), properties=properties)
+
+    # Pipecat's decorator is untyped; it only marks the handler with its call options.
+    options = cast(Callable[[Handler], Handler], direct_function.tool_options(cancel_on_interruption=not tool.completes))  # pyright: ignore[reportUnknownMemberType]
+
+    return FunctionSchema(tool.name, tool.description, {name: dict(schema) for name, schema in tool.properties.items()}, list(tool.required), handler=options(handler))
+
 
 # How much of a session one reading hands over. A session that has run for an hour has hundreds of steps, and
 # all of them at once is a context spent on history; the rest are read on from `more_since`, in order.
@@ -58,25 +129,19 @@ _COMMAND_NAME = re.compile(r"/?([A-Za-z0-9][A-Za-z0-9_:-]*)")
 def audited(tool: Tool, record: Record) -> Tool:
     """The tool, with every call written to the audit log beside the result the model is handed."""
 
-    # [LAW:single-enforcer] one wrapper for every tool, so no tool can be called without leaving its line.
-    # functools.wraps keeps the signature and docstring, which are the schema the model sees.
-    @functools.wraps(tool)
-    async def call(params: FunctionCallParams, **arguments: object) -> None:
-        answer = params.result_callback
-
-        async def result_callback(result: object, *, properties: FunctionCallResultProperties | None = None) -> None:
-            record(Called(params.function_name, arguments, result))
-            await answer(result, properties=properties)
-
+    # [LAW:single-enforcer] one wrapper on every body, whichever adapter calls it, so no call leaves no line.
+    @functools.wraps(tool.body)
+    async def call(**arguments: object) -> Result:
         try:
-            await tool(replace(params, result_callback=result_callback), **arguments)
+            result = await tool.body(**arguments)
         except Exception:
-            # [LAW:no-silent-failure] a tool that raises hands the model no result, so it has no Called line; Pipecat
-            # logs the error under its own name, which the failure sink does not hear. This is its line.
-            logger.exception(f"the tool {params.function_name} raised, called with {arguments!r}")
+            # [LAW:no-silent-failure] a tool that raises hands the model no result, so it has no Called line; this is its line.
+            logger.exception(f"the tool {tool.name} raised, called with {arguments!r}")
             raise
+        record(Called(tool.name, arguments, result))
+        return result
 
-    return cast(Tool, call)
+    return replace(tool, body=call)
 
 
 def intermediary_tools(sessions: Sessions) -> list[Tool]:
@@ -89,20 +154,20 @@ def intermediary_tools(sessions: Sessions) -> list[Tool]:
 
 
 def stay_silent_tool() -> Tool:
-    async def stay_silent(params: FunctionCallParams) -> None:
+    async def stay_silent() -> Result:
         """Say nothing in reply to what was just heard, because it was not said to you.
 
         Calling it is the whole reply: add no words of your own.
         """
         # [LAW:no-silent-failure] the choice not to answer is still a Called line in the audit log, and with the model
         # not run on the result, nothing follows it to the speaker.
-        await params.result_callback({"silent": True}, properties=FunctionCallResultProperties(run_llm=False))
+        return {"silent": True}
 
-    return stay_silent
+    return tool(stay_silent, then="silence")
 
 
 def list_sessions_tool(sessions: Sessions) -> Tool:
-    async def list_sessions(params: FunctionCallParams) -> None:
+    async def list_sessions() -> Result:
         """List the running Claude Code sessions with their titles, what each is doing, and the permission mode each is in.
 
         Call this when the user asks what is running, what sessions exist, what
@@ -111,9 +176,9 @@ def list_sessions_tool(sessions: Sessions) -> Tool:
         while it sits at its prompt is seen when it is next prompted, and one changed
         in the middle of a turn at its next tool call.
         """
-        await params.result_callback({"sessions": [describe_listing(listing) for listing in sessions.live()]})
+        return {"sessions": [describe_listing(listing) for listing in sessions.live()]}
 
-    return list_sessions
+    return tool(list_sessions)
 
 
 # How much of one step the intermediary is shown when it reads a session back: enough to say what happened,
@@ -124,7 +189,7 @@ READBACK_BUDGET = Budget(opening=200, said=400, input=120, result=200, steps=REA
 
 
 def read_session_tool(sessions: Sessions) -> Tool:
-    async def read_session(params: FunctionCallParams, session: str, since: str = "") -> None:
+    async def read_session(session: str, since: str = "") -> Result:
         """What a session has done, in the order it did it, from the point you last read to.
 
         Call this when the user asks what a session has been doing, or to catch up on one that was already
@@ -139,21 +204,18 @@ def read_session_tool(sessions: Sessions) -> Tool:
         """
         member = sessions.membership(SessionId(session))
         if member is None:
-            await params.result_callback({"error": f"there is no session {session}"})
-            return
+            return {"error": f"there is no session {session}"}
         transcript = member.transcript
         try:
             reading = await asyncio.to_thread(read_since, transcript, Ref(since) if since else None)
         except Unseen:
             # [LAW:no-silent-failure] a mark from another session, or from a transcript since rewritten, is said
             # rather than read as "from the start", which would narrate the whole session over again unasked.
-            await params.result_callback({"error": f"session {session} has no record {since}; call again with since empty to read from the start"})
-            return
+            return {"error": f"session {session} has no record {since}; call again with since empty to read from the start"}
         except OSError as error:
             # [LAW:no-silent-failure] the model is told why it got nothing, rather than being handed nothing.
             logger.error(f"cannot read what session {session} did from {transcript}: {error}")
-            await params.result_callback({"error": f"the transcript of session {session} could not be read"})
-            return
+            return {"error": f"the transcript of session {session} could not be read"}
         # The earliest of what it has not had, not the newest: read on from `more_since` and a session is
         # caught up on in order, which is the only order any of it makes sense in.
         shown = _page(reading.happenings)
@@ -169,8 +231,7 @@ def read_session_tool(sessions: Sessions) -> Tool:
         # Marking that record would go on from after the whole of it, losing the very result the mark is held
         # back for, so the mark is the last record every happening of which is settled.
         waiting = {happening.ref for happening in shown[len(settled) :]}
-        await params.result_callback(
-            {
+        return {
                 "happened": [{"record": happening.ref, "what": describe(happening, READBACK_BUDGET)} for happening in shown],
                 # Two different facts, so two answers: history this reading did not reach, and a call that has
                 # not come back. Told as one, the model cannot tell "read on" from "wait and ask again".
@@ -182,9 +243,8 @@ def read_session_tool(sessions: Sessions) -> Tool:
                     since,
                 ),
             }
-        )
 
-    return read_session
+    return tool(read_session)
 
 
 def _page(happenings: list[Happening]) -> list[Happening]:
@@ -272,7 +332,7 @@ class Resolved(TypedDict):
 def draft_tools(sessions: Sessions) -> list[Tool]:
     """stage_draft, amend_draft, discard_draft, send_draft: a prompt dictated for a session, read back until it is right, then sent."""
 
-    async def stage_draft(params: FunctionCallParams, session: str, text: str, resolutions: list[Resolved]) -> None:
+    async def stage_draft(session: str, text: str, resolutions: list[Resolved]) -> Result:
         """Stage a prompt the user dictated for a session. It is not sent until the user says to send it.
 
         Say the returned readback to the user word for word.
@@ -282,9 +342,9 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
             text: The prompt.
             resolutions: Each spoken phrase you turned into something exact, such as a file name, with what you made of it. Empty when you resolved nothing.
         """
-        await _answer(params, sessions, session, lambda id: StageDraft(id, parse_draft(text, resolutions)), sessions.draft, readback)
+        return await _answer("stage_draft", sessions, session, lambda id: StageDraft(id, parse_draft(text, resolutions)), sessions.draft, readback)
 
-    async def amend_draft(params: FunctionCallParams, session: str, text: str, resolutions: list[Resolved]) -> None:
+    async def amend_draft(session: str, text: str, resolutions: list[Resolved]) -> Result:
         """Replace a session's staged draft with a corrected one when the user changes it.
 
         Say the returned readback to the user word for word.
@@ -294,17 +354,17 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
             text: The whole corrected prompt, not only the changed words.
             resolutions: Every resolution the corrected prompt relies on.
         """
-        await _answer(params, sessions, session, lambda id: AmendDraft(id, parse_draft(text, resolutions)), sessions.draft, readback)
+        return await _answer("amend_draft", sessions, session, lambda id: AmendDraft(id, parse_draft(text, resolutions)), sessions.draft, readback)
 
-    async def discard_draft(params: FunctionCallParams, session: str) -> None:
+    async def discard_draft(session: str) -> Result:
         """Throw away a session's staged draft without sending it.
 
         Args:
             session: The session's id, from list_sessions.
         """
-        await _answer(params, sessions, session, DiscardDraft, sessions.draft, readback)
+        return await _answer("discard_draft", sessions, session, DiscardDraft, sessions.draft, readback)
 
-    async def send_draft(params: FunctionCallParams, session: str) -> None:
+    async def send_draft(session: str) -> Result:
         """Type a session's staged draft into it and press Return. Call it only once the user has said to send it.
 
         Say the returned readback to the user.
@@ -312,35 +372,34 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        await _answer(params, sessions, session, SendDraft, sessions.draft, readback)
+        return await _answer("send_draft", sessions, session, SendDraft, sessions.draft, readback)
 
     # A barge-in must not cancel a draft call part way: the draft would change, or be sent, without its readback heard.
-    return [_uncancelled_by_interruption(tool) for tool in (stage_draft, amend_draft, discard_draft, send_draft)]
+    return [tool(body, completes=True) for body in (stage_draft, amend_draft, discard_draft, send_draft)]
 
 
 async def _answer[R, O](
-    params: FunctionCallParams,
+    name: str,
     sessions: Sessions,
     session: object,
     request: Callable[[SessionId], R],
     apply: Callable[[R], Awaitable[O]],
     say: Callable[[O, str], str],
-) -> None:
+) -> Result:
     # [LAW:no-silent-failure] the model hears each failure and says it; the log keeps it.
     try:
         id = _session_id(session)
         outcome = await apply(request(id))
     except Rejected as error:
-        logger.error(f"{params.function_name} refused its arguments: {error}")
-        await params.result_callback({"error": str(error)})
-        return
-    await params.result_callback({"readback": say(outcome, spoken_name(sessions, id))})
+        logger.error(f"{name} refused its arguments: {error}")
+        return {"error": str(error)}
+    return {"readback": say(outcome, spoken_name(sessions, id))}
 
 
 def keyboard_tools(sessions: Sessions) -> list[Tool]:
     """send_command, interrupt_session: what the user would otherwise do at a session's keyboard besides send it a prompt."""
 
-    async def send_command(params: FunctionCallParams, session: str, command: str, args: str = "") -> None:
+    async def send_command(session: str, command: str, args: str = "") -> Result:
         """Run a slash command in a session, such as compact, clear, or model. Call it only when the user asks for a command by name.
 
         What the user dictates as a prompt is a draft, even when it begins with a slash; this is only for commands.
@@ -351,9 +410,9 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
             command: The command's name, such as "compact" or "model".
             args: What follows the name, such as "opus" for model. Empty when the user gave nothing.
         """
-        await _answer(params, sessions, session, lambda id: SendCommand(id, parse_command(command, args)), sessions.keyboard, keyboard_readback)
+        return await _answer("send_command", sessions, session, lambda id: SendCommand(id, parse_command(command, args)), sessions.keyboard, keyboard_readback)
 
-    async def interrupt_session(params: FunctionCallParams, session: str) -> None:
+    async def interrupt_session(session: str) -> Result:
         """Stop what a session is doing, as pressing Escape at its keyboard does. At a permission dialog that is the dialog's no.
 
         Say the returned readback to the user.
@@ -361,16 +420,16 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        await _answer(params, sessions, session, Interrupt, sessions.keyboard, keyboard_readback)
+        return await _answer("interrupt_session", sessions, session, Interrupt, sessions.keyboard, keyboard_readback)
 
     # A barge-in must not cancel either part way: it would be typed without its readback heard.
-    return [_uncancelled_by_interruption(tool) for tool in (send_command, interrupt_session)]
+    return [tool(body, completes=True) for body in (send_command, interrupt_session)]
 
 
 def permission_tools(sessions: Sessions) -> list[Tool]:
     """answer_permission, answer_question, answer_plan: the only ways a voice answer reaches a session waiting on its dialog."""
 
-    async def answer_permission(params: FunctionCallParams, request: str, decision: str, message: str = "") -> None:
+    async def answer_permission(request: str, decision: str, message: str = "") -> Result:
         """Answer a session's permission request with what the user decided. Call it only after the user has said to allow or deny.
 
         Say the returned readback to the user.
@@ -380,9 +439,9 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
             decision: "allow" to let the tool run, or "deny" to refuse it.
             message: Only when denying: what the user wants the session to know or do instead, in their words.
         """
-        await _decide(params, sessions, request, lambda: parse_decision(decision, message))
+        return await _decide("answer_permission", sessions, request, lambda: parse_decision(decision, message))
 
-    async def answer_question(params: FunctionCallParams, request: str, answers: list[str]) -> None:
+    async def answer_question(request: str, answers: list[str]) -> Result:
         """Answer the questions a session asked with what the user chose. Call it only once the user has answered every one.
 
         Say the returned readback to the user.
@@ -391,9 +450,9 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
             request: The request id given with the questions.
             answers: One answer per question, in the order they were asked: the label of the option the user chose, or their own words when no option fits. Where more than one may be chosen, join the labels with ", ". An empty answer when the user chose none.
         """
-        await _decide(params, sessions, request, lambda: parse_answers(answers))
+        return await _decide("answer_question", sessions, request, lambda: parse_answers(answers))
 
-    async def answer_plan(params: FunctionCallParams, request: str, decision: str, message: str = "") -> None:
+    async def answer_plan(request: str, decision: str, message: str = "") -> Result:
         """Answer a session's plan with what the user decided. Call it only after the user has approved the plan or asked for changes.
 
         Say the returned readback to the user.
@@ -403,21 +462,20 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
             decision: "approve" to approve the plan and go on in the mode the session had before it planned; "auto-accept edits" or "manually approve edits" only when the user says how edits should go; or "keep planning" to send it back.
             message: Only when it keeps planning: what the user wants changed, in their words.
         """
-        await _decide(params, sessions, request, lambda: parse_plan_decision(decision, message))
+        return await _decide("answer_plan", sessions, request, lambda: parse_plan_decision(decision, message))
 
     # A barge-in must not cancel an answer part way: the user would never hear whether it went through.
-    return [_uncancelled_by_interruption(tool) for tool in (answer_permission, answer_question, answer_plan)]
+    return [tool(body, completes=True) for body in (answer_permission, answer_question, answer_plan)]
 
 
-async def _decide(params: FunctionCallParams, sessions: Sessions, request: object, decision: Callable[[], Decision]) -> None:
+async def _decide(name: str, sessions: Sessions, request: object, decision: Callable[[], Decision]) -> Result:
     # [LAW:no-silent-failure] the model hears a refused answer and says it; the log keeps it.
     try:
         outcome = await sessions.answer(_request_id(request), decision())
     except Rejected as error:
-        logger.error(f"{params.function_name} refused its arguments: {error}")
-        await params.result_callback({"error": str(error)})
-        return
-    await params.result_callback({"readback": answer_readback(outcome, lambda id: spoken_name(sessions, id))})
+        logger.error(f"{name} refused its arguments: {error}")
+        return {"error": str(error)}
+    return {"readback": answer_readback(outcome, lambda id: spoken_name(sessions, id))}
 
 
 def parse_decision(decision: object, message: object) -> Decision:

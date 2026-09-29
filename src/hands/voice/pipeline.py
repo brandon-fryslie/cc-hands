@@ -8,6 +8,7 @@ the whole variability of the pipeline as data.
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -35,7 +36,7 @@ from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import SpokenForm
-from hands.voice.tools import Tool
+from hands.voice.tools import Tool, pipecat_function
 from hands.voice.turnstop import KeyTurnStop
 from hands.voice.whisper import Whisper
 
@@ -62,7 +63,16 @@ class OpenAICompatibleBackend:
     model: str
 
 
-LLMBackend = AnthropicBackend | OpenAICompatibleBackend
+@dataclass(frozen=True)
+class ClaudeCodeBackend:
+    """Claude through a slim Claude Code of hands' own, on the Claude subscription and the login in `config_dir` (hands.brain)."""
+
+    # No URL of its own: its requests go through hands' proxy, whose address is known only once the run has it listening.
+    model: str
+    config_dir: Path
+
+
+LLMBackend = AnthropicBackend | OpenAICompatibleBackend | ClaudeCodeBackend
 
 
 @dataclass(frozen=True)
@@ -86,9 +96,9 @@ class FailFastOpenAILLMService(OpenAILLMService):
 
 
 def build_llm(
-    backend: LLMBackend, *, instruction: str, max_tokens: int
+    backend: AnthropicBackend | OpenAICompatibleBackend, *, instruction: str, max_tokens: int
 ) -> AnthropicLLMService | OpenAILLMService:
-    """The one place the backend variant is inspected."""
+    """The one place an API backend's variant is inspected."""
     # [LAW:one-type-per-behavior] both services speak the same frame protocol
     # to the rest of the pipeline; only their construction differs.
     match backend:
@@ -111,6 +121,15 @@ def build_llm(
             )
 
 
+def _llm_stage(config: VoiceConfig) -> AnthropicLLMService | OpenAILLMService | None:
+    """The pipeline's LLM stage, or None under the brain, which is its own process, started by the daemon."""
+    match config.llm:
+        case AnthropicBackend() | OpenAICompatibleBackend() as backend:
+            return build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens)
+        case ClaudeCodeBackend():
+            return None
+
+
 @dataclass(frozen=True)
 class Voice:
     """The assembled pipeline plus the handles its edges need: the key, the audio devices, the three services that report failures, and the two sides of the conversation."""
@@ -119,7 +138,7 @@ class Voice:
     key: PushToTalk
     audio: KeyedAudioTransport
     stt: Whisper
-    llm: AnthropicLLMService | OpenAILLMService
+    llm: AnthropicLLMService | OpenAILLMService | None
     tts: PocketTTSService
     user_turns: LLMUserAggregator
     assistant_turns: LLMAssistantAggregator
@@ -136,9 +155,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
     key = PushToTalk()
     transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key)
     stt = Whisper(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model))
-    llm = build_llm(
-        config.llm, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens
-    )
+    llm = _llm_stage(config)
     # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
     # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
     # own reply alike, so this is the one place all of them meet before they are heard.
@@ -153,24 +170,15 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool]) -> Voice:
         start=[VADUserTurnStartStrategy()],
         stop=[KeyTurnStop()],
     )
-    context = LLMContext(tools=list(tools))
+    context = LLMContext(tools=[pipecat_function(tool) for tool in tools])
     pair = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(user_turn_strategies=turns),
     )
     user_aggregator, assistant_aggregator = pair.user(), pair.assistant()
 
-    pipeline = Pipeline(
-        [
-            transport.input(),
-            stt,
-            user_aggregator,
-            llm,
-            tts,
-            transport.output(),
-            assistant_aggregator,
-        ]
-    )
+    stages = (transport.input(), stt, user_aggregator, llm, tts, transport.output(), assistant_aggregator)
+    pipeline = Pipeline([stage for stage in stages if stage is not None])
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True),

@@ -5,13 +5,11 @@ import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import pytest
-from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import AssistantTurnStoppedMessage, LLMContextAggregatorPair, UserTurnMessageAddedMessage
-from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Command, Input, Key, Text, Type
 from hands.core.events import Ended, Joined, StatusReported
@@ -21,7 +19,7 @@ from hands.sessions.typing import Untyped
 from hands.sessions.audit import AuditLog, Record
 from hands.sessions.registry import Sessions
 from hands.voice.conversation import record_turns
-from hands.voice.tools import Tool, audited, draft_tools, keyboard_tools
+from hands.voice.tools import Tool, audited, draft_tools, keyboard_tools, pipecat_function
 
 
 def unrecorded(_: object) -> None:
@@ -36,19 +34,8 @@ async def joined(tmp: Path, record: Record = unrecorded) -> tuple[Sessions, Sess
 
 
 async def call(tools: list[Tool], name: str, **arguments: object) -> dict[str, object]:
-    results: list[dict[str, object]] = []
-
-    async def capture(result: dict[str, object], **_: object) -> None:
-        results.append(result)
-
-    [tool] = [tool for tool in tools if DirectFunctionWrapper(tool).name == name]
-    params = FunctionCallParams(
-        function_name=name, tool_call_id="call-1", arguments=arguments,
-        llm=cast(Any, None), pipeline_worker=cast(Any, None), context=cast(Any, None), result_callback=capture,
-    )
-    await DirectFunctionWrapper(tool).invoke(arguments, params)
-    [result] = results
-    return result
+    [tool] = [tool for tool in tools if tool.name == name]
+    return dict(await tool.body(**arguments))
 
 
 async def test_a_draft_staged_amended_and_discarded_is_read_back_at_each_step(tmp_path: Path) -> None:
@@ -95,18 +82,19 @@ async def test_arguments_that_do_not_parse_are_refused_out_loud(text: str, resol
     assert error in str(result["error"])
 
 
-async def test_the_draft_tools_are_valid_pipecat_direct_functions(tmp_path: Path) -> None:
+async def test_the_draft_tools_say_their_arguments_and_complete_through_a_barge_in(tmp_path: Path) -> None:
     sessions, _ = await joined(tmp_path)
-    wrappers = [DirectFunctionWrapper(tool) for tool in draft_tools(sessions)]
-    assert [wrapper.name for wrapper in wrappers] == ["stage_draft", "amend_draft", "discard_draft", "send_draft"]
-    schema = wrappers[0].to_function_schema()
-    assert schema.required == ["session", "text", "resolutions"]
-    assert schema.properties["resolutions"]["items"]["required"] == ["heard", "meant"]
+    tools = draft_tools(sessions)
+    assert [tool.name for tool in tools] == ["stage_draft", "amend_draft", "discard_draft", "send_draft"]
+    assert tools[0].required == ("session", "text", "resolutions")
+    assert tools[0].properties["resolutions"]["items"] == {"type": "object", "properties": {"heard": {"type": "string"}, "meant": {"type": "string"}}, "required": ["heard", "meant"]}
+    assert all(tool.completes for tool in tools)
 
 
-async def test_an_interruption_does_not_cancel_a_draft_tool(tmp_path: Path) -> None:
+async def test_pipecat_is_told_a_barge_in_cancels_no_draft_tool(tmp_path: Path) -> None:
     sessions, _ = await joined(tmp_path)
-    assert [getattr(tool, "_pipecat_cancel_on_interruption") for tool in draft_tools(sessions)] == [False] * 4
+    handlers = [pipecat_function(tool)._handler for tool in draft_tools(sessions)]  # pyright: ignore[reportPrivateUsage]
+    assert [getattr(handler, "_pipecat_cancel_on_interruption") for handler in handlers] == [False] * 4
 
 
 async def fire(aggregator: object, event: str, message: object) -> None:
@@ -274,13 +262,12 @@ async def test_command_arguments_that_do_not_parse_are_refused_out_loud(command:
     assert typed == []
 
 
-async def test_the_keyboard_tools_are_valid_pipecat_direct_functions_an_interruption_does_not_cancel(tmp_path: Path) -> None:
+async def test_the_keyboard_tools_say_their_arguments_and_complete_through_a_barge_in(tmp_path: Path) -> None:
     sessions, _ = await joined(tmp_path)
     tools = keyboard_tools(sessions)
-    wrappers = [DirectFunctionWrapper(tool) for tool in tools]
-    assert [wrapper.name for wrapper in wrappers] == ["send_command", "interrupt_session"]
-    assert wrappers[0].to_function_schema().required == ["session", "command"]
-    assert [getattr(tool, "_pipecat_cancel_on_interruption") for tool in tools] == [False] * 2
+    assert [tool.name for tool in tools] == ["send_command", "interrupt_session"]
+    assert tools[0].required == ("session", "command")
+    assert all(tool.completes for tool in tools)
 
 
 async def test_a_command_is_in_the_audit_log_before_the_readback(tmp_path: Path) -> None:

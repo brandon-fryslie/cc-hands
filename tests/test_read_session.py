@@ -2,10 +2,8 @@
 
 import shutil
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
-from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.events import Ended, Joined
 from hands.core.session import Membership, SessionId
@@ -23,15 +21,7 @@ async def joined(transcript: Path) -> Sessions:
 
 
 async def read(sessions: Sessions, session: str = "s1", since: str = "") -> dict[str, Any]:
-    results: list[object] = []
-
-    async def capture(result: object, **_: object) -> None:
-        results.append(result)
-
-    tool = read_session_tool(sessions)
-    await tool(cast(FunctionCallParams, SimpleNamespace(result_callback=capture)), session=session, since=since)
-    [result] = results
-    return cast(dict[str, Any], result)
+    return dict(await read_session_tool(sessions).body(session=session, since=since))
 
 
 async def test_a_session_is_read_back_in_order_and_everything_names_its_record(tmp_path: Path) -> None:

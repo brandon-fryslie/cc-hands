@@ -79,6 +79,11 @@ it differently: the Anthropic client appends `/v1/messages`, so its URL has no `
 usually ends in `/v1` (`https://api-chicago.codexapi.pro/v1`: the bare host answers 404). The server
 must stream tool calls, because the pipeline's service always streams: api-chicago.codexapi.pro streams
 Anthropic `tool_use` but drops OpenAI-shape tool calls (2026-09-25), so it is reached as `anthropic`.
+`HANDS_LLM=claude` is the brain: one long-lived Claude Code of hands' own, on the Claude subscription,
+whose requests go through hands' proxy and which reaches the sessions through hands' tools over MCP
+(`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, made once with
+`CLAUDE_CONFIG_DIR=~/.hands/brain claude auth login`, and it does not start without one. Its turns are
+not yet spoken: the pipeline has no stage that hands it one.
 A variant stops at start, naming where its key can be, when it has none. The run's audit log says which
 backend, URL, and model it reached, never the key. The key can live in a `.env` at the repository root,
 which git ignores, and `uv run --env-file .env` puts it in the environment; uv stops if
@@ -152,6 +157,7 @@ uv run python -m hands.sessions.hookconfig > plugin/hooks/hooks.json
 uv sync
 uv run hands run                        # Claude, keyed by ANTHROPIC_API_KEY, else the keychain's HANDS_LLM_ANT_KEY; hold Right Shift in any app to talk, release to send; q in its terminal quits
 HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
+HANDS_LLM=claude uv run hands run      # the brain on the subscription; once first: CLAUDE_CONFIG_DIR=~/.hands/brain claude auth login
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
