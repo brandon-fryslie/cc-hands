@@ -35,13 +35,15 @@ from pipecat.workers.runner import WorkerRunner
 from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
-from hands.sessions.audit import AuditLog, LLMChosen, Record, failures_to
+from hands.core.wire import Exchanged, Heard, Observed, Sent
+from hands.sessions.audit import AuditLog, LLMChosen, ProxyListening, Record, failures_to
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.statusfile import keep_reading_statuses
 from hands.sessions.tail import Tails, keep_tailing
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
+from hands.sessions.proxy import UPSTREAM, serve_proxy
 from hands.sessions.server import serve_hooks
 from hands.sessions.summaries import summaries
 from hands.voice.devices import follow_default_devices
@@ -184,6 +186,8 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     deltas = Deltas()
     sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record, changes=deltas)
     hooks = await serve_hooks(home, sessions)
+    proxy = await serve_proxy(UPSTREAM, wire_to(audit.record), clock=time.time)
+    audit.record(ProxyListening(url=proxy.url, upstream=UPSTREAM))
     quit_event = asyncio.Event()
     # [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the q key, and a failed
     # background task all set this one event, and it is installed before the start, so a stop is heard in every phase of the run.
@@ -200,6 +204,7 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
+        await proxy.close()
         # From here a signal has its default effect again: nothing is left to stop gracefully.
         for signal_number in QUIT_SIGNALS:
             loop.remove_signal_handler(signal_number)
@@ -346,6 +351,20 @@ async def converse(
         raise failures[0]
     if not quit_event.is_set():
         raise RuntimeError("the pipeline ended without being told to stop")
+
+
+def wire_to(record: Record) -> Callable[[Observed], None]:
+    """What the daemon keeps of the wire: one audit line per exchange, the wide record of the proxy's work."""
+
+    def observe(observed: Observed) -> None:
+        match observed:
+            case Exchanged():
+                record(observed)
+            case Sent() | Heard():
+                # Heard as it happens by what speaks from the wire; the exchange's line already holds the request's kind and the whole reply.
+                pass
+
+    return observe
 
 
 class PipelineWatch:

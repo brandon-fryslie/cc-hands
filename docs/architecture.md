@@ -53,7 +53,9 @@ mocks.
 
 **`sessions`** is every edge on the Claude Code side: the unix socket the hook shims
 POST to, the session files the shims write, Claude Code's own status files, the JSONL tail, the git delta reader, the
-process-liveness check, and the audit log. It
+process-liveness check, the audit log, and the wire proxy a Claude Code process reaches
+the API through (`ANTHROPIC_BASE_URL`), which passes every byte unchanged and reads a
+copy into `core.wire`'s typed events, one `Exchanged` audit line per request. It
 parses hook input once at the socket into a `HookEvent` and rejects anything it does
 not recognise with a logged error and a non-2xx reply `[LAW:parse-dont-validate]`. It
 exposes two things upward: an async stream of events, and a small API the tools call.

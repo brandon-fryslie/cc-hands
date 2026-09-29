@@ -5,10 +5,13 @@ description = "Hands-free control of Claude Code: a voice intermediary in one da
 requires-python = ">=3.12"
 dependencies = [
     "pipecat-ai[anthropic,local,mlx-whisper,whisper,pocket-tts]>=1.9.0,<2",
+    "aiohttp>=3.10",
     "loguru>=0.7",
     "pyobjc-framework-cocoa>=11",
     "pyobjc-framework-coreaudio>=11",
     "pyobjc-framework-quartz>=12.2.2",
+    "brotli>=1.2.0",
+    "zstandard>=0.25.0",
 ]
 
 [project.scripts]
