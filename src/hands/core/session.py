@@ -245,6 +245,10 @@ class Session:
     mode: Mode | None
     turn: Turn = Told()
     dialog: Dialog | None = None
+    # Every id the turns before this one went by, each told as the turn after it replaced it: a late Stop naming one ends
+    # nothing, and one naming no id heard at all is of a turn hands never had open. [LAW:types-are-the-program] kept here,
+    # and not on the turn, so every phase answers "was this turn told" the same way.
+    earlier: frozenset[PromptId] = frozenset()
 
 
 @dataclass(frozen=True)
