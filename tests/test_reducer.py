@@ -1072,8 +1072,9 @@ def test_followed_mid_turn_it_works_under_its_own_prompt_once_its_record_is_read
 
 
 def test_a_stop_of_a_turn_never_heard_while_a_telling_waits_tells_the_waiting_turn_then_its_own() -> None:
-    """Its record not read yet: a turn that ran after the one waiting, which is over before it, so told first."""
-    state, tellings = told([said(status.Idle()), Stopped(ONE.id, "other", mode=None, prompt=NEXT, again=False)])
+    """Its record not read yet: a turn that ran after the one waiting, as Claude Code's busy says, which is over before
+    it, so told first."""
+    state, tellings = told([said(status.Idle()), said(Busy(), 3000, at=11.0), Stopped(ONE.id, "other", mode=None, prompt=NEXT, again=False)])
     assert tellings == [*TOLD, Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "other")]
     assert live(state).turn == Told(NEXT)
 
@@ -1085,11 +1086,15 @@ def test_a_late_stop_of_a_turn_told_before_the_last_one_ends_nothing_and_is_audi
     assert reduce(before, STOP) == (before, [Audit(Unmatched(STOP))])
 
 
-def test_a_turn_read_going_on_under_a_queued_message_after_its_idle_is_told_by_that_message_s_stop() -> None:
-    """The Continued record can be read after the idle that ended the turn: the turn waiting to be told takes the new id."""
-    state, tellings = told([said(status.Idle()), Continued(ONE.id, was=TURN, now=NEXT), Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False)])
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two")]
-    assert live(state).turn == Told(NEXT, frozenset({TURN}))
+@pytest.mark.parametrize(("events", "named"), [
+    ([Continued(ONE.id, was=TURN, now=NEXT), Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False)], NEXT),
+    ([Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False), Continued(ONE.id, was=TURN, now=NEXT)], TURN),
+])
+def test_a_turn_that_went_on_under_a_queued_message_is_told_once_by_that_message_s_stop(events: list[Event], named: PromptId) -> None:
+    """The Continued record can be read after the idle that ended the turn, and after the Stop under its new id: no busy
+    since the idle, so that Stop is still this turn's."""
+    _, tellings = told([said(status.Idle()), *events])
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, named, "two")]
 
 
 @pytest.mark.parametrize("end", [Ended(ONE.id, "other"), Ended(ONE.id, "prompt_input_exit"), Died(ONE), MovedOn(ONE)])

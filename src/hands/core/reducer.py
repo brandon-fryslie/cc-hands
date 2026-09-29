@@ -288,13 +288,15 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
         case (Stopped(prompt=prompt, closing=closing, again=again), Opened() as opened) if _names(opened, prompt):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
             return Told(opened.turn, opened.others, _asking(closing, was.dialog)), [Compare(id, again), Summarise(id, prompt, closing), *_following(was.membership, opened)]
-        case (Stopped(prompt=prompt, closing=closing), Untold() as untold) if _names(untold, prompt):
-            # Its Stop fired after Claude Code set idle, as an Escape's can: told with the reply it carries.
+        case (Stopped(prompt=prompt, closing=closing), Untold() as untold) if _names(untold, prompt) or not (prompt in was.earlier or isinstance(was.state, Running)):
+            # Its Stop fired after Claude Code set idle, as an Escape's can: told with the reply it carries. Under an id it
+            # is not yet read going on under, its Continued record still unread, it is still this turn's: [LAW:one-source-of-truth]
+            # Claude Code's status says no turn has run since the idle that ended it.
             return _told(id, turn, closing)
         case (Stopped(prompt=prompt, closing=closing, again=again), Untold() | Told()) if again or not (_names(turn, prompt) or prompt in was.earlier):
-            # A turn hands never had open, such as the one a session was in when it was attached or one whose record is
-            # still unread, or the last turn stopping again after another Stop hook blocked its Stop. A turn waiting to be
-            # told is over before it, so is told first, as it stands. Any other Stop names a turn already told, which it
+            # A turn hands never had open, such as the one a session was in when it was attached or one running since the
+            # idle before it with its record still unread, or the last turn stopping again after another Stop hook blocked
+            # its Stop. A turn waiting to be told is over before it, so is told first, as it stands. Any other Stop names a turn already told, which it
             # ends again only by being heard twice (below). The telling of a turn stopping again holds only what was not
             # told before.
             return Told(prompt, frozenset(), _asking(closing, was.dialog)), [*_told(id, turn, None)[1], Compare(id, again), Summarise(id, prompt, closing)]
