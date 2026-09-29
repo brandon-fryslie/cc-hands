@@ -2,10 +2,11 @@
 
     ANTHROPIC_BASE_URL=<the proxy's url> claude ...
 
-It forwards each request upstream as it came and streams the reply back byte for byte, reading a copy of the same bytes
-into typed events as they pass. It never makes a request of its own and never uses a client's credentials for
-anything but that client's own request. The one request it does not forward is one its route holds: that is answered
-here, with the words the route gives it, so the model is not asked at all.
+It forwards each request upstream as it came, or with the tail its route gives it appended to the newest message, and
+streams the reply back byte for byte, reading a copy of the same bytes into typed events as they pass. It never makes a
+request of its own and never uses a client's credentials for anything but that client's own request. The one request it
+does not forward is one its route holds: that is answered here, with the words the route gives it, so the model is not
+asked at all.
 """
 
 import json
@@ -24,6 +25,7 @@ from loguru import logger
 from multidict import CIMultiDict
 
 from hands.core.wire import (
+    Append,
     Body,
     Exchanged,
     Forward,
@@ -40,6 +42,7 @@ from hands.core.wire import (
     Unreached,
     WireEvent,
     answered,
+    appended,
     assemble,
     classify,
     frames,
@@ -141,27 +144,25 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
         tell(sent)
         try:
             routed = route(sent)
+            onward, tail = _onward(body, parsed, routed)
         except Exception:
             # [LAW:no-silent-failure] a route that raises is logged with its trace, and the request goes on as it came:
             # the conversation is not broken by hands failing to decide about it.
             logger.exception(f"the proxy's route failed on exchange {exchange}; forwarding it")
-            routed = Forward()
+            routed, onward, tail = Forward(), body, ""
 
         sent_at = clock()
 
         def exchanged(reply: Reached | Unreached | Held) -> Exchanged:
-            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), requested_at, sent_at, reply)
+            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), tail, requested_at, sent_at, reply)
 
-        match routed:
-            case Hold(said=said):
-                content_type, answer = _held(parsed, said)
-                tell(exchanged(Held(said, clock())))
-                return web.Response(status=200, body=answer, headers={"Content-Type": content_type})
-            case Forward():
-                pass
+        if isinstance(routed, Hold):
+            content_type, answer = _held(parsed, routed.said)
+            tell(exchanged(Held(routed.said, clock())))
+            return web.Response(status=200, body=answer, headers={"Content-Type": content_type})
 
         try:
-            reached = await client.request(request.method, upstream + request.path_qs, headers=_end_to_end(request.headers), data=body)
+            reached = await client.request(request.method, upstream + request.path_qs, headers=_end_to_end(request.headers), data=onward)
         except (aiohttp.ClientError, OSError) as error:
             tell(exchanged(Unreached(f"{type(error).__name__}: {error}", clock())))
             return web.Response(status=502, text=f"hands' proxy could not reach {upstream}: {error}")
@@ -207,6 +208,16 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
     await site.start()
     host, port = runner.addresses[0][:2]
     return Proxy(url=f"http://{host}:{port}", runner=runner, client=client)
+
+
+def _onward(body: bytes, parsed: object, routed: Route) -> tuple[bytes, str]:
+    """The bytes that go upstream for a routed request, and the tail appended to them."""
+    match routed:
+        case Append(tail=tail):
+            # Claude Code's own spacing: JSON.stringify's, with nothing escaped that it did not escape.
+            return json.dumps(appended(parsed, tail), ensure_ascii=False, separators=(",", ":")).encode(), tail
+        case Forward() | Hold():
+            return body, ""
 
 
 def _held(body: object, said: str) -> tuple[str, bytes]:

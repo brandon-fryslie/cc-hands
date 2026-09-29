@@ -14,7 +14,7 @@ history as refused; what it handed back, which the model will not be asked to sa
 
 import asyncio
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -34,6 +34,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from hands.brain.mcp import SERVER_NAME
 from hands.core.session import SessionId
 from hands.core.wire import (
+    Append,
     BlockStarted,
     BlockStopped,
     Forward,
@@ -97,9 +98,11 @@ class _Turn:
 class BrainStage(FrameProcessor):
     """The LLM stage under the brain: a context in, the brain's words out as LLM text frames, and a barge-in passed on."""
 
-    def __init__(self, brain: Asking, tools: Sequence[Tool], record: Record) -> None:
+    def __init__(self, brain: Asking, tools: Sequence[Tool], tail: Callable[[], str], record: Record) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._brain = brain
+        # What hands appends to each request of a turn, composed as that request leaves.
+        self._tail = tail
         self._record = record
         self._completes = frozenset(wire_name(tool) for tool in tools if tool.completes)
         self._silences = frozenset(wire_name(tool) for tool in tools if tool.then == "silence")
@@ -190,7 +193,8 @@ class BrainStage(FrameProcessor):
         return turn.stopped
 
     def route(self, sent: Sent) -> Route:
-        """Where a request on the wire goes: the brain's own next request after stay_silent or a barge-in is held."""
+        """Where a request on the wire goes: each of a turn's own requests with hands' tail on it, and the next one after
+        stay_silent or a barge-in held."""
         if sent.session != self._brain.session or not isinstance(sent.kind, MainTurn):
             return Forward()
         turn = self._turn
@@ -203,7 +207,7 @@ class BrainStage(FrameProcessor):
         if not (turn.interrupted or any(name in self._silences for name, _ in answers)):
             turn.exchanges.append(sent.exchange)
             turn.opening, turn.calls = {}, {}
-            return Forward()
+            return Append(self._tail())
         turn.readbacks.extend(_said(answer) for name, answer in answers if name in self._completes)
         return Hold(INTERRUPTED if turn.interrupted else SILENT)
 

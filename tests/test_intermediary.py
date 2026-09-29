@@ -12,7 +12,8 @@ from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.sessions.registry import Sessions
-from hands.voice.briefing import briefing
+from hands.voice.briefing import brief, briefing, tail
+from hands.voice.speech import Tailed
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.tools import intermediary_tools, pipecat_function, stay_silent_tool
 
@@ -40,6 +41,27 @@ def test_the_briefing_names_each_session_by_title_state_and_mode_with_the_id_for
 
 def test_the_briefing_with_nothing_running_says_so() -> None:
     assert briefing([]) == "[hands] hands has just started, and no Claude Code sessions are running. Say nothing about this unless the user asks."
+
+
+def test_the_tail_names_each_session_as_the_briefing_does_and_says_it_is_current() -> None:
+    told = tail([AUTH])
+    assert told.startswith("[hands] ")
+    assert f'"auth refactor in cc-hands" (id {AUTH["id"]}), idle, permission mode: manual mode' in told
+    assert "as this message is sent" in told and "Say nothing about this unless the user asks." in told
+
+
+def test_the_tail_with_nothing_running_says_so() -> None:
+    assert tail([]) == "[hands] No Claude Code sessions are running now. Say nothing about this unless the user asks."
+
+
+async def test_a_brain_read_from_the_tail_is_given_no_briefing() -> None:
+    queued: list[object] = []
+
+    async def queue(frame: object) -> None:
+        queued.append(frame)
+
+    await brief(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), Tailed(), queue)
+    assert queued == []
 
 
 async def test_stay_silent_ends_the_turn_without_running_the_model_again() -> None:

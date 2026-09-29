@@ -16,6 +16,8 @@ from hands.brain.stage import BrainStage
 from hands.core.session import SessionId
 from hands.daemon.run import mind
 from hands.sessions.proxy import Wire
+from hands.sessions.registry import Sessions
+from hands.voice.speech import Pushed, Tailed
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, VoiceConfig
 from hands.voice.summary import SummaryFailed, summariser
 from hands.voice.tools import Result, audited, tool
@@ -195,11 +197,12 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     recorded: list[Entry] = []
     wire = Wire(lambda _observed: None)
     api = VoiceConfig(llm=AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m"), whisper_model="w", voice="v")
-    async with mind(api, [], "http://127.0.0.1:1", wire, recorded.append) as minded:
-        assert isinstance(minded.llm, AnthropicLLMService) and minded.watches == ()
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    async with mind(api, [], sessions, "http://127.0.0.1:1", wire, recorded.append) as minded:
+        assert isinstance(minded.llm, AnthropicLLMService) and minded.watches == () and minded.telling == Pushed()
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain"), whisper_model="w", voice="v")
-    async with mind(claude, [tool(echo)], "http://127.0.0.1:1", wire, recorded.append) as minded:
-        assert isinstance(minded.llm, BrainStage)
+    async with mind(claude, [tool(echo)], sessions, "http://127.0.0.1:1", wire, recorded.append) as minded:
+        assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed()
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns"]
         [launched] = [entry for entry in recorded if isinstance(entry, BrainLaunched)]
         assert launched.cwd == tmp_path / "brain" / "cwd"
