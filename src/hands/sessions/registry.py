@@ -8,13 +8,15 @@ from loguru import logger
 
 from hands.core import drafts, keyboard
 from hands.core.drafts import DraftOutcome, DraftRequest
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, Note, NotTyped, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Type, Typed, Unmatched, Unregistered, Withdraw
-from hands.core.events import Abandoned, Event, PermissionRequested, Tick, ToolFinished
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, Note, NotTyped, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Type, Typed, Holding, Unmatched, Unregistered, Unsettled, Withdraw
+from hands.core.events import Abandoned, Event, PermissionRequested, Stopped, Tick, ToolFinished
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
+from hands.core.status import Stamp
 from hands.sessions.audit import Applied, EffectFailed, Performed, Record, Typing
+from hands.sessions.clock import stamp_now
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import ai_title
@@ -37,11 +39,15 @@ class Sessions:
         record: Record,
         changes: Changes | None = None,
         typist: Callable[[Type[Input]], None] = type_into,
+        stamp: Callable[[], Stamp] = stamp_now,
     ) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
         self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={})
         # [LAW:effects-at-boundaries] the one clock: hooks, answers, and ticks are all stamped from it.
         self._clock = clock
+        # [LAW:one-source-of-truth] the wall clock Claude Code stamps its statuses and records with: a Stop is heard on
+        # it and a transcript read through on it, and the two are compared.
+        self._stamp = stamp
         # [LAW:single-enforcer] every event and every effect passes through here, so here is where each becomes an audit line.
         self._record = record
         # What a turn did to the repository it ran in. A daemon given none tells every turn by its steps alone.
@@ -59,6 +65,9 @@ class Sessions:
     def now(self) -> Instant:
         return self._clock()
 
+    def stamp(self) -> Stamp:
+        return self._stamp()
+
     async def apply(self, event: Event) -> None:
         before = self._registry
         self._registry, effects = reduce(before, event)
@@ -66,8 +75,9 @@ class Sessions:
             self._record(Applied(event))
         await self._perform_all(effects)
 
-    async def ask(self, event: PermissionRequested) -> HookReply:
-        """Apply a permission request and wait for its reply: an answer, a withdrawal, or the deny at its deadline."""
+    async def ask(self, event: PermissionRequested | Stopped) -> HookReply:
+        """Apply a hook Claude Code waits on and wait for its reply: a permission request's answer, withdrawal, or deny at
+        its deadline; a Stop's letting go once the reducer has decided whose it is."""
         if self._released:
             # A hook that reached the socket as shutdown began would otherwise wait with nothing left to answer it.
             return Withdraw()
@@ -267,3 +277,7 @@ def _audited(record: AuditRecord) -> tuple[str, str]:
             return "WARNING", f"{type(event).__name__} for session {event.session}, which had already ended"
         case Unmatched(session=session, prompt=prompt):
             return "INFO", f"Stop of turn {prompt} in session {session} ended nothing: its turn was told, or no record read through it names its id"
+        case Holding(session=session, prompt=prompt):
+            return "DEBUG", f"Stop of turn {prompt} in session {session} is held until a record names its id"
+        case Unsettled(session=session, prompt=prompt):
+            return "INFO", f"Stop of turn {prompt} in session {session} ended nothing: its session ended or started again before a record named its id"

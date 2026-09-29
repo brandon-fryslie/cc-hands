@@ -9,7 +9,7 @@ import pytest
 from loguru import logger
 
 from hands.core.events import Continued, Interrupted, Read, Taken, Transcribed
-from hands.core.session import Membership, PromptId, SessionId
+from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.turn import Asked, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Turn
 from hands.core.effects import Summarise
 from hands.core.events import Attached, Joined, Prompted, StatusReported, Stopped
@@ -22,6 +22,7 @@ from hands.sessions.tail import KEPT, Tails, Telling, keep_tailing
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
 STOP_HEARD = Stamp(1500)
+STOP_REQUEST = RequestId("stop")
 
 SID = SessionId("bf411065-dc5c-4ec9-8302-61b84bdb5c53")
 
@@ -57,6 +58,9 @@ class Registry:
 
     def now(self) -> float:
         return 7.0
+
+    def stamp(self) -> Stamp:
+        return Stamp(5000)
 
     def membership(self, session: SessionId) -> Membership | None:
         return next((member for member in self.heard if member.id == session), None)
@@ -756,7 +760,7 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
         more.write(lines(CUT_OFF, NEXT_ASKED, DONE))
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
-    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
 
     ended = await asyncio.wait_for(sessions.story(), 2.0)
     assert ended == Summarise(SID, PromptId("p1"), None)
@@ -793,7 +797,7 @@ async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_
     transcript.write_text(lines(ASKED, WRITING, CUT_OFF, NEXT_ASKED, DONE))
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
-    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
     # Both readings are taken before anything is asserted, so a failure leaves no git command running.
     changed = [[file.path for file in (await deltas.taken(SID)).files] for _ in range(2)]
 
@@ -823,7 +827,7 @@ async def test_each_reading_says_how_far_it_read_after_what_it_found(tmp_path: P
     """On the clock taken before the file was opened: every record Claude Code had written by then is in the reading."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING, CUT_OFF))
-    tails = Tails(Registry([member(transcript)]), clock=lambda: Stamp(5000))
+    tails = Tails(Registry([member(transcript)]))
     assert (await tails.catch_up())[-1] == Read(SID, Stamp(5000))
     assert await tails.catch_up() == [Read(SID, Stamp(5000))]
 
@@ -832,7 +836,7 @@ async def test_a_reading_that_stops_inside_a_record_being_written_says_nothing_o
     """The record may have been begun before the reading, so the reading is not through everything written by then."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED) + CUT_OFF[:30])
-    tails = Tails(Registry([member(transcript)]), clock=lambda: Stamp(5000))
+    tails = Tails(Registry([member(transcript)]))
     assert await tails.catch_up() == [Taken(SID, PromptId("p1"), None, 7.0)]
     with transcript.open("a") as file:
         file.write(CUT_OFF[30:] + "\n")
@@ -841,7 +845,7 @@ async def test_a_reading_that_stops_inside_a_record_being_written_says_nothing_o
 
 async def test_a_transcript_not_written_yet_is_read_through_all_there_is(tmp_path: Path) -> None:
     """A turn whose prompt was cancelled before Claude Code wrote anything is still told once its window passes."""
-    tails = Tails(Registry([member(tmp_path / "t.jsonl")]), clock=lambda: Stamp(5000))
+    tails = Tails(Registry([member(tmp_path / "t.jsonl")]))
     assert await tails.catch_up() == [Read(SID, Stamp(5000))]
 
 
@@ -849,7 +853,7 @@ async def test_a_transcript_that_cannot_be_read_is_waited_on_no_longer(tmp_path:
     """The turn is told, and its telling says why the transcript could not be read, rather than waiting forever unsaid."""
     unreadable = tmp_path / "t.jsonl"
     unreadable.mkdir()
-    tails = Tails(Registry([member(unreadable)]), clock=lambda: Stamp(5000))
+    tails = Tails(Registry([member(unreadable)]))
     assert await tails.catch_up() == [Read(SID, Stamp(5000))]
 
 
@@ -911,7 +915,7 @@ async def test_a_session_followed_from_mid_turn_works_under_its_own_prompt_and_i
         await sessions.apply(transcribed)
     live = sessions.live_session(SID)
     assert live is not None and live.turn == Opened(PromptId("p4"))
-    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p4"), again=False, heard=STOP_HEARD))
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p4"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
     assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p4"), "Done.")
     live = sessions.live_session(SID)
     assert live is not None and live.turn == Told(PromptId("p4"))

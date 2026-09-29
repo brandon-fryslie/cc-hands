@@ -51,7 +51,7 @@ def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, r
         case "UserPromptSubmit":
             return Prompted(session, at, _mode(payload), _prompt(payload))
         case "Stop":
-            return Stopped(session, _closing(payload), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"), heard)
+            return Stopped(session, _closing(payload), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"), heard, request)
         case "Notification":
             return _notified(session, payload.text("notification_type"))
         case "PermissionRequest":

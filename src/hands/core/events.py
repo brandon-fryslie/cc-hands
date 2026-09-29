@@ -66,6 +66,8 @@ class Stopped:
     # When hands heard it, on the clock Claude Code stamps a status and a record with: every record of the turn it ends
     # was written before it fired, so a transcript read through a moment past this holds them.
     heard: Stamp
+    # The hook's connection, which Claude Code waits on until the reducer has decided whose Stop it is (see Reply).
+    request: RequestId
 
 
 @dataclass(frozen=True)

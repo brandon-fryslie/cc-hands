@@ -1,5 +1,6 @@
 """The audit log: what is written, how it reads back, and what becomes a line when writing or encoding fails."""
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,7 +11,7 @@ from loguru import logger
 from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.effects import Reply, Unmatched, Withdraw
+from hands.core.effects import Holding, Reply, Unmatched, Withdraw
 from hands.core.events import Joined, Prompted, Read, Stopped, Tick
 from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.daemon import cli
@@ -36,6 +37,7 @@ from hands.core.status import Stamp
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
 STOP_HEARD = Stamp(1500)
+STOP_REQUEST = RequestId("stop")
 
 AT = datetime(2026, 9, 14, 12, 0, 0, 123000, tzinfo=UTC)
 
@@ -174,12 +176,12 @@ async def test_a_stop_that_ends_no_turn_is_a_line_saying_so() -> None:
     recorded: list[Entry] = []
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
-    stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD)
+    stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
     await sessions.apply(stop)
     assert Unmatched(stop.session, stop.prompt) not in recorded
     # Heard again once its turn was told, as an interrupted turn's late Stop is.
     await sessions.apply(stop)
-    assert recorded[-1] == Unmatched(stop.session, stop.prompt)
+    assert recorded[-2:] == [Unmatched(stop.session, stop.prompt), Performed(Reply(stop.session, stop.request, Withdraw()))]
 
 
 async def test_a_stop_held_for_its_record_is_a_line_as_it_is_heard_and_again_once_read_through_without_one() -> None:
@@ -187,13 +189,26 @@ async def test_a_stop_held_for_its_record_is_a_line_as_it_is_heard_and_again_onc
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
-    stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD)
+    stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
     await sessions.apply(stop)
-    assert recorded[-1] == Applied(stop)
+    assert recorded[-2:] == [Applied(stop), Holding(stop.session, stop.prompt)]
     await sessions.apply(Read(member().id, Stamp(STOP_HEARD + 999)))
-    assert recorded[-1] != Unmatched(stop.session, stop.prompt)
+    assert Unmatched(stop.session, stop.prompt) not in recorded
     await sessions.apply(Read(member().id, Stamp(STOP_HEARD + 1000)))
-    assert recorded[-1] == Unmatched(stop.session, stop.prompt)
+    # Its hook is let go only once it is decided.
+    assert recorded[-2:] == [Unmatched(stop.session, stop.prompt), Performed(Reply(stop.session, stop.request, Withdraw()))]
+
+
+async def test_a_stop_hook_is_answered_only_once_its_stop_is_decided() -> None:
+    """Claude Code waits on the hook, so what deciding the Stop calls for is done before it goes on."""
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member(), "startup"))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    hook = asyncio.create_task(sessions.ask(Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)))
+    await asyncio.sleep(0)
+    assert not hook.done()
+    await sessions.apply(Read(member().id, Stamp(STOP_HEARD + 1000)))
+    assert await asyncio.wait_for(hook, 1.0) == Withdraw()
 
 
 async def test_an_audited_tool_keeps_its_schema_and_writes_its_call_beside_its_result() -> None:

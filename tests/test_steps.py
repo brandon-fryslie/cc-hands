@@ -12,6 +12,7 @@ import pytest
 from dataclasses import dataclass
 
 from hands.core.session import Membership, SessionId
+from hands.core.status import Stamp
 from hands.core.steps import Call, Result, recognise
 from hands.core.testrun import report_of
 from hands.core.turn import Asked, Committed, Delegated, Edited, Looked, Other, Planned, Questioned, Ran, Ref, Step, Tested
@@ -37,6 +38,9 @@ class Registry:
 
     def now(self) -> float:
         return 0.0
+
+    def stamp(self) -> Stamp:
+        return Stamp(0)
 
     def membership(self, session: SessionId) -> Membership | None:
         return self.member if session == self.member.id else None

@@ -18,7 +18,6 @@ from hands.core.events import Continued, Interrupted, Read, Taken, Transcribed
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.status import Stamp
 from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
-from hands.sessions.clock import stamp_now
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.transcript import prompt_of, turn_record, written_of
 from hands.sessions.turning import Turning
@@ -146,17 +145,18 @@ class Known(Protocol):
 
     def now(self) -> Instant: ...
 
+    def stamp(self) -> Stamp: ...
+
     def membership(self, session: SessionId) -> Membership | None: ...
 
 
 class Tails:
     """Every live session's transcript, followed. Only the narrator asks it anything."""
 
-    def __init__(self, known: Known, clock: Callable[[], Stamp] = stamp_now) -> None:
-        # [LAW:one-source-of-truth] where a session's transcript is, is the registry's to say, not this one's to keep.
+    def __init__(self, known: Known) -> None:
+        # [LAW:one-source-of-truth] where a session's transcript is, is the registry's to say, not this one's to keep,
+        # and so is the clock how far a transcript was read is said on: the one a Stop is heard on.
         self._known = known
-        # The wall clock Claude Code stamps its statuses and records with, so how far a transcript was read is said on it.
-        self._clock = clock
         self._following: dict[SessionId, Following] = {}
         # [LAW:no-ambient-temporal-coupling] reading happens off the loop in a thread, and a Stop reads the same
         # transcript the catch-up is reading. [LAW:single-enforcer] everything that touches a Following waits on
@@ -273,7 +273,7 @@ class Tails:
     def _read(self, session: SessionId, following: Following) -> None:
         """Raises OSError, which the caller decides what to make of: a file not written yet, or one that cannot be read."""
         # Before the file is opened, so every record Claude Code had written by then is in what is read.
-        through = self._clock()
+        through = self._known.stamp()
         try:
             with following.path.open("rb") as file:
                 size = file.seek(0, os.SEEK_END)

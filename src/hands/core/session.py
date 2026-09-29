@@ -247,6 +247,8 @@ class Unnamed:
     closing: str | None
     again: bool
     by: Stamp
+    # The hook Claude Code waits on meanwhile, let go once the Stop is decided.
+    request: RequestId
 
 
 @dataclass(frozen=True)

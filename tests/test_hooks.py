@@ -86,7 +86,7 @@ def test_the_turn_hooks(home: Home) -> None:
     stop = body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message="ok", background_tasks=[], permission_mode="acceptEdits", prompt_id="p")
     end = body(hook_event_name="SessionEnd", reason="other")
     assert parse(home, prompt) == Prompted(SID, at=12.5, mode="default", prompt=PromptId("p"))
-    assert parse(home, stop) == Stopped(SID, "ok", mode="acceptEdits", prompt=PromptId("p"), again=False, heard=STOP_HEARD)
+    assert parse(home, stop) == Stopped(SID, "ok", mode="acceptEdits", prompt=PromptId("p"), again=False, heard=STOP_HEARD, request=REQUEST)
     assert parse(home, end) == Ended(SID, "other")
 
 
@@ -100,7 +100,7 @@ def test_a_prompt_or_stop_that_names_no_turn_is_refused(home: Home, fields: dict
 
 def test_a_stop_says_whether_its_turn_went_on_after_another_stop_hook_blocked_its_last_one(home: Home) -> None:
     """stop_hook_active, true on the Stop of a turn Claude went on in after a Stop hook blocked it (2.1.282)."""
-    assert parse(home, body(hook_event_name="Stop", stop_hook_active=True, last_assistant_message="ok", prompt_id="p")) == Stopped(SID, "ok", mode=None, prompt=PromptId("p"), again=True, heard=STOP_HEARD)
+    assert parse(home, body(hook_event_name="Stop", stop_hook_active=True, last_assistant_message="ok", prompt_id="p")) == Stopped(SID, "ok", mode=None, prompt=PromptId("p"), again=True, heard=STOP_HEARD, request=REQUEST)
 
 
 @pytest.mark.parametrize("active", [{}, {"stop_hook_active": None}, {"stop_hook_active": "true"}])
@@ -112,8 +112,8 @@ def test_a_stop_that_does_not_say_whether_its_turn_went_on_is_refused(home: Home
 
 def test_a_stop_is_still_the_end_of_a_turn_when_the_reply_it_carries_is_not_a_string(home: Home) -> None:
     """The turn is what the hook says; the reply is how it is narrated. A turn never told is the worse wrong."""
-    assert parse(home, body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message={"text": "ok"}, prompt_id="p")) == Stopped(SID, None, mode=None, prompt=PromptId("p"), again=False, heard=STOP_HEARD)
-    assert parse(home, body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message=None, prompt_id="p")) == Stopped(SID, None, mode=None, prompt=PromptId("p"), again=False, heard=STOP_HEARD)
+    assert parse(home, body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message={"text": "ok"}, prompt_id="p")) == Stopped(SID, None, mode=None, prompt=PromptId("p"), again=False, heard=STOP_HEARD, request=REQUEST)
+    assert parse(home, body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message=None, prompt_id="p")) == Stopped(SID, None, mode=None, prompt=PromptId("p"), again=False, heard=STOP_HEARD, request=REQUEST)
 
 
 def test_a_permission_request_carries_the_tool_and_its_input(home: Home) -> None:
@@ -133,7 +133,7 @@ def test_a_finished_or_failed_tool_names_its_call_as_a_permission_does(home: Hom
 def test_every_hook_that_carries_a_mode_reports_it(home: Home, mode: Mode) -> None:
     call = {"tool_name": "Bash", "tool_input": {"command": "ls"}}
     assert parse(home, body(hook_event_name="UserPromptSubmit", prompt="hi", permission_mode=mode, prompt_id="p")) == Prompted(SID, at=12.5, mode=mode, prompt=PromptId("p"))
-    assert parse(home, body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message="ok", permission_mode=mode, prompt_id="p")) == Stopped(SID, "ok", mode=mode, prompt=PromptId("p"), again=False, heard=STOP_HEARD)
+    assert parse(home, body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message="ok", permission_mode=mode, prompt_id="p")) == Stopped(SID, "ok", mode=mode, prompt=PromptId("p"), again=False, heard=STOP_HEARD, request=REQUEST)
     requested = parse(home, body(hook_event_name="PermissionRequest", permission_mode=mode, **call))
     assert requested == PermissionRequested(SID, at=12.5, request=REQUEST, on=Permission("Bash", {"command": "ls"}), mode=mode)
     finished = parse(home, body(hook_event_name="PostToolUse", permission_mode=mode, tool_use_id="t", tool_response={}, **call))
@@ -153,7 +153,7 @@ def test_a_hook_fired_inside_a_subagent_reports_no_mode_for_the_session(home: Ho
 @pytest.mark.parametrize("fields", [{}, {"permission_mode": None}, {"permission_mode": 3}])
 def test_a_hook_whose_mode_is_missing_or_not_a_string_still_moves_the_session(home: Home, fields: dict[str, object]) -> None:
     """The turn the Stop names is what matters; refusing it over its mode would lose that turn's telling."""
-    assert parse(home, body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message="ok", prompt_id="p", **fields)) == Stopped(SID, "ok", mode=None, prompt=PromptId("p"), again=False, heard=STOP_HEARD)
+    assert parse(home, body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message="ok", prompt_id="p", **fields)) == Stopped(SID, "ok", mode=None, prompt=PromptId("p"), again=False, heard=STOP_HEARD, request=REQUEST)
 
 
 # As Claude Code 2.1.280 posted it, captured live.

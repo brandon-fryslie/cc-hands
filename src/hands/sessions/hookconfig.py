@@ -19,6 +19,10 @@ PERMISSION_DEADLINE_SECONDS = float(PERMISSION_HOOK_TIMEOUT_SECONDS - REPLY_MARG
 # Every other hook posts and returns, so a daemon slower than this is reported as unreachable.
 POST_TIMEOUT_SECONDS = 2.0
 
+# A Stop is held until the transcript says whose it is, at most a second past it (UNTOLD, in the reducer), and is let
+# go once what that calls for is done: so the shim waits that much longer for it.
+STOP_POST_TIMEOUT_SECONDS = POST_TIMEOUT_SECONDS + 1.0
+
 # [LAW:one-source-of-truth] the module every hook runs, and the launcher, inside the plugin, that runs it under a
 # Python new enough for hands. The plugin has no venv, so the launcher puts the plugin's own src on the path.
 SHIM_MODULE = "hands.sessions.shim"
@@ -36,6 +40,8 @@ SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "Notification", "Permi
 
 # [LAW:dataflow-not-control-flow] what each hook declares beyond its command, as a table; the rest take Claude Code's defaults.
 _DECLARED_TIMEOUTS: Mapping[str, int] = {"PermissionRequest": PERMISSION_HOOK_TIMEOUT_SECONDS}
+# [LAW:dataflow-not-control-flow] how long the shim waits on the daemon for each hook that waits on it.
+_WAITS: Mapping[str, float] = {**_DECLARED_TIMEOUTS, "Stop": STOP_POST_TIMEOUT_SECONDS}
 # The notifications hands hears, by Claude Code's notification_type; the rest never spawn the shim.
 _MATCHERS: Mapping[str, str] = {"Notification": "idle_prompt"}
 # Fired for every tool call, so they run in the background and never hold the agent up. They are how the
@@ -45,7 +51,7 @@ _IN_BACKGROUND = frozenset({"PostToolUse", "PostToolUseFailure"})
 
 def post_timeout(event: str) -> float:
     """How long the shim waits on the daemon for this hook: a blocking hook as long as Claude Code lets it."""
-    return float(_DECLARED_TIMEOUTS.get(event, POST_TIMEOUT_SECONDS))
+    return float(_WAITS.get(event, POST_TIMEOUT_SECONDS))
 
 
 def plugin_hooks() -> dict[str, object]:
