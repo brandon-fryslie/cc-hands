@@ -99,7 +99,9 @@ everything after N. So:
   its own log.
 - **History is edited only in batches.** Trimming an old tool result invalidates the
   prefix from that point, so trims happen every K turns, all at once, one cache rebuild
-  accepted. Compaction has the same shape for the same reason.
+  accepted. Claude Code keeps sending the untrimmed history, so every trim made is
+  applied again to each later request, a pure function of the proxy's own log.
+  Compaction has the same shape for the same reason.
 - **Claude Code already caches the way we'd want.** In the newest recording the system
   prompt carries `cache_control: {type: ephemeral, ttl: 1h}` and a third breakpoint sits
   on the latest user message. The proxy can move or add breakpoints if the tail ever
@@ -162,7 +164,8 @@ mutable, and re-read constantly. So the store is worth building, in this shape:
   says and should not cost a re-summary.
 - **One sentence per ticket.** 132 × ~25 tokens is about 3K tokens: the whole backlog
   fits in a spoken-scale context, and the raw ticket is one call away.
-- **Layered.** A parent's summary is keyed by the hash of its children's summaries, up to
+- **Layered.** A parent's summary is keyed by the hash of its own text and its children's
+  summaries, up to
   the backlog, whose children are its epics and the tickets under no epic. Edit one ticket
   and only it and what sits above it recompute. "How's
   the observability epic going?" becomes a lookup.
@@ -300,18 +303,19 @@ investigate mid-build.
 5. **The LLM stage.** `build_llm` in `src/hands/voice/pipeline.py` gains a processor
    that sends the aggregated transcript to the brain's stdin and emits the wire's text
    deltas as the frames TTS consumes today. Barge-in forwards the interrupt (per ticket
-   3). `stay_silent` ends the turn with nothing said after it, as `run_llm=False` does
-   today; the draft tools complete their
+   3). `stay_silent` keeps today's meaning, nothing said after it (`run_llm=False` in
+   Pipecat); Claude Code sends every tool result back for another response, so under the
+   brain that is the LLM stage's to hold. The draft tools complete their
    effect regardless of interrupt and their readback is spoken from the outcome. Done
    when a person asks by voice and hears the answer, and the audit log shows the text
    came from the wire.
 6. **The tail.** What hands appends to the newest user message each turn, composed
    fresh from the registry: session status, and what the start-up note and `[hands]`
-   messages carry today. Stable body untouched; one turn's tokens uncached per turn is
-   the accepted cost.
+   messages carry today. Stable body untouched; placed after the block carrying Claude
+   Code's breakpoint, the tail costs the cache nothing (see "Owning the request").
 7. **The summary store.** A store keyed by content hash plus summariser version, one
-   sentence per item, layered so a parent's key is the hash of its children's
-   summaries. `read_backlog`, `read_ticket`, and `read_session` tools serve summaries
+   sentence per item, layered so a parent's key is the hash of its own text and its
+   children's summaries. `read_backlog`, `read_ticket`, and `read_session` tools serve summaries
    first and raw content on request. Summarisation runs off the voice path. Purpose:
    a sentence for any content-addressed thing, kept until the thing changes. Second
    consumer: narration's per-turn summaries, and lit itself if the summaries are
@@ -325,7 +329,7 @@ investigate mid-build.
    out and its prompt rewritten. Not pinnable until ticket 8 answers whether forks are
    reachable; if they are not, the patched build's second job is to expose one.
 10. **Work sessions through the proxy.** Fritter's `claude` shim sets
-    `ANTHROPIC_BASE_URL` (beside `FRITTER_SOCKET`, `src/hands/sessions/shim.py:90`) so
+    `ANTHROPIC_BASE_URL` (beside `FRITTER_SOCKET`, set in `fritter/main.go:70`) so
     every wrapped session flows through the proxy, and narration gets the model's
     stream instead of only Stop hooks. Observation only; separable.
 
