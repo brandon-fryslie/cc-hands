@@ -58,7 +58,7 @@ from hands.core.events import (
     ToolFinished,
     Waited,
 )
-from hands.core.session import Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, Unanswered, UnknownMode, Unnamed, Unreported, Untold
+from hands.core.session import Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, Unanswered, UnknownMode, Unnamed, Unreported, Untold, status_stamp
 from hands.core import status
 from hands.core.narration import reported_and_asked
 from hands.core.status import Report, Stamp
@@ -396,10 +396,11 @@ def _stopping(was: Session, stop: Unnamed) -> tuple[Turn, list[Effect]] | None:
         case (None, Told()) if not _heard(was, prompt):
             # A turn hands never had open, such as the one a session was in when it was attached.
             return _alone(was, stop)
-        case (None, Opened() | Untold()) if not _heard(was, prompt):
+        case (None, Opened() | Untold()) if not _heard(was, prompt) and status_stamp(was.state) is not None:
             # Whether it is the open or waiting turn's, gone on under a queued message whose record is unread, or a turn
             # after it whose record is unread, only the transcript says, and a Stop told as the wrong turn is heard as
-            # that turn's answer [LAW:one-source-of-truth]: never guessed from how hands sampled the status.
+            # that turn's answer [LAW:one-source-of-truth]: never guessed from how hands sampled the status. Held only
+            # where the transcript is read, which is once a status is (see Tails.catch_up): else no record would come.
             return None
         case (None, _):
             # [LAW:nothing-unseen] a Stop is a hook Claude Code fired: one that ends nothing is still a line.

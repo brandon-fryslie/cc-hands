@@ -1126,6 +1126,14 @@ def test_a_stop_heard_before_the_record_of_the_turn_after_the_waiting_one_tells_
     assert tellings == [*TOLD, Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two")]
 
 
+def test_a_stop_under_an_unnamed_id_in_a_session_with_no_status_read_is_not_held() -> None:
+    """Its transcript is read only once a status is, so no record would come to name it: held, Claude Code would wait
+    on its hook for nothing."""
+    before = holding(Unreported(), Opened(TURN))
+    stop = Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False, heard=STOP_HEARD, request=STOP_REQUEST)
+    assert reduce(before, stop) == (before, [Audit(Unmatched(ONE.id, NEXT)), LET_STOP])
+
+
 def test_a_held_stop_is_let_go_only_once_the_turn_it_tells_is_compared_and_the_one_queued_behind_it_marked() -> None:
     """Claude Code runs a queued message once the Stop hook returns: held until the record names it, the hook still
     returns after the mark, so the queued turn has changed nothing when it is taken."""

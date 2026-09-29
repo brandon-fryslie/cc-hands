@@ -12,7 +12,7 @@ from pipecat.adapters.schemas.direct_function import DirectFunctionWrapper
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Holding, Reply, Unmatched, Withdraw
-from hands.core.events import Joined, Prompted, Read, Stopped, Tick
+from hands.core.events import Joined, Prompted, Read, StatusReported, Stopped, Tick
 from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.daemon import cli
 from hands.sessions.audit import (
@@ -33,7 +33,7 @@ from hands.sessions.audit import (
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.tools import Tool, audited, draft_tools
-from hands.core.status import Stamp
+from hands.core.status import Busy, Report, Stamp
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
 STOP_HEARD = Stamp(1500)
@@ -189,6 +189,8 @@ async def test_a_stop_held_for_its_record_is_a_line_as_it_is_heard_and_again_onc
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    # Its transcript is read once a status is, so a record could name the Stop.
+    await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
     stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
     await sessions.apply(stop)
     assert recorded[-2:] == [Applied(stop), Holding(stop.session, stop.prompt)]
@@ -204,6 +206,8 @@ async def test_a_stop_hook_is_answered_only_once_its_stop_is_decided() -> None:
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    # Its transcript is read once a status is, so a record could name the Stop.
+    await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
     hook = asyncio.create_task(sessions.ask(Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)))
     await asyncio.sleep(0)
     assert not hook.done()
