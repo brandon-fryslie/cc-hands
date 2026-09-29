@@ -107,7 +107,7 @@ class Statuses:
         # [LAW:no-silent-failure] said once each time the reason changes, rather than every read, and as an error: the
         # status is what ends a turn no Stop ends, so without it a turn stopped at the keyboard runs on until one does.
         if self._unread.get(member.id) != why:
-            logger.error(f"no status for session {member.id}: {why}, so a turn stopped with Escape is not heard to end")
+            logger.error(f"no status for session {member.id}: {why}, so its transcript is read only when a Stop tells a turn, and a turn stopped with Escape or gone on under a queued message is not heard")
         self._unread[member.id] = why
 
 

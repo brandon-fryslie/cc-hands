@@ -358,7 +358,8 @@ def _opens(state: SessionState, turn: Turn, prompt: PromptId, written: Stamp | N
             # the one running.
             return not _names(turn, prompt) and (idled is None or (written is not None and written >= idled))
         case Unreported():
-            # No status says whether any turn runs. The tail reads no session before its status (see Tails.catch_up).
+            # No status says whether any turn runs. The catch-up reads no session before its status (see Tails.catch_up); a
+            # Stop's telling may, of the turn that Stop ends.
             return False
 
 

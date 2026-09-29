@@ -176,7 +176,7 @@ def logged(read: Callable[[], object]) -> list[str]:
 def test_why_a_status_cannot_be_read_is_said_once_not_every_read(tmp_path: Path) -> None:
     live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
     warnings = logged(lambda: [live.heard(statuses) for _ in range(3)])
-    assert len(warnings) == 1 and "keeps no status" in warnings[0]
+    assert len(warnings) == 1 and "keeps no status" in warnings[0] and "transcript is read only when a Stop tells a turn" in warnings[0]
 
 
 def test_a_status_file_removed_as_its_session_exits_is_not_said(tmp_path: Path) -> None:

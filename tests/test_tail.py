@@ -912,3 +912,16 @@ async def test_a_session_followed_from_mid_turn_works_under_its_own_prompt_and_i
     assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p4"), "Done.")
     live = sessions.live_session(SID)
     assert live is not None and live.turn == Told(PromptId("p4"))
+
+
+async def test_a_first_record_still_being_written_explains_no_reading(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(RUNNING[:40])
+    tails = Tails(Registry([member(transcript)]))
+    said: list[str] = []
+    sink = logger.add(lambda message: said.append(message.record["message"]), level="INFO", filter="hands.sessions.tail")
+    try:
+        assert [await tails.catch_up() for _ in range(3)] == [[], [], []]
+    finally:
+        logger.remove(sink)
+    assert said == []

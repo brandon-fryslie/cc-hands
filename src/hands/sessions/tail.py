@@ -290,7 +290,7 @@ class Tails:
             raise
         # [LAW:no-ambient-temporal-coupling] a record is whole only once its newline is written, so the bytes after
         # the last newline stay unread and unconsumed until the write that ends them.
-        # Read from its start, the file holds what was written before hands followed the session.
+        # Read from its start: every turn before the one the file ends in is over by now.
         history = following.offset == 0
         *complete, unfinished = raw.split(b"\n")
         following.offset += len(raw) - len(unfinished)
@@ -314,7 +314,7 @@ class Tails:
         # hands followed the session, and says nothing to anyone.
         current = following.current()
         live = [event for number, event in heard if not history or number >= current]
-        if history:
+        if history and heard:
             # [LAW:nothing-unseen] the decision explained: what was held back, and the turn the reading starts from.
             logger.info(f"read the transcript of session {session} from its start: {len(heard) - len(live)} of {len(heard)} events are of turns before the one it is in, which goes by {sorted(following.reading.ids)}")
         self._transcribed += live
