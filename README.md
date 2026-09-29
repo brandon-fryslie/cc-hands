@@ -72,7 +72,8 @@ mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts �
 The LLM is a backend variant: `HANDS_LLM=anthropic`, the default, is Claude Sonnet 5, keyed by
 `ANTHROPIC_API_KEY` or, when that is not set, by the keychain's `HANDS_LLM_ANT_KEY`; `HANDS_LLM=openai`
 is `gpt-4.1-mini` through OpenAI's API, keyed by `OPENAI_API_KEY`. `HANDS_LLM_MODEL` names another
-model for either. `HANDS_LLM_URL` moves either to another server that speaks its API, and the two take
+model for either. `HANDS_LLM_URL` moves either to another server that speaks its API, keyed only by
+the environment's key (the keychain's key is Anthropic's own and goes nowhere else), and the two take
 it differently: the Anthropic client appends `/v1/messages`, so its URL has no `/v1`
 (`https://api-chicago.codexapi.pro`), while the OpenAI client appends `/chat/completions`, so its URL
 usually ends in `/v1` (`https://api-chicago.codexapi.pro/v1`: the bare host answers 404). The server
@@ -149,7 +150,7 @@ uv run python -m hands.sessions.hookconfig > plugin/hooks/hooks.json
 
 ```
 uv sync
-uv run hands run                        # Claude, keyed from the keychain's HANDS_LLM_ANT_KEY; hold Right Shift in any app to talk, release to send; q in its terminal quits
+uv run hands run                        # Claude, keyed by ANTHROPIC_API_KEY, else the keychain's HANDS_LLM_ANT_KEY; hold Right Shift in any app to talk, release to send; q in its terminal quits
 HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is

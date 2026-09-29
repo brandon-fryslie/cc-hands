@@ -33,6 +33,24 @@ def test_anthropic_url_and_model_come_from_the_environment(monkeypatch: pytest.M
     assert backend_from_env() == AnthropicBackend(base_url="https://api-chicago.codexapi.pro", api_key="k", model="claude-other")
 
 
+def test_the_keychain_key_never_leaves_for_another_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HANDS_LLM", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("HANDS_LLM_URL", "https://api-chicago.codexapi.pro")
+    monkeypatch.setattr(run, "keychain_password", {"HANDS_LLM_ANT_KEY": "anthropic-own"}.get)
+    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set"):
+        backend_from_env()
+
+
+def test_an_anthropic_url_with_its_own_v1_stops_at_the_door(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HANDS_LLM", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    for url in ("http://localhost:8080/v1", "https://api-chicago.codexapi.pro/v1/"):
+        monkeypatch.setenv("HANDS_LLM_URL", url)
+        with pytest.raises(SystemExit, match="ends in /v1"):
+            backend_from_env()
+
+
 def test_the_local_variant_is_gone(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HANDS_LLM", "local")
     with pytest.raises(SystemExit, match="HANDS_LLM='local' is not one of: anthropic, openai"):

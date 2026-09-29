@@ -103,11 +103,15 @@ def backend_from_env() -> LLMBackend:
             model=os.environ.get("HANDS_LLM_MODEL", OPENAI_MODEL),
         )
     if choice == "anthropic":
-        return AnthropicBackend(
-            base_url=os.environ.get("HANDS_LLM_URL", ANTHROPIC_URL),
-            api_key=_environment_key("ANTHROPIC_API_KEY") or _keychain_key(ANTHROPIC_KEYCHAIN_SERVICE, "ANTHROPIC_API_KEY", choice),
-            model=os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL),
-        )
+        model = os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL)
+        url = os.environ.get("HANDS_LLM_URL")
+        if url is None:
+            key = _environment_key("ANTHROPIC_API_KEY") or _keychain_key(ANTHROPIC_KEYCHAIN_SERVICE, "ANTHROPIC_API_KEY", choice)
+            return AnthropicBackend(base_url=ANTHROPIC_URL, api_key=key, model=model)
+        # The keychain's key is Anthropic's own, so it is never sent to another server: that server's key is named in the environment.
+        if url.rstrip("/").endswith("/v1"):
+            sys.exit(f"HANDS_LLM_URL={url!r} ends in /v1, and the Anthropic client appends /v1/messages itself; drop the /v1.")
+        return AnthropicBackend(base_url=url, api_key=_key("ANTHROPIC_API_KEY", choice), model=model)
     sys.exit(f"HANDS_LLM={choice!r} is not one of: anthropic, openai.")
 
 
