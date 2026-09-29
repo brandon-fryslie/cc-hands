@@ -1,16 +1,14 @@
 """The brain: hands' tools over MCP as a Claude Code client reaches them, and the brain's process as hands drives it."""
 
+import asyncio
 import json
-import os
-import stat
-import sys
 from pathlib import Path
 
 import aiohttp
 import pytest
 
 from hands.brain.mcp import McpServer, serve_mcp
-from hands.brain.process import BUILTIN_TOOLS, SLIM, BrainGone, Launch, NotLoggedIn, command, environment, start
+from hands.brain.process import BUILTIN_TOOLS, SLIM, BrainGone, Launch, NotLoggedIn, command, environment, logged_in, start, workdir
 from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainReady, Called, Entry, McpConnected
 from hands.daemon.run import mind
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend
@@ -34,7 +32,7 @@ async def broken() -> Result:
 
 
 async def rpc(server: McpServer, message: dict[str, object]) -> tuple[int, object]:
-    async with aiohttp.ClientSession() as client, client.post(server.url, json=message) as reply:
+    async with aiohttp.ClientSession() as client, client.post(server.url, json=message, headers={"Authorization": f"Bearer {server.token}"}) as reply:
         return reply.status, (await reply.json() if reply.status == 200 else None)
 
 
@@ -71,14 +69,29 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
         assert unknown == {"jsonrpc": "2.0", "id": 3, "error": {"code": -32602, "message": "no tool resume"}}
         _, unasked = await rpc(server, {"jsonrpc": "2.0", "id": 4, "method": "resources/list"})
         assert unasked == {"jsonrpc": "2.0", "id": 4, "error": {"code": -32601, "message": "no method resources/list"}}
-        async with aiohttp.ClientSession() as client, client.get(server.url) as stream:
+        async with aiohttp.ClientSession() as client, client.get(server.url, headers={"Authorization": f"Bearer {server.token}"}) as stream:
             assert stream.status == 405
     finally:
         await server.close()
 
 
+async def test_a_request_without_the_brains_token_reaches_no_tool() -> None:
+    recorded: list[Entry] = []
+    server = await serve_mcp([audited(tool(echo), recorded.append)], recorded.append)
+    call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "hi"}}}
+    try:
+        async with aiohttp.ClientSession() as client:
+            # What a web page can send with no preflight: a text/plain POST, with no token or the wrong one.
+            for headers in ({"Content-Type": "text/plain"}, {"Authorization": "Bearer guessed"}):
+                async with client.post(server.url, data=json.dumps(call), headers=headers) as reply:
+                    assert reply.status == 401
+        assert recorded == []
+    finally:
+        await server.close()
+
+
 def launch(tmp: Path) -> Launch:
-    return Launch(tmp / "brain", tmp / "brain" / "cwd", "claude-sonnet-5", "You are hands.", "http://127.0.0.1:1", '{"mcpServers": {}}')
+    return Launch(tmp / "brain", workdir(tmp / "brain"), "claude-sonnet-5", "You are hands.", "http://127.0.0.1:1", '{"mcpServers": {}}')
 
 
 def test_the_brain_is_slim_strict_and_never_asks_and_runs_on_its_own_login_through_the_proxy(tmp_path: Path) -> None:
@@ -92,38 +105,6 @@ def test_the_brain_is_slim_strict_and_never_asks_and_runs_on_its_own_login_throu
     assert argv[-1] != ",".join(BUILTIN_TOOLS)
     env = environment(tmp_path / "brain", "http://127.0.0.1:1", {"PATH": "/bin", "ANTHROPIC_API_KEY": "sk", "CLAUDE_CODE_OAUTH_TOKEN": "t", "ANTHROPIC_BASE_URL": "http://elsewhere"})
     assert env == {"PATH": "/bin", **SLIM, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
-
-
-INIT = {"type": "system", "subtype": "init", "session_id": "b1", "model": "claude-sonnet-5", "tools": ["Read", "mcp__hands__list_sessions"], "mcp_servers": [{"name": "hands", "status": "connected"}]}
-RESULT = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 1, "duration_ms": 812, "result": "Two."}
-
-
-@pytest.fixture
-def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A `claude` first on PATH that reports its login from LOGGED_IN, and as the brain answers each stdin line with RESULT."""
-    script = tmp_path / "bin" / "claude"
-    script.parent.mkdir()
-    script.write_text(f"""#!{sys.executable}
-import json, os, sys
-if sys.argv[1:3] == ["auth", "status"]:
-    print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1"}}))
-    sys.exit(0)
-if "json" in sys.argv and "stream-json" not in sys.argv:
-    turn = sys.stdin.read()
-    print(json.dumps({{"type": "result", "is_error": turn == "fail", "result": "Summed: " + turn}}))
-    sys.exit(0)
-print(json.dumps({INIT!r}), flush=True)
-print("not json", file=sys.stderr, flush=True)
-for line in sys.stdin:
-    if json.loads(line)["message"]["content"] == "die":
-        sys.exit(3)
-    print(json.dumps({{"type": "stream_event"}}), flush=True)
-    print(json.dumps({RESULT!r}), flush=True)
-""")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{script.parent}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("LOGGED_IN", "1")
-    return script
 
 
 async def test_a_turn_is_written_to_stdin_and_ends_at_the_result_line_with_both_ends_in_the_log(tmp_path: Path, fake_claude: Path) -> None:
@@ -148,31 +129,59 @@ async def test_a_turn_is_written_to_stdin_and_ends_at_the_result_line_with_both_
     ]
 
 
-async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_how_it_ended(tmp_path: Path, fake_claude: Path) -> None:
+async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_ended(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
-    with pytest.raises(BrainGone, match="exited"):
+    with pytest.raises(BrainGone, match="output ended"):
         await brain.ask("die")
     assert await brain.exited() == 3
+    with pytest.raises(BrainGone, match="before it was asked"):
+        await brain.ask("anyone?")
+    # The watch that saw it die and the stop at teardown both wait on the one exit.
+    await brain.stop()
     assert [entry for entry in recorded if isinstance(entry, BrainExited)] == [BrainExited(3, "not json")]
 
 
-async def test_a_brain_with_no_login_is_never_started_and_the_error_names_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LOGGED_IN", "0")
+async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_result_and_the_next_turn_gets_its_own(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
+    brain = await start(launch(tmp_path), recorded.append)
+    try:
+        asked = asyncio.create_task(brain.ask("slow"))
+        await asyncio.sleep(0.1)
+        asked.cancel()
+        assert await brain.ask("and now?") == BrainAnswered("success", False, 1, 812)
+    finally:
+        await brain.stop()
+    turns = [entry for entry in recorded if isinstance(entry, BrainAsked | BrainAnswered)]
+    assert turns == [BrainAsked("slow"), BrainAnswered("success", False, 1, 812), BrainAsked("and now?"), BrainAnswered("success", False, 1, 812)]
+
+
+async def test_a_brain_whose_output_breaks_fails_the_turn_is_killed_and_says_why(tmp_path: Path, fake_claude: Path) -> None:
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path), recorded.append)
+    with pytest.raises(BrainGone, match="output ended"):
+        await brain.ask("flood")
+    with pytest.raises(ValueError):
+        await brain.exited()
+    assert [entry.code for entry in recorded if isinstance(entry, BrainExited)] == [-9]
+
+
+def test_a_brain_with_no_login_is_refused_naming_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    logged_in(tmp_path / "brain", "http://127.0.0.1:1")
+    monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(NotLoggedIn, match=f"CLAUDE_CONFIG_DIR={tmp_path / 'brain'} claude auth login"):
-        await start(launch(tmp_path), recorded.append)
-    assert recorded == []
+        logged_in(tmp_path / "brain", "http://127.0.0.1:1")
 
 
 def test_the_brain_config_is_one_line_of_json_naming_only_hands() -> None:
-    server = McpServer(url="http://127.0.0.1:9/mcp", runner=None)  # pyright: ignore[reportArgumentType]
-    assert json.loads(server.config()) == {"mcpServers": {"hands": {"type": "http", "url": "http://127.0.0.1:9/mcp"}}}
+    server = McpServer(url="http://127.0.0.1:9/mcp", token="t", runner=None)  # pyright: ignore[reportArgumentType]
+    assert json.loads(server.config()) == {"mcpServers": {"hands": {"type": "http", "url": "http://127.0.0.1:9/mcp", "headers": {"Authorization": "Bearer t"}}}}
 
 
 async def test_the_summariser_on_the_brain_asks_a_one_shot_claude_on_the_same_login_and_says_a_failed_answer(tmp_path: Path, fake_claude: Path) -> None:
     summarise = summariser(ClaudeCodeBackend(base_url="https://api.anthropic.com", model="claude-sonnet-5", config_dir=tmp_path / "brain"), "Sum it up.", 200, 10.0)
-    assert await summarise("the tests ran") == "Summed: the tests ran"
+    # In the brain's own empty directory, never the daemon's.
+    assert await summarise("the tests ran") == f"Summed: the tests ran in {(tmp_path / 'brain' / 'cwd').resolve()}"
     with pytest.raises(SummaryFailed, match="claude -p failed"):
         await summarise("fail")
 
@@ -187,11 +196,3 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
         [launched] = [entry for entry in recorded if isinstance(entry, BrainLaunched)]
         assert launched.cwd == tmp_path / "brain" / "cwd"
     assert isinstance(recorded[-1], BrainExited)
-
-
-async def test_a_run_on_a_brain_with_no_login_stops_naming_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LOGGED_IN", "0")
-    claude = ClaudeCodeBackend(base_url="https://api.anthropic.com", model="claude-sonnet-5", config_dir=tmp_path / "brain")
-    with pytest.raises(SystemExit, match="claude auth login"):
-        async with mind(claude, [], "http://127.0.0.1:1", lambda _: None):
-            pass

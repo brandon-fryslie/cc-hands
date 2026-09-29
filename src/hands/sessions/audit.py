@@ -109,8 +109,8 @@ class BrainAnswered:
 
     subtype: str
     is_error: bool
-    turns: int | None
-    duration_ms: int | None
+    turns: int
+    duration_ms: int
 
 
 @dataclass(frozen=True)

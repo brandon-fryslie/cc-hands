@@ -5,11 +5,16 @@
 The second adapter over the tool bodies in hands.voice.tools, beside Pipecat's. It speaks the part of MCP a tools-only
 server needs: initialize, ping, tools/list, and tools/call, each POSTed as JSON-RPC and answered as JSON. It opens no
 event stream of its own, so a GET is refused, as the transport allows.
+
+Its tools type into sessions and answer permissions, and a port on 127.0.0.1 is reachable by every local process and
+every web page, so each request carries a token only the brain's --mcp-config holds.
 """
 
+import hmac
 import inspect
 import json
-from collections.abc import Mapping, Sequence
+import secrets
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -33,19 +38,29 @@ PARSE_ERROR = -32700
 @dataclass(frozen=True)
 class McpServer:
     url: str
+    token: str
     runner: web.AppRunner
 
     async def close(self) -> None:
         await self.runner.cleanup()
 
     def config(self) -> str:
-        """The --mcp-config that points a Claude Code at this server and at nothing else."""
-        return json.dumps({"mcpServers": {SERVER_NAME: {"type": "http", "url": self.url}}})
+        """The --mcp-config that points a Claude Code at this server and at nothing else, with the token that lets it in."""
+        return json.dumps({"mcpServers": {SERVER_NAME: {"type": "http", "url": self.url, "headers": {"Authorization": f"Bearer {self.token}"}}}})
 
 
 async def serve_mcp(tools: Sequence[Tool], record: Record) -> McpServer:
     """Listen on a free local port until the returned server is closed."""
     by_name = {tool.name: tool for tool in tools}
+    token = secrets.token_urlsafe(32)
+
+    @web.middleware
+    async def admitted(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> web.StreamResponse:
+        # [LAW:single-enforcer] the one door: nothing reaches a tool without the token.
+        if not hmac.compare_digest(request.headers.get("Authorization", ""), f"Bearer {token}"):
+            logger.warning(f"the MCP server refused a {request.method} without its token, from {request.remote} (Origin {request.headers.get('Origin')})")
+            return web.Response(status=401)
+        return await handler(request)
 
     async def post(request: web.Request) -> web.Response:
         try:
@@ -105,7 +120,7 @@ async def serve_mcp(tools: Sequence[Tool], record: Record) -> McpServer:
     async def refused(_request: web.Request) -> web.Response:
         return web.Response(status=405, headers={"Allow": "POST"})
 
-    app = web.Application()
+    app = web.Application(middlewares=[admitted])
     app.router.add_post(PATH, post)
     app.router.add_route("*", PATH, refused)
     # [LAW:no-ambient-temporal-coupling] a client that hangs up mid-call does not cancel it: a tool whose effect is half
@@ -115,7 +130,7 @@ async def serve_mcp(tools: Sequence[Tool], record: Record) -> McpServer:
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
     host, port = runner.addresses[0][:2]
-    return McpServer(url=f"http://{host}:{port}{PATH}", runner=runner)
+    return McpServer(url=f"http://{host}:{port}{PATH}", token=token, runner=runner)
 
 
 def _params(message: Mapping[str, object]) -> Mapping[str, object]:

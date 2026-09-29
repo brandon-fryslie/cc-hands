@@ -1,5 +1,7 @@
 """Fixtures more than one test module needs."""
 
+import os
+import stat
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -99,3 +101,41 @@ async def chat_server() -> AsyncIterator[ServeChat]:
     yield serve
     for runner in runners:
         await runner.cleanup()
+
+
+INIT = {"type": "system", "subtype": "init", "session_id": "b1", "model": "claude-sonnet-5", "tools": ["Read", "mcp__hands__list_sessions"], "mcp_servers": [{"name": "hands", "status": "connected"}]}
+RESULT = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 1, "duration_ms": 812, "result": "Two."}
+
+
+@pytest.fixture
+def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A `claude` first on PATH that reports its login from LOGGED_IN, and as the brain answers each stdin line with RESULT."""
+    script = tmp_path / "bin" / "claude"
+    script.parent.mkdir()
+    script.write_text(f"""#!{sys.executable}
+import json, os, sys, time
+if sys.argv[1:3] == ["auth", "status"]:
+    print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1"}}))
+    sys.exit(0)
+if "json" in sys.argv and "stream-json" not in sys.argv:
+    turn = sys.stdin.read()
+    print(json.dumps({{"type": "result", "is_error": turn == "fail", "result": "Summed: " + turn + " in " + os.getcwd()}}))
+    sys.exit(0)
+print(json.dumps({INIT!r}), flush=True)
+print("not json", file=sys.stderr, flush=True)
+for line in sys.stdin:
+    content = json.loads(line)["message"]["content"]
+    if content == "die":
+        sys.exit(3)
+    if content == "slow":
+        time.sleep(0.5)
+    if content == "flood":
+        print("x" * (17 * 1024 * 1024), flush=True)
+        time.sleep(60)
+    print(json.dumps({{"type": "stream_event"}}), flush=True)
+    print(json.dumps({RESULT!r}), flush=True)
+""")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{script.parent}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("LOGGED_IN", "1")
+    return script

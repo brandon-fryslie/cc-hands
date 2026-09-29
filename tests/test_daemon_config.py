@@ -36,13 +36,21 @@ def test_anthropic_url_and_model_come_from_the_environment(monkeypatch: pytest.M
     assert backend_from_env(HOME) == AnthropicBackend(base_url="https://api-chicago.codexapi.pro", api_key="k", model="claude-other")
 
 
-def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     for var in ("HANDS_LLM_URL", "HANDS_LLM_MODEL", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HANDS_LLM", "claude")
     assert backend_from_env(HOME) == ClaudeCodeBackend(base_url=UPSTREAM, model=ANTHROPIC_MODEL, config_dir=Path("/Users/someone/.hands/brain"))
     monkeypatch.setenv("HANDS_LLM_MODEL", "claude-other")
     assert backend_from_env(HOME).model == "claude-other"
+
+
+def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
+    monkeypatch.delenv("HANDS_LLM_URL", raising=False)
+    monkeypatch.setenv("HANDS_LLM", "claude")
+    monkeypatch.setenv("LOGGED_IN", "0")
+    with pytest.raises(SystemExit, match="CLAUDE_CONFIG_DIR=/Users/someone/.hands/brain claude auth login"):
+        backend_from_env(HOME)
 
 
 def test_a_url_for_the_brain_is_refused_rather_than_ignored(monkeypatch: pytest.MonkeyPatch) -> None:

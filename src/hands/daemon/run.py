@@ -73,7 +73,7 @@ from hands.voice.threads import off_loop
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.tools import Tool, audited, intermediary_tools
 from hands.brain.mcp import serve_mcp
-from hands.brain.process import Brain, Launch, NotLoggedIn, start as start_brain
+from hands.brain.process import Brain, Launch, NotLoggedIn, logged_in, start as start_brain, workdir
 
 # The SDK appends /v1/messages to this, so an Anthropic-compatible server's URL has no /v1 of its own.
 ANTHROPIC_URL = "https://api.anthropic.com"
@@ -126,6 +126,11 @@ def backend_from_env(home: Home) -> LLMBackend:
         # named for it would be ignored, so it is refused instead.
         if _environment_url() is not None:
             sys.exit("HANDS_LLM_URL does not apply to HANDS_LLM=claude, whose requests go through hands' proxy to Anthropic's API; unset it.")
+        # A brain with no login is refused here, before the voice loads, rather than once every turn has failed.
+        try:
+            logged_in(home.brain, UPSTREAM)
+        except NotLoggedIn as error:
+            sys.exit(f"hands: {error}")
         return ClaudeCodeBackend(base_url=UPSTREAM, model=os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL), config_dir=home.brain)
     sys.exit(f"HANDS_LLM={choice!r} is not one of: anthropic, openai, claude.")
 
@@ -204,11 +209,8 @@ async def mind(backend: LLMBackend, tools: Sequence[Tool], proxy_url: str, recor
         case ClaudeCodeBackend(model=model, config_dir=config_dir):
             server = await serve_mcp(tools, record)
             try:
-                launch = Launch(config_dir, config_dir / "cwd", model, INTERMEDIARY_INSTRUCTION, proxy_url, server.config())
-                try:
-                    brain = await start_brain(launch, record)
-                except NotLoggedIn as error:
-                    sys.exit(f"hands: {error}")
+                launch = Launch(config_dir, workdir(config_dir), model, INTERMEDIARY_INSTRUCTION, proxy_url, server.config())
+                brain = await start_brain(launch, record)
                 try:
                     yield (Watch("the brain", lambda: outlived(brain)),)
                 finally:
