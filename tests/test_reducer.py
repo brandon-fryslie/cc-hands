@@ -7,6 +7,7 @@ import pytest
 
 from hands.core.effects import (
     AfterEnd,
+    Unmatched,
     Audit,
     Deny,
     Effect,
@@ -112,8 +113,8 @@ def live(registry: Registry) -> Session:
             raise AssertionError("session one ended")
 
 
-def holding(state: SessionState, turn: Turn = Told(), dialog: Dialog | None = None) -> Registry:
-    return registry(Session(ONE, state, mode=None, turn=turn, dialog=dialog))
+def holding(state: SessionState, turn: Turn = Told(), dialog: Dialog | None = None, earlier: frozenset[PromptId] = frozenset()) -> Registry:
+    return registry(Session(ONE, state, mode=None, turn=turn, dialog=dialog, earlier=earlier))
 
 
 def in_turn(state: SessionState = BUSY, dialog: Dialog | None = None, turn: PromptId = TURN) -> Registry:
@@ -211,7 +212,7 @@ def test_a_prompt_inside_an_open_turn_leaves_the_mark_where_that_turn_began(befo
 
 def test_a_prompt_heard_after_the_busy_it_set_was_read_opens_and_marks_its_turn() -> None:
     """Claude Code sets busy before a prompt's hooks run (2.1.282), and the status can be read before the hook lands."""
-    assert reduce(holding(BUSY, Told(TURN)), Prompted(ONE.id, at=5.0, mode=None, prompt=NEXT)) == (in_turn(turn=NEXT), [Snapshot(ONE.id, ONE.cwd)])
+    assert reduce(holding(BUSY, Told(TURN)), Prompted(ONE.id, at=5.0, mode=None, prompt=NEXT)) == (holding(BUSY, Opened(NEXT), earlier=frozenset({TURN})), [Snapshot(ONE.id, ONE.cwd)])
 
 
 @pytest.mark.parametrize("before", [holding(IDLE), holding(BUSY), in_turn()])
@@ -676,24 +677,25 @@ def test_a_stop_is_told_as_the_turn_its_hook_names() -> None:
 
 def test_the_stop_of_a_turn_over_before_the_next_prompt_ends_nothing() -> None:
     """Applied late, it would end the turn now open and spend its mark."""
-    after, effects = reduce(in_turn(turn=NEXT), Stopped(ONE.id, "Done.", mode="plan", prompt=TURN, again=False))
-    assert effects == [Note(ModeChanged(ONE.id, "plan"))] and live(after).turn == Opened(NEXT)
+    late = Stopped(ONE.id, "Done.", mode="plan", prompt=TURN, again=False)
+    after, effects = reduce(in_turn(turn=NEXT), late)
+    assert effects == [Note(ModeChanged(ONE.id, "plan")), Audit(Unmatched(late))] and live(after).turn == Opened(NEXT)
 
 
-@pytest.mark.parametrize(("turn", "again"), [(TURN, False), (None, False), (PromptId("q"), True)])
+@pytest.mark.parametrize(("turn", "again", "earlier"), [(TURN, False, frozenset({TURN})), (None, False, frozenset[PromptId]()), (PromptId("q"), True, frozenset[PromptId]())])
 @pytest.mark.parametrize("state", [IDLE, BUSY])
-def test_a_stop_with_no_turn_open_tells_the_turn_it_names(state: SessionState, turn: PromptId | None, again: bool) -> None:
+def test_a_stop_with_no_turn_open_tells_the_turn_it_names(state: SessionState, turn: PromptId | None, again: bool, earlier: frozenset[PromptId]) -> None:
     """The turn a session was in when hands attached to it, one it was never heard to open, or the last one stopping
     again after another Stop hook blocked its Stop, which Claude Code stops under the same id."""
     after, effects = reduce(holding(state, Told(turn)), Stopped(ONE.id, "Done.", mode=None, prompt=PromptId("q"), again=again))
-    assert after == holding(state, Told(PromptId("q")))
+    assert after == holding(state, Told(PromptId("q")), earlier=earlier)
     # The turn stopping again is read against where its last Stop's reading ended: no prompt marked where it went on.
     assert effects == [Compare(ONE.id, again), Summarise(ONE.id, PromptId("q"), "Done.")]
 
 
 def test_the_stop_of_a_turn_already_told_ends_nothing_and_keeps_the_idle_period_it_lands_in() -> None:
     """An interrupted turn's Stop can land after it was told: told again, it would be heard twice."""
-    assert reduce(holding(IDLE, Told(TURN)), STOP) == (holding(IDLE, Told(TURN)), [])
+    assert reduce(holding(IDLE, Told(TURN)), STOP) == (holding(IDLE, Told(TURN)), [Audit(Unmatched(STOP))])
 
 
 def test_a_stop_naming_an_id_the_open_turn_does_not_go_by_leaves_its_end_to_claude_code() -> None:
@@ -991,11 +993,11 @@ def test_a_message_queued_while_a_turn_ran_is_its_own_turn_named_from_when_it_is
     turn's Stop lands Claude Code runs it under a new id no hook names. It is marked while that Stop's hook holds Claude
     Code, after the turn before is handed over to be told."""
     state, tellings = told([QUEUED, STOP, taken(NEXT, Stamp(1500))], in_turn(RUNNING))
-    assert state == in_turn(RUNNING, turn=NEXT)
+    assert state == holding(RUNNING, Opened(NEXT), earlier=frozenset({TURN}))
     assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done"), Snapshot(ONE.id, ONE.cwd)]
     state, tellings = told([Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False), said(status.Idle(), at=14.0), Tick(20.0)], state)
     assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two")]
-    assert state == holding(Idle(Stamp(2000), due=14.0 + IDLE_NUDGE_SECONDS, after=NEXT), Told(NEXT))
+    assert state == holding(Idle(Stamp(2000), due=14.0 + IDLE_NUDGE_SECONDS, after=NEXT), Told(NEXT), earlier=frozenset({TURN}))
 
 
 @pytest.mark.parametrize(("written", "opens"), [(Stamp(2003), True), (Stamp(2000), True), (Stamp(1990), False), (None, False)])
@@ -1038,7 +1040,7 @@ def test_a_command_claude_code_runs_at_the_prompt_is_running_while_it_runs_and_t
     at_prompt = holding(Idle(Stamp(2000), due=70.0, after=TURN), Told(TURN))
     compact = PromptId("compact")
     state, _ = told([said(Busy(), 3000, at=20.0), taken(compact, Stamp(3001), at=20.1), Joined(ONE, "compact")], at_prompt)
-    assert state == holding(Running(Busy(), Stamp(3000), idled=Stamp(2000)), Opened(compact))
+    assert state == holding(Running(Busy(), Stamp(3000), idled=Stamp(2000)), Opened(compact), earlier=frozenset({TURN}))
     state, tellings = told([said(status.Idle(), 9000, at=30.0), Read(ONE.id, Stamp(9000 + UNTOLD))], state)
     assert (live(state).state, tellings) == (Idle(Stamp(9000), due=30.0 + IDLE_NUDGE_SECONDS, after=compact), [Compare(ONE.id, again=False), Summarise(ONE.id, compact, None)])
 
@@ -1066,13 +1068,47 @@ def test_followed_mid_turn_it_works_under_its_own_prompt_once_its_record_is_read
     state, tellings = told([Stopped(ONE.id, "done", mode=None, prompt=TURN, again=False)], state)
     assert (live(state).turn, tellings) == (Told(TURN), [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done")])
     state, _ = told([taken(NEXT, Stamp(9000), at=20.0)], state)
-    assert state == holding(Running(Busy(), Stamp(3000), idled=None), Opened(NEXT))
+    assert state == holding(Running(Busy(), Stamp(3000), idled=None), Opened(NEXT), earlier=frozenset({TURN}))
 
 
-@pytest.mark.parametrize("stop", [Stopped(ONE.id, "other", mode=None, prompt=NEXT, again=False), Stopped(ONE.id, "done", mode=None, prompt=TURN, again=False)])
-def test_a_stop_while_a_telling_waits_tells_that_turn_and_takes_no_name_from_it(stop: Stopped) -> None:
-    state, _ = told([said(status.Idle()), stop])
-    assert live(state).turn == Told(TURN)
+@pytest.mark.parametrize("between", [[], [said(Busy(), 2100, at=10.5)], [said(Busy(), 2100, at=10.5), said(status.Idle(), 2600, at=11.0)]])
+def test_a_stop_under_an_id_no_record_has_named_while_a_telling_waits_ends_nothing_and_is_audited(between: list[Event]) -> None:
+    """Whether it is the waiting turn's, gone on under a queued message, or a turn after it, only the transcript says:
+    however the status was sampled between, it tells nothing, and the waiting turn is told by its own end."""
+    before, _ = told([said(status.Idle()), *between])
+    other = Stopped(ONE.id, "other", mode=None, prompt=NEXT, again=False)
+    assert reduce(before, other) == (before, [Audit(Unmatched(other))])
+
+
+def test_a_late_stop_of_a_turn_told_before_the_last_one_ends_nothing_and_is_audited() -> None:
+    """p1's Stop delayed past p2's prompt, which tells p1, and past p2's own Stop: told again, p1 would be heard twice."""
+    before, tellings = told([PROMPT, Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False)])
+    assert tellings == [*TOLD, Snapshot(ONE.id, ONE.cwd), Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two")]
+    assert reduce(before, STOP) == (before, [Audit(Unmatched(STOP))])
+
+
+@pytest.mark.parametrize(("events", "closing"), [
+    ([Continued(ONE.id, was=TURN, now=NEXT), Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False)], "two"),
+    ([Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False), Continued(ONE.id, was=TURN, now=NEXT), Read(ONE.id, WINDOW)], None),
+])
+def test_a_turn_that_went_on_under_a_queued_message_is_told_once_under_that_message_s_id(events: list[Event], closing: str | None) -> None:
+    """The Continued record can be read after the idle that ended the turn: the turn waiting to be told takes the new id.
+    Its Stop heard before that record names no turn hands has read, so the turn is told once, by the read, without it."""
+    _, tellings = told([said(status.Idle()), *events])
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, closing)]
+
+
+def test_a_late_stop_again_of_a_turn_told_before_the_one_waiting_ends_nothing() -> None:
+    """Stopping again reopens only the last turn it names: an older turn's, heard late, would tell it twice."""
+    state, _ = told([PROMPT, said(Busy(), 2100, at=11.0), said(status.Idle(), 3000, at=12.0)])
+    again = Stopped(ONE.id, "done", mode=None, prompt=TURN, again=True)
+    assert reduce(state, again) == (state, [Audit(Unmatched(again))])
+
+
+@pytest.mark.parametrize("source", ["resume", "startup"])
+def test_a_turn_told_before_a_restart_is_not_told_again_by_its_late_stop(source: StartSource) -> None:
+    state, _ = told([STOP, Joined(ONE, source)])
+    assert reduce(state, STOP) == (state, [Audit(Unmatched(STOP))])
 
 
 @pytest.mark.parametrize("end", [Ended(ONE.id, "other"), Ended(ONE.id, "prompt_input_exit"), Died(ONE), MovedOn(ONE)])
@@ -1094,6 +1130,17 @@ def test_a_compaction_between_a_turns_telling_and_its_late_stop_tells_it_once() 
     """hands-status-hjr: compaction used to drop the told turn's name, so its late Stop told it again."""
     _, tellings = told([said(status.Idle()), INTERRUPT, Joined(ONE, "compact"), STOP, Tick(20.0)])
     assert tellings == TOLD
+
+
+@pytest.mark.parametrize("between", [[], [Joined(ONE, "compact")]])
+@pytest.mark.parametrize(("own", "closing"), [(Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False), "two"), (Interrupted(ONE.id, NEXT, at=12.2), None)])
+def test_a_late_stop_of_an_older_turn_leaves_the_turn_waiting_to_be_told_for_its_own_end(between: list[Event], own: Event, closing: str | None) -> None:
+    """hands-status-tlo.ypl: p1's Stop is delayed past p2's prompt, which tells p1, and past the idle that ends p2. It is
+    not p2's, so p2 waits on for its own Stop or record, compaction or not."""
+    state, tellings = told([PROMPT, said(Busy(), 2000, at=11.0), said(status.Idle(), 3000, at=12.0), *between, STOP])
+    assert tellings == [*TOLD, Snapshot(ONE.id, ONE.cwd)]
+    assert isinstance(live(state).turn, Untold)
+    assert told([own, Tick(20.0)], state)[1] == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, closing)]
 
 
 @pytest.mark.parametrize("event", [INTERRUPT, taken(NEXT, Stamp(9000)), Continued(ONE.id, was=TURN, now=NEXT)])
