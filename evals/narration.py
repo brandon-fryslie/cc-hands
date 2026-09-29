@@ -50,6 +50,7 @@ from hands.core.delta import Changed, Commit, Delta
 from hands.core.narration import Narration, narration, open_questions, reported_and_asked, shown
 from hands.core.spoken import spoken
 from hands.core.turn import Answering, Asked, Budget, Continuing, Interruption, Notified, Opening, Step, Turn
+from hands.sessions.home import default_home
 from hands.daemon.run import SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS, backend_from_env
 from hands.sessions.transcript import turn_record
 from hands.sessions.turning import Turning
@@ -325,7 +326,7 @@ async def main() -> int:
     parsed.add_argument("--show", action="store_true", help="print every telling, not only the ones that failed")
     args = parsed.parse_args()
 
-    backend = backend_from_env()
+    backend = backend_from_env(default_home())
     summarise = summariser(backend, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
     chosen = [case for case in cases() if args.only in case.name]
     if not chosen:

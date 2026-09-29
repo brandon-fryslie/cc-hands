@@ -59,11 +59,12 @@ from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.openai.llm import OpenAILLMService
 
 from hands.core.spoken import spoken
+from hands.sessions.home import default_home
 from hands.daemon.run import backend_from_env
 from hands.sessions.registry import Sessions
 from hands.voice.briefing import briefing
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
-from hands.voice.pipeline import AnthropicBackend, LLMBackend, OpenAICompatibleBackend, VoiceConfig, build_llm
+from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, LLMBackend, OpenAICompatibleBackend, VoiceConfig, build_llm
 from hands.voice.tools import intermediary_tools, pipecat_function
 
 CONVERSATIONS = Path(__file__).parent / "conversations"
@@ -166,6 +167,9 @@ def asker(backend: LLMBackend) -> Ask:
                 return said, calls
 
             return from_anthropic
+        case ClaudeCodeBackend():
+            # [LAW:no-silent-failure] the eval asks a Pipecat LLM stage, and the brain is a process with none.
+            sys.exit("HANDS_LLM=claude has no Pipecat LLM stage for this eval to ask; pick anthropic or openai.")
 
 
 # How many times a model may look before the step it takes is judged: once is caution, three times is lost.
@@ -306,7 +310,7 @@ async def main() -> int:
     logger.remove()
     logger.add(sys.stderr, level="WARNING")
 
-    backend = backend_from_env()
+    backend = backend_from_env(default_home())
     ask = asker(backend)
     chosen = [case for case in cases() if args.only in case.name]
     if not chosen:

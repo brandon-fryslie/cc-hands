@@ -132,6 +132,9 @@ _UNREACHABLE = (openai.APIConnectionError, anthropic.APIConnectionError, Connect
 def alarm(error: ErrorFrame, *, stt: FrameProcessor, llm: FrameProcessor | None, tts: FrameProcessor) -> Alarm:
     """What the user is told about a pipeline error, decided by the processor that raised it."""
     match error.processor:
+        case None:
+            # Pipecat leaves it unset when nothing named the processor; it must not pass for a stage that is absent.
+            return Unrouted("no processor", error.error)
         case processor if processor is tts:
             return Post(error.error)
         case processor if processor is llm:
