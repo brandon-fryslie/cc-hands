@@ -44,9 +44,11 @@ def python312(tmp_path: Path) -> str:
 
 @dataclass
 class ChatServer:
-    """A chat completions endpoint at `url`, and what it has been asked: each request's body and bearer token."""
+    """A chat completions endpoint at `url` and an Anthropic messages one at `anthropic_url`, and what they have been asked: each request's body and key."""
 
     url: str
+    # The Anthropic SDK appends /v1/messages itself, so its base is the bare host.
+    anthropic_url: str
     asked: list[dict[str, object]]
     keys: list[str]
 
@@ -56,7 +58,7 @@ ServeChat = Callable[[str | None], Awaitable[ChatServer]]
 
 @pytest.fixture
 async def chat_server() -> AsyncIterator[ServeChat]:
-    """Starts a chat completions endpoint that answers every request with the content given; stopped after the test."""
+    """Starts a server whose two endpoints answer every request with the content given; stopped after the test."""
     runners: list[web.AppRunner] = []
 
     async def serve(content: str | None) -> ChatServer:
@@ -73,13 +75,26 @@ async def chat_server() -> AsyncIterator[ServeChat]:
                 }
             )
 
+        async def message(request: web.Request) -> web.Response:
+            asked.append(await request.json())
+            keys.append(request.headers["x-api-key"])
+            return web.json_response(
+                {
+                    "id": "m1", "type": "message", "role": "assistant", "model": "m", "stop_reason": "end_turn", "stop_sequence": None,
+                    "content": [] if content is None else [{"type": "text", "text": content}],
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            )
+
         app = web.Application()
         app.router.add_post("/v1/chat/completions", complete)
+        app.router.add_post("/v1/messages", message)
         runner = web.AppRunner(app)
         runners.append(runner)
         await runner.setup()
         await web.TCPSite(runner, "127.0.0.1", 0).start()
-        return ChatServer(url=f"http://127.0.0.1:{runner.addresses[0][1]}/v1", asked=asked, keys=keys)
+        host = f"http://127.0.0.1:{runner.addresses[0][1]}"
+        return ChatServer(url=f"{host}/v1", anthropic_url=host, asked=asked, keys=keys)
 
     yield serve
     for runner in runners:

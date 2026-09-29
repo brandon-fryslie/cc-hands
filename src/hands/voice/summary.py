@@ -34,8 +34,8 @@ def summariser(backend: LLMBackend, instruction: str, max_tokens: int, timeout: 
                 return _spoken([choice.message.content or "" for choice in completion.choices[:1]])
 
             return from_openai
-        case AnthropicBackend(api_key=api_key, model=model):
-            anthropic_client = AsyncAnthropic(api_key=api_key, max_retries=0, timeout=timeout)
+        case AnthropicBackend(base_url=base_url, api_key=api_key, model=model):
+            anthropic_client = AsyncAnthropic(base_url=base_url, api_key=api_key, max_retries=0, timeout=timeout)
 
             async def from_anthropic(turn: str) -> str:
                 message = await anthropic_client.messages.create(

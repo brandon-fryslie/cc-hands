@@ -44,8 +44,9 @@ from hands.voice.whisper import Whisper
 # fields; there is no bag of optional keys and URLs to guard downstream.
 @dataclass(frozen=True)
 class AnthropicBackend:
-    """Claude over the Anthropic API."""
+    """Claude over the Anthropic API, or any server that speaks it."""
 
+    base_url: str
     # Kept out of the repr, so a backend printed or logged does not print its key.
     api_key: str = field(repr=False)
     model: str
@@ -53,7 +54,7 @@ class AnthropicBackend:
 
 @dataclass(frozen=True)
 class OpenAICompatibleBackend:
-    """Any OpenAI chat completions server: OpenAI's own API, or one such as mlx_lm.server."""
+    """Any OpenAI chat completions server: OpenAI's own API, or one that speaks it."""
 
     base_url: str
     # Sent as the bearer token on every call, whatever the server does with it; kept out of the repr like Claude's.
@@ -91,11 +92,11 @@ def build_llm(
     # [LAW:one-type-per-behavior] both services speak the same frame protocol
     # to the rest of the pipeline; only their construction differs.
     match backend:
-        case AnthropicBackend(api_key=api_key, model=model):
+        case AnthropicBackend(base_url=base_url, api_key=api_key, model=model):
             return AnthropicLLMService(
                 api_key=api_key,
                 # Reported at once, as for the OpenAI-compatible model: a retry with backoff is silence in a voice turn.
-                client=AsyncAnthropic(api_key=api_key, max_retries=0),
+                client=AsyncAnthropic(base_url=base_url, api_key=api_key, max_retries=0),
                 settings=AnthropicLLMService.Settings(
                     model=model, system_instruction=instruction, max_tokens=max_tokens
                 ),

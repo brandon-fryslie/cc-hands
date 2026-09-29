@@ -118,7 +118,7 @@ class Rig:
 async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     voice = built.build_voice(
-        built.VoiceConfig(llm=built.AnthropicBackend(api_key="unused", model="unused"), whisper_model="unused", voice="unused"),
+        built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), whisper_model="unused", voice="unused"),
         tools=[],
     )
     out = Recorded()

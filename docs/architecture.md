@@ -1592,9 +1592,9 @@ pocket-tts is MIT, 100M parameters, CPU-only by design, reports no word timings,
 streams: measured on this
 Mac, first audio 87 ms after the text arrives and about 5.6x real time. Whisper
 large-v3-turbo on MLX transcribes a four-second clip in under a second. The default
-LLM is Qwen3-30B-A3B-Instruct-2507 in MLX 8-bit served by `mlx_lm.server` on inferno,
-the M4 Max on the LAN; Claude through the Anthropic API is the other backend
-variant. Measured on 2026-09-12, full voice-to-voice: a turn with a tool call had
+LLM is Claude Sonnet 5 through the Anthropic API, or any server that speaks it; OpenAI's
+chat completions API is the other backend variant. Measured on 2026-09-12, full
+voice-to-voice with Qwen3-30B-A3B on inferno, since retired: a turn with a tool call had
 first audio 4.3 s after key release; a plain turn 1.4 s.
 
 Python, `uv`, pyright strict. State types are discriminated unions: frozen dataclasses

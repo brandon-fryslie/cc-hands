@@ -147,8 +147,8 @@ closes.
   reads as down in `hands status`, and running it again shows the new pid and uptime.
 - **System speech channel.** The `Speak` effect becomes a `TTSSpeakFrame`; the
   daemon speaks its own start and restart, an unreachable LLM, an empty Whisper
-  result, and a TTS error posts a macOS notification instead. Done when stopping
-  `mlx_lm.server` on inferno is heard within one turn, with no model involved.
+  result, and a TTS error posts a macOS notification instead. Done when an unreachable
+  model server is heard within one turn, with no model involved.
 - **Membership from session files, liveness from pids.** The shim writes
   `~/.hands/sessions/<id>.json` at `SessionStart`; the daemon reads the directory at
   start and watches it; a liveness sweep moves dead pids to `Gone` and speaks it.

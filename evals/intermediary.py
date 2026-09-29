@@ -3,10 +3,9 @@
 
 Run it against whatever model the daemon runs:
 
-    uv run python evals/intermediary.py                 # the local model on inferno, one run each
+    uv run python evals/intermediary.py                 # Claude, one run each
     uv run python evals/intermediary.py --runs 3        # three runs each, for a model that samples
-    HANDS_LLM=anthropic uv run python evals/intermediary.py
-    HANDS_LLM_URL=http://localhost:8080/v1 uv run python evals/intermediary.py    # the same model, served here
+    HANDS_LLM=openai uv run --env-file .env python evals/intermediary.py
 
 Each case under `evals/conversations` is one decision point: the conversation up to a moment, and what the model
 must do next. The model is asked with the daemon's own prompt, its own tool schemas, and its own start-up note, and
@@ -149,10 +148,10 @@ def asker(backend: LLMBackend) -> Ask:
                 return message.content or "", calls
 
             return from_openai
-        case AnthropicBackend(api_key=api_key, model=model):
+        case AnthropicBackend(base_url=base_url, api_key=api_key, model=model):
             service_ = build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=MAX_REPLY_TOKENS)
             assert isinstance(service_, AnthropicLLMService)
-            client_ = AsyncAnthropic(api_key=api_key, max_retries=0, timeout=TIMEOUT_SECONDS)
+            client_ = AsyncAnthropic(base_url=base_url, api_key=api_key, max_retries=0, timeout=TIMEOUT_SECONDS)
 
             async def from_anthropic(messages: list[LLMContextMessage]) -> tuple[str, tuple[Call, ...]]:
                 context = LLMContext(messages=list(messages), tools=list(tools))
