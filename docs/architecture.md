@@ -122,7 +122,7 @@ Turn = Opened | Untold | Told
 @dataclass(frozen=True)
 class Opened:    turn: PromptId; others: frozenset[PromptId]; queued: bool
 @dataclass(frozen=True)
-class Untold:    turn: PromptId; others: frozenset[PromptId]; by: Instant; asking: bool
+class Untold:    turn: PromptId; others: frozenset[PromptId]; by: Stamp; asking: bool
 @dataclass(frozen=True)
 class Told:      turn: PromptId | None; others: frozenset[PromptId]; asking: bool
 
@@ -439,21 +439,26 @@ No hook fires when the user interrupts a turn with Escape or Ctrl-C (2.1.281): n
 Claude Code writes a user record instead, `[Request interrupted by user]`, or
 `[Request interrupted by user for tool use]` when a tool was running, carrying the
 `promptId` of the turn it stopped, which is the `prompt_id` that turn's
-`UserPromptSubmit` carried. The tail reads that record as the `Interrupted` event. It
-ends nothing: Claude Code sets the session `idle` ~100 ms before it writes the record
-(2.1.282), and that status is what ends the turn (see Sessions, below); the record is
-what the turn's telling waits for. Only the prompt names the turn: a background
+`UserPromptSubmit` carried. The tail reads that record as the `Interrupted` event.
+Claude Code sets the session `idle` before it writes the record (37 ms before, 2.1.283),
+and that status is what moves the session to its prompt (see Sessions, below); the record
+says the turn Claude was answering is over, and is what its telling waits for. An
+interrupt that flushes a queued message names that message's id instead, and the turn
+goes on under it. Only the prompt names the turn: a background
 subagent's hooks keep the `prompt_id` of the turn that started it after that turn is over.
 
 Only Claude Code's status moves a session between running and at its prompt. Hooks and
 records say which turn it is and what it did: a turn is `Opened`, `Untold` once Claude
 Code's idle ends it, and `Told`. A turn opens from a prompt heard with no turn open, which
-marks it, whether or not the busy that prompt set has been read yet. A message queued into
-an open turn fires `UserPromptSubmit` with that turn's `prompt_id`, the id it went on
-under after a flush included (2.1.281), so it is in the turn it names. Any other id it or
-a record carries while a turn is open joins the ids the turn goes by: a flush's, taken
-seconds before Claude answers under it, which a message queued in between carries; or,
-should Claude Code's idle go unread between two turns, the next turn's. A `Stop` carries
+marks it, whether or not the busy that prompt set has been read yet. What is submitted
+while a turn runs, a queued message or a task's notification, fires `UserPromptSubmit`
+with the running turn's `prompt_id` and leaves the status as it was (2.1.283), so it is in
+the turn it names. Claude Code gives a prompt an id of its own only at its prompt, so a
+prompt under another id means the open turn is over, even when the `idle` between them
+was set and set again inside one status read (93 ms apart, 2.1.283): that turn is told,
+compared while the new prompt's hook holds Claude Code, and the new turn is marked. Any
+other id a record carries while a turn is open is a flush's, taken seconds before Claude
+answers under it, and joins the ids the turn goes by. A `Stop` carries
 the `prompt_id` of the turn it ends, which is how that turn is found in the tail, and it
 ends only an open turn that goes by that id, so a `Stop` applied late never ends the turn
 after it. A `Stop` with no turn open tells a turn hands never had open, such as the one a
@@ -1219,10 +1224,11 @@ stopped with Escape, which fires no Stop, is never heard to end. The
   written ~100 ms after, and an Escape'd turn's Stop can fire after it. So the turn is
   kept `Untold` and is told, once, at the first of five events: its Stop
   (told with the reply the Stop carries), its interrupt record (one naming its prompt), a turn after it
-  opening (told before that turn's mark), the session ending, or the tick `UNTOLD_SECONDS` after the
-  status, which is what tells a double Escape that leaves no record. Which came first
-  is decided by the order they are applied, with no stamp compared against hands'
-  clock. Claude Code sets `idle` only once a Stop's hooks have returned, and the shim
+  opening (told before that turn's mark), the session ending, or a reading of the
+  transcript through `UNTOLD` ms past the `idle`'s stamp, which is what tells a double
+  Escape that leaves no record. That wait is on Claude Code's clock: each reading says how
+  far it read (`Read`), stamped before it opened the file, so a transcript hands reads late
+  delays the telling and never leaves the record out of it. Claude Code sets `idle` only once a Stop's hooks have returned, and the shim
   waits (up to its 2 s post timeout) until the Stop is applied, so a stopped turn is
   normally ended by its Stop. It sets `busy` before a prompt's hooks run, so no `idle`
   read after a prompt is applied predates it. A single Escape that flushes a queued

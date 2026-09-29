@@ -107,6 +107,15 @@ class Continued:
 
 
 @dataclass(frozen=True)
+class Read:
+    """The session's transcript was read through everything Claude Code had written of it by `through`, on the clock it
+    stamps a status with: a record of how a turn ended that was not in it, Claude Code had not written by then."""
+
+    session: SessionId
+    through: Stamp
+
+
+@dataclass(frozen=True)
 class Waited:
     """Claude Code says the session has sat at its prompt since its turn ended, and nobody has typed: idle_prompt."""
 
@@ -168,10 +177,10 @@ class Tick:
 
 # Events about a session the registry must already know; a join is how it comes to.
 # What moves a live session on its axes; its end is the one session event that moves none of them.
-Moving = Prompted | Stopped | Interrupted | Taken | Continued | Waited | StatusReported | PermissionRequested | ToolFinished
+Moving = Prompted | Stopped | Interrupted | Taken | Continued | Read | Waited | StatusReported | PermissionRequested | ToolFinished
 SessionEvent = Moving | Ended
-# What a session's transcript says of its turn that none of its hooks do.
-Transcribed = Taken | Interrupted | Continued
+# What a session's transcript says that none of its hooks do: of its turn, and how far it has been read.
+Transcribed = Taken | Interrupted | Continued | Read
 # What the liveness sweep saw in one membership file.
 Observed = Attached | Died | MovedOn
 Event = Joined | Observed | SessionEvent | Abandoned | Tick
