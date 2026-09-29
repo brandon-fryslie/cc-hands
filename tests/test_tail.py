@@ -830,3 +830,11 @@ async def test_a_transcript_not_written_yet_is_read_through_all_there_is(tmp_pat
     """A turn whose prompt was cancelled before Claude Code wrote anything is still told once its window passes."""
     tails = Tails(Registry([member(tmp_path / "t.jsonl")]), clock=lambda: Stamp(5000))
     assert await tails.catch_up() == [Read(SID, Stamp(5000))]
+
+
+async def test_a_transcript_that_cannot_be_read_is_waited_on_no_longer(tmp_path: Path) -> None:
+    """The turn is told, and its telling says why the transcript could not be read, rather than waiting forever unsaid."""
+    unreadable = tmp_path / "t.jsonl"
+    unreadable.mkdir()
+    tails = Tails(Registry([member(unreadable)]), clock=lambda: Stamp(5000))
+    assert await tails.catch_up() == [Read(SID, Stamp(5000))]

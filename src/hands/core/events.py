@@ -108,8 +108,9 @@ class Continued:
 
 @dataclass(frozen=True)
 class Read:
-    """The session's transcript was read through everything Claude Code had written of it by `through`, on the clock it
-    stamps a status with: a record of how a turn ended that was not in it, Claude Code had not written by then."""
+    """The session's transcript has given everything it will of what Claude Code had written by `through`, on the clock
+    it stamps a status with: read through it, or found missing or unreadable. A record of how a turn ended that was not
+    in it, Claude Code had not written by then, or hands cannot read."""
 
     session: SessionId
     through: Stamp

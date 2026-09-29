@@ -260,19 +260,19 @@ class Tails:
         # Before the file is opened, so every record Claude Code had written by then is in what is read.
         through = self._clock()
         try:
-            opened = following.path.open("rb")
-        except FileNotFoundError:
-            # Nothing written yet is nothing left unread.
+            with following.path.open("rb") as file:
+                size = file.seek(0, os.SEEK_END)
+                if size < following.offset:
+                    # Reset in place: the narrator may be holding this very following while a summary comes back.
+                    logger.warning(f"the transcript of session {session} is shorter than what was read of it, so it is read again from its start")
+                    following.restart()
+                file.seek(following.offset)
+                raw = file.read()
+        except OSError:
+            # Nothing written yet is nothing left unread, and a transcript that cannot be read gives nothing more to wait
+            # for: the turn is told, and its telling says why it could not read it [LAW:no-silent-failure].
             self._transcribed.append(Read(session, through))
             raise
-        with opened as file:
-            size = file.seek(0, os.SEEK_END)
-            if size < following.offset:
-                # Reset in place: the narrator may be holding this very following while a summary comes back.
-                logger.warning(f"the transcript of session {session} is shorter than what was read of it, so it is read again from its start")
-                following.restart()
-            file.seek(following.offset)
-            raw = file.read()
         # [LAW:no-ambient-temporal-coupling] a record is whole only once its newline is written, so the bytes after
         # the last newline stay unread and unconsumed until the write that ends them.
         *complete, unfinished = raw.split(b"\n")
@@ -300,8 +300,8 @@ class Tails:
     def _interrupt(self, session: SessionId, record: Payload) -> None:
         prompt = prompt_of(record)
         if prompt is None:
-            # [LAW:no-silent-failure] a record that names no turn is the record of none, so the turn it stopped is told at
-            # the deadline Claude Code's idle set, without it.
+            # [LAW:no-silent-failure] a record that names no turn is the record of none, so the turn it stopped is told once
+            # the transcript is read past the window Claude Code's idle set, without it.
             logger.error(f"session {session} was interrupted, but the record of it names no prompt, so its turn is told without it")
             return
         # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
