@@ -256,7 +256,7 @@ def parse(frame: Frame) -> WireEvent:
     # [LAW:single-enforcer] the parse boundary for the response stream; nothing after it reads raw frames.
     try:
         data = json.loads(frame.data)
-    except json.JSONDecodeError as error:
+    except ValueError as error:
         return Unparsed(frame, f"its data is not JSON: {error}")
     if not isinstance(data, dict):
         return Unparsed(frame, "its data is not a JSON object")
@@ -389,9 +389,9 @@ class Answered:
 Body = Streamed | Garbled | Answered
 
 
-# A block being built: a finished block, or the pieces of a tool call's input not yet joined.
+# A block not yet stopped: what it holds so far, and the pieces of a tool call's input not yet joined.
 @dataclass(frozen=True)
-class _Building:
+class _Open:
     block: Block
     json: str
 
@@ -410,14 +410,22 @@ def assemble(events: Sequence[WireEvent]) -> Streamed | Garbled:
 
 def _fold(events: Sequence[WireEvent]) -> Message:
     message: Message | None = None
-    blocks: dict[int, _Building] = {}
+    # [LAW:types-are-the-program] a block is _Open until its stop and a Block after it, so a delta after the stop and a
+    # block that never stopped cannot pass for a finished one.
+    blocks: dict[int, _Open | Block] = {}
     stopped = False
     for event in events:
+        if stopped:
+            raise _Broken(f"a {type(event).__name__} after message_stop")
         match event:
             case MessageStarted(id=id, model=model, usage=usage):
+                if message is not None:
+                    raise _Broken("a second message_start")
                 message = Message(id=id, model=model, content=(), stop_reason=None, usage=usage)
             case BlockStarted(index=index, block=block):
-                blocks[index] = _Building(_opened(block), "")
+                if index in blocks:
+                    raise _Broken(f"block {index} started twice")
+                blocks[index] = _Open(_opened(block), "")
             case TextDelta(index=index, text=text):
                 blocks[index] = _grown(blocks, index, Text, lambda block: replace(block, text=block.text + text))
             case ThinkingDelta(index=index, thinking=thinking):
@@ -426,7 +434,7 @@ def _fold(events: Sequence[WireEvent]) -> Message:
                 blocks[index] = _grown(blocks, index, Thinking, lambda block: replace(block, signature=block.signature + signature))
             case JsonDelta(index=index, partial_json=partial):
                 building = blocks.get(index)
-                if building is None or not isinstance(building.block, ToolUse):
+                if not isinstance(building, _Open) or not isinstance(building.block, ToolUse):
                     raise _Broken(f"a tool input delta for block {index}, which is not an open tool call")
                 blocks[index] = replace(building, json=building.json + partial)
             case BlockStopped(index=index):
@@ -447,7 +455,10 @@ def _fold(events: Sequence[WireEvent]) -> Message:
         raise _Broken("the stream ended with no message_start")
     if not stopped:
         raise _Broken("the stream ended before message_stop")
-    return replace(message, content=tuple(blocks[index].block for index in sorted(blocks)))
+    content = tuple(block for _, block in sorted(blocks.items()) if not isinstance(block, _Open))
+    if len(content) != len(blocks):
+        raise _Broken(f"blocks {sorted(index for index, block in blocks.items() if isinstance(block, _Open))} never stopped")
+    return replace(message, content=content)
 
 
 def _opened(block: Mapping[str, object]) -> Block:
@@ -467,27 +478,26 @@ def _opened(block: Mapping[str, object]) -> Block:
         raise _Broken(f"a {block.get('type')!r} block whose start lacks a field: {error!r}") from error
 
 
-def _grown[B: Block](blocks: Mapping[int, _Building], index: int, kind: type[B], grow: Callable[[B], B]) -> _Building:
+def _grown[B: Block](blocks: Mapping[int, _Open | Block], index: int, kind: type[B], grow: Callable[[B], B]) -> _Open:
     building = blocks.get(index)
-    if building is None or not isinstance(building.block, kind):
+    if not isinstance(building, _Open) or not isinstance(building.block, kind):
         raise _Broken(f"a {kind.__name__} delta for block {index}, which is not an open {kind.__name__} block")
     return replace(building, block=grow(building.block))
 
 
-
-def _closed(blocks: Mapping[int, _Building], index: int) -> _Building:
+def _closed(blocks: Mapping[int, _Open | Block], index: int) -> Block:
     building = blocks.get(index)
-    if building is None:
-        raise _Broken(f"content_block_stop for block {index}, which never started")
+    if not isinstance(building, _Open):
+        raise _Broken(f"content_block_stop for block {index}, which is not open")
     if not isinstance(building.block, ToolUse):
-        return building
+        return building.block
     try:
         parsed = json.loads(building.json or "{}")
     except json.JSONDecodeError as error:
         raise _Broken(f"tool call {building.block.name}'s input is not JSON: {error}") from error
     if not isinstance(parsed, dict):
         raise _Broken(f"tool call {building.block.name}'s input is not a JSON object")
-    return _Building(replace(building.block, input=cast(dict[str, object], parsed)), "")
+    return replace(building.block, input=cast(dict[str, object], parsed))
 
 
 def answered(data: bytes) -> Answered:

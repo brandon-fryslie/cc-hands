@@ -10,6 +10,8 @@ dependencies = [
     "pyobjc-framework-cocoa>=11",
     "pyobjc-framework-coreaudio>=11",
     "pyobjc-framework-quartz>=12.2.2",
+    "brotli>=1.2.0",
+    "zstandard>=0.25.0",
 ]
 
 [project.scripts]

@@ -170,6 +170,25 @@ def test_a_stream_cut_short_is_garbled_not_a_shorter_message() -> None:
     assert assemble([parse(frame) for frame in frames(cut)[0]]) == Garbled("the stream ended before message_stop")
 
 
+def test_a_stream_out_of_order_is_garbled_not_a_message_missing_a_part() -> None:
+    def garbled(body: bytes) -> str:
+        reply = assemble([parse(frame) for frame in frames(body)[0]])
+        assert isinstance(reply, Garbled)
+        return reply.reason
+
+    # The tool call never stops, so its input never joined: not a ToolUse with no input.
+    assert garbled(STREAM.replace(sse("content_block_stop", {"type": "content_block_stop", "index": 3}), b"")) == "blocks [3] never stopped"
+    start = STREAM.split(b"event: content_block_start", 1)[0]
+    assert garbled(STREAM.replace(b"event: message_delta", start + b"event: message_delta")) == "a second message_start"
+    assert garbled(STREAM + sse("ping", {"type": "ping"})) == "a Ping after message_stop"
+    late = sse("content_block_delta", {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "late"}})
+    assert garbled(STREAM.replace(b"event: message_delta", late + b"event: message_delta")) == "a Text delta for block 1, which is not an open Text block"
+
+
+def test_a_frame_whose_number_json_cannot_hold_is_unparsed() -> None:
+    assert isinstance(parse(Frame("message_start", '{"n": ' + "9" * 5000 + "}")), Unparsed)
+
+
 def test_a_frame_that_cannot_be_read_is_kept_and_garbles_the_reply() -> None:
     odd = Frame("content_block_delta", json.dumps({"type": "content_block_delta", "index": 1, "delta": {"type": "citations_delta"}}))
     assert parse(odd) == Unparsed(odd, "no event is named 'content_block_delta' with this data")

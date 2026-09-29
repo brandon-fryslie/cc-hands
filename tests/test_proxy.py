@@ -1,12 +1,15 @@
 """The proxy: the client gets the API's bytes unchanged, the API gets the client's request unchanged, and each exchange is one record."""
 
 import asyncio
+import contextlib
 import gzip
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 
 import aiohttp
+import brotli
 import pytest
+import zstandard
 from aiohttp import web
 
 from hands.core.session import SessionId
@@ -168,6 +171,49 @@ async def test_a_compressed_answer_reaches_the_client_compressed_and_is_read_dec
     assert isinstance(exchange.reply, Reached) and exchange.reply.body == Answered({"input_tokens": 5583})
 
 
+@pytest.mark.parametrize(("encoding", "pack"), [("br", brotli.compress), ("zstd", zstandard.ZstdCompressor().compress)])
+async def test_every_encoding_claude_code_asks_for_is_read(
+    serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], encoding: str, pack: Callable[[bytes], bytes]
+) -> None:
+    packed = pack(b"".join(STREAM))
+
+    async def compressed(_request: web.Request) -> web.Response:
+        return web.Response(body=packed, headers={"Content-Type": "text/event-stream", "Content-Encoding": encoding})
+
+    _, wire = await serve(compressed)
+    assert (await post(wire.proxy.url))[::2] == (200, packed)
+    reply = only_exchange(wire).reply
+    assert isinstance(reply, Reached) and isinstance(reply.body, Streamed)
+    assert reply.body.message.content == (Text("hello from the wire"),)
+
+
+async def test_a_reply_hands_cannot_read_still_reaches_the_client_whole(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    # A frame that is not UTF-8 breaks hands' reading of the stream, and nothing of the client's.
+    sent = [*STREAM[:2], b"event: content_block_delta\ndata: \xff\xfe\n\n", *STREAM[2:]]
+
+    async def unreadable(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        for chunk in sent:
+            await response.write(chunk)
+        await response.write_eof()
+        return response
+
+    _, wire = await serve(unreadable)
+    assert (await post(wire.proxy.url))[::2] == (200, b"".join(sent))
+    reply = only_exchange(wire).reply
+    assert isinstance(reply, Reached) and isinstance(reply.body, Garbled) and reply.body.reason.startswith("hands could not read it: UnicodeDecodeError")
+
+
+async def test_no_header_the_client_left_out_is_added_on_the_way_up(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    upstream, wire = await serve(streamed)
+    async with aiohttp.ClientSession(skip_auto_headers=("Accept-Encoding", "User-Agent", "Content-Type")) as client:
+        async with client.post(wire.proxy.url + "/v1/messages", data=REQUEST) as response:
+            await response.read()
+    [(_, asked_headers, _)] = upstream.asked
+    assert {"Accept-Encoding", "User-Agent", "Content-Type"}.isdisjoint(asked_headers)
+
+
 async def test_an_error_status_passes_through_with_its_body_read(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     error = b'{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'
 
@@ -220,7 +266,29 @@ async def test_a_client_that_hangs_up_mid_stream_ends_the_upstream_reply_and_is_
     # The hang-up is the only way the rest stops coming, so both ends are waited on rather than timed.
     await asyncio.wait_for(asyncio.gather(wire.exchanged.wait(), upstream_ended.wait()), timeout=10)
     reply = only_exchange(wire).reply
-    assert isinstance(reply, Reached) and isinstance(reply.body, Garbled) and reply.body.reason.startswith("the reply ended after")
+    assert isinstance(reply, Reached) and isinstance(reply.body, Garbled) and reply.body == Garbled("the proxy stopped reading the reply: its client hung up or hands stopped")
+
+
+async def test_closing_the_proxy_mid_stream_stops_at_once_and_records_the_reply(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    async def endless(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(STREAM[0])
+        # Pings until the proxy lets go of the reply, which a write then finds.
+        with contextlib.suppress(ConnectionError, aiohttp.ClientConnectionResetError):
+            while True:
+                await response.write(sse("ping", '{"type":"ping"}'))
+                await asyncio.sleep(0.01)
+        return response
+
+    _, wire = await serve(endless)
+    async with aiohttp.ClientSession() as client:
+        async with client.post(wire.proxy.url + "/v1/messages", data=REQUEST, headers=HEADERS) as response:
+            await response.content.readany()
+            # A stop does not wait on a reply that may stream for minutes.
+            await asyncio.wait_for(wire.proxy.close(), timeout=5)
+    reply = only_exchange(wire).reply
+    assert isinstance(reply, Reached) and reply.body == Garbled("the proxy stopped reading the reply: its client hung up or hands stopped")
 
 
 def test_the_daemon_keeps_one_audit_line_per_exchange_and_nothing_per_event() -> None:
