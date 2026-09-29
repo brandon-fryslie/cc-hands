@@ -25,7 +25,8 @@ class AfterEnd:
 
 @dataclass(frozen=True)
 class Unmatched:
-    """A Stop named no turn open or waiting to be told, such as one that landed after its turn was told, so it ended nothing."""
+    """A Stop that ended nothing: its turn was told already, or no record naming its id had been read while a turn was open
+    or waiting to be told."""
 
     event: Stopped
 

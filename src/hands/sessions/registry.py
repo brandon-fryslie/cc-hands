@@ -266,4 +266,4 @@ def _audited(record: AuditRecord) -> tuple[str, str]:
         case AfterEnd(event=event):
             return "WARNING", f"{type(event).__name__} for session {event.session}, which had already ended"
         case Unmatched(event=event):
-            return "INFO", f"Stop of turn {event.prompt} in session {event.session}, which is neither open nor waiting to be told"
+            return "INFO", f"Stop of turn {event.prompt} in session {event.session}, which names no turn hands has read open or waiting to be told"

@@ -117,6 +117,12 @@ def _started(membership: Membership, source: StartSource, previous: Known | None
         case (_, Session(turn=Untold() as untold, earlier=earlier)):
             # A turn ended before the restart is still told. One that ended was told as it ended.
             return Session(membership, Unreported(), mode=None, turn=untold, earlier=earlier)
+        case (_, Session(turn=Told() as last, earlier=earlier)):
+            # Told before the restart, so a late Stop of it ends nothing after it.
+            return Session(membership, Unreported(), mode=None, earlier=earlier | _ids(last))
+        case (_, Session(earlier=earlier)):
+            # A turn open when its process went is not told, so a Stop of it can still tell it.
+            return Session(membership, Unreported(), mode=None, earlier=earlier)
         case _:
             return Session(membership, Unreported(), mode=None)
 
@@ -288,18 +294,14 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
         case (Stopped(prompt=prompt, closing=closing, again=again), Opened() as opened) if _names(opened, prompt):
             # Compared before the turn is handed over to be summarised, never after: see Compare.
             return Told(opened.turn, opened.others, _asking(closing, was.dialog)), [Compare(id, again), Summarise(id, prompt, closing), *_following(was.membership, opened)]
-        case (Stopped(prompt=prompt, closing=closing), Untold() as untold) if _names(untold, prompt) or not (prompt in was.earlier or isinstance(was.state, Running)):
-            # Its Stop fired after Claude Code set idle, as an Escape's can: told with the reply it carries. Under an id it
-            # is not yet read going on under, its Continued record still unread, it is still this turn's: [LAW:one-source-of-truth]
-            # Claude Code's status says no turn has run since the idle that ended it.
+        case (Stopped(prompt=prompt, closing=closing), Untold() as untold) if _names(untold, prompt):
+            # Its Stop fired after Claude Code set idle, as an Escape's can: told with the reply it carries.
             return _told(id, turn, closing)
-        case (Stopped(prompt=prompt, closing=closing, again=again), Untold() | Told()) if again or not (_names(turn, prompt) or prompt in was.earlier):
-            # A turn hands never had open, such as the one a session was in when it was attached or one running since the
-            # idle before it with its record still unread, or the last turn stopping again after another Stop hook blocked
-            # its Stop. A turn waiting to be told is over before it, so is told first, as it stands. Any other Stop names a turn already told, which it
-            # ends again only by being heard twice (below). The telling of a turn stopping again holds only what was not
-            # told before.
-            return Told(prompt, frozenset(), _asking(closing, was.dialog)), [*_told(id, turn, None)[1], Compare(id, again), Summarise(id, prompt, closing)]
+        case (Stopped(prompt=prompt, closing=closing, again=again), Told() as told) if not _heard(was, prompt) or (again and _names(told, prompt)):
+            # A turn hands never had open, such as the one a session was in when it was attached, or the last turn
+            # stopping again after another Stop hook blocked its Stop. Any other Stop names a turn already told, and ends
+            # nothing (below). The telling of a turn stopping again holds only what was not told before.
+            return Told(prompt, frozenset(), _asking(closing, was.dialog)), [Compare(id, again), Summarise(id, prompt, closing)]
         case (Interrupted(prompt=prompt), Untold() as untold) if _names(untold, prompt):
             # The record of how the turn Claude Code said is over ended: what its telling waits for.
             return _told(id, turn, None)
@@ -312,7 +314,11 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # Read through the point where the record of how it ended would be, and it was not there: told with what was read.
             return _told(id, turn, None)
         case (Stopped() as stopped, _):
-            # [LAW:nothing-unseen] a Stop is a hook Claude Code fired: one that ends nothing is still a line.
+            # [LAW:nothing-unseen] a Stop is a hook Claude Code fired: one that ends nothing is still a line. While a turn
+            # is open or waiting to be told, that includes a Stop under an id no record has been read naming yet: whether
+            # it is that turn's, gone on under a queued message, or a turn after it, only the transcript says, and a Stop
+            # told as the wrong turn is heard as that turn's answer. The waiting turn is told by its own end.
+
             return turn, [Audit(Unmatched(stopped))]
         case _:
             # A record of a turn that is neither the one open nor the one waiting to be told: read after that turn ended,
@@ -353,6 +359,11 @@ def _over(session: SessionId, opened: Opened, closing: str | None, dialog: Dialo
 def _names(turn: Turn, prompt: PromptId) -> bool:
     """Whether the id is one the turn goes by."""
     return prompt in _ids(turn)
+
+
+def _heard(session: Session, prompt: PromptId) -> bool:
+    """Whether the id is one the session's turn, or a turn before it, went by."""
+    return _names(session.turn, prompt) or prompt in session.earlier
 
 
 def _ids(turn: Turn) -> frozenset[PromptId]:
