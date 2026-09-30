@@ -234,7 +234,7 @@ async def test_a_stop_heard_as_the_daemon_shuts_down_is_still_applied() -> None:
     sessions.release_waiting()
     await asyncio.wait_for(sessions.stop(Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)), 3.0)
     live = sessions.live_session(member().id)
-    assert live is not None and live.turn == Told(PromptId("p1"), closing="done")
+    assert live is not None and live.turn == Told(PromptId("p1"))
 
 
 async def test_an_audited_tool_keeps_its_schema_and_writes_its_call_beside_its_result() -> None:

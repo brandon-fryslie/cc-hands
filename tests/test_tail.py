@@ -918,7 +918,7 @@ async def test_a_session_followed_from_mid_turn_works_under_its_own_prompt_and_i
     await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p4"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
     assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p4"), "Done.")
     live = sessions.live_session(SID)
-    assert live is not None and live.turn == Told(PromptId("p4"), closing="Done.")
+    assert live is not None and live.turn == Told(PromptId("p4"))
 
 
 async def test_a_first_record_still_being_written_explains_no_reading(tmp_path: Path) -> None:

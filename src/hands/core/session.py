@@ -250,15 +250,6 @@ class Told:
     turn: PromptId | None = None
     others: frozenset[PromptId] = frozenset()
     asking: bool = False
-    # The reply it was told with, as `said` leaves it; None when it was told with none. Each ending of a turn is heard
-    # twice, its reply on the wire and its Stop hook, in either order: [LAW:one-source-of-truth] the reply both carry is
-    # what says the second is the same ending, and not a turn gone on after another Stop hook blocked its Stop.
-    closing: str | None = None
-
-
-def said(text: str | None) -> str | None:
-    """A reply as it is compared and told: what Claude wrote without the whitespace around it, and nothing for an empty one."""
-    return None if text is None or not text.strip() else text.strip()
 
 
 Turn = Opened | Untold | Told
