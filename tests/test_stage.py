@@ -449,6 +449,17 @@ async def test_a_barge_in_while_a_drafts_input_still_streams_stops_the_brain_bef
     rig.brain.end()
 
 
+async def test_a_barge_in_before_the_brain_has_sent_the_turn_stops_nothing_and_the_turn_is_answered(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "are you listening?"})
+    # Still waiting for the input: nothing of it has left, so there is nothing to stop, and the user's words follow it.
+    await rig.interrupt()
+    assert rig.brain.interrupts == 0
+    assert not any(isinstance(entry, BrainInterrupted) for entry in rig.recorded)
+    _, route = rig.request()
+    assert route == Send((Tail(TAIL),))
+    rig.brain.end()
+
+
 async def test_a_barge_in_reaches_the_pipeline_even_when_the_brain_cannot_be_told(rig: Rig) -> None:
     def gone() -> None:
         raise RuntimeError("the brain cannot be told")

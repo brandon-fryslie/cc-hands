@@ -182,7 +182,8 @@ class BrainStage(FrameProcessor):
     def _barge_in(self) -> bool:
         """Stops the turn in flight being spoken; True when the brain is to be told to stop it too."""
         turn = self._turn
-        if turn is None or turn.interrupted:
+        # A turn none of whose requests has left is not being answered yet: the user's new words follow it as the next turn.
+        if turn is None or turn.interrupted or not turn.exchanges:
             return False
         turn.interrupted = True
         # Cancelled before anything else runs, so no word of the turn follows the barge-in down the pipeline.

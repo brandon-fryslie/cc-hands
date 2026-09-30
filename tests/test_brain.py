@@ -12,6 +12,7 @@ from loguru import logger
 
 from hands.brain.mcp import McpServer, serve_mcp
 from hands.brain.process import BUILTIN_TOOLS, SLIM, Brain, BrainGone, ForkFailed, Launch, NotLoggedIn, Unstartable, Untaken, command, environment, logged_in, start, workdir
+from hands.sessions.payload import Payload
 from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainForked, BrainLaunched, Called, Entry, McpConnected
 from pipecat.services.anthropic.llm import AnthropicLLMService
 
@@ -277,6 +278,37 @@ async def test_a_stop_goes_before_the_side_questions_waiting_to_type_and_returns
         ["btw", "second"],
         ["dismissed", ""],
     ]
+
+
+async def test_a_turn_goes_before_the_side_questions_waiting_to_type(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    try:
+        first = asyncio.create_task(brain.fork("first"))
+        await until(lambda: any(line[0] == "btw" for line in typed(tmp_path)))
+        second = asyncio.create_task(brain.fork("second"))
+        await asyncio.sleep(0.05)
+        # The user's turn waits only for the side question on the screen, not for those queued behind it.
+        asked = asyncio.create_task(brain.ask("are you listening?"))
+        await asyncio.sleep(0.05)
+        brain.hear(forked("b1", "first", "x1"))
+        brain.hear(answered("b1", "One.", exchange="x1"))
+        assert await first == "One."
+        assert await asyncio.wait_for(asked, 5) == BrainAnswered("p1", None)
+        await until(lambda: sum(line[0] == "btw" for line in typed(tmp_path)) == 2)
+        brain.hear(forked("b1", "second", "x2"))
+        brain.hear(answered("b1", "Two.", exchange="x2"))
+        assert await second == "Two."
+    finally:
+        await brain.stop()
+    assert [line[:2] for line in typed(tmp_path)] == [["btw", "first"], ["dismissed", ""], ["prompt", " are you listening?"], ["btw", "second"], ["dismissed", ""]]
+
+
+def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_are_still_heard() -> None:
+    brain = object.__new__(Brain)
+    brain.session = SessionId("b1")
+    brain._turn = None  # pyright: ignore[reportPrivateUsage]
+    # An error that is not text: the hook is logged and passed over, never raised out of the loop that hears hooks.
+    brain._hook(Payload({"hook_event_name": "StopFailure", "session_id": "b1", "prompt_id": "p1", "error": {"kind": "odd"}}))  # pyright: ignore[reportPrivateUsage]
 
 
 def test_a_turn_sent_without_hands_tools_is_an_error_and_one_with_them_is_not() -> None:

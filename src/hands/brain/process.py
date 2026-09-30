@@ -229,7 +229,7 @@ class _Terminal:
         """The last lines the brain showed, as text."""
         with self._lock:
             shown = self._shown.decode(errors="replace")
-        lines = [line.rstrip() for line in _CONTROL.sub("", shown).replace("\r", "\n").split("\n") if line.strip()]
+        lines = [line.rstrip() for line in _CONTROL.sub("", shown.replace("\r", "\n")).split("\n") if line.strip()]
         return "\n".join(lines[-SHOWN_LINES:])
 
 
@@ -285,8 +285,8 @@ class Brain:
         self._sockets = sockets
         self._record = record
         # [LAW:single-enforcer] one thing is typed at a time, and nothing while a side question's answer covers the input,
-        # where whatever is typed goes into the answer instead. Turns and side questions wait their turn for the input in
-        # the queue, so a stop, which takes the input alone, is next once whatever holds it lets go.
+        # where whatever is typed goes into the answer instead. Side questions wait their turn for the input in the queue,
+        # so a turn the user asked for, or a stop, each of which takes the input alone, is next once whatever holds it lets go.
         self._queue = asyncio.Lock()
         self._input = asyncio.Lock()
         # [LAW:no-ambient-temporal-coupling] the turn in flight is the brain's own state, not its asker's: it is over
@@ -320,7 +320,7 @@ class Brain:
 
     async def _send(self, text: str, turn: _Turn) -> None:
         try:
-            async with self._queue, self._input:
+            async with self._input:
                 # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
                 await self._type(lambda: self._typist.type(Text(pasted(text)).typed))
             self._record(BrainAsked(text))
@@ -344,7 +344,8 @@ class Brain:
                 reply = await asyncio.wait_for(asyncio.shield(fork.answer), FORK_SECONDS)
             except TimeoutError as error:
                 # [LAW:no-silent-failure] a question the brain never answers ends here, said as such.
-                failure = ForkFailed(f"no answer in {FORK_SECONDS:.0f}s")
+                # What the brain showed says why: a question it never saw, one it is still answering, or a screen over its input.
+                failure = ForkFailed(f"no answer in {FORK_SECONDS:.0f}s; the brain showed:\n{self._terminal.last()}")
                 self._record(BrainForked(question, str(failure), failed=True))
                 raise failure from error
             except (ForkFailed, BrainGone) as error:
@@ -379,7 +380,11 @@ class Brain:
         await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
         try:
             async with self._input:
-                if self._turn is not turn or not turn.taken.done():
+                if self._turn is not turn:
+                    return
+                if not turn.taken.done():
+                    # [LAW:no-silent-failure] the turn runs on, told to stop by nobody: its words are the stage's to hold.
+                    logger.warning(f"the brain was not stopped: its turn was not taken in {TAKE_SECONDS:.0f}s")
                     return
                 await self._type(lambda: self._typist.press("escape"))
                 # Escape puts the stopped prompt back in the input, which the next turn typed would join; Ctrl-C clears it.
@@ -388,6 +393,9 @@ class Brain:
                 await self._type(lambda: self._typist.press("ctrl_c"))
         except BrainGone as error:
             self._over(turn, error)
+            return
+        if turn.answered.done():
+            # Its Stop came while the Escape was pressed: the turn ended by itself, and says so once.
             return
         stopped = BrainAnswered(turn.taken.result(), None)
         self._record(stopped)
@@ -466,6 +474,7 @@ class Brain:
         try:
             event, session = said.text("hook_event_name"), said.session_id()
             prompt = said.text("prompt_id")
+            failed = f"{said.optional_text('error')}: {said.optional_text('last_assistant_message')}"
         except Rejected as error:
             logger.warning(f"the brain posted a hook that does not parse: {error}")
             return
@@ -478,7 +487,7 @@ class Brain:
             case "UserPromptSubmit" if not turn.taken.done():
                 turn.taken.set_result(prompt)
             case "Stop" | "StopFailure" if turn.prompt == prompt:
-                error = None if event == "Stop" else f"{said.optional_text('error')}: {said.optional_text('last_assistant_message')}"
+                error = None if event == "Stop" else failed
                 answered = BrainAnswered(prompt, error)
                 self._record(answered)
                 self._over(turn, answered)

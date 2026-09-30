@@ -3,10 +3,11 @@
 import re
 from dataclasses import dataclass
 
+from hands.core.session import ESCAPES
+
 # Runners draw their summaries, and a command's output reaches the transcript with the drawing in it. Every
 # control sequence goes, not only the colours: a runner that hides the cursor before writing its summary would
 # otherwise leave `\x1b[?25l` in front of the line, where it is no longer the start of a line at all.
-_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 @dataclass(frozen=True)
@@ -84,7 +85,7 @@ def report_of(output: str) -> Report | None:
     A command is a test run because its output is a test runner's, not because of how the command was
     spelled: `make test`, `just check` and a script all reach the same runners [LAW:one-source-of-truth].
     """
-    text = _ANSI.sub("", output)
+    text = ESCAPES.sub("", output)
     for runner in RUNNERS:
         # [LAW:one-source-of-truth] a run is counted by the summaries its mark found and by nothing else in the
         # scrollback: a workspace writes one summary per binary, and the line above them counts files, not tests.
