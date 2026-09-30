@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 
-from hands.core.events import Closed, Requested
+from hands.core.events import Closed
 from hands.core.session import PromptId, SessionId
 from hands.core.wire import Block, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Streamed, Subagent, Text, TextDelta, ToolUse, Uncopied, Unreached
 from hands.sessions.audit import CopiesLost, Entry
@@ -239,18 +239,15 @@ def replied(kind: Kind, stop_reason: str, *content: Block) -> Exchanged:
     return Exchanged("e1", SessionId("s1"), kind, "POST", "/v1/messages", 1, (), 1.0, 1.0, Reached(200, 2.0, 3.0, 10, Streamed(message)))
 
 
-def test_a_request_of_a_turn_is_that_turn_asked_on() -> None:
-    assert moves(Sent("e1", SessionId("s1"), MainTurn(TURN), {})) == (Requested(SessionId("s1"), TURN),)
-
-
-def test_a_reply_that_ends_the_turn_with_text_closes_it_with_that_text() -> None:
+def test_a_reply_that_ends_the_turn_with_text_closes_it_with_its_last_text_as_its_stop_carries_it() -> None:
     thought = replied(MainTurn(TURN), "end_turn", Text("Done."), Text("Pushed."))
-    assert moves(thought) == (Closed(SessionId("s1"), TURN, "Done.\n\nPushed."),)
+    assert moves(thought) == (Closed(SessionId("s1"), TURN, "Pushed."),)
 
 
 @pytest.mark.parametrize(
-    "exchanged",
+    "observed",
     [
+        Sent("e1", SessionId("s1"), MainTurn(TURN), {}),
         # Claude Code asks again after an end_turn with no text (2.1.285): the turn goes on.
         replied(MainTurn(TURN), "end_turn"),
         replied(MainTurn(TURN), "tool_use", Text("Reading."), ToolUse("t1", "Read", {})),
@@ -259,5 +256,5 @@ def test_a_reply_that_ends_the_turn_with_text_closes_it_with_that_text() -> None
         replied(Fork(), "end_turn", Text("An aside.")),
     ],
 )
-def test_a_reply_that_does_not_end_a_turn_the_request_names_closes_nothing(exchanged: Exchanged) -> None:
-    assert moves(exchanged) == ()
+def test_what_does_not_end_a_turn_the_request_names_closes_nothing(observed: Observed) -> None:
+    assert moves(observed) == ()

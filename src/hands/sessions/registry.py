@@ -8,7 +8,7 @@ from loguru import logger
 
 from hands.core import drafts, keyboard
 from hands.core.drafts import DraftOutcome, DraftRequest
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, Note, NotTyped, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Type, Typed, Holding, Unmatched, Unregistered, Unsettled, Withdraw
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, Note, NotTyped, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Type, Typed, Holding, Unclosed, Unmatched, Unregistered, Unsettled, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Stopped, Tick, ToolFinished
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
@@ -64,6 +64,10 @@ class Sessions:
         self._heard: asyncio.Queue[Heard] = asyncio.Queue()
         # Apart from what is heard: a summary takes seconds of model time, which must not hold up a permission request.
         self._story: asyncio.Queue[Story] = asyncio.Queue()
+        # Each session's latest performing of a hook's reply or a read of its repository: what the next one waits on.
+        self._performing: dict[SessionId, asyncio.Task[None]] = {}
+        # What was heard where nothing waits on it, still being performed.
+        self._hearing: set[asyncio.Task[None]] = set()
 
     def now(self) -> Instant:
         return self._clock()
@@ -72,10 +76,45 @@ class Sessions:
         return self._stamp()
 
     async def apply(self, event: Event) -> None:
+        await self._decided(event)
+
+    def hear(self, event: Event) -> None:
+        """Apply an event heard where nothing waits on it: decided now, in the order it was heard, and performed after."""
+        hearing = self._decided(event)
+        self._hearing.add(hearing)
+        hearing.add_done_callback(self._performed)
+
+    def _performed(self, hearing: asyncio.Task[None]) -> None:
+        self._hearing.discard(hearing)
+        if not hearing.cancelled() and (error := hearing.exception()) is not None:
+            # [LAW:no-silent-failure] nothing awaits it to raise to: the effect that failed is its own audit line already.
+            logger.error(f"performing what was heard failed: {type(error).__name__}: {error}")
+
+    def _decided(self, event: Event) -> asyncio.Task[None]:
+        """The event reduced now, and its effects scheduled."""
         before = self._registry
         self._registry, effects = reduce(before, event)
         if effects or self._registry != before:
             self._record(Applied(event))
+        return self._scheduled(effects)
+
+    def _scheduled(self, effects: list[Effect]) -> asyncio.Task[None]:
+        """The effects being performed once what was decided before them of their sessions is.
+
+        [LAW:no-ambient-temporal-coupling] a session's hook is let go only after every read of its repository decided
+        before it: the turn queued behind a turn told from the wire is marked before that turn's Stop hook lets Claude
+        Code go on to run it, whichever of the two is performed first.
+        """
+        sessions = {effect.session for effect in effects if isinstance(effect, Reply | Snapshot | Compare)}
+        after = [self._performing[session] for session in sessions if session in self._performing]
+        performing = asyncio.create_task(self._perform_after(after, effects))
+        self._performing |= dict.fromkeys(sessions, performing)
+        return performing
+
+    async def _perform_after(self, after: list[asyncio.Task[None]], effects: list[Effect]) -> None:
+        if after:  # asyncio.wait refuses an empty set
+            # Only their order matters here: how each went is its own caller's to hear.
+            await asyncio.wait(after)
         await self._perform_all(effects)
 
     async def stop(self, event: Stopped) -> None:
@@ -301,6 +340,8 @@ def _audited(record: AuditRecord) -> tuple[str, str]:
             return "WARNING", f"{type(event).__name__} for session {event.session}, which had already ended"
         case Unmatched(session=session, prompt=prompt):
             return "INFO", f"Stop of turn {prompt} in session {session} ended nothing: its turn was told, or no record read through it names its id"
+        case Unclosed(session=session, prompt=prompt):
+            return "INFO", f"reply closing turn {prompt} in session {session} on the wire ended nothing: its turn was told, or its session is in no turn by that id"
         case Holding(session=session, prompt=prompt):
             return "DEBUG", f"Stop of turn {prompt} in session {session} is held until a record names its id"
         case Unsettled(session=session, prompt=prompt):

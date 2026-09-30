@@ -15,7 +15,7 @@ from typing import Protocol
 from loguru import logger
 
 from hands.core.events import Continued, Interrupted, Read, Taken, Transcribed
-from hands.core.session import Instant, Membership, PromptId, SessionId
+from hands.core.session import Instant, Membership, PromptId, SessionId, said
 from hands.core.status import Stamp
 from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
@@ -232,7 +232,7 @@ class Tails:
             # [LAW:one-source-of-truth] the transcript is the record of what Claude said; the hook's copy stands in only
             # while the turn does not yet end on it. Both are read the same way, so a record padded with whitespace
             # neither misses its stand-in nor hides behind one.
-            reply = _spoken(closing)
+            reply = said(closing)
             stand_in = None if reply == _said_at(steps, len(steps) - 1) else reply
             shown = steps[heard:] if stand_in is None else [*steps[heard:], Said(None, stand_in)]
             # [LAW:types-are-the-program] a turn whose earlier steps went out already is a different thing to
@@ -361,9 +361,4 @@ def _written(session: SessionId, record: Payload) -> Stamp | None:
 def _said_at(steps: list[Step], index: int) -> str | None:
     """What Claude said in the step at this place; None where the turn has no such step, or used a tool there."""
     step = steps[index] if 0 <= index < len(steps) else None
-    return _spoken(step.text) if isinstance(step, Said) else None
-
-
-def _spoken(text: str | None) -> str | None:
-    """A reply as it is compared and told: what Claude wrote without the whitespace around it, and nothing for an empty one."""
-    return None if text is None or not text.strip() else text.strip()
+    return said(step.text) if isinstance(step, Said) else None

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from hands.core.events import Closed, Requested
+from hands.core.events import Closed
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, Garbled, Heard, MainTurn, Message, Observed, Reached, Seconds, Sent, Streamed, Text, Uncopied, Unreached, WireEvent
 from hands.sessions.audit import CopiesLost, Record
@@ -111,16 +111,16 @@ def _headers(pairs: list[object]) -> Mapping[str, str]:
     return headers
 
 
-def moves(observed: Observed) -> tuple[Requested | Closed, ...]:
-    """What a session's exchange says of its turn: a request of it went out, or the reply that closed it came back."""
+def moves(observed: Observed) -> tuple[Closed, ...]:
+    """What a session's exchange says of its turn: the reply that closed it came back."""
     match observed:
-        case Sent(session=str() as session, kind=MainTurn(prompt=str() as prompt)):
-            return (Requested(SessionId(session), prompt),)
         case Exchanged(session=str() as session, kind=MainTurn(prompt=str() as prompt), reply=Reached(body=Streamed(message=Message(stop_reason="end_turn") as message))):
-            closing = "\n\n".join(block.text for block in message.content if isinstance(block, Text))
-            return (Closed(SessionId(session), prompt, closing),) if closing else ()
+            # The last text block, as the Stop hook's last_assistant_message and the transcript's last step hold it:
+            # Claude Code records each block of a reply on its own.
+            texts = [block.text for block in message.content if isinstance(block, Text)]
+            return (Closed(SessionId(session), prompt, texts[-1]),) if texts and texts[-1] else ()
         case _:
-            # A request that names no turn, a subagent's or a fork's, a reply that asks for a tool or never came whole:
+            # A request, one that names no turn, a subagent's or a fork's, a reply that asks for a tool or never came whole:
             # nothing of the turn's end, which its Stop hook still tells. Each is on its exchange's own audit line.
             return ()
 

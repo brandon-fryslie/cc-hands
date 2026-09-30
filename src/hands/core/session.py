@@ -242,13 +242,6 @@ class Untold:
     asking: bool
 
 
-# Each ending of a turn is heard twice: its reply on the wire, and then its Stop hook. Whichever comes first tells it, and
-# this is which of the two is still to come: "stop", the wire told it and its Stop will end nothing; "wire", something
-# else told it and its reply heard on the wire now is that same ending, late; "none", the turn went on since it was
-# told, as it does after another Stop hook blocked its Stop, so its next ending is new, whichever hears it first.
-Echo = Literal["stop", "wire", "none"]
-
-
 @dataclass(frozen=True)
 class Told:
     """The last turn is told: None until one is. At the prompt, a Stop of this turn ends it again only when the turn went
@@ -257,7 +250,15 @@ class Told:
     turn: PromptId | None = None
     others: frozenset[PromptId] = frozenset()
     asking: bool = False
-    echo: Echo = "wire"
+    # The reply it was told with, as `said` leaves it; None when it was told with none. Each ending of a turn is heard
+    # twice, its reply on the wire and its Stop hook, in either order: [LAW:one-source-of-truth] the reply both carry is
+    # what says the second is the same ending, and not a turn gone on after another Stop hook blocked its Stop.
+    closing: str | None = None
+
+
+def said(text: str | None) -> str | None:
+    """A reply as it is compared and told: what Claude wrote without the whitespace around it, and nothing for an empty one."""
+    return None if text is None or not text.strip() else text.strip()
 
 
 Turn = Opened | Untold | Told

@@ -33,6 +33,15 @@ class Unmatched:
 
 
 @dataclass(frozen=True)
+class Unclosed:
+    """A reply on the wire that ended nothing: its turn was told already, or the session is in no turn its id names. The
+    reply itself is the line of the event it came in."""
+
+    session: SessionId
+    prompt: PromptId
+
+
+@dataclass(frozen=True)
 class Holding:
     """A Stop under an id no record read yet names, held until one is: Claude Code waits on its hook meanwhile."""
 
@@ -48,7 +57,7 @@ class Unsettled:
     prompt: PromptId
 
 
-AuditRecord = Unregistered | AfterEnd | Unmatched | Holding | Unsettled
+AuditRecord = Unregistered | AfterEnd | Unmatched | Unclosed | Holding | Unsettled
 
 
 @dataclass(frozen=True)

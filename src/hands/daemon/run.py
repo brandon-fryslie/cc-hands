@@ -23,7 +23,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
+from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,7 +41,6 @@ from pipecat.workers.runner import WorkerRunner
 from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
-from hands.core.events import Closed, Requested
 from hands.core.wire import UPSTREAM, Exchanged, Heard, Observed, Sent
 from hands.sessions.audit import AuditLog, LLMChosen, ProxyListening, Record, TapListening, failures_to
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
@@ -291,13 +290,11 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=time.time)
     audit.record(ProxyListening(url=proxy.url, upstream=UPSTREAM))
     # [LAW:one-source-of-truth] the working sessions' exchanges reach the same observer as the brain's, so the log and
-    # whatever listens hear one wire; and what they say of a turn reaches the registry, in the order it was heard.
-    turns: asyncio.Queue[Requested | Closed] = asyncio.Queue()
-
+    # whatever listens hear one wire; and what they say of a turn reaches the registry as it is heard, as a hook does.
     def tapped(observed: Observed) -> None:
         wire.observe(observed)
         for move in moves(observed):
-            turns.put_nowait(move)
+            sessions.hear(move)
 
     tap = await serve_tap(home.wire, tapped, audit.record, clock=time.time)
     audit.record(TapListening(path=home.wire))
@@ -319,7 +316,7 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
                 if voice is not None:
                     summarise = minded.summariser(TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences, turns)
+                    await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -379,7 +376,6 @@ async def converse(
     minded: Mind,
     store: SummaryStore,
     sentences: Summariser,
-    turns: asyncio.Queue[Requested | Closed],
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
@@ -394,7 +390,7 @@ async def converse(
 
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
-        # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the tapped turns no turn is told from the wire, without the relay
+        # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
         # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
         # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
         if not task.cancelled() and (error := task.exception()) is not None:
@@ -411,7 +407,6 @@ async def converse(
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
-        asyncio.create_task(keep_applying(turns, sessions.apply), name="the tapped turns"),
         asyncio.create_task(relay(sessions, minded.telling, voice.worker.queue_frame), name="the session speech relay"),
         asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record, lambda: summaries(home), channel.say, store.keep, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
@@ -472,12 +467,6 @@ async def converse(
         raise failures[0]
     if not quit_event.is_set():
         raise RuntimeError("the pipeline ended without being told to stop")
-
-
-async def keep_applying[E](events: asyncio.Queue[E], apply: Callable[[E], Awaitable[None]]) -> None:
-    """Apply each event as it is queued, one at a time, until cancelled."""
-    while True:
-        await apply(await events.get())
 
 
 def wire_to(record: Record) -> Callable[[Observed], None]:
