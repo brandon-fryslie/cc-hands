@@ -374,7 +374,7 @@ has not. A session first read at its prompt went idle before hands followed it: 
 `due` is None, and only `idle_prompt` nudges it. A session with a turn opened that the
 status is yet to say runs is not nudged. `asking` on the last turn (`Told` or `Untold`)
 makes the nudge "X has a question for you." rather than "X is waiting for you." It is true for the two things the telling
-counts as waiting: a reply the `Stop` carried that the narration's own `reported_and_asked`
+counts as waiting: a reply the `Stop` carried that the narration's own `asked_in`
 reads as asking, and a turn that ended at an `AskUserQuestion` dialog with nothing run
 after it, the dialog still up or escaped. An Escape kills the dialog's hook, so the session's
 dialog becomes `Unanswered`, and a tool running, a message typed, or another permission
@@ -893,10 +893,9 @@ Nothing is read verbatim. Claude writes for a screen, and markdown, code, tables
 and hashes cannot be heard as written, so every word that reaches the speaker is
 summarised or transformed first.
 
-**What runs today** is the top level of the tree: each finished turn becomes a headline of
-the configured length, followed by what git says the turn did, followed by the turn's
-question where it ended on one. The sections below the headline are built and not yet
-spoken. When a live session's `Stop` arrives, the reducer emits
+**What runs today** is the top level of the tree: each finished turn is handed to the
+intermediary with what git says the turn did and the turn's question where it ended on
+one, as described below. The sections are built and not yet spoken. When a live session's `Stop` arrives, the reducer emits
 `Summarise(session, closing)`, and `narrate` in `hands.voice.narrator` asks the tail what
 that session has not been told. A turn opens at the last user record that is
 not `isMeta`, not `isCompactSummary`, whose content is a string or a block list with no
@@ -945,12 +944,13 @@ The narrator hands a finished turn to the intermediary as a turn of its own, and
 intermediary says it in its own words, so what the user heard is in its history and it can
 answer about it. A summariser beside it, asked with `/btw`, left the brain's history
 without it: on 2026-09-30 hands told Brandon a session asked about PR 68 and 69, and asked
-what those were, the brain said no session showed them. What is handed is the reply the
-turn ended on — the session's own account, whose author knows what PR 68 is — bounded at
+what those were, the brain said no session showed them. What is handed is the last thing
+the turn said — the session's own account, whose author knows what PR 68 is — bounded at
 `REPLY_SHOWN` characters, since every turn told grows the brain's history toward
-compaction; then what hands read of the turn that the reply may not say, from the
+compaction; then what hands read of the turn that those words may not say, from the
 narration tree; then the question it is waiting on, which the intermediary is told to end
-on. Each working session is told at `SessionStart`, by the plugin's shim, to end every
+on. If the brain cannot take the turn, hands says as written that it could not tell it,
+and the question. Each working session is told at `SessionStart`, by the plugin's shim, to end every
 turn with a concise, speakable overview. A turn the user stopped before it did anything,
 and the question alone when summaries are off, are said as written with no model. Each
 telling is written to the audit log as `Recounted`, with whether the model was handed it.
@@ -959,7 +959,9 @@ read it." without the model and out of the context, and logged as a `Failure` li
 
 For the brain, a narration waits in a lane of `BrainStage`'s own, never in Pipecat's
 context, and the user's turn goes ahead of it: a narration that waited while the brain
-was answering is asked only once no words of the user's are waiting.
+was answering is asked only once no words of the user's are waiting. What the narrator
+says as written waits in the same lane (`Aloud`), so a session's end is heard after its
+last turn. `BrainSpoke.waited` is how long each turn waited in its lane.
 
 The rest of this section is planned: step summaries built as steps arrive, children
 below the top level, and streaming.
@@ -1086,7 +1088,7 @@ that ends on a question is waiting on the listener whether or not a hook blocks,
 nothing but an interruption followed, and what the closing text asks — the turn's last step,
 since a question it worked past was answered or did not need one. A dialog Claude went on
 past was declined with a message or refused by a hook, as 5 of the 94 unanswered in this machine's
-transcripts were; the other 89 were escaped, and ended the turn on the question. `reported_and_asked` is the one reading of a
+transcripts were; the other 89 were escaped, and ended the turn on the question. `asked_in` is the one reading of a
 text for questions, used on Claude's closing text by the narration and the nudge
 `[LAW:one-source-of-truth]`. A question put to the listener outright counts wherever
 it stands ("want me to do it?" before two more sections). Where the text ends, an offer
@@ -1292,9 +1294,7 @@ one per request (`hands.core.turn.turns`), and hands over the newest forty with 
 for each finished turn, or its request while the sentence is unsaid; `before` pages back,
 and `read_turn` pages one turn's steps from a mark. A finished turn never changes, so its key is not its text but its identity
 (`turn_digest`): its first record's id and how many things happened in it, under no
-instruction. Narration keeps a turn's headline under that key when it reports the whole
-turn (`Recounted.kept`), so a turn heard aloud is not summarised again; the rest are
-wanted at each read and said by the same task, one `TurnsSummarised` line per pass, which
+instruction. The turns are wanted at each read and said by the same task, one `TurnsSummarised` line per pass, which
 skips what was said after it was queued. Whether the last turn is finished is the
 registry's to say, and only `Idle` or an ended session proves it: an `Unreported` one may
 be mid-turn.

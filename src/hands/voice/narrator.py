@@ -24,7 +24,7 @@ from hands.sessions.registry import Sessions
 from hands.sessions.summaries import DEFAULT, Summaries
 from hands.sessions.tail import Tails
 from hands.voice.readback import spoken_name
-from hands.voice.speech import Telling, handed
+from hands.voice.speech import Telling, as_written, bounded, handed
 
 # How much of a reply is handed to the model. Every turn told grows the model's history toward compaction, so what is
 # handed is bounded; a session asked to end on a concise overview writes far less than this.
@@ -56,7 +56,7 @@ async def narrate(
                 switch = await _switch(aloud)
                 told = await recount(tails, session, turn, closing, name, record, await read.taken(session), switch, telling)
             case SessionGone():
-                told = TTSSpeakFrame(f"The session {name} is gone.")
+                told = as_written(TTSSpeakFrame(f"The session {name} is gone."), telling)
         if told is not None:
             await queue_frame(told)
 
@@ -84,7 +84,7 @@ async def recount(
     try:
         told = await tails.tell(session, turn, closing)
     except _FAILURES as error:
-        return _unread(session, name, error)
+        return as_written(_unread(session, name, error), telling)
     if told is None or not (told.turn.steps or delta):
         logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")
         return None
@@ -94,13 +94,15 @@ async def recount(
     match switch:
         case "on" if did:
             text = _news(name, told.turn, tree)
-            frame: Frame | None = handed(text, telling)
+            # Said as written if the model cannot take it: what the turn is waiting on is the daemon's, and still heard.
+            unsaid = " ".join(part for part in (f"{name} finished a turn, and I could not tell it.", tree.asked()) if part)
+            frame: Frame | None = handed(text, unsaid, telling)
         case "on":
             text = tree.said()
-            frame = TTSSpeakFrame(f"{name}: {text}")
+            frame = as_written(TTSSpeakFrame(f"{name}: {text}"), telling)
         case "off":
             text = tree.asked()
-            frame = TTSSpeakFrame(f"{name}: {text}") if text else None
+            frame = as_written(TTSSpeakFrame(f"{name}: {text}"), telling) if text else None
             logger.info(f"session {session} finished a turn, and spoken summaries are off, so {'only its question is' if text else 'nothing is'} said")
     record(
         Recounted(
@@ -117,10 +119,14 @@ async def recount(
 
 
 def _news(name: str, turn: Turn, tree: Narration) -> str:
-    """The turn as the model is handed it: the reply that ended it, what hands read of it that the reply may not say, and
-    what it is waiting on, which the model ends by asking."""
-    replied = [step.text for step in turn.steps[-1:] if isinstance(step, Said)]
-    reply = f"It ended with this reply:\n\n{_bounded(replied[0])}\n\n" if replied else "It ended with no reply. "
+    """The turn as the model is handed it: the last thing the session said, what hands read of it that those words may
+    not say, and what it is waiting on, which the model ends by asking.
+
+    The last words wherever they fall: a turn interrupted mid-work, or one ending on a dialog, said what it had done
+    before the step that ended it.
+    """
+    replied = [step.text for step in turn.steps if isinstance(step, Said)][-1:]
+    reply = f"The last thing it said was:\n\n{bounded(replied[0], REPLY_SHOWN)}\n\n" if replied else "It said nothing. "
     read = " ".join(segment.text for segment in (*tree.interrupted, *tree.repository))
     facts = f"From its record, hands adds: {read} " if read else ""
     asked = tree.asked()
@@ -129,10 +135,6 @@ def _news(name: str, turn: Turn, tree: Narration) -> str:
         f"[hands] The Claude Code session {name} finished a turn. {reply}{facts}"
         f"Tell the user what it did, in your own words, in one or two spoken sentences, naming the session. {ending}"
     )
-
-
-def _bounded(reply: str) -> str:
-    return reply if len(reply) <= REPLY_SHOWN else f"{reply[:REPLY_SHOWN]}... (cut short)"
 
 
 async def _switch(aloud: Callable[[], Summaries]) -> Summaries:
@@ -148,7 +150,7 @@ async def _switch(aloud: Callable[[], Summaries]) -> Summaries:
         return DEFAULT
 
 
-def _unread(session: SessionId, name: str, error: Exception) -> Frame:
+def _unread(session: SessionId, name: str, error: Exception) -> TTSSpeakFrame:
     """What is said of a turn whose transcript could not be read: that, as a system fact is, with no model.
 
     [LAW:no-silent-failure] logged with the reason, which is an audit line. Nothing is marked told, so a later telling

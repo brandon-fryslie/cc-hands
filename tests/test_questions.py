@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.narration import open_questions, reported_and_asked
+from hands.core.narration import asked_in, open_questions, reading
 from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Opening, Said, Step, Turn
 from hands.sessions.transcript import turn_record
 from hands.sessions.turning import Turning
@@ -56,7 +56,7 @@ def _folded(transcript: Path) -> tuple[Opening, list[Step]]:
 
 
 def asked(text: str) -> list[str]:
-    return reported_and_asked(text)[1]
+    return asked_in(text)
 
 
 @pytest.mark.parametrize(
@@ -122,12 +122,11 @@ def test_a_text_that_asks_the_listener_nothing_is_not_read_as_asking(text: str) 
 
 
 def test_a_sentence_wrapped_over_two_lines_is_one_sentence() -> None:
-    assert reported_and_asked("The rename is in, but three session tests\nstill fail.") == (["The rename is in, but three session tests still fail."], [])
+    assert reading("The rename is in, but three session tests\nstill fail.") == [(False, "The rename is in, but three session tests still fail.")]
 
 
 def test_a_question_mark_muted_for_being_quoted_is_given_back_to_the_sentence_that_holds_it() -> None:
-    reported, questions = reported_and_asked('It asks "why?" at the end. Want me to change that?')
-    assert reported == ['It asks "why?" at the end.'] and questions == ["Want me to change that?"]
+    assert reading('It asks "why?" at the end. Want me to change that?') == [(False, 'It asks "why?" at the end.'), (True, "Want me to change that?")]
 
 
 @pytest.mark.parametrize("case", cases(), ids=lambda case: case.name)

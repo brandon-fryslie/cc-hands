@@ -154,13 +154,15 @@ Asker = Literal["user", "hands"]
 @dataclass(frozen=True)
 class BrainSpoke:
     """What a brain turn handed to the speaker, and the exchanges on the wire its words came from; `readbacks` is what hands
-    said for it once its next request was held. `asker` is whose turn it was: the user's words, or hands' narration."""
+    said for it once its next request was held. `asker` is whose turn it was: the user's words, or hands' narration.
+    `waited` is how long, in seconds, the turn waited in its lane for the brain before it was written."""
 
     exchanges: tuple[str, ...]
     text: str
     readbacks: tuple[str, ...]
     interrupted: bool
     asker: Asker
+    waited: float
 
 
 @dataclass(frozen=True)

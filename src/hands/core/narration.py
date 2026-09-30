@@ -162,9 +162,10 @@ class Narration:
 def narration(turn: Turn, delta: Delta) -> Narration:
     """The tree for one turn, all of it arithmetic over the turn's steps and what git says it came to.
 
-    Whether the turn asked anything is the daemon's to say, from the turn's own closing text and its
-    `AskUserQuestion` calls, and never a model's: a model asked to end on the turn's question can drop it, and can
-    end on one the turn never asked [LAW:one-source-of-truth].
+    Whether the turn asked anything, and what, is the daemon's to find, from the turn's own closing text and its
+    `AskUserQuestion` calls, and never a model's: a model asked to find it can miss one, and can find one the turn
+    never asked [LAW:one-source-of-truth]. The model it is handed to puts it in its own words; whatever hands says
+    as written, with no model, says it as found.
     """
     waiting = open_questions(turn)
     sectioned = [step for step in turn.steps if not isinstance(step, Questioned | Interruption)]
@@ -229,7 +230,7 @@ def open_questions(turn: Turn) -> tuple[Open, ...]:
         for question in step.questions
         if question.answer is None
     ]
-    closing = [InText(step, " ".join(asked)) for step in turn.steps[-1:] if isinstance(step, Said) for asked in [reported_and_asked(step.text)[1]] if asked]
+    closing = [InText(step, " ".join(asked)) for step in turn.steps[-1:] if isinstance(step, Said) for asked in [asked_in(step.text)] if asked]
     return (*unanswered, *closing)
 
 
@@ -303,10 +304,9 @@ _OFFERED = re.compile(
 )
 
 
-def reported_and_asked(text: str) -> tuple[list[str], list[str]]:
-    """The text's sentences, split into what it told and what it asked of the listener, as `reading` reads them."""
-    read = reading(text)
-    return [sentence for asks, sentence in read if not asks], [sentence for asks, sentence in read if asks]
+def asked_in(text: str) -> list[str]:
+    """The sentences in which the text asks the listener something, as `reading` reads them."""
+    return [sentence for asks, sentence in reading(text) if asks]
 
 
 def reading(text: str) -> list[tuple[bool, str]]:
@@ -321,8 +321,8 @@ def reading(text: str) -> list[tuple[bool, str]]:
     last paragraph, or the one that introduces the list it ends on — and only where its own paragraph does not
     go on to tell something after it: "Why did it fail? The cache was stale." is the text asking itself, and it
     answered. An offer is asked where the text ends on it: "Say the word and I'll do it." The shapes were read
-    off 3,038 closing texts in this machine's transcripts on 2026-09-25, and the eval holds a real turn of each
-    shape that decides a case, asked and not.
+    off 3,038 closing texts in this machine's transcripts on 2026-09-25, and tests/fixtures/turns holds a real turn
+    of each shape that decides a case, asked and not.
     """
     muted = _QUOTED.sub(lambda quoted: quoted.group(0).replace("?", _MUTED), _FENCED.sub("", text))
     paragraphs = [paragraph for paragraph in _PARAGRAPH.split(muted.strip()) if paragraph.strip()]

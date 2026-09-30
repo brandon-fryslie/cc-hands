@@ -57,8 +57,7 @@ def turn_digest(turn: Sequence[Happening]) -> Digest | None:
     """The key of a finished turn of a work session, read from what happened in it: its first record, and how many things happened.
 
     A finished turn never changes, so it is keyed by what it is rather than by what it says, and by nobody's
-    instruction: narration's headline and the store's own sentence are both a sentence of the same turn, and whichever
-    is said first is the one kept. The count is what tells a finished turn from the same turn read part way through.
+    instruction. The count is what tells a finished turn from the same turn read part way through.
     None for a turn no record of which carries an id, which has nothing to be known by.
     """
     first = next((happening.ref for happening in turn if happening.ref is not None), None)

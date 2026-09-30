@@ -62,7 +62,7 @@ from hands.core.events import (
 )
 from hands.core.session import Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, Unanswered, UnknownMode, Unnamed, Unreported, Untold, status_stamp
 from hands.core import status
-from hands.core.narration import reported_and_asked
+from hands.core.narration import asked_in
 from hands.core.status import Report, Stamp
 
 # How long before a permission's deadline the one warning is spoken.
@@ -517,7 +517,7 @@ def _asking(closing: str | None, dialog: Dialog | None) -> bool:
     only in the transcript the tail reads, and nothing the reducer is handed carries them; making it the one
     function would take the narrator handing its finding back as an event, after the summariser has answered.
     So each half is read from the reducer's own record of the same fact. The closing text is the Stop's reply,
-    read by the narration's own `reported_and_asked` [LAW:one-source-of-truth]. An unanswered `AskUserQuestion`
+    read by the narration's own `asked_in` [LAW:one-source-of-truth]. An unanswered `AskUserQuestion`
     is a turn that ended at its dialog, still up or escaped, with nothing run after it: the telling counts a dialog
     nothing but an interruption followed. Answered at the keyboard or by voice, the tool ran and the session was
     working again before it stopped; escaped, its hook was killed (`Abandoned`) and the session's dialog is
@@ -533,7 +533,7 @@ def _asking(closing: str | None, dialog: Dialog | None) -> bool:
         case Held(on=Question()) | LetGo(on=Question()) | Unanswered():
             return True
         case _:
-            return closing is not None and bool(reported_and_asked(closing)[1])
+            return closing is not None and bool(asked_in(closing))
 
 
 def _same_call(asked: Blocker, call: FinishedCall) -> bool:

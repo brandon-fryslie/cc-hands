@@ -14,6 +14,7 @@ history as refused; what it handed back, which the model will not be asked to sa
 
 import asyncio
 import json
+import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -50,7 +51,7 @@ from hands.core.wire import (
     tool_answers,
 )
 from hands.sessions.audit import Asker, BrainAnswered, BrainInterrupted, BrainSpoke, Record
-from hands.voice.speech import Narrated
+from hands.voice.speech import Aloud, Narrated
 from hands.voice.tools import Tool
 
 
@@ -100,12 +101,13 @@ class _Turn:
 class BrainStage(FrameProcessor):
     """The LLM stage under the brain: a context in, the brain's words out as LLM text frames, and a barge-in passed on."""
 
-    def __init__(self, brain: Asking, tools: Sequence[Tool], tail: Callable[[], str], record: Record) -> None:
+    def __init__(self, brain: Asking, tools: Sequence[Tool], tail: Callable[[], str], record: Record, clock: Callable[[], float] = time.monotonic) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._brain = brain
         # What hands appends to each request of a turn, composed as that request leaves.
         self._tail = tail
         self._record = record
+        self._now = clock
         self._completes = frozenset(wire_name(tool) for tool in tools if tool.completes)
         self._silences = frozenset(wire_name(tool) for tool in tools if tool.then == "silence")
         # How many of the context's messages the brain has been handed: the rest are new to it.
@@ -113,8 +115,10 @@ class BrainStage(FrameProcessor):
         # [LAW:no-ambient-temporal-coupling] the turn is the brain's, from its write to its result line, not the pipeline's:
         # it runs beside the frames passing through, a barge-in ends what is said of it, and the next is written only
         # once the brain has ended it. What waits is in two lanes, the user's and hands', and the user's goes first.
-        self._contexts: deque[LLMContext] = deque()
-        self._narrations: deque[str] = deque()
+        # Each thing waiting is kept with when it arrived. Hands' lane holds what it says as written beside what it
+        # hands the brain, so a session's story is heard in the order it happened.
+        self._contexts: deque[tuple[LLMContext, float]] = deque()
+        self._hands: deque[tuple[Narrated | Aloud, float]] = deque()
         self._waiting = asyncio.Event()
         self._turn: _Turn | None = None
 
@@ -122,10 +126,10 @@ class BrainStage(FrameProcessor):
         await super().process_frame(frame, direction)
         match frame:
             case LLMContextFrame(context=context):
-                self._contexts.append(context)
+                self._contexts.append((context, self._now()))
                 self._waiting.set()
-            case Narrated(text=text):
-                self._narrations.append(text)
+            case Narrated() | Aloud():
+                self._hands.append((frame, self._now()))
                 self._waiting.set()
             case InterruptionFrame():
                 # [LAW:no-ambient-temporal-coupling] the turn stops being spoken, then the pipeline is told, then the brain:
@@ -141,19 +145,27 @@ class BrainStage(FrameProcessor):
         """Asks the brain each turn the pipeline hands this stage, one at a time, for as long as it runs; returns only by
         raising what stopped it, since a stage that can no longer ask leaves every question unanswered."""
         while True:
-            text, asker = await self._next_turn()
-            # A context frame is a call to answer, not a message: one whose messages an earlier turn already took asks nothing.
-            if text:
-                await self._ask(text, asker)
+            waiting, arrived = await self._upcoming()
+            match waiting:
+                case LLMContext() as context:
+                    # A context frame is a call to answer, not a message: one whose messages an earlier turn already took asks nothing.
+                    if text := self._news(context):
+                        await self._ask(text, "user", (), arrived)
+                case Narrated(text=text, unsaid=unsaid):
+                    await self._ask(text, "hands", (unsaid,), arrived)
+                case Aloud(spoken=spoken):
+                    await self.push_frame(spoken)
 
-    async def _next_turn(self) -> tuple[str, Asker]:
-        """The next turn to ask: the user's words while any wait, since what they said goes ahead of what hands has to tell."""
-        while not (self._contexts or self._narrations):
+    async def _upcoming(self) -> tuple[LLMContext | Narrated | Aloud, float]:
+        """What is next: the user's words while any wait, since what they said goes ahead of what hands has to tell."""
+        while not (self._contexts or self._hands):
             self._waiting.clear()
             await self._waiting.wait()
-        return (self._news(self._contexts.popleft()), "user") if self._contexts else (self._narrations.popleft(), "hands")
+        return self._contexts.popleft() if self._contexts else self._hands.popleft()
 
-    async def _ask(self, text: str, asker: Asker) -> None:
+    async def _ask(self, text: str, asker: Asker, unsaid: Sequence[str], arrived: float) -> None:
+        """One turn of the brain's; `unsaid` is what hands says as written if the brain cannot take it."""
+        waited = self._now() - arrived
         said: asyncio.Queue[str | None] = asyncio.Queue()
         spoken: list[str] = []
         turn = self._turn = _Turn(said, asyncio.create_task(self._speak(said, spoken), name="the brain's words"), spoken)
@@ -167,15 +179,22 @@ class BrainStage(FrameProcessor):
         for readback in turn.readbacks:
             # Said by hands, since the model that would have said it was not asked to go on.
             await self.push_frame(TTSSpeakFrame(readback))
-        self._record(BrainSpoke(tuple(turn.exchanges), "".join(turn.spoken), tuple(turn.readbacks), turn.interrupted, asker))
+        self._record(BrainSpoke(tuple(turn.exchanges), "".join(turn.spoken), tuple(turn.readbacks), turn.interrupted, asker, waited))
         if (error := asked.exception()) is not None:
             # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
             # from its own watch, but one that never took the turn, or could not be typed into, is still running.
             logger.opt(exception=error).error("the brain failed a turn")
+            await self._unsaid(unsaid)
             await self.push_error(f"the brain failed a turn: {error}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         elif (failed := asked.result().error) is not None and not turn.stopped:
             # [LAW:no-silent-failure] said as the API services' failures are: an error from the model's stage.
+            await self._unsaid(unsaid)
             await self.push_error(f"the brain's turn ended in error: {failed}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+
+    async def _unsaid(self, unsaid: Sequence[str]) -> None:
+        """What hands had for the brain to tell, said as written since the brain did not: a system fact, kept out of the context."""
+        for line in unsaid:
+            await self.push_frame(TTSSpeakFrame(line, append_to_context=False))
 
     async def _speak(self, said: asyncio.Queue[str | None], spoken: list[str]) -> None:
         await self.push_frame(LLMFullResponseStartFrame())
