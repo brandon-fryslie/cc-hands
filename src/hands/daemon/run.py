@@ -48,6 +48,7 @@ from hands.sessions.statusfile import keep_reading_statuses
 from hands.sessions.tail import Tails, keep_tailing
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
+from hands.sessions.sentences import Sentences
 from hands.sessions.proxy import UPSTREAM, Wire, serve_proxy
 from hands.sessions.server import serve_hooks
 from hands.sessions.summaries import summaries
@@ -68,6 +69,9 @@ from hands.voice.pipeline import (
 from hands.voice.narrator import narrate
 from hands.voice.speech import Pushed, Tailed, Telling, relay
 from hands.voice.summary import Summariser, summariser
+from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
+from hands.voice.backlog_summaries import SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS, keep_summarising
+from hands.voice.sentences import SummaryStore
 from hands.voice.summary_instruction import TURN_SUMMARY_INSTRUCTION
 from hands.voice.briefing import brief, tail
 from hands.voice.conversation import record_turns
@@ -275,7 +279,8 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     for signal_number in QUIT_SIGNALS:
         loop.add_signal_handler(signal_number, quit_event.set)
     voice: Voice | None = None
-    tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions)]
+    store = SummaryStore(Sentences(home.sentences))
+    tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store)]
     try:
         config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions, quit_event)
         if config is not None:
@@ -284,7 +289,8 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm), "the voice load"), heart, sessions, quit_event)
                 if voice is not None:
                     summarise = summariser(config.llm, proxy.url, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas, minded)
+                    sentences = summariser(config.llm, proxy.url, SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
+                    await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -341,6 +347,8 @@ async def converse(
     record: Record,
     deltas: Deltas,
     minded: Mind,
+    store: SummaryStore,
+    sentences: Summariser,
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
@@ -364,6 +372,9 @@ async def converse(
             quit_event.set()
 
     await brief(sessions, minded.telling, voice.worker.queue_frame)
+    # First sight of every project a session is already working in: its backlog is said before anyone asks for it.
+    for listing in sessions.live():
+        store.want(listing.session.membership.cwd)
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
@@ -371,6 +382,7 @@ async def converse(
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
         asyncio.create_task(relay(sessions, minded.telling, voice.worker.queue_frame), name="the session speech relay"),
         asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record, lambda: summaries(home), channel.say, changes=deltas), name="the session narrator"),
+        asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),
     ]

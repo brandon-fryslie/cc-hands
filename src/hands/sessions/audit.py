@@ -193,6 +193,25 @@ class Recounted:
 
 
 @dataclass(frozen=True)
+class Summarised:
+    """One pass of the summary store over a project's backlog: how much of it was already said, and what this pass said.
+
+    `unsaid` is what is still without a sentence when the pass ends: things the summariser failed on or left out, and
+    the parents above them.
+    """
+
+    project: str
+    outcome: Literal["said", "partial", "unread"]
+    things: int
+    known: int
+    said: int
+    unsaid: int
+    calls: int
+    failed_calls: int
+    seconds: float
+
+
+@dataclass(frozen=True)
 class Failure:
     """An error the daemon logged: where it was raised and what it said."""
 
@@ -222,6 +241,7 @@ Entry = (
     | Called
     | Announced
     | Recounted
+    | Summarised
     | Failure
 )
 Record = Callable[[Entry], None]

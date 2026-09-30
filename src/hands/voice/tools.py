@@ -27,9 +27,11 @@ from hands.core.session import Blocker, CommandName, Dialog, Held, Idle, LetGo, 
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.turn import Budget, Happening, Ref, describe
 from hands.sessions.backfill import Unseen, read_since
+from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
 from hands.sessions.audit import Called, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.registry import Listing, Sessions
+from hands.voice.sentences import SummaryStore
 from hands.voice.readback import keyboard_readback, readback, spoken_mode, spoken_name, spoken_title
 from hands.voice.speech import answer_readback
 
@@ -144,13 +146,13 @@ def audited(tool: Tool, record: Record) -> Tool:
     return replace(tool, body=call)
 
 
-def intermediary_tools(sessions: Sessions) -> list[Tool]:
+def intermediary_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them.
 
     [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
     tool added here is one the eval's model is offered too.
     """
-    return [list_sessions_tool(sessions), read_session_tool(sessions), *draft_tools(sessions), *keyboard_tools(sessions), *permission_tools(sessions), stay_silent_tool()]
+    return [list_sessions_tool(sessions), read_session_tool(sessions), *backlog_tools(sessions, store), *draft_tools(sessions), *keyboard_tools(sessions), *permission_tools(sessions), stay_silent_tool()]
 
 
 def stay_silent_tool() -> Tool:
@@ -270,6 +272,91 @@ def _page(happenings: list[Happening]) -> list[Happening]:
     while end < len(happenings) and happenings[end].ref == ref:
         end += 1
     return happenings[:end]
+
+
+def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
+    """read_backlog, read_ticket: a session's project backlog, a sentence per ticket first and the ticket's own words on request."""
+
+    async def read_backlog(session: str) -> Result:
+        """The backlog of the project a session works in: one sentence for the whole of it, and each epic and loose ticket in the order they are to be worked, each with its own sentence.
+
+        Call this when the user asks what is in the backlog, what is left to do, or what comes next. Answer from the
+        sentences; call read_ticket to hear more of one. A ticket with no summary yet has only its title, and its
+        sentence is being written.
+
+        Args:
+            session: The id, from list_sessions, of a session working in the project.
+        """
+        match await _backlog(sessions, store, session):
+            case str() as error:
+                return {"error": error}
+            case (backlog, said):
+                roots = backlog.roots()
+                return {
+                    **({"summary": said[BACKLOG]} if BACKLOG in said else {}),
+                    "items": [_ticket_line(backlog, said, id) for id in roots],
+                    "unsummarised": sum(id not in said for id in roots),
+                }
+
+    async def read_ticket(session: str, ticket: str, full: bool = False) -> Result:
+        """One ticket or epic from a session's project backlog: its sentence, where it sits, and what is still open under it.
+
+        Call this when the user asks about a ticket or an epic, such as how an epic is going. Set `full` only when
+        the user wants the detail the sentence leaves out: it hands over the ticket's whole description and every
+        comment on it, which is long.
+
+        Args:
+            session: The id, from list_sessions, of a session working in the project.
+            ticket: The ticket's id, from read_backlog or an earlier read_ticket.
+            full: True to be handed the ticket's own words: its description and its comments.
+        """
+        match await _backlog(sessions, store, session):
+            case str() as error:
+                return {"error": error}
+            case (backlog, said) if ticket not in backlog.tickets:
+                return {"error": f"the backlog has no ticket {ticket}"}
+            case (backlog, said):
+                parent = backlog.parent.get(ticket)
+                found = backlog.tickets[ticket]
+                return {
+                    **_ticket_line(backlog, said, ticket),
+                    **({} if parent is None else {"parent": _ticket_line(backlog, said, parent)}),
+                    "open_children": [_ticket_line(backlog, said, child) for child in backlog.open_children(ticket)],
+                    **({"description": found.description, "comments": [{"by": comment.by, "at": comment.at, "body": comment.body} for comment in backlog.comments.get(ticket, ())]} if full else {}),
+                }
+
+    return [tool(read_backlog), tool(read_ticket)]
+
+
+async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tuple[Backlog, Mapping[str, str]] | str:
+    """The session's project backlog read fresh, and every sentence already said of it; or why it could not be read."""
+    member = sessions.membership(SessionId(session))
+    if member is None:
+        return f"there is no session {session}"
+    try:
+        backlog = await read_backlog(member.cwd)
+    except (Unread, Rejected) as error:
+        # [LAW:no-silent-failure] the model is told why it got nothing, and the log keeps it.
+        logger.error(f"cannot read the backlog of session {session} in {member.cwd}: {error}")
+        return f"the backlog in {member.cwd} could not be read: {error}"
+    # Every read is a sighting: what changed since the last pass is said in the background, never while this call waits.
+    store.want(member.cwd)
+    return backlog, store.reckon(backlog.thing()).said
+
+
+def _ticket_line(backlog: Backlog, said: Mapping[str, str], id: str) -> dict[str, object]:
+    """A ticket as the backlog tools hand it over: its sentence where one is said, its state, and for a parent, how far its children are."""
+    ticket = backlog.tickets[id]
+    children = backlog.children.get(id, ())
+    open_children = backlog.open_children(id)
+    return {
+        "id": id,
+        "title": ticket.title,
+        **({"summary": said[id]} if id in said else {}),
+        # An epic has no status of its own in lit; how far it is lies in its children's counts.
+        **({} if ticket.status is None else {"status": ticket.status}),
+        **({"children_open": len(open_children), "children_done": len(children) - len(open_children)} if children else {}),
+    }
 
 
 def standing(sessions: Sessions) -> list[dict[str, str]]:
