@@ -7,8 +7,8 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from hands.core.delta import Delta
-from hands.core.effects import Summarise
-from hands.core.events import Closed, Joined, Prompted, StatusReported, Stopped, Taken
+from hands.core.effects import SessionGone, Summarise
+from hands.core.events import Closed, Ended, Joined, Prompted, StatusReported, Stopped, Taken
 from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
@@ -620,3 +620,32 @@ async def test_a_stop_whose_turn_the_wire_told_holds_claude_code_until_the_turn_
     repository.release.set()
     await asyncio.wait_for(stopping, 2.0)
     assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "Done.")
+
+
+class Reading:
+    """A repository reader whose readings take as long as the test says."""
+
+    def __init__(self) -> None:
+        self.started, self.release = asyncio.Event(), asyncio.Event()
+
+    async def snapshot(self, session: SessionId, cwd: Path) -> None: ...
+
+    async def compare(self, session: SessionId, again: bool) -> None:
+        self.started.set()
+        await self.release.wait()
+
+    async def taken(self, session: SessionId) -> Delta:
+        return Delta()
+
+
+async def test_a_session_is_told_gone_only_after_the_turn_it_finished_is_told(tmp_path: Path) -> None:
+    repository = Reading()
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=repository)
+    await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    sessions.hear(Closed(SID, PromptId("p1"), "Done."))
+    await asyncio.wait_for(repository.started.wait(), 2.0)
+    sessions.hear(Ended(SID, "other"))
+    repository.release.set()
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "Done.")
+    assert await asyncio.wait_for(sessions.story(), 2.0) == SessionGone(SID)

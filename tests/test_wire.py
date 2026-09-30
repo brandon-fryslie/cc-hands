@@ -82,6 +82,11 @@ def test_a_main_turn_names_the_turn_it_asks_for_by_the_prompt_id_its_billing_lin
     assert classify("/v1/messages", body) == MainTurn(PromptId("74fbc62d-8c76-4ce6-b21a-1057ac8e59f9"))
 
 
+def test_a_billing_line_ends_at_its_line_when_more_of_the_system_prompt_follows_it() -> None:
+    body = {**request(said("go on", marked=True)), "system": "x-anthropic-billing-header: cc_version=2.1.285.a1b; cc_prompt_id=p1\nYou are Claude Code; be brief."}
+    assert classify("/v1/messages", body) == MainTurn(PromptId("p1"))
+
+
 def test_a_subagent_s_request_under_its_session_s_header_is_not_a_main_turn() -> None:
     body = billed("x-anthropic-billing-header: cc_version=2.1.285.a1b; cc_entrypoint=cli; cc_is_subagent=true; cc_prompt_id=74fbc62d-8c76-4ce6-b21a-1057ac8e59f9;", said("go on", marked=True))
     assert classify("/v1/messages", body) == Subagent()

@@ -64,10 +64,10 @@ class Sessions:
         self._heard: asyncio.Queue[Heard] = asyncio.Queue()
         # Apart from what is heard: a summary takes seconds of model time, which must not hold up a permission request.
         self._story: asyncio.Queue[Story] = asyncio.Queue()
-        # Each session's latest performing of a hook's reply or a read of its repository: what the next one waits on.
+        # Each session's latest performing still under way: what the next of that session's waits on.
         self._performing: dict[SessionId, asyncio.Task[None]] = {}
         # What was heard where nothing waits on it, still being performed.
-        self._hearing: set[asyncio.Task[None]] = set()
+        self._hearing: set[asyncio.Future[list[None]]] = set()
 
     def now(self) -> Instant:
         return self._clock()
@@ -76,7 +76,8 @@ class Sessions:
         return self._stamp()
 
     async def apply(self, event: Event) -> None:
-        await self._decided(event)
+        # Shielded: the event is in the registry already, so a caller that gives up never costs it its effects.
+        await asyncio.shield(self._decided(event))
 
     def hear(self, event: Event) -> None:
         """Apply an event heard where nothing waits on it: decided now, in the order it was heard, and performed after."""
@@ -84,13 +85,13 @@ class Sessions:
         self._hearing.add(hearing)
         hearing.add_done_callback(self._performed)
 
-    def _performed(self, hearing: asyncio.Task[None]) -> None:
+    def _performed(self, hearing: asyncio.Future[list[None]]) -> None:
         self._hearing.discard(hearing)
         if not hearing.cancelled() and (error := hearing.exception()) is not None:
             # [LAW:no-silent-failure] nothing awaits it to raise to: the effect that failed is its own audit line already.
             logger.error(f"performing what was heard failed: {type(error).__name__}: {error}")
 
-    def _decided(self, event: Event) -> asyncio.Task[None]:
+    def _decided(self, event: Event) -> asyncio.Future[list[None]]:
         """The event reduced now, and its effects scheduled."""
         before = self._registry
         self._registry, effects = reduce(before, event)
@@ -98,23 +99,30 @@ class Sessions:
             self._record(Applied(event))
         return self._scheduled(effects)
 
-    def _scheduled(self, effects: list[Effect]) -> asyncio.Task[None]:
-        """The effects being performed once what was decided before them of their sessions is.
+    def _scheduled(self, effects: list[Effect]) -> asyncio.Future[list[None]]:
+        """The effects being performed, each session's once what was decided before them of that session is.
 
-        [LAW:no-ambient-temporal-coupling] a session's hook is let go only after every read of its repository decided
-        before it: the turn queued behind a turn told from the wire is marked before that turn's Stop hook lets Claude
-        Code go on to run it, whichever of the two is performed first.
+        [LAW:no-ambient-temporal-coupling] one session's effects are performed in the order they were decided, and no
+        session's wait on another's: the turn queued behind a turn told from the wire is marked before that turn's Stop
+        hook lets Claude Code go on to run it, and a turn is told before its session is said to be gone.
         """
-        sessions = {effect.session for effect in effects if isinstance(effect, Reply | Snapshot | Compare)}
-        after = [self._performing[session] for session in sessions if session in self._performing]
+        grouped: dict[SessionId | None, list[Effect]] = {}
+        for effect in effects:
+            grouped.setdefault(_ordered_by(effect), []).append(effect)
+        return asyncio.gather(*(self._chained(session, group) for session, group in grouped.items()))
+
+    def _chained(self, session: SessionId | None, effects: list[Effect]) -> asyncio.Task[None]:
+        after = None if session is None else self._performing.get(session)
         performing = asyncio.create_task(self._perform_after(after, effects))
-        self._performing |= dict.fromkeys(sessions, performing)
+        if session is not None:
+            self._performing[session] = performing
+            performing.add_done_callback(lambda done: self._performing.pop(session) if self._performing.get(session) is done else None)
         return performing
 
-    async def _perform_after(self, after: list[asyncio.Task[None]], effects: list[Effect]) -> None:
-        if after:  # asyncio.wait refuses an empty set
-            # Only their order matters here: how each went is its own caller's to hear.
-            await asyncio.wait(after)
+    async def _perform_after(self, after: asyncio.Task[None] | None, effects: list[Effect]) -> None:
+        if after is not None:
+            # Only its order matters here: how it went is its own caller's to hear.
+            await asyncio.wait({after})
         await self._perform_all(effects)
 
     async def stop(self, event: Stopped) -> None:
@@ -316,6 +324,15 @@ class Sessions:
             return
         logger.info(f"replying to session {session} request {request}: {reply}")
         waiting.set_result(reply)
+
+
+def _ordered_by(effect: Effect) -> SessionId | None:
+    """The session whose order the effect keeps; None for one that waits on nothing: a line, or what is heard."""
+    match effect:
+        case Reply(session=session) | Summarise(session=session) | SessionGone(session=session) | Snapshot(session=session) | Compare(session=session):
+            return session
+        case Audit() | Speak() | Narrate() | Note():
+            return None
 
 
 def _listing[S: Known](session: S) -> Listing[S]:

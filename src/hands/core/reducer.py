@@ -333,6 +333,11 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # busy again 93 ms apart (2.1.283), inside one status read. Told as it stands, and compared now, while this
             # prompt's hook holds Claude Code, so before the next turn has changed anything; then that turn is marked.
             return Opened(prompt), [*_over(id, opened, None, was.dialog)[1], Snapshot(id, was.membership.cwd)]
+        case (Prompted(prompt=prompt), Told() as told) if _names(told, prompt):
+            # Submitted after the wire told the turn and before its Stop fired: filed under the turn's id, as a message
+            # queued behind a running turn is, and run as its own turn once that Stop's hook returns. Marked here, while
+            # its own prompt hook holds Claude Code; its turn opens when it is taken (see Taken).
+            return turn, [Snapshot(id, was.membership.cwd)]
         case (Prompted(prompt=prompt), Untold() | Told()):
             # A turn opens at the prompt, and is marked, so what it changes is read against a repository it has not
             # touched yet: after the one before is told, so that one is compared against its own mark.

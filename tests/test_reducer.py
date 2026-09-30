@@ -1332,3 +1332,11 @@ def test_a_reply_on_the_wire_that_asks_something_leaves_the_turn_asking() -> Non
 
 def test_a_reply_on_the_wire_for_a_turn_the_session_is_not_in_is_a_line() -> None:
     assert reduce(in_turn(), Closed(ONE.id, NEXT, "Done.")) == (in_turn(), [Audit(Unclosed(ONE.id, NEXT))])
+
+
+def test_a_message_queued_between_the_wire_telling_a_turn_and_its_stop_is_marked_and_the_turn_told_once() -> None:
+    """Claude Code files it under the told turn's id, as it does one queued behind a running turn, and runs it once
+    that turn's Stop hook returns: marked while its own prompt hook holds Claude Code."""
+    state, heard = through(Closed(ONE.id, TURN, "Done."), Prompted(ONE.id, at=6.0, mode=None, prompt=TURN), stop("Done."))
+    assert [effect for effect in heard if isinstance(effect, Compare | Summarise | Snapshot)] == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done."), Snapshot(ONE.id, ONE.cwd)]
+    assert live(state).turn == Told(TURN)

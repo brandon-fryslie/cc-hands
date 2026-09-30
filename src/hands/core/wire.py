@@ -123,7 +123,7 @@ def _billing(request: Mapping[str, object]) -> Mapping[str, str]:
     """The pairs of the billing line Claude Code opens its system prompt with; none when it has no such line."""
     system = request.get("system")
     texts = [system] if isinstance(system, str) else [text for block in _mappings(_list(system)) if isinstance(text := block.get("text"), str)]
-    line = next((text for text in texts if text.startswith(BILLING_OPENING)), "").removeprefix(BILLING_OPENING)
+    line = next((text for text in texts if text.startswith(BILLING_OPENING)), "").partition("\n")[0].removeprefix(BILLING_OPENING)
     pairs = (pair.strip().partition("=") for pair in line.split(";"))
     return {name: value for name, sep, value in pairs if sep}
 
