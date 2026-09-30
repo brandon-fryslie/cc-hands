@@ -78,7 +78,9 @@ func run(args []string, stdin *os.File, stdout io.Writer) int {
 			return failed
 		}
 		defer tap.close()
-		env = append(env, options.tap.variable+"="+tap.address)
+		// FRITTER_TAP names the tap as FRITTER_SOCKET names the socket, so what the child
+		// runs can tell the variable fritter set from one set again after it.
+		env = append(env, options.tap.variable+"="+tap.address, "FRITTER_TAP="+tap.address)
 	}
 
 	wrapped, err := start(options.argv, env)

@@ -93,10 +93,16 @@ connection per exchange, as JSON lines in the order it happened:
 ```
 
 `at` is seconds since the epoch. Headers that carry a credential are never copied. The
-child never waits on the copy: nobody listening, or a listener that reads slowly, costs
-the exchange nothing, and a copy that could not be handed over is counted in `lost` on
-the next one that is. Which variable a program reads its server from is the caller's
-knowledge; hands' `claude` shim passes `ANTHROPIC_BASE_URL`.
+child never waits on the copy: nobody listening, or a listener that stops reading, costs
+the exchange nothing, and a copy whose request never reached the listener is counted in
+`lost` on the next one that does. A copy that breaks off after its request was heard ends
+without its last lines, and the listener sees it end that way. When the child exits,
+fritter gives the copies still under way a moment to finish before it exits too.
+
+The tap's address is also published in `FRITTER_TAP`, so what the child runs can tell
+`VARIABLE` as fritter set it from a value set again since. Which variable a program reads
+its server from is the caller's knowledge; hands' `claude` shim passes
+`ANTHROPIC_BASE_URL`.
 
 ## Multi-line text
 

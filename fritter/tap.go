@@ -44,9 +44,15 @@ var credentials = map[string]bool{
 	"set-cookie":          true,
 }
 
-// How long a copy waits to reach the listener before it is counted as lost. The exchange
-// never waits on it; this bounds only the goroutine carrying the copy.
-const dialTimeout = time.Second
+// How long a copy waits on the listener - to be let in, to take each line, and at the end
+// for the copies still under way once the child has gone - before it gives up on it. The
+// exchange never waits on any of it; these bound what fritter holds for a listener that
+// has stopped reading.
+const (
+	dialTimeout  = time.Second
+	writeTimeout = 5 * time.Second
+	drainTimeout = 2 * time.Second
+)
 
 // What a copy is: one JSON object per line, in the order the exchange happened, on a
 // connection of its own. A request line, then the reply's head and each chunk of its
@@ -110,10 +116,11 @@ func parseTap(spec string) (variable string, upstream *url.URL, err error) {
 
 // Tap is a running tap: the server the child is pointed at, and the count of copies lost.
 type Tap struct {
-	address string
-	server  *http.Server
-	lost    atomic.Int64
-	to      string
+	address    string
+	server     *http.Server
+	lost       atomic.Int64
+	to         string
+	deliveries sync.WaitGroup
 }
 
 // startTap listens on loopback and serves until closed.
@@ -173,19 +180,34 @@ func startTap(t tapping) (*Tap, error) {
 	return tap, nil
 }
 
+// close stops serving, and lets the copies still under way finish, up to drainTimeout: the
+// child has gone, and what they still hold is how its last exchanges ended.
 func (tap *Tap) close() {
 	tap.server.Close()
+	drained := make(chan struct{})
+	go func() {
+		tap.deliveries.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(drainTimeout):
+	}
 }
 
 // open starts the copy of one exchange with its request, and delivers it as it grows.
 func (tap *Tap) open(request requested) *exchangeCopy {
 	// [LAW:nothing-unseen] What was lost is said with the next copy, and put back if that
-	// one is lost too, so the count reaches the listener with the first copy it takes.
+	// one is lost too, so the count reaches the listener with the first copy it takes. A
+	// copy is lost when its request never reached the listener; one that broke off after
+	// was heard, and the listener sees it end broken.
 	request.Lost = tap.lost.Swap(0)
 	copied := newCopy()
 	copied.put(request)
+	tap.deliveries.Add(1)
 	go func() {
-		if err := copied.deliver(tap.to); err != nil {
+		defer tap.deliveries.Done()
+		if !copied.deliver(tap.to) {
 			tap.lost.Add(request.Lost + 1)
 		}
 	}()
@@ -292,13 +314,14 @@ func (c *exchangeCopy) signal() {
 	}
 }
 
-// deliver writes the copy to the socket as it grows, until it is closed; an error means
-// the listener did not take all of it, and from then on nothing more is held for it.
-func (c *exchangeCopy) deliver(to string) error {
+// deliver writes the copy to the socket as it grows, until it is closed, and says whether
+// the listener took its first line, the request. A listener that stops taking lines is
+// given up on, and from then on nothing more is held for it.
+func (c *exchangeCopy) deliver(to string) (heard bool) {
 	connection, err := net.DialTimeout("unix", to, dialTimeout)
 	if err != nil {
 		c.drop()
-		return err
+		return false
 	}
 	defer connection.Close()
 	for {
@@ -308,13 +331,15 @@ func (c *exchangeCopy) deliver(to string) error {
 		c.lines = nil
 		c.mu.Unlock()
 		for _, line := range lines {
+			connection.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if _, err := connection.Write(line); err != nil {
 				c.drop()
-				return err
+				return heard
 			}
+			heard = true
 		}
 		if closed {
-			return nil
+			return true
 		}
 	}
 }

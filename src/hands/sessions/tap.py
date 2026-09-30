@@ -10,16 +10,16 @@ the same observer. Nothing goes back: the session never waited on its copy, and 
 
 import asyncio
 import base64
-import json
+import binascii
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
 
 from loguru import logger
 
 from hands.core.wire import Exchanged, Garbled, Heard, Observed, Reached, Seconds, Sent, Uncopied, Unreached, WireEvent
 from hands.sessions.audit import CopiesLost, Record
+from hands.sessions.payload import Payload, Rejected
 from hands.sessions.replies import Reader, reply_reader, sent_of, shielded
 from hands.sessions.server import claim_socket
 
@@ -68,65 +68,44 @@ Line = Request | Response | Chunk | End | NoUpstream
 
 
 def line_of(raw: bytes) -> Line:
-    """One line of a copy, typed; raises ValueError saying what about it is not a line fritter writes."""
+    """One line of a copy, typed; raises Rejected saying what about it is not a line fritter writes."""
     # [LAW:parse-dont-validate] the one place a copy's JSON is read: everything past here is a Line.
     try:
-        data = json.loads(raw)
-        if not isinstance(data, dict):
-            raise ValueError("not a JSON object")
-        line = cast(dict[str, object], data)
-        at = _float(line["at"])
-        match line["kind"]:
+        line = Payload.parse(raw)
+        at = line.number("at")
+        match line.text("kind"):
             case "request":
-                return Request(at, _str(line["method"]), _str(line["path"]), _headers(line["headers"]), _bytes(line["body"]), _int(line["lost"]))
+                return Request(at, line.text("method"), line.text("path"), _headers(line.items("headers")), _bytes(line.optional_text("body")), line.integer("lost"))
             case "response":
-                return Response(at, _int(line["status"]), _headers(line["headers"]))
+                return Response(at, line.integer("status"), _headers(line.items("headers")))
             case "bytes":
-                return Chunk(at, _bytes(line["bytes"]))
+                return Chunk(at, _bytes(line.optional_text("bytes")))
             case "end":
-                return End(at, _str(line["error"]) or None)
+                return End(at, line.text("error") or None)
             case "unreached":
-                return NoUpstream(at, _str(line["error"]))
+                return NoUpstream(at, line.text("error"))
             case other:
-                raise ValueError(f"no line is of kind {other!r}")
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError(f"{error!r} in {raw[:200]!r}") from error
+                raise Rejected(f"no line is of kind {other!r}")
+    except Rejected as error:
+        raise Rejected(f"{error} in {raw[:200]!r}") from error
 
 
-def _float(value: object) -> float:
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise TypeError(f"expected a number, got {type(value).__name__}")
-    return float(value)
-
-
-def _int(value: object) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise TypeError(f"expected an integer, got {type(value).__name__}")
-    return value
-
-
-def _str(value: object) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"expected a string, got {type(value).__name__}")
-    return value
-
-
-def _bytes(value: object) -> bytes:
+def _bytes(value: str | None) -> bytes:
     # Go writes a []byte as base64, and a nil one as null.
-    return b"" if value is None else base64.b64decode(_str(value), validate=True)
+    try:
+        return b"" if value is None else base64.b64decode(value, validate=True)
+    except binascii.Error as error:
+        raise Rejected(f"bytes that are not base64: {error}") from error
 
 
-def _headers(value: object) -> Mapping[str, str]:
-    if not isinstance(value, list):
-        raise TypeError(f"expected a list of header pairs, got {type(value).__name__}")
-    pairs = cast(list[object], value)
+def _headers(pairs: list[object]) -> Mapping[str, str]:
     headers: dict[str, str] = {}
     for pair in pairs:
         match pair:
             case [str() as name, str() as given]:
                 headers[name] = given
             case _:
-                raise TypeError(f"a header is {pair!r}, not a name and a value")
+                raise Rejected(f"a header is {pair!r}, not a name and a value")
     return headers
 
 
@@ -157,12 +136,8 @@ async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], 
     if not first:
         # A fritter that dialled and went before it wrote: it counts the copy as lost, and says so with its next one.
         return
-    match line_of(first):
-        case Request() as request:
-            pass
-        case other:
-            raise ValueError(f"a copy opened with a {type(other).__name__}, not its request")
-    sent: Sent = sent_of(request.headers, request.path, request.body)
+    # Off the loop: a request carries its session's whole history, megabytes on a long one, and the voice runs on this loop.
+    request, sent = await asyncio.to_thread(_opened, first)
     if request.lost:
         record(CopiesLost(sent.session, request.lost))
     tell(sent)
@@ -170,36 +145,59 @@ async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], 
     tell(Exchanged(sent.exchange, sent.session, sent.kind, request.method, request.path, len(request.body), (), request.at, request.at, reply))
 
 
+def _opened(raw: bytes) -> tuple[Request, Sent]:
+    match line_of(raw):
+        case Request() as request:
+            return request, sent_of(request.headers, request.path, request.body)
+        case other:
+            raise Rejected(f"a copy opened with a {type(other).__name__}, not its request")
+
+
+async def _next(reader: asyncio.StreamReader) -> Line | str:
+    """The copy's next line, or why it has none."""
+    try:
+        raw = await reader.readline()
+    except (OSError, ValueError) as error:
+        # A connection reset, or a line longer than LINE_LIMIT.
+        return f"the copy broke off: {error!r}"
+    if not raw:
+        return "the copy broke off: its fritter ended, or hands could not keep reading"
+    try:
+        return line_of(raw)
+    except Rejected as error:
+        logger.exception("a copy line hands cannot read")
+        return f"a line hands cannot read: {error}"
+
+
 async def _reply(reader: asyncio.StreamReader, hear: Callable[[WireEvent], None], clock: Callable[[], Seconds]) -> Reached | Unreached | Uncopied:
+    """How the exchange ended, as its copy tells it; a copy that breaks off, however it does, is a reply of its own."""
     reading: tuple[Response, Reader] | None = None
     first: Seconds | None = None
     last: Seconds | None = None
     size = 0
     while True:
-        raw = await reader.readline()
-        try:
-            line = line_of(raw) if raw else None
-        except ValueError as error:
-            logger.exception("a copy line hands cannot read")
-            line, broken = None, f"a line hands cannot read: {error}"
-        else:
-            broken = "the copy broke off: its fritter ended, or hands could not keep reading"
+        line = await _next(reader)
         match (line, reading):
             case (Response() as head, None):
                 reading = (head, reply_reader(head.headers, hear))
-            case (Chunk(at=at, data=data), (_, reader_)):
+                continue
+            case (Chunk(at=at, data=data), (_, feeder)):
                 first = at if first is None else first
                 last = at
                 size += len(data)
-                reader_.feed(data)
-            case (End(at=at, error=error), (head, reader_)):
-                body = reader_.finish() if error is None else Garbled(error)
+                feeder.feed(data)
+                continue
+            case (End(at=at, error=error), (head, feeder)):
+                body = feeder.finish() if error is None else Garbled(error)
                 return Reached(head.status, head.at if first is None else first, at if last is None else last, size, body)
             case (NoUpstream(at=at, error=error), None):
                 return Unreached(error, at)
-            case (None, (head, _)):
-                return Reached(head.status, head.at if first is None else first, head.at if last is None else last, size, Garbled(broken))
-            case (None, None):
-                return Uncopied(broken, clock())
+            case (str() as broken, _):
+                pass
             case (unexpected, _):
-                raise ValueError(f"a copy line {unexpected!r} out of its order")
+                broken = f"a {type(unexpected).__name__} line out of its order"
+        match reading:
+            case None:
+                return Uncopied(broken, clock())
+            case (head, _):
+                return Reached(head.status, head.at if first is None else first, head.at if last is None else last, size, Garbled(broken))

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net"
@@ -35,6 +36,13 @@ type line struct {
 // listening is a socket that takes copies, each connection's lines handed over as it closes.
 func listening(t *testing.T, path string) <-chan []line {
 	t.Helper()
+	return listeningAfter(t, path, 0)
+}
+
+// listeningAfter is listening by a listener that lets each connection wait `delay` before
+// it starts reading.
+func listeningAfter(t *testing.T, path string, delay time.Duration) <-chan []line {
+	t.Helper()
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("cannot listen on %s: %v", path, err)
@@ -49,13 +57,14 @@ func listening(t *testing.T, path string) <-chan []line {
 			}
 			go func() {
 				defer connection.Close()
+				time.Sleep(delay)
 				var lines []line
 				scanner := bufio.NewScanner(connection)
 				scanner.Buffer(make([]byte, 1<<20), 1<<24)
 				for scanner.Scan() {
 					var read line
 					if err := json.Unmarshal(scanner.Bytes(), &read); err != nil {
-						t.Errorf("a copy line is not JSON: %q", scanner.Text())
+						t.Errorf("a copy line is not JSON: %.200q", scanner.Text())
 					}
 					lines = append(lines, read)
 				}
@@ -240,5 +249,90 @@ func TestTheChildIsGivenTheTapsAddressInItsVariable(t *testing.T) {
 	fritter.Wait()
 	if !regexp.MustCompile(`at=http://127\.0\.0\.1:\d+\r?\n`).Match(printed) {
 		t.Errorf("the child saw %q, want BASE_URL at the tap on loopback", printed)
+	}
+}
+
+// fritterAround runs fritter as its own process around `sh -c script`, tapping BASE_URL
+// toward upstream, and returns once the process has ended.
+func fritterAround(t *testing.T, dir string, upstream string, to string, script string) []byte {
+	t.Helper()
+	fritter := exec.Command(os.Args[0], "-test.run=TestHelperFritter")
+	fritter.Env = append(os.Environ(),
+		"FRITTER_HELPER=1",
+		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--tap\x1fBASE_URL="+upstream+"\x1f--tap-to\x1f"+to+"\x1f--\x1fsh\x1f-c\x1f"+script,
+	)
+	terminal, err := pty.Start(fritter)
+	if err != nil {
+		t.Fatalf("cannot start fritter on a terminal: %v", err)
+	}
+	defer terminal.Close()
+	printed, _ := io.ReadAll(terminal)
+	fritter.Wait()
+	return printed
+}
+
+func TestTheChildsLastExchangeIsCopiedToItsEndThoughFritterEndsWithTheChild(t *testing.T) {
+	// The process has to end for this to show: the child hangs up mid-reply and exits, and
+	// fritter, exiting with it, still has the end of that exchange's copy to write.
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("needs curl to be the child")
+	}
+	dir := shortTempDir(t)
+	to := filepath.Join(dir, "wire.sock")
+	// A request far larger than the socket's buffer, to a listener slow to read it: the
+	// copy is still being written when the child has gone.
+	copies := listeningAfter(t, to, time.Second)
+	body := filepath.Join(dir, "body")
+	if err := os.WriteFile(body, bytes.Repeat([]byte("x"), 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	slow := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		io.Copy(io.Discard, request.Body)
+		writer.WriteHeader(http.StatusOK)
+		writer.Write([]byte("first"))
+		writer.(http.Flusher).Flush()
+		<-request.Context().Done()
+	}))
+	t.Cleanup(slow.Close)
+	fritterAround(t, dir, slow.URL, to, `curl -s -m 0.5 --data-binary @`+body+` "$BASE_URL/v1/messages"`)
+	select {
+	case lines := <-copies:
+		if last := lines[len(lines)-1]; last.Kind != "end" || last.Error == "" {
+			t.Errorf("the last exchange's copy ends %+v, want its end, cut short by the child", last)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no copy of the child's last exchange reached the listener")
+	}
+}
+
+func TestACopyHeardAndThenBrokenOffIsNotLost(t *testing.T) {
+	// The listener heard the request, and with it the count of copies lost before it; it
+	// sees this copy end broken. Counting it lost as well would tell the loss twice.
+	to := filepath.Join(shortTempDir(t), "wire.sock")
+	listener, err := net.Listen("unix", to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	firsts := make(chan string, 4)
+	go func() {
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			first, _ := bufio.NewReader(connection).ReadString('\n')
+			firsts <- first
+			connection.Close()
+		}
+	}()
+	tap := tapped(t, streaming(t).URL, to)
+	tap.lost.Store(3)
+
+	ask(t, tap, `{}`)
+	<-firsts
+	tap.deliveries.Wait()
+	if lost := tap.lost.Load(); lost != 0 {
+		t.Errorf("after a copy whose request was heard, %d are counted lost, want 0", lost)
 	}
 }

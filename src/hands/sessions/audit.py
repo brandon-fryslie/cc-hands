@@ -330,6 +330,9 @@ class AuditLog:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._path = path
         self._clock = clock
+        # The log holds what every tapped session said, as the tap's socket does: the user's alone to read.
+        if path.exists():
+            path.chmod(0o600)
 
     def record(self, entry: Entry) -> None:
         # [LAW:single-enforcer] the log watches what the daemon does and never changes it: a line it cannot encode or
@@ -342,11 +345,15 @@ class AuditLog:
             return
         try:
             # Opened for each line, so a line is on disk when record returns and a log moved aside is started again.
-            with self._path.open("a", encoding="utf-8") as log:
+            with open(self._path, "a", encoding="utf-8", opener=_private) as log:
                 log.write(line + "\n")
         except OSError as error:
             # [LAW:no-silent-failure] said on stderr, as a warning: an error would be sent back to the log that just failed.
             logger.warning(f"the audit log {self._path} lost a {type(entry).__name__} line: {error}")
+
+
+def _private(path: str, flags: int) -> int:
+    return os.open(path, flags, 0o600)
 
 
 def encoded(value: object) -> dict[str, object]:

@@ -72,6 +72,16 @@ def test_a_value_the_log_cannot_write_is_refused_rather_than_guessed_at() -> Non
         encoded(Called("t", {"odd": {1, 2}}, None))
 
 
+def test_the_log_is_the_user_s_alone_to_read_whether_it_is_new_or_was_there(tmp_path: Path) -> None:
+    fresh = tmp_path / "fresh.jsonl"
+    AuditLog(fresh, clock=lambda: AT).record(Transcribed("send it"))
+    there = tmp_path / "there.jsonl"
+    there.write_text("")
+    there.chmod(0o644)
+    AuditLog(there, clock=lambda: AT)
+    assert [path.stat().st_mode & 0o777 for path in (fresh, there)] == [0o600, 0o600]
+
+
 def test_each_entry_is_one_line_stamped_with_when_it_was_written(tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "deep" / "audit.jsonl", clock=lambda: AT)
     log.record(Transcribed("send it"))

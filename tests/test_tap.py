@@ -157,6 +157,20 @@ async def test_a_line_hands_cannot_read_ends_the_copy_as_garbled_and_the_next_co
     assert isinstance(reply := tap.exchanged().reply, Reached) and isinstance(reply.body, Streamed)
 
 
+async def test_a_line_out_of_its_order_ends_the_copy_as_broken_and_the_exchange_is_still_told(tap: Heard_, socket_path: Path) -> None:
+    await copy(socket_path, [request_line(), CHUNKS[0]])
+    await asyncio.wait_for(tap.done.wait(), 5)
+    reply = tap.exchanged().reply
+    assert isinstance(reply, Uncopied) and "Chunk line out of its order" in reply.reason
+
+    tap.done.clear()
+    tap.observed.clear()
+    await copy(socket_path, [request_line(), HEAD, HEAD])
+    await asyncio.wait_for(tap.done.wait(), 5)
+    reply = tap.exchanged().reply
+    assert isinstance(reply, Reached) and isinstance(reply.body, Garbled) and "Response line out of its order" in reply.body.reason
+
+
 async def test_the_socket_is_the_user_s_alone(tap: Heard_, socket_path: Path) -> None:
     assert socket_path.stat().st_mode & 0o777 == 0o600
 

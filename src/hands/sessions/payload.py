@@ -1,4 +1,4 @@
-"""The one reader of JSON that crosses into hands: hook payloads, membership files, transcript records."""
+"""The one reader of JSON that crosses into hands: hook payloads, membership files, transcript records, fritter's copies."""
 
 import json
 import re
@@ -58,6 +58,15 @@ class Payload:
                 return value
             case other:
                 raise self._wrong(key, "an integer", other)
+
+    def number(self, key: str) -> float:
+        match self._field(key):
+            case bool() as other:
+                raise self._wrong(key, "a number", other)
+            case int() | float() as value:
+                return float(value)
+            case other:
+                raise self._wrong(key, "a number", other)
 
     def mapping(self, key: str) -> Mapping[str, object]:
         value = self._field(key)

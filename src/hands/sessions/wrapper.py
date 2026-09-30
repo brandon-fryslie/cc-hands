@@ -70,14 +70,15 @@ def shim_script(fritter: Path, wire: Path) -> str:
     # flag that takes no value and leaves a run going, so `-cp` is print too.
     # A session's ANTHROPIC_BASE_URL is its fritter's tap, which ends with it, so a claude run from inside one reaches
     # the API the session was given, kept in HANDS_API_URL: a session is tapped once, by its own fritter, and a run that
-    # outlives the session it started in is not left with an address nothing answers.
+    # outlives the session it started in is not left with an address nothing answers. Only the tap is given back:
+    # an ANTHROPIC_BASE_URL set again since, as the brain's is set to hands' proxy, is what that run was meant to reach.
     return f"""#!/bin/sh
 {MARK}
 fritter={shlex.quote(str(fritter))}
 wire={shlex.quote(str(wire))}
 
-if [ -n "${{HANDS_API_URL+x}}" ]; then
-  if [ -n "$HANDS_API_URL" ]; then export ANTHROPIC_BASE_URL="$HANDS_API_URL"; else unset ANTHROPIC_BASE_URL; fi
+if [ -n "${{FRITTER_TAP-}}" ] && [ "${{ANTHROPIC_BASE_URL-}}" = "$FRITTER_TAP" ]; then
+  if [ -n "${{HANDS_API_URL-}}" ]; then export ANTHROPIC_BASE_URL="$HANDS_API_URL"; else unset ANTHROPIC_BASE_URL; fi
 fi
 
 set -f

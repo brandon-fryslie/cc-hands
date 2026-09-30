@@ -193,9 +193,18 @@ def test_a_claude_run_from_inside_a_session_reaches_the_api_the_session_was_give
     # The session's own ANTHROPIC_BASE_URL is its fritter's tap, which ends when the session does.
     shim = installed_shim(root)
     executable(root / "real" / "claude", API_RECORDER)
-    tap = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:40000", "HANDS_API_URL": given}
+    tap = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:40000", "FRITTER_TAP": "http://127.0.0.1:40000", "HANDS_API_URL": given}
     ran = on_a_pipe([str(shim), "-p", "hello"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin", tap)
     assert ran.stdout == f"claude api={reached}\n"
+
+
+def test_a_claude_pointed_elsewhere_from_inside_a_session_reaches_where_it_was_pointed(root: Path) -> None:
+    # hands' brain, run by a daemon started inside a session, is pointed at hands' proxy.
+    shim = installed_shim(root)
+    executable(root / "real" / "claude", API_RECORDER)
+    inside = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:50000", "FRITTER_TAP": "http://127.0.0.1:40000", "HANDS_API_URL": ""}
+    ran = on_a_pipe([str(shim), "-p", "hello"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin", inside)
+    assert ran.stdout == "claude api=http://127.0.0.1:50000\n"
 
 
 def test_a_session_is_tapped_toward_the_api_it_was_given(root: Path) -> None:
