@@ -447,3 +447,4 @@ def test_a_change_with_nothing_to_change_is_refused() -> None:
         edited(request(said("hi", marked=True)), (Stub("b", "Read: B"),))
     with pytest.raises(ValueError, match="compaction prompt to steer"):
         edited(request(said("hi", marked=True)), (Steer("summarise"),))
+

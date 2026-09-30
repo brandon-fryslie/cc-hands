@@ -9,8 +9,11 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field
+from typing import Literal
 
 import pytest
+from datetime import UTC, datetime
+from pipecat.utils.errors import ErrorCategory
 from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
@@ -31,8 +34,10 @@ from hands.brain.process import Untaken
 from hands.brain.stage import INTERRUPTED, SILENT, BrainStage
 from hands.core.session import SessionId
 from hands.core.wire import (
+    Answering,
     BlockStarted,
     BlockStopped,
+    Exchanged,
     Fork,
     Heard,
     Hold,
@@ -44,7 +49,10 @@ from hands.core.wire import (
     Tail,
     TextDelta,
     Unknown,
+    Unreached,
+    UsageLimitReached,
 )
+from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelUnreachable
 from hands.sessions.audit import BrainAnswered, BrainInterrupted, BrainSpoke, Entry
 from hands.voice.speech import Aloud, Narrated
 from hands.voice.tools import Result, Tool, tool
@@ -223,7 +231,7 @@ async def test_a_finished_turn_hands_narrates_reaches_the_brain_as_a_typed_turn_
     rig.brain.end()
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
     assert rig.out.said() == ["api opened pull request 68."]
-    assert BrainSpoke((exchange,), "api opened pull request 68.", (), False, "hands", 0.0) in rig.recorded
+    assert BrainSpoke((exchange,), "api opened pull request 68.", (), False, "hands", 0.0, None) in rig.recorded
     # Never in Pipecat's context, where it would ride along with whatever the user says next.
     assert rig.context.get_messages() == []
 
@@ -254,7 +262,7 @@ async def test_a_narration_records_how_long_it_waited_behind_the_users_turn(rig:
     exchange, _ = rig.request()
     rig.brain.end()
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) and entry.asker == "hands" for entry in rig.recorded))
-    assert BrainSpoke((exchange,), "", (), False, "hands", 2.5) in rig.recorded
+    assert BrainSpoke((exchange,), "", (), False, "hands", 2.5, None) in rig.recorded
 
 
 async def test_what_hands_says_as_written_is_heard_after_the_narration_ahead_of_it(rig: Rig) -> None:
@@ -303,7 +311,7 @@ async def test_a_turn_goes_to_the_brain_and_its_words_come_off_the_wire(rig: Rig
     assert rig.out.shape() == ["LLMFullResponseStartFrame", "LLMTextFrame", "LLMTextFrame", "LLMFullResponseEndFrame"]
     assert rig.out.said() == ["Two sessions ", "are running."]
     # The audit log ties what was spoken to the exchange on the wire it came from.
-    assert BrainSpoke((exchange,), "Two sessions are running.", (), False, "user", 0.0) in rig.recorded
+    assert BrainSpoke((exchange,), "Two sessions are running.", (), False, "user", 0.0, None) in rig.recorded
 
 
 async def test_each_request_of_a_turn_carries_how_the_sessions_stand_as_it_leaves(rig: Rig) -> None:
@@ -390,7 +398,7 @@ async def test_a_barge_in_mid_reply_stops_the_brain_and_nothing_more_of_the_turn
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
     assert rig.out.said() == ["First, "]
     assert rig.brain.interrupts == 1
-    assert BrainSpoke((exchange,), "First, ", (), True, "user", 0.0) in rig.recorded
+    assert BrainSpoke((exchange,), "First, ", (), True, "user", 0.0, None) in rig.recorded
 
 
 async def test_a_barge_in_while_a_draft_lands_lets_it_finish_and_speaks_its_readback(rig: Rig) -> None:
@@ -409,7 +417,7 @@ async def test_a_barge_in_while_a_draft_lands_lets_it_finish_and_speaks_its_read
     # Said once the turn is over, after anything the model had begun to say.
     await rig.until(lambda: rig.out.said()[-1:] == ["staged for api: add tests"])
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
-    assert BrainSpoke((exchange,), "Staging it.", ("staged for api: add tests",), True, "user", 0.0) in rig.recorded
+    assert BrainSpoke((exchange,), "Staging it.", ("staged for api: add tests",), True, "user", 0.0, None) in rig.recorded
 
 
 async def test_a_barge_in_while_a_reading_tool_runs_stops_the_brain_at_once(rig: Rig) -> None:
@@ -468,6 +476,48 @@ async def test_a_turn_the_brain_ended_in_error_is_reported_as_the_model_stages_e
     assert "API Error: 500 overloaded" in rig.errors[0].error
 
 
+RESETS = datetime(2026, 9, 30, 18, 0, tzinfo=UTC).timestamp()
+
+
+def unreached(exchange: str) -> Exchanged:
+    """The proxy's record of a request it could not get to the API, told before it answers the brain 502."""
+    return Exchanged(exchange, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("ClientConnectorError: no route", 0.0))
+
+
+@pytest.mark.parametrize(
+    ("answers", "failure", "fact"),
+    [
+        # As Claude Code 2.1.285 meets each (measured, hands-wire-6ic.gfq): a spent limit is asked once, an API the proxy
+        # cannot reach eleven times, and what failed the turn is its latest answer.
+        ([429], "rate_limit: You've hit your session limit · resets 12:00pm", UsageLimitReached(RESETS)),
+        ([None, None, None], "server_error: API Error: 502 hands' proxy could not reach https://api.anthropic.com", ModelUnreachable()),
+        ([529], "server_error: API Error: 529 Overloaded", ModelFailed(ErrorCategory.SERVER)),
+        ([None, 529, 200], "server_error: API Error: Connection lost mid-response.", ModelFailed(ErrorCategory.UNKNOWN)),
+        # A request whose answer never came, its handler cancelled before the head: an earlier answer is not its reason.
+        ([None, "unanswered"], "server_error: API Error: Request timed out.", ModelFailed(ErrorCategory.UNKNOWN)),
+    ],
+)
+async def test_a_failed_turn_is_said_as_the_wire_says_it_failed(rig: Rig, answers: list[int | None | Literal["unanswered"]], failure: str, fact: ModelFact) -> None:
+    await rig.say({"role": "user", "content": "hello"})
+    for status in answers:
+        exchange, _ = rig.request()
+        match status:
+            case None:
+                rig.stage.hear(unreached(exchange))
+            case 429:
+                rig.stage.hear(Answering(exchange, 429, UsageLimitReached(RESETS)))
+            case int():
+                rig.stage.hear(Answering(exchange, status, None))
+            case "unanswered":
+                pass
+    rig.brain.end(BrainAnswered("p1", failure))
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == fact
+    # [LAW:nothing-unseen] which failure the turn was said as is on its line in the audit log.
+    [spoke] = [entry for entry in rig.recorded if isinstance(entry, BrainSpoke)]
+    assert spoke.failed == fact
+
+
 async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_then_the_failure(rig: Rig) -> None:
     # As Claude Code 2.1.285 ends it (hands-wire-6ic.6dz, measured): no retry and no fallback request, only StopFailure.
     await rig.say({"role": "user", "content": "tell me about lighthouses"})
@@ -480,7 +530,7 @@ async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_
     assert rig.out.said() == ["1. Lighthouses stand ", "on rocky coasts and h"]
     assert rig.errors[0].processor is rig.stage
     assert "Connection lost mid-response" in rig.errors[0].error
-    assert BrainSpoke((exchange,), "1. Lighthouses stand on rocky coasts and h", (), False, "user", 0.0) in rig.recorded
+    assert BrainSpoke((exchange,), "1. Lighthouses stand on rocky coasts and h", (), False, "user", 0.0, ModelFailed(ErrorCategory.UNKNOWN)) in rig.recorded
     # The broken reply is not in the brain's history, so its next turn tells it what the user heard, and only that one.
     await rig.say({"role": "user", "content": "what were you saying?"})
     rig.brain.end()

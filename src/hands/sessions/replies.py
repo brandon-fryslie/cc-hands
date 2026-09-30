@@ -7,6 +7,7 @@ Read the same way however hands was handed the bytes: the proxy forwarding them,
 import json
 import zlib
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from typing import Protocol
 from uuid import uuid4
 
@@ -14,7 +15,7 @@ import brotli
 import zstandard
 from loguru import logger
 
-from hands.core.wire import Body, Garbled, Observed, Sent, Unknown, WireEvent, answered, assemble, classify, frames, is_stream, parse, session_of
+from hands.core.wire import Body, Garbled, Observed, Seconds, UsageLimitReached, Sent, Unknown, WireEvent, answered, assemble, classify, frames, is_stream, parse, session_of
 
 
 def sent_of(headers: Mapping[str, str], path: str, body: bytes) -> Sent:
@@ -49,14 +50,44 @@ def _json(body: bytes) -> object:
         return None
 
 
+# The headers the API refuses a subscription's spent usage limit with, and the second its access returns: the body names no
+# limit. Claude Code 2.1.285 says the same reset (measured, hands-wire-6ic.gfq).
+_LIMIT_STATUS = "anthropic-ratelimit-unified-status"
+_LIMIT_RESET = "anthropic-ratelimit-unified-reset"
+
+
+def spent(status: int, headers: Mapping[str, str]) -> UsageLimitReached | None:
+    """The spent usage limit an answer with this status and these headers refuses under; None for any other answer."""
+    named = _named(headers)
+    match status, named.get(_LIMIT_STATUS):
+        case 429, "rejected":
+            return UsageLimitReached(_reset(named.get(_LIMIT_RESET, "")))
+        case _:
+            return None
+
+
+def _reset(reset: str) -> Seconds | None:
+    """The instant a reset header names, or None when it names none a clock can show: read before the proxy passes the
+    answer on, so a header the API got wrong cannot fail the answer or the sentence that says it."""
+    try:
+        return datetime.fromtimestamp(int(reset), UTC).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
 class Reader(Protocol):
     def feed(self, plain: bytes, /) -> None: ...
     def finish(self) -> Body: ...
 
 
+def _named(headers: Mapping[str, str]) -> dict[str, str]:
+    """Headers by lowercase name, since HTTP names are case-insensitive whatever mapping carried them."""
+    return {name.lower(): value for name, value in headers.items()}
+
+
 def reply_reader(headers: Mapping[str, str], hear: Callable[[WireEvent], None]) -> Reader:
     """What reads a reply with these headers: each event heard as its frame completes, and the whole at the end."""
-    named = {name.lower(): value for name, value in headers.items()}
+    named = _named(headers)
     return _Decoded(named.get("content-encoding", "identity"), _Events(hear) if is_stream(named.get("content-type", "")) else _Whole())
 
 

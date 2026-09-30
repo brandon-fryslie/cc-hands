@@ -28,6 +28,7 @@ from hands.voice.system import (
     AudioMoved,
     BURST_SECONDS,
     ModelFailed,
+    ModelFault,
     UsageLimitReached,
     ModelUnreachable,
     Post,
@@ -98,7 +99,7 @@ REFUSED = openai.APIConnectionError(request=httpx2.Request("POST", "http://192.1
 
 # What Anthropic answered every call with from 15:07 on 2026-09-27, which hands said as "invalid request".
 LIMIT = "You have reached your specified API usage limits. You will regain access on 2026-10-01 at 00:00 UTC."
-RETURNS = datetime(2026, 10, 1, tzinfo=UTC)
+RETURNS = datetime(2026, 10, 1, tzinfo=UTC).timestamp()
 
 
 def anthropic_error(status: int, message: str) -> anthropic.APIStatusError:
@@ -120,6 +121,9 @@ def openai_streamed_error(message: str) -> openai.APIError:
         (anthropic_error(400, "prompt is too long: 205113 tokens > 200000 maximum"), ErrorCategory.INVALID_REQUEST, ModelFailed(ErrorCategory.INVALID_REQUEST)),
         (anthropic_error(529, "Overloaded"), ErrorCategory.SERVER, ModelFailed(ErrorCategory.SERVER)),
         (RuntimeError("boom"), ErrorCategory.UNKNOWN, ModelFailed(ErrorCategory.UNKNOWN)),
+        # Under the brain the stage has read the fact off the wire already, and it is said as read.
+        (ModelFault(UsageLimitReached(RETURNS)), ErrorCategory.UNKNOWN, UsageLimitReached(RETURNS)),
+        (ModelFault(ModelUnreachable()), ErrorCategory.UNKNOWN, ModelUnreachable()),
     ],
 )
 def test_a_spent_usage_limit_is_said_as_itself_and_every_other_refusal_by_its_category(exception: Exception, category: ErrorCategory, fact: SystemFact) -> None:

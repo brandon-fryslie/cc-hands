@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import gzip
 import json
+from datetime import UTC, datetime
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 
@@ -17,6 +18,7 @@ from loguru import logger
 from hands.core.session import SessionId
 from hands.core.wire import (
     Answered,
+    Answering,
     CountTokens,
     Exchanged,
     Garbled,
@@ -34,6 +36,7 @@ from hands.core.wire import (
     Text,
     TextDelta,
     Unreached,
+    UsageLimitReached,
     assemble,
     frames,
     parse,
@@ -41,6 +44,7 @@ from hands.core.wire import (
 from hands.daemon.run import wire_to
 from hands.sessions.audit import Entry
 from hands.sessions.proxy import Proxy, serve_proxy
+from hands.sessions.replies import spent
 
 REQUEST = (
     b'{"model": "claude-opus-5-5", "tools": [{"name": "Read"}], "stream": true, "messages": '
@@ -341,6 +345,56 @@ async def test_a_chunk_is_heard_before_the_client_can_have_it(serve: Callable[[H
             assert TextDelta(0, "hello ") in heard
             rest.set()
             await response.read()
+
+
+RESETS = datetime(2026, 9, 30, 18, 0, tzinfo=UTC).timestamp()
+
+
+@pytest.mark.parametrize(
+    ("status", "headers", "limit"),
+    [
+        # As the API refuses a subscription whose limit is spent, and as Claude Code 2.1.285 reads it (hands-wire-6ic.gfq).
+        (429, {"anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "1790791200"}, UsageLimitReached(RESETS)),
+        (429, {"Anthropic-Ratelimit-Unified-Status": "rejected"}, UsageLimitReached(None)),
+        # A reset no clock can show, not in seconds or not a number: the limit is still said, without when it lifts.
+        (429, {"anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "soon"}, UsageLimitReached(None)),
+        (429, {"anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "1790791200000000"}, UsageLimitReached(None)),
+        # A throttle, not a spent limit, and an answer the limiter let through.
+        (429, {"anthropic-ratelimit-unified-status": "allowed"}, None),
+        (429, {}, None),
+        (200, {"anthropic-ratelimit-unified-status": "allowed", "anthropic-ratelimit-unified-reset": "1790791200"}, None),
+    ],
+)
+def test_a_spent_usage_limit_is_read_from_the_answers_head(status: int, headers: dict[str, str], limit: UsageLimitReached | None) -> None:
+    assert spent(status, headers) == limit
+
+
+async def test_a_spent_usage_limit_is_heard_from_the_answers_head_before_the_client_can_have_any_of_it(
+    serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]],
+) -> None:
+    # Claude Code ends the turn in StopFailure once it has the refusal, so why it failed must already be heard.
+    rest = asyncio.Event()
+    refusal = b'{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}'
+
+    async def refused(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(
+            status=429,
+            headers={"Content-Type": "application/json", "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "1790791200"},
+        )
+        await response.prepare(request)
+        await rest.wait()
+        await response.write(refusal)
+        await response.write_eof()
+        return response
+
+    _, wire = await serve(refused)
+    async with aiohttp.ClientSession() as client:
+        async with client.post(wire.proxy.url + "/v1/messages", data=REQUEST, headers=HEADERS) as response:
+            [answering] = [seen for seen in wire.seen if isinstance(seen, Answering)]
+            assert (answering.status, answering.limit) == (429, UsageLimitReached(RESETS))
+            rest.set()
+            assert (response.status, await response.read()) == (429, refusal)
+    assert answering.exchange == only_exchange(wire).exchange
 
 
 async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_routes_words(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:

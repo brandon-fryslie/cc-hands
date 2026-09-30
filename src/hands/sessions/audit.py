@@ -12,6 +12,7 @@ import os
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 from hands.core.effects import AuditRecord, Effect, Input, Type
 from hands.core.events import Event
 from hands.core.wire import Exchanged
+from hands.sessions.model_facts import ModelFact
 
 
 @dataclass(frozen=True)
@@ -155,7 +157,8 @@ Asker = Literal["user", "hands"]
 class BrainSpoke:
     """What a brain turn handed to the speaker, and the exchanges on the wire its words came from; `readbacks` is what hands
     said for it once its next request was held. `asker` is whose turn it was: the user's words, or hands' narration.
-    `waited` is how long, in seconds, the turn waited in its lane for the brain before it was written."""
+    `waited` is how long, in seconds, the turn waited in its lane for the brain before it was written. `failed` is what the
+    turn ended in error of, as its latest answer on the wire said; None for a turn that did not."""
 
     exchanges: tuple[str, ...]
     text: str
@@ -163,6 +166,7 @@ class BrainSpoke:
     interrupted: bool
     asker: Asker
     waited: float
+    failed: ModelFact | None
 
 
 @dataclass(frozen=True)
@@ -362,6 +366,8 @@ def _json(value: object) -> object:
             return value
         case Path():
             return str(value)
+        case Enum():
+            return _json(value.value)
         case Mapping():
             return {str(key): _json(item) for key, item in cast(Mapping[object, object], value).items()}
         case list() | tuple():
