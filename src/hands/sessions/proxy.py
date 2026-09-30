@@ -2,7 +2,7 @@
 
     ANTHROPIC_BASE_URL=<the proxy's url> claude ...
 
-It forwards each request upstream as it came, or with the tail its route gives it appended to the newest message, and
+It forwards each request upstream as it came, or with the changes its route gives it made to it, and
 streams the reply back byte for byte, reading a copy of the same bytes into typed events as they pass. It never makes a
 request of its own and never uses a client's credentials for anything but that client's own request. The one request it
 does not forward is one its route holds: that is answered here, with the words the route gives it, so the model is not
@@ -25,10 +25,9 @@ from loguru import logger
 from multidict import CIMultiDict
 
 from hands.core.wire import (
-    Append,
     Body,
+    Change,
     Exchanged,
-    Forward,
     Garbled,
     Heard,
     Held,
@@ -37,12 +36,13 @@ from hands.core.wire import (
     Reached,
     Route,
     Seconds,
+    Send,
     Sent,
     Unknown,
     Unreached,
     WireEvent,
     answered,
-    appended,
+    edited,
     assemble,
     classify,
     frames,
@@ -69,7 +69,7 @@ class Listener(Protocol):
 
 class _NoOne:
     def route(self, sent: Sent) -> Route:
-        return Forward()
+        return Send()
 
     def hear(self, observed: Observed) -> None:
         pass
@@ -148,27 +148,25 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
             # [LAW:no-silent-failure] a route that raises is logged with its trace, and the request goes on as it came:
             # the conversation is not broken by hands failing to decide about it.
             logger.exception(f"the proxy's route failed on exchange {exchange}; forwarding it")
-            routed = Forward()
+            routed = Send()
 
         sent_at = clock()
 
-        def exchanged(tail: str, reply: Reached | Unreached | Held) -> Exchanged:
-            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), tail, requested_at, sent_at, reply)
+        def exchanged(changes: tuple[Change, ...], reply: Reached | Unreached | Held) -> Exchanged:
+            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply)
 
         match routed:
             case Hold(said=said):
                 content_type, answer = _held(parsed, said)
-                tell(exchanged("", Held(said, clock())))
+                tell(exchanged((), Held(said, clock())))
                 return web.Response(status=200, body=answer, headers={"Content-Type": content_type})
-            case Forward():
-                onward, tail = body, ""
-            case Append(tail=tail):
-                onward, tail = _appended(exchange, body, parsed, tail)
+            case Send(changes=changes):
+                onward, changes = _edited(exchange, body, parsed, changes)
 
         try:
             reached = await client.request(request.method, upstream + request.path_qs, headers=_end_to_end(request.headers), data=onward)
         except (aiohttp.ClientError, OSError) as error:
-            tell(exchanged(tail, Unreached(f"{type(error).__name__}: {error}", clock())))
+            tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock())))
             return web.Response(status=502, text=f"hands' proxy could not reach {upstream}: {error}")
         async with reached:
             response = web.StreamResponse(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers))
@@ -199,7 +197,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                 raise
             finally:
                 last = clock() if ended is None else ended
-                tell(exchanged(tail, Reached(reached.status, last if first is None else first, last, size, reply)))
+                tell(exchanged(changes, Reached(reached.status, last if first is None else first, last, size, reply)))
         return response
 
     app = web.Application()
@@ -214,16 +212,19 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
     return Proxy(url=f"http://{host}:{port}", runner=runner, client=client)
 
 
-def _appended(exchange: str, body: bytes, parsed: object, tail: str) -> tuple[bytes, str]:
-    """The bytes that go upstream with `tail` appended, and the tail they carry: none when it could not be appended."""
+def _edited(exchange: str, body: bytes, parsed: object, changes: tuple[Change, ...]) -> tuple[bytes, tuple[Change, ...]]:
+    """The bytes that go upstream with `changes` made, and the changes they carry: none when they could not be made."""
+    if not changes:
+        # The bytes the client wrote, not a re-encoding of them.
+        return body, ()
     try:
         # JSON.stringify's spacing. Non-ASCII is escaped: a string Claude Code cut mid-emoji holds a lone surrogate,
         # which UTF-8 cannot encode.
-        return json.dumps(appended(parsed, tail), separators=(",", ":")).encode(), tail
+        return json.dumps(edited(parsed, changes), separators=(",", ":")).encode(), changes
     except ValueError:
-        # [LAW:no-silent-failure] the request goes on as it came, and the log says it went without the tail.
-        logger.exception(f"the proxy could not append the tail to exchange {exchange}; forwarding it as it came")
-        return body, ""
+        # [LAW:no-silent-failure] the request goes on as it came, and the log says it went unchanged.
+        logger.exception(f"the proxy could not change exchange {exchange}; forwarding it as it came")
+        return body, ()
 
 
 def _held(body: object, said: str) -> tuple[str, bytes]:

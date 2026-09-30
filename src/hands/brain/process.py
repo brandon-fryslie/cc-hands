@@ -26,7 +26,7 @@ from loguru import logger
 
 from hands.brain.mcp import SERVER_NAME
 from hands.core.session import SessionId
-from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainReady, Record
+from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainForked, BrainLaunched, BrainReady, Record
 from hands.sessions.payload import Payload, Rejected
 
 # The built-in tools the brain is given: it reads, searches, runs commands, and uses skills. It edits nothing itself,
@@ -52,6 +52,8 @@ STDERR_LINES = 20
 AUTH_STATUS_SECONDS = 20.0
 # How long a brain told to stop has before it is killed.
 STOP_SECONDS = 5.0
+# How long a side question is waited on: one reply of one sentence, with thinking, read from the brain's cache.
+FORK_SECONDS = 120.0
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,10 @@ class BrainGone(Exception):
     """The brain's output ended while a turn waited on it, or before one was asked."""
 
 
+class ForkFailed(Exception):
+    """The brain answered a side question with an error, or with no reply."""
+
+
 class NotLoggedIn(Exception):
     """The brain's config directory holds no login, so every turn would fail."""
 
@@ -151,6 +157,8 @@ class Brain:
         # when its result line is read, whether or not anyone still waits on it, and the next is written only then, so
         # a result always belongs to the turn written before it.
         self._turn: asyncio.Future[BrainAnswered] | None = None
+        # Side questions asked and not yet answered, by request id: they run beside the turn, each ended by its own response.
+        self._forks: dict[str, asyncio.Future[str]] = {}
         self._stderr: deque[str] = deque(maxlen=STDERR_LINES)
         self._read = asyncio.ensure_future(self._read_stdout())
         self._said = asyncio.ensure_future(self._read_stderr())
@@ -173,6 +181,34 @@ class Brain:
         await stdin.drain()
         # An asker that stops waiting leaves the turn running to its result line, which is still the brain's to read.
         return await asyncio.shield(turn)
+
+    async def fork(self, question: str) -> str:
+        """The brain's answer to a side question, asked of a fork that shares its context, writes nothing into its
+        history, and may run while a turn is in flight; raises ForkFailed on an error response, and BrainGone when the
+        brain's output ends first."""
+        if self._read.done():
+            raise BrainGone(f"the brain's output had ended ({self._process.returncode}) before it was asked a side question")
+        request = uuid4().hex
+        answer = self._forks[request] = asyncio.get_running_loop().create_future()
+        stdin = self._process.stdin
+        assert stdin is not None, "the brain is started with a stdin pipe"
+        try:
+            stdin.write(json.dumps({"type": "control_request", "request_id": request, "request": {"subtype": "side_question", "question": question}}).encode() + b"\n")
+            await stdin.drain()
+            reply = await asyncio.wait_for(asyncio.shield(answer), FORK_SECONDS)
+        except (ConnectionError, TimeoutError) as error:
+            # [LAW:no-silent-failure] a question the brain cannot take, or never answers, ends here, said as such.
+            failure = BrainGone(f"the brain's stdin closed: {error}") if isinstance(error, ConnectionError) else ForkFailed(f"no answer in {FORK_SECONDS:.0f}s")
+            self._record(BrainForked(request, question, str(failure), failed=True))
+            raise failure from error
+        except (ForkFailed, BrainGone) as error:
+            self._record(BrainForked(request, question, str(error), failed=True))
+            raise
+        finally:
+            # However the asker stops waiting, cancelled included, no one is left to be told the answer.
+            self._forks.pop(request, None)
+        self._record(BrainForked(request, question, reply, failed=False))
+        return reply
 
     async def interrupt(self) -> None:
         """Tell the turn in flight to stop. It still ends at its result line, which the brain writes once it has stopped."""
@@ -213,8 +249,11 @@ class Brain:
             async for line in stdout:
                 self._heard(line)
         finally:
-            # [LAW:no-silent-failure] a turn that can never end is said to have failed, not left waiting.
+            # [LAW:no-silent-failure] a turn or a side question that can never end is said to have failed, not left waiting.
             self._over(BrainGone("the brain's output ended before it answered"))
+            for answer in self._forks.values():
+                answer.set_exception(BrainGone("the brain's output ended before it answered a side question"))
+            self._forks.clear()
 
     async def _read_stderr(self) -> None:
         stderr = self._process.stderr
@@ -234,6 +273,8 @@ class Brain:
         match said.fields.get("type"), said.fields.get("subtype"):
             case "system", "init":
                 self._ready(said)
+            case "control_response", _:
+                self._answered(said)
             case "result", _:
                 # The turn is over whatever else the line holds; one that does not parse fails it, loudly.
                 try:
@@ -246,6 +287,25 @@ class Brain:
             case _:
                 # Everything else is what the model said and did, which hands reads from the wire, where all of it is.
                 pass
+
+    def _answered(self, said: Payload) -> None:
+        """A control response: the end of the side question it names, or of a control request no one waits on."""
+        try:
+            response = Payload.of(said.fields.get("response"), "a control response")
+            answer = self._forks.pop(response.text("request_id"), None)
+        except Rejected as error:
+            logger.warning(f"the brain wrote a control response that does not parse: {error}")
+            return
+        if answer is None:
+            # An interrupt's acknowledgement: nothing waits on it.
+            return
+        match response.fields.get("subtype"), response.fields.get("response"):
+            case "success", {"response": str() as reply}:
+                answer.set_result(reply)
+            case "success", given:
+                answer.set_exception(ForkFailed(f"the brain answered the side question with no reply: {given!r}"))
+            case _:
+                answer.set_exception(ForkFailed(f"the brain failed the side question: {response.fields.get('error')!r}"))
 
     def _over(self, outcome: BrainAnswered | Exception) -> None:
         match self._turn, outcome:

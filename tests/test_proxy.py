@@ -17,10 +17,8 @@ from loguru import logger
 from hands.core.session import SessionId
 from hands.core.wire import (
     Answered,
-    Append,
     CountTokens,
     Exchanged,
-    Forward,
     Garbled,
     Heard,
     Held,
@@ -29,7 +27,9 @@ from hands.core.wire import (
     Observed,
     Reached,
     Route,
+    Send,
     Sent,
+    Tail,
     Streamed,
     Text,
     TextDelta,
@@ -73,7 +73,7 @@ class Upstream:
 
 
 def forward(_sent: Sent) -> Route:
-    return Forward()
+    return Send()
 
 
 @dataclass
@@ -362,7 +362,7 @@ async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_rou
 
 async def test_an_appended_request_reaches_the_api_with_the_tail_after_its_newest_block_and_says_so(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Append("[hands] how they stand")
+    wire.route = lambda _sent: Send((Tail("[hands] how they stand"),))
     status, _, body = await post(wire.proxy.url)
     assert (status, body) == (200, b"".join(STREAM))
     [(_, _, asked_body)] = upstream.asked
@@ -371,12 +371,12 @@ async def test_an_appended_request_reaches_the_api_with_the_tail_after_its_newes
     assert json.loads(asked_body) == {**came, "messages": [{**newest, "content": [*newest["content"], {"type": "text", "text": "[hands] how they stand"}]}]}
     exchange = only_exchange(wire)
     # The line says what was added and how big the request was as the client sent it.
-    assert (exchange.appended, exchange.request_bytes) == ("[hands] how they stand", len(REQUEST))
+    assert (exchange.changes, exchange.request_bytes) == ((Tail("[hands] how they stand"),), len(REQUEST))
 
 
 async def test_a_request_the_tail_cannot_be_appended_to_goes_on_as_it_came(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Append("tail")
+    wire.route = lambda _sent: Send((Tail("tail"),))
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
@@ -384,19 +384,19 @@ async def test_a_request_the_tail_cannot_be_appended_to_goes_on_as_it_came(serve
     finally:
         logger.remove(sink)
     [(_, _, asked_body)] = upstream.asked
-    assert (status, asked_body, only_exchange(wire).appended) == (200, b"not json", "")
-    assert [error.startswith("the proxy could not append the tail") for error in errors] == [True]
+    assert (status, asked_body, only_exchange(wire).changes) == (200, b"not json", ())
+    assert [error.startswith("the proxy could not change exchange") for error in errors] == [True]
 
 
 async def test_a_request_holding_a_string_cut_mid_emoji_still_goes_on_with_the_tail(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Append("tail")
+    wire.route = lambda _sent: Send((Tail("tail"),))
     # JSON.stringify writes half a surrogate pair as its escape; parsed, it is a lone surrogate UTF-8 cannot encode.
     cut = REQUEST.replace(b'"text": "hi"', b'"text": "hi \\ud83d"')
     status, _, _ = await post(wire.proxy.url, body=cut)
     [(_, _, asked_body)] = upstream.asked
     [newest] = json.loads(asked_body)["messages"]
-    assert (status, newest["content"][0]["text"], newest["content"][-1], only_exchange(wire).appended) == (200, "hi \ud83d", {"type": "text", "text": "tail"}, "tail")
+    assert (status, newest["content"][0]["text"], newest["content"][-1], only_exchange(wire).changes) == (200, "hi \ud83d", {"type": "text", "text": "tail"}, (Tail("tail"),))
 
 
 async def test_a_held_request_that_did_not_ask_for_a_stream_is_answered_whole(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
@@ -428,7 +428,7 @@ async def test_a_route_that_raises_is_logged_and_the_request_goes_on_as_it_came(
 def test_the_daemon_keeps_one_audit_line_per_exchange_and_nothing_per_event() -> None:
     lines: list[Entry] = []
     observe = wire_to(lines.append)
-    exchange = Exchanged("e1", None, MainTurn(), "POST", "/v1/messages", 1, "", 1.0, 2.0, Unreached("refused", 3.0))
+    exchange = Exchanged("e1", None, MainTurn(), "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0))
     observe(Sent("e1", None, MainTurn(), None))
     observe(Heard("e1", TextDelta(0, "hi")))
     observe(exchange)

@@ -56,9 +56,10 @@ POST to, the session files the shims write, Claude Code's own status files, the 
 process-liveness check, the audit log, and the wire proxy a Claude Code process reaches
 the API through (`ANTHROPIC_BASE_URL`), which passes every byte unchanged and reads a
 copy into `core.wire`'s typed events, one `Exchanged` audit line per request. The one
-listener joined to it (the brain's stage) routes each request: forwarded as it came,
-forwarded with hands' tail appended to its newest message, or held and answered by hands
-without reaching the API. It
+listener joined to it (the brain's stage, with the keeper of the brain's context) routes
+each request: sent with the changes hands makes to it (none, hands' tail appended to its
+newest message, old tool results as one line each, a compaction's prompt replaced), or
+held and answered by hands without reaching the API. It
 parses hook input once at the socket into a `HookEvent` and rejects anything it does
 not recognise with a logged error and a non-2xx reply `[LAW:parse-dont-validate]`. It
 exposes two things upward: an async stream of events, and a small API the tools call.
@@ -1186,7 +1187,13 @@ live sessions by title, state, and focus, and never their history; Happy's sessi
 directory at connect is the model for it. The brain gets no note: each request its turn
 makes carries the same listing, composed as the request leaves, as a last text block after
 the block holding Claude Code's cache marker (`hands.voice.briefing.tail`). The cached
-prefix is exactly what Claude Code sent, and its history never keeps a stale listing. This is the single decision that avoids
+prefix is exactly what Claude Code sent, and its history never keeps a stale listing. The
+brain's history is kept small on the way out the same way (`hands.brain.context`): a long
+tool result more than K turns old goes as `<tool>: <sentence>`, a batch every K turns so
+the cached prefix changes once a batch, with the sentence asked of a fork of the brain
+(`Brain.fork`, a side question over stdin) once the result's turn ends and kept in the
+summary store by the result's content; and its compaction is asked for what a voice
+session keeps rather than what a coding session does. This is the single decision that avoids
 most of Happy's trouble: it pushed history in and could not pull, so it needed a
 bootstrap dump, an eviction policy it never wrote, and a window that only grew.
 

@@ -8,8 +8,8 @@ import aiohttp
 import pytest
 
 from hands.brain.mcp import McpServer, serve_mcp
-from hands.brain.process import BUILTIN_TOOLS, SLIM, BrainGone, Launch, NotLoggedIn, command, environment, logged_in, start, workdir
-from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainReady, Called, Entry, McpConnected
+from hands.brain.process import BUILTIN_TOOLS, SLIM, BrainGone, ForkFailed, Launch, NotLoggedIn, command, environment, logged_in, start, workdir
+from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainForked, BrainLaunched, BrainReady, Called, Entry, McpConnected
 from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
@@ -17,6 +17,8 @@ from hands.core.session import SessionId
 from hands.daemon.run import mind
 from hands.sessions.proxy import Wire
 from hands.sessions.registry import Sessions
+from hands.sessions.sentences import Sentences
+from hands.voice.sentences import SummaryStore
 from hands.voice.speech import Pushed, Tailed
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, VoiceConfig
 from hands.voice.summary import SummaryFailed, summariser
@@ -136,6 +138,63 @@ async def test_a_turn_is_written_to_stdin_and_ends_at_the_result_line_with_both_
     ]
 
 
+async def test_a_side_question_is_answered_by_its_request_id_beside_a_turn_in_flight(tmp_path: Path, fake_claude: Path) -> None:
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path), recorded.append)
+    try:
+        turn = asyncio.create_task(brain.ask("wait"))
+        held = asyncio.create_task(brain.fork("hold"))
+        await asyncio.sleep(0.1)
+        # The turn and the held question are both still open; the next question is answered first, then both.
+        assert await brain.fork("what did the read say?") == "Forked: what did the read say?"
+        assert await held == "Forked: hold"
+        assert await turn == BrainAnswered("success", False, 1, 812)
+        with pytest.raises(ForkFailed, match="no snapshot"):
+            await brain.fork("fail")
+        with pytest.raises(ForkFailed, match="no reply"):
+            await brain.fork("silent")
+    finally:
+        await brain.stop()
+    forked = [(entry.question, entry.reply, entry.failed) for entry in recorded if isinstance(entry, BrainForked)]
+    assert forked == [
+        ("what did the read say?", "Forked: what did the read say?", False),
+        ("hold", "Forked: hold", False),
+        ("fail", "the brain failed the side question: 'no snapshot'", True),
+        ("silent", "the brain answered the side question with no reply: {'response': None, 'synthetic': False}", True),
+    ]
+
+
+async def test_a_side_question_never_answered_fails_in_time_and_its_late_answer_is_ignored(
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("hands.brain.process.FORK_SECONDS", 0.2)
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path), recorded.append)
+    try:
+        with pytest.raises(ForkFailed, match="no answer in 0s"):
+            await brain.fork("hold")
+        # The held question is answered now, after the next one, and nothing waits on it.
+        assert await brain.fork("and now?") == "Forked: and now?"
+    finally:
+        await brain.stop()
+    forked = [(entry.question, entry.reply, entry.failed) for entry in recorded if isinstance(entry, BrainForked)]
+    assert forked == [("hold", "no answer in 0s", True), ("and now?", "Forked: and now?", False)]
+
+
+async def test_a_side_question_the_brain_dies_on_fails_as_gone(tmp_path: Path, fake_claude: Path) -> None:
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path), recorded.append)
+    held = asyncio.create_task(brain.fork("hold"))
+    await asyncio.sleep(0.1)
+    with pytest.raises(BrainGone):
+        await brain.ask("die")
+    with pytest.raises(BrainGone, match="side question"):
+        await held
+    with pytest.raises(BrainGone, match="before it was asked a side question"):
+        await brain.fork("anyone?")
+    await brain.stop()
+
+
 async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_ended(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
@@ -198,12 +257,13 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     wire = Wire(lambda _observed: None)
     api = VoiceConfig(llm=AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m"), whisper_model="w", voice="v")
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
-    async with mind(api, [], sessions, "http://127.0.0.1:1", wire, recorded.append) as minded:
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    async with mind(api, [], sessions, "http://127.0.0.1:1", wire, store, recorded.append) as minded:
         assert isinstance(minded.llm, AnthropicLLMService) and minded.watches == () and minded.telling == Pushed()
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain"), whisper_model="w", voice="v")
-    async with mind(claude, [tool(echo)], sessions, "http://127.0.0.1:1", wire, recorded.append) as minded:
+    async with mind(claude, [tool(echo)], sessions, "http://127.0.0.1:1", wire, store, recorded.append) as minded:
         assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed()
-        assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns"]
+        assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
         [launched] = [entry for entry in recorded if isinstance(entry, BrainLaunched)]
         assert launched.cwd == tmp_path / "brain" / "cwd"
         # The stage speaks from the wire while the brain runs, so a second one cannot join it.
