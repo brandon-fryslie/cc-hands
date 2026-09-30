@@ -803,24 +803,6 @@ class UsageLimitReached:
     returns: Seconds | None
 
 
-# The headers the API refuses a subscription's spent usage limit with, and the second its access returns: the body names no
-# limit. Claude Code 2.1.285 says the same reset (measured, hands-wire-6ic.gfq).
-_LIMIT_STATUS = "anthropic-ratelimit-unified-status"
-_LIMIT_RESET = "anthropic-ratelimit-unified-reset"
-
-
-def spent(status: int, headers: Mapping[str, str]) -> UsageLimitReached | None:
-    """The spent usage limit an answer with this status and these headers refuses under; None for any other answer."""
-    named = {name.lower(): value for name, value in headers.items()}
-    match status, named.get(_LIMIT_STATUS), named.get(_LIMIT_RESET, ""):
-        case 429, "rejected", str() as reset if reset.isdigit():
-            return UsageLimitReached(float(reset))
-        case 429, "rejected", _:
-            return UsageLimitReached(None)
-        case _:
-            return None
-
-
 @dataclass(frozen=True)
 class Answering:
     """The head of the API's answer, heard before any of it is passed on: its status, and the spent usage limit it refuses

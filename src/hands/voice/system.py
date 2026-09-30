@@ -22,6 +22,7 @@ from hands.sessions.audit import Announced, Record
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
 from hands.core.wire import Seconds, UsageLimitReached
+from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelUnreachable
 from hands.voice.refusal import usage_limit
 from hands.voice.hold import TURN_LIMIT_SECONDS, Move
 
@@ -32,28 +33,6 @@ class Started:
 
     after_crash: bool
     devices: Devices
-
-
-@dataclass(frozen=True)
-class ModelUnreachable:
-    pass
-
-
-@dataclass(frozen=True)
-class ModelFailed:
-    category: ErrorCategory
-
-
-ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed
-
-
-class ModelFault(Exception):
-    """A failure of the model already read as the fact it is, as the brain's stage reads it off the wire: carried on the
-    stage's error frame so the channel says that fact."""
-
-    def __init__(self, fact: ModelFact) -> None:
-        super().__init__(system_text(fact))
-        self.fact = fact
 
 
 @dataclass(frozen=True)

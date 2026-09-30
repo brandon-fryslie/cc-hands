@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from loguru import logger
+from pipecat.utils.errors import ErrorCategory
 
 from hands.core.effects import Holding, Reply, Unmatched, Withdraw
 from hands.core.events import Abandoned, Closed, Joined, Prompted, Read, StatusReported, Stopped, Tick
@@ -16,6 +17,7 @@ from hands.daemon import cli
 from hands.sessions.audit import (
     Applied,
     AuditLog,
+    BrainSpoke,
     Called,
     Entry,
     Failure,
@@ -29,6 +31,7 @@ from hands.sessions.audit import (
     tail,
 )
 from hands.sessions.home import Home
+from hands.sessions.model_facts import ModelFailed
 from hands.sessions.registry import Sessions
 from hands.voice.tools import Result, Tool, audited, draft_tools, tool
 from hands.core.status import Busy, Report, Stamp
@@ -322,3 +325,10 @@ async def test_what_was_heard_where_nothing_waits_on_it_still_fails_loudly() -> 
         await asyncio.wait_for(failed(), 2.0)
     finally:
         logger.remove(sink)
+
+
+def test_a_brain_turn_that_failed_is_written_with_what_it_failed_of(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    AuditLog(path, clock=lambda: AT).record(BrainSpoke(("x1",), "", (), False, "user", 0.0, ModelFailed(ErrorCategory.SERVER)))
+    [line] = lines(path)
+    assert line["failed"] == {"type": "ModelFailed", "category": "server"}

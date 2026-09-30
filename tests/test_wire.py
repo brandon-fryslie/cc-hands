@@ -1,15 +1,12 @@
 """The wire read as values: which kind a request is, whose it is, and what a streamed reply said."""
 
 import json
-from datetime import UTC, datetime
 
 import pytest
 from typing import cast
 
 from hands.core.session import PromptId, SessionId
 from hands.core.wire import (
-    UsageLimitReached,
-    spent,
     ToolAnswer,
     tool_answers,
     COMPACTION_INSTRUCTIONS,
@@ -451,19 +448,3 @@ def test_a_change_with_nothing_to_change_is_refused() -> None:
     with pytest.raises(ValueError, match="compaction prompt to steer"):
         edited(request(said("hi", marked=True)), (Steer("summarise"),))
 
-
-@pytest.mark.parametrize(
-    ("status", "headers", "limit"),
-    [
-        # As the API refuses a subscription whose limit is spent, and as Claude Code 2.1.285 reads it (hands-wire-6ic.gfq).
-        (429, {"anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "1790791200"}, UsageLimitReached(datetime(2026, 9, 30, 18, 0, tzinfo=UTC).timestamp())),
-        (429, {"Anthropic-Ratelimit-Unified-Status": "rejected"}, UsageLimitReached(None)),
-        (429, {"anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "soon"}, UsageLimitReached(None)),
-        # A throttle, not a spent limit, and an answer the limiter let through.
-        (429, {"anthropic-ratelimit-unified-status": "allowed"}, None),
-        (429, {}, None),
-        (200, {"anthropic-ratelimit-unified-status": "allowed", "anthropic-ratelimit-unified-reset": "1790791200"}, None),
-    ],
-)
-def test_a_spent_usage_limit_is_read_from_the_answers_head(status: int, headers: dict[str, str], limit: UsageLimitReached | None) -> None:
-    assert spent(status, headers) == limit

@@ -54,9 +54,9 @@ from hands.core.wire import (
     Unreached,
     tool_answers,
 )
+from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelUnreachable
 from hands.sessions.audit import Asker, BrainAnswered, BrainInterrupted, BrainSpoke, Record
 from hands.voice.speech import Aloud, Narrated
-from hands.voice.system import ModelFact, ModelFailed, ModelFault, ModelUnreachable
 from hands.voice.tools import Tool
 
 
@@ -81,6 +81,9 @@ def wire_name(tool: Tool) -> str:
     return f"mcp__{SERVER_NAME}__{tool.name}"
 
 
+_UNNAMED = ModelFailed(ErrorCategory.UNKNOWN)
+
+
 @dataclass
 class _Turn:
     """One question to the brain, from its write to stdin to its result line."""
@@ -101,8 +104,8 @@ class _Turn:
     interrupted: bool = False
     # Told to stop by hands, which Claude Code 2.1.285 ends with an error_during_execution result: asked for, not a failure.
     stopped: bool = False
-    # What the turn failed of, if it fails, as the wire last told it: nothing it named until one of its answers says.
-    failure: ModelFact = ModelFailed(ErrorCategory.UNKNOWN)
+    # What the turn failed of, if it fails, as its latest request's answer told it: nothing named until that answer says.
+    failure: ModelFact = _UNNAMED
 
 
 class BrainStage(FrameProcessor):
@@ -191,7 +194,10 @@ class BrainStage(FrameProcessor):
         for readback in turn.readbacks:
             # Said by hands, since the model that would have said it was not asked to go on.
             await self.push_frame(TTSSpeakFrame(readback))
-        self._record(BrainSpoke(tuple(turn.exchanges), "".join(turn.spoken), tuple(turn.readbacks), turn.interrupted, asker, waited))
+        # Told to stop by hands is asked for, not a failure; a brain that failed the turn itself has no answer to read.
+        ended = None if asked.exception() is not None or turn.stopped else asked.result().error
+        failed = None if ended is None else turn.failure
+        self._record(BrainSpoke(tuple(turn.exchanges), "".join(turn.spoken), tuple(turn.readbacks), turn.interrupted, asker, waited, failed))
         if (error := asked.exception()) is not None:
             # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
             # from its own watch, but one that never took the turn, or could not be typed into, is still running.
@@ -200,11 +206,12 @@ class BrainStage(FrameProcessor):
             self._broken_off = note
             await self._unsaid(unsaid)
             await self.push_error(f"the brain failed a turn: {error}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
-        elif (failed := asked.result().error) is not None and not turn.stopped:
-            # [LAW:no-silent-failure] said as the API services' failures are: an error from the model's stage.
+        elif ended is not None:
+            # [LAW:no-silent-failure] said as the API services' failures are: an error from the model's stage. No category:
+            # Pipecat takes an invalid request or a refused login as permanent and stops the stage, and the brain goes on.
             self._broken_off = _broken_off("".join(turn.spoken))
             await self._unsaid(unsaid)
-            await self.push_error(f"the brain's turn ended in error: {failed}", exception=ModelFault(turn.failure))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+            await self.push_error(f"the brain's turn ended in error: {ended}", exception=ModelFault(turn.failure))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
     async def _unsaid(self, unsaid: Sequence[str]) -> None:
         """What hands had for the brain to tell, said as written since the brain did not: a system fact, kept out of the context."""
@@ -258,7 +265,7 @@ class BrainStage(FrameProcessor):
         answers = [(turn.calls[answer.call], answer) for answer in tool_answers(sent.body) if answer.call in turn.calls]
         if not (turn.interrupted or any(name in self._silences for name, _ in answers)):
             turn.exchanges.append(sent.exchange)
-            turn.opening, turn.calls = {}, {}
+            turn.opening, turn.calls, turn.failure = {}, {}, _UNNAMED
             return Send((Tail(self._tail()),))
         turn.readbacks.extend(_said(answer) for name, answer in answers if name in self._completes)
         return Hold(INTERRUPTED if turn.interrupted else SILENT)
@@ -281,7 +288,7 @@ class BrainStage(FrameProcessor):
                 turn.calls[call] = name
             # [LAW:one-source-of-truth] why a turn failed is the wire's, as the API variants read it off their own calls: the
             # head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
-            # told before its 502. Claude Code asks again after most failures (ten times, 2.1.285): the latest is the turn's.
+            # told before its 502. Claude Code asks again after most failures (ten times, 2.1.285): the latest request's is the turn's.
             case Answering(exchange=exchange, status=status, limit=limit) if exchange in turn.exchanges:
                 turn.failure = limit or ModelFailed(classify_http_status_code(status))
             case Exchanged(exchange=exchange, reply=Unreached()) if exchange in turn.exchanges:

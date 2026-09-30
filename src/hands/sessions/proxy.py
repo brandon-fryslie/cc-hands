@@ -38,9 +38,8 @@ from hands.core.wire import (
     Sent,
     Unreached,
     edited,
-    spent,
 )
-from hands.sessions.replies import reply_reader, sent_of, shielded
+from hands.sessions.replies import reply_reader, sent_of, shielded, spent
 
 # Headers that describe one hop's connection rather than the request or reply, so each hop sets its own.
 HOP_BY_HOP = frozenset({"connection", "content-length", "host", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"})
