@@ -113,10 +113,10 @@ def dues(*ids: str) -> list[Due]:
     return [Due(id, digest("v1", id, []), f"text of {id}", ()) for id in ids]
 
 
-def test_the_page_names_each_item_and_cuts_a_long_text() -> None:
+def test_the_page_names_each_item_and_cuts_a_long_text_in_its_middle() -> None:
     [due] = dues("t1")
-    shown = page([Due("e1", due.digest, "x" * 50, (("e1.a", "A sentence."),))], text_limit=10)
-    assert shown == '<item id="e1">\nxxxxxxxxxx [cut]\n<parts>\n- e1.a: A sentence.\n</parts>\n</item>'
+    shown = page([Due("e1", due.digest, "a" * 20 + "x" * 20 + "z" * 10, (("e1.a", "A sentence."),))], text_limit=10)
+    assert shown == '<item id="e1">\naaaaa\n[40 characters left out]\nzzzzz\n<parts>\n- e1.a: A sentence.\n</parts>\n</item>'
 
 
 def test_a_reply_gives_each_id_its_sentence_and_says_what_it_missed_and_what_it_made_up() -> None:

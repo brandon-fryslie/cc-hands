@@ -75,12 +75,16 @@ async def summarise_turns(turns: Turns, store: SummaryStore, summarise: Summaris
     """Make a sentence for each turn asked for, and audit the pass."""
     began = time.monotonic()
     tally = _Tally()
-    await _say(turns.due, f"session {turns.session}", store, summarise, tally, batch)
+    # A turn is let go of as it is taken, so a read while it is being said queues it again, and narration can keep its
+    # headline in the meantime: this pass runs after both, and asks only for what is still unsaid.
+    unsaid = [due for due in turns.due if store.known(due.digest) is None]
+    await _say(unsaid, f"session {turns.session}", store, summarise, tally, batch)
     record(
         TurnsSummarised(
             turns.session,
-            outcome="said" if tally.said == len(turns.due) else "partial",
-            asked=len(turns.due),
+            outcome="said" if tally.said == len(unsaid) else "partial",
+            known=len(turns.due) - len(unsaid),
+            asked=len(unsaid),
             said=tally.said,
             calls=tally.calls,
             failed_calls=tally.failed,

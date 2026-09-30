@@ -100,7 +100,10 @@ def page(batch: Sequence[Due], text_limit: int) -> str:
 
 
 def _item(due: Due, text_limit: int) -> str:
-    text = due.text if len(due.text) <= text_limit else f"{due.text[:text_limit]} [cut]"
+    # A thing longer than the limit keeps how it starts and how it ends: a ticket's close says when it is done, and a
+    # turn's says what came of it, which is what its sentence is judged by.
+    head = (text_limit + 1) // 2
+    text = due.text if len(due.text) <= text_limit else f"{due.text[:head]}\n[{len(due.text) - text_limit} characters left out]\n{due.text[len(due.text) - (text_limit - head) :]}"
     parts = "".join(f"\n- {id}: {sentence}" for id, sentence in due.parts)
     return f"<item id={json.dumps(due.id)}>\n{text}" + (f"\n<parts>{parts}\n</parts>" if parts else "") + "\n</item>"
 

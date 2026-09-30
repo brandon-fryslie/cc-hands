@@ -1312,7 +1312,8 @@ summariser's instruction, the thing's own text, and the sentence of each thing u
 The tree is the backlog over its unfinished tickets with no unfinished parent (epics, loose
 tickets, and follow-ups filed under a closed ticket), each over its unfinished children. Editing one ticket changes its key and its ancestors' and no other,
 and stops rising at the first sentence that comes back unchanged; a rerank or a status
-change changes no key; an edit to the instruction changes every key. The rows live in
+change changes no key; an edit to the instruction changes every backlog key (a turn's key
+is its identity, below). The rows live in
 `<home>/sentences.db`, one table, never updated.
 
 Sentences are made off the voice path by one task (`hands.voice.summarising`). A
@@ -1325,21 +1326,22 @@ never waits on it: a thing with no sentence yet is served by its title and count
 0 calls and 0.16 s warm.
 
 A session is served the same way. `read_session` splits the whole transcript into turns,
-one per request (`hands.core.turn.turns`), and hands over a sentence for each finished
-turn, or its request while the sentence is unsaid; `read_turn` pages one turn's steps from
-a mark. A finished turn never changes, so its key is not its text but its identity
+one per request (`hands.core.turn.turns`), and hands over the newest forty with a sentence
+for each finished turn, or its request while the sentence is unsaid; `before` pages back,
+and `read_turn` pages one turn's steps from a mark. A finished turn never changes, so its key is not its text but its identity
 (`turn_digest`): its first record's id and how many things happened in it, under no
 instruction. Narration keeps a turn's headline under that key when it reports the whole
 turn (`Recounted.kept`), so a turn heard aloud is not summarised again; the rest are
-wanted at each read and said by the same task, one `TurnsSummarised` line per pass.
-Whether the last turn is finished is the registry's to say: it is while the session is
-not `Running`.
+wanted at each read and said by the same task, one `TurnsSummarised` line per pass, which
+skips what was said after it was queued. Whether the last turn is finished is the
+registry's to say, and only `Idle` or an ended session proves it: an `Unreported` one may
+be mid-turn.
 
 ## The intermediary's tools
 
 ```
 list_sessions()
-read_session(session)            read_turn(session, turn, since?)
+read_session(session, before?)   read_turn(session, turn, since?)
 read_backlog(session)            read_ticket(session, ticket, full?)
 focus_session(session)
 end_session(session?)

@@ -222,12 +222,14 @@ class Summarised:
 class TurnsSummarised:
     """One pass of the summary store over finished turns of a session that read_session found unsaid.
 
-    `asked` is how many turns the pass was handed; `left_out` names those a reply gave no sentence for, and `stray`
-    counts the reply lines that named nothing asked.
+    `known` is how many turns it was handed that had been said since they were queued, and `asked` how many it asked
+    the summariser for; `left_out` names those a reply gave no sentence for, and `stray` counts the reply lines that
+    named nothing asked.
     """
 
     session: str
     outcome: Literal["said", "partial"]
+    known: int
     asked: int
     said: int
     calls: int

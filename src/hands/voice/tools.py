@@ -27,7 +27,7 @@ from hands.core.session import Blocker, Membership, CommandName, Dialog, Held, I
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
 from hands.core.sentences import Due, turn_digest
-from hands.core.turn import Budget, Happening, body, describe, turns
+from hands.core.turn import Asked, Budget, Happening, Notified, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
 from hands.sessions.audit import Called, Record
@@ -193,50 +193,61 @@ READBACK_BUDGET = Budget(opening=200, said=400, input=120, result=200, steps=REA
 
 
 # How much of a finished turn the summariser is shown to say it in one sentence: its request, and how it started and
-# ended, inside the text the summariser is shown of any one thing.
+# ended. What is longer than the summariser is shown of one thing loses its middle, never its end.
 TURN_SENTENCE_BUDGET = Budget(opening=400, said=250, input=100, result=120, steps=16, files=0, commits=0, changes=0)
+
+# How many turns one reading of a session hands over, newest last: a day of work is hundreds of turns, and what it did
+# lately is what is asked about.
+TURNS_PAGE = 40
 
 
 def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
     """read_session, read_turn: what a session has done, a sentence per finished turn first and one turn's steps on request."""
 
-    async def read_session(session: str) -> Result:
+    async def read_session(session: str, before: int = 0) -> Result:
         """What a session has done, one turn at a time, in order: a sentence for each turn it has finished, and the request of the one it is on.
 
         Call this when the user asks what a session has been doing, or to catch up on one that was already
         running before you attached. Answer from the sentences; call read_turn to hear more of one turn, or of the
         one it is on. A finished turn with no summary yet has only its request, and its sentence is being written.
-        When `working` comes back true the session is still on its last turn.
+        When `working` comes back true the session is still on its last turn. You are given its newest turns; when
+        `earlier` is above zero there are that many before them, and calling again with `before` set to the first
+        turn you were given reads those.
 
         Args:
             session: The session's id, from list_sessions.
+            before: A turn number from an earlier call, to read the turns before it. 0 reads the newest.
         """
         found = await _session_reading(sessions, session)
         if isinstance(found, str):
             return {"error": found}
         member, reading = found
         spans = turns(reading.happenings)
+        if not (before == 0 or 1 <= before <= len(spans)):
+            return {"error": f"session {session} has turns 1 to {len(spans)}, and no turn {before}"}
+        end = len(spans) if before == 0 else before - 1
+        start = max(0, end - TURNS_PAGE)
         live = sessions.live_session(member.id)
-        # [LAW:one-source-of-truth] whether a session is still on its last turn is the registry's to say: the file
-        # cannot tell a turn that ended from one waiting on a long call.
-        working = live is not None and isinstance(live.state, Running)
-        finished = spans[:-1] if working else spans
-        keys = [turn_digest(reading.happenings[span.start : span.stop]) for span in finished]
-        said = {number: sentence for number, key in enumerate(keys, start=1) if key is not None and (sentence := store.known(key)) is not None}
-        due = [
-            Due(f"turn-{number}", key, body(reading.happenings[span.start : span.stop], Delta(), TURN_SENTENCE_BUDGET), ())
-            for number, (span, key) in enumerate(zip(finished, keys), start=1)
-            if key is not None and number not in said
-        ]
+        # [LAW:one-source-of-truth] whether a session's last turn is over is the registry's to say: the file cannot tell
+        # a turn that ended from one waiting on a long call. Only a session at its prompt, or gone, proves it; one whose
+        # status has not been read yet may be mid-turn, and a sentence of half a turn would be kept for good.
+        over = live is None or isinstance(live.state, Idle)
+        entries: list[dict[str, object]] = []
+        due: list[Due] = []
+        for number in range(start + 1, end + 1):
+            happened = reading.happenings[spans[number - 1].start : spans[number - 1].stop]
+            key = turn_digest(happened) if number < len(spans) or over else None
+            sentence = None if key is None else store.known(key)
+            if key is not None and sentence is None:
+                due.append(Due(f"turn-{number}", key, body(happened, Delta(), TURN_SENTENCE_BUDGET), ()))
+            entries.append({"turn": number, **({"summary": sentence} if sentence is not None else _opened(happened[0]))})
         # Every read is a sighting: the turns without a sentence are said in the background, never while this call waits.
         store.want_turns(member.id, due)
         return {
-            "turns": [
-                {"turn": number, **({"summary": said[number]} if number in said else {"asked": describe(reading.happenings[span.start], READBACK_BUDGET)})}
-                for number, span in enumerate(spans, start=1)
-            ],
+            "turns": entries,
+            "earlier": start,
             "unsummarised": len(due),
-            "working": working,
+            "working": live is not None and isinstance(live.state, Running),
         }
 
     async def read_turn(session: str, turn: int, since: str = "") -> Result:
@@ -298,6 +309,16 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         }
 
     return [tool(read_session), tool(read_turn)]
+
+
+def _opened(first: Happening) -> dict[str, object]:
+    """How a turn with no sentence is told: by its request, or, in a transcript that starts part way through one, by the
+    step it was first read at, which nobody asked for."""
+    match first:
+        case Asked() | Notified():
+            return {"asked": describe(first, READBACK_BUDGET)}
+        case _:
+            return {"began": describe(first, READBACK_BUDGET)}
 
 
 async def _session_reading(sessions: Sessions, session: str) -> tuple[Membership, Reading] | str:

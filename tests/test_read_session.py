@@ -9,14 +9,14 @@ from typing import Any
 from hands.core.delta import Delta
 from hands.core.events import Ended, Joined, StatusReported
 from hands.core.session import Membership, SessionId
-from hands.core.status import Busy, Report, Stamp
+from hands.core.status import Busy, Idle, Report, Stamp
 from hands.sessions.audit import Entry, Recounted, TurnsSummarised
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
 from hands.voice.narrator import recount
 from hands.voice.sentences import SummaryStore, Turns
 from hands.voice.summarising import summarise_turns
-from hands.voice.tools import READBACK_COUNT, Tool, session_tools
+from hands.voice.tools import READBACK_COUNT, TURNS_PAGE, Tool, session_tools
 
 from test_narrator import BUDGET, tailing, unrefused
 
@@ -30,13 +30,19 @@ async def joined(transcript: Path) -> Sessions:
     return sessions
 
 
+async def at_prompt(sessions: Sessions) -> Sessions:
+    """The session as Claude Code reports it sitting at its prompt: its last turn is over."""
+    await sessions.apply(StatusReported(SID, Report(Idle(), Stamp(1)), at=0.0))
+    return sessions
+
+
 def tools(sessions: Sessions, store: SummaryStore | None = None) -> dict[str, Tool]:
     return {tool.name: tool for tool in session_tools(sessions, store or SummaryStore(Sentences(Path(tempfile.mkdtemp()) / "sentences.db")))}
 
 
-async def sentences(sessions: Sessions, store: SummaryStore) -> dict[str, Any]:
+async def sentences(sessions: Sessions, store: SummaryStore, before: int = 0) -> dict[str, Any]:
     """The session a sentence per turn, as read_session hands it over."""
-    return dict(await tools(sessions, store)["read_session"].body(session="s1"))
+    return dict(await tools(sessions, store)["read_session"].body(session="s1", before=before))
 
 
 async def read(sessions: Sessions, session: str = "s1", since: str = "", turn: int = 1) -> dict[str, Any]:
@@ -291,19 +297,19 @@ async def test_an_hour_long_session_is_a_sentence_per_turn_said_off_the_voice_pa
     """An hour of work read raw is thousands of tokens; a sentence per turn is a few hundred."""
     transcript = tmp_path / "s1.jsonl"
     transcript.write_text("".join(f"{record}\n" for record in hour(turns=30, steps=40)))
-    sessions = await joined(transcript)
+    sessions = await at_prompt(await joined(transcript))
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
 
     # Nothing is said yet: each finished turn is its request, and none of it waited on a model.
     first = await sentences(sessions, store)
     assert [turn["turn"] for turn in first["turns"]] == list(range(1, 31))
     assert first["turns"][4] == {"turn": 5, "asked": "The user asked:\ndo task 4"}
-    assert first["unsummarised"] == 30 and first["working"] is False
+    assert first["unsummarised"] == 30 and first["working"] is False and first["earlier"] == 0
 
     recorded: list[Entry] = []
     await summarised(store, recorded)
     [pass_] = recorded
-    assert isinstance(pass_, TurnsSummarised) and (pass_.outcome, pass_.asked, pass_.said, pass_.calls) == ("said", 30, 30, 2)
+    assert isinstance(pass_, TurnsSummarised) and (pass_.outcome, pass_.known, pass_.asked, pass_.said, pass_.calls) == ("said", 0, 30, 30, 2)
 
     then = await sentences(sessions, store)
     assert then["turns"][4] == {"turn": 5, "summary": "What turn-5 did."}
@@ -346,6 +352,70 @@ async def test_a_turn_narration_reported_whole_is_served_from_its_report_and_nev
     await recount(tailing(transcript), SID, None, None, "a", summarise, recorded.append, BUDGET, Delta(), "on", unrefused, store.keep)
     assert any(isinstance(entry, Recounted) and entry.kept for entry in recorded)
 
-    answer = await sentences(await joined(transcript), store)
+    answer = await sentences(await at_prompt(await joined(transcript)), store)
     assert answer["turns"][-1] == {"turn": len(answer["turns"]), "summary": "Designed the hands-free architecture."}
     assert answer["unsummarised"] == len(answer["turns"]) - 1
+
+
+async def test_a_session_whose_status_is_not_read_yet_has_its_last_turn_left_unsummarised(tmp_path: Path) -> None:
+    """Attached mid-turn, a session is heard of before its status is read; half a turn summarised would be kept for good."""
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("".join(f"{record}\n" for record in hour(turns=2, steps=3)))
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+
+    answer = await sentences(await joined(transcript), store)
+    assert answer["working"] is False and answer["unsummarised"] == 1
+    wanted = await store.wanted()
+    assert isinstance(wanted, Turns) and [due.id for due in wanted.due] == ["turn-1"]
+
+
+async def test_a_long_day_is_read_newest_first_a_page_at_a_time(tmp_path: Path) -> None:
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("".join(f"{record}\n" for record in hour(turns=TURNS_PAGE + 10, steps=1)))
+    sessions = await at_prompt(await joined(transcript))
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+
+    newest = await sentences(sessions, store)
+    assert [turn["turn"] for turn in newest["turns"]] == list(range(11, TURNS_PAGE + 11))
+    assert newest["earlier"] == 10 and newest["unsummarised"] == TURNS_PAGE
+    before = await sentences(sessions, store, before=11)
+    assert [turn["turn"] for turn in before["turns"]] == list(range(1, 11)) and before["earlier"] == 0
+    # Only what was handed over is asked for: the store is never sent a whole day by one read.
+    first = await store.wanted()
+    assert isinstance(first, Turns) and len(first.due) == TURNS_PAGE
+    assert "error" in await sentences(sessions, store, before=TURNS_PAGE + 11)
+
+
+async def test_a_transcript_that_starts_part_way_through_a_turn_says_so_rather_than_what_was_asked(tmp_path: Path) -> None:
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("".join(f"{record}\n" for record in [said("r0", "picking up where it was"), *hour(turns=1, steps=1)]))
+    answer = await sentences(await joined(transcript), SummaryStore(Sentences(tmp_path / "sentences.db")))
+    assert answer["turns"][0] == {"turn": 1, "began": "Claude said:\npicking up where it was"}
+    assert answer["turns"][1] == {"turn": 2, "asked": "The user asked:\ndo task 0"}
+
+
+async def test_a_turn_said_after_it_was_queued_is_not_asked_for_again(tmp_path: Path) -> None:
+    """Read twice while the first pass runs, or told aloud in between: the second pass finds it said."""
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("".join(f"{record}\n" for record in hour(turns=3, steps=1)))
+    sessions = await at_prompt(await joined(transcript))
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    await sentences(sessions, store)
+    first = await store.wanted()
+    # Taken, so a read in the meantime queues the same turns again.
+    await sentences(sessions, store)
+    assert isinstance(first, Turns)
+    asked: list[str] = []
+
+    async def summarise(page: str) -> str:
+        asked.append(page)
+        return "\n".join(f"{due.id}: What {due.id} did." for due in first.due)
+
+    recorded: list[Entry] = []
+    await summarise_turns(first, store, summarise, recorded.append)
+    second = await store.wanted()
+    assert isinstance(second, Turns)
+    await summarise_turns(second, store, summarise, recorded.append)
+    assert len(asked) == 1
+    [_, again] = recorded
+    assert isinstance(again, TurnsSummarised) and (again.outcome, again.known, again.asked, again.calls) == ("said", 3, 0, 0)
