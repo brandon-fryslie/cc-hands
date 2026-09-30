@@ -66,15 +66,15 @@ from hands.voice.pipeline import (
     build_voice,
 )
 from hands.voice.narrator import narrate
-from hands.voice.speech import relay
+from hands.voice.speech import Pushed, Tailed, Telling, relay
 from hands.voice.summary import Summariser, summariser
 from hands.voice.summary_instruction import TURN_SUMMARY_INSTRUCTION
-from hands.voice.briefing import brief
+from hands.voice.briefing import brief, tail
 from hands.voice.conversation import record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.voice.threads import off_loop
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
-from hands.voice.tools import Tool, audited, intermediary_tools
+from hands.voice.tools import Tool, audited, intermediary_tools, standing
 from hands.brain.mcp import serve_mcp
 from hands.brain.process import Brain, Launch, NotLoggedIn, logged_in, start as start_brain, workdir
 from hands.brain.stage import BrainStage
@@ -207,20 +207,21 @@ class Watch:
 
 @dataclass(frozen=True)
 class Mind:
-    """The pipeline's LLM stage for the model's variant, and what that variant runs beside the pipeline."""
+    """The pipeline's LLM stage for the model's variant, what that variant runs beside the pipeline, and how the model is told how the sessions stand."""
 
     llm: FrameProcessor
     watches: Sequence[Watch]
+    telling: Telling
 
 
 @asynccontextmanager
-async def mind(config: VoiceConfig, tools: Sequence[Tool], proxy_url: str, wire: Wire, record: Record) -> AsyncGenerator[Mind]:
+async def mind(config: VoiceConfig, tools: Sequence[Tool], sessions: Sessions, proxy_url: str, wire: Wire, record: Record) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
     through, and the stage that speaks for it from the wire."""
     # [LAW:single-enforcer] the one place the backend's variant decides the LLM stage.
     match config.llm:
         case AnthropicBackend() | OpenAICompatibleBackend() as backend:
-            yield Mind(build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens), ())
+            yield Mind(build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens), (), Pushed())
         case ClaudeCodeBackend(model=model, config_dir=config_dir):
             server = await serve_mcp(tools, record)
             try:
@@ -228,9 +229,9 @@ async def mind(config: VoiceConfig, tools: Sequence[Tool], proxy_url: str, wire:
                 launch = Launch(config_dir, workdir(config_dir), model, INTERMEDIARY_INSTRUCTION, proxy_url, server.config(), session)
                 brain = await start_brain(launch, record)
                 try:
-                    stage = BrainStage(brain, tools, record)
+                    stage = BrainStage(brain, tools, lambda: tail(standing(sessions)), record)
                     with wire.joined(stage):
-                        yield Mind(stage, (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each)))
+                        yield Mind(stage, (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each)), Tailed())
                 finally:
                     await brain.stop()
             finally:
@@ -279,11 +280,11 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
         config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, proxy.url, wire, audit.record) as minded:
+            async with mind(config, tools, sessions, proxy.url, wire, audit.record) as minded:
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm), "the voice load"), heart, sessions, quit_event)
                 if voice is not None:
                     summarise = summariser(config.llm, proxy.url, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas, minded.watches)
+                    await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas, minded)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -339,7 +340,7 @@ async def converse(
     after_crash: bool,
     record: Record,
     deltas: Deltas,
-    watches: Sequence[Watch],
+    minded: Mind,
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
@@ -362,16 +363,16 @@ async def converse(
             failures.append(error)
             quit_event.set()
 
-    await brief(sessions, voice.worker.queue_frame)
+    await brief(sessions, minded.telling, voice.worker.queue_frame)
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
-        asyncio.create_task(relay(sessions, voice.worker.queue_frame), name="the session speech relay"),
+        asyncio.create_task(relay(sessions, minded.telling, voice.worker.queue_frame), name="the session speech relay"),
         asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record, lambda: summaries(home), channel.say, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
-        *(asyncio.create_task(watch.run(), name=watch.name) for watch in watches),
+        *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),
     ]
     following = asyncio.create_task(follow_default_devices(pipeline.started, voice.audio, channel.say), name="the audio device follower")
     background.append(following)

@@ -30,6 +30,7 @@ from pipecat.workers.runner import WorkerRunner
 from hands.brain.stage import INTERRUPTED, SILENT, BrainStage
 from hands.core.session import SessionId
 from hands.core.wire import (
+    Append,
     BlockStarted,
     BlockStopped,
     Fork,
@@ -49,6 +50,7 @@ from hands.voice.tools import Result, Tool, tool
 BRAIN = SessionId("brain-session")
 PATIENCE_SECS = 2.0
 ANSWERED = BrainAnswered("success", False, 1, 10)
+TAIL = "[hands] The Claude Code sessions running now: none of note."
 
 
 async def stage_draft(session: str, text: str) -> Result:
@@ -119,6 +121,8 @@ class Rig:
     out: Spoken
     recorded: list[Entry]
     errors: list[ErrorFrame]
+    # How the sessions stand, as the registry would compose it when a request leaves.
+    standing: list[str]
     context: LLMContext = field(default_factory=LLMContext)
     exchanges: int = 0
 
@@ -162,7 +166,8 @@ class Rig:
 async def rig() -> AsyncGenerator[Rig, None]:
     brain = FakeBrain()
     recorded: list[Entry] = []
-    stage = BrainStage(brain, TOOLS, recorded.append)
+    standing = [TAIL]
+    stage = BrainStage(brain, TOOLS, lambda: standing[-1], recorded.append)
     out = Spoken()
     worker = PipelineWorker(Pipeline([stage, out]), idle_timeout_secs=None)
     started = asyncio.Event()
@@ -182,7 +187,7 @@ async def rig() -> AsyncGenerator[Rig, None]:
     # As the daemon runs it: a watch beside the pipeline.
     asking = asyncio.create_task(stage.ask_each())
     await asyncio.wait_for(started.wait(), PATIENCE_SECS)
-    yield Rig(worker, stage, brain, out, recorded, errors)
+    yield Rig(worker, stage, brain, out, recorded, errors, standing)
     asking.cancel()
     await worker.cancel()
     await running
@@ -205,7 +210,7 @@ async def test_a_turn_goes_to_the_brain_and_its_words_come_off_the_wire(rig: Rig
     await rig.say({"role": "user", "content": "what is running?"})
     assert rig.brain.asked == ["what is running?"]
     exchange, route = rig.request()
-    assert route == Forward()
+    assert route == Append(TAIL)
     rig.stream(exchange, "Two sessions ", "are running.")
     await rig.until(lambda: len(rig.out.said()) == 2)
     rig.brain.end()
@@ -214,6 +219,17 @@ async def test_a_turn_goes_to_the_brain_and_its_words_come_off_the_wire(rig: Rig
     assert rig.out.said() == ["Two sessions ", "are running."]
     # The audit log ties what was spoken to the exchange on the wire it came from.
     assert BrainSpoke((exchange,), "Two sessions are running.", (), False) in rig.recorded
+
+
+async def test_each_request_of_a_turn_carries_how_the_sessions_stand_as_it_leaves(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "start the tests in auth"})
+    exchange, first = rig.request()
+    rig.calls(exchange, ("t1", "mcp__hands__stage_draft"))
+    rig.standing.append("[hands] The Claude Code sessions running now: auth, working.")
+    _, second = rig.request(answering("mcp__hands__stage_draft", {"readback": "staged"}))
+    # Composed as each request leaves, never kept from the one before.
+    assert (first, second) == (Append(TAIL), Append("[hands] The Claude Code sessions running now: auth, working."))
+    rig.brain.end()
 
 
 async def test_only_the_brains_own_main_turns_are_spoken(rig: Rig) -> None:
@@ -265,7 +281,7 @@ async def test_stay_silent_holds_the_next_request_so_nothing_follows_it(rig: Rig
     closed = answering("mcp__hands__stay_silent", {"silent": True})
     closed["messages"] = [*closed["messages"], {"role": "assistant", "content": [{"type": "text", "text": SILENT}]}, {"role": "user", "content": "are you there?"}]  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType]
     exchange, route = rig.request(closed)
-    assert route == Forward()
+    assert route == Append(TAIL)
     rig.stream(exchange, "I am.")
     await rig.until(lambda: rig.out.said() == ["I am."])
     rig.brain.end()
@@ -378,7 +394,7 @@ async def test_a_stay_silent_answered_in_an_earlier_turn_does_not_hold_the_next(
     body = answering("mcp__hands__stay_silent", {"silent": True})
     body["messages"] = [*body["messages"], {"role": "user", "content": "are you there?"}]  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType]
     _, route = rig.request(body)
-    assert route == Forward()
+    assert route == Append(TAIL)
     rig.brain.end()
 
 

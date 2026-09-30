@@ -176,7 +176,7 @@ def list_sessions_tool(sessions: Sessions) -> Tool:
         while it sits at its prompt is seen when it is next prompted, and one changed
         in the middle of a turn at its next tool call.
         """
-        return {"sessions": [describe_listing(listing) for listing in sessions.live()]}
+        return {"sessions": standing(sessions)}
 
     return tool(list_sessions)
 
@@ -270,6 +270,11 @@ def _page(happenings: list[Happening]) -> list[Happening]:
     while end < len(happenings) and happenings[end].ref == ref:
         end += 1
     return happenings[:end]
+
+
+def standing(sessions: Sessions) -> list[dict[str, str]]:
+    """Every live session as list_sessions describes it."""
+    return [describe_listing(listing) for listing in sessions.live()]
 
 
 def describe_listing(listing: Listing[Session]) -> dict[str, str]:

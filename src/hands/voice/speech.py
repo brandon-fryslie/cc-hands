@@ -1,7 +1,8 @@
 """What sessions say to the user unasked: announcements spoken as written, moments the intermediary explains."""
 
 import json
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 
@@ -24,23 +25,40 @@ _AFTER_PLAN: Mapping[ModeAfterPlan, str] = {
 }
 
 
-async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]]) -> None:
+@dataclass(frozen=True)
+class Pushed:
+    """The model is told how the sessions stand by notes in its context: one when hands starts, and one at each change."""
+
+
+@dataclass(frozen=True)
+class Tailed:
+    """The model reads how the sessions stand at the tail of each request its turn makes, so no note goes into its context."""
+
+
+Telling = Pushed | Tailed
+
+
+async def relay(sessions: Sessions, telling: Telling, queue_frame: Callable[[Frame], Awaitable[None]]) -> None:
     """Hand everything the sessions say to the pipeline, in the order it was decided, until cancelled."""
     while True:
         heard = await sessions.heard()
-        await queue_frame(frame(heard, lambda id: spoken_name(sessions, id)))
+        for each in frames(heard, telling, lambda id: spoken_name(sessions, id)):
+            await queue_frame(each)
 
 
-def frame(heard: Heard, names: Names) -> Frame:
+def frames(heard: Heard, telling: Telling, names: Names) -> Sequence[Frame]:
     # [LAW:one-type-per-behavior] the route is the effect's own variant: Speak needs no model, Narrate needs one to explain.
-    match heard:
-        case Speak(announcement=announcement):
+    match heard, telling:
+        case Speak(announcement=announcement), _:
             # Kept in the context, so the intermediary knows what the user has already been told.
-            return TTSSpeakFrame(announcement_text(announcement, names))
-        case Narrate(moment=moment):
-            return LLMMessagesAppendFrame([{"role": "user", "content": narration(moment, names)}], run_llm=True)
-        case Note(fact=fact):
-            return LLMMessagesAppendFrame([{"role": "user", "content": noted(fact, names)}], run_llm=False)
+            return (TTSSpeakFrame(announcement_text(announcement, names)),)
+        case Narrate(moment=moment), _:
+            return (LLMMessagesAppendFrame([{"role": "user", "content": narration(moment, names)}], run_llm=True),)
+        case Note(fact=fact), Pushed():
+            return (LLMMessagesAppendFrame([{"role": "user", "content": noted(fact, names)}], run_llm=False),)
+        case Note(), Tailed():
+            # [LAW:one-source-of-truth] the tail of the brain's next request says how the session stands now.
+            return ()
 
 
 def noted(fact: ModeChanged, names: Names) -> str:

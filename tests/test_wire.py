@@ -1,6 +1,8 @@
 """The wire read as values: which kind a request is, whose it is, and what a streamed reply said."""
 
 import json
+
+import pytest
 from typing import cast
 
 from hands.core.session import SessionId
@@ -27,6 +29,7 @@ from hands.core.wire import (
     Unknown,
     Unparsed,
     answered,
+    appended,
     assemble,
     classify,
     frames,
@@ -250,3 +253,32 @@ def test_tool_answers_are_every_result_in_the_request_by_the_call_it_answers() -
     assert tool_answers(body) == (ToolAnswer("a", '{"readback": "staged"}', False), ToolAnswer("b", "exit 1", True))
     assert tool_answers({"messages": [{"role": "user", "content": "hi"}]}) == ()
     assert tool_answers(None) == ()
+
+
+def test_the_tail_goes_after_every_block_of_the_newest_message_and_nothing_before_it_moves() -> None:
+    result: dict[str, object] = {"type": "tool_result", "tool_use_id": "t1", "content": "ok", "cache_control": MARKED}
+    tool_result: dict[str, object] = {"role": "user", "content": [result]}
+    earlier: list[dict[str, object]] = [said("hi"), {"role": "assistant", "content": [{"type": "text", "text": "hello"}]}]
+    sent = request(*earlier, tool_result)
+    amended = appended(sent, "[hands] how they stand")
+    assert amended == {**sent, "messages": [*earlier, {"role": "user", "content": [result, {"type": "text", "text": "[hands] how they stand"}]}]}
+    # Still the loop's own request: the marker has not moved.
+    assert classify("/v1/messages", amended) == MainTurn()
+    # The request Claude Code keeps in its history is untouched.
+    assert tool_result == {"role": "user", "content": [result]}
+
+
+# A string for content has no block to carry a cache marker, so no main turn's newest message is one.
+REFUSED: list[object] = [
+    None,
+    {"messages": []},
+    {"messages": [{"role": "user", "content": []}]},
+    {"messages": [{"role": "user"}]},
+    {"messages": [{"role": "user", "content": "hi"}]},
+]
+
+
+@pytest.mark.parametrize("body", REFUSED)
+def test_a_request_with_no_newest_message_to_append_to_is_refused(body: object) -> None:
+    with pytest.raises(ValueError):
+        appended(body, "tail")

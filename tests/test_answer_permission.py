@@ -22,7 +22,7 @@ from hands.core.status import Busy, Idle, Report, Stamp
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
-from hands.voice.speech import frame, relay
+from hands.voice.speech import Pushed, frames, relay
 from hands.voice.tools import DENIED_BY_VOICE, SENT_BACK_BY_VOICE, Tool, permission_tools
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000002")
@@ -184,7 +184,7 @@ async def test_a_question_nobody_answers_by_its_deadline_is_left_to_its_dialog_a
     assert (code, stdout) == (0, "")
     [warning, expiry] = [await sessions.heard(), await sessions.heard()]
     assert (warning, expiry) == (Speak(DeadlineNear(SID, moment.on, remaining=10.0)), Speak(Expired(SID, moment.on)))
-    spoken = [frame(heard, names=lambda _: "quiz") for heard in (warning, expiry)]
+    spoken = [said for heard in (warning, expiry) for said in frames(heard, Pushed(), names=lambda _: "quiz")]
     assert [cast(TTSSpeakFrame, said).text for said in spoken] == [
         "10 seconds left to answer quiz about its question.",
         "Nobody answered quiz about its question in time, so it is left waiting at its dialog.",
@@ -222,7 +222,7 @@ def test_a_question_reaches_the_model_whole_with_its_options_and_request_id() ->
         AskedQuestion("Which fruits?", (Option("pear", long), Option("plum", long)), several=True),
         AskedQuestion("Name it?", (), several=False),
     )
-    narrated = frame(Narrate(Asking(SID, RequestId("q-7"), Question(asked, {}))), names=lambda id: id)
+    [narrated] = frames(Narrate(Asking(SID, RequestId("q-7"), Question(asked, {}))), Pushed(), names=lambda id: id)
     assert isinstance(narrated, LLMMessagesAppendFrame)
     [message] = narrated.messages
     content = str(cast(dict[str, object], message)["content"])
@@ -381,7 +381,7 @@ async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the
         frames.append(frame)
 
     shim, _ = await asked(home, sessions)
-    relaying = asyncio.create_task(relay(sessions, queue_frame))
+    relaying = asyncio.create_task(relay(sessions, Pushed(), queue_frame))
     await sessions.apply(Tick(DEADLINE - 10.0))
     await sessions.apply(Tick(DEADLINE))
     await asyncio.wait_for(shim.finished(), WAIT_SECONDS)
@@ -397,7 +397,7 @@ async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the
 
 def test_a_request_reaches_the_model_with_its_tool_input_and_request_id() -> None:
     moment = Asking(SID, RequestId("r-42"), Permission("Bash", {"command": "rm -r build"}))
-    narrated = frame(Narrate(moment), names=lambda id: id)
+    [narrated] = frames(Narrate(moment), Pushed(), names=lambda id: id)
     assert isinstance(narrated, LLMMessagesAppendFrame) and narrated.run_llm is True
     [message] = narrated.messages
     content = str(cast(dict[str, object], message)["content"])
@@ -463,7 +463,7 @@ async def test_a_plan_nobody_answers_by_its_deadline_is_left_to_its_dialog(home:
     code, stdout, _ = await shim.finished()
     assert (code, stdout) == (0, "")
     [warning, expiry] = [await sessions.heard(), await sessions.heard()]
-    assert [cast(TTSSpeakFrame, frame(heard, names=lambda _: "planner")).text for heard in (warning, expiry)] == [
+    assert [cast(TTSSpeakFrame, said).text for heard in (warning, expiry) for said in frames(heard, Pushed(), names=lambda _: "planner")] == [
         "10 seconds left to answer planner about its plan.",
         "Nobody answered planner about its plan in time, so it is left waiting at its dialog.",
     ]
@@ -485,7 +485,7 @@ async def test_plan_answers_that_do_not_parse_are_refused_out_loud(sessions: Ses
 
 def test_a_plan_reaches_the_model_whole_with_its_request_id() -> None:
     long = "\n".join(f"{step}. A step described at length so the plan runs past what a tool input is shown." for step in range(1, 30))
-    narrated = frame(Narrate(Asking(SID, RequestId("p-3"), Plan(long))), names=lambda id: id)
+    [narrated] = frames(Narrate(Asking(SID, RequestId("p-3"), Plan(long))), Pushed(), names=lambda id: id)
     assert isinstance(narrated, LLMMessagesAppendFrame)
     [message] = narrated.messages
     content = str(cast(dict[str, object], message)["content"])

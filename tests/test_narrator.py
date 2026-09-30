@@ -25,7 +25,7 @@ from hands.sessions.summaries import Summaries, set_summaries, summaries
 from hands.sessions.tail import Tails
 from hands.voice.narrator import narrate, recount
 from hands.voice.refusal import UsageLimitReached
-from hands.voice.speech import relay
+from hands.voice.speech import Pushed, relay
 from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
 
@@ -163,7 +163,7 @@ async def test_with_summaries_off_a_finished_turn_is_not_spoken_and_turning_them
 
     frames: asyncio.Queue[Frame] = asyncio.Queue()
     narrating = asyncio.create_task(narrate(sessions, Tails(sessions), summarise, frames.put, record, lambda: summaries(home), unrefused, BUDGET))
-    relaying = asyncio.create_task(relay(sessions, frames.put))
+    relaying = asyncio.create_task(relay(sessions, Pushed(), frames.put))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))

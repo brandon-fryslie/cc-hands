@@ -603,6 +603,8 @@ class Exchanged:
     method: str
     path: str
     request_bytes: int
+    # What hands appended to the newest message before it went on; empty for a request that went as it came.
+    appended: str
     requested_at: Seconds
     sent_at: Seconds
     reply: Reached | Unreached | Held
@@ -631,4 +633,30 @@ class Hold:
     said: str
 
 
-Route = Forward | Hold
+@dataclass(frozen=True)
+class Append:
+    """The request goes to the API with `tail` as one more text block at the end of its newest message.
+
+    After the block carrying the request's cache marker, so the cached prefix is what Claude Code sent, and the next
+    request, whose history lacks the tail, misses none of it.
+    """
+
+    tail: str
+
+
+Route = Forward | Append | Hold
+
+
+def appended(body: object, tail: str) -> Mapping[str, object]:
+    """A messages request with `tail` added as a text block after every block of its newest message; nothing before it moves."""
+    if not isinstance(body, Mapping):
+        raise ValueError("a request with no JSON object for a body has no message to append to")
+    request = cast(Mapping[str, object], body)
+    messages = _list(request.get("messages"))
+    if not messages or not isinstance(messages[-1], Mapping):
+        raise ValueError("a request with no newest message has nothing to append to")
+    newest = cast(Mapping[str, object], messages[-1])
+    blocks = _list(newest.get("content"))
+    if not blocks:
+        raise ValueError(f"the newest message's content is {newest.get('content')!r}, not blocks to append to")
+    return {**request, "messages": [*messages[:-1], {**newest, "content": [*blocks, {"type": "text", "text": tail}]}]}
