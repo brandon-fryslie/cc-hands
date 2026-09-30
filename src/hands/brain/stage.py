@@ -34,16 +34,16 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from hands.brain.mcp import SERVER_NAME
 from hands.core.session import SessionId
 from hands.core.wire import (
-    Append,
     BlockStarted,
     BlockStopped,
-    Forward,
     Heard,
     Hold,
     MainTurn,
     Observed,
     Route,
+    Send,
     Sent,
+    Tail,
     TextDelta,
     ToolAnswer,
     tool_answers,
@@ -196,18 +196,18 @@ class BrainStage(FrameProcessor):
         """Where a request on the wire goes: each of a turn's own requests with hands' tail on it, and the next one after
         stay_silent or a barge-in held."""
         if sent.session != self._brain.session or not isinstance(sent.kind, MainTurn):
-            return Forward()
+            return Send()
         turn = self._turn
         if turn is None:
             # [LAW:no-silent-failure] the brain asked the model something with no turn written to it: heard, never spoken.
             logger.warning(f"the brain sent a main turn (exchange {sent.exchange}) with no turn asked of it; nothing it says will be spoken")
-            return Forward()
+            return Send()
         # Only the calls this turn's last reply opened: a request carries every result of the brain's history.
         answers = [(turn.calls[answer.call], answer) for answer in tool_answers(sent.body) if answer.call in turn.calls]
         if not (turn.interrupted or any(name in self._silences for name, _ in answers)):
             turn.exchanges.append(sent.exchange)
             turn.opening, turn.calls = {}, {}
-            return Append(self._tail())
+            return Send((Tail(self._tail()),))
         turn.readbacks.extend(_said(answer) for name, answer in answers if name in self._completes)
         return Hold(INTERRUPTED if turn.interrupted else SILENT)
 

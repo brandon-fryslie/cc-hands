@@ -28,8 +28,14 @@ from hands.core.wire import (
     ToolUse,
     Unknown,
     Unparsed,
+    Tail,
+    SIDE_QUESTION_OPENING,
+    Stub,
+    Steer,
+    tool_calls,
+    turns,
     answered,
-    appended,
+    edited,
     assemble,
     classify,
     frames,
@@ -52,15 +58,45 @@ def request(*messages: dict[str, object], tools: list[object] = TOOLS) -> dict[s
 
 
 # The shapes below are the ones Claude Code 2.1.284 sent through the proxy on 2026-09-29: its own loop marks the last
-# message, and its compaction, a fork that skips the cache write, marks the one before.
+# message, and its compaction marks the one before.
 
 
 def test_the_loop_marks_its_last_message_and_is_a_main_turn() -> None:
     assert classify("/v1/messages?beta=true", request(said("hi"), said("ok"), said("go on", marked=True))) == MainTurn()
 
 
-def test_a_fork_marks_the_message_before_its_own_and_is_not_a_main_turn() -> None:
-    assert classify("/v1/messages?beta=true", request(said("hi"), said("ok", marked=True), said("side question"))) == Fork()
+QUESTION = SIDE_QUESTION_OPENING + " You must answer this question directly in a single response.</system-reminder>\n\nwhat did the read say?"
+
+
+def reply(text: str, marked: bool = False) -> dict[str, object]:
+    return {**said(text, marked), "role": "assistant"}
+
+
+# The three shapes of a side question 2.1.285 sent through the proxy (hands-wire-6ic.l2o), which differ in everything
+# but the words the question is wrapped in.
+SIDE_QUESTIONS = {
+    # Between turns: the question follows the last reply, which carries the marker.
+    "between turns": request(said("hi"), reply("hello", marked=True), said(QUESTION)),
+    # During a turn: merged into the prompt in flight, and followed by a message of Claude Code's own.
+    "during a turn": request(
+        said("hi"),
+        reply("hello", marked=True),
+        {"role": "user", "content": [{"type": "text", "text": "read the file"}, {"type": "text", "text": QUESTION}]},
+        {"role": "system", "content": [{"type": "text", "text": "<system-reminder>tokens left</system-reminder>"}]},
+    ),
+    # Before the first turn has finished: merged into the first prompt, with no marker anywhere.
+    "before the first turn": request({"role": "user", "content": [{"type": "text", "text": "hi"}, {"type": "text", "text": QUESTION}]}),
+}
+
+
+@pytest.mark.parametrize("shape", SIDE_QUESTIONS)
+def test_a_side_question_is_a_fork_by_its_wrapper_wherever_its_marker_lands(shape: str) -> None:
+    assert classify("/v1/messages?beta=true", SIDE_QUESTIONS[shape]) == Fork()
+
+
+def test_a_side_question_quoted_in_history_does_not_make_the_next_turn_a_fork() -> None:
+    body = request(said(QUESTION), reply("the read said nothing"), said("thanks", marked=True))
+    assert classify("/v1/messages", body) == MainTurn()
 
 
 def test_the_compaction_prompt_makes_a_compaction_whatever_its_marker() -> None:
@@ -250,7 +286,7 @@ def test_tool_answers_are_every_result_in_the_request_by_the_call_it_answers() -
             {"role": "system", "content": [{"type": "text", "text": "<system-reminder>tokens left</system-reminder>", "cache_control": {"type": "ephemeral"}}]},
         ]
     }
-    assert tool_answers(body) == (ToolAnswer("a", '{"readback": "staged"}', False), ToolAnswer("b", "exit 1", True))
+    assert tool_answers(body) == (ToolAnswer("a", '{"readback": "staged"}', False, 0), ToolAnswer("b", "exit 1", True, 0))
     assert tool_answers({"messages": [{"role": "user", "content": "hi"}]}) == ()
     assert tool_answers(None) == ()
 
@@ -260,7 +296,7 @@ def test_the_tail_goes_after_every_block_of_the_newest_message_and_nothing_befor
     tool_result: dict[str, object] = {"role": "user", "content": [result]}
     earlier: list[dict[str, object]] = [said("hi"), {"role": "assistant", "content": [{"type": "text", "text": "hello"}]}]
     sent = request(*earlier, tool_result)
-    amended = appended(sent, "[hands] how they stand")
+    amended = edited(sent, (Tail("[hands] how they stand"),))
     assert amended == {**sent, "messages": [*earlier, {"role": "user", "content": [result, {"type": "text", "text": "[hands] how they stand"}]}]}
     # Still the loop's own request: the marker has not moved.
     assert classify("/v1/messages", amended) == MainTurn()
@@ -281,4 +317,56 @@ REFUSED: list[object] = [
 @pytest.mark.parametrize("body", REFUSED)
 def test_a_request_with_no_newest_message_to_append_to_is_refused(body: object) -> None:
     with pytest.raises(ValueError):
-        appended(body, "tail")
+        edited(body, (Tail("tail"),))
+
+
+def result(call: str, text: str) -> dict[str, object]:
+    return {"type": "tool_result", "tool_use_id": call, "content": [{"type": "text", "text": text}]}
+
+
+def called(call: str, name: str = "Read") -> dict[str, object]:
+    return {"role": "assistant", "content": [{"type": "tool_use", "id": call, "name": name, "input": {"file_path": f"/{call}"}}]}
+
+
+def answering(*results: dict[str, object]) -> dict[str, object]:
+    return {"role": "user", "content": list(results)}
+
+
+def test_a_turn_opens_at_each_prompt_and_its_results_are_counted_in_it() -> None:
+    body = request(
+        said("read a"), called("a"), answering(result("a", "A")), reply("read it"),
+        said("read b"), called("b"), answering(result("b", "B")),
+        {"role": "system", "content": [{"type": "text", "text": "<system-reminder>tokens left</system-reminder>"}]},
+    )
+    assert turns(body) == 2
+    assert [(answer.call, answer.turn) for answer in tool_answers(body)] == [("a", 0), ("b", 1)]
+    assert tool_calls(body) == {"a": ToolUse("a", "Read", {"file_path": "/a"}), "b": ToolUse("b", "Read", {"file_path": "/b"})}
+    assert turns(None) == 0
+
+
+def test_a_stub_replaces_only_the_result_it_names_and_the_request_keeps_its_shape() -> None:
+    body = request(said("read a"), called("a"), answering(result("a", "A" * 500), {"type": "text", "text": "note"}), reply("ok"), said("go", marked=True))
+    changed = edited(body, (Stub("a", "Read: the file holds A."),))
+    assert changed == {
+        **body,
+        "messages": [
+            said("read a"), called("a"),
+            answering({**result("a", ""), "content": "Read: the file holds A."}, {"type": "text", "text": "note"}),
+            reply("ok"), said("go", marked=True),
+        ],
+    }
+    assert classify("/v1/messages", changed) == MainTurn()
+
+
+def test_a_steer_replaces_the_compaction_prompt_and_it_is_still_a_compaction() -> None:
+    body = request(said("hi"), reply("ok", marked=True), said(COMPACTION_OPENING + " summarise the code"))
+    changed = edited(body, (Steer(COMPACTION_OPENING + " summarise the voice session"),))
+    assert changed["messages"] == [said("hi"), reply("ok", marked=True), said(COMPACTION_OPENING + " summarise the voice session")]
+    assert classify("/v1/messages", changed) == Compaction()
+
+
+def test_a_change_with_nothing_to_change_is_refused() -> None:
+    with pytest.raises(ValueError, match="no tool result answers call b"):
+        edited(request(said("hi", marked=True)), (Stub("b", "Read: B"),))
+    with pytest.raises(ValueError, match="no compaction prompt"):
+        edited(request(said("hi", marked=True)), (Steer("summarise"),))

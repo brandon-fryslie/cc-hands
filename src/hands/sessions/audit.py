@@ -114,6 +114,25 @@ class BrainAnswered:
 
 
 @dataclass(frozen=True)
+class BrainForked:
+    """A side question the brain was asked over stdin, beside any turn, and its control response: the reply, or why it failed."""
+
+    request: str
+    question: str
+    reply: str
+    failed: bool
+
+
+@dataclass(frozen=True)
+class ResultsStubbed:
+    """The brain's history crossed a batch boundary: the calls whose results go as a line from now on, and those that
+    go whole because no sentence had been said of them by then."""
+
+    stubbed: tuple[str, ...]
+    unsaid: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class BrainInterrupted:
     """The user barged in on a brain turn: the tools it had in flight, and whether it was told to stop at once.
 
@@ -270,6 +289,8 @@ Entry = (
     | BrainReady
     | BrainAsked
     | BrainAnswered
+    | BrainForked
+    | ResultsStubbed
     | BrainInterrupted
     | BrainSpoke
     | BrainExited

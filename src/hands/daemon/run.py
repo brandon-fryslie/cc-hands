@@ -81,6 +81,7 @@ from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.tools import Tool, audited, intermediary_tools, standing
 from hands.brain.mcp import serve_mcp
 from hands.brain.process import Brain, Launch, NotLoggedIn, logged_in, start as start_brain, workdir
+from hands.brain.context import EVERY, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.core.session import SessionId
 
@@ -219,9 +220,11 @@ class Mind:
 
 
 @asynccontextmanager
-async def mind(config: VoiceConfig, tools: Sequence[Tool], sessions: Sessions, proxy_url: str, wire: Wire, record: Record) -> AsyncGenerator[Mind]:
+async def mind(
+    config: VoiceConfig, tools: Sequence[Tool], sessions: Sessions, proxy_url: str, wire: Wire, store: Store, record: Record
+) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
-    through, and the stage that speaks for it from the wire."""
+    through, the stage that speaks for it from the wire, and the keeper of its context."""
     # [LAW:single-enforcer] the one place the backend's variant decides the LLM stage.
     match config.llm:
         case AnthropicBackend() | OpenAICompatibleBackend() as backend:
@@ -234,8 +237,10 @@ async def mind(config: VoiceConfig, tools: Sequence[Tool], sessions: Sessions, p
                 brain = await start_brain(launch, record)
                 try:
                     stage = BrainStage(brain, tools, lambda: tail(standing(sessions)), record)
-                    with wire.joined(stage):
-                        yield Mind(stage, (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each)), Tailed())
+                    keeper = Keeper(brain, store, EVERY, record)
+                    with wire.joined(Kept(stage, keeper)):
+                        watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
+                        yield Mind(stage, watches, Tailed())
                 finally:
                     await brain.stop()
             finally:
@@ -285,7 +290,7 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
         config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, sessions, proxy.url, wire, audit.record) as minded:
+            async with mind(config, tools, sessions, proxy.url, wire, store, audit.record) as minded:
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm), "the voice load"), heart, sessions, quit_event)
                 if voice is not None:
                     summarise = summariser(config.llm, proxy.url, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)

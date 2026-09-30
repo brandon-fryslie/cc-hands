@@ -30,17 +30,17 @@ from pipecat.workers.runner import WorkerRunner
 from hands.brain.stage import INTERRUPTED, SILENT, BrainStage
 from hands.core.session import SessionId
 from hands.core.wire import (
-    Append,
     BlockStarted,
     BlockStopped,
     Fork,
-    Forward,
     Heard,
     Hold,
     Kind,
     MainTurn,
     Route,
+    Send,
     Sent,
+    Tail,
     TextDelta,
     Unknown,
 )
@@ -210,7 +210,7 @@ async def test_a_turn_goes_to_the_brain_and_its_words_come_off_the_wire(rig: Rig
     await rig.say({"role": "user", "content": "what is running?"})
     assert rig.brain.asked == ["what is running?"]
     exchange, route = rig.request()
-    assert route == Append(TAIL)
+    assert route == Send((Tail(TAIL),))
     rig.stream(exchange, "Two sessions ", "are running.")
     await rig.until(lambda: len(rig.out.said()) == 2)
     rig.brain.end()
@@ -228,14 +228,14 @@ async def test_each_request_of_a_turn_carries_how_the_sessions_stand_as_it_leave
     rig.standing.append("[hands] The Claude Code sessions running now: auth, working.")
     _, second = rig.request(answering("mcp__hands__stage_draft", {"readback": "staged"}))
     # Composed as each request leaves, never kept from the one before.
-    assert (first, second) == (Append(TAIL), Append("[hands] The Claude Code sessions running now: auth, working."))
+    assert (first, second) == (Send((Tail(TAIL),)), Send((Tail("[hands] The Claude Code sessions running now: auth, working."),)))
     rig.brain.end()
 
 
 async def test_only_the_brains_own_main_turns_are_spoken(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "hello"})
     others = [rig.request(kind=Fork()), rig.request(kind=Unknown("a messages request with no tools")), rig.request(session=SessionId("a summary"))]
-    assert [route for _, route in others] == [Forward()] * 3
+    assert [route for _, route in others] == [Send()] * 3
     for exchange, _ in others:
         rig.stream(exchange, "not for the user")
     exchange, _ = rig.request()
@@ -281,7 +281,7 @@ async def test_stay_silent_holds_the_next_request_so_nothing_follows_it(rig: Rig
     closed = answering("mcp__hands__stay_silent", {"silent": True})
     closed["messages"] = [*closed["messages"], {"role": "assistant", "content": [{"type": "text", "text": SILENT}]}, {"role": "user", "content": "are you there?"}]  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType]
     exchange, route = rig.request(closed)
-    assert route == Append(TAIL)
+    assert route == Send((Tail(TAIL),))
     rig.stream(exchange, "I am.")
     await rig.until(lambda: rig.out.said() == ["I am."])
     rig.brain.end()
@@ -394,7 +394,7 @@ async def test_a_stay_silent_answered_in_an_earlier_turn_does_not_hold_the_next(
     body = answering("mcp__hands__stay_silent", {"silent": True})
     body["messages"] = [*body["messages"], {"role": "user", "content": "are you there?"}]  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType]
     _, route = rig.request(body)
-    assert route == Append(TAIL)
+    assert route == Send((Tail(TAIL),))
     rig.brain.end()
 
 

@@ -109,7 +109,8 @@ RESULT = {"type": "result", "subtype": "success", "is_error": False, "num_turns"
 
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A `claude` first on PATH that reports its login from LOGGED_IN, and as the brain answers each stdin line with RESULT."""
+    """A `claude` first on PATH that reports its login from LOGGED_IN, and as the brain answers each turn with RESULT and
+    each side question with "Forked: " and the question."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
@@ -123,8 +124,37 @@ if "json" in sys.argv and "stream-json" not in sys.argv:
     sys.exit(0)
 print(json.dumps({INIT!r}), flush=True)
 print("not json", file=sys.stderr, flush=True)
+def respond(request_id, question):
+    if question == "fail":
+        response = {{"subtype": "error", "request_id": request_id, "error": "no snapshot"}}
+    else:
+        reply = None if question == "silent" else "Forked: " + question
+        response = {{"subtype": "success", "request_id": request_id, "response": {{"response": reply, "synthetic": False}}}}
+    print(json.dumps({{"type": "control_response", "response": response}}), flush=True)
+# A turn "wait" is answered after the next side question, and a side question "hold" after the one that follows it.
+waiting, holding = False, None
 for line in sys.stdin:
-    content = json.loads(line)["message"]["content"]
+    said = json.loads(line)
+    if said["type"] == "control_request":
+        request_id, question = said["request_id"], said["request"].get("question")
+        if question is None:
+            print(json.dumps({{"type": "control_response", "response": {{"subtype": "success", "request_id": request_id}}}}), flush=True)
+            continue
+        if question == "hold":
+            holding = request_id
+            continue
+        respond(request_id, question)
+        if holding is not None:
+            respond(holding, "hold")
+            holding = None
+        if waiting:
+            waiting = False
+            print(json.dumps({RESULT!r}), flush=True)
+        continue
+    content = said["message"]["content"]
+    if content == "wait":
+        waiting = True
+        continue
     if content == "die":
         sys.exit(3)
     if content == "slow":

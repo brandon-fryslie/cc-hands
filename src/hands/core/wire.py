@@ -24,7 +24,7 @@ class MainTurn:
 
 @dataclass(frozen=True)
 class Fork:
-    """A side request sharing the session's prefix, such as /btw or a prompt suggestion, whose reply never enters its history."""
+    """A side question: a request sharing the session's prefix, as /btw's does, whose reply never enters its history."""
 
 
 @dataclass(frozen=True)
@@ -48,15 +48,17 @@ Kind = MainTurn | Fork | Compaction | CountTokens | Unknown
 
 # The first words of every compaction request's last message, in Claude Code's services/compact/prompt.ts.
 COMPACTION_OPENING = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
+# The first words Claude Code wraps every side question in, in its utils/sideQuestion.ts.
+SIDE_QUESTION_OPENING = "<system-reminder>This is a side question from the user."
 
 
 def classify(path: str, body: object) -> Kind:
     """Which kind of request this is, from its path and its parsed body alone, decided before any reply exists.
 
-    Claude Code puts exactly one message-level cache marker on a request. Its own loop puts it on the last message;
-    a fire-and-forget fork (skipCacheWrite in services/api/claude.ts) puts it on the one before, the last point it
-    shares with the loop, and that placement is the fork's mark on the wire. A fork that does not skip the write
-    is marked like the loop and is not told apart here.
+    Claude Code's own loop puts its one message-level cache marker on the last message. Compaction and side questions
+    are told by the words Claude Code opens their prompts with, not by where their marker lands: a side question asked
+    during a turn is merged into the turn's prompt and followed by another message, and one asked before any turn has
+    finished carries no marker at all (hands-wire-6ic.l2o, 2.1.285).
     """
     # [LAW:dataflow-not-control-flow] every rule is a value test on the request; what none of them matches is Unknown,
     # so a shape no one has seen yet is heard and never spoken.
@@ -79,15 +81,29 @@ def _classify_messages(body: object) -> Kind:
     # Any block: Claude Code merges adjacent user messages, so the compaction prompt can follow a prompt just typed.
     if any(text.startswith(COMPACTION_OPENING) for text in _texts(messages[-1])):
         return Compaction()
+    if any(text.startswith(SIDE_QUESTION_OPENING) for message in _since_reply(messages) for text in _texts(message)):
+        return Fork()
     if not _list(request.get("tools")):
         return Unknown(f"a messages request with no tools, to {request.get('model')!r}")
     marked = [index for index, message in enumerate(messages) if _cache_marked(message)]
-    last = len(messages) - 1
-    if marked == [last]:
+    if marked == [len(messages) - 1]:
         return MainTurn()
-    if marked == [last - 1]:
-        return Fork()
     return Unknown(f"a messages request with cache markers on messages {marked} of {len(messages)}")
+
+
+def _since_reply(messages: Sequence[object]) -> Sequence[object]:
+    """The messages after the model's last reply: what the request is asking now."""
+    replies = [index for index, message in enumerate(messages) if _role(message) == "assistant"]
+    return messages[replies[-1] + 1 :] if replies else messages
+
+
+def _role(message: object) -> object:
+    return cast(Mapping[str, object], message).get("role") if isinstance(message, Mapping) else None
+
+
+def _mappings(values: Sequence[object]) -> list[Mapping[str, object]]:
+    """The JSON objects among some values."""
+    return [cast(Mapping[str, object], value) for value in values if isinstance(value, Mapping)]
 
 
 def _list(value: object) -> list[object]:
@@ -117,11 +133,13 @@ def _texts(message: object) -> list[str]:
 
 @dataclass(frozen=True)
 class ToolAnswer:
-    """A tool call's result as a request hands it to the model: the id of the call it answers, its text, and whether it failed."""
+    """A tool call's result as a request hands it to the model: the id of the call it answers, its text, whether it
+    failed, and the turn it was made in, counted from 0 at the first prompt the request carries."""
 
     call: str
     text: str
     is_error: bool
+    turn: int
 
 
 def tool_answers(body: object) -> tuple[ToolAnswer, ...]:
@@ -130,13 +148,41 @@ def tool_answers(body: object) -> tuple[ToolAnswer, ...]:
     A request carries its whole history, so which of these answer the model's last reply is known only to whoever heard
     that reply's calls.
     """
+    answers: list[ToolAnswer] = []
+    for turn, message in _turned(body):
+        results = [item for item in _mappings(_blocks(message)) if item.get("type") == "tool_result"]
+        answers.extend(
+            ToolAnswer(call, "".join(_texts(result)), result.get("is_error") is True, turn) for result in results if isinstance(call := result.get("tool_use_id"), str)
+        )
+    return tuple(answers)
+
+
+def turns(body: object) -> int:
+    """How many turns a messages request's history holds, the one in flight included."""
+    return max((turn + 1 for turn, _ in _turned(body)), default=0)
+
+
+def _turned(body: object) -> list[tuple[int, object]]:
+    """Each message of a request with the turn it belongs to, counted from 0 at the first prompt."""
     messages = _list(cast(Mapping[str, object], body).get("messages")) if isinstance(body, Mapping) else []
-    results = [cast(Mapping[str, object], item) for message in messages for item in _blocks(message) if isinstance(item, Mapping)]
-    return tuple(
-        ToolAnswer(call, "".join(_texts(result)), result.get("is_error") is True)
-        for result in results
-        if result.get("type") == "tool_result" and isinstance(call := result.get("tool_use_id"), str)
-    )
+    turned: list[tuple[int, object]] = []
+    turn = -1
+    for message in messages:
+        # A turn opens with a prompt: a message from the user that answers no call.
+        turn += _role(message) == "user" and not any(item.get("type") == "tool_result" for item in _mappings(_blocks(message)))
+        turned.append((turn, message))
+    return turned
+
+
+def tool_calls(body: object) -> Mapping[str, "ToolUse"]:
+    """Every tool call the model made in a request's history, by its id."""
+    messages = _list(cast(Mapping[str, object], body).get("messages")) if isinstance(body, Mapping) else []
+    uses = [item for message in messages for item in _mappings(_blocks(message)) if item.get("type") == "tool_use"]
+    return {
+        call: ToolUse(call, name, cast(Mapping[str, object], given))
+        for use in uses
+        if isinstance(call := use.get("id"), str) and isinstance(name := use.get("name"), str) and isinstance(given := use.get("input"), Mapping)
+    }
 
 
 SESSION_HEADER = "x-claude-code-session-id"
@@ -543,6 +589,105 @@ def is_stream(content_type: str) -> bool:
     return _EVENT_STREAM.match(content_type) is not None
 
 
+# ── Where a request goes ─────────────────────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Stub:
+    """A tool result sent as one line in place of its text: the id of the call it answers, and the line."""
+
+    call: str
+    line: str
+
+
+@dataclass(frozen=True)
+class Steer:
+    """A compaction sent with `prompt` in place of the summarisation prompt Claude Code wrote."""
+
+    prompt: str
+
+
+@dataclass(frozen=True)
+class Tail:
+    """`text` added as one more text block at the end of the newest message.
+
+    After the block carrying the request's cache marker, so the cached prefix is what Claude Code sent, and the next
+    request, whose history lacks the tail, misses none of it.
+    """
+
+    text: str
+
+
+Change = Stub | Steer | Tail
+
+
+@dataclass(frozen=True)
+class Send:
+    """The request goes to the API with these changes made to it, and as it came when there are none."""
+
+    changes: tuple[Change, ...] = ()
+
+
+@dataclass(frozen=True)
+class Hold:
+    """The request is answered by hands and never reaches the API, with `said` as the model's whole reply.
+
+    Kept in the client's history as the model's own words and never spoken. Not empty: to an empty reply Claude Code
+    2.1.285 answers "[Your previous response had no visible output. Please continue ...]" and asks again, and its
+    history keeps the tool results with no reply after them.
+    """
+
+    said: str
+
+
+Route = Send | Hold
+
+
+def edited(body: object, changes: Sequence[Change]) -> Mapping[str, object]:
+    """A messages request with each change made to it; raises ValueError naming a change that has nothing to change."""
+    if not isinstance(body, Mapping):
+        raise ValueError("a request with no JSON object for a body has nothing to change")
+    request = cast(Mapping[str, object], body)
+    messages = [_edited_message(message, changes) for message in _list(request.get("messages"))]
+    stubbed = {item.get("tool_use_id") for message in messages for item in _mappings(_blocks(message)) if item.get("type") == "tool_result"}
+    for change in changes:
+        # [LAW:no-silent-failure] a change that found nothing to change is a request hands misread, said before it goes.
+        match change:
+            case Stub(call=call) if call not in stubbed:
+                raise ValueError(f"no tool result answers call {call}")
+            case Steer() if not any(text.startswith(COMPACTION_OPENING) for text in _texts(messages[-1] if messages else None)):
+                raise ValueError("the newest message holds no compaction prompt to steer")
+            case _:
+                pass
+    tails: list[object] = [{"type": "text", "text": change.text} for change in changes if isinstance(change, Tail)]
+    if tails:
+        newest = _mappings(messages[-1:])
+        if not newest or not _blocks(newest[0]):
+            raise ValueError(f"the newest message is {messages[-1:]!r}, not blocks to append to")
+        messages[-1] = {**newest[0], "content": [*_blocks(newest[0]), *tails]}
+    return {**request, "messages": messages}
+
+
+def _edited_message(message: object, changes: Sequence[Change]) -> object:
+    lines = {change.call: change.line for change in changes if isinstance(change, Stub)}
+    prompts = [change.prompt for change in changes if isinstance(change, Steer)]
+    match message:
+        case {"content": list()}:
+            return {**cast(Mapping[str, object], message), "content": [_edited_block(block, lines, prompts) for block in _blocks(message)]}
+        case _:
+            return message
+
+
+def _edited_block(block: object, lines: Mapping[str, str], prompts: Sequence[str]) -> object:
+    match block:
+        case {"type": "tool_result", "tool_use_id": str() as call} if call in lines:
+            return {**cast(Mapping[str, object], block), "content": lines[call]}
+        case {"type": "text", "text": str() as text} if prompts and text.startswith(COMPACTION_OPENING):
+            return {**cast(Mapping[str, object], block), "text": prompts[-1]}
+        case _:
+            return block
+
+
 # ── One exchange ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
 Seconds = float  # wall-clock seconds since the epoch, so the proxy's times read beside the audit log's own
@@ -603,60 +748,11 @@ class Exchanged:
     method: str
     path: str
     request_bytes: int
-    # What hands appended to the newest message before it went on; empty for a request that went as it came.
-    appended: str
+    # What hands changed of the request before it went on; none for a request that went as it came.
+    changes: tuple[Change, ...]
     requested_at: Seconds
     sent_at: Seconds
     reply: Reached | Unreached | Held
 
 
 Observed = Sent | Heard | Exchanged
-
-
-# ── Where a request goes ─────────────────────────────────────────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class Forward:
-    """The request goes to the API as it came."""
-
-
-@dataclass(frozen=True)
-class Hold:
-    """The request is answered by hands and never reaches the API, with `said` as the model's whole reply.
-
-    Kept in the client's history as the model's own words and never spoken. Not empty: to an empty reply Claude Code
-    2.1.285 answers "[Your previous response had no visible output. Please continue ...]" and asks again, and its
-    history keeps the tool results with no reply after them.
-    """
-
-    said: str
-
-
-@dataclass(frozen=True)
-class Append:
-    """The request goes to the API with `tail` as one more text block at the end of its newest message.
-
-    After the block carrying the request's cache marker, so the cached prefix is what Claude Code sent, and the next
-    request, whose history lacks the tail, misses none of it.
-    """
-
-    tail: str
-
-
-Route = Forward | Append | Hold
-
-
-def appended(body: object, tail: str) -> Mapping[str, object]:
-    """A messages request with `tail` added as a text block after every block of its newest message; nothing before it moves."""
-    if not isinstance(body, Mapping):
-        raise ValueError("a request with no JSON object for a body has no message to append to")
-    request = cast(Mapping[str, object], body)
-    messages = _list(request.get("messages"))
-    if not messages or not isinstance(messages[-1], Mapping):
-        raise ValueError("a request with no newest message has nothing to append to")
-    newest = cast(Mapping[str, object], messages[-1])
-    blocks = _list(newest.get("content"))
-    if not blocks:
-        raise ValueError(f"the newest message's content is {newest.get('content')!r}, not blocks to append to")
-    return {**request, "messages": [*messages[:-1], {**newest, "content": [*blocks, {"type": "text", "text": tail}]}]}
