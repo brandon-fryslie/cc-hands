@@ -319,10 +319,10 @@ def test_a_turn_sent_without_hands_tools_is_an_error_and_one_with_them_is_not() 
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
         body = {"messages": [{"role": "user", "content": "hi"}], "tools": [{"name": "Read"}]}
-        brain.hear(Sent("x1", SessionId("b1"), MainTurn(), {**body, "tools": [{"name": "Read"}, {"name": "mcp__hands__read_session"}]}))
-        brain.hear(Sent("x2", SessionId("elsewhere"), MainTurn(), body))
+        brain.hear(Sent("x1", SessionId("b1"), MainTurn(None), {**body, "tools": [{"name": "Read"}, {"name": "mcp__hands__read_session"}]}))
+        brain.hear(Sent("x2", SessionId("elsewhere"), MainTurn(None), body))
         assert errors == []
-        brain.hear(Sent("x3", SessionId("b1"), MainTurn(), body))
+        brain.hear(Sent("x3", SessionId("b1"), MainTurn(None), body))
     finally:
         logger.remove(sink)
     assert errors == ["the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (('Read',))"]

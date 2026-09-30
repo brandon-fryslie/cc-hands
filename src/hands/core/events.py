@@ -71,6 +71,18 @@ class Stopped:
 
 
 @dataclass(frozen=True)
+class Closed:
+    """The model ended a turn with a reply of text (stop_reason end_turn), as it came back on the wire: the turn's closing
+    reply, heard before Claude Code fires the Stop hook that carries it too.
+
+    Never made of a reply with no text, to which Claude Code answers by asking again (2.1.285): that turn goes on."""
+
+    session: SessionId
+    prompt: PromptId
+    closing: str
+
+
+@dataclass(frozen=True)
 class Interrupted:
     """The user stopped the turn at the keyboard, with Escape or Ctrl-C: no Stop hook fires for that, so it is read
     from the record Claude Code writes in the transcript instead."""
@@ -183,7 +195,7 @@ class Tick:
 
 # Events about a session the registry must already know; a join is how it comes to.
 # What moves a live session on its axes; its end is the one session event that moves none of them.
-Moving = Prompted | Stopped | Interrupted | Taken | Continued | Read | Waited | StatusReported | PermissionRequested | ToolFinished
+Moving = Prompted | Stopped | Closed | Interrupted | Taken | Continued | Read | Waited | StatusReported | PermissionRequested | ToolFinished
 SessionEvent = Moving | Ended
 # What a session's transcript says that none of its hooks do: of its turn, and how far it has been read.
 Transcribed = Taken | Interrupted | Continued | Read

@@ -10,7 +10,7 @@ import pytest
 from loguru import logger
 
 from hands.core.effects import Holding, Reply, Unmatched, Withdraw
-from hands.core.events import Abandoned, Joined, Prompted, Read, StatusReported, Stopped, Tick
+from hands.core.events import Abandoned, Closed, Joined, Prompted, Read, StatusReported, Stopped, Tick
 from hands.core.session import Membership, PromptId, RequestId, SessionId, Told
 from hands.daemon import cli
 from hands.sessions.audit import (
@@ -298,3 +298,27 @@ def test_an_entry_the_log_cannot_encode_is_a_failure_line_and_the_daemon_carries
     [line] = lines(path)
     assert line["type"] == "Failure"
     assert line["message"].startswith("the audit log cannot encode a Called line: the audit log cannot encode a object")
+
+
+async def test_what_was_heard_where_nothing_waits_on_it_still_fails_loudly() -> None:
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR")
+
+    def record(entry: Entry) -> None:
+        if isinstance(entry, Performed):
+            raise RuntimeError("the log is full")
+
+    try:
+        sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record)
+        await sessions.apply(Joined(member(), "startup"))
+        with pytest.raises(RuntimeError):
+            await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+        sessions.hear(Closed(member().id, PromptId("p1"), "Done."))
+
+        async def failed() -> None:
+            while "performing what was heard failed: RuntimeError: the log is full" not in logged:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(failed(), 2.0)
+    finally:
+        logger.remove(sink)

@@ -29,6 +29,7 @@ from hands.core.effects import (
     Snapshot,
     Summarise,
     Unmatched,
+    Unclosed,
     Unregistered,
     Unsettled,
     WaitingForYou,
@@ -45,6 +46,7 @@ from hands.core.events import (
     Event,
     Interrupted,
     Continued,
+    Closed,
     Taken,
     Joined,
     Read,
@@ -246,7 +248,7 @@ def _settled(session: Session, event: Moving) -> tuple[Session, list[Effect]]:
     Never told as a turn hands never had open (see _stopping): that a record of it may still come is why it is held."""
     id, turn, held, effects = session.membership.id, session.turn, list[Unnamed](), list[Effect]()
     for stop in session.unnamed:
-        match (_ending(replace(session, turn=turn), stop), event):
+        match (_ending(replace(session, turn=turn), stop.prompt, stop.closing, stop.again), event):
             case (None, Read(through=through)) if through >= stop.by:
                 effects += [Audit(Unmatched(id, stop.prompt)), *_let_go(id, stop)]
             case (None, _):
@@ -331,6 +333,11 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # busy again 93 ms apart (2.1.283), inside one status read. Told as it stands, and compared now, while this
             # prompt's hook holds Claude Code, so before the next turn has changed anything; then that turn is marked.
             return Opened(prompt), [*_over(id, opened, None, was.dialog)[1], Snapshot(id, was.membership.cwd)]
+        case (Prompted(prompt=prompt), Told() as told) if _names(told, prompt):
+            # Submitted after the wire told the turn and before its Stop fired: filed under the turn's id, as a message
+            # queued behind a running turn is, and run as its own turn once that Stop's hook returns. Marked here, while
+            # its own prompt hook holds Claude Code; its turn opens when it is taken (see Taken).
+            return turn, [Snapshot(id, was.membership.cwd)]
         case (Prompted(prompt=prompt), Untold() | Told()):
             # A turn opens at the prompt, and is marked, so what it changes is read against a repository it has not
             # touched yet: after the one before is told, so that one is compared against its own mark.
@@ -352,6 +359,13 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # still by the one it went on from, which a hook sent before Claude Code moved on carries. Read after the idle
             # that ended it, the turn waiting to be told is the same turn, and waits for the Stop under its new id.
             return replace(going_on, turn=now, others=going_on.others | {going_on.turn}), []
+        case (Closed(prompt=prompt, closing=closing), _):
+            # The reply the turn closed with, from the wire, where it exists first: told as its Stop would tell it, and
+            # before that Stop fires, which then ends nothing, as any Stop of a turn told does. Only a first ending: that
+            # the turn went on after another Stop hook blocked its Stop is the Stop's to say (its again), not the wire's.
+            ended = _ending(was, prompt, closing, again=False)
+            # [LAW:nothing-unseen] a reply that ends nothing, as a Stop that ends nothing is, is a line.
+            return (turn, [Audit(Unclosed(id, prompt))]) if ended is None else ended
         case (Interrupted(prompt=prompt), Untold() as untold) if _names(untold, prompt):
             # The record of how the turn Claude Code said is over ended: what its telling waits for.
             return _told(id, turn, None)
@@ -370,37 +384,40 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             return turn, []
 
 
-def _ending(was: Session, stop: Unnamed) -> tuple[Turn, list[Effect]] | None:
-    """The turn the Stop's id names, ended with its reply; None when it names no turn it can end."""
-    id, prompt, closing = was.membership.id, stop.prompt, stop.closing
+def _ending(was: Session, prompt: PromptId, closing: str | None, again: bool) -> tuple[Turn, list[Effect]] | None:
+    """The turn the id names, ended with its reply, whether its Stop or the wire heard that; None when it names no turn
+    it can end."""
+    id = was.membership.id
     match was.turn:
         case Opened() as opened if _names(opened, prompt):
-            # Compared before the turn is handed over to be summarised, never after: see Compare.
-            return Told(opened.turn, opened.others, _asking(closing, was.dialog)), [Compare(id, stop.again), Summarise(id, prompt, closing), *_following(was.membership, opened)]
+            # Compared before the turn is handed over to be summarised, never after: see Compare. A turn queued behind it
+            # is marked while its Stop hook holds Claude Code, or, heard on the wire first, before that hook is let go
+            # (see Sessions): so before Claude Code can run the queued turn.
+            return Told(opened.turn, opened.others, _asking(closing, was.dialog)), [Compare(id, again), Summarise(id, prompt, closing), *_following(was.membership, opened)]
         case Untold() as untold if _names(untold, prompt):
             # Its Stop fired after Claude Code set idle, as an Escape's can: told with the reply it carries.
             return _told(id, untold, closing)
-        case Told() as told if stop.again and _names(told, prompt):
+        case Told() as told if again and _names(told, prompt):
             # The last turn stopping again after another Stop hook blocked its Stop: its telling holds only what was not
-            # told before. Any other Stop of a turn told ends nothing.
-            return _alone(was, stop)
+            # told before. Any other ending of a turn told ends nothing.
+            return _alone(was, prompt, closing, again)
         case _:
             return None
 
 
-def _alone(was: Session, stop: Unnamed) -> tuple[Turn, list[Effect]]:
-    """The Stop told as a turn that goes by its id alone."""
-    id, prompt, closing = was.membership.id, stop.prompt, stop.closing
-    return Told(prompt, frozenset(), _asking(closing, was.dialog)), [Compare(id, stop.again), Summarise(id, prompt, closing)]
+def _alone(was: Session, prompt: PromptId, closing: str | None, again: bool) -> tuple[Turn, list[Effect]]:
+    """The ending told as a turn that goes by its id alone."""
+    id = was.membership.id
+    return Told(prompt, frozenset(), _asking(closing, was.dialog)), [Compare(id, again), Summarise(id, prompt, closing)]
 
 
 def _stopping(was: Session, stop: Unnamed) -> tuple[Turn, list[Effect]] | None:
     """What the Stop does to the session's turn as it is heard; None while no record read so far says whose it is."""
     id, turn, prompt = was.membership.id, was.turn, stop.prompt
-    match (_ending(was, stop), turn):
+    match (_ending(was, prompt, stop.closing, stop.again), turn):
         case (None, Told()) if not _heard(was, prompt):
             # A turn hands never had open, such as the one a session was in when it was attached.
-            return _alone(was, stop)
+            return _alone(was, prompt, stop.closing, stop.again)
         case (None, Opened() | Untold()) if not _heard(was, prompt) and status_stamp(was.state) is not None:
             # Whether it is the open or waiting turn's, gone on under a queued message whose record is unread, or a turn
             # after it whose record is unread, only the transcript says, and a Stop told as the wrong turn is heard as
@@ -419,7 +436,7 @@ def _reported(event: Moving) -> Mode | None:
     match event:
         case Prompted(mode=mode) | Stopped(mode=mode) | PermissionRequested(mode=mode) | ToolFinished(mode=mode):
             return mode
-        case Taken() | Interrupted() | Continued() | Read() | Waited() | StatusReported():
+        case Closed() | Taken() | Interrupted() | Continued() | Read() | Waited() | StatusReported():
             return None
 
 

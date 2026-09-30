@@ -52,7 +52,7 @@ from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.server import serve_hooks
-from hands.sessions.tap import serve_tap
+from hands.sessions.tap import moves, serve_tap
 from hands.sessions.summaries import summaries
 from hands.voice.devices import follow_default_devices
 from hands.voice.cues import cues
@@ -290,8 +290,13 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=time.time)
     audit.record(ProxyListening(url=proxy.url, upstream=UPSTREAM))
     # [LAW:one-source-of-truth] the working sessions' exchanges reach the same observer as the brain's, so the log and
-    # whatever listens hear one wire.
-    tap = await serve_tap(home.wire, wire.observe, audit.record, clock=time.time)
+    # whatever listens hear one wire; and what they say of a turn reaches the registry as it is heard, as a hook does.
+    def tapped(observed: Observed) -> None:
+        wire.observe(observed)
+        for move in moves(observed):
+            sessions.hear(move)
+
+    tap = await serve_tap(home.wire, tapped, audit.record, clock=time.time)
     audit.record(TapListening(path=home.wire))
     quit_event = asyncio.Event()
     # [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the q key, and a failed

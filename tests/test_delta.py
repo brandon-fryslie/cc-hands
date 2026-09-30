@@ -7,8 +7,8 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from hands.core.delta import Delta
-from hands.core.effects import Summarise
-from hands.core.events import Joined, Prompted, StatusReported, Stopped, Taken
+from hands.core.effects import SessionGone, Summarise
+from hands.core.events import Closed, Ended, Joined, Prompted, StatusReported, Stopped, Taken
 from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
@@ -583,3 +583,69 @@ async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_cha
     assert [file.path for file in (await deltas.taken(SID)).files] == ["queued.py"]
 
 
+
+
+class Marking:
+    """A repository reader whose marks after the first take as long as the test says."""
+
+    def __init__(self) -> None:
+        self.marks, self.started, self.release = 0, asyncio.Event(), asyncio.Event()
+
+    async def snapshot(self, session: SessionId, cwd: Path) -> None:
+        self.marks += 1
+        if self.marks > 1:
+            self.started.set()
+            await self.release.wait()
+
+    async def compare(self, session: SessionId, again: bool) -> None: ...
+
+    async def taken(self, session: SessionId) -> Delta:
+        return Delta()
+
+
+async def test_a_stop_whose_turn_the_wire_told_holds_claude_code_until_the_turn_queued_behind_it_is_marked(tmp_path: Path) -> None:
+    """The reply on the wire tells the turn and starts marking the one queued behind it before the Stop fires. The Stop
+    then ends nothing, and its hook is let go only once that mark is taken: Claude Code runs the queued turn after it."""
+    repository = Marking()
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=repository)
+    await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=2.0, mode=None, prompt=PromptId("p1")))
+    sessions.hear(Closed(SID, PromptId("p1"), "Done."))
+    await asyncio.wait_for(repository.started.wait(), 2.0)
+
+    stopping = asyncio.create_task(sessions.stop(Stopped(SID, "Done.", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)))
+    done, _ = await asyncio.wait({stopping}, timeout=0.2)
+    assert not done, "the Stop's hook was let go while the queued turn was still being marked"
+    repository.release.set()
+    await asyncio.wait_for(stopping, 2.0)
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "Done.")
+
+
+class Reading:
+    """A repository reader whose readings take as long as the test says."""
+
+    def __init__(self) -> None:
+        self.started, self.release = asyncio.Event(), asyncio.Event()
+
+    async def snapshot(self, session: SessionId, cwd: Path) -> None: ...
+
+    async def compare(self, session: SessionId, again: bool) -> None:
+        self.started.set()
+        await self.release.wait()
+
+    async def taken(self, session: SessionId) -> Delta:
+        return Delta()
+
+
+async def test_a_session_is_told_gone_only_after_the_turn_it_finished_is_told(tmp_path: Path) -> None:
+    repository = Reading()
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=repository)
+    await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    sessions.hear(Closed(SID, PromptId("p1"), "Done."))
+    await asyncio.wait_for(repository.started.wait(), 2.0)
+    sessions.hear(Ended(SID, "other"))
+    repository.release.set()
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "Done.")
+    assert await asyncio.wait_for(sessions.story(), 2.0) == SessionGone(SID)

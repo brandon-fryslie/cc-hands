@@ -159,7 +159,7 @@ async def test_a_stream_passes_byte_for_byte_and_is_one_classified_timed_exchang
     assert (path, asked_body, asked_headers["Authorization"]) == ("/v1/messages?beta=true", REQUEST, "Bearer the-clients-own")
     exchange = only_exchange(wire)
     assert (exchange.session, exchange.kind, exchange.method, exchange.path, exchange.request_bytes) == (
-        SessionId("s1"), MainTurn(), "POST", "/v1/messages?beta=true", len(REQUEST)
+        SessionId("s1"), MainTurn(None), "POST", "/v1/messages?beta=true", len(REQUEST)
     )
     assert isinstance(exchange.reply, Reached)
     assert exchange.reply.status == 200 and exchange.reply.reply_bytes == len(body)
@@ -171,7 +171,7 @@ async def test_a_stream_passes_byte_for_byte_and_is_one_classified_timed_exchang
 async def test_the_request_is_heard_before_the_reply_and_text_as_it_arrives(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     _, wire = await serve(streamed)
     await post(wire.proxy.url)
-    assert isinstance(wire.seen[0], Sent) and wire.seen[0].kind == MainTurn()
+    assert isinstance(wire.seen[0], Sent) and wire.seen[0].kind == MainTurn(None)
     texts = [seen.event.text for seen in wire.seen if isinstance(seen, Heard) and isinstance(seen.event, TextDelta)]
     assert texts == ["hello ", "from the wire"]
     assert isinstance(wire.seen[-1], Exchanged)
@@ -356,7 +356,7 @@ async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_rou
     assert isinstance(reply, Streamed)
     assert (reply.message.model, reply.message.content, reply.message.stop_reason) == ("claude-opus-5-5", (Text("(stayed silent)"),), "end_turn")
     exchange = only_exchange(wire)
-    assert exchange.kind == MainTurn() and isinstance(exchange.reply, Held) and exchange.reply.said == "(stayed silent)"
+    assert exchange.kind == MainTurn(None) and isinstance(exchange.reply, Held) and exchange.reply.said == "(stayed silent)"
     assert [type(seen) for seen in wire.seen] == [Sent, Exchanged]
 
 
@@ -428,8 +428,8 @@ async def test_a_route_that_raises_is_logged_and_the_request_goes_on_as_it_came(
 def test_the_daemon_keeps_one_audit_line_per_exchange_and_nothing_per_event() -> None:
     lines: list[Entry] = []
     observe = wire_to(lines.append)
-    exchange = Exchanged("e1", None, MainTurn(), "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0))
-    observe(Sent("e1", None, MainTurn(), None))
+    exchange = Exchanged("e1", None, MainTurn(None), "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0))
+    observe(Sent("e1", None, MainTurn(None), None))
     observe(Heard("e1", TextDelta(0, "hi")))
     observe(exchange)
     assert lines == [exchange]
