@@ -22,7 +22,7 @@ from hands.core.status import Busy, Idle, Report, Stamp
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
-from hands.voice.speech import Narrated, Pushed, Tailed, frames, relay
+from hands.voice.speech import Aloud, Narrated, Pushed, Tailed, frames, relay
 
 from test_shim import STARTED
 from hands.voice.tools import DENIED_BY_VOICE, SENT_BACK_BY_VOICE, Tool, permission_tools
@@ -220,6 +220,13 @@ async def test_answers_that_do_not_parse_are_refused_out_loud(sessions: Sessions
 def test_the_brain_takes_what_a_session_asks_as_a_turn_of_its_own_after_the_users() -> None:
     [narrated] = frames(Narrate(Asking(SID, RequestId("r-1"), Permission("Bash", {"command": "ls"}))), Tailed(), names=lambda id: id)
     assert isinstance(narrated, Narrated) and "is waiting for permission to use Bash" in narrated.text
+    # Said as written if the brain cannot take it, so a session waiting on the user is still heard waiting.
+    assert narrated.unsaid == f"{SID} is waiting for you."
+
+
+def test_under_the_brain_an_announcement_waits_in_hands_lane_behind_the_question_it_counts_down() -> None:
+    [said] = frames(Speak(DeadlineNear(SID, Permission("Bash", {"command": "ls"}), 10.0)), Tailed(), names=lambda _: "quiz")
+    assert isinstance(said, Aloud) and said.spoken.text.startswith("10 seconds left to answer quiz")
 
 
 def test_a_question_reaches_the_model_whole_with_its_options_and_request_id() -> None:

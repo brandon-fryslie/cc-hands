@@ -95,8 +95,9 @@ def frames(heard: Heard, telling: Telling, names: Names) -> Sequence[Frame]:
     # [LAW:one-type-per-behavior] the route is the effect's own variant: Speak needs no model, Narrate needs one to explain.
     match heard, telling:
         case Speak(announcement=announcement), _:
-            # Kept in the context, so the intermediary knows what the user has already been told.
-            return (TTSSpeakFrame(announcement_text(announcement, names)),)
+            # Kept in the context, so the intermediary knows what the user has already been told. In hands' lane under the
+            # brain, so a deadline is heard after the question it counts down, never ahead of it.
+            return (as_written(TTSSpeakFrame(announcement_text(announcement, names)), telling),)
         case Narrate(moment=moment), _:
             return (handed(narration(moment, names), announcement_text(WaitingForYou(moment.session, isinstance(moment.on, Question)), names), telling),)
         case Note(fact=fact), Pushed():
