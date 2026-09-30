@@ -32,6 +32,11 @@ class Home:
         return self.root / "summaries"
 
     @property
+    def sentences(self) -> Path:
+        """The summary store: a sentence for each content-addressed thing, written by the daemon alone."""
+        return self.root / "sentences.db"
+
+    @property
     def memberships(self) -> Path:
         """One file per session, written by its shim: the set of sessions hands is attached to."""
         return self.root / "sessions"

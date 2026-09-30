@@ -4,8 +4,6 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 
-import anthropic
-import openai
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
@@ -22,7 +20,7 @@ from hands.sessions.summaries import DEFAULT, Summaries
 from hands.sessions.tail import Tails
 from hands.voice.readback import spoken_name
 from hands.voice.refusal import UsageLimitReached, usage_limit
-from hands.voice.summary import Summariser, SummaryFailed
+from hands.voice.summary import SUMMARY_FAILURES, Summariser
 from hands.voice.summary_instruction import HEADLINE_SENTENCES
 
 # How much of a turn the summariser is shown: enough to name its results, few enough tokens for a local model to answer in seconds.
@@ -32,7 +30,7 @@ TURN_BUDGET = Budget(opening=600, said=1500, input=200, result=400, steps=40, fi
 Refused = Callable[[UsageLimitReached], Awaitable[None]]
 
 # Everything reading and summarising a turn is expected to fail with; each is said, and the next turn is still heard.
-_FAILURES = (Rejected, OSError, SummaryFailed, openai.OpenAIError, anthropic.AnthropicError)
+_FAILURES = (Rejected, *SUMMARY_FAILURES)
 
 
 async def narrate(

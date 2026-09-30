@@ -5,12 +5,13 @@ import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from anthropic import AsyncAnthropic, Omit, omit
+from anthropic import AnthropicError, AsyncAnthropic, Omit, omit
 from anthropic.types import TextBlock, ThinkingConfigDisabledParam
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
 from pipecat.services.anthropic.llm import _SONNET_THINKS_BY_DEFAULT_FROM, _sonnet_generation  # pyright: ignore[reportPrivateUsage]
 
 from hands.brain.process import environment, workdir
+from hands.sessions.child import finished
 from hands.sessions.payload import Payload, Rejected
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, LLMBackend, OpenAICompatibleBackend
 
@@ -20,6 +21,11 @@ Summariser = Callable[[str], Awaitable[str]]
 
 class SummaryFailed(Exception):
     """The model answered, but with nothing that can be spoken."""
+
+
+# Everything one summariser call is expected to fail with: the model's answer unusable, its API refusing, or the
+# slim Claude Code not starting at all.
+SUMMARY_FAILURES = (SummaryFailed, OpenAIError, AnthropicError, OSError)
 
 
 def summariser(backend: LLMBackend, proxy_url: str, instruction: str, max_tokens: int, timeout: float) -> Summariser:
@@ -70,14 +76,7 @@ async def once(config_dir: Path, base_url: str, model: str, instruction: str, te
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        try:
-            out, err = await asyncio.wait_for(asked.communicate(text.encode()), timeout)
-        except BaseException:
-            # A summary given up on, timed out or its run stopping, takes its process with it.
-            if asked.returncode is None:
-                asked.kill()
-            await asked.wait()
-            raise
+        out, err = await finished(asked, timeout, text.encode())
     except TimeoutError:
         raise SummaryFailed(f"claude -p did not answer in {timeout:.0f}s") from None
     try:

@@ -24,6 +24,7 @@ from loguru import logger
 
 from hands.core.delta import Changed, Commit, Delta
 from hands.core.session import SessionId
+from hands.sessions.child import finished
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 
 # What a mark may spend, all its git commands together. It is taken while a prompt's hook waits on the daemon,
@@ -325,11 +326,8 @@ class Deltas:
             logger.error(f"cannot run git in {cwd}: {error}")
             return None
         try:
-            out, err = await asyncio.wait_for(process.communicate(), left)
+            out, err = await finished(process, left)
         except TimeoutError:
-            process.kill()
-            # Reaped here rather than left to the loop, which would report it as a subprocess still running.
-            await process.wait()
             logger.error(f"git {args[0]} in {cwd} did not answer in {left:.1f}s, so the turn is told without it")
             return None
         if process.returncode != 0:
