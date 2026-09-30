@@ -13,7 +13,7 @@ from typing import Protocol
 
 from loguru import logger
 
-from hands.brain.process import ForkFailed
+from hands.brain.process import BrainGone, ForkFailed
 from hands.core.context import Result, aged, key, line, question, results, sentence
 from hands.core.sentences import Digest
 from hands.core.session import SessionId
@@ -34,6 +34,7 @@ from hands.core.wire import (
     Steer,
     Streamed,
     Stub,
+    asked,
     tool_answers,
 )
 from hands.sessions.audit import Record, ResultsStubbed
@@ -44,7 +45,7 @@ EVERY = 5
 
 # What the brain's compaction is asked for instead of Claude Code's summary of a coding session. The first paragraph
 # keeps the form Claude Code reads the summary back in (services/compact/prompt.ts): text only, an <analysis> block,
-# then a <summary> block.
+# then a <summary> block. Claude Code's own closing reminder, and any instructions it was given, follow it.
 VOICE_COMPACTION = f"""{COMPACTION_OPENING}
 
 - Do NOT use Read, Bash, Grep, Glob, Skill, or ANY other tool.
@@ -62,10 +63,7 @@ what matters below. Then write <summary> with these sections, in plain sentences
 3. Decisions: what the person decided or asked for, and whether each is done.
 4. Promised: what you told the person you would do and have not done yet.
 
-Leave out what tools returned that is already said above, and anything the person would not ask about again.
-
-REMINDER: Do NOT call any tools. Respond with plain text only — an <analysis> block followed by a <summary> block.
-Tool calls will be rejected and you will fail the task."""
+Leave out what tools returned that is already said above, and anything the person would not ask about again."""
 
 
 class Forking(Protocol):
@@ -100,6 +98,10 @@ class Keeper:
         # Every call whose result has been heard, so each is looked up in the store once.
         self._heard: set[str] = set()
         self._asking: asyncio.Queue[Result] = asyncio.Queue()
+        # The question a fork is being asked, and whether the fork's own request held its result whole: a fork asked
+        # after a compaction, or one that forked from a history changed since, answers of what it cannot see.
+        self._asked: dict[str, Result] = {}
+        self._held: set[str] = set()
 
     def changes(self, sent: Sent) -> tuple[Change, ...]:
         """What a request of the brain's goes with: its old results as lines, and a compaction its steered prompt."""
@@ -124,6 +126,12 @@ class Keeper:
                 fresh = [result for result in results(body) if result.call not in self._heard]
                 self._heard.update(result.call for result in fresh)
                 self._unsaid.update((result.call, result) for result in fresh if self._store.known(key(result)) is None)
+            case Sent(session=session, kind=Fork(), body=body) if session == self._brain.session:
+                # [LAW:no-ambient-temporal-coupling] the fork's request is heard before it goes upstream, so before its answer.
+                whole = {(answer.call, answer.text) for answer in tool_answers(body)}
+                self._held.update(
+                    result.call for said, result in self._asked.items() if any(said in text for text in asked(body)) and (result.call, result.text) in whole
+                )
             case Exchanged(session=session, kind=MainTurn(), reply=Held()) if session == self._brain.session:
                 self._turn_ended()
             case Exchanged(session=session, kind=MainTurn(), reply=Reached(body=Streamed(message=message))) if (
@@ -137,12 +145,20 @@ class Keeper:
         """Asks a fork for each unsaid result as its turn ends, one at a time, for as long as the brain runs."""
         while True:
             result = await self._asking.get()
+            asking = question(result)
+            self._asked[asking] = result
             try:
-                said = sentence(await self._brain.fork(question(result)))
-            except (ForkFailed, ValueError) as error:
-                # [LAW:no-silent-failure] the result goes whole once its batch is reached, and this says why.
+                said = sentence(await self._brain.fork(asking))
+                if result.call not in self._held:
+                    raise ValueError("the fork's request did not hold the result whole")
+            except (ForkFailed, BrainGone, ValueError) as error:
+                # [LAW:no-silent-failure] the result goes whole once its batch is reached, and this says why. A brain
+                # that is gone is the brain's watch to report, with its stderr.
                 logger.error(f"no sentence for {result.tool} call {result.call}: {error}")
                 continue
+            finally:
+                del self._asked[asking]
+                self._held.discard(result.call)
             self._store.keep({key(result): said})
 
     def _turn_ended(self) -> None:
@@ -171,9 +187,11 @@ class Kept:
         self._keeper = keeper
 
     def route(self, sent: Sent) -> Route:
+        # The keeper's first: a history it cannot read fails the whole route before the stage has counted the request.
+        kept = self._keeper.changes(sent)
         match self._stage.route(sent):
             case Send(changes=changes):
-                return Send((*self._keeper.changes(sent), *changes))
+                return Send((*kept, *changes))
             case Hold() as held:
                 return held
 

@@ -17,8 +17,10 @@ from hands.core.wire import tool_answers, tool_calls, turns
 VERSION = "tool-result-1"
 # A result shorter than this is about as short as its sentence would be: it goes whole, and no fork is asked about it.
 LONG = 400
-# How much of a call's input a question quotes to name the call: enough to tell two reads apart.
+# How much of a call's input a question quotes to name the call, and of each end of its result to tell apart two
+# calls with the same input, as two reads of one session a turn apart.
 QUOTED = 300
+ENDS = 120
 # What Claude Code answers a side question with when the model called a tool instead, in its utils/sideQuestion.ts.
 TRIED_A_TOOL = "(The model tried to call "
 
@@ -65,9 +67,11 @@ def question(result: Result) -> str:
     """What a fork of the brain is asked about a result, which its prefix still holds whole."""
     given = json.dumps(result.input, sort_keys=True)
     quoted = given if len(given) <= QUOTED else given[:QUOTED] + "…"
+    opening, closing = json.dumps(result.text[:ENDS]), json.dumps(result.text[-ENDS:])
     return (
         f"In one sentence of at most 30 words, say what the result of your {result.tool} call {result.call} with input "
-        f"{quoted} told you, so that the sentence can stand in for the result from now on. Answer with the sentence alone."
+        f"{quoted} told you, so that the sentence can stand in for the result from now on. It is the result that opens "
+        f"{opening} and ends {closing}. Answer with the sentence alone."
     )
 
 

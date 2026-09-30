@@ -55,10 +55,11 @@ SIDE_QUESTION_OPENING = "<system-reminder>This is a side question from the user.
 def classify(path: str, body: object) -> Kind:
     """Which kind of request this is, from its path and its parsed body alone, decided before any reply exists.
 
-    Claude Code's own loop puts its one message-level cache marker on the last message. Compaction and side questions
-    are told by the words Claude Code opens their prompts with, not by where their marker lands: a side question asked
-    during a turn is merged into the turn's prompt and followed by another message, and one asked before any turn has
-    finished carries no marker at all (hands-wire-6ic.l2o, 2.1.285).
+    Claude Code's own loop puts its one message-level cache marker on the last message; a fire-and-forget fork
+    (skipCacheWrite in services/api/claude.ts) puts it on the one before, the last point it shares with the loop.
+    Compaction and side questions are told by the words Claude Code opens their prompts with, not by where their marker
+    lands: a side question asked during a turn is merged into the turn's prompt and followed by another message, and one
+    asked before any turn has finished carries no marker at all (hands-wire-6ic.l2o, 2.1.285).
     """
     # [LAW:dataflow-not-control-flow] every rule is a value test on the request; what none of them matches is Unknown,
     # so a shape no one has seen yet is heard and never spoken.
@@ -81,20 +82,24 @@ def _classify_messages(body: object) -> Kind:
     # Any block: Claude Code merges adjacent user messages, so the compaction prompt can follow a prompt just typed.
     if any(text.startswith(COMPACTION_OPENING) for text in _texts(messages[-1])):
         return Compaction()
-    if any(text.startswith(SIDE_QUESTION_OPENING) for message in _since_reply(messages) for text in _texts(message)):
+    if any(text.startswith(SIDE_QUESTION_OPENING) for text in asked(request)):
         return Fork()
     if not _list(request.get("tools")):
         return Unknown(f"a messages request with no tools, to {request.get('model')!r}")
     marked = [index for index, message in enumerate(messages) if _cache_marked(message)]
-    if marked == [len(messages) - 1]:
+    last = len(messages) - 1
+    if marked == [last]:
         return MainTurn()
+    if marked == [last - 1]:
+        return Fork()
     return Unknown(f"a messages request with cache markers on messages {marked} of {len(messages)}")
 
 
-def _since_reply(messages: Sequence[object]) -> Sequence[object]:
-    """The messages after the model's last reply: what the request is asking now."""
+def asked(body: object) -> tuple[str, ...]:
+    """The text of a messages request after the model's last reply: what the request is asking now."""
+    messages = _list(cast(Mapping[str, object], body).get("messages")) if isinstance(body, Mapping) else []
     replies = [index for index, message in enumerate(messages) if _role(message) == "assistant"]
-    return messages[replies[-1] + 1 :] if replies else messages
+    return tuple(text for message in messages[replies[-1] + 1 if replies else 0 :] for text in _texts(message))
 
 
 def _role(message: object) -> object:
@@ -602,7 +607,11 @@ class Stub:
 
 @dataclass(frozen=True)
 class Steer:
-    """A compaction sent with `prompt` in place of the summarisation prompt Claude Code wrote."""
+    """A compaction sent with `prompt` in place of the summarisation prompt Claude Code wrote in its newest message.
+
+    What Claude Code writes after its own prompt stays: the /compact arguments or a PreCompact hook's instructions, and
+    the closing reminder.
+    """
 
     prompt: str
 
@@ -648,15 +657,18 @@ def edited(body: object, changes: Sequence[Change]) -> Mapping[str, object]:
     if not isinstance(body, Mapping):
         raise ValueError("a request with no JSON object for a body has nothing to change")
     request = cast(Mapping[str, object], body)
-    messages = [_edited_message(message, changes) for message in _list(request.get("messages"))]
+    lines = {change.call: change.line for change in changes if isinstance(change, Stub)}
+    messages = [_edited_blocks(message, lambda block: _stubbed(block, lines)) for message in _list(request.get("messages"))]
     stubbed = {item.get("tool_use_id") for message in messages for item in _mappings(_blocks(message)) if item.get("type") == "tool_result"}
     for change in changes:
         # [LAW:no-silent-failure] a change that found nothing to change is a request hands misread, said before it goes.
         match change:
             case Stub(call=call) if call not in stubbed:
                 raise ValueError(f"no tool result answers call {call}")
-            case Steer() if not any(text.startswith(COMPACTION_OPENING) for text in _texts(messages[-1] if messages else None)):
-                raise ValueError("the newest message holds no compaction prompt to steer")
+            case Steer(prompt=prompt):
+                if not any(text.startswith(COMPACTION_OPENING) for text in _texts(messages[-1] if messages else None)):
+                    raise ValueError("the newest message holds no compaction prompt to steer")
+                messages[-1] = _edited_blocks(messages[-1], lambda block: _steered(block, prompt))
             case _:
                 pass
     tails: list[object] = [{"type": "text", "text": change.text} for change in changes if isinstance(change, Tail)]
@@ -668,22 +680,35 @@ def edited(body: object, changes: Sequence[Change]) -> Mapping[str, object]:
     return {**request, "messages": messages}
 
 
-def _edited_message(message: object, changes: Sequence[Change]) -> object:
-    lines = {change.call: change.line for change in changes if isinstance(change, Stub)}
-    prompts = [change.prompt for change in changes if isinstance(change, Steer)]
+# What Claude Code writes after its compaction prompt, in services/compact/prompt.ts: the instructions it was given, if
+# any, then the closing reminder.
+COMPACTION_INSTRUCTIONS = "\n\nAdditional Instructions:\n"
+COMPACTION_REMINDER = "\n\nREMINDER: Do NOT call any tools."
+
+
+def _edited_blocks(message: object, edit: Callable[[object], object]) -> object:
     match message:
         case {"content": list()}:
-            return {**cast(Mapping[str, object], message), "content": [_edited_block(block, lines, prompts) for block in _blocks(message)]}
+            return {**cast(Mapping[str, object], message), "content": [edit(block) for block in _blocks(message)]}
         case _:
             return message
 
 
-def _edited_block(block: object, lines: Mapping[str, str], prompts: Sequence[str]) -> object:
+def _stubbed(block: object, lines: Mapping[str, str]) -> object:
     match block:
         case {"type": "tool_result", "tool_use_id": str() as call} if call in lines:
             return {**cast(Mapping[str, object], block), "content": lines[call]}
-        case {"type": "text", "text": str() as text} if prompts and text.startswith(COMPACTION_OPENING):
-            return {**cast(Mapping[str, object], block), "text": prompts[-1]}
+        case _:
+            return block
+
+
+def _steered(block: object, prompt: str) -> object:
+    match block:
+        case {"type": "text", "text": str() as text} if text.startswith(COMPACTION_OPENING):
+            ends = [at for at in (text.find(COMPACTION_INSTRUCTIONS), text.find(COMPACTION_REMINDER)) if at >= 0]
+            if not ends:
+                raise ValueError("the compaction prompt has no closing reminder to keep")
+            return {**cast(Mapping[str, object], block), "text": prompt + text[min(ends) :]}
         case _:
             return block
 

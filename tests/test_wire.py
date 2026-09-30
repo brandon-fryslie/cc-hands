@@ -9,7 +9,9 @@ from hands.core.session import SessionId
 from hands.core.wire import (
     ToolAnswer,
     tool_answers,
+    COMPACTION_INSTRUCTIONS,
     COMPACTION_OPENING,
+    COMPACTION_REMINDER,
     Answered,
     BlockStarted,
     Compaction,
@@ -63,6 +65,10 @@ def request(*messages: dict[str, object], tools: list[object] = TOOLS) -> dict[s
 
 def test_the_loop_marks_its_last_message_and_is_a_main_turn() -> None:
     assert classify("/v1/messages?beta=true", request(said("hi"), said("ok"), said("go on", marked=True))) == MainTurn()
+
+
+def test_a_fork_that_skips_the_cache_write_marks_the_message_before_its_own_and_is_not_a_main_turn() -> None:
+    assert classify("/v1/messages?beta=true", request(said("hi"), said("ok", marked=True), said("suggest the next prompt"))) == Fork()
 
 
 QUESTION = SIDE_QUESTION_OPENING + " You must answer this question directly in a single response.</system-reminder>\n\nwhat did the read say?"
@@ -358,11 +364,18 @@ def test_a_stub_replaces_only_the_result_it_names_and_the_request_keeps_its_shap
     assert classify("/v1/messages", changed) == MainTurn()
 
 
-def test_a_steer_replaces_the_compaction_prompt_and_it_is_still_a_compaction() -> None:
-    body = request(said("hi"), reply("ok", marked=True), said(COMPACTION_OPENING + " summarise the code"))
+def test_a_steer_replaces_the_newest_compaction_prompt_keeps_what_follows_it_and_it_is_still_a_compaction() -> None:
+    quoted = said(COMPACTION_OPENING + " quoted earlier" + COMPACTION_REMINDER)
+    after = COMPACTION_INSTRUCTIONS + "keep the draft" + COMPACTION_REMINDER + " Respond with plain text only."
+    body = request(quoted, reply("ok", marked=True), said(COMPACTION_OPENING + " summarise the code" + after))
     changed = edited(body, (Steer(COMPACTION_OPENING + " summarise the voice session"),))
-    assert changed["messages"] == [said("hi"), reply("ok", marked=True), said(COMPACTION_OPENING + " summarise the voice session")]
+    assert changed["messages"] == [quoted, reply("ok", marked=True), said(COMPACTION_OPENING + " summarise the voice session" + after)]
     assert classify("/v1/messages", changed) == Compaction()
+
+
+def test_a_steer_refuses_a_compaction_prompt_with_no_closing_reminder() -> None:
+    with pytest.raises(ValueError, match="no closing reminder"):
+        edited(request(said(COMPACTION_OPENING + " cut short")), (Steer("voice"),))
 
 
 def test_a_change_with_nothing_to_change_is_refused() -> None:

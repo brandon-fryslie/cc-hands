@@ -1,7 +1,7 @@
 """The brain's context kept from the proxy: old results as a line, in batches, from sentences forks said while the results were whole."""
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import cast
 
 import pytest
@@ -12,7 +12,9 @@ from hands.core.context import LONG, Result, aged, boundary, key, line, question
 from hands.core.sentences import Digest
 from hands.core.session import SessionId
 from hands.core.wire import (
+    COMPACTION_INSTRUCTIONS,
     COMPACTION_OPENING,
+    COMPACTION_REMINDER,
     SIDE_QUESTION_OPENING,
     Compaction,
     CountTokens,
@@ -102,22 +104,30 @@ def test_a_forks_reply_is_one_line_and_one_that_is_not_an_answer_is_refused() ->
         sentence("(The model tried to call Read instead of answering directly. Try rephrasing.)")
 
 
-def test_a_question_names_the_call_by_tool_id_and_input_and_the_key_is_what_came_back() -> None:
-    result = Result("call7", "Read", {"file_path": "/7"}, "7" * LONG, 7)
+def test_a_question_names_the_call_by_tool_id_input_and_the_ends_of_its_result_and_the_key_is_what_came_back() -> None:
+    result = Result("call7", "Read", {"file_path": "/7"}, "head " + "7" * LONG + " tail", 7)
     assert "Read call call7 with input {\"file_path\": \"/7\"}" in question(result)
-    assert key(result) == key(Result("call9", "Read", {"file_path": "/7"}, "7" * LONG, 2))
+    # Two reads of one thing a turn apart are told apart by what each came back with.
+    assert question(result) != question(Result("call7", "Read", {"file_path": "/7"}, "head " + "7" * LONG + " later", 7))
+    assert key(result) == key(Result("call9", "Read", {"file_path": "/7"}, result.text, 2))
     assert key(result) != key(Result("call7", "Read", {"file_path": "/7"}, "8" * LONG, 7))
 
 
 class Brain:
+    """A brain whose forks send their request on the wire, from its history as it stands, before they answer."""
+
     session = BRAIN
 
     def __init__(self) -> None:
         self.asked: list[str] = []
         self.failing: set[str] = set()
+        self.history: dict[str, object] = history(0)
+        self.wire: Callable[[Sent], None] = lambda _sent: None
 
     async def fork(self, question: str) -> str:
         self.asked.append(question)
+        messages = cast(list[object], self.history["messages"])
+        self.wire(sent({**self.history, "messages": [*messages[:-1], prompt(f"{SIDE_QUESTION_OPENING} ...</system-reminder>\n\n{question}", marked=True)]}))
         if any(call in question for call in self.failing):
             raise ForkFailed("no snapshot")
         call = question.split(" call ", 1)[1].split(" ", 1)[0]
@@ -161,10 +171,12 @@ class Rig:
         self.recorded: list[Entry] = []
         self.keeper = Keeper(self.brain, self.store, every, self.recorded.append)
         self.kept = Kept(Stage(), self.keeper)
+        self.brain.wire = self.kept.hear
 
     async def turn(self, finished: int) -> Route:
         """The brain's main turn after `finished` turns: routed, heard, and ended, and its results asked about."""
-        request = sent(history(finished))
+        self.brain.history = history(finished)
+        request = sent(self.brain.history)
         self.kept.hear(request)
         route = self.kept.route(request)
         self.kept.hear(ended())
@@ -228,12 +240,16 @@ async def test_forks_and_compaction_share_the_stubs_and_only_main_turns_move_the
     side["messages"] = [*side["messages"], prompt(question)]  # pyright: ignore
     assert rig.kept.route(sent(side)) == Send(tuple(stubs))
     compacting = history(9)
-    compacting["messages"] = [*compacting["messages"][:-1], prompt(COMPACTION_OPENING + " summarise the code")]  # pyright: ignore
+    kept = COMPACTION_INSTRUCTIONS + "keep the draft" + COMPACTION_REMINDER + " Respond with plain text only."
+    compacting["messages"] = [*compacting["messages"][:-1], prompt(COMPACTION_OPENING + " summarise the code" + kept)]  # pyright: ignore
     compaction = rig.kept.route(sent(compacting))
     assert compaction == Send((*stubs, Steer(VOICE_COMPACTION)))
     assert isinstance(sent(compacting).kind, Compaction) and isinstance(sent(side).kind, Fork)
-    # The steered prompt is what goes, and the request is still a compaction.
-    assert isinstance(compaction, Send) and classify("/v1/messages", edited(compacting, compaction.changes)) == Compaction()
+    # The steered prompt is what goes, with what Claude Code wrote after its own, and the request is still a compaction.
+    assert isinstance(compaction, Send)
+    steered = edited(compacting, compaction.changes)
+    assert classify("/v1/messages", steered) == Compaction()
+    assert cast(list[dict[str, list[dict[str, str]]]], steered["messages"])[-1]["content"][0]["text"] == VOICE_COMPACTION + kept
 
 
 async def test_another_sessions_requests_and_count_tokens_go_unchanged(rig: Rig) -> None:
@@ -249,3 +265,26 @@ async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> No
 
     keeper = Keeper(Brain(), Store(), 3, lambda _entry: None)
     assert Kept(Holding(), keeper).route(sent(history(6))) == Hold("(stayed silent)")
+
+
+async def test_a_sentence_is_kept_only_when_the_forks_own_request_held_the_result_whole(rig: Rig) -> None:
+    errors: list[str] = []
+    from loguru import logger
+
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
+    await rig.turn(0)
+    # A compaction lands before the queue drains: the brain's history is its summary, and the forks see no results.
+    request = sent(history(1))
+    rig.kept.hear(request)
+    rig.kept.route(request)
+    rig.brain.history = {**history(0), "messages": [prompt("the summary", marked=True)]}
+    rig.kept.hear(ended())
+    worker = asyncio.create_task(rig.keeper.keep_asking())
+    try:
+        for _ in range(20):
+            await asyncio.sleep(0)
+    finally:
+        worker.cancel()
+        logger.remove(sink)
+    assert rig.brain.asked and rig.store.said == {}
+    assert errors == ["no sentence for Read call call0: the fork's request did not hold the result whole"]

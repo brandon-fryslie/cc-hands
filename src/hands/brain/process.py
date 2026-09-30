@@ -52,6 +52,8 @@ STDERR_LINES = 20
 AUTH_STATUS_SECONDS = 20.0
 # How long a brain told to stop has before it is killed.
 STOP_SECONDS = 5.0
+# How long a side question is waited on: one reply of one sentence, with thinking, read from the brain's cache.
+FORK_SECONDS = 120.0
 
 
 @dataclass(frozen=True)
@@ -190,10 +192,16 @@ class Brain:
         answer = self._forks[request] = asyncio.get_running_loop().create_future()
         stdin = self._process.stdin
         assert stdin is not None, "the brain is started with a stdin pipe"
-        stdin.write(json.dumps({"type": "control_request", "request_id": request, "request": {"subtype": "side_question", "question": question}}).encode() + b"\n")
-        await stdin.drain()
         try:
-            reply = await asyncio.shield(answer)
+            stdin.write(json.dumps({"type": "control_request", "request_id": request, "request": {"subtype": "side_question", "question": question}}).encode() + b"\n")
+            await stdin.drain()
+            reply = await asyncio.wait_for(asyncio.shield(answer), FORK_SECONDS)
+        except (ConnectionError, TimeoutError) as error:
+            # [LAW:no-silent-failure] a question the brain cannot take, or never answers, ends here, said as such.
+            self._forks.pop(request, None)
+            failure = BrainGone(f"the brain's stdin closed: {error}") if isinstance(error, ConnectionError) else ForkFailed(f"no answer in {FORK_SECONDS:.0f}s")
+            self._record(BrainForked(request, question, str(failure), failed=True))
+            raise failure from error
         except (ForkFailed, BrainGone) as error:
             self._record(BrainForked(request, question, str(error), failed=True))
             raise

@@ -164,6 +164,23 @@ async def test_a_side_question_is_answered_by_its_request_id_beside_a_turn_in_fl
     ]
 
 
+async def test_a_side_question_never_answered_fails_in_time_and_its_late_answer_is_ignored(
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("hands.brain.process.FORK_SECONDS", 0.2)
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path), recorded.append)
+    try:
+        with pytest.raises(ForkFailed, match="no answer in 0s"):
+            await brain.fork("hold")
+        # The held question is answered now, after the next one, and nothing waits on it.
+        assert await brain.fork("and now?") == "Forked: and now?"
+    finally:
+        await brain.stop()
+    forked = [(entry.question, entry.reply, entry.failed) for entry in recorded if isinstance(entry, BrainForked)]
+    assert forked == [("hold", "no answer in 0s", True), ("and now?", "Forked: and now?", False)]
+
+
 async def test_a_side_question_the_brain_dies_on_fails_as_gone(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
