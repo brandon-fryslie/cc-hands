@@ -46,19 +46,13 @@ class Installed:
 
 def fritter_of(path: Path) -> Path | None:
     """The fritter a hands shim at path runs, this home's or another's; None when path is not a hands shim."""
-    # Read as the shim reads each claude on PATH: a file it cannot read is not a shim to it either.
-    try:
-        with path.open("rb") as found:
-            lines = [found.readline() for _ in range(3)]
-    except OSError:
-        return None
-    marked, assigned = lines[1].rstrip(b"\n"), lines[2].rstrip(b"\n").decode(errors="replace")
+    assigned = _shim(path) or ""
     try:
         words = shlex.split(assigned.removeprefix("fritter=")) if assigned.startswith("fritter=") else []
     except ValueError:  # an unclosed quote: not a line shim_script writes
         words = []
-    match (marked == MARK.encode(), words):
-        case (True, [fritter]):
+    match words:
+        case [fritter]:
             return Path(fritter)
         case _:
             return None
@@ -70,18 +64,22 @@ def real_claude(search: str) -> Path | None:
     # second line, and an empty entry is the current directory.
     for entry in search.split(":"):
         candidate = Path(entry or ".") / "claude"
-        if not (candidate.is_file() and os.access(candidate, os.X_OK)):
-            continue
-        try:
-            with candidate.open("rb") as found:
-                found.readline()
-                marked = found.readline().rstrip(b"\n") == MARK.encode()
-        except OSError:
-            continue
-        if not marked:
+        if candidate.is_file() and os.access(candidate, os.X_OK) and _shim(candidate) is None:
             # Absolute: whoever runs it may run it from another directory than the one an empty entry named.
             return candidate.absolute()
     return None
+
+
+def _shim(path: Path) -> str | None:
+    """The line after a hands shim's mark; None when path is not a file marked as a shim."""
+    # [LAW:one-source-of-truth] the one reading of the mark in Python. Read as the shim reads each claude on PATH: a file
+    # it cannot read is not a shim to it either.
+    try:
+        with path.open("rb") as found:
+            lines = [found.readline() for _ in range(3)]
+    except OSError:
+        return None
+    return lines[2].rstrip(b"\n").decode(errors="replace") if lines[1].rstrip(b"\n") == MARK.encode() else None
 
 
 def shim_script(fritter: Path, wire: Path) -> str:

@@ -2,7 +2,7 @@
 
     uv run hands run              # Sonnet 5 (HANDS_LLM=anthropic, the default); ANTHROPIC_API_KEY, else the keychain's HANDS_LLM_ANT_KEY
     HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
-    HANDS_LLM=claude uv run hands run   # a slim Claude Code on the subscription, once: cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude
+    HANDS_LLM=claude uv run hands run   # a slim Claude Code on the subscription, once: mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude
 
 Sessions join through the hook socket at ~/.hands/hands.sock (the home is
 HANDS_HOME when that is set). A Claude Code session is registered when the hands

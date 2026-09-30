@@ -8,7 +8,7 @@ posts to a listener of hands' own: that a typed turn was taken, and that it ende
 
 Its login, settings, and skills live in a directory hands owns, set up once, as any Claude Code is, by running it there:
 
-    cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude
+    mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude
 
 and it runs in that empty directory of hands' own, never in a project.
 """
@@ -25,7 +25,7 @@ import subprocess
 import tempfile
 import termios
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,8 +34,8 @@ from loguru import logger
 
 from hands.brain.mcp import SERVER_NAME
 from hands.core.effects import Command, Text
-from hands.core.session import CommandName, PromptText, SessionId
-from hands.core.wire import Exchanged, Fork, Observed, Reached, Streamed
+from hands.core.session import ESCAPES, CommandName, PromptText, SessionId, pasted
+from hands.core.wire import Exchanged, Fork, MainTurn, Observed, Reached, Sent, Streamed, asked, tool_names
 from hands.core.wire import Text as Said
 from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainForked, BrainLaunched, Record
 from hands.sessions.payload import Payload, Rejected
@@ -86,8 +86,8 @@ STOP_SECONDS = 5.0
 # How long a side question is waited on: one reply of one sentence, with thinking, read from the brain's cache.
 FORK_SECONDS = 120.0
 
-# What a terminal is told rather than shown: colour, cursor moves, and the titles and modes set around them.
-_CONTROL = re.compile(r"\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[()*+].|[@-Z\\-_0-9=>])|[\x00-\x09\x0b-\x1f\x7f]")
+# What a terminal is told rather than shown, and the keys it is sent.
+_CONTROL = re.compile(rf"{ESCAPES.pattern}|[\x00-\x09\x0b-\x1f\x7f]")
 
 
 @dataclass(frozen=True)
@@ -192,7 +192,8 @@ def logged_in(config_dir: Path, base_url: str) -> None:
 
 def setup(config_dir: Path) -> str:
     """The command that sets the brain up as any Claude Code is set up: run once, where it runs."""
-    return f"cd {_cwd(config_dir)} && CLAUDE_CONFIG_DIR={config_dir} claude"
+    # The directory is made here too: it is asked for before hands has ever run the brain, and so before workdir made it.
+    return f"mkdir -p {_cwd(config_dir)} && cd {_cwd(config_dir)} && CLAUDE_CONFIG_DIR={config_dir} claude"
 
 
 class _Terminal:
@@ -229,6 +230,17 @@ class _Terminal:
         return "\n".join(lines[-SHOWN_LINES:])
 
 
+@dataclass(frozen=True)
+class _Aside:
+    """A side question typed into the brain: its text as typed, the exchanges on the wire that ask it, and its answer."""
+
+    question: PromptText
+    answer: asyncio.Future[str]
+    # [LAW:one-source-of-truth] the answer is read from the brain's own request for this question, never from whichever
+    # fork of the session happens to end first.
+    exchanges: set[str]
+
+
 @dataclass
 class _Turn:
     answered: asyncio.Future[BrainAnswered]
@@ -263,13 +275,15 @@ class Brain:
         self._sockets = sockets
         self._record = record
         # [LAW:single-enforcer] one thing is typed at a time, and nothing while a side question's answer covers the input,
-        # where whatever is typed goes into the answer instead.
+        # where whatever is typed goes into the answer instead. Turns and side questions wait their turn for the input in
+        # the queue, so a stop, which takes the input alone, is next once whatever holds it lets go.
+        self._queue = asyncio.Lock()
         self._input = asyncio.Lock()
         # [LAW:no-ambient-temporal-coupling] the turn in flight is the brain's own state, not its asker's: it is over
         # when its hook says so, whether or not anyone still waits on it, and the next is typed only then.
         self._turn: _Turn | None = None
-        self._sending: set[asyncio.Task[None]] = set()
-        self._fork: asyncio.Future[str] | None = None
+        self._typing: set[asyncio.Task[None]] = set()
+        self._fork: _Aside | None = None
         self._heard = asyncio.ensure_future(self._hear_hooks(hooks))
         self._exit = asyncio.ensure_future(self._run_out())
 
@@ -285,18 +299,22 @@ class Brain:
         loop = asyncio.get_running_loop()
         turn = self._turn = _Turn(loop.create_future(), loop.create_future())
         # An asker that stops waiting leaves the turn to be typed and to run to its end, which is still the brain's to hear.
-        sending = asyncio.create_task(self._send(text, turn))
-        self._sending.add(sending)
-        sending.add_done_callback(self._sending.discard)
+        self._keep(self._send(text, turn))
         return await asyncio.shield(turn.answered)
+
+    def _keep(self, typing: Coroutine[None, None, None]) -> None:
+        """Types on in a task of the brain's own, whoever asked for it."""
+        task = asyncio.create_task(typing)
+        self._typing.add(task)
+        task.add_done_callback(self._typing.discard)
 
     async def _send(self, text: str, turn: _Turn) -> None:
         try:
-            async with self._input:
+            async with self._queue, self._input:
                 # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
-                await self._type(lambda: self._typist.type(Text(PromptText(text)).typed))
+                await self._type(lambda: self._typist.type(Text(pasted(text)).typed))
             self._record(BrainAsked(text))
-            await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS)
+            await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
             if not (turn.taken.done() or turn.answered.done()):
                 raise Untaken(f"the brain did not take the turn typed into it in {TAKE_SECONDS:.0f}s; if it is on a setup screen, run: {setup(self._config_dir)}")
         except (BrainGone, Untaken) as error:
@@ -308,11 +326,12 @@ class Brain:
         BrainGone when the brain ends or cannot be typed into."""
         if self._exit.done():
             raise BrainGone(f"the brain had exited ({self._process.returncode}) before it was asked a side question")
-        async with self._input:
-            answer = self._fork = asyncio.get_running_loop().create_future()
+        async with self._queue, self._input:
+            typed = pasted(question)
+            fork = self._fork = _Aside(typed, asyncio.get_running_loop().create_future(), set())
             try:
-                await self._type(lambda: self._typist.command(Command(ASIDE, PromptText(question))))
-                reply = await asyncio.wait_for(asyncio.shield(answer), FORK_SECONDS)
+                await self._type(lambda: self._typist.command(Command(ASIDE, typed)))
+                reply = await asyncio.wait_for(asyncio.shield(fork.answer), FORK_SECONDS)
             except TimeoutError as error:
                 # [LAW:no-silent-failure] a question the brain never answers ends here, said as such.
                 failure = ForkFailed(f"no answer in {FORK_SECONDS:.0f}s")
@@ -333,34 +352,50 @@ class Brain:
         self._record(BrainForked(question, reply, failed=False))
         return reply
 
-    async def interrupt(self) -> None:
-        """Stop the turn in flight with Escape, as at the keyboard. No hook says a turn was stopped, so it ends here."""
+    def interrupt(self) -> None:
+        """Stop the turn in flight with Escape, as at the keyboard. Returns at once: the Escape is the brain's to press,
+        before anything else waiting to type, and no hook says a turn was stopped, so the turn ends where it is pressed."""
         turn = self._turn
-        if turn is None:
-            return
+        if turn is not None:
+            self._keep(self._stop(turn))
+
+    async def _stop(self, turn: _Turn) -> None:
         # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: a turn ended
         # while its UserPromptSubmit hook is still coming would leave that hook to be taken for the next turn's.
-        await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS)
-        async with self._input:
-            if self._turn is not turn or not turn.taken.done():
-                return
-            await self._type(lambda: self._typist.press("escape"))
-        stopped = BrainAnswered(None)
+        await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+        try:
+            async with self._input:
+                if self._turn is not turn or not turn.taken.done():
+                    return
+                await self._type(lambda: self._typist.press("escape"))
+        except BrainGone as error:
+            self._over(turn, error)
+            return
+        stopped = BrainAnswered(turn.taken.result(), None)
         self._record(stopped)
         self._over(turn, stopped)
 
     def hear(self, observed: Observed) -> None:
-        """A side question's answer, read from the wire as its exchange ends."""
-        answer = self._fork
+        """The brain's own requests, read from the wire: whether a turn reached hands' tools, and a side question's answer."""
+        fork = self._fork
         match observed:
-            case Exchanged(session=session, kind=Fork(), reply=reply) if session == self.session and answer is not None and not answer.done():
+            case Sent(session=session, kind=MainTurn(), body=body) if session == self.session and not any(
+                name.startswith(f"mcp__{SERVER_NAME}__") for name in tool_names(body)
+            ):
+                # [LAW:no-silent-failure] a brain without hands' tools answers every question about the sessions from nothing.
+                logger.error(f"the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server ({tool_names(body)})")
+            case Sent(exchange=exchange, session=session, kind=Fork(), body=body) if (
+                session == self.session and fork is not None and any(fork.question in text for text in asked(body))
+            ):
+                fork.exchanges.add(exchange)
+            case Exchanged(exchange=exchange, reply=reply) if fork is not None and exchange in fork.exchanges and not fork.answer.done():
                 match reply:
                     case Reached(status=200, body=Streamed(message=message)):
                         said = " ".join(block.text for block in message.content if isinstance(block, Said)).strip()
                         if said:
-                            answer.set_result(said)
+                            fork.answer.set_result(said)
                         else:
-                            answer.set_exception(ForkFailed(f"the brain answered the side question with no words ({message.stop_reason})"))
+                            fork.answer.set_exception(ForkFailed(f"the brain answered the side question with no words ({message.stop_reason})"))
                     case _:
                         # Claude Code asks again after a request that failed; the question waits for that, or for its time.
                         logger.warning(f"a side question of the brain's was answered {reply}")
@@ -399,8 +434,8 @@ class Brain:
         # [LAW:no-silent-failure] a turn or a side question that can never end is said to have failed, not left waiting.
         if self._turn is not None:
             self._over(self._turn, BrainGone(f"the brain exited ({code}) before it answered"))
-        if self._fork is not None and not self._fork.done():
-            self._fork.set_exception(BrainGone(f"the brain exited ({code}) before it answered a side question"))
+        if self._fork is not None and not self._fork.answer.done():
+            self._fork.answer.set_exception(BrainGone(f"the brain exited ({code}) before it answered a side question"))
         self._record(BrainExited(code, self._terminal.last()))
         return code
 
@@ -425,7 +460,7 @@ class Brain:
                 turn.taken.set_result(prompt)
             case "Stop" | "StopFailure" if turn.prompt == prompt:
                 error = None if event == "Stop" else f"{said.optional_text('error')}: {said.optional_text('last_assistant_message')}"
-                answered = BrainAnswered(error)
+                answered = BrainAnswered(prompt, error)
                 self._record(answered)
                 self._over(turn, answered)
             case _:

@@ -60,7 +60,7 @@ class Asking(Protocol):
 
     async def ask(self, text: str) -> BrainAnswered: ...
 
-    async def interrupt(self) -> None: ...
+    def interrupt(self) -> None: ...
 
 
 # What the brain is recorded as saying for a request hands held. Never spoken: a held request joins no turn.
@@ -125,7 +125,7 @@ class BrainStage(FrameProcessor):
                 stop = self._barge_in()
                 await self.push_frame(frame, direction)
                 if stop:
-                    await self._brain.interrupt()
+                    self._brain.interrupt()
             case _:
                 await self.push_frame(frame, direction)
 
@@ -154,8 +154,10 @@ class BrainStage(FrameProcessor):
             await self.push_frame(TTSSpeakFrame(readback))
         self._record(BrainSpoke(tuple(turn.exchanges), "".join(turn.spoken), tuple(turn.readbacks), turn.interrupted))
         if (error := asked.exception()) is not None:
-            # [LAW:no-silent-failure] a brain that is gone stops the run from its own watch; this says which turn it took.
+            # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
+            # from its own watch, but one that never took the turn, or could not be typed into, is still running.
             logger.opt(exception=error).error("the brain failed a turn")
+            await self.push_error(f"the brain failed a turn: {error}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         elif (failed := asked.result().error) is not None and not turn.stopped:
             # [LAW:no-silent-failure] said as the API services' failures are: an error from the model's stage.
             await self.push_error(f"the brain's turn ended in error: {failed}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)

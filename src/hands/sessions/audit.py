@@ -114,6 +114,7 @@ class BrainAnswered:
     """The end of a brain turn, at this line's time: its Stop hook, its StopFailure hook with what failed it, or the Escape
     hands pressed to stop it. Its words are on the wire."""
 
+    prompt: str  # the prompt id Claude Code gave the turn, which every hook of the turn and its transcript records carry
     error: str | None
 
 

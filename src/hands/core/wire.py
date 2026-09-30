@@ -107,6 +107,12 @@ def asked(body: object) -> tuple[str, ...]:
     return tuple(text for message in messages[_since_reply(messages) :] for text in _texts(message))
 
 
+def tool_names(body: object) -> tuple[str, ...]:
+    """The names of the tools a messages request offers the model."""
+    tools = _list(cast(Mapping[str, object], body).get("tools")) if isinstance(body, Mapping) else []
+    return tuple(name for tool in _mappings(tools) if isinstance(name := tool.get("name"), str))
+
+
 def _since_reply(messages: Sequence[object]) -> int:
     """Where the messages after the model's last reply begin."""
     replies = [index for index, message in enumerate(messages) if _role(message) == "assistant"]

@@ -125,7 +125,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import json, os, sys, time, tty, urllib.request, uuid
+import json, os, sys, time, tty, urllib.request
 if sys.argv[1:3] == ["auth", "status"]:
     print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1"}}))
     sys.exit(0)
@@ -141,9 +141,9 @@ def typed(line):
 tty.setraw(0)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h> ")
-pending, box, turn, aside = b"", "", None, False
+pending, box, turn, aside, prompts = b"", "", None, False, 0
 def submit(text):
-    global turn, aside
+    global turn, aside, prompts
     if aside:
         aside = False
         typed(["dismissed", text])
@@ -153,7 +153,8 @@ def submit(text):
         typed(["btw", text[len("/btw "):]])
         return
     typed(["prompt", text])
-    prompt = str(uuid.uuid4())
+    prompts += 1
+    prompt = f"p{{prompts}}"
     said = text.strip()
     if said == "deaf":
         return

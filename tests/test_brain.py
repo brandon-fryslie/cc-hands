@@ -8,15 +8,16 @@ from pathlib import Path
 
 import aiohttp
 import pytest
+from loguru import logger
 
 from hands.brain.mcp import McpServer, serve_mcp
-from hands.brain.process import BUILTIN_TOOLS, SLIM, BrainGone, ForkFailed, Launch, NotLoggedIn, Unstartable, Untaken, command, environment, logged_in, start, workdir
+from hands.brain.process import BUILTIN_TOOLS, SLIM, Brain, BrainGone, ForkFailed, Launch, NotLoggedIn, Unstartable, Untaken, command, environment, logged_in, start, workdir
 from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainForked, BrainLaunched, Called, Entry, McpConnected
 from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
-from hands.core.session import SessionId
-from hands.core.wire import Exchanged, Fork, Garbled, Message, Reached, Streamed
+from hands.core.session import SessionId, pasted
+from hands.core.wire import Exchanged, Fork, Garbled, MainTurn, Message, Reached, Sent, Streamed
 from hands.core.wire import Text as Said
 from hands.daemon.run import mind
 from hands.sessions.proxy import Wire
@@ -121,9 +122,15 @@ async def until(check: Callable[[], bool]) -> None:
     raise AssertionError("never")
 
 
-def answered(session: str, words: str, stop: str = "end_turn") -> Exchanged:
+def forked(session: str, question: str, exchange: str = "x1") -> Sent:
+    """A fork's request on the wire, asking `question` as /btw's request does: after the history, in a message of its own."""
+    body = {"messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "Hello."}, {"role": "user", "content": f"<system-reminder>{question}</system-reminder>"}]}
+    return Sent(exchange, SessionId(session), Fork(), body)
+
+
+def answered(session: str, words: str, stop: str = "end_turn", exchange: str = "x1") -> Exchanged:
     message = Message("m1", "claude-sonnet-5", (Said(words),) if words else (), stop, {})
-    return Exchanged("x1", SessionId(session), Fork(), "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Streamed(message)))
+    return Exchanged(exchange, SessionId(session), Fork(), "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Streamed(message)))
 
 
 def test_the_brain_is_interactive_slim_strict_and_never_asks_and_runs_on_its_own_login_through_the_proxy(tmp_path: Path) -> None:
@@ -154,8 +161,8 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_bot
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
     try:
-        assert await brain.ask("what is running?") == BrainAnswered(None)
-        assert await brain.ask("/and now?") == BrainAnswered(None)
+        assert await brain.ask("what is running?") == BrainAnswered("p1", None)
+        assert await brain.ask("/and now?") == BrainAnswered("p2", None)
     finally:
         await brain.stop()
     assert (tmp_path / "brain" / "cwd").is_dir()
@@ -166,9 +173,9 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_bot
     assert recorded == [
         BrainLaunched(brain.pid, tmp_path / "brain", tmp_path / "brain" / "cwd", "claude-sonnet-5"),
         BrainAsked("what is running?"),
-        BrainAnswered(None),
+        BrainAnswered("p1", None),
         BrainAsked("/and now?"),
-        BrainAnswered(None),
+        BrainAnswered("p2", None),
         exited,
     ]
 
@@ -176,8 +183,8 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_bot
 async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_failed_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     brain = await start(launch(tmp_path, fritter), lambda _entry: None)
     try:
-        assert await brain.ask("fail") == BrainAnswered("unknown: API Error: 400 refused")
-        assert await brain.ask("and now?") == BrainAnswered(None)
+        assert await brain.ask("fail") == BrainAnswered("p1", "unknown: API Error: 400 refused")
+        assert await brain.ask("and now?") == BrainAnswered("p2", None)
     finally:
         await brain.stop()
 
@@ -187,13 +194,14 @@ async def test_an_interrupt_is_escape_and_ends_the_turn_in_flight_and_the_next_t
     brain = await start(launch(tmp_path, fritter), recorded.append)
     try:
         # With no turn in flight there is nothing to stop, and no Escape is pressed.
-        await brain.interrupt()
+        brain.interrupt()
         waiting = asyncio.create_task(brain.ask("wait"))
         # As soon as it is typed, before Claude Code has said it took it: the Escape waits for that.
         await until(lambda: [" wait"] == [line[1] for line in typed(tmp_path) if line[0] == "prompt"])
-        await brain.interrupt()
-        assert await waiting == BrainAnswered(None)
-        assert await brain.ask("and now?") == BrainAnswered(None)
+        brain.interrupt()
+        # Pressed once the turn is taken, not once it ends: the turn waiting on the Escape never ends without it.
+        assert await asyncio.wait_for(waiting, 5) == BrainAnswered("p1", None)
+        assert await brain.ask("and now?") == BrainAnswered("p2", None)
     finally:
         await brain.stop()
     assert typed(tmp_path) == [["prompt", " wait"], ["escape", ""], ["prompt", " and now?"]]
@@ -203,24 +211,80 @@ async def test_a_side_question_is_btw_typed_answered_from_the_wire_and_dismissed
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
     try:
-        asked = asyncio.create_task(brain.fork("what did\nthe read say?"))
+        asked = asyncio.create_task(brain.fork("what did\n\tthe read say?"))
         await until(lambda: any(line[0] == "btw" for line in typed(tmp_path)))
-        # Another session's side question, and one of the brain's that failed and is asked again, answer nothing.
-        brain.hear(answered("elsewhere", "Not this."))
-        brain.hear(replace(answered("b1", "x"), reply=Reached(529, 0.0, 0.0, 10, Garbled("overloaded"))))
-        brain.hear(answered("b1", "It said four."))
+        # Another session's side question, a fork of the brain's own that asks something else, and the brain's asking
+        # that failed and is asked again, answer nothing.
+        brain.hear(forked("elsewhere", "what did\n    the read say?", "x0"))
+        brain.hear(answered("elsewhere", "Not this.", exchange="x0"))
+        brain.hear(forked("b1", "predict the next prompt", "x2"))
+        brain.hear(answered("b1", "Not this either.", exchange="x2"))
+        brain.hear(forked("b1", "what did\n    the read say?", "x3"))
+        brain.hear(replace(answered("b1", "x", exchange="x3"), reply=Reached(529, 0.0, 0.0, 10, Garbled("overloaded"))))
+        brain.hear(forked("b1", "what did\n    the read say?", "x4"))
+        brain.hear(answered("b1", "It said four.", exchange="x4"))
         assert await asked == "It said four."
-        silent = asyncio.create_task(brain.fork("silent"))
+        silent = asyncio.create_task(brain.fork("silent\\"))
         await until(lambda: sum(line[0] == "btw" for line in typed(tmp_path)) == 2)
-        brain.hear(answered("b1", "", stop="tool_use"))
+        brain.hear(forked("b1", "silent\\ ", "x5"))
+        brain.hear(answered("b1", "", stop="tool_use", exchange="x5"))
         with pytest.raises(ForkFailed, match="no words"):
             await silent
     finally:
         await brain.stop()
-    # The command typed and its question pasted whole, newline and all; each answer dismissed before anything else is typed.
-    assert typed(tmp_path) == [["btw", "what did\nthe read say?"], ["dismissed", ""], ["btw", "silent"], ["dismissed", ""]]
-    forked = [(entry.question, entry.reply, entry.failed) for entry in recorded if isinstance(entry, BrainForked)]
-    assert forked == [("what did\nthe read say?", "It said four.", False), ("silent", "the brain answered the side question with no words (tool_use)", True)]
+    # The command typed and its question pasted whole, newline and all, with a tab as its spaces and a closing backslash
+    # kept from the Return; each answer dismissed before anything else is typed.
+    assert typed(tmp_path) == [["btw", "what did\n    the read say?"], ["dismissed", ""], ["btw", "silent\\ "], ["dismissed", ""]]
+    asides = [(entry.question, entry.reply, entry.failed) for entry in recorded if isinstance(entry, BrainForked)]
+    assert asides == [("what did\n\tthe read say?", "It said four.", False), ("silent\\", "the brain answered the side question with no words (tool_use)", True)]
+
+
+def test_text_passed_on_to_the_brain_is_typed_as_the_characters_it_shows() -> None:
+    # What a terminal is told is dropped, line ends are newlines, a tab is its spaces, any other control is spelled out,
+    # and a closing backslash is kept from the Return that sends it.
+    assert pasted("\x1b[31mred\x1b[0m\r\nnext\rline\n\tgo\tthere\x07 C:\\") == "red\nnext\nline\n    go  there\\x07 C:\\ "
+    assert pasted("plain\nwords") == "plain\nwords"
+
+
+async def test_a_stop_goes_before_the_side_questions_waiting_to_type_and_returns_at_once(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    try:
+        waiting = asyncio.create_task(brain.ask("wait"))
+        await until(lambda: any(line[0] == "prompt" for line in typed(tmp_path)))
+        first = asyncio.create_task(brain.fork("first"))
+        await until(lambda: any(line[0] == "btw" for line in typed(tmp_path)))
+        second = asyncio.create_task(brain.fork("second"))
+        await asyncio.sleep(0.05)
+        # A barge-in does not wait on the input: the stage that calls this goes on with its frames.
+        brain.interrupt()
+        brain.hear(forked("b1", "first", "x1"))
+        brain.hear(answered("b1", "One.", exchange="x1"))
+        assert await first == "One."
+        assert await waiting == BrainAnswered("p1", None)
+        await until(lambda: sum(line[0] == "btw" for line in typed(tmp_path)) == 2)
+        brain.hear(forked("b1", "second", "x2"))
+        brain.hear(answered("b1", "Two.", exchange="x2"))
+        assert await second == "Two."
+    finally:
+        await brain.stop()
+    assert typed(tmp_path) == [["prompt", " wait"], ["btw", "first"], ["dismissed", ""], ["escape", ""], ["btw", "second"], ["dismissed", ""]]
+
+
+def test_a_turn_sent_without_hands_tools_is_an_error_and_one_with_them_is_not() -> None:
+    brain = object.__new__(Brain)
+    brain.session = SessionId("b1")
+    brain._fork = None  # pyright: ignore[reportPrivateUsage]
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
+    try:
+        body = {"messages": [{"role": "user", "content": "hi"}], "tools": [{"name": "Read"}]}
+        brain.hear(Sent("x1", SessionId("b1"), MainTurn(), {**body, "tools": [{"name": "Read"}, {"name": "mcp__hands__read_session"}]}))
+        brain.hear(Sent("x2", SessionId("elsewhere"), MainTurn(), body))
+        assert errors == []
+        brain.hear(Sent("x3", SessionId("b1"), MainTurn(), body))
+    finally:
+        logger.remove(sink)
+    assert errors == ["the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (('Read',))"]
 
 
 async def test_a_side_question_never_answered_fails_in_time_and_is_still_dismissed(
@@ -234,7 +298,7 @@ async def test_a_side_question_never_answered_fails_in_time_and_is_still_dismiss
             await brain.fork("hold")
         # A late answer finds no question waiting on it.
         brain.hear(answered("b1", "Too late."))
-        assert await brain.ask("and now?") == BrainAnswered(None)
+        assert await brain.ask("and now?") == BrainAnswered("p1", None)
     finally:
         await brain.stop()
     assert typed(tmp_path) == [["btw", "hold"], ["dismissed", ""], ["prompt", " and now?"]]
@@ -264,9 +328,9 @@ async def test_a_turn_never_taken_fails_naming_the_setup_command_and_the_next_tu
     monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
     brain = await start(launch(tmp_path, fritter), lambda _entry: None)
     try:
-        with pytest.raises(Untaken, match=f"cd {tmp_path / 'brain' / 'cwd'} && CLAUDE_CONFIG_DIR={tmp_path / 'brain'} claude"):
+        with pytest.raises(Untaken, match=f"mkdir -p {tmp_path / 'brain' / 'cwd'} && cd {tmp_path / 'brain' / 'cwd'} && CLAUDE_CONFIG_DIR={tmp_path / 'brain'} claude"):
             await brain.ask("deaf")
-        assert await brain.ask("and now?") == BrainAnswered(None)
+        assert await brain.ask("and now?") == BrainAnswered("p2", None)
     finally:
         await brain.stop()
 
@@ -278,11 +342,11 @@ async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_n
         asked = asyncio.create_task(brain.ask("slow"))
         await asyncio.sleep(0.1)
         asked.cancel()
-        assert await brain.ask("and now?") == BrainAnswered(None)
+        assert await brain.ask("and now?") == BrainAnswered("p2", None)
     finally:
         await brain.stop()
     turns = [entry for entry in recorded if isinstance(entry, BrainAsked | BrainAnswered)]
-    assert turns == [BrainAsked("slow"), BrainAnswered(None), BrainAsked("and now?"), BrainAnswered(None)]
+    assert turns == [BrainAsked("slow"), BrainAnswered("p1", None), BrainAsked("and now?"), BrainAnswered("p2", None)]
 
 
 async def test_a_brain_with_no_fritter_to_run_under_is_refused_naming_the_install(tmp_path: Path, fake_claude: Path) -> None:
