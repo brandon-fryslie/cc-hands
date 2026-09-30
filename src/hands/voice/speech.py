@@ -4,7 +4,7 @@ import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
+from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
 
 from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Speak, WaitingForYou
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
@@ -38,6 +38,26 @@ class Tailed:
 Telling = Pushed | Tailed
 
 
+@dataclass
+class Narrated(DataFrame, UninterruptibleFrame):
+    """A message from hands the brain takes as a turn of its own, once no turn of the user's is waiting.
+
+    Never put in Pipecat's context, where it would be one message with whatever the user said beside it: the brain keeps
+    its own history. Kept through a barge-in, which stops what is said, not what is still to be told.
+    """
+
+    text: str
+
+
+def handed(text: str, telling: Telling) -> Frame:
+    """A message from hands for the model to say in its own words, as the model's telling takes one."""
+    match telling:
+        case Pushed():
+            return LLMMessagesAppendFrame([{"role": "user", "content": text}], run_llm=True)
+        case Tailed():
+            return Narrated(text)
+
+
 async def relay(sessions: Sessions, telling: Telling, queue_frame: Callable[[Frame], Awaitable[None]]) -> None:
     """Hand everything the sessions say to the pipeline, in the order it was decided, until cancelled."""
     while True:
@@ -53,7 +73,7 @@ def frames(heard: Heard, telling: Telling, names: Names) -> Sequence[Frame]:
             # Kept in the context, so the intermediary knows what the user has already been told.
             return (TTSSpeakFrame(announcement_text(announcement, names)),)
         case Narrate(moment=moment), _:
-            return (LLMMessagesAppendFrame([{"role": "user", "content": narration(moment, names)}], run_llm=True),)
+            return (handed(narration(moment, names), telling),)
         case Note(fact=fact), Pushed():
             return (LLMMessagesAppendFrame([{"role": "user", "content": noted(fact, names)}], run_llm=False),)
         case Note(), Tailed():

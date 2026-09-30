@@ -6,19 +6,15 @@ from pathlib import Path
 from typing import Any
 
 
-from hands.core.delta import Delta
 from hands.core.events import Ended, Joined, StatusReported
 from hands.core.session import Membership, SessionId
 from hands.core.status import Busy, Idle, Report, Stamp
-from hands.sessions.audit import Entry, Recounted, TurnsSummarised
+from hands.sessions.audit import Entry, TurnsSummarised
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
-from hands.voice.narrator import recount
 from hands.voice.sentences import SummaryStore, Turns
 from hands.voice.summarising import summarise_turns
 from hands.voice.tools import READBACK_COUNT, TURNS_PAGE, Tool, session_tools
-
-from test_narrator import BUDGET, tailing, unrefused
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
 SID = SessionId("s1")
@@ -336,25 +332,6 @@ async def test_the_turn_a_running_session_is_on_is_not_summarised_until_it_is_do
     assert answer["turns"][1] == {"turn": 2, "asked": "The user asked:\ndo task 1"}
     wanted = await store.wanted()
     assert isinstance(wanted, Turns) and [due.id for due in wanted.due] == ["turn-1"]
-
-
-async def test_a_turn_narration_reported_whole_is_served_from_its_report_and_never_summarised_again(tmp_path: Path) -> None:
-    """The trap: narration's summaries exist only while spoken summaries are on, so the rest are said off the voice path.
-    One narration did make is the turn's sentence, found under the key read_session reads the turn by."""
-    transcript = tmp_path / "s1.jsonl"
-    shutil.copy(Path(__file__).parent / "fixtures" / "turn.jsonl", transcript)
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    recorded: list[Entry] = []
-
-    async def summarise(_turn: str) -> str:
-        return "Designed the hands-free architecture."
-
-    await recount(tailing(transcript), SID, None, None, "a", summarise, recorded.append, BUDGET, Delta(), "on", unrefused, store.keep)
-    assert any(isinstance(entry, Recounted) and entry.kept for entry in recorded)
-
-    answer = await sentences(await at_prompt(await joined(transcript)), store)
-    assert answer["turns"][-1] == {"turn": len(answer["turns"]), "summary": "Designed the hands-free architecture."}
-    assert answer["unsummarised"] == len(answer["turns"]) - 1
 
 
 async def test_a_session_whose_status_is_not_read_yet_has_its_last_turn_left_unsummarised(tmp_path: Path) -> None:

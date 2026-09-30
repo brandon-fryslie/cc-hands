@@ -184,8 +184,7 @@ uv run hands check                      # whether hands is set up to work here; 
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run pytest && uv run pyright
-uv run python evals/narration.py       # real turns through the real summariser; needs the model to be up
-uv run python evals/intermediary.py    # conversations through the intermediary's prompt and tools; same
+uv run python evals/intermediary.py    # conversations through the intermediary's prompt and tools; needs the model to be up
 ```
 
 `hands check` looks at each piece hands needs and says it is there or what puts it

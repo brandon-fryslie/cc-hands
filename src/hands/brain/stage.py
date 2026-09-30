@@ -14,6 +14,7 @@ history as refused; what it handed back, which the model will not be asked to sa
 
 import asyncio
 import json
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -48,7 +49,8 @@ from hands.core.wire import (
     ToolAnswer,
     tool_answers,
 )
-from hands.sessions.audit import BrainAnswered, BrainInterrupted, BrainSpoke, Record
+from hands.sessions.audit import Asker, BrainAnswered, BrainInterrupted, BrainSpoke, Record
+from hands.voice.speech import Narrated
 from hands.voice.tools import Tool
 
 
@@ -110,15 +112,21 @@ class BrainStage(FrameProcessor):
         self._told = 0
         # [LAW:no-ambient-temporal-coupling] the turn is the brain's, from its write to its result line, not the pipeline's:
         # it runs beside the frames passing through, a barge-in ends what is said of it, and the next is written only
-        # once the brain has ended it.
-        self._contexts: asyncio.Queue[LLMContext] = asyncio.Queue()
+        # once the brain has ended it. What waits is in two lanes, the user's and hands', and the user's goes first.
+        self._contexts: deque[LLMContext] = deque()
+        self._narrations: deque[str] = deque()
+        self._waiting = asyncio.Event()
         self._turn: _Turn | None = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame:
             case LLMContextFrame(context=context):
-                self._contexts.put_nowait(context)
+                self._contexts.append(context)
+                self._waiting.set()
+            case Narrated(text=text):
+                self._narrations.append(text)
+                self._waiting.set()
             case InterruptionFrame():
                 # [LAW:no-ambient-temporal-coupling] the turn stops being spoken, then the pipeline is told, then the brain:
                 # what is playing stops first, and a brain that cannot be written to cannot hold the barge-in back.
@@ -133,12 +141,19 @@ class BrainStage(FrameProcessor):
         """Asks the brain each turn the pipeline hands this stage, one at a time, for as long as it runs; returns only by
         raising what stopped it, since a stage that can no longer ask leaves every question unanswered."""
         while True:
-            text = self._news(await self._contexts.get())
+            text, asker = await self._next_turn()
             # A context frame is a call to answer, not a message: one whose messages an earlier turn already took asks nothing.
             if text:
-                await self._ask(text)
+                await self._ask(text, asker)
 
-    async def _ask(self, text: str) -> None:
+    async def _next_turn(self) -> tuple[str, Asker]:
+        """The next turn to ask: the user's words while any wait, since what they said goes ahead of what hands has to tell."""
+        while not (self._contexts or self._narrations):
+            self._waiting.clear()
+            await self._waiting.wait()
+        return (self._news(self._contexts.popleft()), "user") if self._contexts else (self._narrations.popleft(), "hands")
+
+    async def _ask(self, text: str, asker: Asker) -> None:
         said: asyncio.Queue[str | None] = asyncio.Queue()
         spoken: list[str] = []
         turn = self._turn = _Turn(said, asyncio.create_task(self._speak(said, spoken), name="the brain's words"), spoken)
@@ -152,7 +167,7 @@ class BrainStage(FrameProcessor):
         for readback in turn.readbacks:
             # Said by hands, since the model that would have said it was not asked to go on.
             await self.push_frame(TTSSpeakFrame(readback))
-        self._record(BrainSpoke(tuple(turn.exchanges), "".join(turn.spoken), tuple(turn.readbacks), turn.interrupted))
+        self._record(BrainSpoke(tuple(turn.exchanges), "".join(turn.spoken), tuple(turn.readbacks), turn.interrupted, asker))
         if (error := asked.exception()) is not None:
             # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
             # from its own watch, but one that never took the turn, or could not be typed into, is still running.

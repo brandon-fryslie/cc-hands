@@ -22,7 +22,9 @@ from hands.core.status import Busy, Idle, Report, Stamp
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
-from hands.voice.speech import Pushed, frames, relay
+from hands.voice.speech import Narrated, Pushed, Tailed, frames, relay
+
+from test_shim import STARTED
 from hands.voice.tools import DENIED_BY_VOICE, SENT_BACK_BY_VOICE, Tool, permission_tools
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000002")
@@ -106,7 +108,7 @@ PLAN: dict[str, object] = {**ASK, "tool_name": "ExitPlanMode", "tool_input": {"p
 
 
 async def asked(home: Home, sessions: Sessions, payload: Mapping[str, object] = ASK) -> tuple[Shim, Asking]:
-    assert await (await Shim.run(home, START)).finished() == (0, "", "")
+    assert await (await Shim.run(home, START)).finished() == (0, STARTED, "")
     # A request is asked inside the turn a prompt opened, and the Stop that ends that turn names it.
     assert await (await Shim.run(home, PROMPT)).finished() == (0, "", "")
     # Claude Code set the session busy before the prompt's hooks ran: only a running session can be held at a dialog.
@@ -215,6 +217,11 @@ async def test_answers_that_do_not_parse_are_refused_out_loud(sessions: Sessions
     assert error in str((await call(named(sessions, "answer_question"), request="r", answers=answers))["error"])
 
 
+def test_the_brain_takes_what_a_session_asks_as_a_turn_of_its_own_after_the_users() -> None:
+    [narrated] = frames(Narrate(Asking(SID, RequestId("r-1"), Permission("Bash", {"command": "ls"}))), Tailed(), names=lambda id: id)
+    assert isinstance(narrated, Narrated) and "is waiting for permission to use Bash" in narrated.text
+
+
 def test_a_question_reaches_the_model_whole_with_its_options_and_request_id() -> None:
     long = "a description long enough that the questions together run past what a tool input is shown " * 4
     asked = (
@@ -287,7 +294,7 @@ async def test_a_reply_decided_as_the_hook_closes_is_logged_as_never_delivered(h
     logged: list[str] = []
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
     try:
-        assert await (await Shim.run(home, START)).finished() == (0, "", "")
+        assert await (await Shim.run(home, START)).finished() == (0, STARTED, "")
         await sessions.apply(StatusReported(SID, BUSY, at=0.0))
         request = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
         waiting = asyncio.create_task(sessions.ask(request))
@@ -311,7 +318,7 @@ async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_
 
 
 async def test_a_hook_that_asks_after_shutdown_began_is_let_go_at_once(home: Home, sessions: Sessions) -> None:
-    assert await (await Shim.run(home, START)).finished() == (0, "", "")
+    assert await (await Shim.run(home, START)).finished() == (0, STARTED, "")
     sessions.release_waiting()
     request = PermissionRequested(SID, at=0.0, request=RequestId("late"), on=Permission("Bash", {}), mode=None)
     assert await asyncio.wait_for(sessions.ask(request), WAIT_SECONDS) == Withdraw()

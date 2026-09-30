@@ -46,6 +46,7 @@ from hands.core.wire import (
     Unknown,
 )
 from hands.sessions.audit import BrainAnswered, BrainInterrupted, BrainSpoke, Entry
+from hands.voice.speech import Narrated
 from hands.voice.tools import Result, Tool, tool
 
 BRAIN = SessionId("brain-session")
@@ -210,6 +211,35 @@ def answering(name: str, result: object, call_id: str = "t1") -> dict[str, objec
     }
 
 
+async def test_a_finished_turn_hands_narrates_reaches_the_brain_as_a_typed_turn_of_its_own(rig: Rig) -> None:
+    """What hands says aloud of a session's turn is the brain's own turn, so it can answer about what the user heard."""
+    await rig.worker.queue_frame(Narrated("[hands] The Claude Code session api finished a turn."))
+    await rig.until(lambda: rig.brain.asked == ["[hands] The Claude Code session api finished a turn."])
+    exchange, _ = rig.request()
+    rig.stream(exchange, "api opened pull request 68.")
+    rig.brain.end()
+    await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
+    assert rig.out.said() == ["api opened pull request 68."]
+    assert BrainSpoke((exchange,), "api opened pull request 68.", (), False, "hands") in rig.recorded
+    # Never in Pipecat's context, where it would ride along with whatever the user says next.
+    assert rig.context.get_messages() == []
+
+
+async def test_the_users_turn_goes_ahead_of_a_narration_waiting_for_the_brain(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "what is running?"})
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn."))
+    rig.context.add_message({"role": "user", "content": "and the backlog?"})
+    await rig.worker.queue_frame(LLMContextFrame(rig.context))
+    # Frames pass the stage in order, so once this is out, both before it are waiting in the stage.
+    await rig.worker.queue_frame(TTSSpeakFrame("marker"))
+    await rig.until(lambda: "marker" in rig.out.said())
+    rig.brain.end()
+    await rig.until(lambda: len(rig.brain.asked) == 2)
+    rig.brain.end()
+    await rig.until(lambda: len(rig.brain.asked) == 3)
+    assert rig.brain.asked == ["what is running?", "and the backlog?", "[hands] api finished a turn."]
+
+
 async def test_a_turn_goes_to_the_brain_and_its_words_come_off_the_wire(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "what is running?"})
     assert rig.brain.asked == ["what is running?"]
@@ -222,7 +252,7 @@ async def test_a_turn_goes_to_the_brain_and_its_words_come_off_the_wire(rig: Rig
     assert rig.out.shape() == ["LLMFullResponseStartFrame", "LLMTextFrame", "LLMTextFrame", "LLMFullResponseEndFrame"]
     assert rig.out.said() == ["Two sessions ", "are running."]
     # The audit log ties what was spoken to the exchange on the wire it came from.
-    assert BrainSpoke((exchange,), "Two sessions are running.", (), False) in rig.recorded
+    assert BrainSpoke((exchange,), "Two sessions are running.", (), False, "user") in rig.recorded
 
 
 async def test_each_request_of_a_turn_carries_how_the_sessions_stand_as_it_leaves(rig: Rig) -> None:
@@ -309,7 +339,7 @@ async def test_a_barge_in_mid_reply_stops_the_brain_and_nothing_more_of_the_turn
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
     assert rig.out.said() == ["First, "]
     assert rig.brain.interrupts == 1
-    assert BrainSpoke((exchange,), "First, ", (), True) in rig.recorded
+    assert BrainSpoke((exchange,), "First, ", (), True, "user") in rig.recorded
 
 
 async def test_a_barge_in_while_a_draft_lands_lets_it_finish_and_speaks_its_readback(rig: Rig) -> None:
@@ -328,7 +358,7 @@ async def test_a_barge_in_while_a_draft_lands_lets_it_finish_and_speaks_its_read
     # Said once the turn is over, after anything the model had begun to say.
     await rig.until(lambda: rig.out.said()[-1:] == ["staged for api: add tests"])
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
-    assert BrainSpoke((exchange,), "Staging it.", ("staged for api: add tests",), True) in rig.recorded
+    assert BrainSpoke((exchange,), "Staging it.", ("staged for api: add tests",), True, "user") in rig.recorded
 
 
 async def test_a_barge_in_while_a_reading_tool_runs_stops_the_brain_at_once(rig: Rig) -> None:

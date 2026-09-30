@@ -1,18 +1,22 @@
-"""Sessions' stories, heard: each turn a session finishes is told from the tail, summarised, and spoken with its name, and each session gone is said after its last turn."""
+"""Sessions' stories, heard: each turn a session finishes is handed to the model with the reply that ended it, and said
+in the model's own words, and each session gone is said after its last turn.
+
+The model is the one that says a turn, not a summariser beside it, so what the user heard is in the model's history and
+it can answer about it. The reply is the session's own account: its author knows what "PR 68" is, and a summariser
+reading a trimmed transcript does not.
+"""
 
 import asyncio
-import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core.delta import Delta
 from hands.core.effects import SessionGone, Summarise
-from hands.core.narration import narration, shown
+from hands.core.narration import Narration, narration
 from hands.core.session import PromptId, SessionId
-from hands.core.sentences import Digest, turn_digest
-from hands.core.turn import Answering, Budget, Interruption
+from hands.core.turn import Interruption, Said, Turn
 from hands.sessions.audit import Recounted, Record
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.payload import Rejected
@@ -20,36 +24,26 @@ from hands.sessions.registry import Sessions
 from hands.sessions.summaries import DEFAULT, Summaries
 from hands.sessions.tail import Tails
 from hands.voice.readback import spoken_name
-from hands.voice.refusal import UsageLimitReached, usage_limit
-from hands.voice.summary import SUMMARY_FAILURES, Summariser
-from hands.voice.summary_instruction import HEADLINE_SENTENCES
+from hands.voice.speech import Telling, handed
 
-# How much of a turn the summariser is shown: enough to name its results, few enough tokens for a local model to answer in seconds.
-TURN_BUDGET = Budget(opening=600, said=1500, input=200, result=400, steps=40, files=25, commits=10, changes=2000)
+# How much of a reply is handed to the model. Every turn told grows the model's history toward compaction, so what is
+# handed is bounded; a session asked to end on a concise overview writes far less than this.
+REPLY_SHOWN = 1500
 
-# Where a turn's report goes to be kept as its sentence: the summary store.
-Keep = Callable[[Mapping[Digest, str]], None]
-
-# Where a model refusal the listener can act on goes: the system channel, which says it once a burst.
-Refused = Callable[[UsageLimitReached], Awaitable[None]]
-
-# Everything reading and summarising a turn is expected to fail with; each is said, and the next turn is still heard.
-_FAILURES = (Rejected, *SUMMARY_FAILURES)
+# Everything reading a turn is expected to fail with; each is said, and the next turn is still heard.
+_FAILURES = (Rejected, OSError)
 
 
 async def narrate(
     sessions: Sessions,
     tails: Tails,
-    summarise: Summariser,
+    telling: Telling,
     queue_frame: Callable[[Frame], Awaitable[None]],
     record: Record,
     aloud: Callable[[], Summaries],
-    refused: Refused,
-    keep: Keep,
-    budget: Budget = TURN_BUDGET,
     changes: Changes | None = None,
 ) -> None:
-    """Speak each finished turn and each session gone, in the order they happened, until cancelled.
+    """Tell each finished turn and each session gone, in the order they happened, until cancelled.
 
     `aloud` reads where the summaries switch stands, at every finished turn, so a change is heard from the next one told.
     """
@@ -60,11 +54,11 @@ async def narrate(
         match story:
             case Summarise(session=session, turn=turn, closing=closing):
                 switch = await _switch(aloud)
-                spoken = await recount(tails, session, turn, closing, name, summarise, record, budget, await read.taken(session), switch, refused, keep)
+                told = await recount(tails, session, turn, closing, name, record, await read.taken(session), switch, telling)
             case SessionGone():
-                spoken = TTSSpeakFrame(f"The session {name} is gone.")
-        if spoken is not None:
-            await queue_frame(spoken)
+                told = TTSSpeakFrame(f"The session {name} is gone.")
+        if told is not None:
+            await queue_frame(told)
 
 
 async def recount(
@@ -73,13 +67,10 @@ async def recount(
     turn: PromptId | None,
     closing: str | None,
     name: str,
-    summarise: Summariser,
     record: Record,
-    budget: Budget,
     delta: Delta,
     switch: Summaries,
-    refused: Refused,
-    keep: Keep,
+    telling: Telling,
 ) -> Frame | None:
     """The frame that tells the user what the turn did beyond what was told before, or None when there is nothing new.
 
@@ -87,65 +78,61 @@ async def recount(
     but a repository that moved is still worth telling: that is a formatter or a code generator, and naming
     what it changed is the whole point of reading git at all.
 
-    With summaries off, what the turn is waiting on the user to answer is all that plays, and no model is asked:
-    the switch quiets the report, never a question.
+    With summaries off, what the turn is waiting on the user to answer is all that plays, said as written: the switch
+    quiets the report, never a question.
     """
     try:
-        telling = await tails.tell(session, turn, closing)
+        told = await tails.tell(session, turn, closing)
     except _FAILURES as error:
-        return _unsummarised(session, name, error, "")
-    if telling is None or not (telling.turn.steps or delta):
+        return _unread(session, name, error)
+    if told is None or not (told.turn.steps or delta):
         logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")
         return None
-    # What plays with no model: whatever the turn is waiting on the listener to answer.
-    unsaid = narration("", telling.turn, delta, HEADLINE_SENTENCES)
+    tree = narration(told.turn, delta)
+    # A turn stopped before it did anything has nothing for the model to tell: what the types say of it is all there is.
+    did = bool(delta) or any(not isinstance(step, Interruption) for step in told.turn.steps)
     match switch:
+        case "on" if did:
+            text = _news(name, told.turn, tree)
+            frame: Frame | None = handed(text, telling)
         case "on":
-            began = time.monotonic()
-            # A turn stopped before it did anything has nothing for a model to report, and a model told not to say it was
-            # interrupted would report something anyway: its narration is the interruption alone.
-            did = delta or any(not isinstance(step, Interruption) for step in telling.turn.steps)
-            try:
-                headline = await summarise(shown(telling.turn, delta, budget)) if did else ""
-            except _FAILURES as error:
-                # A spent usage limit fails every summary until a stated date, so it goes to the system channel, which
-                # says it once a burst however many sessions finish a turn inside one.
-                match usage_limit(error):
-                    case UsageLimitReached() as limit:
-                        await refused(limit)
-                    case None:
-                        pass
-                # What the turn is waiting on is the daemon's to find and needs no model, and a question is always said.
-                return _unsummarised(session, name, error, unsaid.asked())
-            # The number this whole epic turns on, and until now invisible: how long a finished turn waited on the
-            # model before it could be spoken at all.
-            logger.info(f"session {session} was summarised in {time.monotonic() - began:.2f} s")
-            # The tree is cut from the turn after the headline comes back, so the sections cost nothing at the Stop that
-            # matters: the counts are arithmetic over steps already read, and only the headline waits on a model.
-            told = narration(headline, telling.turn, delta, HEADLINE_SENTENCES)
-            spoken = told.said()
-            # [LAW:one-source-of-truth] a report of the whole turn is its sentence in the summary store, under the key
-            # read_session finds it by, so a turn told aloud is never summarised again. A telling of the rest of a turn
-            # reported once already is not the whole turn, and is not kept.
-            key = turn_digest((telling.turn.opening, *telling.turn.steps)) if headline and isinstance(telling.turn.standing, Answering) else None
-            if key is not None:
-                keep({key: headline})
+            text = tree.said()
+            frame = TTSSpeakFrame(f"{name}: {text}")
         case "off":
-            told, spoken, key = unsaid, unsaid.asked(), None
-            logger.info(f"session {session} finished a turn, and spoken summaries are off, so {'only its question is' if spoken else 'nothing is'} said")
+            text = tree.asked()
+            frame = TTSSpeakFrame(f"{name}: {text}") if text else None
+            logger.info(f"session {session} finished a turn, and spoken summaries are off, so {'only its question is' if text else 'nothing is'} said")
     record(
         Recounted(
             session,
-            spoken,
-            tuple(dict.fromkeys(segment.topic.name for segment in (*told.sections, *told.settled))),
-            tuple(question.text for question in told.questions),
-            kept=key is not None,
+            text,
+            tuple(dict.fromkeys(segment.topic.name for segment in (*tree.sections, *tree.settled))),
+            tuple(question.text for question in tree.questions),
+            by_model=switch == "on" and did,
         )
     )
     # Marked told either way: a turn the switch kept quiet was heard as much as it will be, and is not told later.
-    await tails.spoken(telling)
-    # Kept in the intermediary's context, so it can answer about what the user heard.
-    return TTSSpeakFrame(f"{name}: {spoken}") if spoken else None
+    await tails.spoken(told)
+    return frame
+
+
+def _news(name: str, turn: Turn, tree: Narration) -> str:
+    """The turn as the model is handed it: the reply that ended it, what hands read of it that the reply may not say, and
+    what it is waiting on, which the model ends by asking."""
+    replied = [step.text for step in turn.steps[-1:] if isinstance(step, Said)]
+    reply = f"It ended with this reply:\n\n{_bounded(replied[0])}\n\n" if replied else "It ended with no reply. "
+    read = " ".join(segment.text for segment in (*tree.interrupted, *tree.repository))
+    facts = f"From its record, hands adds: {read} " if read else ""
+    asked = tree.asked()
+    ending = f"It is waiting on the user's answer to this, so end by asking it: {asked}" if asked else "It asks the user nothing."
+    return (
+        f"[hands] The Claude Code session {name} finished a turn. {reply}{facts}"
+        f"Tell the user what it did, in your own words, in one or two spoken sentences, naming the session. {ending}"
+    )
+
+
+def _bounded(reply: str) -> str:
+    return reply if len(reply) <= REPLY_SHOWN else f"{reply[:REPLY_SHOWN]}... (cut short)"
 
 
 async def _switch(aloud: Callable[[], Summaries]) -> Summaries:
@@ -161,12 +148,11 @@ async def _switch(aloud: Callable[[], Summaries]) -> Summaries:
         return DEFAULT
 
 
-def _unsummarised(session: SessionId, name: str, error: Exception, asked: str) -> Frame:
-    """What is said of a turn that could not be summarised: that, and what it is waiting on the listener to answer.
+def _unread(session: SessionId, name: str, error: Exception) -> Frame:
+    """What is said of a turn whose transcript could not be read: that, as a system fact is, with no model.
 
-    [LAW:no-silent-failure] said without the model, as a system fact is, and logged with the reason, which is an audit
-    line. Nothing is marked told, so a later telling of the same turn — its Stop after an interrupt was read — tells it
-    whole.
+    [LAW:no-silent-failure] logged with the reason, which is an audit line. Nothing is marked told, so a later telling
+    of the same turn tells it whole.
     """
-    logger.error(f"cannot summarise the turn session {session} finished: {type(error).__name__}: {error}")
-    return TTSSpeakFrame(" ".join(part for part in (f"{name} finished a turn, and I could not summarise it.", asked) if part), append_to_context=False)
+    logger.error(f"cannot read the turn session {session} finished: {type(error).__name__}: {error}")
+    return TTSSpeakFrame(f"{name} finished a turn, and I could not read it.", append_to_context=False)

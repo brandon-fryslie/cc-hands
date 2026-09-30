@@ -1,19 +1,58 @@
 """What a turn is waiting on the listener to answer, read off its text by the daemon and by no model."""
 
-import importlib.util
-import sys
+import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from hands.core.narration import reported_and_asked
+from hands.core.narration import open_questions, reported_and_asked
+from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Opening, Said, Step, Turn
+from hands.sessions.transcript import turn_record
+from hands.sessions.turning import Turning
 
-# The eval's own reading of its fixtures, so the cases this holds to zero are the cases it reports on.
-_SPEC = importlib.util.spec_from_file_location("narration_eval", Path(__file__).parents[1] / "evals" / "narration.py")
-assert _SPEC is not None and _SPEC.loader is not None
-EVAL = importlib.util.module_from_spec(_SPEC)
-sys.modules["narration_eval"] = EVAL
-_SPEC.loader.exec_module(EVAL)
+# Real turns, each lifted whole out of a real transcript, beside a few words of each question it is waiting on.
+TURNS = Path(__file__).parent / "fixtures" / "turns"
+
+
+@dataclass(frozen=True)
+class Case:
+    name: str
+    turn: Turn
+    # A few words of each question the turn is waiting on, as Claude wrote them; empty for a turn that asked nothing.
+    asks: tuple[str, ...]
+
+
+def cases() -> list[Case]:
+    """Every case under `fixtures/turns`, in name order. A case may name another's transcript rather than copy it, which
+    is what lets the same turn appear once as a first telling and once as a second [LAW:one-source-of-truth]."""
+    found: list[Case] = []
+    for expectation in sorted(TURNS.glob("*/expect.json")):
+        written = json.loads(expectation.read_text())
+        named = written.get("transcript", "transcript.jsonl")
+        opening, steps = _folded(expectation.parent / named if "/" not in named else TURNS / named)
+        told = int(written.get("told", 0))
+        turn = Turn(opening, tuple(steps[told:]), Answering() if told == 0 else Continuing(told))
+        # Required, not defaulted: a case silent about its question would count as asking none.
+        found.append(Case(expectation.parent.name, turn, tuple(written["asks"])))
+    return found
+
+
+def _folded(transcript: Path) -> tuple[Opening, list[Step]]:
+    """The transcript, read into a turn by the recognisers the daemon reads with."""
+    turning = Turning()
+    for line in transcript.read_bytes().splitlines():
+        record = turn_record(line)
+        if record is None:
+            continue
+        match turning.consume(record):
+            case Asked() | Notified() as opening:
+                turning.clear()
+                turning.begin(opening)
+            case Interruption() | None:
+                pass
+    assert turning.opening is not None, f"{transcript} holds no turn"
+    return turning.opening, turning.steps()
 
 
 def asked(text: str) -> list[str]:
@@ -91,20 +130,27 @@ def test_a_question_mark_muted_for_being_quoted_is_given_back_to_the_sentence_th
     assert reported == ['It asks "why?" at the end.'] and questions == ["Want me to change that?"]
 
 
-@pytest.mark.parametrize("case", EVAL.cases(), ids=lambda case: case.name)
-def test_every_real_turn_in_the_eval_is_read_for_its_questions_with_no_miss_and_no_false_alarm(case: object) -> None:
-    """The eval reports the same reading over the same fixtures; this holds it to zero with no model to reach."""
-    found = EVAL.detection(case)
-    assert (found.missed, found.alarmed) == ((), ())
+@pytest.mark.parametrize("case", cases(), ids=lambda case: case.name)
+def test_every_real_turn_is_read_for_its_questions_with_no_miss_and_no_false_alarm(case: Case) -> None:
+    found = [question.asked for question in open_questions(case.turn)]
+    missed = [asked for asked in case.asks if not any(asked in question for question in found)]
+    alarmed = [question for question in found if not any(asked in question for asked in case.asks)]
+    assert (missed, alarmed) == ([], [])
 
 
-def test_the_eval_holds_turns_that_ask_and_turns_that_do_not_including_the_shapes_a_question_mark_misreads() -> None:
+def test_the_real_turns_hold_turns_that_ask_and_turns_that_do_not_including_the_shapes_a_question_mark_misreads() -> None:
     """At least three of each, and among them the cases a trailing question mark gets wrong both ways."""
-    named = {case.name: case for case in EVAL.cases()}
+    named = {case.name: case for case in cases()}
     asking = [case for case in named.values() if case.asks]
     assert len(asking) >= 3 and len(named) - len(asking) >= 3
     # An offer with no question mark anywhere in its closing text.
-    assert "?" not in named["offered-without-a-question-mark"].turn.steps[-1].text
+    assert "?" not in _closing(named["offered-without-a-question-mark"])
     # A question mark that is not a question the listener is asked.
-    assert "?" in named["answered-its-own-question"].turn.steps[-1].text
-    assert "?" in named["quoted-a-question"].turn.steps[-1].text
+    assert "?" in _closing(named["answered-its-own-question"])
+    assert "?" in _closing(named["quoted-a-question"])
+
+
+def _closing(case: Case) -> str:
+    last = case.turn.steps[-1]
+    assert isinstance(last, Said)
+    return last.text

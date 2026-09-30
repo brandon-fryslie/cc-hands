@@ -201,7 +201,7 @@ Heard = Speak | Narrate | Note
 
 @dataclass(frozen=True)
 class Summarise:
-    """A session finished a turn: what the tail has not told of it is summarised by the model and spoken.
+    """A session finished a turn: what the tail has not told of it is handed to the model to say.
 
     The transcript is not named here because the tail is already following it [LAW:one-source-of-truth].
     """
