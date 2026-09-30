@@ -81,10 +81,12 @@ must stream tool calls, because the pipeline's service always streams: api-chica
 Anthropic `tool_use` but drops OpenAI-shape tool calls (2026-09-25), so it is reached as `anthropic`.
 `HANDS_LLM=claude` is the brain: one long-lived Claude Code of hands' own, on the Claude subscription,
 whose requests go through hands' proxy and which reaches the sessions through hands' tools over MCP
-(`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, made once with
-`CLAUDE_CONFIG_DIR=~/.hands/brain claude auth login`, and it does not start without one. It is the
-pipeline's LLM stage (`src/hands/brain/stage.py`): the turn goes to its stdin, and what it says is spoken
-from its requests on the wire, never from its stdout; each turn's `BrainSpoke` audit line names the
+(`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, set up once as any
+Claude Code is, by running `mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude` and answering its first screens, and it does not start without one.
+It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input,
+asks side questions and the Claude Code backend's summaries with `/btw`, and stops a turn with Escape; its hooks
+say when a turn was taken and when it ended. It is the pipeline's LLM stage (`src/hands/brain/stage.py`): what
+it says is spoken from its requests on the wire, never from its screen; each turn's `BrainSpoke` audit line names the
 exchanges its words came from. A barge-in stops it, except while a tool whose effect must land is running,
 which finishes and has its readback, or why it failed, spoken; after that, and after `stay_silent`, hands
 answers the brain's next request itself, so the model is not asked to go on. A turn the brain ends in error is
@@ -176,7 +178,7 @@ uv run python -m hands.sessions.hookconfig > plugin/hooks/hooks.json
 uv sync
 uv run hands run                        # Claude, keyed by ANTHROPIC_API_KEY, else the keychain's HANDS_LLM_ANT_KEY; hold Right Shift in any app to talk, release to send; q in its terminal quits
 HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
-HANDS_LLM=claude uv run hands run      # the brain on the subscription; once first: CLAUDE_CONFIG_DIR=~/.hands/brain claude auth login
+HANDS_LLM=claude uv run hands run      # the brain on the subscription; once first: mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at

@@ -189,12 +189,18 @@ class Keeper:
         return tuple(Stub(answer.call, said) for answer in tool_answers(body) if (said := self._decided.get(answer.call)) is not None)
 
 
-class Kept:
-    """The brain's listener on the wire: the stage's route, with the keeper's changes made before the stage's own."""
+class Hearing(Protocol):
+    def hear(self, observed: Observed) -> None: ...
 
-    def __init__(self, stage: Listener, keeper: Keeper) -> None:
+
+class Kept:
+    """The brain's listener on the wire: the stage's route, with the keeper's changes made before the stage's own, and
+    everything heard by the brain too, which reads its side questions' answers there."""
+
+    def __init__(self, stage: Listener, keeper: Keeper, brain: Hearing) -> None:
         self._stage = stage
         self._keeper = keeper
+        self._brain = brain
 
     def route(self, sent: Sent) -> Route:
         # The keeper's first: a history it cannot read fails the whole route before the stage has counted the request.
@@ -208,3 +214,4 @@ class Kept:
     def hear(self, observed: Observed) -> None:
         self._stage.hear(observed)
         self._keeper.hear(observed)
+        self._brain.hear(observed)

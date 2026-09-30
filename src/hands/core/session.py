@@ -1,5 +1,6 @@
 """A session's membership and lifecycle state, and the registry that holds them."""
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -15,12 +16,30 @@ PromptId = NewType("PromptId", str)
 Instant = float  # monotonic seconds
 
 # Prompt text that holds no control characters, so typing it into a session
-# cannot press a key the text does not name. Made only where the model's words are parsed.
+# cannot press a key the text does not name. Made where the model's words are parsed, which
+# refuses what does not fit, and by `pasted`, which renders hands' own text to fit.
 # A newline is not a control character here: bracketing carries it into the message, and it
 # is the carriage return that would submit a half-written one. A tab is, because nothing
 # carries a tab - it is in the Keystroke vocabulary below and is sent by name.
 # It does not end with a backslash, which would make the Return that sends it a newline.
 PromptText = NewType("PromptText", str)
+
+# Every C0 and C1 control character but newline: each would press a key if it were typed.
+KEYSTROKES = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+# What a terminal is told rather than shown: colour, cursor moves, and the titles and modes set around them.
+ESCAPES = re.compile(r"\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[()*+].|[@-Z\\-_0-9=>])")
+
+
+def pasted(text: str) -> PromptText:
+    """Text hands wrote or read, rendered to be typed as the characters it shows: what a terminal is told dropped, line
+    ends as newlines, tabs as the spaces they stand for, any other control character spelled out, and a closing
+    backslash kept from the Return behind it."""
+    # [LAW:parse-dont-validate] the words the model chose are refused when they do not fit, so it can choose again; text
+    # that is only being passed on - a turn to summarise, a note - is made to fit, since there is no one to ask.
+    shown = ESCAPES.sub("", text).replace("\r\n", "\n").replace("\r", "\n").expandtabs(4)
+    spelled = KEYSTROKES.sub(lambda control: f"\\x{ord(control.group()):02x}", shown)
+    return PromptText(f"{spelled} " if spelled.endswith("\\") else spelled)
+
 
 # The named chords a session can be sent, as distinct from text. Which bytes each one is
 # belongs to whatever does the typing, not here; this is the vocabulary hands speaks.

@@ -146,6 +146,13 @@ def said(text: str, stop_reason: str = "end_turn") -> Message:
     return Message("m", "claude-opus-5-5", (Text(text),), stop_reason, {})
 
 
+class Deaf:
+    """The brain's own ear on the wire, which these tests do not listen with."""
+
+    def hear(self, observed: Observed) -> None:
+        pass
+
+
 class Store:
     def __init__(self) -> None:
         self.said: dict[Digest, str] = {}
@@ -182,7 +189,7 @@ class Rig:
         self.store = Store()
         self.recorded: list[Entry] = []
         self.keeper = Keeper(self.brain, self.store, every, self.recorded.append)
-        self.kept = Kept(Stage(), self.keeper)
+        self.kept = Kept(Stage(), self.keeper, Deaf())
         self.brain.wire = self.kept.hear
 
     async def turn(self, finished: int) -> Route:
@@ -276,7 +283,7 @@ async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> No
             return Hold("(stayed silent)")
 
     keeper = Keeper(Brain(), Store(), 3, lambda _entry: None)
-    assert Kept(Holding(), keeper).route(sent(history(6))) == Hold("(stayed silent)")
+    assert Kept(Holding(), keeper, Deaf()).route(sent(history(6))) == Hold("(stayed silent)")
 
 
 async def test_a_sentence_is_kept_only_when_the_forks_own_request_held_the_result_whole(rig: Rig) -> None:

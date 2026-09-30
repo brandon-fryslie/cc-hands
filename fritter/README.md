@@ -52,6 +52,7 @@ One JSON object per connection, newline-terminated, answered with one JSON objec
 
 ```
 {"pid":4242,"kind":"text","text":"fix the auth middleware"}
+{"pid":4242,"kind":"command","command":"/btw","text":"what did the last test say?"}
 {"pid":4242,"kind":"key","key":"escape"}
 ```
 
@@ -66,6 +67,12 @@ A `text` request is typed the way someone at the keyboard types a message: the t
 Return. It goes into the child as one write. fritter does not decide what a leading `/` or
 `@` means to the program underneath; that is the caller's, and in hands it is settled
 before anything reaches here.
+
+A `command` request is a command and its text: the command typed as keys, then a space,
+then the text pasted, then Return, all as one write. Only the text is pasted because
+Claude Code folds a long paste into a placeholder, `[Pasted text #1 +80 lines]`, and a
+command inside the fold is no longer at the start of the input, so the whole of it is read
+as a prompt. A command is one word; with no text it is typed alone, then Return.
 
 `text` is characters and newlines, and a control byte in it is refused by name: an `ESC`
 would end the bracketing early and a `0x03` is a Ctrl-C. Send a `key` request for a

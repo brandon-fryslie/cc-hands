@@ -52,7 +52,7 @@ def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_c
     monkeypatch.delenv("HANDS_LLM_URL", raising=False)
     monkeypatch.setenv("HANDS_LLM", "claude")
     monkeypatch.setenv("LOGGED_IN", "0")
-    with pytest.raises(SystemExit, match="CLAUDE_CONFIG_DIR=/Users/someone/.hands/brain claude auth login"):
+    with pytest.raises(SystemExit, match="cd /Users/someone/.hands/brain/cwd && CLAUDE_CONFIG_DIR=/Users/someone/.hands/brain claude"):
         backend_from_env(HOME)
 
 

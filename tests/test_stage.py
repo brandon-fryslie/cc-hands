@@ -27,6 +27,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
+from hands.brain.process import Untaken
 from hands.brain.stage import INTERRUPTED, SILENT, BrainStage
 from hands.core.session import SessionId
 from hands.core.wire import (
@@ -49,7 +50,7 @@ from hands.voice.tools import Result, Tool, tool
 
 BRAIN = SessionId("brain-session")
 PATIENCE_SECS = 2.0
-ANSWERED = BrainAnswered("success", False, 1, 10)
+ANSWERED = BrainAnswered("p1", None)
 TAIL = "[hands] The Claude Code sessions running now: none of note."
 
 
@@ -86,11 +87,14 @@ class FakeBrain:
         self.turns.append(turn)
         return await asyncio.shield(turn)
 
-    async def interrupt(self) -> None:
+    def interrupt(self) -> None:
         self.interrupts += 1
 
     def end(self, answered: BrainAnswered = ANSWERED) -> None:
         self.turns[-1].set_result(answered)
+
+    def fail(self, error: Exception) -> None:
+        self.turns[-1].set_exception(error)
 
 
 class Spoken(FrameProcessor):
@@ -377,10 +381,22 @@ async def test_notes_that_came_in_one_ask_are_not_asked_again_empty(rig: Rig) ->
 
 async def test_a_turn_the_brain_ended_in_error_is_reported_as_the_model_stages_error(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "hello"})
-    rig.brain.end(BrainAnswered("error_during_execution", True, 1, 10))
+    rig.brain.end(BrainAnswered("p1", "unknown: API Error: 500 overloaded"))
     await rig.until(lambda: len(rig.errors) == 1)
     assert rig.errors[0].processor is rig.stage
-    assert "error_during_execution" in rig.errors[0].error
+    assert "API Error: 500 overloaded" in rig.errors[0].error
+
+
+async def test_a_turn_the_brain_never_took_is_reported_as_the_model_stages_error_and_the_next_is_asked(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "hello"})
+    # The brain is still running, so no watch reports it: the stage does.
+    rig.brain.fail(Untaken("the brain did not take the turn typed into it in 30s"))
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert rig.errors[0].processor is rig.stage
+    assert "did not take the turn" in rig.errors[0].error
+    await rig.say({"role": "user", "content": "again"})
+    await rig.until(lambda: rig.brain.asked == ["hello", "again"])
+    rig.brain.end()
 
 
 async def test_a_stay_silent_answered_in_an_earlier_turn_does_not_hold_the_next(rig: Rig) -> None:
@@ -415,8 +431,8 @@ async def test_a_turn_hands_stopped_ends_in_the_error_it_asked_for_and_nothing_i
     rig.stream(exchange, "First, ")
     await rig.until(lambda: rig.out.said() == ["First, "])
     await rig.interrupt()
-    # As Claude Code 2.1.285 ends a turn it was told to stop.
-    rig.brain.end(BrainAnswered("error_during_execution", True, 1, 10))
+    # A turn the API fails as it is being stopped is still a turn hands stopped, not an error to report.
+    rig.brain.end(BrainAnswered("p1", "unknown: API Error: 500 overloaded"))
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
     await asyncio.sleep(0.1)
     assert rig.errors == []
@@ -433,9 +449,20 @@ async def test_a_barge_in_while_a_drafts_input_still_streams_stops_the_brain_bef
     rig.brain.end()
 
 
+async def test_a_barge_in_before_the_brain_has_sent_the_turn_stops_nothing_and_the_turn_is_answered(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "are you listening?"})
+    # Still waiting for the input: nothing of it has left, so there is nothing to stop, and the user's words follow it.
+    await rig.interrupt()
+    assert rig.brain.interrupts == 0
+    assert not any(isinstance(entry, BrainInterrupted) for entry in rig.recorded)
+    _, route = rig.request()
+    assert route == Send((Tail(TAIL),))
+    rig.brain.end()
+
+
 async def test_a_barge_in_reaches_the_pipeline_even_when_the_brain_cannot_be_told(rig: Rig) -> None:
-    async def gone() -> None:
-        raise BrokenPipeError("the brain's stdin is closed")
+    def gone() -> None:
+        raise RuntimeError("the brain cannot be told")
 
     rig.brain.interrupt = gone  # type: ignore[method-assign]
     await rig.say({"role": "user", "content": "tell me everything"})

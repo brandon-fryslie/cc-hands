@@ -23,7 +23,7 @@ from pipecat.services.llm_service import FunctionCallParams
 from hands.core.drafts import AmendDraft, DiscardDraft, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
-from hands.core.session import Blocker, Membership, CommandName, Dialog, Held, Idle, LetGo, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unanswered, Unreported
+from hands.core.session import Blocker, Membership, CommandName, Dialog, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unanswered, Unreported
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
 from hands.core.sentences import Due, turn_digest
@@ -120,11 +120,6 @@ SENT_BACK_BY_VOICE = "The user sent the plan back by voice without saying what t
 # answer_plan's approvals, by the mode each leaves plan mode for.
 _APPROVALS: Mapping[str, ModeAfterPlan] = {"approve": "resume", "auto-accept edits": "acceptEdits", "manually approve edits": "default"}
 
-# Every C0 and C1 control character but newline: each would press a key when the draft is typed.
-# A tab is one of them. Bracketing carries a newline into the message, but nothing carries a
-# tab - typed into a session it cycles the mode, and fritter refuses it by name at the socket.
-# Refusing it here instead means the model is told while it still has the words to fix.
-_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
 
 # A slash command's name, with the slash the model may have kept from what the user said.
 _COMMAND_NAME = re.compile(r"/?([A-Za-z0-9][A-Za-z0-9_:-]*)")
@@ -758,7 +753,9 @@ def _prompt_text(text: object, what: str) -> PromptText:
     match text:
         case str() if not text.strip():
             raise Rejected(f"{what} is empty")
-        case str() if _CONTROL.search(text):
+        case str() if KEYSTROKES.search(text):
+            # A tab is one: typed into a session it cycles the mode, and fritter refuses it by name at the socket.
+            # Refusing it here instead means the model is told while it still has the words to fix.
             raise Rejected(f"{what} holds a control character, which would press a key when it is typed")
         case str() if text.endswith("\\"):
             raise Rejected(f"{what} ends with a backslash, which turns the Return that sends it into a newline")

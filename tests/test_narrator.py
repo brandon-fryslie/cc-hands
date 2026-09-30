@@ -292,7 +292,7 @@ async def test_a_turn_that_cannot_be_summarised_is_said_to_have_failed_and_logge
     recorded: list[Entry] = []
 
     # A port nothing listens on: the model is unreachable the way a stopped inferno is.
-    unreachable = summariser(OpenAICompatibleBackend(base_url="http://127.0.0.1:9/v1", api_key="k", model="m"), "http://127.0.0.1:1", "Summarise.", max_tokens=50, timeout=5.0)
+    unreachable = summariser(OpenAICompatibleBackend(base_url="http://127.0.0.1:9/v1", api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
         spoken = await recount(tailing(FIXTURE), SID, None, None, "cc-hands", unreachable, recorded.append, BUDGET, Delta(), "on", unrefused, forget)
@@ -407,7 +407,7 @@ async def test_the_openai_compatible_summariser_sends_the_instruction_and_the_tu
     chat_server: ServeChat,
 ) -> None:
     server = await chat_server("  Fixed the test.  ")
-    summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), "http://127.0.0.1:1", "Summarise.", max_tokens=50, timeout=5.0)
+    summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
     assert await summarise("The user asked:\nfix it") == "Fixed the test."
     [request] = server.asked
     assert request["model"] == "m" and request["max_tokens"] == 50
@@ -419,7 +419,7 @@ async def test_the_anthropic_summariser_sends_the_instruction_and_the_turn_with_
     chat_server: ServeChat,
 ) -> None:
     server = await chat_server("  Fixed the test.  ")
-    summarise = summariser(AnthropicBackend(base_url=server.anthropic_url, api_key="k", model="m"), "http://127.0.0.1:1", "Summarise.", max_tokens=50, timeout=5.0)
+    summarise = summariser(AnthropicBackend(base_url=server.anthropic_url, api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
     assert await summarise("The user asked:\nfix it") == "Fixed the test."
     [request] = server.asked
     assert request["model"] == "m" and request["max_tokens"] == 50 and request["system"] == "Summarise."
@@ -429,7 +429,7 @@ async def test_the_anthropic_summariser_sends_the_instruction_and_the_turn_with_
 
 async def test_a_summary_with_nothing_in_it_is_a_failure(chat_server: ServeChat) -> None:
     server = await chat_server(None)
-    summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), "http://127.0.0.1:1", "Summarise.", max_tokens=50, timeout=5.0)
+    summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
     with pytest.raises(SummaryFailed):
         await summarise("The user asked:\nfix it")
 
@@ -447,7 +447,7 @@ async def test_a_model_that_answers_with_nothing_is_said_to_have_failed_rather_t
     recorded: list[Entry] = []
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
-        summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), "http://127.0.0.1:1", "Summarise.", max_tokens=50, timeout=5.0)
+        summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
         spoken = await recount(tailing(FIXTURE), SID, None, None, "cc-hands", summarise, recorded.append, BUDGET, Delta(), "on", unrefused, forget)
     finally:
         logger.remove(sink)
