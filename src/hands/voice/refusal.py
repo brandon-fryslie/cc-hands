@@ -5,23 +5,17 @@ here and hand what they found to the system channel, which says it. The API's te
 """
 
 import re
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import anthropic
 import openai
 
+from hands.core.wire import Seconds, UsageLimitReached
+
 # Anthropic's words for an account that has spent its limit (2026-09-27), and the instant it names. Matched exactly: a
 # throttle that mentions a per-minute usage limit lifts in seconds and is not this.
 _USAGE_LIMIT = re.compile(r"You have reached your specified API usage limits")
 _RETURNS = re.compile(r"regain access on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2}) UTC")
-
-
-@dataclass(frozen=True)
-class UsageLimitReached:
-    """The model's API account has reached its usage limit; `returns` is when access comes back, if the API said."""
-
-    returns: datetime | None
 
 
 def usage_limit(exception: BaseException | None) -> UsageLimitReached | None:
@@ -45,9 +39,9 @@ def _message(exception: BaseException | None) -> str | None:
             return None
 
 
-def _returns(message: str) -> datetime | None:
+def _returns(message: str) -> Seconds | None:
     match _RETURNS.search(message):
         case re.Match() as found:
-            return datetime.fromisoformat(f"{found[1]}T{found[2]}").replace(tzinfo=UTC)
+            return datetime.fromisoformat(f"{found[1]}T{found[2]}").replace(tzinfo=UTC).timestamp()
         case None:
             return None

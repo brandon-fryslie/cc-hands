@@ -41,7 +41,7 @@ from pipecat.workers.runner import WorkerRunner
 from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
-from hands.core.wire import UPSTREAM, Exchanged, Heard, Observed, Sent
+from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
 from hands.sessions.audit import AuditLog, LLMChosen, ProxyListening, Record, TapListening, failures_to
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
@@ -470,7 +470,7 @@ def wire_to(record: Record) -> Callable[[Observed], None]:
         match observed:
             case Exchanged():
                 record(observed)
-            case Sent() | Heard():
+            case Sent() | Heard() | Answering():
                 # Heard as it happens by what speaks from the wire; the exchange's line already holds the request's kind and the whole reply.
                 pass
 

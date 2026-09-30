@@ -11,6 +11,8 @@ from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field
 
 import pytest
+from datetime import UTC, datetime
+from pipecat.utils.errors import ErrorCategory
 from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
@@ -31,8 +33,10 @@ from hands.brain.process import Untaken
 from hands.brain.stage import INTERRUPTED, SILENT, BrainStage
 from hands.core.session import SessionId
 from hands.core.wire import (
+    Answering,
     BlockStarted,
     BlockStopped,
+    Exchanged,
     Fork,
     Heard,
     Hold,
@@ -44,9 +48,12 @@ from hands.core.wire import (
     Tail,
     TextDelta,
     Unknown,
+    Unreached,
+    UsageLimitReached,
 )
 from hands.sessions.audit import BrainAnswered, BrainInterrupted, BrainSpoke, Entry
 from hands.voice.speech import Aloud, Narrated
+from hands.voice.system import ModelFact, ModelFailed, ModelFault, ModelUnreachable
 from hands.voice.tools import Result, Tool, tool
 
 BRAIN = SessionId("brain-session")
@@ -466,6 +473,41 @@ async def test_a_turn_the_brain_ended_in_error_is_reported_as_the_model_stages_e
     await rig.until(lambda: len(rig.errors) == 1)
     assert rig.errors[0].processor is rig.stage
     assert "API Error: 500 overloaded" in rig.errors[0].error
+
+
+RESETS = datetime(2026, 9, 30, 18, 0, tzinfo=UTC).timestamp()
+
+
+def unreached(exchange: str) -> Exchanged:
+    """The proxy's record of a request it could not get to the API, told before it answers the brain 502."""
+    return Exchanged(exchange, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("ClientConnectorError: no route", 0.0))
+
+
+@pytest.mark.parametrize(
+    ("answers", "failure", "fact"),
+    [
+        # As Claude Code 2.1.285 meets each (measured, hands-wire-6ic.gfq): a spent limit is asked once, an API the proxy
+        # cannot reach eleven times, and what failed the turn is its latest answer.
+        ([429], "rate_limit: You've hit your session limit · resets 12:00pm", UsageLimitReached(RESETS)),
+        ([None, None, None], "server_error: API Error: 502 hands' proxy could not reach https://api.anthropic.com", ModelUnreachable()),
+        ([529], "server_error: API Error: 529 Overloaded", ModelFailed(ErrorCategory.SERVER)),
+        ([None, 529, 200], "server_error: API Error: Connection lost mid-response.", ModelFailed(ErrorCategory.UNKNOWN)),
+    ],
+)
+async def test_a_failed_turn_is_said_as_the_wire_says_it_failed(rig: Rig, answers: list[int | None], failure: str, fact: ModelFact) -> None:
+    await rig.say({"role": "user", "content": "hello"})
+    for status in answers:
+        exchange, _ = rig.request()
+        match status:
+            case None:
+                rig.stage.hear(unreached(exchange))
+            case 429:
+                rig.stage.hear(Answering(exchange, 429, UsageLimitReached(RESETS)))
+            case int():
+                rig.stage.hear(Answering(exchange, status, None))
+    rig.brain.end(BrainAnswered("p1", failure))
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == fact
 
 
 async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_then_the_failure(rig: Rig) -> None:

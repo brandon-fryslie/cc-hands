@@ -21,7 +21,8 @@ from pipecat.utils.errors import ErrorCategory
 from hands.sessions.audit import Announced, Record
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
-from hands.voice.refusal import UsageLimitReached, usage_limit
+from hands.core.wire import Seconds, UsageLimitReached
+from hands.voice.refusal import usage_limit
 from hands.voice.hold import TURN_LIMIT_SECONDS, Move
 
 
@@ -41,6 +42,18 @@ class ModelUnreachable:
 @dataclass(frozen=True)
 class ModelFailed:
     category: ErrorCategory
+
+
+ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed
+
+
+class ModelFault(Exception):
+    """A failure of the model already read as the fact it is, as the brain's stage reads it off the wire: carried on the
+    stage's error frame so the channel says that fact."""
+
+    def __init__(self, fact: ModelFact) -> None:
+        super().__init__(system_text(fact))
+        self.fact = fact
 
 
 @dataclass(frozen=True)
@@ -145,7 +158,9 @@ def alarm(error: ErrorFrame, *, stt: FrameProcessor, llm: FrameProcessor, tts: F
             return Unrouted(str(processor), error.error)
 
 
-def model_fact(error: ErrorFrame) -> ModelUnreachable | UsageLimitReached | ModelFailed:
+def model_fact(error: ErrorFrame) -> ModelFact:
+    if isinstance(error.exception, ModelFault):
+        return error.exception.fact
     if isinstance(error.exception, _UNREACHABLE) or error.category is ErrorCategory.CONNECTIVITY:
         return ModelUnreachable()
     # [LAW:no-silent-failure] a spent usage limit fails every call until a stated date, and its category alone said
@@ -158,13 +173,13 @@ def model_fact(error: ErrorFrame) -> ModelUnreachable | UsageLimitReached | Mode
             return ModelFailed(error.category or ErrorCategory.UNKNOWN)
 
 
-def _until(returns: datetime | None) -> str:
+def _until(returns: Seconds | None) -> str:
     """When access comes back, in the listener's own time, for the end of a sentence."""
     match returns:
         case None:
             return ""
-        case datetime():
-            local = returns.astimezone()
+        case _:
+            local = datetime.fromtimestamp(returns).astimezone()
             return f", until {local:%B} {local.day} at {local:%-I:%M %p}"
 
 

@@ -22,6 +22,7 @@ from loguru import logger
 from multidict import CIMultiDict
 
 from hands.core.wire import (
+    Answering,
     Body,
     Change,
     Exchanged,
@@ -37,6 +38,7 @@ from hands.core.wire import (
     Sent,
     Unreached,
     edited,
+    spent,
 )
 from hands.sessions.replies import reply_reader, sent_of, shielded
 
@@ -145,6 +147,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
             tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock())))
             return web.Response(status=502, text=f"hands' proxy could not reach {upstream}: {error}")
         async with reached:
+            tell(Answering(exchange, reached.status, spent(reached.status, reached.headers)))
             response = web.StreamResponse(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers))
             if "Content-Length" in reached.headers:
                 response.content_length = int(reached.headers["Content-Length"])

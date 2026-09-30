@@ -32,12 +32,15 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.aggregators.llm_context import LLMContext, LLMSpecificMessage, LLMStandardMessage
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
 from hands.brain.mcp import SERVER_NAME
 from hands.core.session import SessionId
 from hands.core.wire import (
+    Answering,
     BlockStarted,
     BlockStopped,
+    Exchanged,
     Heard,
     Hold,
     MainTurn,
@@ -48,10 +51,12 @@ from hands.core.wire import (
     Tail,
     TextDelta,
     ToolAnswer,
+    Unreached,
     tool_answers,
 )
 from hands.sessions.audit import Asker, BrainAnswered, BrainInterrupted, BrainSpoke, Record
 from hands.voice.speech import Aloud, Narrated
+from hands.voice.system import ModelFact, ModelFailed, ModelFault, ModelUnreachable
 from hands.voice.tools import Tool
 
 
@@ -96,6 +101,8 @@ class _Turn:
     interrupted: bool = False
     # Told to stop by hands, which Claude Code 2.1.285 ends with an error_during_execution result: asked for, not a failure.
     stopped: bool = False
+    # What the turn failed of, if it fails, as the wire last told it: nothing it named until one of its answers says.
+    failure: ModelFact = ModelFailed(ErrorCategory.UNKNOWN)
 
 
 class BrainStage(FrameProcessor):
@@ -197,7 +204,7 @@ class BrainStage(FrameProcessor):
             # [LAW:no-silent-failure] said as the API services' failures are: an error from the model's stage.
             self._broken_off = _broken_off("".join(turn.spoken))
             await self._unsaid(unsaid)
-            await self.push_error(f"the brain's turn ended in error: {failed}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+            await self.push_error(f"the brain's turn ended in error: {failed}", exception=ModelFault(turn.failure))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
     async def _unsaid(self, unsaid: Sequence[str]) -> None:
         """What hands had for the brain to tell, said as written since the brain did not: a system fact, kept out of the context."""
@@ -272,6 +279,13 @@ class BrainStage(FrameProcessor):
             case Heard(exchange=exchange, event=BlockStopped(index=index)) if exchange in turn.exchanges and index in turn.opening:
                 call, name = turn.opening.pop(index)
                 turn.calls[call] = name
+            # [LAW:one-source-of-truth] why a turn failed is the wire's, as the API variants read it off their own calls: the
+            # head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
+            # told before its 502. Claude Code asks again after most failures (ten times, 2.1.285): the latest is the turn's.
+            case Answering(exchange=exchange, status=status, limit=limit) if exchange in turn.exchanges:
+                turn.failure = limit or ModelFailed(classify_http_status_code(status))
+            case Exchanged(exchange=exchange, reply=Unreached()) if exchange in turn.exchanges:
+                turn.failure = ModelUnreachable()
             case _:
                 pass
 
