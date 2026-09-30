@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
-from hands.core.session import SessionId
+from hands.core.session import PromptId, SessionId
 
 # Where Claude Code reaches the API when nothing says otherwise.
 UPSTREAM = "https://api.anthropic.com"
@@ -22,7 +22,18 @@ UPSTREAM = "https://api.anthropic.com"
 
 @dataclass(frozen=True)
 class MainTurn:
-    """The session's own loop asking the model for its next step: the one kind of request whose reply is the session speaking."""
+    """The session's own loop asking the model for its next step: the one kind of request whose reply is the session speaking.
+
+    `prompt` is the turn it asks for, the id its hooks carry as prompt_id; None when the request names none, which Claude
+    Code's does only toward Anthropic's API, told so of a tap by the shim (see `hands.sessions.wrapper`).
+    """
+
+    prompt: PromptId | None
+
+
+@dataclass(frozen=True)
+class Subagent:
+    """A subagent's loop asking for its next step: under its session's header, and never the session speaking."""
 
 
 @dataclass(frozen=True)
@@ -47,12 +58,14 @@ class Unknown:
     shape: str
 
 
-Kind = MainTurn | Fork | Compaction | CountTokens | Unknown
+Kind = MainTurn | Subagent | Fork | Compaction | CountTokens | Unknown
 
 # The first words of every compaction request's last message, in Claude Code's services/compact/prompt.ts.
 COMPACTION_OPENING = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
 # The first words Claude Code wraps every side question in, in its utils/sideQuestion.ts.
 SIDE_QUESTION_OPENING = "<system-reminder>This is a side question from the user."
+# The line Claude Code opens its system prompt with, in its attribution header builder: `key=value;` pairs after it.
+BILLING_OPENING = "x-anthropic-billing-header:"
 
 
 def classify(path: str, body: object) -> Kind:
@@ -92,13 +105,27 @@ def _classify_messages(body: object) -> Kind:
         return Unknown(f"a messages request with no tools, to {request.get('model')!r}")
     marked = [index for index, message in enumerate(messages) if _cache_marked(message)]
     last = len(messages) - 1
+    billing = _billing(request)
     # By the newest marker: a working session also marks an earlier message of a long history, which the brain's
     # slim requests never did (2.1.285, markers on messages 5 and 7 of 8).
+    if marked and marked[-1] == last and billing.get("cc_is_subagent") == "true":
+        # A subagent's requests carry its parent's session header and shape; only this line tells them apart (2.1.285).
+        return Subagent()
     if marked and marked[-1] == last:
-        return MainTurn()
+        prompt = billing.get("cc_prompt_id")
+        return MainTurn(None if prompt is None else PromptId(prompt))
     if marked and marked[-1] == last - 1:
         return Fork()
     return Unknown(f"a messages request with cache markers on messages {marked} of {len(messages)}")
+
+
+def _billing(request: Mapping[str, object]) -> Mapping[str, str]:
+    """The pairs of the billing line Claude Code opens its system prompt with; none when it has no such line."""
+    system = request.get("system")
+    texts = [system] if isinstance(system, str) else [text for block in _mappings(_list(system)) if isinstance(text := block.get("text"), str)]
+    line = next((text for text in texts if text.startswith(BILLING_OPENING)), "").removeprefix(BILLING_OPENING)
+    pairs = (pair.strip().partition("=") for pair in line.split(";"))
+    return {name: value for name, sep, value in pairs if sep}
 
 
 def asked(body: object) -> tuple[str, ...]:

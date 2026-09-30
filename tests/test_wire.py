@@ -5,7 +5,7 @@ import json
 import pytest
 from typing import cast
 
-from hands.core.session import SessionId
+from hands.core.session import PromptId, SessionId
 from hands.core.wire import (
     ToolAnswer,
     tool_answers,
@@ -20,6 +20,7 @@ from hands.core.wire import (
     Frame,
     Garbled,
     MainTurn,
+    Subagent,
     Message,
     Ping,
     RedactedThinking,
@@ -64,7 +65,30 @@ def request(*messages: dict[str, object], tools: list[object] = TOOLS) -> dict[s
 
 
 def test_the_loop_marks_its_last_message_and_is_a_main_turn() -> None:
-    assert classify("/v1/messages?beta=true", request(said("hi"), said("ok"), said("go on", marked=True))) == MainTurn()
+    assert classify("/v1/messages?beta=true", request(said("hi"), said("ok"), said("go on", marked=True))) == MainTurn(None)
+
+
+# The line Claude Code 2.1.285 opens a working session's system prompt with toward Anthropic's API, from its attribution
+# header builder; a subagent's adds cc_is_subagent=true.
+BILLING = "x-anthropic-billing-header: cc_version=2.1.285.a1b; cc_entrypoint=cli; cch=00000; cc_prompt_id=74fbc62d-8c76-4ce6-b21a-1057ac8e59f9; cc_prompt_index=1; cc_turn_index=2;"
+
+
+def billed(line: str, *messages: dict[str, object]) -> dict[str, object]:
+    return {**request(*messages), "system": [{"type": "text", "text": line}, {"type": "text", "text": "you are"}]}
+
+
+def test_a_main_turn_names_the_turn_it_asks_for_by_the_prompt_id_its_billing_line_carries() -> None:
+    body = billed(BILLING, said("hi"), said("go on", marked=True))
+    assert classify("/v1/messages", body) == MainTurn(PromptId("74fbc62d-8c76-4ce6-b21a-1057ac8e59f9"))
+
+
+def test_a_subagent_s_request_under_its_session_s_header_is_not_a_main_turn() -> None:
+    body = billed("x-anthropic-billing-header: cc_version=2.1.285.a1b; cc_entrypoint=cli; cc_is_subagent=true; cc_prompt_id=74fbc62d-8c76-4ce6-b21a-1057ac8e59f9;", said("go on", marked=True))
+    assert classify("/v1/messages", body) == Subagent()
+
+
+def test_a_main_turn_with_no_billing_line_names_no_turn() -> None:
+    assert classify("/v1/messages", {**request(said("go on", marked=True)), "system": "you are"}) == MainTurn(None)
 
 
 def test_a_fork_that_skips_the_cache_write_marks_the_message_before_its_own_and_is_not_a_main_turn() -> None:
@@ -102,7 +126,7 @@ def test_a_side_question_is_a_fork_by_its_wrapper_wherever_its_marker_lands(shap
 
 def test_a_side_question_quoted_in_history_does_not_make_the_next_turn_a_fork() -> None:
     body = request(said(QUESTION), reply("the read said nothing"), said("thanks", marked=True))
-    assert classify("/v1/messages", body) == MainTurn()
+    assert classify("/v1/messages", body) == MainTurn(None)
 
 
 def test_the_compaction_prompt_makes_a_compaction_whatever_its_marker() -> None:
@@ -143,7 +167,7 @@ def test_count_tokens_is_known_by_its_path() -> None:
 def test_a_request_is_told_by_its_newest_cache_marker_whatever_marks_come_before_it() -> None:
     # A working session marks an earlier message of a long history as well as its last (2.1.285).
     history = [said("hi"), reply("hello"), said("more", marked=True), reply("ok")]
-    assert classify("/v1/messages", request(*history, said("go on", marked=True))) == MainTurn()
+    assert classify("/v1/messages", request(*history, said("go on", marked=True))) == MainTurn(None)
     assert classify("/v1/messages", request(*history[:-1], reply("ok", marked=True), said("suggest the next prompt"))) == Fork()
 
 
@@ -335,7 +359,7 @@ def test_the_tail_goes_after_every_block_of_the_newest_message_and_nothing_befor
     amended = edited(sent, (Tail("[hands] how they stand"),))
     assert amended == {**sent, "messages": [*earlier, {"role": "user", "content": [result, {"type": "text", "text": "[hands] how they stand"}]}]}
     # Still the loop's own request: the marker has not moved.
-    assert classify("/v1/messages", amended) == MainTurn()
+    assert classify("/v1/messages", amended) == MainTurn(None)
     # The request Claude Code keeps in its history is untouched.
     assert tool_result == {"role": "user", "content": [result]}
 
@@ -391,7 +415,7 @@ def test_a_stub_replaces_only_the_result_it_names_and_the_request_keeps_its_shap
             reply("ok"), said("go", marked=True),
         ],
     }
-    assert classify("/v1/messages", changed) == MainTurn()
+    assert classify("/v1/messages", changed) == MainTurn(None)
 
 
 def test_a_steer_replaces_the_newest_compaction_prompt_keeps_what_follows_it_and_it_is_still_a_compaction() -> None:

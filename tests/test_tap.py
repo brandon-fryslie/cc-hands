@@ -13,10 +13,11 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 
-from hands.core.session import SessionId
-from hands.core.wire import Exchanged, Garbled, Heard, MainTurn, Observed, Reached, Sent, Streamed, Text, TextDelta, Uncopied, Unreached
+from hands.core.events import Closed, Requested
+from hands.core.session import PromptId, SessionId
+from hands.core.wire import Block, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Streamed, Subagent, Text, TextDelta, ToolUse, Uncopied, Unreached
 from hands.sessions.audit import CopiesLost, Entry
-from hands.sessions.tap import serve_tap
+from hands.sessions.tap import moves, serve_tap
 from hands.sessions.wrapper import FRITTER_SOURCE
 
 REQUEST = (
@@ -98,11 +99,11 @@ async def test_a_copied_exchange_is_the_wire_s_values_with_the_session_s_id(tap:
     await asyncio.wait_for(tap.done.wait(), 5)
 
     sent = tap.observed[0]
-    assert isinstance(sent, Sent) and (sent.session, sent.kind) == (SessionId("s1"), MainTurn())
+    assert isinstance(sent, Sent) and (sent.session, sent.kind) == (SessionId("s1"), MainTurn(None))
     deltas = [observed.event.text for observed in tap.observed if isinstance(observed, Heard) and isinstance(observed.event, TextDelta)]
     assert deltas == ["hello ", "from the wire"]
     exchanged = tap.exchanged()
-    assert (exchanged.exchange, exchanged.session, exchanged.kind, exchanged.path, exchanged.changes) == (sent.exchange, SessionId("s1"), MainTurn(), "/v1/messages?beta=true", ())
+    assert (exchanged.exchange, exchanged.session, exchanged.kind, exchanged.path, exchanged.changes) == (sent.exchange, SessionId("s1"), MainTurn(None), "/v1/messages?beta=true", ())
     assert (exchanged.requested_at, exchanged.sent_at, exchanged.request_bytes) == (100.0, 100.0, len(REQUEST))
     match exchanged.reply:
         case Reached(status=200, first_byte_at=101.0, last_byte_at=107.0, reply_bytes=size, body=Streamed(message=message)):
@@ -217,7 +218,7 @@ async def test_a_session_under_a_real_fritter_is_answered_by_the_api_and_heard_o
 
     assert b"".join(STREAM).decode() in printed.decode().replace("\r\n", "\n")
     exchanged = tap.exchanged()
-    assert (exchanged.session, exchanged.kind) == (SessionId("s1"), MainTurn())
+    assert (exchanged.session, exchanged.kind) == (SessionId("s1"), MainTurn(None))
     assert isinstance(exchanged.reply, Reached) and isinstance(exchanged.reply.body, Streamed)
 
 
@@ -226,3 +227,37 @@ def _read(fd: int) -> bytes:
         return os.read(fd, 4096)
     except OSError:  # EIO: the last process holding the terminal let go of it
         return b""
+
+
+# ── What a session's exchange says of its turn ─────────────────────────────────────────────────────────────────────
+
+TURN = PromptId("p1")
+
+
+def replied(kind: Kind, stop_reason: str, *content: Block) -> Exchanged:
+    message = Message("m1", "claude-opus-5-5", content, stop_reason, {})
+    return Exchanged("e1", SessionId("s1"), kind, "POST", "/v1/messages", 1, (), 1.0, 1.0, Reached(200, 2.0, 3.0, 10, Streamed(message)))
+
+
+def test_a_request_of_a_turn_is_that_turn_asked_on() -> None:
+    assert moves(Sent("e1", SessionId("s1"), MainTurn(TURN), {})) == (Requested(SessionId("s1"), TURN),)
+
+
+def test_a_reply_that_ends_the_turn_with_text_closes_it_with_that_text() -> None:
+    thought = replied(MainTurn(TURN), "end_turn", Text("Done."), Text("Pushed."))
+    assert moves(thought) == (Closed(SessionId("s1"), TURN, "Done.\n\nPushed."),)
+
+
+@pytest.mark.parametrize(
+    "exchanged",
+    [
+        # Claude Code asks again after an end_turn with no text (2.1.285): the turn goes on.
+        replied(MainTurn(TURN), "end_turn"),
+        replied(MainTurn(TURN), "tool_use", Text("Reading."), ToolUse("t1", "Read", {})),
+        replied(MainTurn(None), "end_turn", Text("Done.")),
+        replied(Subagent(), "end_turn", Text("Found it.")),
+        replied(Fork(), "end_turn", Text("An aside.")),
+    ],
+)
+def test_a_reply_that_does_not_end_a_turn_the_request_names_closes_nothing(exchanged: Exchanged) -> None:
+    assert moves(exchanged) == ()

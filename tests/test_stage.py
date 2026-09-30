@@ -143,7 +143,7 @@ class Rig:
         await self.worker.queue_frame(LLMContextFrame(self.context))
         await self.until(lambda: len(self.brain.asked) > asked)
 
-    def request(self, body: object = None, kind: Kind = MainTurn(), session: SessionId | None = BRAIN) -> tuple[str, Route]:
+    def request(self, body: object = None, kind: Kind = MainTurn(None), session: SessionId | None = BRAIN) -> tuple[str, Route]:
         """A request leaving on the wire: the stage hears it and decides where it goes."""
         self.exchanges += 1
         exchange = f"x{self.exchanges}"

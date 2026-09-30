@@ -242,6 +242,13 @@ class Untold:
     asking: bool
 
 
+# Each ending of a turn is heard twice: its reply on the wire, and then its Stop hook. Whichever comes first tells it, and
+# this is which of the two is still to come: "stop", the wire told it and its Stop will end nothing; "wire", something
+# else told it and its reply heard on the wire now is that same ending, late; "none", the turn went on since it was
+# told, as it does after another Stop hook blocked its Stop, so its next ending is new, whichever hears it first.
+Echo = Literal["stop", "wire", "none"]
+
+
 @dataclass(frozen=True)
 class Told:
     """The last turn is told: None until one is. At the prompt, a Stop of this turn ends it again only when the turn went
@@ -250,6 +257,7 @@ class Told:
     turn: PromptId | None = None
     others: frozenset[PromptId] = frozenset()
     asking: bool = False
+    echo: Echo = "wire"
 
 
 Turn = Opened | Untold | Told

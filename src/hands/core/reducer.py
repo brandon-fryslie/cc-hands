@@ -45,6 +45,8 @@ from hands.core.events import (
     Event,
     Interrupted,
     Continued,
+    Closed,
+    Requested,
     Taken,
     Joined,
     Read,
@@ -352,6 +354,20 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # still by the one it went on from, which a hook sent before Claude Code moved on carries. Read after the idle
             # that ended it, the turn waiting to be told is the same turn, and waits for the Stop under its new id.
             return replace(going_on, turn=now, others=going_on.others | {going_on.turn}), []
+        case (Closed(prompt=prompt, closing=closing), Opened() as opened) if _names(opened, prompt):
+            # [LAW:one-source-of-truth] the reply the turn closed with, from the wire, where it exists first: told now,
+            # before the Stop that carries it too, which then ends nothing (see Echo). A turn queued behind it is marked
+            # here, while Claude Code has yet to fire that Stop, so before it can run the queued turn.
+            return Told(opened.turn, opened.others, _asking(closing, was.dialog), echo="stop"), [Compare(id, again=False), Summarise(id, prompt, closing), *_following(was.membership, opened)]
+        case (Closed(prompt=prompt, closing=closing), Untold() as untold) if _names(untold, prompt):
+            told, telling = _told(id, untold, closing)
+            return replace(told, echo="stop"), telling
+        case (Closed(prompt=prompt, closing=closing), Told(echo="none") as told) if _names(told, prompt):
+            # The turn went on after another Stop hook blocked its Stop, and has ended again: told as a Stop again is.
+            return Told(prompt, frozenset(), _asking(closing, was.dialog), echo="stop"), [Compare(id, again=True), Summarise(id, prompt, closing)]
+        case (Requested(prompt=prompt), Told(echo="wire") as told) if _names(told, prompt):
+            # A request of a turn already told: it went on, so what the wire hears end next is not the ending told.
+            return replace(told, echo="none"), []
         case (Interrupted(prompt=prompt), Untold() as untold) if _names(untold, prompt):
             # The record of how the turn Claude Code said is over ended: what its telling waits for.
             return _told(id, turn, None)
@@ -380,6 +396,9 @@ def _ending(was: Session, stop: Unnamed) -> tuple[Turn, list[Effect]] | None:
         case Untold() as untold if _names(untold, prompt):
             # Its Stop fired after Claude Code set idle, as an Escape's can: told with the reply it carries.
             return _told(id, untold, closing)
+        case Told(echo="stop") as told if _names(told, prompt):
+            # The ending the wire told, heard again: nothing is told twice.
+            return replace(told, echo="none"), []
         case Told() as told if stop.again and _names(told, prompt):
             # The last turn stopping again after another Stop hook blocked its Stop: its telling holds only what was not
             # told before. Any other Stop of a turn told ends nothing.
@@ -419,7 +438,7 @@ def _reported(event: Moving) -> Mode | None:
     match event:
         case Prompted(mode=mode) | Stopped(mode=mode) | PermissionRequested(mode=mode) | ToolFinished(mode=mode):
             return mode
-        case Taken() | Interrupted() | Continued() | Read() | Waited() | StatusReported():
+        case Requested() | Closed() | Taken() | Interrupted() | Continued() | Read() | Waited() | StatusReported():
             return None
 
 

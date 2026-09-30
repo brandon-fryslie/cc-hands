@@ -17,7 +17,9 @@ from pathlib import Path
 
 from loguru import logger
 
-from hands.core.wire import Exchanged, Garbled, Heard, Observed, Reached, Seconds, Sent, Uncopied, Unreached, WireEvent
+from hands.core.events import Closed, Requested
+from hands.core.session import SessionId
+from hands.core.wire import Exchanged, Garbled, Heard, MainTurn, Message, Observed, Reached, Seconds, Sent, Streamed, Text, Uncopied, Unreached, WireEvent
 from hands.sessions.audit import CopiesLost, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.replies import Reader, reply_reader, sent_of, shielded
@@ -107,6 +109,20 @@ def _headers(pairs: list[object]) -> Mapping[str, str]:
             case _:
                 raise Rejected(f"a header is {pair!r}, not a name and a value")
     return headers
+
+
+def moves(observed: Observed) -> tuple[Requested | Closed, ...]:
+    """What a session's exchange says of its turn: a request of it went out, or the reply that closed it came back."""
+    match observed:
+        case Sent(session=str() as session, kind=MainTurn(prompt=str() as prompt)):
+            return (Requested(SessionId(session), prompt),)
+        case Exchanged(session=str() as session, kind=MainTurn(prompt=str() as prompt), reply=Reached(body=Streamed(message=Message(stop_reason="end_turn") as message))):
+            closing = "\n\n".join(block.text for block in message.content if isinstance(block, Text))
+            return (Closed(SessionId(session), prompt, closing),) if closing else ()
+        case _:
+            # A request that names no turn, a subagent's or a fork's, a reply that asks for a tool or never came whole:
+            # nothing of the turn's end, which its Stop hook still tells. Each is on its exchange's own audit line.
+            return ()
 
 
 async def serve_tap(path: Path, observe: Callable[[Observed], None], record: Record, clock: Callable[[], Seconds]) -> asyncio.Server:
