@@ -121,6 +121,9 @@ class BrainStage(FrameProcessor):
         self._hands: deque[tuple[Narrated | Aloud, float]] = deque()
         self._waiting = asyncio.Event()
         self._turn: _Turn | None = None
+        # What the user heard of the last turn before the API broke it off, told to the brain with its next turn: Claude
+        # Code keeps the broken reply out of the brain's history (2.1.285), so without it the brain cannot answer about it.
+        self._broken_off = ""
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -166,6 +169,7 @@ class BrainStage(FrameProcessor):
     async def _ask(self, text: str, asker: Asker, unsaid: Sequence[str], arrived: float) -> None:
         """One turn of the brain's; `unsaid` is what hands says as written if the brain cannot take it."""
         waited = self._now() - arrived
+        text, self._broken_off = "\n\n".join(part for part in (self._broken_off, text) if part), ""
         said: asyncio.Queue[str | None] = asyncio.Queue()
         spoken: list[str] = []
         turn = self._turn = _Turn(said, asyncio.create_task(self._speak(said, spoken), name="the brain's words"), spoken)
@@ -188,6 +192,7 @@ class BrainStage(FrameProcessor):
             await self.push_error(f"the brain failed a turn: {error}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         elif (failed := asked.result().error) is not None and not turn.stopped:
             # [LAW:no-silent-failure] said as the API services' failures are: an error from the model's stage.
+            self._broken_off = _broken_off("".join(turn.spoken))
             await self._unsaid(unsaid)
             await self.push_error(f"the brain's turn ended in error: {failed}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
@@ -274,6 +279,11 @@ def _user_text(message: LLMStandardMessage) -> str:
         # [LAW:no-silent-failure] hands' aggregator and notes write plain text; anything else is a change to hear about.
         raise TypeError(f"a user message in the context is not plain text: {message!r}")
     return content
+
+
+def _broken_off(spoken: str) -> str:
+    """The note that tells the brain what the user heard of a turn the API broke off; none when nothing of it was said."""
+    return f'[hands] The API broke off your last turn. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.' if spoken else ""
 
 
 def _said(answer: ToolAnswer) -> str:

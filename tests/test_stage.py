@@ -478,8 +478,18 @@ async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_
     await rig.until(lambda: len(rig.errors) == 1)
     assert rig.out.shape() == ["LLMFullResponseStartFrame", "LLMTextFrame", "LLMTextFrame", "LLMFullResponseEndFrame"]
     assert rig.out.said() == ["1. Lighthouses stand ", "on rocky coasts and h"]
+    assert rig.errors[0].processor is rig.stage
     assert "Connection lost mid-response" in rig.errors[0].error
     assert BrainSpoke((exchange,), "1. Lighthouses stand on rocky coasts and h", (), False, "user", 0.0) in rig.recorded
+    # The broken reply is not in the brain's history, so its next turn tells it what the user heard, and only that one.
+    await rig.say({"role": "user", "content": "what were you saying?"})
+    rig.brain.end()
+    await rig.say({"role": "user", "content": "thanks"})
+    assert rig.brain.asked[1:] == [
+        '[hands] The API broke off your last turn. The user heard you say "1. Lighthouses stand on rocky coasts and h", then that it failed. '
+        "Say nothing about this unless the user asks.\n\nwhat were you saying?",
+        "thanks",
+    ]
 
 
 async def test_a_turn_the_brain_never_took_is_reported_as_the_model_stages_error_and_the_next_is_asked(rig: Rig) -> None:
