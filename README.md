@@ -153,6 +153,11 @@ that asks per program, such as Little Snitch, sees those connections as fritter'
 holds each one until it is answered: allow `~/.hands/bin/fritter` to reach
 `api.anthropic.com`, and again after `install-fritter` rebuilds it.
 
+Claude Code takes fritter's loopback address for a third-party API, and turns off what it
+keeps for Anthropic's own: hands tells it the backend is Anthropic's, which restores most
+of that, but what reads the address itself stays off in a session under fritter. Remote
+Control is among it.
+
 The hooks are on whether or not hands is running. While hands is stopped, has never
 run, or is still starting, they cost a session nothing: no hook error, and a permission
 request gets Claude Code's own dialog. A hands that died, hung, or left a heartbeat nothing can read shows
