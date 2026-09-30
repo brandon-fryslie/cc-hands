@@ -74,7 +74,6 @@ from hands.voice.summary import Summariser, aside, summariser
 from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
 from hands.voice.summarising import SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS, keep_summarising
 from hands.voice.sentences import SummaryStore
-from hands.voice.summary_instruction import TURN_SUMMARY_INSTRUCTION
 from hands.voice.briefing import brief, tail
 from hands.voice.conversation import record_turns
 from hands.voice.system import SystemChannel, listen, told
@@ -106,9 +105,6 @@ SWEEP_SECONDS = 2.0
 TAIL_SECONDS = 0.1
 # How late Claude Code setting a session's status is heard: the file it rewrites is a few hundred bytes a session.
 STATUS_SECONDS = 0.1
-# A turn's summary is spoken, so it is short; a model that has not answered in this long is said to have failed.
-SUMMARY_MAX_TOKENS = 200
-SUMMARY_TIMEOUT_SECONDS = 30.0
 
 
 def backend_from_env(home: Home) -> LLMBackend:
@@ -314,9 +310,8 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
             async with mind(config, tools, sessions, proxy.url, wire, store, home.fritter, audit.record) as minded:
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm), "the voice load"), heart, sessions, quit_event)
                 if voice is not None:
-                    summarise = minded.summariser(TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences)
+                    await converse(voice, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -367,7 +362,6 @@ async def converse(
     voice: Voice,
     home: Home,
     sessions: Sessions,
-    summarise: Summariser,
     heart: heartbeat.Heart,
     quit_event: asyncio.Event,
     after_crash: bool,
@@ -408,7 +402,7 @@ async def converse(
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
         asyncio.create_task(relay(sessions, minded.telling, voice.worker.queue_frame), name="the session speech relay"),
-        asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record, lambda: summaries(home), channel.say, store.keep, changes=deltas), name="the session narrator"),
+        asyncio.create_task(narrate(sessions, tails, minded.telling, voice.worker.queue_frame, record, lambda: summaries(home), changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),

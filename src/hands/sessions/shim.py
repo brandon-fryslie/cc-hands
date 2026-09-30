@@ -5,7 +5,8 @@
 It runs in Claude Code's critical path for every subscribed hook, so it imports
 only the standard library and hands' data modules, and it never waits on
 anything but the post. Every post returns at once but a PermissionRequest's,
-which waits for the answer and prints it for Claude Code to read.
+which waits for the answer and prints it for Claude Code to read. A start prints
+what the session is told of how to end its turns, before the post.
 
 The plugin installs the hooks whether or not hands is running, so a daemon the
 shim cannot reach is judged by its heartbeat: one that was stopped or never ran
@@ -14,6 +15,7 @@ can read is reported.
 """
 
 import http.client
+import json
 import os
 import socket
 import sys
@@ -33,6 +35,14 @@ from hands.sessions.payload import Payload, Rejected
 # the model, turning a dead daemon into a stuck session.
 FAILED = 1
 USAGE = 64
+
+# What every session is told as it starts. What a session says at the end of a turn is what hands hands its model to say
+# aloud, and the session is the one that knows what its work was: "PR 68" means something to it and to nobody else.
+OVERVIEW = (
+    "The user may be away from the screen, and hands has the end of each of your turns said aloud to them. "
+    "End every turn with a concise, speakable overview: what you did and where it stands, in a few plain sentences "
+    "a person could say aloud, and any question you need answered."
+)
 
 
 class Unreached(Exception):
@@ -72,6 +82,18 @@ def record(home: Home, payload: Payload) -> None:
             write_membership(home, _membership(payload))
         case _:
             pass
+
+
+def told(payload: Payload) -> str:
+    """What the hook tells Claude Code of its own, whatever the daemon answers: a start is told how to end its turns.
+
+    Told while hands is off too, so a session started before hands is heard in its own words once hands starts.
+    """
+    match payload.text("hook_event_name"):
+        case "SessionStart":
+            return json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": OVERVIEW}})
+        case _:
+            return ""
 
 
 def _membership(payload: Payload) -> Membership:
@@ -147,6 +169,7 @@ def main(argv: Sequence[str]) -> int:
     try:
         payload = Payload.parse(body)
         record(home, payload)
+        sys.stdout.write(told(payload))
         reply = post(home, body, post_timeout(payload.text("hook_event_name")))
     except Unreached as error:
         return unreached(home, error)

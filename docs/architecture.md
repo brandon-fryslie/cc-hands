@@ -243,14 +243,14 @@ or looks at a clock. When it needs the time it has already been handed one in a
 `Tick`. When it needs a summary it emits `Summarise` and receives the segments back as
 an event. Today nothing comes back: `Summarise` is emitted for a live session's `Stop`,
 for an interrupt, and for a turn that a prompt naming another turn finds still running,
-and the narrator reads, summarises, and speaks the turn without returning to the
-reducer.
+and the narrator reads the turn and hands it to the intermediary to say, without returning
+to the reducer.
 
 The adapters live in `sessions` and `voice` and each performs one effect kind: `Reply`
 writes to the blocked shim's socket connection, `Speak` becomes a Pipecat `TTSSpeakFrame`,
 `Narrate` and `Note` become
 `LLMMessagesAppendFrame` with `run_llm` on or off, `Play` sends a segment to TTS
-through the player, `Summarise` calls the summariser, `Snapshot` records or diffs the
+through the player, `Summarise` hands the turn to the intermediary, `Snapshot` records or diffs the
 target's git state, `Audit` appends one JSONL line. An
 adapter that fails raises; the supervisor logs it and the failure is spoken through
 the system channel. Nothing is retried silently and nothing falls back
@@ -374,7 +374,7 @@ has not. A session first read at its prompt went idle before hands followed it: 
 `due` is None, and only `idle_prompt` nudges it. A session with a turn opened that the
 status is yet to say runs is not nudged. `asking` on the last turn (`Told` or `Untold`)
 makes the nudge "X has a question for you." rather than "X is waiting for you." It is true for the two things the telling
-counts as waiting: a reply the `Stop` carried that the narration's own `reported_and_asked`
+counts as waiting: a reply the `Stop` carried that the narration's own `asked_in`
 reads as asking, and a turn that ended at an `AskUserQuestion` dialog with nothing run
 after it, the dialog still up or escaped. An Escape kills the dialog's hook, so the session's
 dialog becomes `Unanswered`, and a tool running, a message typed, or another permission
@@ -382,9 +382,10 @@ clears it. The reducer cannot call `open_questions` itself, since the
 `Questioned` steps it reads live only in the transcript. The two still differ where a dialog
 was declined with a message and Claude answered in text alone before stopping: that is heard
 as the Escape it looks like, the common case. `Story` carries finished turns and sessions gone in one ordered
-queue, because a summary takes seconds, and an end spoken at once was heard before the
-last turn it ended. A turn's summary reaches TTS as one `TTSSpeakFrame`, with no player
-and no segments. `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
+queue, because an end spoken at once was heard before the last turn it ended. A finished
+turn reaches the intermediary as a turn of its own — an `LLMMessagesAppendFrame` with
+`run_llm` on for an API model, a `Narrated` frame for the brain — with no player and no
+segments. `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
 with `run_llm` off. The player, the routing table, the overlays, the priority
 queue, and `coalesce` below are planned.
 
@@ -892,10 +893,9 @@ Nothing is read verbatim. Claude writes for a screen, and markdown, code, tables
 and hashes cannot be heard as written, so every word that reaches the speaker is
 summarised or transformed first.
 
-**What runs today** is the top level of the tree: each finished turn becomes a headline of
-the configured length, followed by what git says the turn did, followed by the turn's
-question where it ended on one. The sections below the headline are built and not yet
-spoken. When a live session's `Stop` arrives, the reducer emits
+**What runs today** is the top level of the tree: each finished turn is handed to the
+intermediary with what git says the turn did and the turn's question where it ended on
+one, as described below. The sections are built and not yet spoken. When a live session's `Stop` arrives, the reducer emits
 `Summarise(session, closing)`, and `narrate` in `hands.voice.narrator` asks the tail what
 that session has not been told. A turn opens at the last user record that is
 not `isMeta`, not `isCompactSummary`, whose content is a string or a block list with no
@@ -940,25 +940,28 @@ in all twelve turns, so this is out of reach at a `Stop`. The tail can complete 
 has already told — the slot is still there — but a completed step told out of order only
 makes sense once steps are told as they arrive, so the progress ticket owns it.
 
-`render(turn, budget)` in `core` writes the turn as the summariser's message
-under `TURN_BUDGET`: 600 characters of the opening, 1,500 of each text block, 200 of
-each tool input, 400 of each result, and 40 steps, where a longer turn keeps its head
-and tail and says how many steps in the middle were left out. The summariser is a
-stateless call on the configured backend, OpenAI-compatible or Anthropic, capped at 200
-tokens, with a 30-second timeout and no retries; an empty answer is a failure. Its
-instruction asks for results rather than a play-by-play, no code names, paths, or
-hashes, and an ending that asks the turn's question with the session as "it". The
-narrator speaks the summary after the session's name, keeps it in the intermediary's
-context, and writes it to the audit log as `Recounted`. When reading or summarising
-fails, it says "cc-hands finished a turn, and I could not summarise it." without the model and
-out of the context, followed by what the turn is waiting on when summarising was what failed, since
-finding that needs no model, and logs the reason, which is a `Failure` line. Measured live
-against a real `claude -p` session, with Qwen3-30B-A3B on inferno: the summary was ready
-1.3 s after `Stop` and first audio came at 1.36 s, and the session's end was heard
-after its summary. Measured again against a session whose first `Stop` another hook
-blocked: 1.22 s to the summary and 1.29 s to first audio, then 0.93 s and 1.00 s for
-the second stop of the same turn, which was heard as what the turn did after the
-first — nothing of it twice.
+The narrator hands a finished turn to the intermediary as a turn of its own, and the
+intermediary says it in its own words, so what the user heard is in its history and it can
+answer about it. A summariser beside it, asked with `/btw`, left the brain's history
+without it: on 2026-09-30 hands told Brandon a session asked about PR 68 and 69, and asked
+what those were, the brain said no session showed them. What is handed is the last thing
+the turn said — the session's own account, whose author knows what PR 68 is — bounded at
+`REPLY_SHOWN` characters, since every turn told grows the brain's history toward
+compaction; then what hands read of the turn that those words may not say, from the
+narration tree; then the question it is waiting on, which the intermediary is told to end
+on. If the brain cannot take the turn, hands says as written that it could not tell it,
+and the question. Each working session is told at `SessionStart`, by the plugin's shim, to end every
+turn with a concise, speakable overview. A turn the user stopped before it did anything,
+and the question alone when summaries are off, are said as written with no model. Each
+telling is written to the audit log as `Recounted`, with whether the model was handed it.
+A transcript that cannot be read is said as "cc-hands finished a turn, and I could not
+read it." without the model and out of the context, and logged as a `Failure` line.
+
+For the brain, a narration waits in a lane of `BrainStage`'s own, never in Pipecat's
+context, and the user's turn goes ahead of it: a narration that waited while the brain
+was answering is asked only once no words of the user's are waiting. What the narrator
+says as written waits in the same lane (`Aloud`), so a session's end is heard after its
+last turn. `BrainSpoke.waited` is how long each turn waited in its lane.
 
 The rest of this section is planned: step summaries built as steps arrive, children
 below the top level, and streaming.
@@ -1032,19 +1035,8 @@ logged, and the voice edge logs it, because logging is an effect and `core` is n
 edge `[LAW:effects-at-boundaries]`. The filter is stateless, so a barge-in mid-sentence
 leaves nothing to reset.
 
-The summary instruction still asks for spoken form, and that is not duplication: the
-model does what only the model can, turning `created_at` into "the creation date" rather
-than "created at". The filter guarantees the floor beneath it.
-
-**The summariser** is a stateless call on the configured backend, separate from the
-conversational context. It is asked for one thing only — prose about what the turn did —
-because it is the only thing nothing else can supply. Code and diffs are described by what
-they do: "adds a retry around the token refresh, three attempts with backoff," not the
-lines. Step summaries requested as steps arrive, so that first audio does not wait for the
-whole turn to be read, are planned and belong to the progress ticket.
-
-**The narration tree.** `core/narration.py` cuts a finished turn into segments: the
-headline, what the repository did, the question it is waiting on, what the user already
+**The narration tree.** `core/narration.py` cuts a finished turn into segments: whether
+the user stopped it, what the repository did, the question it is waiting on, what the user already
 answered, and one section per topic — the change, the tests, the commit, the commands, what it read, the plan, the subagents,
 the other tools, what it said. The topics are not a table of rules written beside the
 steps; they are a match over the `Step` union, which already draws exactly those lines, so
@@ -1056,22 +1048,21 @@ so `opened` renders them through the same `body` the whole turn goes through, an
 segment names are the records it holds, and the two cannot come apart
 `[LAW:one-source-of-truth]`.
 
-Only the headline is prose from a model. Everything else the top level says is arithmetic
-over typed steps, and that is the point rather than an economy: a summariser was measured
-on 2026-09-21 reporting "version two point seven point one" for a runner that printed 8.4.1,
-and a count that is computed cannot be invented. It is also free, so the sections cost
-nothing at the `Stop` that matters.
+None of the tree is prose from a model. It is arithmetic over typed steps, and that is the
+point rather than an economy: a summariser was measured on 2026-09-21 reporting "version
+two point seven point one" for a runner that printed 8.4.1, and a count that is computed
+cannot be invented.
 
 **What git says is not the model's to say.** Whether a turn committed is recorded twice —
 by the step, when Claude Code writes a `gitOperation`, and by the delta read against where
 the turn began — and each sees what the other misses: a `git commit` inside a heredoc
 carries no operation for a step to hold, and the delta names it anyway. So the narration
 says it, from whichever saw it, in words that carry no hash: "It committed and left five
-files different." Asked for this instead, the model was measured both dropping the commit
-entirely and reading its hash out loud, in the same afternoon. The instruction now asks it
-to leave commits alone; when it says one anyway the listener hears it twice, and that
-redundancy is kept on purpose — dropping git's clause whenever the report claims a commit
-would suppress it in exactly the case it exists for, a commit claimed that never landed
+files different." Asked for this instead, a summariser was measured both dropping the commit
+entirely and reading its hash out loud, in the same afternoon. It is handed to the
+intermediary beside the reply, which may say the same, and that redundancy is kept on
+purpose — dropping git's clause whenever the reply claims a commit would suppress it in
+exactly the case it exists for, a commit claimed that never landed
 `[LAW:no-silent-failure]`. A branch is said by `spoken_ref` rather than copied: this is the
 one clause of the top level no model wrote, so the instruction cannot reach it, and the
 filter in front of the speaker deliberately will not read a bare `feature/narration-tree`
@@ -1083,28 +1074,13 @@ the others `[LAW:single-enforcer]`.
 Only a commit has both sources. A push, a branch, or a pull request is known solely
 from the `gitOperation` Claude Code writes beside the step, because none of them changes a
 file or adds a local commit for the delta to find — so `git commit -m x && git push`, or a
-push inside a heredoc, is heard as a commit and never as a push. The instruction bans the
-model from saying any of the four rather than just commits, which is what makes that gap a
-silence; the trade is kept because the model was measured dropping a commit and reading a
-hash aloud in the same afternoon, and a clause code did not write is a clause nothing can
-hold to `[LAW:no-silent-failure]`. `hands-narration-k08` owns closing it.
+push inside a heredoc, is read by hands as a commit and never as a push; only the session's
+own reply can say it. `hands-narration-k08` owns closing it.
 
 What git says is *not* said of a turn told twice. `Compare` pops the mark and only
 `UserPromptSubmit` sets one, so the second telling of a turn whose first `Stop` was blocked
 is handed an empty delta, and a commit made in its second half — a heredoc commit, which no
-step records either — is never spoken at all. The eval's `second-telling` case is given that
-empty delta because it is what production hands it, so the gap is measured rather than
-papered over, and `hands-narration-k4q` owns closing it.
-
-**The length is a number, and it is enforced rather than requested.**
-`HEADLINE_SENTENCES` lives beside the instruction it rewrites, because changing it means
-re-rendering that text and the two cannot be apart. It starts at one. Asked for one
-sentence the local model wrote two in nine tellings out of twelve, so `narration` cuts the
-reply's report to the number — the same reason the spoken-form filter is a filter and not
-an instruction: a rule held as an instruction is obeyed or not and checked by nobody. A
-question is not in the count, because it is not in the headline at all. Nothing cut is
-lost, because the sections hold every step the headline was made from. The eval reports
-how often the model overran, which is the signal for changing the number.
+step records either — is never read by hands at all. `hands-narration-k4q` owns closing it.
 
 **What the turn asked always plays, once, and the daemon decides whether it asked.** A turn
 that ends on a question is waiting on the listener whether or not a hook blocks, so
@@ -1112,9 +1088,9 @@ that ends on a question is waiting on the listener whether or not a hook blocks,
 nothing but an interruption followed, and what the closing text asks — the turn's last step,
 since a question it worked past was answered or did not need one. A dialog Claude went on
 past was declined with a message or refused by a hook, as 5 of the 94 unanswered in this machine's
-transcripts were; the other 89 were escaped, and ended the turn on the question. `reported_and_asked` is the one reading of a
-text for questions, used on Claude's closing text, on the summariser's reply, and for the
-nudge `[LAW:one-source-of-truth]`. A question put to the listener outright counts wherever
+transcripts were; the other 89 were escaped, and ended the turn on the question. `asked_in` is the one reading of a
+text for questions, used on Claude's closing text by the narration and the nudge
+`[LAW:one-source-of-truth]`. A question put to the listener outright counts wherever
 it stands ("want me to do it?" before two more sections). Where the text ends, an offer
 counts ("Say the word and I'll do it."), and so do a choice and any other question, unless
 its own list item or run of prose goes on to answer it ("Why did it fail? The cache was stale.") and nothing
@@ -1125,36 +1101,13 @@ name, and one an arrow follows was answered on its line. Those shapes were read 
 closing texts on this machine, and each that decides a case and fits in a fixture is one:
 the only real closing that asks itself and answers on the same line is a 794 KB turn.
 
-What plays is one question segment, last, at every length. The summariser's message is
-`shown`: the turn as `render` writes it, then what the daemon found it waiting on, in spoken
-form, or that it asks nothing. Measured on inferno on 2026-09-25, without that line the
-model ended four of nine fixture turns that asked nothing on a question of its own and left
-out a question asked above two more sections; with it, none of either. Its words are the
-ones the summariser ended its reply on, which `narration` takes out of the headline so the
-question is said once — where the turn waits on one thing, the closing text counting as one
-however many sentences it asks in. Waiting on two, nothing says which the summariser's words
-cover, and where it left the question out, the words are Claude's own, framed as "It is
-asking:" or "It said:", with "(Recommended)" dropped and put through `spoken`. Where
-the summariser asked and the turn did not, what it asked is dropped: the instruction
-already forbids it, and this is what holds it, while one of its sentences that only reads
-like an offer ("left the retry count up to you") stays in the report. An `AskUserQuestion`
-the turn is no longer waiting on, answered or gone past, is its own segment in `settled`,
-there to be opened and never played.
-
-**The eval.** `evals/narration.py` runs real turns, lifted whole out of real transcripts,
-through the daemon's own recognisers, `render`, and summariser, and judges what comes back:
-that the facts a listener must have are in it, that nothing code-shaped reached the ear,
-that the headline is within its number, that every number said is a number the turn showed,
-and that nothing the case forbids was said. The code-shape judge is `core/spoken.py` itself
-rather than a second table of patterns, so the eval cannot drift from what the daemon does.
-Once a case, with no model, it also judges `open_questions` against the questions the
-case's `asks` names and counts misses and false alarms, which `tests/test_questions.py`
-holds to zero over the same fixtures.
-It exits 0, 1, or 2 — every check held, a check or a question failed, or the model could not be reached —
-and a model is stochastic, so it tells each case several times and every telling must hold.
-Measured live against `claude -p` sessions on inferno, twice on 2026-09-22: `Stop` to the
-summary 2.01 s and 1.82 s, `Stop` to first audio 2.07 s and 1.88 s, which puts the speech
-leg at 60 ms. The four fixture cases summarise in 0.92 to 2.0 s, median 1.25 s.
+What the turn is waiting on is one question segment, last, in Claude's own words framed as
+"It is asking:" or "It said:", with "(Recommended)" dropped and put through `spoken`. It is
+handed to the intermediary to end on, and said as written when summaries are off. An
+`AskUserQuestion` the turn is no longer waiting on, answered or gone past, is its own
+segment in `settled`, there to be opened and never played. `tests/test_questions.py` holds
+`open_questions` to no miss and no false alarm over real turns lifted whole out of real
+transcripts, under `tests/fixtures/turns`.
 
 **Streaming.** Steps from the tail are events like any other, so a session's progress
 can be played as it happens: "running the tests," "editing the auth middleware." Text
@@ -1341,9 +1294,7 @@ one per request (`hands.core.turn.turns`), and hands over the newest forty with 
 for each finished turn, or its request while the sentence is unsaid; `before` pages back,
 and `read_turn` pages one turn's steps from a mark. A finished turn never changes, so its key is not its text but its identity
 (`turn_digest`): its first record's id and how many things happened in it, under no
-instruction. Narration keeps a turn's headline under that key when it reports the whole
-turn (`Recounted.kept`), so a turn heard aloud is not summarised again; the rest are
-wanted at each read and said by the same task, one `TurnsSummarised` line per pass, which
+instruction. The turns are wanted at each read and said by the same task, one `TurnsSummarised` line per pass, which
 skips what was said after it was queued. Whether the last turn is finished is the
 registry's to say, and only `Idle` or an ended session proves it: an `Unreported` one may
 be mid-turn.

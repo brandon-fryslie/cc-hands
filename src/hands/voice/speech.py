@@ -4,7 +4,7 @@ import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
+from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
 
 from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Speak, WaitingForYou
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
@@ -38,6 +38,51 @@ class Tailed:
 Telling = Pushed | Tailed
 
 
+@dataclass
+class Narrated(DataFrame, UninterruptibleFrame):
+    """A message from hands the brain takes as a turn of its own, once no turn of the user's is waiting.
+
+    Never put in Pipecat's context, where it would be one message with whatever the user said beside it: the brain keeps
+    its own history. Kept through a barge-in, which stops what is said, not what is still to be told. `unsaid` is what
+    hands says as written if the brain cannot take the turn, so what it was waiting on is still heard.
+    """
+
+    text: str
+    unsaid: str
+
+
+@dataclass
+class Aloud(DataFrame, UninterruptibleFrame):
+    """A line hands says as written, held in hands' lane behind what it has already handed the brain, so the user
+    hears a session's story in the order it happened."""
+
+    spoken: TTSSpeakFrame
+
+
+def handed(text: str, unsaid: str, telling: Telling) -> Frame:
+    """A message from hands for the model to say in its own words, as the model's telling takes one."""
+    match telling:
+        case Pushed():
+            return LLMMessagesAppendFrame([{"role": "user", "content": text}], run_llm=True)
+        case Tailed():
+            return Narrated(text, unsaid)
+
+
+def as_written(spoken: TTSSpeakFrame, telling: Telling) -> Frame:
+    """A line hands says as written, in order with what it hands the model: a model in the pipeline takes frames one at
+    a time, and the brain's stage holds it in hands' lane."""
+    match telling:
+        case Pushed():
+            return spoken
+        case Tailed():
+            return Aloud(spoken)
+
+
+def bounded(text: str, limit: int) -> str:
+    """The text whole up to `limit` characters, and cut there, saying so, past it."""
+    return text if len(text) <= limit else f"{text[:limit]}... (cut short)"
+
+
 async def relay(sessions: Sessions, telling: Telling, queue_frame: Callable[[Frame], Awaitable[None]]) -> None:
     """Hand everything the sessions say to the pipeline, in the order it was decided, until cancelled."""
     while True:
@@ -50,10 +95,11 @@ def frames(heard: Heard, telling: Telling, names: Names) -> Sequence[Frame]:
     # [LAW:one-type-per-behavior] the route is the effect's own variant: Speak needs no model, Narrate needs one to explain.
     match heard, telling:
         case Speak(announcement=announcement), _:
-            # Kept in the context, so the intermediary knows what the user has already been told.
-            return (TTSSpeakFrame(announcement_text(announcement, names)),)
+            # Kept in the context, so the intermediary knows what the user has already been told. In hands' lane under the
+            # brain, so a deadline is heard after the question it counts down, never ahead of it.
+            return (as_written(TTSSpeakFrame(announcement_text(announcement, names)), telling),)
         case Narrate(moment=moment), _:
-            return (LLMMessagesAppendFrame([{"role": "user", "content": narration(moment, names)}], run_llm=True),)
+            return (handed(narration(moment, names), announcement_text(WaitingForYou(moment.session, isinstance(moment.on, Question)), names), telling),)
         case Note(fact=fact), Pushed():
             return (LLMMessagesAppendFrame([{"role": "user", "content": noted(fact, names)}], run_llm=False),)
         case Note(), Tailed():
@@ -72,8 +118,7 @@ def narration(moment: Asking, names: Names) -> str:
 def _asks(on: Blocker) -> str:
     match on:
         case Permission(tool=tool, input=input):
-            shown = json.dumps(dict(input), ensure_ascii=False)
-            shown = shown if len(shown) <= _INPUT_SHOWN else f"{shown[:_INPUT_SHOWN]}... (cut short)"
+            shown = bounded(json.dumps(dict(input), ensure_ascii=False), _INPUT_SHOWN)
             return f"is waiting for permission to use {tool} with this input: {shown}."
         case Question(asked=asked):
             # Shown whole, however long: a question cut short cannot be answered.

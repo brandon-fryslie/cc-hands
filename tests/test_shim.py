@@ -19,6 +19,7 @@ from hands.core.effects import Summarise
 from hands.core.session import Membership, Opened, PromptId, Session, SessionId, Unreported
 from hands.sessions import heartbeat
 from hands.sessions.hookconfig import LAUNCHER, PLUGIN_DIR, SHIM_MODULE
+from hands.sessions.shim import OVERVIEW
 from hands.sessions.home import Home
 from hands.sessions.liveness import sweep
 from hands.sessions.membership import read_membership, write_membership
@@ -33,6 +34,8 @@ STOP = {**COMMON, "hook_event_name": "Stop", "stop_hook_active": False, "last_as
 END = {**COMMON, "hook_event_name": "SessionEnd", "reason": "other"}
 ASK = {**COMMON, "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "ls"}}
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent / PLUGIN_DIR
+# What a start prints for Claude Code, whatever the daemon answers.
+STARTED = json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": OVERVIEW}})
 
 
 @pytest.fixture
@@ -77,10 +80,18 @@ def beat(home: Home, pid: int, written_ago: timedelta, pipeline: heartbeat.Pipel
     heartbeat.write(home.status, heartbeat.Status(pid, now, now - written_ago, heartbeat.HEARTBEAT, pipeline, None, 0, False))
 
 
-@pytest.mark.parametrize("payload", [START, PROMPT, ASK], ids=["start", "prompt", "permission"])
+@pytest.mark.parametrize("payload", [PROMPT, ASK], ids=["prompt", "permission"])
 async def test_a_hands_that_never_ran_costs_the_session_nothing(home: Home, payload: Mapping[str, object]) -> None:
     # Nothing on stdout, so a permission request falls through to Claude Code's own dialog.
     assert await shim(home, payload) == (0, "", "")
+
+
+async def test_a_session_is_told_as_it_starts_to_end_every_turn_on_a_speakable_overview_whether_or_not_hands_runs(home: Home) -> None:
+    """What a session says at the end of a turn is what the model is handed to say aloud."""
+    code, stdout, stderr = await shim(home, START)
+    assert (code, stderr) == (0, "")
+    assert stdout == STARTED
+    assert "End every turn with a concise, speakable overview" in OVERVIEW
 
 
 async def test_a_hands_that_was_stopped_costs_the_session_nothing(home: Home) -> None:
@@ -146,7 +157,7 @@ def launch(home: Home, cwd: Path, path: str) -> subprocess.CompletedProcess[byte
 
 def test_the_plugin_launcher_runs_the_shim_from_the_plugin_as_the_process_claude_code_spawned(home: Home, tmp_path: Path, python312: str) -> None:
     ran = launch(home, tmp_path, python312)
-    assert (ran.returncode, ran.stdout, ran.stderr) == (0, b"", b"")
+    assert (ran.returncode, ran.stdout, ran.stderr) == (0, STARTED.encode(), b"")
     # Spawned directly, as Claude Code spawns an exec-form hook, so the pid recorded must be this process's.
     assert read_membership(home, SID).pid == os.getpid()
 
@@ -157,7 +168,7 @@ def test_a_project_s_own_modules_cannot_stand_in_for_the_shim_s(home: Home, tmp_
     (project / "json.py").write_text("raise SystemExit('shadowed json')\n")
     (project / "hands" / "__init__.py").write_text("raise SystemExit('shadowed hands')\n")
     ran = launch(home, project, python312)
-    assert (ran.returncode, ran.stdout, ran.stderr) == (0, b"", b"")
+    assert (ran.returncode, ran.stdout, ran.stderr) == (0, STARTED.encode(), b"")
 
 
 def test_with_no_python_new_enough_the_launcher_says_so(home: Home, tmp_path: Path) -> None:
@@ -167,7 +178,7 @@ def test_with_no_python_new_enough_the_launcher_says_so(home: Home, tmp_path: Pa
 
 
 async def test_a_start_records_membership_and_joins_the_registry(home: Home, sessions: Sessions) -> None:
-    assert await shim(home, START) == (0, "", "")
+    assert await shim(home, START) == (0, STARTED, "")
     assert await shim(home, PROMPT) == (0, "", "")
     membership = Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path("/nowhere/t.jsonl"))
     assert [listing.session for listing in sessions.live()] == [Session(membership, Unreported(), mode=None, turn=Opened(PromptId("p1")))]
@@ -252,7 +263,7 @@ async def test_a_socket_left_by_a_dead_daemon_is_reclaimed(home: Home) -> None:
     registry = Sessions(60.0, clock=lambda: 0.0, record=lambda _: None)
     runner = await serve_hooks(home, registry)
     try:
-        assert await shim(home, START) == (0, "", "")
+        assert await shim(home, START) == (0, STARTED, "")
         assert len(registry.live()) == 1
     finally:
         await runner.cleanup()
@@ -262,19 +273,19 @@ async def test_a_session_started_under_fritter_records_where_to_type_into_it(hom
     # fritter publishes its socket in the environment of the process it wrapped, and this
     # hook is a child of that process, so the address arrives without either side naming
     # a path the other has to guess.
-    assert await shim(home, START, fritter="/tmp/fritter-abc.sock") == (0, "", "")
+    assert await shim(home, START, fritter="/tmp/fritter-abc.sock") == (0, STARTED, "")
     [listing] = sessions.live()
     assert listing.session.membership.fritter == Path("/tmp/fritter-abc.sock")
 
 
 async def test_a_session_started_outside_fritter_records_no_way_to_type_into_it(home: Home, sessions: Sessions) -> None:
-    assert await shim(home, START) == (0, "", "")
+    assert await shim(home, START) == (0, STARTED, "")
     [listing] = sessions.live()
     assert listing.session.membership.fritter is None
 
 
 async def test_an_empty_fritter_address_is_no_address(home: Home, sessions: Sessions) -> None:
     # An exported-but-empty variable is how a shell hands on a value it does not have.
-    assert await shim(home, START, fritter="") == (0, "", "")
+    assert await shim(home, START, fritter="") == (0, STARTED, "")
     [listing] = sessions.live()
     assert listing.session.membership.fritter is None

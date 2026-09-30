@@ -1,6 +1,6 @@
 """The intermediary's system prompt: the conversational model between the user's voice and their Claude Code sessions.
 
-Its own deliverable, apart from the summariser's instruction, and judged by `evals/intermediary.py` against the model
+Its own deliverable, judged by `evals/intermediary.py` against the model
 the daemon runs. Two rules keep it and the tools from giving the model two orders for one thing:
 
 - It says WHEN to reach for a tool. HOW to use what a tool returns lives in that tool's docstring, which is what the

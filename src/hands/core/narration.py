@@ -1,14 +1,13 @@
-"""A turn, heard: the headline that plays when it stops, the questions it left open, and one section per topic.
+"""A turn, heard: what hands knows of it from its types, the questions it left open, and one section per topic.
 
 The tree is cut from the turn's own types. `Step` already separates an edit from a test run from a command that
 committed, so the sections are a match over that union rather than a table of rules invented beside it, and a
-segment's record ids are read off the steps it holds rather than claimed by the model that wrote its text
-`[LAW:one-source-of-truth]`. That is what keeps "that part" a lookup: the map is redrawn from the territory on
-every build, and a summariser that invents a version number cannot invent a uuid to go with it.
+segment's record ids are read off the steps it holds rather than claimed by a model `[LAW:one-source-of-truth]`.
+That is what keeps "that part" a lookup: the map is redrawn from the territory on every build.
 
-Only the headline's text comes from a model. Every count here is arithmetic over typed steps, so the part of the
-narration that carries facts cannot be hallucinated, and the model is asked only for the thing nothing else can
-do — saying what a change did.
+No text here comes from a model. Every count is arithmetic over typed steps, so the facts hands hands on with a
+turn — that it was interrupted, what git says, what it is waiting on — cannot be hallucinated, and what the turn
+did is left to the words of the session that did it.
 """
 
 import re
@@ -38,7 +37,6 @@ from hands.core.turn import (
     Tested,
     Turn,
     body,
-    render,
 )
 
 
@@ -54,7 +52,6 @@ class Topic:
     thing: str
 
 
-THE_HEADLINE = Topic("the headline", "turn")
 THE_QUESTION = Topic("the question", "question")
 WHAT_IT_ASKED = Topic("what it asked", "question")
 WHAT_IT_SAID = Topic("what it said", "message")
@@ -129,14 +126,13 @@ def opened(segment: Segment, budget: Budget) -> str:
 
 @dataclass(frozen=True)
 class Narration:
-    """A turn's narration tree: what plays at Stop, and what is there to be opened afterwards.
+    """A turn's narration tree: what hands says of it at Stop, and what is there to be opened afterwards.
 
     `repository` holds nothing at all for a turn that left the repository where it found it, rather than being a
     segment that may be absent, so the caller speaks it unconditionally [LAW:dataflow-not-control-flow]. So do
     `interrupted` for a turn that finished and `questions` for one that is waiting on nothing.
     """
 
-    headline: Segment
     interrupted: tuple[Segment, ...]
     repository: tuple[Segment, ...]
     # What the turn is waiting on the listener to answer. Plays at every length.
@@ -147,58 +143,40 @@ class Narration:
     sections: tuple[Segment, ...]
 
     def said(self) -> str:
-        """What plays when the turn stops: that it was stopped, the headline, what git says, and what it asked.
+        """What hands says of the turn from its types: that it was stopped, what git says, and what it asked.
 
-        The repository's part is the one clause of the top level no model wrote, and that is the point. Whether
-        a turn committed is a fact its steps and its delta both record, and a summariser asked for it was
-        measured on 2026-09-22 both dropping it and reporting it with the hash read out. Said from the types it
-        can be neither, and the instruction is free to say nothing about commits at all [LAW:one-source-of-truth].
-
-        The question goes last, whatever the summariser put where: it is the one sentence the listener answers,
-        and a fact read out after it leaves them holding the answer to something already gone by. It is said
-        once, because the headline does not hold it: `narration` takes it out of the summariser's reply and into
-        a segment of its own. The sections are built and not spoken: a menu of topics read after every turn would
-        defeat the length number, whose whole point is a turn short enough to sit through, and a listener who
-        wants a topic asks for it.
+        Whether a turn committed is a fact its steps and its delta both record, and a summariser asked for it was
+        measured on 2026-09-22 both dropping it and reporting it with the hash read out: said from the types it can
+        be neither [LAW:one-source-of-truth]. The question goes last: it is the one sentence the listener answers, and
+        a fact read out after it leaves them holding the answer to something already gone by. The sections are built
+        and not said: a listener who wants a topic asks for it.
         """
         # That the user stopped it goes first: it is what they are listening for, and it says why what follows is unfinished.
-        parts = (*self.interrupted, self.headline, *self.repository, *self.questions)
-        # A turn stopped before it did anything has an empty headline, which adds nothing rather than a space.
-        return " ".join(part.text for part in parts if part.text)
+        return " ".join(part.text for part in (*self.interrupted, *self.repository, *self.questions))
 
     def asked(self) -> str:
         """What plays when the turn stops and its summary is not wanted: only what it is waiting on the listener to answer."""
         return " ".join(question.text for question in self.questions)
 
 
-def narration(said: str, turn: Turn, delta: Delta, sentences: int) -> Narration:
-    """The tree for one turn: `said` is what a summariser made of the whole of it, and the rest is arithmetic.
+def narration(turn: Turn, delta: Delta) -> Narration:
+    """The tree for one turn, all of it arithmetic over the turn's steps and what git says it came to.
 
-    The delta belongs to the turn rather than to any step of it — it is what all of them came to, and it names
-    files no step reports — so it is in the headline's reach and in a section of its own, and in no other.
-
-    Whether the turn asked anything is the daemon's to say, from the turn's own closing text and its
-    `AskUserQuestion` calls, and never the summariser's: a model asked to end on the turn's question can drop it,
-    and can end on one the turn never asked [LAW:one-source-of-truth]. The summariser is left the one thing only
-    it can do, which is to put the question in words that can be heard.
+    Whether the turn asked anything, and what, is the daemon's to find, from the turn's own closing text and its
+    `AskUserQuestion` calls, and never a model's: a model asked to find it can miss one, and can find one the turn
+    never asked [LAW:one-source-of-truth]. The model it is handed to puts it in its own words; whatever hands says
+    as written, with no model, says it as found.
     """
     waiting = open_questions(turn)
-    read = reading(said)
-    # A turn waiting on nothing asked nothing, so a sentence of the summariser's read as asking is report phrased
-    # like an offer, "left the retry count up to you", and kept, unless it is a question the model invented, which
-    # is dropped. Dropping the first as well left a one-sentence report saying nothing at all.
-    reported = [sentence for asks, sentence in read if not asks or not waiting and not _questioned(sentence)]
-    worded = [sentence for asks, sentence in read if asks]
     sectioned = [step for step in turn.steps if not isinstance(step, Questioned | Interruption)]
     changes = tuple(change for step in turn.steps if isinstance(step, Ran) for change in step.git)
     return Narration(
-        headline=Segment(THE_HEADLINE, _headline(reported, sentences), (turn.opening, *turn.steps), delta),
-        # Said by the types and not left to the summariser, for the reason the repository is: whether the turn was
-        # stopped is a fact its record holds, and a model asked for it can drop it [LAW:one-source-of-truth]. Said of a
-        # turn that ends on one: a queued message that cut a tool off mid-turn let the turn go on, and it is a step.
+        # Said by the types, for the reason the repository is: whether the turn was stopped is a fact its record holds,
+        # and a model asked for it can drop it [LAW:one-source-of-truth]. Said of a turn that ends on one: a queued
+        # message that cut a tool off mid-turn let the turn go on, and it is a step.
         interrupted=tuple(Segment(THE_INTERRUPTION, "You interrupted it.", (step,)) for step in turn.steps[-1:] if isinstance(step, Interruption)),
         repository=_repository(delta, changes),
-        questions=_questions(worded, waiting),
+        questions=_questions(waiting),
         settled=tuple(
             _settled(question, step)
             for step in turn.steps
@@ -208,24 +186,6 @@ def narration(said: str, turn: Turn, delta: Delta, sentences: int) -> Narration:
         ),
         sections=_sections(sectioned),
     )
-
-
-def _headline(reported: list[str], sentences: int) -> str:
-    """What the summariser reported, cut to the length the top level was given.
-
-    The length is held here and not by the instruction alone, for the reason the spoken-form filter is held in
-    one place: a rule a model is asked to follow is obeyed or not and checked by nobody. Asked for one sentence,
-    the local model wrote two in six of eight tellings on 2026-09-22, and each extra sentence is seconds a
-    listener cannot skip [LAW:single-enforcer]. A question is neither counted nor cut, because it is not here:
-    it is the question segment's, which plays at every length.
-
-    Nothing cut is lost: the sections hold every step the headline was made from, and opening one is what they
-    are for.
-    """
-    kept = " ".join(reported[:sentences])
-    # A reply that ended without a stop would run into what git says next as one long sentence, and speech has
-    # no other way to hear the join.
-    return kept if not kept or kept.endswith((".", "!", "?")) else f"{kept}."
 
 
 @dataclass(frozen=True)
@@ -270,49 +230,25 @@ def open_questions(turn: Turn) -> tuple[Open, ...]:
         for question in step.questions
         if question.answer is None
     ]
-    closing = [InText(step, " ".join(asked)) for step in turn.steps[-1:] if isinstance(step, Said) for asked in [reported_and_asked(step.text)[1]] if asked]
+    closing = [InText(step, " ".join(asked)) for step in turn.steps[-1:] if isinstance(step, Said) for asked in [asked_in(step.text)] if asked]
     return (*unanswered, *closing)
 
 
-def shown(turn: Turn, delta: Delta, budget: Budget) -> str:
-    """The summariser's message: the turn as `render` writes it, and what the daemon found it waiting on.
-
-    Told rather than left for the model to find, because the model is the one wording what the daemon decided:
-    the local model was measured on 2026-09-25 leaving out a question asked above two more sections, and ending
-    four of nine turns that asked nothing on a question of its own. What it asks of a turn that asked nothing is
-    dropped either way, and a question it leaves out is said in Claude's words, which are worse to hear. Given in
-    spoken form, because the model copies what it read last: handed "leaving sync.ts unreviewed" here, it said
-    "sync.ts" in the report above the question as well.
-    """
-    waiting = open_questions(turn)
-    told = f"The turn is waiting on the user's answer to this, and your report ends by asking it:\n  {_unworded(waiting)}" if waiting else "The turn asks the user nothing."
-    return f"{render(turn, delta, budget)}\n\n{told}"
-
-
-def _questions(worded: list[str], waiting: tuple[Open, ...]) -> tuple[Segment, ...]:
-    """The one segment that asks what the turn is waiting on, or nothing for a turn waiting on nothing.
-
-    In the summariser's words where it asked and the turn is waiting on one thing, because they are the words
-    made to be heard, and whatever it asked can only be that thing. Waiting on two, nothing says which of them the summariser's words cover — asked one, it can drop the other,
-    and then that one is said zero times — so each is said in Claude's own words instead, put in spoken form,
-    as it is where the summariser asked nothing: a turn waiting on an answer it never asks for is the failure
-    this segment exists to prevent, and saying a question less well beats not saying it [LAW:no-silent-failure].
-    What the summariser asked of a turn that asked nothing is dropped, which the instruction forbids it to write.
-    """
+def _questions(waiting: tuple[Open, ...]) -> tuple[Segment, ...]:
+    """The one segment that asks what the turn is waiting on, or nothing for a turn waiting on nothing."""
     match waiting:
         case ():
             return ()
         case _:
             holding = tuple(dict.fromkeys(question.step for question in waiting))
-            return (Segment(THE_QUESTION, " ".join(worded) if worded and len(waiting) == 1 else _unworded(waiting), holding),)
+            return (Segment(THE_QUESTION, _unworded(waiting), holding),)
 
 
 def _unworded(waiting: tuple[Open, ...]) -> str:
-    """The questions as Claude put them, for a turn whose summariser did not ask them, in spoken form.
+    """The questions as Claude put them, in spoken form.
 
     Through `spoken` here as well as in front of the speaker, because these words were written for a screen and
-    are said whole, and a line put in spoken form here is one the eval can hold to it; the filter changes nothing
-    the second time. "(Recommended)" is Claude marking an option for a reader, which a listener would hear as
+    are said whole; the filter changes nothing the second time. "(Recommended)" is Claude marking an option for a reader, which a listener would hear as
     part of the option's name, so it is taken out.
     """
     return spoken(" ".join(_put(question) for question in waiting)).text
@@ -353,7 +289,7 @@ _HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]")
 _SENTENCE = re.compile(r"(?<=[.!?])(?<!\be\.g\.)(?<!\bi\.e\.)\s+|(?<=[.!?][*_)\"'”’])\s+|(?<=[.!?][*_)\"'”’]{2})\s+")
 _CLOSERS = "*_)\"'”’ "
 # A question put to the listener outright, which is asked wherever in the text it stands.
-# The summariser's own voice is here too, since it asks with the session as "it": "Want it to carry on?"
+# Asked of the session as "it" too: "Want it to carry on?"
 _ADDRESSED = re.compile(r"\b(?:you|your|yours|want (?:me|it) to|should (?:I|it)|shall (?:I|it)|may I|can I|do I)\b", re.IGNORECASE)
 _CHOICE = re.compile(r"\bor\b", re.IGNORECASE)
 # A sentence that looks ahead to an answer still to come, rather than giving one: to the listener, a condition on
@@ -368,26 +304,25 @@ _OFFERED = re.compile(
 )
 
 
-def reported_and_asked(text: str) -> tuple[list[str], list[str]]:
-    """The text's sentences, split into what it told and what it asked of the listener, as `reading` reads them."""
-    read = reading(text)
-    return [sentence for asks, sentence in read if not asks], [sentence for asks, sentence in read if asks]
+def asked_in(text: str) -> list[str]:
+    """The sentences in which the text asks the listener something, as `reading` reads them."""
+    return [sentence for asks, sentence in reading(text) if asks]
 
 
 def reading(text: str) -> list[tuple[bool, str]]:
     """The text's sentences in order, each with whether it asks the listener something.
 
-    One definition, because the summariser's reply, Claude's own closing text and the idle nudge are all read for
-    their questions, and were there two rules the headline could ask what the nudge says is no question, or the
-    nudge promise one that is never said [LAW:one-source-of-truth].
+    One definition, because Claude's own closing text is read for its questions by the narration and by the idle
+    nudge, and were there two rules the narration could ask what the nudge says is no question, or the nudge promise
+    one that is never said [LAW:one-source-of-truth].
 
     A question put to the listener outright is asked wherever it stands: "Want me to do it?" asked above three
     more sections still waits on an answer. Any other question is asked only where the text ends on it — its
     last paragraph, or the one that introduces the list it ends on — and only where its own paragraph does not
     go on to tell something after it: "Why did it fail? The cache was stale." is the text asking itself, and it
     answered. An offer is asked where the text ends on it: "Say the word and I'll do it." The shapes were read
-    off 3,038 closing texts in this machine's transcripts on 2026-09-25, and the eval holds a real turn of each
-    shape that decides a case, asked and not.
+    off 3,038 closing texts in this machine's transcripts on 2026-09-25, and tests/fixtures/turns holds a real turn
+    of each shape that decides a case, asked and not.
     """
     muted = _QUOTED.sub(lambda quoted: quoted.group(0).replace("?", _MUTED), _FENCED.sub("", text))
     paragraphs = [paragraph for paragraph in _PARAGRAPH.split(muted.strip()) if paragraph.strip()]

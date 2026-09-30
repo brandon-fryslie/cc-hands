@@ -147,15 +147,22 @@ class BrainInterrupted:
     stopped: bool
 
 
+# Whose turn the brain answered: the user's words, or what hands handed it to tell.
+Asker = Literal["user", "hands"]
+
+
 @dataclass(frozen=True)
 class BrainSpoke:
     """What a brain turn handed to the speaker, and the exchanges on the wire its words came from; `readbacks` is what hands
-    said for it once its next request was held."""
+    said for it once its next request was held. `asker` is whose turn it was: the user's words, or hands' narration.
+    `waited` is how long, in seconds, the turn waited in its lane for the brain before it was written."""
 
     exchanges: tuple[str, ...]
     text: str
     readbacks: tuple[str, ...]
     interrupted: bool
+    asker: Asker
+    waited: float
 
 
 @dataclass(frozen=True)
@@ -200,22 +207,20 @@ class Announced:
 
 @dataclass(frozen=True)
 class Recounted:
-    """What the user heard about a turn a session finished, and what the narration left them able to ask for.
+    """What hands told of a turn a session finished, and what the narration left the user able to ask for.
 
+    `told` is what went out: handed to the model to say in its own words when `by_model`, and said as written when not.
     `topics` is every part of the turn's narration that was built and not played — its sections, and what it
     asked through a dialog and is no longer waiting on — which makes this line the
     one place a developer who cannot see the screen can find out what "more on that" has to open. `questions`
-    is what was said of what the session is waiting on an answer to, which is also the end of `summary`, kept
-    apart so a log reader need not tell the question from the report.
+    is what the session is waiting on an answer to, kept apart so a log reader need not find it in `told`.
     """
 
     session: str
-    summary: str
+    told: str
     topics: tuple[str, ...]
     questions: tuple[str, ...]
-    # Whether the model's report was kept as the turn's sentence in the summary store, so read_session serves it and
-    # the turn is never summarised again. Not kept: summaries off, no model asked, or a telling of part of a turn.
-    kept: bool
+    by_model: bool
 
 
 @dataclass(frozen=True)
