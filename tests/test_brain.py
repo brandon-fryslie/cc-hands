@@ -248,8 +248,11 @@ def test_text_passed_on_to_the_brain_is_typed_as_the_characters_it_shows() -> No
     assert pasted("plain\nwords") == "plain\nwords"
 
 
-async def test_a_stop_goes_before_the_side_questions_waiting_to_type_and_returns_at_once(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
-    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+async def test_a_stop_cancels_the_side_question_on_the_screen_goes_before_those_waiting_to_type_and_returns_at_once(
+    tmp_path: Path, fake_claude: Path, fritter: Path
+) -> None:
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
     try:
         waiting = asyncio.create_task(brain.ask("wait"))
         await until(lambda: any(line[0] == "prompt" for line in typed(tmp_path)))
@@ -259,25 +262,32 @@ async def test_a_stop_goes_before_the_side_questions_waiting_to_type_and_returns
         await asyncio.sleep(0.05)
         # A barge-in does not wait on the input: the stage that calls this goes on with its frames.
         brain.interrupt()
+        # Nor on the side question on the screen, whose answer may be a long way off.
+        with pytest.raises(ForkFailed, match="the turn beside it was stopped before it was answered"):
+            await asyncio.wait_for(first, 5)
+        assert await asyncio.wait_for(waiting, 5) == BrainAnswered("p1", None)
+        # A late answer finds no question waiting on it.
         brain.hear(forked("b1", "first", "x1"))
         brain.hear(answered("b1", "One.", exchange="x1"))
-        assert await first == "One."
-        assert await asyncio.wait_for(waiting, 5) == BrainAnswered("p1", None)
         await until(lambda: sum(line[0] == "btw" for line in typed(tmp_path)) == 2)
         brain.hear(forked("b1", "second", "x2"))
         brain.hear(answered("b1", "Two.", exchange="x2"))
         assert await second == "Two."
     finally:
         await brain.stop()
+    # The question cancelled with its Escape, the turn stopped with the stop's, and the prompt that Escape put back
+    # cleared, so the next thing typed goes out alone.
     assert typed(tmp_path) == [
         ["prompt", " wait"],
         ["btw", "first"],
-        ["dismissed", ""],
+        ["cancelled", ""],
         ["escape", ""],
         ["ctrl_c", " wait"],
         ["btw", "second"],
         ["dismissed", ""],
     ]
+    asides = [(entry.question, entry.reply, entry.failed) for entry in recorded if isinstance(entry, BrainForked)]
+    assert asides == [("first", "the turn beside it was stopped before it was answered", True), ("second", "Two.", False)]
 
 
 async def test_a_turn_goes_before_the_side_questions_waiting_to_type(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:

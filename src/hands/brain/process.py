@@ -286,7 +286,8 @@ class Brain:
         self._record = record
         # [LAW:single-enforcer] one thing is typed at a time, and nothing while a side question's answer covers the input,
         # where whatever is typed goes into the answer instead. Side questions wait their turn for the input in the queue,
-        # so a turn the user asked for, or a stop, each of which takes the input alone, is next once whatever holds it lets go.
+        # so a turn the user asked for, or a stop, each of which takes the input alone, is next once whatever holds it lets go;
+        # a stop fails a side question still waiting on its answer, so that it lets go at once.
         self._queue = asyncio.Lock()
         self._input = asyncio.Lock()
         # [LAW:no-ambient-temporal-coupling] the turn in flight is the brain's own state, not its asker's: it is over
@@ -368,8 +369,8 @@ class Brain:
 
     def interrupt(self) -> None:
         """Stop the turn in flight with Escape, as at the keyboard. Returns at once: the Escape is the brain's to press,
-        before anything else waiting to type, once a side question on the screen is done with it (hands-wire-6ic.ulk), and
-        no hook says a turn was stopped, so the turn ends where it is pressed."""
+        before anything else waiting to type and without waiting on a side question's answer, and no hook says a turn was
+        stopped, so the turn ends where it is pressed."""
         turn = self._turn
         if turn is not None:
             self._keep(self._stop(turn))
@@ -378,6 +379,11 @@ class Brain:
         # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: a turn ended
         # while its UserPromptSubmit hook is still coming would leave that hook to be taken for the next turn's.
         await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+        fork = self._fork
+        if self._turn is turn and turn.taken.done() and fork is not None and not fork.answer.done():
+            # A side question waiting on its answer holds the input until the answer comes. It fails now, so it cancels
+            # itself with its Escape and lets go at once; that Escape leaves the turn running, for this one to stop.
+            fork.answer.set_exception(ForkFailed("the turn beside it was stopped before it was answered"))
         try:
             async with self._input:
                 if self._turn is not turn:
@@ -387,9 +393,9 @@ class Brain:
                     logger.warning(f"the brain was not stopped: its turn was not taken in {TAKE_SECONDS:.0f}s")
                     return
                 await self._type(lambda: self._typist.press("escape"))
-                # Escape puts the stopped prompt back in the input, which the next turn typed would join; Ctrl-C clears it.
-                # It arms Claude Code's exit for a second Ctrl-C on an empty input, which no stop presses: each follows an
-                # Escape that refilled it (2.1.285, measured 2026-09-30, two stops 45ms apart).
+                # Escape puts a prompt stopped before any reply back in the input, which the next turn typed would join;
+                # Ctrl-C clears it. On an input left empty it arms Claude Code's exit instead, which the next turn's typing
+                # disarms, so the next stop's Ctrl-C never exits (2.1.285, measured 2026-09-30, three stops 1.6s apart).
                 await self._type(lambda: self._typist.press("ctrl_c"))
         except BrainGone as error:
             self._over(turn, error)

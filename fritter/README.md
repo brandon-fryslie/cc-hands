@@ -81,7 +81,10 @@ keystroke. The keys are `escape`, `enter`, `ctrl_c`, `ctrl_u`, `up`, `down`, `ta
 
 The answer is `{"ok":true}` once the write is done, or `{"ok":false,"reason":"..."}` when
 the request was refused or the write failed. Writes into the child are made one at a time,
-the user's keys and requests alike, so neither lands inside the other.
+the user's keys and requests alike, so neither lands inside the other. An `escape` keeps
+the input to itself for 100ms after it is written, and its answer comes after that: a
+terminal reads an `ESC` with another byte close behind it as one chord, so Escape then
+Ctrl-C sent together would reach Claude Code as Alt+Ctrl-C.
 
 A caller has one second and 64 KB to get its request in.
 

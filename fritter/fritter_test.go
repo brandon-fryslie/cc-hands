@@ -278,6 +278,22 @@ func TestTextIsPastedAndSentAsOneWrite(t *testing.T) {
 	}
 }
 
+func TestAnEscapeIsReadAloneWhateverIsTypedStraightAfterIt(t *testing.T) {
+	// An ESC read together with the byte behind it is a chord, not an Escape: Claude Code
+	// took Escape then Ctrl-C, sent at once, as Alt+Ctrl-C and stopped nothing. The child
+	// reads every 50ms, so keys sent within that time of each other arrive in one read
+	// unless fritter keeps them apart.
+	_, ask, reads := recorded(t, 2)
+	for _, key := range []string{"escape", "ctrl_c"} {
+		if answer := ask(`{"kind":"key","key":"` + key + `"}`); !answer.OK {
+			t.Fatalf("the key %s was refused: %s", key, answer.Reason)
+		}
+	}
+	if got, want := reads(), []string{"\x1b", "\x03"}; !slices.Equal(got, want) {
+		t.Fatalf("the child read %q, want %q", got, want)
+	}
+}
+
 func TestACommandIsTypedAndOnlyItsTextPasted(t *testing.T) {
 	// A long paste is folded into a placeholder that hides whatever it began with, so the
 	// command goes as keys and only what follows it as a paste.

@@ -124,10 +124,34 @@ func (w *Wrapped) inject(asked request) response {
 	if err != nil {
 		return refuse(err.Error())
 	}
-	if _, err := w.Write(keys); err != nil {
+	if err := w.typeIn(keys); err != nil {
 		return refuse(fmt.Sprintf("cannot write to the session: %v", err))
 	}
 	return response{OK: true}
+}
+
+// How long keys that end in ESC keep the child's input to themselves. Claude Code 2.1.285
+// read an ESC followed within 40ms by another byte as one chord, and alone from 45ms on
+// (hands-wire-6ic.ulk, measured 2026-09-30); this is vim's default for the same wait.
+const loneEscape = 100 * time.Millisecond
+
+// typeIn writes a request's keys into the child's input.
+//
+// [LAW:no-ambient-temporal-coupling] A terminal tells an Escape from the start of a chord
+// only by the silence after it: an ESC followed at once by Ctrl-C is read as Alt+Ctrl-C,
+// and the Escape that was to stop a turn stops nothing. fritter is the one writer into the
+// child's input, so it owns that silence: whatever comes next, a request or the user's own
+// keys, waits behind the ESC until it has been read alone.
+func (w *Wrapped) typeIn(keys []byte) error {
+	w.writing.Lock()
+	defer w.writing.Unlock()
+	if _, err := w.master.Write(keys); err != nil {
+		return err
+	}
+	if keys[len(keys)-1] == esc {
+		time.Sleep(loneEscape)
+	}
+	return nil
 }
 
 // keys is a request as the bytes a terminal sends for it.
