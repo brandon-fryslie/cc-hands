@@ -253,6 +253,8 @@ class BrainStage(FrameProcessor):
         if turn is None:
             return
         match observed:
+            # Said as it arrives, and never twice: a reply the API breaks mid-stream is not asked for again, streamed or
+            # not; the turn ends in StopFailure, with the broken reply kept out of the brain's history (2.1.285, hands-wire-6ic.6dz).
             case Heard(exchange=exchange, event=TextDelta(text=text)) if exchange in turn.exchanges:
                 turn.said.put_nowait(text)
             case Heard(exchange=exchange, event=BlockStarted(index=index, block={"type": "tool_use", "id": str() as call, "name": str() as name})) if exchange in turn.exchanges:
