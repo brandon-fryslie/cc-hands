@@ -468,6 +468,45 @@ async def test_a_turn_the_brain_ended_in_error_is_reported_as_the_model_stages_e
     assert "API Error: 500 overloaded" in rig.errors[0].error
 
 
+async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_then_the_failure(rig: Rig) -> None:
+    # As Claude Code 2.1.285 ends it (hands-wire-6ic.6dz, measured): no retry and no fallback request, only StopFailure.
+    await rig.say({"role": "user", "content": "tell me about lighthouses"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "1. Lighthouses stand ", "on rocky coasts and h")
+    await rig.until(lambda: len(rig.out.said()) == 2)
+    rig.brain.end(BrainAnswered("p1", "server_error: API Error: Connection lost mid-response. The response above may be incomplete."))
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert rig.out.shape() == ["LLMFullResponseStartFrame", "LLMTextFrame", "LLMTextFrame", "LLMFullResponseEndFrame"]
+    assert rig.out.said() == ["1. Lighthouses stand ", "on rocky coasts and h"]
+    assert rig.errors[0].processor is rig.stage
+    assert "Connection lost mid-response" in rig.errors[0].error
+    assert BrainSpoke((exchange,), "1. Lighthouses stand on rocky coasts and h", (), False, "user", 0.0) in rig.recorded
+    # The broken reply is not in the brain's history, so its next turn tells it what the user heard, and only that one.
+    await rig.say({"role": "user", "content": "what were you saying?"})
+    rig.brain.end()
+    await rig.say({"role": "user", "content": "thanks"})
+    assert rig.brain.asked[1:] == [
+        '[hands] The API broke off your last turn. The user heard you say "1. Lighthouses stand on rocky coasts and h", then that it failed. '
+        "Say nothing about this unless the user asks.\n\nwhat were you saying?",
+        "thanks",
+    ]
+
+
+async def test_what_the_user_heard_of_a_broken_turn_is_told_with_the_first_turn_the_brain_takes(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "tell me about lighthouses"})
+    rig.stream(rig.request()[0], "Lighthouses stand")
+    await rig.until(lambda: len(rig.out.said()) == 1)
+    rig.brain.end(BrainAnswered("p1", "server_error: API Error: Connection lost mid-response."))
+    await rig.until(lambda: len(rig.errors) == 1)
+    await rig.say({"role": "user", "content": "what were you saying?"})
+    rig.brain.fail(Untaken("the brain did not take the turn typed into it in 30s"))
+    await rig.until(lambda: len(rig.errors) == 2)
+    await rig.say({"role": "user", "content": "again"})
+    note = '[hands] The API broke off your last turn. The user heard you say "Lighthouses stand", then that it failed. Say nothing about this unless the user asks.'
+    assert rig.brain.asked[1:] == [f"{note}\n\nwhat were you saying?", f"{note}\n\nagain"]
+    rig.brain.end()
+
+
 async def test_a_turn_the_brain_never_took_is_reported_as_the_model_stages_error_and_the_next_is_asked(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "hello"})
     # The brain is still running, so no watch reports it: the stage does.

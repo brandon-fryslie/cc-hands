@@ -121,6 +121,9 @@ class BrainStage(FrameProcessor):
         self._hands: deque[tuple[Narrated | Aloud, float]] = deque()
         self._waiting = asyncio.Event()
         self._turn: _Turn | None = None
+        # What the user heard of the last turn before the API broke it off, told to the brain with its next turn: Claude
+        # Code keeps the broken reply out of the brain's history (2.1.285), so without it the brain cannot answer about it.
+        self._broken_off = ""
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -166,6 +169,8 @@ class BrainStage(FrameProcessor):
     async def _ask(self, text: str, asker: Asker, unsaid: Sequence[str], arrived: float) -> None:
         """One turn of the brain's; `unsaid` is what hands says as written if the brain cannot take it."""
         waited = self._now() - arrived
+        note, self._broken_off = self._broken_off, ""
+        text = "\n\n".join(part for part in (note, text) if part)
         said: asyncio.Queue[str | None] = asyncio.Queue()
         spoken: list[str] = []
         turn = self._turn = _Turn(said, asyncio.create_task(self._speak(said, spoken), name="the brain's words"), spoken)
@@ -184,10 +189,13 @@ class BrainStage(FrameProcessor):
             # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
             # from its own watch, but one that never took the turn, or could not be typed into, is still running.
             logger.opt(exception=error).error("the brain failed a turn")
+            # A turn the brain never took did not tell it what the user heard: the turn after it does.
+            self._broken_off = note
             await self._unsaid(unsaid)
             await self.push_error(f"the brain failed a turn: {error}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         elif (failed := asked.result().error) is not None and not turn.stopped:
             # [LAW:no-silent-failure] said as the API services' failures are: an error from the model's stage.
+            self._broken_off = _broken_off("".join(turn.spoken))
             await self._unsaid(unsaid)
             await self.push_error(f"the brain's turn ended in error: {failed}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
@@ -253,6 +261,8 @@ class BrainStage(FrameProcessor):
         if turn is None:
             return
         match observed:
+            # Said as it arrives, and never twice: a reply the API breaks mid-stream is not asked for again, streamed or
+            # not; the turn ends in StopFailure, with the broken reply kept out of the brain's history (2.1.285, hands-wire-6ic.6dz).
             case Heard(exchange=exchange, event=TextDelta(text=text)) if exchange in turn.exchanges:
                 turn.said.put_nowait(text)
             case Heard(exchange=exchange, event=BlockStarted(index=index, block={"type": "tool_use", "id": str() as call, "name": str() as name})) if exchange in turn.exchanges:
@@ -272,6 +282,11 @@ def _user_text(message: LLMStandardMessage) -> str:
         # [LAW:no-silent-failure] hands' aggregator and notes write plain text; anything else is a change to hear about.
         raise TypeError(f"a user message in the context is not plain text: {message!r}")
     return content
+
+
+def _broken_off(spoken: str) -> str:
+    """The note that tells the brain what the user heard of a turn the API broke off; none when nothing of it was said."""
+    return f'[hands] The API broke off your last turn. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.' if spoken else ""
 
 
 def _said(answer: ToolAnswer) -> str:
