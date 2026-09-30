@@ -79,8 +79,9 @@ def _classify_messages(body: object) -> Kind:
     messages = _list(request.get("messages"))
     if not messages:
         return Unknown("a messages request with no messages")
-    # Any block: Claude Code merges adjacent user messages, so the compaction prompt can follow a prompt just typed.
-    if any(text.startswith(COMPACTION_OPENING) for text in _texts(messages[-1])):
+    # Any block of any message since the last reply: Claude Code merges adjacent user messages, so a prompt of its own
+    # can follow a prompt just typed or a tool's result, and a message of its own can follow it (2.1.285).
+    if any(text.startswith(COMPACTION_OPENING) for text in asked(request)):
         return Compaction()
     if any(text.startswith(SIDE_QUESTION_OPENING) for text in asked(request)):
         return Fork()
@@ -98,8 +99,13 @@ def _classify_messages(body: object) -> Kind:
 def asked(body: object) -> tuple[str, ...]:
     """The text of a messages request after the model's last reply: what the request is asking now."""
     messages = _list(cast(Mapping[str, object], body).get("messages")) if isinstance(body, Mapping) else []
+    return tuple(text for message in messages[_since_reply(messages) :] for text in _texts(message))
+
+
+def _since_reply(messages: Sequence[object]) -> int:
+    """Where the messages after the model's last reply begin."""
     replies = [index for index, message in enumerate(messages) if _role(message) == "assistant"]
-    return tuple(text for message in messages[replies[-1] + 1 if replies else 0 :] for text in _texts(message))
+    return replies[-1] + 1 if replies else 0
 
 
 def _role(message: object) -> object:
@@ -607,7 +613,7 @@ class Stub:
 
 @dataclass(frozen=True)
 class Steer:
-    """A compaction sent with `prompt` in place of the summarisation prompt Claude Code wrote in its newest message.
+    """A compaction sent with `prompt` in place of the summarisation prompt Claude Code wrote after the last reply.
 
     What Claude Code writes after its own prompt stays: the /compact arguments or a PreCompact hook's instructions, and
     the closing reminder.
@@ -666,9 +672,10 @@ def edited(body: object, changes: Sequence[Change]) -> Mapping[str, object]:
             case Stub(call=call) if call not in stubbed:
                 raise ValueError(f"no tool result answers call {call}")
             case Steer(prompt=prompt):
-                if not any(text.startswith(COMPACTION_OPENING) for text in _texts(messages[-1] if messages else None)):
-                    raise ValueError("the newest message holds no compaction prompt to steer")
-                messages[-1] = _steered(messages[-1], prompt)
+                if not any(text.startswith(COMPACTION_OPENING) for text in asked(request)):
+                    raise ValueError("no message since the last reply holds a compaction prompt to steer")
+                since = _since_reply(messages)
+                messages[since:] = [_steered(message, prompt) for message in messages[since:]]
             case _:
                 pass
     tails: list[object] = [{"type": "text", "text": change.text} for change in changes if isinstance(change, Tail)]
@@ -703,7 +710,7 @@ def _stubbed(block: object, lines: Mapping[str, str]) -> object:
 
 
 def _steered(message: object, prompt: str) -> object:
-    """The newest message with its compaction prompt replaced, whether its content is a string or blocks, as `_texts` reads it."""
+    """A message with its compaction prompt replaced, whether its content is a string or blocks, as `_texts` reads it."""
     match message:
         case {"content": str() as text}:
             return {**cast(Mapping[str, object], message), "content": _steered_text(text, prompt)}

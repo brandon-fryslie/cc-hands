@@ -113,6 +113,29 @@ def test_the_compaction_prompt_makes_a_compaction_whatever_its_marker() -> None:
     assert classify("/v1/messages", request(said("hi"), said("ok", marked=True), merged)) == Compaction()
 
 
+# /compact on a brain mid-history, as 2.1.285 sent it through the proxy (hands-wire-6ic.6tr in vivo): the prompt merged
+# into the message answering the last reply's call, the marker on that reply, and a message of Claude Code's own after.
+COMPACTING = request(
+    said("read turn 2"),
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "a", "name": "read_turn", "input": {}, "cache_control": MARKED}]},
+    {
+        "role": "user",
+        "content": [
+            {"type": "tool_result", "tool_use_id": "a", "content": [{"type": "text", "text": "no turn 2"}]},
+            {"type": "text", "text": COMPACTION_OPENING + " summarise the code" + COMPACTION_REMINDER},
+        ],
+    },
+    {"role": "system", "content": "<system-reminder>tokens left</system-reminder>"},
+)
+
+
+def test_a_compaction_followed_by_a_message_of_claude_codes_own_is_a_compaction_and_is_steered() -> None:
+    assert classify("/v1/messages", COMPACTING) == Compaction()
+    messages = cast(list[dict[str, object]], edited(COMPACTING, (Steer("voice"),))["messages"])
+    assert cast(list[dict[str, str]], messages[2]["content"])[1]["text"] == "voice" + COMPACTION_REMINDER
+    assert messages[3] == cast(list[object], COMPACTING["messages"])[3]
+
+
 def test_count_tokens_is_known_by_its_path() -> None:
     assert classify("/v1/messages/count_tokens?beta=true", {"messages": [said("a file")]}) == CountTokens()
 
@@ -386,5 +409,5 @@ def test_a_steer_refuses_a_compaction_prompt_with_no_closing_reminder() -> None:
 def test_a_change_with_nothing_to_change_is_refused() -> None:
     with pytest.raises(ValueError, match="no tool result answers call b"):
         edited(request(said("hi", marked=True)), (Stub("b", "Read: B"),))
-    with pytest.raises(ValueError, match="no compaction prompt"):
+    with pytest.raises(ValueError, match="compaction prompt to steer"):
         edited(request(said("hi", marked=True)), (Steer("summarise"),))
