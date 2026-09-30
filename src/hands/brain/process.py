@@ -34,7 +34,7 @@ from loguru import logger
 
 from hands.brain.mcp import SERVER_NAME
 from hands.core.effects import Command, Text
-from hands.core.session import ESCAPES, CommandName, PromptText, SessionId, pasted
+from hands.core.session import ESCAPES, CommandName, Keystroke, PromptText, SessionId, pasted
 from hands.core.wire import Exchanged, Fork, MainTurn, Observed, Reached, Sent, Streamed, asked, tool_names
 from hands.core.wire import Text as Said
 from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainForked, BrainLaunched, Record
@@ -53,6 +53,9 @@ SLIM = {
     "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
+    # A background command's notification opens a turn of its own, under a prompt id no turn hands typed carries, which
+    # would take a typed turn's place or leave it never ending (hands-wire-6ic.99l review).
+    "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
 }
 
 # Credentials Claude Code prefers to its own login. Inherited from hands' environment, any of them would put the brain
@@ -230,7 +233,7 @@ class _Terminal:
         return "\n".join(lines[-SHOWN_LINES:])
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Aside:
     """A side question typed into the brain: its text as typed, the exchanges on the wire that ask it, and its answer."""
 
@@ -239,6 +242,13 @@ class _Aside:
     # [LAW:one-source-of-truth] the answer is read from the brain's own request for this question, never from whichever
     # fork of the session happens to end first.
     exchanges: set[str]
+    # Whether the answer came, and so is what covers the input: Return dismisses an answer, and Escape a question still
+    # waiting on one, which it cancels and leaves the turn running (2.1.285, measured 2026-09-30).
+    shown: bool = False
+
+    @property
+    def dismissal(self) -> Keystroke:
+        return "enter" if self.shown else "escape"
 
 
 @dataclass
@@ -340,12 +350,15 @@ class Brain:
             except (ForkFailed, BrainGone) as error:
                 self._record(BrainForked(question, str(error), failed=True))
                 raise
+            except asyncio.CancelledError:
+                self._record(BrainForked(question, "its asker stopped waiting", failed=True))
+                raise
             finally:
                 self._fork = None
-                # The answer is shown over the input until it is dismissed. On an input with nothing in it, Return does nothing.
+                # The question or its answer covers the input until it is dismissed.
                 if not self._exit.done():
                     try:
-                        await self._type(lambda: self._typist.press("enter"))
+                        await self._type(lambda: self._typist.press(fork.dismissal))
                     except BrainGone:
                         logger.exception("the brain's side question could not be dismissed")
                     await asyncio.sleep(SETTLE_SECONDS)
@@ -354,7 +367,8 @@ class Brain:
 
     def interrupt(self) -> None:
         """Stop the turn in flight with Escape, as at the keyboard. Returns at once: the Escape is the brain's to press,
-        before anything else waiting to type, and no hook says a turn was stopped, so the turn ends where it is pressed."""
+        before anything else waiting to type, once a side question on the screen is done with it (hands-wire-6ic.ulk), and
+        no hook says a turn was stopped, so the turn ends where it is pressed."""
         turn = self._turn
         if turn is not None:
             self._keep(self._stop(turn))
@@ -368,6 +382,10 @@ class Brain:
                 if self._turn is not turn or not turn.taken.done():
                     return
                 await self._type(lambda: self._typist.press("escape"))
+                # Escape puts the stopped prompt back in the input, which the next turn typed would join; Ctrl-C clears it.
+                # It arms Claude Code's exit for a second Ctrl-C on an empty input, which no stop presses: each follows an
+                # Escape that refilled it (2.1.285, measured 2026-09-30, two stops 45ms apart).
+                await self._type(lambda: self._typist.press("ctrl_c"))
         except BrainGone as error:
             self._over(turn, error)
             return
@@ -391,6 +409,7 @@ class Brain:
             case Exchanged(exchange=exchange, reply=reply) if fork is not None and exchange in fork.exchanges and not fork.answer.done():
                 match reply:
                     case Reached(status=200, body=Streamed(message=message)):
+                        fork.shown = True
                         said = " ".join(block.text for block in message.content if isinstance(block, Said)).strip()
                         if said:
                             fork.answer.set_result(said)
@@ -489,35 +508,38 @@ async def start(launch: Launch, record: Record) -> Brain:
     listener, url = await _listen(hooks)
     # A unix socket's path is capped near 104 bytes on macOS, so not under the brain's own directory.
     sockets = Path(tempfile.mkdtemp(prefix="hands-brain-"))
-    master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+    process: asyncio.subprocess.Process | None = None
     try:
-        process = await asyncio.create_subprocess_exec(
-            str(launch.fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url),
-            cwd=launch.cwd,
-            env={**environment(launch.config_dir, launch.proxy_url, os.environ), "TERM": "xterm-256color"},
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            start_new_session=True,
-        )
-    except BaseException:
-        os.close(master)
-        await listener.cleanup()
-        raise
-    finally:
-        os.close(slave)
-    terminal = _Terminal(master)
-    record(BrainLaunched(process.pid, launch.config_dir, launch.cwd, launch.model))
-    try:
+        master, slave = pty.openpty()
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+            process = await asyncio.create_subprocess_exec(
+                str(launch.fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url),
+                cwd=launch.cwd,
+                env={**environment(launch.config_dir, launch.proxy_url, os.environ), "TERM": "xterm-256color"},
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                start_new_session=True,
+            )
+        except BaseException:
+            os.close(master)
+            raise
+        finally:
+            os.close(slave)
+        terminal = _Terminal(master)
+        record(BrainLaunched(process.pid, launch.config_dir, launch.cwd, launch.model))
         typist = await _typist(process, sockets, launch.session)
-    except Unstartable:
-        process.kill()
-        await process.wait()
+        await asyncio.sleep(SETTLE_SECONDS)
+    except BaseException:
+        # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
+        # its own, so nothing else would end it when hands does.
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
         await listener.cleanup()
         shutil.rmtree(sockets, ignore_errors=True)
         raise
-    await asyncio.sleep(SETTLE_SECONDS)
     return Brain(process, launch.session, typist, terminal, hooks, listener, sockets, launch.config_dir, record)
 
 

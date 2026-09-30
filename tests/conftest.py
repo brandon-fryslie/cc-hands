@@ -141,9 +141,9 @@ def typed(line):
 tty.setraw(0)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h> ")
-pending, box, turn, aside, prompts = b"", "", None, False, 0
+pending, box, turn, turn_text, aside, prompts = b"", "", None, "", False, 0
 def submit(text):
-    global turn, aside, prompts
+    global turn, turn_text, aside, prompts
     if aside:
         aside = False
         typed(["dismissed", text])
@@ -163,7 +163,7 @@ def submit(text):
         os.write(1, b"bye\\r\\n")
         sys.exit(3)
     if said == "wait":
-        turn = prompt
+        turn, turn_text = prompt, text
         return
     if said == "slow":
         time.sleep(0.5)
@@ -185,9 +185,19 @@ while True:
             pending = pending[end + 6:]
         elif pending.startswith(b"\\x1b"):
             pending = pending[1:]
+            if aside:
+                # Escape over a side question waiting on its answer cancels it, and the turn runs on.
+                aside = False
+                typed(["cancelled", box])
+                continue
             typed(["escape", box])
             if turn is not None:
-                turn = None
+                # As Claude Code does, the stopped prompt is put back in the input.
+                box, turn = turn_text, None
+        elif pending.startswith(b"\x03"):
+            pending = pending[1:]
+            typed(["ctrl_c", box])
+            box = ""
         elif pending.startswith(b"\\r"):
             pending = pending[1:]
             text, box = box, ""

@@ -204,7 +204,8 @@ async def test_an_interrupt_is_escape_and_ends_the_turn_in_flight_and_the_next_t
         assert await brain.ask("and now?") == BrainAnswered("p2", None)
     finally:
         await brain.stop()
-    assert typed(tmp_path) == [["prompt", " wait"], ["escape", ""], ["prompt", " and now?"]]
+    # The Escape puts the stopped prompt back in the input, and Ctrl-C clears it before the next is typed.
+    assert typed(tmp_path) == [["prompt", " wait"], ["escape", ""], ["ctrl_c", " wait"], ["prompt", " and now?"]]
 
 
 async def test_a_side_question_is_btw_typed_answered_from_the_wire_and_dismissed(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
@@ -260,14 +261,22 @@ async def test_a_stop_goes_before_the_side_questions_waiting_to_type_and_returns
         brain.hear(forked("b1", "first", "x1"))
         brain.hear(answered("b1", "One.", exchange="x1"))
         assert await first == "One."
-        assert await waiting == BrainAnswered("p1", None)
+        assert await asyncio.wait_for(waiting, 5) == BrainAnswered("p1", None)
         await until(lambda: sum(line[0] == "btw" for line in typed(tmp_path)) == 2)
         brain.hear(forked("b1", "second", "x2"))
         brain.hear(answered("b1", "Two.", exchange="x2"))
         assert await second == "Two."
     finally:
         await brain.stop()
-    assert typed(tmp_path) == [["prompt", " wait"], ["btw", "first"], ["dismissed", ""], ["escape", ""], ["btw", "second"], ["dismissed", ""]]
+    assert typed(tmp_path) == [
+        ["prompt", " wait"],
+        ["btw", "first"],
+        ["dismissed", ""],
+        ["escape", ""],
+        ["ctrl_c", " wait"],
+        ["btw", "second"],
+        ["dismissed", ""],
+    ]
 
 
 def test_a_turn_sent_without_hands_tools_is_an_error_and_one_with_them_is_not() -> None:
@@ -287,7 +296,7 @@ def test_a_turn_sent_without_hands_tools_is_an_error_and_one_with_them_is_not() 
     assert errors == ["the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (('Read',))"]
 
 
-async def test_a_side_question_never_answered_fails_in_time_and_is_still_dismissed(
+async def test_a_side_question_never_answered_fails_in_time_and_is_cancelled(
     tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("hands.brain.process.FORK_SECONDS", 0.2)
@@ -301,7 +310,8 @@ async def test_a_side_question_never_answered_fails_in_time_and_is_still_dismiss
         assert await brain.ask("and now?") == BrainAnswered("p1", None)
     finally:
         await brain.stop()
-    assert typed(tmp_path) == [["btw", "hold"], ["dismissed", ""], ["prompt", " and now?"]]
+    # Never answered, it is cancelled with Escape rather than dismissed with Return.
+    assert typed(tmp_path) == [["btw", "hold"], ["cancelled", ""], ["prompt", " and now?"]]
 
 
 async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_its_side_question_and_says_once_how_it_ended(
@@ -373,13 +383,18 @@ async def test_the_summariser_on_the_brain_types_the_turn_in_as_a_side_question_
         asked.append(question)
         if "fail" in question:
             raise ForkFailed("no answer in 120s")
+        if "slow" in question:
+            await asyncio.sleep(5)
         return "  The tests ran. "
 
-    summarise = aside(fork, "Sum it up.")
+    summarise = aside(fork, "Sum it up.", 0.1)
     assert await summarise("the tests ran") == "The tests ran."
     assert asked == ["Sum it up.\n\nSummarize this:\n\nthe tests ran"]
     with pytest.raises(SummaryFailed, match="no answer in 120s"):
         await summarise("fail")
+    # The summary's own time holds, whatever the side question waited on: the input, or the brain's answer.
+    with pytest.raises(SummaryFailed, match="no answer in 0s"):
+        await summarise("slow")
 
 
 async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_variant_alone(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:

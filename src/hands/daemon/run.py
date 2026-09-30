@@ -250,9 +250,9 @@ async def mind(
                     with wire.joined(Kept(stage, keeper, brain)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                         # Its summaries are side questions typed into it: no other Claude Code is started, and no request
-                        # is sent that the brain did not send itself. What it answers is as long as it takes, and a side
-                        # question has its own time.
-                        yield Mind(stage, watches, Tailed(), lambda instruction, _max_tokens, _timeout: aside(brain.fork, instruction))
+                        # is sent that the brain did not send itself. What it answers is as long as it takes: only its time
+                        # is the summary's own.
+                        yield Mind(stage, watches, Tailed(), lambda instruction, _max_tokens, timeout: aside(brain.fork, instruction, timeout))
                 finally:
                     await brain.stop()
             finally:
