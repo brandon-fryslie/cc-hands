@@ -49,7 +49,7 @@ from hands.voice.tools import Result, Tool, tool
 
 BRAIN = SessionId("brain-session")
 PATIENCE_SECS = 2.0
-ANSWERED = BrainAnswered("success", False, 1, 10)
+ANSWERED = BrainAnswered(None)
 TAIL = "[hands] The Claude Code sessions running now: none of note."
 
 
@@ -377,10 +377,10 @@ async def test_notes_that_came_in_one_ask_are_not_asked_again_empty(rig: Rig) ->
 
 async def test_a_turn_the_brain_ended_in_error_is_reported_as_the_model_stages_error(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "hello"})
-    rig.brain.end(BrainAnswered("error_during_execution", True, 1, 10))
+    rig.brain.end(BrainAnswered("unknown: API Error: 500 overloaded"))
     await rig.until(lambda: len(rig.errors) == 1)
     assert rig.errors[0].processor is rig.stage
-    assert "error_during_execution" in rig.errors[0].error
+    assert "API Error: 500 overloaded" in rig.errors[0].error
 
 
 async def test_a_stay_silent_answered_in_an_earlier_turn_does_not_hold_the_next(rig: Rig) -> None:
@@ -415,8 +415,8 @@ async def test_a_turn_hands_stopped_ends_in_the_error_it_asked_for_and_nothing_i
     rig.stream(exchange, "First, ")
     await rig.until(lambda: rig.out.said() == ["First, "])
     await rig.interrupt()
-    # As Claude Code 2.1.285 ends a turn it was told to stop.
-    rig.brain.end(BrainAnswered("error_during_execution", True, 1, 10))
+    # A turn the API fails as it is being stopped is still a turn hands stopped, not an error to report.
+    rig.brain.end(BrainAnswered("unknown: API Error: 500 overloaded"))
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
     await asyncio.sleep(0.1)
     assert rig.errors == []

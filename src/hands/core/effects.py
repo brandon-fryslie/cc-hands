@@ -275,13 +275,18 @@ class Command:
     args: PromptText | None
 
     @property
-    def typed(self) -> PromptText:
+    def word(self) -> str:
         """The command with its slash, which is what makes Claude Code run it rather than read it as a prompt."""
+        return f"/{self.name}"
+
+    @property
+    def typed(self) -> PromptText:
+        """The command and its arguments, as they read in the input."""
         match self.args:
             case None:
-                return PromptText(f"/{self.name}")
+                return PromptText(self.word)
             case args:
-                return PromptText(f"/{self.name} {args}")
+                return PromptText(f"{self.word} {args}")
 
 
 @dataclass(frozen=True)

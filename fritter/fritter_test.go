@@ -278,6 +278,29 @@ func TestTextIsPastedAndSentAsOneWrite(t *testing.T) {
 	}
 }
 
+func TestACommandIsTypedAndOnlyItsTextPasted(t *testing.T) {
+	// A long paste is folded into a placeholder that hides whatever it began with, so the
+	// command goes as keys and only what follows it as a paste.
+	_, ask, reads := recorded(t, 1)
+	if answer := ask(`{"kind":"command","command":"/btw","text":"two\nlines"}`); !answer.OK {
+		t.Fatalf("the command was refused: %s", answer.Reason)
+	}
+	want := []string{"/btw \x1b[200~two\nlines\x1b[201~\r"}
+	if got := reads(); !slices.Equal(got, want) {
+		t.Fatalf("the child read %q, want %q", got, want)
+	}
+}
+
+func TestACommandWithNoTextIsTypedAlone(t *testing.T) {
+	_, ask, reads := recorded(t, 1)
+	if answer := ask(`{"kind":"command","command":"/clear"}`); !answer.OK {
+		t.Fatalf("the command was refused: %s", answer.Reason)
+	}
+	if got, want := reads(), []string{"/clear\r"}; !slices.Equal(got, want) {
+		t.Fatalf("the child read %q, want %q", got, want)
+	}
+}
+
 func TestTheExitCodeIsTheChildsOwn(t *testing.T) {
 	// The child reads one line and exits with 3, so the test proves both that the text
 	// arrived and that fritter did not invent an exit code of its own.
@@ -550,6 +573,8 @@ func TestTextThatIsNotCharactersIsRefusedRatherThanTyped(t *testing.T) {
 		{"an interrupt", `{"kind":"text","text":"a\u0003b"}`},
 		{"a carriage return, which submits", `{"kind":"text","text":"first\rsecond"}`},
 		{"a tab, which is a key", `{"kind":"text","text":"a\tb"}`},
+		{"a command's text", `{"kind":"command","command":"/btw","text":"a\u0003b"}`},
+		{"a command", `{"kind":"command","command":"/b\u001btw","text":"a"}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			answer := ask(c.body)
@@ -571,6 +596,8 @@ func TestRequestsThatNameNothingRealAreRefusedWithAReason(t *testing.T) {
 		{"an unknown key", `{"kind":"key","key":"f13"}`, "no key named"},
 		{"an unknown kind", `{"kind":"shout","text":"hi"}`, "no request kind named"},
 		{"not json at all", `nonsense`, "cannot read the request"},
+		{"a command of no word", `{"kind":"command","text":"hi"}`, "one word"},
+		{"a command of two words", `{"kind":"command","command":"/btw hi","text":"there"}`, "one word"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			answer := ask(c.body)

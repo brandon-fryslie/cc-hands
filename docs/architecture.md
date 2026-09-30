@@ -1195,7 +1195,7 @@ prefix is exactly what Claude Code sent, and its history never keeps a stale lis
 brain's history is kept small on the way out the same way (`hands.brain.context`): a long
 tool result more than K turns old goes as `<tool>: <sentence>`, a batch every K turns so
 the cached prefix changes once a batch, with the sentence asked of a fork of the brain
-(`Brain.fork`, a side question over stdin) once the result's turn ends and kept in the
+(`Brain.fork`, a `/btw` typed into it) once the result's turn ends and kept in the
 summary store by the result's content; and its compaction is asked for what a voice
 session keeps rather than what a coding session does. This is the single decision that avoids
 most of Happy's trouble: it pushed history in and could not pull, so it needed a

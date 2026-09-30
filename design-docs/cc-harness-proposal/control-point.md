@@ -219,6 +219,13 @@ routes it through the proxy, as cc-dump proves daily. Interrupt over stdin is a 
 request the CLI's stream-json protocol carries for its own SDK; that it works against a
 slim `-p` brain is listed below as unverified.
 
+Superseded 2026-09-30 (hands-wire-6ic.99l): the brain is not `-p`. Brandon: no `claude -p`
+anywhere, and no request sent that Claude Code did not send itself. It runs interactive under
+hands' own fritter; a turn is typed into its input, a fork is `/btw` typed the same way, an
+interrupt is Escape, and turn ends come from its UserPromptSubmit, Stop, and StopFailure hooks.
+`--append-system-prompt` in place of `--system-prompt`: the API checks that the system prompt
+opens as Claude Code's does.
+
 `--bare` is out. Brandon knew this from use; the help text and the source confirm it:
 "Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and
 keychain are never read)", and `auth.ts:101` in the research fork: "--bare:

@@ -156,9 +156,9 @@ class BrainStage(FrameProcessor):
         if (error := asked.exception()) is not None:
             # [LAW:no-silent-failure] a brain that is gone stops the run from its own watch; this says which turn it took.
             logger.opt(exception=error).error("the brain failed a turn")
-        elif (answered := asked.result()).is_error and not turn.stopped:
+        elif (failed := asked.result().error) is not None and not turn.stopped:
             # [LAW:no-silent-failure] said as the API services' failures are: an error from the model's stage.
-            await self.push_error(f"the brain's turn ended in error: {answered.subtype}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+            await self.push_error(f"the brain's turn ended in error: {failed}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
     async def _speak(self, said: asyncio.Queue[str | None], spoken: list[str]) -> None:
         await self.push_frame(LLMFullResponseStartFrame())

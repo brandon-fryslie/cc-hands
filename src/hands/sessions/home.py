@@ -52,6 +52,11 @@ class Home:
         return self.root / "bin"
 
     @property
+    def fritter(self) -> Path:
+        """The fritter every interactive session runs under, the brain's included, built by `hands install-fritter`."""
+        return self.bin / "fritter"
+
+    @property
     def shim(self) -> Path:
         """The claude that runs every interactive session under fritter."""
         return self.bin / "claude"

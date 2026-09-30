@@ -1,6 +1,7 @@
 """Fixtures more than one test module needs."""
 
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -11,6 +12,8 @@ from pathlib import Path
 import mlx_whisper
 import pytest
 from aiohttp import web
+
+from hands.sessions.wrapper import FRITTER_SOURCE
 
 
 @pytest.fixture(autouse=True)
@@ -103,69 +106,97 @@ async def chat_server() -> AsyncIterator[ServeChat]:
         await runner.cleanup()
 
 
-INIT = {"type": "system", "subtype": "init", "session_id": "b1", "model": "claude-sonnet-5", "tools": ["Read", "mcp__hands__list_sessions"], "mcp_servers": [{"name": "hands", "status": "connected"}]}
-RESULT = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 1, "duration_ms": 812, "result": "Two."}
+@pytest.fixture(scope="session")
+def fritter(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """fritter, built from this checkout once for the run."""
+    if shutil.which("go") is None:
+        pytest.skip("needs go to build fritter")
+    built = tmp_path_factory.mktemp("fritter") / "fritter"
+    subprocess.run(["go", "build", "-o", str(built), "."], cwd=FRITTER_SOURCE, check=True, capture_output=True)
+    return built
 
 
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A `claude` first on PATH that reports its login from LOGGED_IN, and as the brain answers each turn with RESULT and
-    each side question with "Forked: " and the question."""
+    """A `claude` first on PATH that reports its login from LOGGED_IN, and as the brain is Claude Code at a keyboard: it
+    reads its terminal raw, takes a prompt when Return sends it, and posts the hooks its --settings name. Everything it
+    reads is written, one line each, to the file TYPED names. A turn "wait" runs until Escape, "fail" is failed by the
+    API, "deaf" is never taken, and "die" ends the program."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import json, os, sys, time
+import json, os, sys, time, tty, urllib.request, uuid
 if sys.argv[1:3] == ["auth", "status"]:
     print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1"}}))
     sys.exit(0)
-if "json" in sys.argv and "stream-json" not in sys.argv:
-    turn = sys.stdin.read()
-    print(json.dumps({{"type": "result", "is_error": turn == "fail", "result": "Summed: " + turn + " in " + os.getcwd() + " via " + os.environ["ANTHROPIC_BASE_URL"]}}))
-    sys.exit(0)
-print(json.dumps({INIT!r}), flush=True)
-print("not json", file=sys.stderr, flush=True)
-def respond(request_id, question):
-    if question == "fail":
-        response = {{"subtype": "error", "request_id": request_id, "error": "no snapshot"}}
-    else:
-        reply = None if question == "silent" else "Forked: " + question
-        response = {{"subtype": "success", "request_id": request_id, "response": {{"response": reply, "synthetic": False}}}}
-    print(json.dumps({{"type": "control_response", "response": response}}), flush=True)
-# A turn "wait" is answered after the next side question, and a side question "hold" after the one that follows it.
-waiting, holding = False, None
-for line in sys.stdin:
-    said = json.loads(line)
-    if said["type"] == "control_request":
-        request_id, question = said["request_id"], said["request"].get("question")
-        if question is None:
-            print(json.dumps({{"type": "control_response", "response": {{"subtype": "success", "request_id": request_id}}}}), flush=True)
-            continue
-        if question == "hold":
-            holding = request_id
-            continue
-        respond(request_id, question)
-        if holding is not None:
-            respond(holding, "hold")
-            holding = None
-        if waiting:
-            waiting = False
-            print(json.dumps({RESULT!r}), flush=True)
-        continue
-    content = said["message"]["content"]
-    if content == "wait":
-        waiting = True
-        continue
-    if content == "die":
+hooks = json.loads(sys.argv[sys.argv.index("--settings") + 1])["hooks"]
+session = sys.argv[sys.argv.index("--session-id") + 1]
+def post(event, **fields):
+    [[url]] = [[hook["url"] for hook in matcher["hooks"]] for matcher in hooks[event]]
+    body = json.dumps({{"session_id": session, "hook_event_name": event, **fields}}).encode()
+    urllib.request.urlopen(urllib.request.Request(url, body, {{"Content-Type": "application/json"}}), timeout=5).read()
+def typed(line):
+    with open(os.environ["TYPED"], "a") as log:
+        log.write(json.dumps(line) + "\\n")
+tty.setraw(0)
+# Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
+os.write(1, b"\\x1b[?2004h> ")
+pending, box, turn, aside = b"", "", None, False
+def submit(text):
+    global turn, aside
+    if aside:
+        aside = False
+        typed(["dismissed", text])
+        return
+    if text.startswith("/btw "):
+        aside = True
+        typed(["btw", text[len("/btw "):]])
+        return
+    typed(["prompt", text])
+    prompt = str(uuid.uuid4())
+    said = text.strip()
+    if said == "deaf":
+        return
+    post("UserPromptSubmit", prompt_id=prompt, prompt=text)
+    if said == "die":
+        os.write(1, b"bye\\r\\n")
         sys.exit(3)
-    if content == "slow":
+    if said == "wait":
+        turn = prompt
+        return
+    if said == "slow":
         time.sleep(0.5)
-    if content == "flood":
-        print("x" * (17 * 1024 * 1024), flush=True)
-        time.sleep(60)
-    print(json.dumps({{"type": "stream_event"}}), flush=True)
-    print(json.dumps({RESULT!r}), flush=True)
+    if said == "fail":
+        post("StopFailure", prompt_id=prompt, error="unknown", last_assistant_message="API Error: 400 refused")
+    else:
+        post("Stop", prompt_id=prompt, last_assistant_message="Two.")
+while True:
+    data = os.read(0, 65536)
+    if not data:
+        break
+    pending += data
+    while pending:
+        if pending.startswith(b"\\x1b[200~"):
+            end = pending.find(b"\\x1b[201~")
+            if end < 0:
+                break
+            box += pending[6:end].decode()
+            pending = pending[end + 6:]
+        elif pending.startswith(b"\\x1b"):
+            pending = pending[1:]
+            typed(["escape", box])
+            if turn is not None:
+                turn = None
+        elif pending.startswith(b"\\r"):
+            pending = pending[1:]
+            text, box = box, ""
+            submit(text)
+        else:
+            box += pending[:1].decode()
+            pending = pending[1:]
 """)
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{script.parent}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("LOGGED_IN", "1")
+    monkeypatch.setenv("TYPED", str(tmp_path / "typed.jsonl"))
     return script

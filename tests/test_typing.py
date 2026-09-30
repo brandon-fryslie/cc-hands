@@ -89,7 +89,8 @@ def test_a_type_effect_is_typed_behind_a_space(short_dir: Path) -> None:
 @pytest.mark.parametrize(
     ("input", "sent"),
     [
-        (Command(CommandName("model"), PromptText("opus")), {"pid": 4242, "kind": "text", "text": "/model opus"}),
+        (Command(CommandName("model"), PromptText("opus")), {"pid": 4242, "kind": "command", "command": "/model", "text": "opus"}),
+        (Command(CommandName("clear"), None), {"pid": 4242, "kind": "command", "command": "/clear", "text": ""}),
         (Key("escape"), {"pid": 4242, "kind": "key", "key": "escape"}),
     ],
 )

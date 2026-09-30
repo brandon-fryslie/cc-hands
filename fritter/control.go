@@ -19,10 +19,11 @@ import (
 // kind, and the kind says which, so there is no request that names both and no reader
 // that has to guess.
 type request struct {
-	Pid  int    `json:"pid"`  // the process the caller means to type into; see inject
-	Kind string `json:"kind"` // "text" or "key"
-	Text string `json:"text"` // kind "text": the characters to type and send, already escaped by the caller
-	Key  string `json:"key"`  // kind "key": one of the names in keystrokes
+	Pid     int    `json:"pid"`     // the process the caller means to type into; see inject
+	Kind    string `json:"kind"`    // "text", "command" or "key"
+	Text    string `json:"text"`    // kinds "text" and "command": the characters to paste, already escaped by the caller
+	Command string `json:"command"` // kind "command": the command, typed as keys ahead of its text
+	Key     string `json:"key"`     // kind "key": one of the names in keystrokes
 }
 
 type response struct {
@@ -138,19 +139,29 @@ func (w *Wrapped) inject(asked request) response {
 func (w *Wrapped) keys(asked request) ([]byte, error) {
 	switch asked.Kind {
 	case "text":
-		// [LAW:parse-dont-validate] Text is characters and newlines. A control byte in it
-		// is a keystroke wearing text's clothes: an ESC ends the bracketing early, and a
-		// 0x03 is a Ctrl-C.
-		if offending, at := controlByte(asked.Text); at >= 0 {
-			return nil, fmt.Errorf("this text holds the control byte %#02x at offset %d, which is a keystroke and not a character; send a key request for it", offending, at)
-		}
-		pasted, bracketed := w.paste.encode(asked.Text)
-		// [LAW:no-silent-failure] Bare newlines are Returns, so without bracketing a
-		// multi-line message arrives as several submitted prompts.
-		if !bracketed && strings.Contains(asked.Text, "\n") {
-			return nil, errors.New("this session has not turned bracketed paste on, so the newlines in this text would submit it as several separate prompts")
+		pasted, err := w.pasted(asked.Text)
+		if err != nil {
+			return nil, err
 		}
 		return append(pasted, keystrokes["enter"]...), nil
+	case "command":
+		// A command is typed, and only its text pasted. A program that folds a long paste
+		// into a placeholder folds whatever the paste began with: a command pasted with its
+		// text reaches Claude Code as "[Pasted text #1]", which is a prompt, not a command.
+		if asked.Command == "" || strings.ContainsAny(asked.Command, " \n") {
+			return nil, fmt.Errorf("a command is one word, got %q", asked.Command)
+		}
+		if offending, at := controlByte(asked.Command); at >= 0 {
+			return nil, fmt.Errorf("this command holds the control byte %#02x at offset %d", offending, at)
+		}
+		if asked.Text == "" {
+			return append([]byte(asked.Command), keystrokes["enter"]...), nil
+		}
+		pasted, err := w.pasted(asked.Text)
+		if err != nil {
+			return nil, err
+		}
+		return append(append([]byte(asked.Command+" "), pasted...), keystrokes["enter"]...), nil
 	case "key":
 		chord, known := keystrokes[asked.Key]
 		if !known {
@@ -160,6 +171,23 @@ func (w *Wrapped) keys(asked request) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("no request kind named %q", asked.Kind)
 	}
+}
+
+// pasted is text as a paste into the child: bracketed when the child asked for it.
+func (w *Wrapped) pasted(text string) ([]byte, error) {
+	// [LAW:parse-dont-validate] Text is characters and newlines. A control byte in it
+	// is a keystroke wearing text's clothes: an ESC ends the bracketing early, and a
+	// 0x03 is a Ctrl-C.
+	if offending, at := controlByte(text); at >= 0 {
+		return nil, fmt.Errorf("this text holds the control byte %#02x at offset %d, which is a keystroke and not a character; send a key request for it", offending, at)
+	}
+	pasted, bracketed := w.paste.encode(text)
+	// [LAW:no-silent-failure] Bare newlines are Returns, so without bracketing a
+	// multi-line message arrives as several submitted prompts.
+	if !bracketed && strings.Contains(text, "\n") {
+		return nil, errors.New("this session has not turned bracketed paste on, so the newlines in this text would submit it as several separate prompts")
+	}
+	return pasted, nil
 }
 
 // controlByte finds the first byte in text that is a keystroke rather than a character,

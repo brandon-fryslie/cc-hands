@@ -64,6 +64,26 @@ def fritter_of(path: Path) -> Path | None:
             return None
 
 
+def real_claude(search: str) -> Path | None:
+    """The first claude on the PATH `search` that is not a hands shim, as the shim itself finds it; None when there is none."""
+    # [LAW:one-source-of-truth] the shim's own rule, which lives in shell below: a shim is known by its mark on its
+    # second line, and an empty entry is the current directory.
+    for entry in search.split(":"):
+        candidate = Path(entry or ".") / "claude"
+        if not (candidate.is_file() and os.access(candidate, os.X_OK)):
+            continue
+        try:
+            with candidate.open("rb") as found:
+                found.readline()
+                marked = found.readline().rstrip(b"\n") == MARK.encode()
+        except OSError:
+            continue
+        if not marked:
+            # Absolute: whoever runs it may run it from another directory than the one an empty entry named.
+            return candidate.absolute()
+    return None
+
+
 def shim_script(fritter: Path, wire: Path) -> str:
     """The shim's text: a claude that runs a session under fritter, its API traffic copied to hands at `wire`, and
     anything else as it would run without it."""
@@ -134,7 +154,7 @@ esac
 
 def install(home: Home) -> Installed:
     """Build fritter and write the shim into the home's bin."""
-    fritter = home.bin / "fritter"
+    fritter = home.fritter
     shim = home.shim
     if not (FRITTER_SOURCE / "go.mod").is_file():
         raise Uninstallable(f"no fritter source at {FRITTER_SOURCE}: hands install-fritter builds it from a checkout of cc-hands")

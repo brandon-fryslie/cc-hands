@@ -2,7 +2,7 @@
 
     uv run hands run              # Sonnet 5 (HANDS_LLM=anthropic, the default); ANTHROPIC_API_KEY, else the keychain's HANDS_LLM_ANT_KEY
     HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
-    HANDS_LLM=claude uv run hands run   # a slim Claude Code on the subscription, once: CLAUDE_CONFIG_DIR=~/.hands/brain claude auth login
+    HANDS_LLM=claude uv run hands run   # a slim Claude Code on the subscription, once: cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude
 
 Sessions join through the hook socket at ~/.hands/hands.sock (the home is
 HANDS_HOME when that is set). A Claude Code session is registered when the hands
@@ -26,6 +26,7 @@ import time
 from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import uuid4
@@ -69,7 +70,7 @@ from hands.voice.pipeline import (
 )
 from hands.voice.narrator import narrate
 from hands.voice.speech import Pushed, Tailed, Telling, relay
-from hands.voice.summary import Summariser, summariser
+from hands.voice.summary import Summariser, aside, summariser
 from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
 from hands.voice.summarising import SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS, keep_summarising
 from hands.voice.sentences import SummaryStore
@@ -218,30 +219,40 @@ class Mind:
     llm: FrameProcessor
     watches: Sequence[Watch]
     telling: Telling
+    # A summariser on this model, given its instruction, how many tokens it may answer in, and how long it has.
+    summariser: Callable[[str, int, float], Summariser]
 
 
 @asynccontextmanager
 async def mind(
-    config: VoiceConfig, tools: Sequence[Tool], sessions: Sessions, proxy_url: str, wire: Wire, store: Store, record: Record
+    config: VoiceConfig, tools: Sequence[Tool], sessions: Sessions, proxy_url: str, wire: Wire, store: Store, fritter: Path, record: Record
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
     through, the stage that speaks for it from the wire, and the keeper of its context."""
     # [LAW:single-enforcer] the one place the backend's variant decides the LLM stage.
     match config.llm:
         case AnthropicBackend() | OpenAICompatibleBackend() as backend:
-            yield Mind(build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens), (), Pushed())
+            yield Mind(
+                build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens),
+                (),
+                Pushed(),
+                lambda instruction, max_tokens, timeout: summariser(backend, instruction, max_tokens, timeout),
+            )
         case ClaudeCodeBackend(model=model, config_dir=config_dir):
             server = await serve_mcp(tools, record)
             try:
                 session = SessionId(str(uuid4()))
-                launch = Launch(config_dir, workdir(config_dir), model, INTERMEDIARY_INSTRUCTION, proxy_url, server.config(), session)
+                launch = Launch(config_dir, workdir(config_dir), model, INTERMEDIARY_INSTRUCTION, proxy_url, server.config(), session, fritter)
                 brain = await start_brain(launch, record)
                 try:
                     stage = BrainStage(brain, tools, lambda: tail(standing(sessions)), record)
                     keeper = Keeper(brain, store, EVERY, record)
-                    with wire.joined(Kept(stage, keeper)):
+                    with wire.joined(Kept(stage, keeper, brain)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
-                        yield Mind(stage, watches, Tailed())
+                        # Its summaries are side questions typed into it: no other Claude Code is started, and no request
+                        # is sent that the brain did not send itself. What it answers is as long as it takes, and a side
+                        # question has its own time.
+                        yield Mind(stage, watches, Tailed(), lambda instruction, _max_tokens, _timeout: aside(brain.fork, instruction))
                 finally:
                     await brain.stop()
             finally:
@@ -295,11 +306,11 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
         config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, sessions, proxy.url, wire, store, audit.record) as minded:
+            async with mind(config, tools, sessions, proxy.url, wire, store, home.fritter, audit.record) as minded:
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm), "the voice load"), heart, sessions, quit_event)
                 if voice is not None:
-                    summarise = summariser(config.llm, proxy.url, TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
-                    sentences = summariser(config.llm, proxy.url, SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
+                    summarise = minded.summariser(TURN_SUMMARY_INSTRUCTION, SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS)
+                    sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, summarise, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.

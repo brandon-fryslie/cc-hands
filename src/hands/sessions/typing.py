@@ -41,6 +41,11 @@ class Typist:
         """Type text into the session's input and press Return."""
         self._ask({"pid": self.pid, "kind": "text", "text": str(text)})
 
+    def command(self, command: Command) -> None:
+        """Type a slash command into the session's input and press Return: the command as keys, and its arguments
+        pasted behind it, so a long paste Claude Code folds into a placeholder cannot fold the command in with it."""
+        self._ask({"pid": self.pid, "kind": "command", "command": command.word, "text": "" if command.args is None else str(command.args)})
+
     def press(self, key: Keystroke) -> None:
         """Press one named chord."""
         self._ask({"pid": self.pid, "kind": "key", "key": key})
@@ -67,7 +72,9 @@ def type_into(effect: Type[Input]) -> None:
     """Perform a Type: text or a command typed into the session and sent with Return, or a key pressed."""
     typist = Typist(effect.session, effect.socket, effect.pid)
     match effect.input:
-        case Text() | Command() as typed:
+        case Text() as typed:
             typist.type(typed.typed)
+        case Command() as command:
+            typist.command(command)
         case Key(key=key):
             typist.press(key)

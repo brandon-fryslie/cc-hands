@@ -103,37 +103,24 @@ class BrainLaunched:
 
 
 @dataclass(frozen=True)
-class BrainReady:
-    """The brain's own first line: the session its requests carry on the wire, and what it loaded."""
-
-    session: str
-    model: str
-    tools: tuple[str, ...]
-    mcp_servers: Mapping[str, str]
-
-
-@dataclass(frozen=True)
 class BrainAsked:
-    """The stdin end of a brain turn: what was written to it, at this line's time."""
+    """The typed end of a brain turn: what was typed into it, at this line's time."""
 
     text: str
 
 
 @dataclass(frozen=True)
 class BrainAnswered:
-    """The stdout end of a brain turn: the harness's result line, at this line's time. Its words are on the wire."""
+    """The end of a brain turn, at this line's time: its Stop hook, its StopFailure hook with what failed it, or the Escape
+    hands pressed to stop it. Its words are on the wire."""
 
-    subtype: str
-    is_error: bool
-    turns: int
-    duration_ms: int
+    error: str | None
 
 
 @dataclass(frozen=True)
 class BrainForked:
-    """A side question the brain was asked over stdin, beside any turn, and its control response: the reply, or why it failed."""
+    """A side question the brain was asked with /btw, beside any turn, and its answer from the wire, or why it has none."""
 
-    request: str
     question: str
     reply: str
     failed: bool
@@ -172,10 +159,10 @@ class BrainSpoke:
 
 @dataclass(frozen=True)
 class BrainExited:
-    """The brain's process ended: its exit code, and the last of what it wrote to stderr."""
+    """The brain's process ended: its exit code, and the last of what it showed on its terminal."""
 
     code: int
-    stderr: str
+    shown: str
 
 
 @dataclass(frozen=True)
@@ -304,7 +291,6 @@ Entry = (
     | Exchanged
     | McpConnected
     | BrainLaunched
-    | BrainReady
     | BrainAsked
     | BrainAnswered
     | BrainForked
