@@ -181,6 +181,16 @@ Opening = Asked | Notified
 Happening = Opening | Step
 
 
+def turns(happenings: Sequence[Happening]) -> list[range]:
+    """Where each turn lies in a session read in order: from one opening up to the next.
+
+    Steps before the first opening, in a transcript that starts part way through a turn, are a turn of their own:
+    nothing that happened is left without a turn to be read under.
+    """
+    starts = [index for index, happening in enumerate(happenings) if index == 0 or isinstance(happening, Asked | Notified)]
+    return [range(start, end) for start, end in zip(starts, [*starts[1:], len(happenings)])]
+
+
 @dataclass(frozen=True)
 class Answering:
     """This telling is the first of its turn, so its opening is the request the steps below answer."""

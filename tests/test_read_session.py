@@ -1,14 +1,24 @@
-"""read_session hands the intermediary what a session did, in order, from the point it last read to."""
+"""read_session hands the intermediary a sentence per turn a session finished; read_turn, one turn's steps in order from the point it last read to."""
 
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
 
-from hands.core.events import Ended, Joined
+from hands.core.delta import Delta
+from hands.core.events import Ended, Joined, StatusReported
 from hands.core.session import Membership, SessionId
+from hands.core.status import Busy, Report, Stamp
+from hands.sessions.audit import Entry, Recounted, TurnsSummarised
 from hands.sessions.registry import Sessions
-from hands.voice.tools import READBACK_COUNT, read_session_tool
+from hands.sessions.sentences import Sentences
+from hands.voice.narrator import recount
+from hands.voice.sentences import SummaryStore, Turns
+from hands.voice.summarising import summarise_turns
+from hands.voice.tools import READBACK_COUNT, Tool, session_tools
+
+from test_narrator import BUDGET, tailing, unrefused
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
 SID = SessionId("s1")
@@ -20,15 +30,26 @@ async def joined(transcript: Path) -> Sessions:
     return sessions
 
 
-async def read(sessions: Sessions, session: str = "s1", since: str = "") -> dict[str, Any]:
-    return dict(await read_session_tool(sessions).body(session=session, since=since))
+def tools(sessions: Sessions, store: SummaryStore | None = None) -> dict[str, Tool]:
+    return {tool.name: tool for tool in session_tools(sessions, store or SummaryStore(Sentences(Path(tempfile.mkdtemp()) / "sentences.db")))}
+
+
+async def sentences(sessions: Sessions, store: SummaryStore) -> dict[str, Any]:
+    """The session a sentence per turn, as read_session hands it over."""
+    return dict(await tools(sessions, store)["read_session"].body(session="s1"))
+
+
+async def read(sessions: Sessions, session: str = "s1", since: str = "", turn: int = 1) -> dict[str, Any]:
+    """One turn's steps, as read_turn hands them over."""
+    return dict(await tools(sessions)["read_turn"].body(session=session, turn=turn, since=since))
 
 
 async def test_a_session_is_read_back_in_order_and_everything_names_its_record(tmp_path: Path) -> None:
     transcript = tmp_path / "s1.jsonl"
     shutil.copy(FIXTURE, transcript)
-    answer = await read(await joined(transcript))
-    said = [happening["what"] for happening in answer["happened"]]
+    sessions = await joined(transcript)
+    first, second = await read(sessions), await read(sessions, turn=2)
+    said = [happening["what"] for happening in first["happened"] + second["happened"]]
     # What was asked is in its place among what was done, so an hour of work reads as work on something.
     assert [words.split()[1].rstrip(":") for words in said] == [
         "user", "said", "ran", "ran", "said", "user", "said", "ran", "ran", "wrote", "ran", "gave", "said"
@@ -39,8 +60,10 @@ async def test_a_session_is_read_back_in_order_and_everything_names_its_record(t
     # A subagent is one step: the job it was given, and that it has not reported back.
     assert said[11] == "Claude gave the general-purpose subagent this job: Rewrite docs for Pipecat architecture\nIt is still working."
     # The record id is what the next reading is asked from, so everything carries the one it came from.
-    assert all(happening["record"] for happening in answer["happened"])
-    assert answer["more"] is False
+    assert all(happening["record"] for happening in first["happened"] + second["happened"])
+    assert first["more"] is False and second["more"] is False
+    # Each turn is its own: the first ends where the second is asked.
+    assert [words.split()[1].rstrip(":") for words in said[:5]] == ["user", "said", "ran", "ran", "said"]
 
 
 async def test_reading_on_from_where_it_read_to_gives_what_came_after_and_nothing_twice(tmp_path: Path) -> None:
@@ -212,12 +235,22 @@ async def test_a_session_that_has_ended_is_never_said_to_be_in_the_middle_of_som
     assert ended["more_since"] == "u2"
 
 
-async def test_a_mark_this_session_never_held_is_said_rather_than_read_as_the_start(tmp_path: Path) -> None:
+async def test_a_mark_this_turn_never_held_is_said_rather_than_read_as_the_start(tmp_path: Path) -> None:
     """[LAW:no-silent-failure] a mark from another session would otherwise re-tell this one from the top."""
     transcript = tmp_path / "s1.jsonl"
     shutil.copy(FIXTURE, transcript)
-    answer = await read(await joined(transcript), since="not-a-record")
-    assert answer == {"error": "session s1 has no record not-a-record; call again with since empty to read from the start"}
+    sessions = await joined(transcript)
+    answer = await read(sessions, since="not-a-record")
+    assert answer == {"error": "turn 1 of session s1 has no record not-a-record; call again with since empty to read from its start"}
+    # A mark from another turn of the same session is not this turn's either.
+    later = (await read(sessions, turn=2))["happened"][0]["record"]
+    assert (await read(sessions, since=later))["error"].startswith("turn 1 of session s1 has no record")
+
+
+async def test_a_turn_the_session_has_not_had_is_said_rather_than_read_as_another(tmp_path: Path) -> None:
+    transcript = tmp_path / "s1.jsonl"
+    shutil.copy(FIXTURE, transcript)
+    assert await read(await joined(transcript), turn=3) == {"error": "session s1 has turns 1 to 2, and no turn 3"}
 
 
 async def test_a_session_the_registry_never_heard_of_is_said_to_be_no_session(tmp_path: Path) -> None:
@@ -229,3 +262,90 @@ async def test_a_transcript_that_cannot_be_read_is_said_rather_than_answered_wit
     """[LAW:no-silent-failure] the model is told why it got nothing, rather than being handed nothing."""
     answer = await read(await joined(tmp_path / "gone.jsonl"))
     assert answer == {"error": "the transcript of session s1 could not be read"}
+
+
+# read_session: a sentence per finished turn.
+
+
+def asked(number: int) -> str:
+    return f'{{"uuid":"q{number}","type":"user","message":{{"role":"user","content":"do task {number}"}}}}'
+
+
+def hour(turns: int, steps: int) -> list[str]:
+    """A long session: each turn a request and many steps."""
+    return [record for turn in range(turns) for record in [asked(turn), *(said(f"s{turn}-{n}", f"step {n} of task {turn}") for n in range(steps))]]
+
+
+async def summarised(store: SummaryStore, recorded: list[Entry]) -> None:
+    """Run the pass the store was asked for, with a summariser that names each turn it is shown."""
+    wanted = await store.wanted()
+    assert isinstance(wanted, Turns)
+
+    async def summarise(page: str) -> str:
+        return "\n".join(f"{due.id}: What {due.id} did." for due in wanted.due if f'id="{due.id}"' in page)
+
+    await summarise_turns(wanted, store, summarise, recorded.append)
+
+
+async def test_an_hour_long_session_is_a_sentence_per_turn_said_off_the_voice_path(tmp_path: Path) -> None:
+    """An hour of work read raw is thousands of tokens; a sentence per turn is a few hundred."""
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("".join(f"{record}\n" for record in hour(turns=30, steps=40)))
+    sessions = await joined(transcript)
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+
+    # Nothing is said yet: each finished turn is its request, and none of it waited on a model.
+    first = await sentences(sessions, store)
+    assert [turn["turn"] for turn in first["turns"]] == list(range(1, 31))
+    assert first["turns"][4] == {"turn": 5, "asked": "The user asked:\ndo task 4"}
+    assert first["unsummarised"] == 30 and first["working"] is False
+
+    recorded: list[Entry] = []
+    await summarised(store, recorded)
+    [pass_] = recorded
+    assert isinstance(pass_, TurnsSummarised) and (pass_.outcome, pass_.asked, pass_.said, pass_.calls) == ("said", 30, 30, 2)
+
+    then = await sentences(sessions, store)
+    assert then["turns"][4] == {"turn": 5, "summary": "What turn-5 did."}
+    assert then["unsummarised"] == 0
+    # Said once, kept: a second read asks for nothing more.
+    assert store._wanted.empty()  # pyright: ignore[reportPrivateUsage]
+    # The raw steps of one turn are one call away, and are all of that turn and nothing of another.
+    steps = await read(sessions, turn=5)
+    assert len(steps["happened"]) == READBACK_COUNT and steps["more"] is True
+    rest = await read(sessions, turn=5, since=steps["more_since"])
+    assert [step["what"] for step in rest["happened"]] == ["Claude said:\nstep 39 of task 4"] and rest["more"] is False
+
+
+async def test_the_turn_a_running_session_is_on_is_not_summarised_until_it_is_done(tmp_path: Path) -> None:
+    """A turn still growing would be summarised under a key it will not have once it is done."""
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("".join(f"{record}\n" for record in hour(turns=2, steps=3)))
+    sessions = await joined(transcript)
+    await sessions.apply(StatusReported(SID, Report(Busy(), Stamp(1)), at=0.0))
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+
+    answer = await sentences(sessions, store)
+    assert answer["working"] is True and answer["unsummarised"] == 1
+    assert answer["turns"][1] == {"turn": 2, "asked": "The user asked:\ndo task 1"}
+    wanted = await store.wanted()
+    assert isinstance(wanted, Turns) and [due.id for due in wanted.due] == ["turn-1"]
+
+
+async def test_a_turn_narration_reported_whole_is_served_from_its_report_and_never_summarised_again(tmp_path: Path) -> None:
+    """The trap: narration's summaries exist only while spoken summaries are on, so the rest are said off the voice path.
+    One narration did make is the turn's sentence, found under the key read_session reads the turn by."""
+    transcript = tmp_path / "s1.jsonl"
+    shutil.copy(Path(__file__).parent / "fixtures" / "turn.jsonl", transcript)
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    recorded: list[Entry] = []
+
+    async def summarise(_turn: str) -> str:
+        return "Designed the hands-free architecture."
+
+    await recount(tailing(transcript), SID, None, None, "a", summarise, recorded.append, BUDGET, Delta(), "on", unrefused, store.keep)
+    assert any(isinstance(entry, Recounted) and entry.kept for entry in recorded)
+
+    answer = await sentences(await joined(transcript), store)
+    assert answer["turns"][-1] == {"turn": len(answer["turns"]), "summary": "Designed the hands-free architecture."}
+    assert answer["unsummarised"] == len(answer["turns"]) - 1

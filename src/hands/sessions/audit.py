@@ -190,6 +190,9 @@ class Recounted:
     summary: str
     topics: tuple[str, ...]
     questions: tuple[str, ...]
+    # Whether the model's report was kept as the turn's sentence in the summary store, so read_session serves it and
+    # the turn is never summarised again. Not kept: summaries off, no model asked, or a telling of part of a turn.
+    kept: bool
 
 
 @dataclass(frozen=True)
@@ -208,6 +211,25 @@ class Summarised:
     said: int
     unsaid: int
     rounds: int
+    calls: int
+    failed_calls: int
+    left_out: tuple[str, ...]
+    stray: int
+    seconds: float
+
+
+@dataclass(frozen=True)
+class TurnsSummarised:
+    """One pass of the summary store over finished turns of a session that read_session found unsaid.
+
+    `asked` is how many turns the pass was handed; `left_out` names those a reply gave no sentence for, and `stray`
+    counts the reply lines that named nothing asked.
+    """
+
+    session: str
+    outcome: Literal["said", "partial"]
+    asked: int
+    said: int
     calls: int
     failed_calls: int
     left_out: tuple[str, ...]
@@ -255,6 +277,7 @@ Entry = (
     | Announced
     | Recounted
     | Summarised
+    | TurnsSummarised
     | BacklogUnread
     | Failure
 )

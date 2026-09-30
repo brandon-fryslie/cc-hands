@@ -14,6 +14,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import NewType
 
+from hands.core.turn import Happening
+
 Digest = NewType("Digest", str)
 
 
@@ -49,6 +51,18 @@ def digest(version: str, text: str, parts: Sequence[tuple[str, str]]) -> Digest:
     """The key of a thing with this text whose parts have these sentences, under this summariser."""
     # Parts in id order, not rank order, so a rerank leaves the key where it was.
     return Digest(hashlib.sha256(json.dumps([version, text, sorted(parts)]).encode()).hexdigest())
+
+
+def turn_digest(turn: Sequence[Happening]) -> Digest | None:
+    """The key of a finished turn of a work session, read from what happened in it: its first record, and how many things happened.
+
+    A finished turn never changes, so it is keyed by what it is rather than by what it says, and by nobody's
+    instruction: narration's headline and the store's own sentence are both a sentence of the same turn, and whichever
+    is said first is the one kept. The count is what tells a finished turn from the same turn read part way through.
+    None for a turn no record of which carries an id, which has nothing to be known by.
+    """
+    first = next((happening.ref for happening in turn if happening.ref is not None), None)
+    return None if first is None else Digest(hashlib.sha256(json.dumps(["turn", first, len(turn)]).encode()).hexdigest())
 
 
 def reckon(thing: Thing, version: str, known: Callable[[Digest], str | None]) -> Reckoning:

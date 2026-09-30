@@ -70,7 +70,7 @@ from hands.voice.narrator import narrate
 from hands.voice.speech import Pushed, Tailed, Telling, relay
 from hands.voice.summary import Summariser, summariser
 from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
-from hands.voice.backlog_summaries import SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS, keep_summarising
+from hands.voice.summarising import SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS, keep_summarising
 from hands.voice.sentences import SummaryStore
 from hands.voice.summary_instruction import TURN_SUMMARY_INSTRUCTION
 from hands.voice.briefing import brief, tail
@@ -364,7 +364,7 @@ async def converse(
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
         # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
-        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the summary store no backlog is ever said, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
+        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
         # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
@@ -381,7 +381,7 @@ async def converse(
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
         asyncio.create_task(relay(sessions, minded.telling, voice.worker.queue_frame), name="the session speech relay"),
-        asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record, lambda: summaries(home), channel.say, changes=deltas), name="the session narrator"),
+        asyncio.create_task(narrate(sessions, tails, summarise, voice.worker.queue_frame, record, lambda: summaries(home), channel.say, store.keep, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),

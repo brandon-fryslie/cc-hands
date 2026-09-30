@@ -650,8 +650,8 @@ that by the time `Stop` fires most of the turn's summary is built; that is the p
 ticket's, not this one's.
 
 **Backfill.** When the daemon attaches to a session that has been running for an
-hour, `read_session(session, since)` reads the same file from an earlier point through
-the same recognisers. What it hands over is `Happening = Opening | Step`: what opened
+hour, `read_session(session)` and `read_turn(session, turn, since)` read the same file
+through the same recognisers. What it hands over is `Happening = Opening | Step`: what opened
 each turn as well as each step of the answer, because the steps alone say how a session
 spent an hour and never what for. A `Turn` keeps the two apart, because it is summarised
 as a whole against its request; a reading of a session nobody heard has no whole to
@@ -1315,7 +1315,7 @@ and stops rising at the first sentence that comes back unchanged; a rerank or a 
 change changes no key; an edit to the instruction changes every key. The rows live in
 `<home>/sentences.db`, one table, never updated.
 
-Sentences are made off the voice path by one task (`hands.voice.backlog_summaries`). A
+Sentences are made off the voice path by one task (`hands.voice.summarising`). A
 backlog is wanted at start for every live session's project and again at every read;
 the task asks the summariser for what is due, twenty things to a call, leaves before the
 parents keyed by their sentences, and writes one `Summarised` audit line per pass, or
@@ -1324,11 +1324,22 @@ never waits on it: a thing with no sentence yet is served by its title and count
 `unsummarised`. Measured 2026-09-29 on this repo: 52 sentences in 5 calls and 45 s cold,
 0 calls and 0.16 s warm.
 
+A session is served the same way. `read_session` splits the whole transcript into turns,
+one per request (`hands.core.turn.turns`), and hands over a sentence for each finished
+turn, or its request while the sentence is unsaid; `read_turn` pages one turn's steps from
+a mark. A finished turn never changes, so its key is not its text but its identity
+(`turn_digest`): its first record's id and how many things happened in it, under no
+instruction. Narration keeps a turn's headline under that key when it reports the whole
+turn (`Recounted.kept`), so a turn heard aloud is not summarised again; the rest are
+wanted at each read and said by the same task, one `TurnsSummarised` line per pass.
+Whether the last turn is finished is the registry's to say: it is while the session is
+not `Running`.
+
 ## The intermediary's tools
 
 ```
 list_sessions()
-read_session(session?, since?)
+read_session(session)            read_turn(session, turn, since?)
 read_backlog(session)            read_ticket(session, ticket, full?)
 focus_session(session)
 end_session(session?)

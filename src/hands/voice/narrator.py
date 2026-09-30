@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
@@ -11,7 +11,8 @@ from hands.core.delta import Delta
 from hands.core.effects import SessionGone, Summarise
 from hands.core.narration import narration, shown
 from hands.core.session import PromptId, SessionId
-from hands.core.turn import Budget, Interruption
+from hands.core.sentences import Digest, turn_digest
+from hands.core.turn import Answering, Budget, Interruption
 from hands.sessions.audit import Recounted, Record
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.payload import Rejected
@@ -25,6 +26,9 @@ from hands.voice.summary_instruction import HEADLINE_SENTENCES
 
 # How much of a turn the summariser is shown: enough to name its results, few enough tokens for a local model to answer in seconds.
 TURN_BUDGET = Budget(opening=600, said=1500, input=200, result=400, steps=40, files=25, commits=10, changes=2000)
+
+# Where a turn's report goes to be kept as its sentence: the summary store.
+Keep = Callable[[Mapping[Digest, str]], None]
 
 # Where a model refusal the listener can act on goes: the system channel, which says it once a burst.
 Refused = Callable[[UsageLimitReached], Awaitable[None]]
@@ -41,6 +45,7 @@ async def narrate(
     record: Record,
     aloud: Callable[[], Summaries],
     refused: Refused,
+    keep: Keep,
     budget: Budget = TURN_BUDGET,
     changes: Changes | None = None,
 ) -> None:
@@ -55,7 +60,7 @@ async def narrate(
         match story:
             case Summarise(session=session, turn=turn, closing=closing):
                 switch = await _switch(aloud)
-                spoken = await recount(tails, session, turn, closing, name, summarise, record, budget, await read.taken(session), switch, refused)
+                spoken = await recount(tails, session, turn, closing, name, summarise, record, budget, await read.taken(session), switch, refused, keep)
             case SessionGone():
                 spoken = TTSSpeakFrame(f"The session {name} is gone.")
         if spoken is not None:
@@ -74,6 +79,7 @@ async def recount(
     delta: Delta,
     switch: Summaries,
     refused: Refused,
+    keep: Keep,
 ) -> Frame | None:
     """The frame that tells the user what the turn did beyond what was told before, or None when there is nothing new.
 
@@ -118,8 +124,14 @@ async def recount(
             # matters: the counts are arithmetic over steps already read, and only the headline waits on a model.
             told = narration(headline, telling.turn, delta, HEADLINE_SENTENCES)
             spoken = told.said()
+            # [LAW:one-source-of-truth] a report of the whole turn is its sentence in the summary store, under the key
+            # read_session finds it by, so a turn told aloud is never summarised again. A telling of the rest of a turn
+            # reported once already is not the whole turn, and is not kept.
+            key = turn_digest((telling.turn.opening, *telling.turn.steps)) if headline and isinstance(telling.turn.standing, Answering) else None
+            if key is not None:
+                keep({key: headline})
         case "off":
-            told, spoken = unsaid, unsaid.asked()
+            told, spoken, key = unsaid, unsaid.asked(), None
             logger.info(f"session {session} finished a turn, and spoken summaries are off, so {'only its question is' if spoken else 'nothing is'} said")
     record(
         Recounted(
@@ -127,6 +139,7 @@ async def recount(
             spoken,
             tuple(dict.fromkeys(segment.topic.name for segment in (*told.sections, *told.settled))),
             tuple(question.text for question in told.questions),
+            kept=key is not None,
         )
     )
     # Marked told either way: a turn the switch kept quiet was heard as much as it will be, and is not told later.

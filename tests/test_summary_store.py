@@ -16,8 +16,8 @@ from hands.sessions.backlog import BACKLOG, Unread, parse_export, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
-from hands.voice.backlog_summaries import summarise_backlog
-from hands.voice.sentences import SummaryStore
+from hands.voice.summarising import summarise_backlog
+from hands.voice.sentences import Backlog, SummaryStore
 from hands.voice.tools import backlog_tools
 
 SID = SessionId("s1")
@@ -316,7 +316,7 @@ async def test_read_backlog_serves_titles_until_the_sentences_are_made_and_asks_
         {"id": "t1", "title": "Fix the flaky test", "status": "open"},
     ]
     # The read is a sighting: the backlog is asked for, to be said off the voice path.
-    assert await store.wanted() == project
+    assert await store.wanted() == Backlog(project)
     await summarise_backlog(project, store, Summariser(), lambda _entry: None)
     after = dict(await read_backlog(session="s1"))
     assert after["summary"] == f"said {BACKLOG} 3" and after["unsummarised"] == 0
