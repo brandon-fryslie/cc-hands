@@ -98,10 +98,10 @@ class Keeper:
         # Every call whose result has been heard, so each is looked up in the store once.
         self._heard: set[str] = set()
         self._asking: asyncio.Queue[Result] = asyncio.Queue()
-        # The question a fork is being asked, and whether the fork's own request held its result whole: a fork asked
-        # after a compaction, or one that forked from a history changed since, answers of what it cannot see.
+        # The question a fork is being asked, and the result each of its requests on the wire held whole, by exchange:
+        # a fork asked after a compaction, or one that forked from a history changed since, answers of what it cannot see.
         self._asked: dict[str, Result] = {}
-        self._held: set[str] = set()
+        self._held: dict[str, Result] = {}
 
     def changes(self, sent: Sent) -> tuple[Change, ...]:
         """What a request of the brain's goes with: its old results as lines, and a compaction its steered prompt."""
@@ -126,12 +126,26 @@ class Keeper:
                 fresh = [result for result in results(body) if result.call not in self._heard]
                 self._heard.update(result.call for result in fresh)
                 self._unsaid.update((result.call, result) for result in fresh if self._store.known(key(result)) is None)
-            case Sent(session=session, kind=Fork(), body=body) if session == self._brain.session:
-                # [LAW:no-ambient-temporal-coupling] the fork's request is heard before it goes upstream, so before its answer.
+            case Sent(exchange=exchange, session=session, kind=Fork(), body=body) if session == self._brain.session:
+                # [LAW:no-ambient-temporal-coupling] the fork's request is heard before it goes upstream, so while it is
+                # still being asked; its sentence is kept when its own exchange ends, whenever the fork's answer comes.
                 whole = {(answer.call, answer.text) for answer in tool_answers(body)}
-                self._held.update(
-                    result.call for said, result in self._asked.items() if any(said in text for text in asked(body)) and (result.call, result.text) in whole
-                )
+                for result in (result for said, result in self._asked.items() if any(said in text for text in asked(body))):
+                    if (result.call, result.text) in whole:
+                        self._held[exchange] = result
+                    else:
+                        logger.error(f"no sentence for {result.tool} call {result.call}: the fork's request did not hold the result whole")
+            case Exchanged(exchange=exchange, kind=Fork(), reply=reply) if exchange in self._held:
+                result = self._held.pop(exchange)
+                try:
+                    match reply:
+                        case Reached(body=Streamed(message=message)):
+                            self._store.keep({key(result): sentence(message)})
+                        case _:
+                            # Claude Code may ask again, as another exchange.
+                            raise ValueError(f"the fork's request was answered {reply}")
+                except ValueError as error:
+                    logger.error(f"no sentence for {result.tool} call {result.call}: {error}")
             case Exchanged(session=session, kind=MainTurn(), reply=Held()) if session == self._brain.session:
                 self._turn_ended()
             case Exchanged(session=session, kind=MainTurn(), reply=Reached(body=Streamed(message=message))) if (
@@ -148,18 +162,14 @@ class Keeper:
             asking = question(result)
             self._asked[asking] = result
             try:
-                said = sentence(await self._brain.fork(asking))
-                if result.call not in self._held:
-                    raise ValueError("the fork's request did not hold the result whole")
-            except (ForkFailed, BrainGone, ValueError) as error:
+                # What the fork said is kept from the wire, as its exchange ends: this only waits for it to be done.
+                await self._brain.fork(asking)
+            except (ForkFailed, BrainGone) as error:
                 # [LAW:no-silent-failure] the result goes whole once its batch is reached, and this says why. A brain
                 # that is gone is the brain's watch to report, with its stderr.
                 logger.error(f"no sentence for {result.tool} call {result.call}: {error}")
-                continue
             finally:
                 del self._asked[asking]
-                self._held.discard(result.call)
-            self._store.keep({key(result): said})
 
     def _turn_ended(self) -> None:
         for result in self._unsaid.values():

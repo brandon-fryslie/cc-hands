@@ -33,6 +33,8 @@ from hands.core.wire import (
     Stub,
     Tail,
     Text,
+    Observed,
+    ToolUse,
     classify,
     edited,
 )
@@ -97,11 +99,11 @@ def test_the_trim_stubs_exactly_the_old_results_and_the_prefix_is_byte_identical
 
 
 def test_a_forks_reply_is_one_line_and_one_that_is_not_an_answer_is_refused() -> None:
-    assert sentence("  The file\nholds 400 zeros. ") == "The file holds 400 zeros."
+    assert sentence(said("  The file\nholds 400 zeros. ")) == "The file holds 400 zeros."
     with pytest.raises(ValueError):
-        sentence(" \n")
+        sentence(said(" \n"))
     with pytest.raises(ValueError):
-        sentence("(The model tried to call Read instead of answering directly. Try rephrasing.)")
+        sentence(Message("m", "claude-opus-5-5", (ToolUse("t", "Read", {}),), "tool_use", {}))
 
 
 def test_a_question_names_the_call_by_tool_id_input_and_the_ends_of_its_result_and_the_key_is_what_came_back() -> None:
@@ -122,16 +124,26 @@ class Brain:
         self.asked: list[str] = []
         self.failing: set[str] = set()
         self.history: dict[str, object] = history(0)
-        self.wire: Callable[[Sent], None] = lambda _sent: None
+        self.wire: Callable[[Observed], None] = lambda _observed: None
+        # What the fork's model replies over the wire, given the question.
+        self.reply: Callable[[str], Message] = lambda question: said(f"the read of {question.split(' call ', 1)[1].split(' ', 1)[0]} said its digit")
 
     async def fork(self, question: str) -> str:
         self.asked.append(question)
+        exchange = f"fork{len(self.asked)}"
         messages = cast(list[object], self.history["messages"])
-        self.wire(sent({**self.history, "messages": [*messages[:-1], prompt(f"{SIDE_QUESTION_OPENING} ...</system-reminder>\n\n{question}", marked=True)]}))
+        body = {**self.history, "messages": [*messages[:-1], prompt(f"{SIDE_QUESTION_OPENING} ...</system-reminder>\n\n{question}", marked=True)]}
         if any(call in question for call in self.failing):
+            # Refused by Claude Code before any request of its own.
             raise ForkFailed("no snapshot")
-        call = question.split(" call ", 1)[1].split(" ", 1)[0]
-        return f"the read of {call} said its digit"
+        self.wire(Sent(exchange, BRAIN, classify("/v1/messages", body), body))
+        message = self.reply(question)
+        self.wire(Exchanged(exchange, BRAIN, Fork(), "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Streamed(message))))
+        return "what Claude Code hands back, which is not kept"
+
+
+def said(text: str, stop_reason: str = "end_turn") -> Message:
+    return Message("m", "claude-opus-5-5", (Text(text),), stop_reason, {})
 
 
 class Store:
@@ -288,3 +300,15 @@ async def test_a_sentence_is_kept_only_when_the_forks_own_request_held_the_resul
         logger.remove(sink)
     assert rig.brain.asked and rig.store.said == {}
     assert errors == ["no sentence for Read call call0: the fork's request did not hold the result whole"]
+
+
+async def test_what_claude_code_says_for_a_fork_whose_request_failed_is_never_kept(rig: Rig) -> None:
+    # Claude Code hands back "(API error: ...)" as a fork's answer; on the wire the model's reply never ended in words.
+    rig.brain.reply = lambda _question: said("", stop_reason="max_tokens")
+    worker = asyncio.create_task(rig.keeper.keep_asking())
+    try:
+        await rig.turn(0)
+        await rig.turn(1)
+    finally:
+        worker.cancel()
+    assert rig.brain.asked and rig.store.said == {}

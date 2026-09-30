@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from hands.core.sentences import Digest, digest
-from hands.core.wire import tool_answers, tool_calls, turns
+from hands.core.wire import Message, Text, tool_answers, tool_calls, turns
 
 # The summariser's version in every result's key: a change to how a result is asked about is a new key for each.
 VERSION = "tool-result-1"
@@ -21,8 +21,6 @@ LONG = 400
 # calls with the same input, as two reads of one session a turn apart.
 QUOTED = 300
 ENDS = 120
-# What Claude Code answers a side question with when the model called a tool instead, in its utils/sideQuestion.ts.
-TRIED_A_TOOL = "(The model tried to call "
 
 
 @dataclass(frozen=True)
@@ -75,13 +73,16 @@ def question(result: Result) -> str:
     )
 
 
-def sentence(reply: str) -> str:
-    """A fork's reply as the one line that stands in for a result; raises ValueError for a reply that is not one."""
-    said = " ".join(reply.split())
-    if not said:
-        raise ValueError("the fork answered nothing")
-    if said.startswith(TRIED_A_TOOL):
-        raise ValueError(f"the fork called a tool instead of answering: {said}")
+def sentence(reply: Message) -> str:
+    """The model's reply to a fork, as the wire carried it, made the one line that stands in for a result; raises
+    ValueError for a reply that did not end in words.
+
+    Read from the wire, not from what Claude Code hands back: to a fork whose model called a tool, or whose request
+    failed, it answers with words of its own (utils/sideQuestion.ts).
+    """
+    said = " ".join(" ".join(block.text for block in reply.content if isinstance(block, Text)).split())
+    if reply.stop_reason != "end_turn" or not said:
+        raise ValueError(f"the fork's reply ended {reply.stop_reason!r} with {said!r}")
     return said
 
 
