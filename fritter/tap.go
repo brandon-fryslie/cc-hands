@@ -148,6 +148,13 @@ func startTap(t tapping) (*Tap, error) {
 		ModifyResponse: func(response *http.Response) error {
 			copied := copyOf(response.Request.Context())
 			copied.put(replied{Kind: "response", At: now(), Status: response.StatusCode, Headers: kept(response.Header)})
+			if response.StatusCode == http.StatusSwitchingProtocols {
+				// The body is now a connection both ways, which the proxy needs whole to join
+				// the child to it; what crosses it is another protocol, and is not copied.
+				copied.put(ended{Kind: "end", At: now(), Error: "the exchange switched protocols: what followed is not copied"})
+				copied.close()
+				return nil
+			}
 			response.Body = &teed{body: response.Body, copy: copied}
 			return nil
 		},

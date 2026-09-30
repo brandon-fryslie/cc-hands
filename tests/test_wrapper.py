@@ -230,3 +230,11 @@ def test_a_session_tapped_toward_anthropic_s_api_is_told_its_api_is_anthropic_s(
     executable(root / "real" / "claude", RECORDER)
     shim = executable(bin / "claude", shim_script(bin / "fritter", WIRE))
     assert on_a_terminal([str(shim)], f"{bin}:{root / 'real'}:/usr/bin:/bin", given) == f"assumed={assumed}\n"
+
+
+def test_a_claude_run_from_inside_a_session_pointed_elsewhere_is_not_told_its_api_is_anthropic_s(root: Path) -> None:
+    shim = installed_shim(root)
+    executable(root / "real" / "claude", ASSUMED_RECORDER)
+    inside = {"ANTHROPIC_BASE_URL": "https://gateway.example", "FRITTER_TAP": "http://127.0.0.1:40000", "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1"}
+    ran = on_a_pipe([str(shim), "-p", "hello"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin", inside)
+    assert ran.stdout == "assumed=unset\n"

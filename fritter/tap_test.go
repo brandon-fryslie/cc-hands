@@ -336,3 +336,48 @@ func TestACopyHeardAndThenBrokenOffIsNotLost(t *testing.T) {
 		t.Errorf("after a copy whose request was heard, %d are counted lost, want 0", lost)
 	}
 }
+
+func TestAnUpgradedExchangeJoinsTheChildToTheUpstreamAndIsCopiedToItsHead(t *testing.T) {
+	to := filepath.Join(shortTempDir(t), "wire.sock")
+	copies := listening(t, to)
+	// An upstream that switches protocols and then echoes what it is sent.
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, buffered, err := writer.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("cannot hijack: %v", err)
+			return
+		}
+		defer connection.Close()
+		buffered.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+		buffered.Flush()
+		io.Copy(connection, buffered)
+	}))
+	t.Cleanup(upstream.Close)
+	tap := tapped(t, upstream.URL, to)
+
+	connection, err := net.Dial("tcp", strings.TrimPrefix(tap.address, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	connection.Write([]byte("GET /ws HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n"))
+	reader := bufio.NewReader(connection)
+	response, err := http.ReadResponse(reader, nil)
+	if err != nil || response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("the child's upgrade came back %v, %v; want 101", response, err)
+	}
+	connection.Write([]byte("ping\n"))
+	if echoed, _ := reader.ReadString('\n'); echoed != "ping\n" {
+		t.Errorf("across the upgraded connection the child got %q, want its ping back", echoed)
+	}
+	connection.Close()
+
+	lines := <-copies
+	kinds := []string{}
+	for _, read := range lines {
+		kinds = append(kinds, read.Kind)
+	}
+	if strings.Join(kinds, ",") != "request,response,end" || lines[1].Status != 101 || lines[2].Error == "" {
+		t.Errorf("the upgraded exchange was copied as %v", lines)
+	}
+}
