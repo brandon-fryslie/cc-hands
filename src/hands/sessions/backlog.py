@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from hands.core.sentences import Thing
+from hands.sessions.child import finished
 from hands.sessions.payload import Payload, Rejected
 
 # The largest backlog on this machine (links, 8.6 MB of export) takes 5 s; past this lit is stuck, not slow.
@@ -73,8 +74,12 @@ class Backlog:
         return tuple(child for child in self.children.get(id, ()) if not self.done(child))
 
     def roots(self) -> tuple[str, ...]:
-        """What the backlog is made of: every unfinished ticket under no parent, epics and loose tickets alike, in rank order."""
-        return tuple(id for id in self.tickets if id not in self.parent and not self.done(id))
+        """What the backlog is made of: every unfinished ticket under no unfinished parent, in rank order.
+
+        Epics and loose tickets, and a follow-up filed under a ticket already closed, which stands on its own rather
+        than vanishing with the parent the tree no longer shows.
+        """
+        return tuple(id for id in self.tickets if not self.done(id) and (id not in self.parent or self.done(self.parent[id])))
 
     def thing(self) -> Thing:
         """The backlog as a thing to be said: its unfinished roots, each over its unfinished children."""
@@ -93,16 +98,13 @@ async def read_backlog(project: Path) -> Backlog:
     except OSError as error:
         raise Unread(f"cannot run lit in {project}: {error}") from error
     try:
-        out, err = await asyncio.wait_for(process.communicate(), EXPORT_TIMEOUT_SECONDS)
-    except BaseException:
-        # An export given up on, timed out or its caller cancelled, takes its process with it.
-        if process.returncode is None:
-            process.kill()
-        await process.wait()
-        raise
+        out, err = await finished(process, EXPORT_TIMEOUT_SECONDS)
+    except TimeoutError:
+        raise Unread(f"lit export in {project} did not answer in {EXPORT_TIMEOUT_SECONDS:.0f}s") from None
     if process.returncode != 0:
         raise Unread(f"lit export in {project} exited {process.returncode}: {err.decode(errors='replace').strip()[-300:]}")
-    return parse_export(out)
+    # Off the loop: the largest export takes tens of milliseconds to parse, which the voice pipeline would hear.
+    return await asyncio.to_thread(parse_export, out)
 
 
 def parse_export(raw: bytes) -> Backlog:

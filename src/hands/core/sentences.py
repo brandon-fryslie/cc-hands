@@ -59,6 +59,9 @@ def reckon(thing: Thing, version: str, known: Callable[[Digest], str | None]) ->
 
     def visit(node: Thing) -> str | None:
         nonlocal waiting
+        if not node.text and not node.parts:
+            # Nothing is there to be said: an empty thing, such as a backlog with nothing left in it, is never due.
+            return None
         # Every part is visited, said or not, so a tree reckoned once finds everything due at every depth.
         parts = [(part.id, visit(part)) for part in node.parts]
         sentences = [(id, sentence) for id, sentence in parts if sentence is not None]

@@ -1309,8 +1309,8 @@ the ticket's own words only when asked (`full`). The backlog is read fresh from
 
 A sentence is keyed by a digest of what it was made from (`hands.core.sentences`): the
 summariser's instruction, the thing's own text, and the sentence of each thing under it.
-The tree is the backlog over its unfinished epics and loose tickets, each over its
-unfinished children. Editing one ticket changes its key and its ancestors' and no other,
+The tree is the backlog over its unfinished tickets with no unfinished parent (epics, loose
+tickets, and follow-ups filed under a closed ticket), each over its unfinished children. Editing one ticket changes its key and its ancestors' and no other,
 and stops rising at the first sentence that comes back unchanged; a rerank or a status
 change changes no key; an edit to the instruction changes every key. The rows live in
 `<home>/sentences.db`, one table, never updated.
@@ -1318,7 +1318,8 @@ change changes no key; an edit to the instruction changes every key. The rows li
 Sentences are made off the voice path by one task (`hands.voice.backlog_summaries`). A
 backlog is wanted at start for every live session's project and again at every read;
 the task asks the summariser for what is due, twenty things to a call, leaves before the
-parents keyed by their sentences, and writes one `Summarised` audit line per pass. A tool
+parents keyed by their sentences, and writes one `Summarised` audit line per pass, or
+`BacklogUnread` with lit's error when the export could not be read. A tool
 never waits on it: a thing with no sentence yet is served by its title and counted in
 `unsummarised`. Measured 2026-09-29 on this repo: 52 sentences in 5 calls and 45 s cold,
 0 calls and 0.16 s warm.

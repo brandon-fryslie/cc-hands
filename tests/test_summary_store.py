@@ -1,6 +1,7 @@
 """The summary store: a sentence for any content-addressed thing, kept until the thing changes, served by read_backlog and read_ticket."""
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -10,8 +11,8 @@ import pytest
 from hands.core.events import Joined
 from hands.core.sentences import Due, Thing, answered, digest, page, reckon
 from hands.core.session import Membership, SessionId
-from hands.sessions.audit import Entry, Summarised
-from hands.sessions.backlog import BACKLOG, parse_export
+from hands.sessions.audit import BacklogUnread, Entry, Summarised
+from hands.sessions.backlog import BACKLOG, Unread, parse_export, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
@@ -147,6 +148,12 @@ def test_the_backlog_is_every_unfinished_root_in_rank_order_over_its_unfinished_
     assert thing.parts[1].text == "Fix the flaky test\n\nIt fails one run in ten."
 
 
+def test_a_follow_up_filed_under_a_closed_ticket_stands_as_a_root() -> None:
+    backlog = parse_export(export(issues=[*ISSUES, ticket("t2.f", "09", "Follow up", "What the fix left.")], relations=[*RELATIONS, child("t2", "t2.f")]))
+    assert backlog.roots() == ("e1", "t1", "t2.f")
+    assert [part.id for part in backlog.thing().parts] == ["e1", "t1", "t2.f"]
+
+
 def test_a_child_whose_parent_the_export_left_out_stands_as_a_root() -> None:
     backlog = parse_export(export(relations=[*RELATIONS, child("gone", "t1")]))
     assert "t1" in backlog.roots()
@@ -209,7 +216,7 @@ async def test_a_pass_says_the_whole_backlog_leaves_first_and_audits_itself(proj
     assert set(store.reckon(parse_export(export()).thing()).said) == {"e1.a", "e1.b", "t1", "e1", BACKLOG}
     [record] = records
     assert isinstance(record, Summarised)
-    assert (record.outcome, record.things, record.known, record.said, record.unsaid, record.calls, record.failed_calls) == ("said", 5, 0, 5, 0, 4, 0)
+    assert (record.outcome, record.things, record.known, record.said, record.unsaid, record.rounds, record.calls, record.failed_calls, record.left_out, record.stray) == ("said", 5, 0, 5, 0, 3, 4, 0, (), 0)
 
 
 async def test_editing_one_ticket_resays_only_it_and_what_sits_above_it(project: Path, tmp_path: Path) -> None:
@@ -248,14 +255,46 @@ async def test_what_the_summariser_leaves_out_stays_unsaid_and_the_pass_says_so(
     assert set(store.reckon(parse_export(export()).thing()).said) == {"e1.a", "e1.b", "e1"}
     [record] = records
     assert isinstance(record, Summarised) and (record.outcome, record.said, record.unsaid) == ("partial", 3, 2)
+    # Asked in every round, left out of every reply: the line tells a model that skips an item from calls that failed.
+    assert (record.rounds, record.left_out, record.failed_calls) == (3, ("t1", "t1", "t1"), 0)
 
 
-async def test_a_project_lit_cannot_read_is_audited_as_unread(project: Path, tmp_path: Path) -> None:
+async def test_a_project_lit_cannot_read_is_audited_as_unread_and_why(project: Path, tmp_path: Path) -> None:
     (project / "export.json").unlink()
     records: list[Entry] = []
     await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), Summariser(), records.append)
     [record] = records
-    assert isinstance(record, Summarised) and record.outcome == "unread"
+    assert isinstance(record, BacklogUnread) and "exited 1" in record.error
+
+
+async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_running(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lit = Path(os.environ["PATH"].split(":")[0]) / "lit"
+    lit.write_text("#!/bin/sh\necho $$ > pid\nexec sleep 30\n")
+    monkeypatch.setattr("hands.sessions.backlog.EXPORT_TIMEOUT_SECONDS", 0.5)
+    with pytest.raises(Unread, match="did not answer"):
+        await read_backlog(project)
+    with pytest.raises(ProcessLookupError):
+        os.kill(int((project / "pid").read_text()), 0)
+
+
+async def test_a_summariser_that_cannot_start_is_a_failed_call_and_the_pass_still_ends(project: Path, tmp_path: Path) -> None:
+    async def no_claude(_page: str) -> str:
+        raise FileNotFoundError("claude")
+
+    records: list[Entry] = []
+    await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), no_claude, records.append)
+    [record] = records
+    assert isinstance(record, Summarised) and (record.outcome, record.said, record.calls, record.failed_calls) == ("partial", 0, 1, 1)
+
+
+async def test_a_backlog_with_nothing_left_asks_the_summariser_nothing(project: Path, tmp_path: Path) -> None:
+    (project / "export.json").write_bytes(export(issues=[ticket("t2", "01", "Old bug", status="closed")], relations=[]))
+    summarise = Summariser()
+    records: list[Entry] = []
+    await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), summarise, records.append)
+    [record] = records
+    assert summarise.pages == []
+    assert isinstance(record, Summarised) and (record.outcome, record.things, record.calls) == ("said", 0, 0)
 
 
 # --- the tools

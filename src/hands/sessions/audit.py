@@ -197,17 +197,30 @@ class Summarised:
     """One pass of the summary store over a project's backlog: how much of it was already said, and what this pass said.
 
     `unsaid` is what is still without a sentence when the pass ends: things the summariser failed on or left out, and
-    the parents above them.
+    the parents above them. `left_out` names what a reply gave no sentence for, and `stray` counts the reply lines
+    that named nothing asked, so a model that skips items reads apart from one whose calls failed.
     """
 
     project: str
-    outcome: Literal["said", "partial", "unread"]
+    outcome: Literal["said", "partial"]
     things: int
     known: int
     said: int
     unsaid: int
+    rounds: int
     calls: int
     failed_calls: int
+    left_out: tuple[str, ...]
+    stray: int
+    seconds: float
+
+
+@dataclass(frozen=True)
+class BacklogUnread:
+    """A pass of the summary store that could not start: lit would not hand over the project's backlog, and why."""
+
+    project: str
+    error: str
     seconds: float
 
 
@@ -242,6 +255,7 @@ Entry = (
     | Announced
     | Recounted
     | Summarised
+    | BacklogUnread
     | Failure
 )
 Record = Callable[[Entry], None]

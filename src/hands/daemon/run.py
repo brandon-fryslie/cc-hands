@@ -364,7 +364,7 @@ async def converse(
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
         # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
-        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
+        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the summary store no backlog is ever said, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
         # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
