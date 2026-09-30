@@ -198,13 +198,15 @@ class Brain:
             reply = await asyncio.wait_for(asyncio.shield(answer), FORK_SECONDS)
         except (ConnectionError, TimeoutError) as error:
             # [LAW:no-silent-failure] a question the brain cannot take, or never answers, ends here, said as such.
-            self._forks.pop(request, None)
             failure = BrainGone(f"the brain's stdin closed: {error}") if isinstance(error, ConnectionError) else ForkFailed(f"no answer in {FORK_SECONDS:.0f}s")
             self._record(BrainForked(request, question, str(failure), failed=True))
             raise failure from error
         except (ForkFailed, BrainGone) as error:
             self._record(BrainForked(request, question, str(error), failed=True))
             raise
+        finally:
+            # However the asker stops waiting, cancelled included, no one is left to be told the answer.
+            self._forks.pop(request, None)
         self._record(BrainForked(request, question, reply, failed=False))
         return reply
 

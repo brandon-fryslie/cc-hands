@@ -373,6 +373,11 @@ def test_a_steer_replaces_the_newest_compaction_prompt_keeps_what_follows_it_and
     assert classify("/v1/messages", changed) == Compaction()
 
 
+def test_a_steer_replaces_a_compaction_prompt_sent_as_a_plain_string() -> None:
+    body = request(said("hi"), reply("ok", marked=True), {"role": "user", "content": COMPACTION_OPENING + " summarise" + COMPACTION_REMINDER})
+    assert cast(list[dict[str, object]], edited(body, (Steer("voice"),))["messages"])[-1]["content"] == "voice" + COMPACTION_REMINDER
+
+
 def test_a_steer_refuses_a_compaction_prompt_with_no_closing_reminder() -> None:
     with pytest.raises(ValueError, match="no closing reminder"):
         edited(request(said(COMPACTION_OPENING + " cut short")), (Steer("voice"),))

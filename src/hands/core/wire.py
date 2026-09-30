@@ -668,7 +668,7 @@ def edited(body: object, changes: Sequence[Change]) -> Mapping[str, object]:
             case Steer(prompt=prompt):
                 if not any(text.startswith(COMPACTION_OPENING) for text in _texts(messages[-1] if messages else None)):
                     raise ValueError("the newest message holds no compaction prompt to steer")
-                messages[-1] = _edited_blocks(messages[-1], lambda block: _steered(block, prompt))
+                messages[-1] = _steered(messages[-1], prompt)
             case _:
                 pass
     tails: list[object] = [{"type": "text", "text": change.text} for change in changes if isinstance(change, Tail)]
@@ -702,15 +702,30 @@ def _stubbed(block: object, lines: Mapping[str, str]) -> object:
             return block
 
 
-def _steered(block: object, prompt: str) -> object:
+def _steered(message: object, prompt: str) -> object:
+    """The newest message with its compaction prompt replaced, whether its content is a string or blocks, as `_texts` reads it."""
+    match message:
+        case {"content": str() as text}:
+            return {**cast(Mapping[str, object], message), "content": _steered_text(text, prompt)}
+        case _:
+            return _edited_blocks(message, lambda block: _steered_block(block, prompt))
+
+
+def _steered_block(block: object, prompt: str) -> object:
     match block:
-        case {"type": "text", "text": str() as text} if text.startswith(COMPACTION_OPENING):
-            ends = [at for at in (text.find(COMPACTION_INSTRUCTIONS), text.find(COMPACTION_REMINDER)) if at >= 0]
-            if not ends:
-                raise ValueError("the compaction prompt has no closing reminder to keep")
-            return {**cast(Mapping[str, object], block), "text": prompt + text[min(ends) :]}
+        case {"type": "text", "text": str() as text}:
+            return {**cast(Mapping[str, object], block), "text": _steered_text(text, prompt)}
         case _:
             return block
+
+
+def _steered_text(text: str, prompt: str) -> str:
+    if not text.startswith(COMPACTION_OPENING):
+        return text
+    ends = [at for at in (text.find(COMPACTION_INSTRUCTIONS), text.find(COMPACTION_REMINDER)) if at >= 0]
+    if not ends:
+        raise ValueError("the compaction prompt has no closing reminder to keep")
+    return prompt + text[min(ends) :]
 
 
 # ── One exchange ─────────────────────────────────────────────────────────────────────────────────────────────────────
