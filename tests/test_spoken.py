@@ -13,7 +13,7 @@ from loguru import logger
 
 from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
-from hands.sessions.backfill import read_since
+from hands.sessions.backfill import read_transcript
 from hands.voice.spoken import SpokenForm
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
@@ -253,7 +253,7 @@ def real_replies() -> list[str]:
     The same recognisers the tail uses, rather than a second transcript parser living in a test file
     [LAW:one-source-of-truth].
     """
-    return [said.text for said in read_since(FIXTURE, None).happenings if isinstance(said, Said) and said.text.strip()]
+    return [said.text for said in read_transcript(FIXTURE).happenings if isinstance(said, Said) and said.text.strip()]
 
 
 def test_the_fixture_holds_real_replies_to_check_against() -> None:

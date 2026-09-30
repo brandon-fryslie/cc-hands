@@ -14,6 +14,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import NewType
 
+from hands.core.turn import Happening
+
 Digest = NewType("Digest", str)
 
 
@@ -51,6 +53,18 @@ def digest(version: str, text: str, parts: Sequence[tuple[str, str]]) -> Digest:
     return Digest(hashlib.sha256(json.dumps([version, text, sorted(parts)]).encode()).hexdigest())
 
 
+def turn_digest(turn: Sequence[Happening]) -> Digest | None:
+    """The key of a finished turn of a work session, read from what happened in it: its first record, and how many things happened.
+
+    A finished turn never changes, so it is keyed by what it is rather than by what it says, and by nobody's
+    instruction: narration's headline and the store's own sentence are both a sentence of the same turn, and whichever
+    is said first is the one kept. The count is what tells a finished turn from the same turn read part way through.
+    None for a turn no record of which carries an id, which has nothing to be known by.
+    """
+    first = next((happening.ref for happening in turn if happening.ref is not None), None)
+    return None if first is None else Digest(hashlib.sha256(json.dumps(["turn", first, len(turn)]).encode()).hexdigest())
+
+
 def reckon(thing: Thing, version: str, known: Callable[[Digest], str | None]) -> Reckoning:
     """Every sentence the store already holds for this tree, and the things that can be summarised now."""
     said: dict[str, str] = {}
@@ -86,7 +100,10 @@ def page(batch: Sequence[Due], text_limit: int) -> str:
 
 
 def _item(due: Due, text_limit: int) -> str:
-    text = due.text if len(due.text) <= text_limit else f"{due.text[:text_limit]} [cut]"
+    # A thing longer than the limit keeps how it starts and how it ends: a ticket's close says when it is done, and a
+    # turn's says what came of it, which is what its sentence is judged by.
+    head = (text_limit + 1) // 2
+    text = due.text if len(due.text) <= text_limit else f"{due.text[:head]}\n[{len(due.text) - text_limit} characters left out]\n{due.text[len(due.text) - (text_limit - head) :]}"
     parts = "".join(f"\n- {id}: {sentence}" for id, sentence in due.parts)
     return f"<item id={json.dumps(due.id)}>\n{text}" + (f"\n<parts>{parts}\n</parts>" if parts else "") + "\n</item>"
 

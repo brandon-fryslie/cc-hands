@@ -16,8 +16,8 @@ from hands.sessions.backlog import BACKLOG, Unread, parse_export, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
-from hands.voice.backlog_summaries import summarise_backlog
-from hands.voice.sentences import SummaryStore
+from hands.voice.summarising import summarise_backlog
+from hands.voice.sentences import Backlog, SummaryStore
 from hands.voice.tools import backlog_tools
 
 SID = SessionId("s1")
@@ -113,10 +113,10 @@ def dues(*ids: str) -> list[Due]:
     return [Due(id, digest("v1", id, []), f"text of {id}", ()) for id in ids]
 
 
-def test_the_page_names_each_item_and_cuts_a_long_text() -> None:
+def test_the_page_names_each_item_and_cuts_a_long_text_in_its_middle() -> None:
     [due] = dues("t1")
-    shown = page([Due("e1", due.digest, "x" * 50, (("e1.a", "A sentence."),))], text_limit=10)
-    assert shown == '<item id="e1">\nxxxxxxxxxx [cut]\n<parts>\n- e1.a: A sentence.\n</parts>\n</item>'
+    shown = page([Due("e1", due.digest, "a" * 20 + "x" * 20 + "z" * 10, (("e1.a", "A sentence."),))], text_limit=10)
+    assert shown == '<item id="e1">\naaaaa\n[40 characters left out]\nzzzzz\n<parts>\n- e1.a: A sentence.\n</parts>\n</item>'
 
 
 def test_a_reply_gives_each_id_its_sentence_and_says_what_it_missed_and_what_it_made_up() -> None:
@@ -316,7 +316,7 @@ async def test_read_backlog_serves_titles_until_the_sentences_are_made_and_asks_
         {"id": "t1", "title": "Fix the flaky test", "status": "open"},
     ]
     # The read is a sighting: the backlog is asked for, to be said off the voice path.
-    assert await store.wanted() == project
+    assert await store.wanted() == Backlog(project)
     await summarise_backlog(project, store, Summariser(), lambda _entry: None)
     after = dict(await read_backlog(session="s1"))
     assert after["summary"] == f"said {BACKLOG} 3" and after["unsummarised"] == 0

@@ -45,6 +45,25 @@
     {
       "role": "tool",
       "tool_call_id": "call_3",
+      "content": "{\"turns\": [{\"turn\": 1, \"asked\": \"The user asked:\\nThe refresh token is expiring early in prod, can you find out why and fix it\"}], \"earlier\": 0, \"unsummarised\": 1, \"working\": false}"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_4",
+          "type": "function",
+          "function": {
+            "name": "read_turn",
+            "arguments": "{\"session\": \"5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34\", \"turn\": 1}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_4",
       "content": "{\"happened\": [{\"record\": \"9a1f3c2e-0b7d-4e55-8c1a-2f6d9e0b3a71\", \"what\": \"The user asked:\\nThe refresh token is expiring early in prod, can you find out why and fix it\"}, {\"record\": \"1c4e8b2a-7d3f-4a91-b0e6-5f2c8d7a9e13\", \"what\": \"Claude ran rg -n \\\"refresh_token\\\" src/auth (Find where refresh tokens are handled)\\nOutput: src/auth/refresh.py:12:def refresh_token(session):\\nsrc/auth/refresh.py:40:    expires_at = issued_at + timedelta(seconds=REFRESH_TTL)\"}, {\"record\": \"e7b2d4a1-3c9f-4b8e-a6d0-8f1e2c5b7a94\", \"what\": \"Claude said:\\nFound it: `REFRESH_TTL` is read in seconds but configured in minutes, so tokens expire sixty times too soon.\"}, {\"record\": \"4d8a1e6c-2b7f-4c93-9e0a-7b5d3f1c8e26\", \"what\": \"Claude edited src/auth/refresh.py\\nChanged: expires_at = issued_at + timedelta(minutes=REFRESH_TTL)\"}, {\"record\": \"b3f7c1d9-6e2a-4d84-8b1f-0c9e5a7d2f68\", \"what\": \"Claude ran uv run pytest tests/test_refresh.py -q (Run the refresh tests)\\nOutput: 14 passed in 0.82s\"}, {\"record\": \"7e2c9a4b-1d6f-4e30-a8b5-3c7f9d1e6a52\", \"what\": \"Claude said:\\nFixed: `refresh_token` now reads `REFRESH_TTL` as minutes. `test_refresh.py` passes, 14 of 14.\"}], \"more\": false, \"working\": false, \"more_since\": \"7e2c9a4b-1d6f-4e30-a8b5-3c7f9d1e6a52\"}"
     }
   ],

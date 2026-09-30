@@ -10,19 +10,15 @@ from pathlib import Path
 
 from loguru import logger
 
-from hands.core.turn import Asked, Happening, Interruption, Notified, Opening, Ref, Said, Step
+from hands.core.turn import Asked, Happening, Interruption, Notified, Opening, Said, Step
 from hands.sessions.payload import Rejected
-from hands.sessions.transcript import ref_of, turn_record
+from hands.sessions.transcript import turn_record
 from hands.sessions.turning import Turning
-
-
-class Unseen(Exception):
-    """The record a reading was to go on from is not in this transcript."""
 
 
 @dataclass(frozen=True)
 class Reading:
-    """What a session did after the mark it was read from, and how much of that can be marked as read.
+    """What a session did, and how much of that can be marked as read.
 
     A call whose result has not been written yet is still shown — the session is in the middle of something and
     that is worth saying — but it is not a place to go on from. A mark names a record and a reading goes on from
@@ -43,13 +39,11 @@ class _Opened:
     opening: Opening
 
 
-def read_since(transcript: Path, since: Ref | None) -> Reading:
-    """Everything a session did after the record named, or all of it for a session nobody has heard of yet.
+def read_transcript(transcript: Path) -> Reading:
+    """Everything a session did, in order, folded whole.
 
-    The whole file is folded, and only then cut at the record named, so that a call made before the cut and
-    answered after it is still one step that knows its result — read from the mark on, the result would have
-    arrived with no call to belong to. Raises OSError, which the caller decides what to make of, and Unseen for
-    a record this transcript does not hold.
+    The whole file is folded, so a call made before any mark a reader cuts it at and answered after it is still one
+    step that knows its result. Raises OSError, which the caller decides what to make of.
 
     Folded again for every reading rather than kept between them: the file is the one source of what a session
     did, and a fold held on the side is a second copy of it that the session writing the file can make wrong
@@ -58,8 +52,6 @@ def read_since(transcript: Path, since: Ref | None) -> Reading:
     """
     turning = Turning()
     openings: list[_Opened] = []
-    read = 0  # how much of the session the reader has already been given
-    seen = since is None
     # [LAW:no-ambient-temporal-coupling] a session may be writing while this reads, and a record is whole only
     # once its newline is written, so the bytes after the last newline are not read as a record.
     *complete, _unfinished = transcript.read_bytes().split(b"\n")
@@ -80,15 +72,8 @@ def read_since(transcript: Path, since: Ref | None) -> Reading:
             case Interruption() | None:
                 # An interruption is a step, and the turning has already put it in its place.
                 pass
-        if since is not None and ref_of(record) == since:
-            seen = True
-            read = len(turning.slots) + len(openings)
-    if not seen:
-        # [LAW:no-silent-failure] a mark this transcript never held would otherwise read as a mark at the very
-        # start, and the whole session would be told again as though it were new.
-        raise Unseen(f"{transcript} holds no record {since}")
     happenings, places = _in_order(turning.steps(), openings)
-    return Reading(happenings[read:], max(0, _settled(happenings, _waiting(turning, places)) - read))
+    return Reading(happenings, _settled(happenings, _waiting(turning, places)))
 
 
 def _waiting(turning: Turning, places: list[int]) -> set[int]:

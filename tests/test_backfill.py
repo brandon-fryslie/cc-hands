@@ -7,16 +7,14 @@ Claude Code writes to the subagent's file rather than this one.
 
 from pathlib import Path
 
-import pytest
-
 from hands.core.turn import Asked, Delegated, Edited, Happening, Interruption, Ran, Ref
-from hands.sessions.backfill import Unseen, read_since
+from hands.sessions.backfill import read_transcript
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
 
 
-def read(since: Ref | None = None) -> list[Happening]:
-    return read_since(FIXTURE, since).happenings
+def read() -> list[Happening]:
+    return read_transcript(FIXTURE).happenings
 
 
 def written(path: Path, *records: str) -> Path:
@@ -41,16 +39,6 @@ def test_a_session_nobody_has_heard_of_yet_is_read_whole_and_everything_names_it
     assert asked[1].text.startswith("Pytorch?")
     # Everything a backfill hands over came from a record, so every one of them can be read on from.
     assert all(happening.ref is not None for happening in happenings)
-
-
-def test_what_came_after_a_record_is_what_the_reader_has_not_had() -> None:
-    """The whole session read from a point in it: what came before is what the reader already has."""
-    happenings = read()
-    sixth = happenings[5].ref
-    assert sixth is not None and read(sixth) == happenings[6:]
-    # Cut at its own last record, a session has nothing left to say.
-    last = happenings[-1].ref
-    assert last is not None and read(last) == []
 
 
 def test_a_subagent_is_one_delegated_step_and_not_the_work_it_did() -> None:
@@ -79,24 +67,24 @@ def test_a_call_shown_with_no_result_yet_is_never_the_mark_a_reading_goes_on_fro
     Marking a call that has not come back would go on from after it next time, so the result would arrive with
     nobody to tell: the one thing the reader was waiting to hear is the one thing it would never hear.
     """
-    working = read_since(written(tmp_path / "working.jsonl", PROMPT, CALL), None)
+    working = read_transcript(written(tmp_path / "working.jsonl", PROMPT, CALL))
     assert [type(happening).__name__ for happening in working.happenings] == ["Asked", "Ran"]
     running = working.happenings[1]
     assert isinstance(running, Ran) and running.output == "(no result)"
     # What was asked is finished business. The call the session is still inside is not.
     assert working.settled == 1
 
-    done = read_since(written(tmp_path / "done.jsonl", PROMPT, CALL, RESULT, DONE), Ref("u1"))
-    assert [type(happening).__name__ for happening in done.happenings] == ["Ran", "Said"]
-    answered = done.happenings[0]
+    done = read_transcript(written(tmp_path / "done.jsonl", PROMPT, CALL, RESULT, DONE))
+    assert [type(happening).__name__ for happening in done.happenings] == ["Asked", "Ran", "Said"]
+    answered = done.happenings[1]
     assert isinstance(answered, Ran) and answered.output == "3 tests did not pass"
-    assert done.settled == 2
+    assert done.settled == 3
 
 
 def test_a_call_nothing_ever_answers_does_not_hold_the_reading_back(tmp_path: Path) -> None:
     """Only a call a reading ends on is unfinished. One the session carried on past is never coming back, and
     holding the mark behind it would read the rest of the session again, every time, for ever."""
-    abandoned = read_since(written(tmp_path / "abandoned.jsonl", PROMPT, CALL, DONE), None)
+    abandoned = read_transcript(written(tmp_path / "abandoned.jsonl", PROMPT, CALL, DONE))
     assert [type(happening).__name__ for happening in abandoned.happenings] == ["Asked", "Ran", "Said"]
     assert abandoned.settled == 3
 
@@ -114,7 +102,7 @@ def test_a_call_id_that_comes_round_again_does_not_take_the_first_call_with_it(t
         '{"uuid":"u3","type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest -q"}}]}}',
         '{"uuid":"u4","type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"all good"}]}}',
     )
-    first, second = read_since(transcript, None).happenings[1:]
+    first, second = read_transcript(transcript).happenings[1:]
     assert isinstance(first, Ran) and first.command == "pytest -x" and first.output == "(no result)"
     assert isinstance(second, Ran) and second.command == "pytest -q" and second.output == "all good"
 
@@ -131,23 +119,16 @@ def test_a_call_still_out_while_another_answers_holds_the_mark_where_it_is(tmp_p
         '{"uuid":"u3","type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}]}}',
         '{"uuid":"u4","type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"a.py"}]}}',
     )
-    out = read_since(written(tmp_path / "out.jsonl", *calls), None)
+    out = read_transcript(written(tmp_path / "out.jsonl", *calls))
     assert [type(happening).__name__ for happening in out.happenings] == ["Asked", "Ran", "Ran"]
     # The second call came back; the first is still out, so the mark stays behind it.
     assert out.settled == 1
 
-    landed = read_since(written(tmp_path / "landed.jsonl", *calls, RESULT), Ref("u1"))
+    landed = read_transcript(written(tmp_path / "landed.jsonl", *calls, RESULT))
     assert [(step.command, step.output) for step in landed.happenings if isinstance(step, Ran)] == [
         ("pytest", "3 tests did not pass"),
         ("ls", "a.py"),
     ]
-
-
-def test_a_mark_this_transcript_never_held_is_said_rather_than_read_as_the_start(tmp_path: Path) -> None:
-    """[LAW:no-silent-failure] otherwise a mark from another session re-tells this one from the top as if new."""
-    transcript = written(tmp_path / "s.jsonl", PROMPT, CALL, RESULT, DONE)
-    with pytest.raises(Unseen):
-        read_since(transcript, Ref("u9"))
 
 
 def test_a_transcript_that_is_being_written_is_read_only_as_far_as_its_last_whole_record(tmp_path: Path) -> None:
@@ -155,13 +136,13 @@ def test_a_transcript_that_is_being_written_is_read_only_as_far_as_its_last_whol
     half = tmp_path / "half.jsonl"
     whole = FIXTURE.read_bytes()
     half.write_bytes(whole[: whole.rindex(b"\n") + 1] + b'{"type":"assistant","message":{"content":[{"typ')
-    assert read_since(half, None).happenings == read()
+    assert read_transcript(half).happenings == read()
 
 
 def test_a_call_the_user_interrupted_is_read_as_over_and_the_interrupt_in_its_place(tmp_path: Path) -> None:
     """A second call left open when the user pressed Escape is never answered: the interrupt is the proof."""
     second = '{"uuid":"u5","type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"sleep 60"}}]}}'
     cut = '{"uuid":"u6","type":"user","promptId":"p1","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}'
-    reading = read_since(written(tmp_path / "t.jsonl", PROMPT, CALL, RESULT, second, cut), None)
+    reading = read_transcript(written(tmp_path / "t.jsonl", PROMPT, CALL, RESULT, second, cut))
     assert reading.happenings[-1] == Interruption(Ref("u6"))
     assert reading.settled == len(reading.happenings)

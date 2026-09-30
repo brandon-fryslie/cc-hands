@@ -23,10 +23,12 @@ from pipecat.services.llm_service import FunctionCallParams
 from hands.core.drafts import AmendDraft, DiscardDraft, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
-from hands.core.session import Blocker, CommandName, Dialog, Held, Idle, LetGo, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unanswered, Unreported
+from hands.core.session import Blocker, Membership, CommandName, Dialog, Held, Idle, LetGo, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unanswered, Unreported
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
-from hands.core.turn import Budget, Happening, Ref, describe
-from hands.sessions.backfill import Unseen, read_since
+from hands.core.delta import Delta
+from hands.core.sentences import Due, turn_digest
+from hands.core.turn import Asked, Budget, Happening, Notified, body, describe, turns
+from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
 from hands.sessions.audit import Called, Record
 from hands.sessions.payload import Payload, Rejected
@@ -152,7 +154,7 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
     [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
     tool added here is one the eval's model is offered too.
     """
-    return [list_sessions_tool(sessions), read_session_tool(sessions), *backlog_tools(sessions, store), *draft_tools(sessions), *keyboard_tools(sessions), *permission_tools(sessions), stay_silent_tool()]
+    return [list_sessions_tool(sessions), *session_tools(sessions, store), *backlog_tools(sessions, store), *draft_tools(sessions), *keyboard_tools(sessions), *permission_tools(sessions), stay_silent_tool()]
 
 
 def stay_silent_tool() -> Tool:
@@ -190,63 +192,146 @@ def list_sessions_tool(sessions: Sessions) -> Tool:
 READBACK_BUDGET = Budget(opening=200, said=400, input=120, result=200, steps=READBACK_COUNT, files=0, commits=0, changes=0)
 
 
-def read_session_tool(sessions: Sessions) -> Tool:
-    async def read_session(session: str, since: str = "") -> Result:
-        """What a session has done, in the order it did it, from the point you last read to.
+# How much of a finished turn the summariser is shown to say it in one sentence: its request, and how it started and
+# ended. What is longer than the summariser is shown of one thing loses its middle, never its end.
+TURN_SENTENCE_BUDGET = Budget(opening=400, said=250, input=100, result=120, steps=16, files=0, commits=0, changes=0)
+
+# How many turns one reading of a session hands over, newest last: a day of work is hundreds of turns, and what it did
+# lately is what is asked about.
+TURNS_PAGE = 40
+
+
+def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
+    """read_session, read_turn: what a session has done, a sentence per finished turn first and one turn's steps on request."""
+
+    async def read_session(session: str, before: int = 0) -> Result:
+        """What a session has done, one turn at a time, in order: a sentence for each turn it has finished, and the request of the one it is on.
 
         Call this when the user asks what a session has been doing, or to catch up on one that was already
-        running before you attached. When `more` comes back true there is history after what you were given:
+        running before you attached. Answer from the sentences; call read_turn to hear more of one turn, or of the
+        one it is on. A finished turn with no summary yet has only its request, and its sentence is being written.
+        When `working` comes back true the session is still on its last turn. You are given its newest turns; when
+        `earlier` is above zero there are that many before them, and calling again with `before` set to the first
+        turn you were given reads those.
+
+        Args:
+            session: The session's id, from list_sessions.
+            before: A turn number from an earlier call, to read the turns before it. 0 reads the newest.
+        """
+        found = await _session_reading(sessions, session)
+        if isinstance(found, str):
+            return {"error": found}
+        member, reading = found
+        spans = turns(reading.happenings)
+        if not (before == 0 or 1 <= before <= len(spans)):
+            return {"error": f"session {session} has turns 1 to {len(spans)}, and no turn {before}"}
+        end = len(spans) if before == 0 else before - 1
+        start = max(0, end - TURNS_PAGE)
+        live = sessions.live_session(member.id)
+        # [LAW:one-source-of-truth] whether a session's last turn is over is the registry's to say: the file cannot tell
+        # a turn that ended from one waiting on a long call. Only a session at its prompt, or gone, proves it; one whose
+        # status has not been read yet may be mid-turn, and a sentence of half a turn would be kept for good.
+        over = live is None or isinstance(live.state, Idle)
+        entries: list[dict[str, object]] = []
+        due: list[Due] = []
+        for number in range(start + 1, end + 1):
+            happened = reading.happenings[spans[number - 1].start : spans[number - 1].stop]
+            key = turn_digest(happened) if number < len(spans) or over else None
+            sentence = None if key is None else store.known(key)
+            if key is not None and sentence is None:
+                due.append(Due(f"turn-{number}", key, body(happened, Delta(), TURN_SENTENCE_BUDGET), ()))
+            entries.append({"turn": number, **({"summary": sentence} if sentence is not None else _opened(happened[0]))})
+        # Every read is a sighting: the turns without a sentence are said in the background, never while this call waits.
+        store.want_turns(member.id, due)
+        return {
+            "turns": entries,
+            "earlier": start,
+            "unsummarised": len(due),
+            "working": live is not None and isinstance(live.state, Running),
+        }
+
+    async def read_turn(session: str, turn: int, since: str = "") -> Result:
+        """The steps of one turn of a session, in the order it took them, from the point you last read to.
+
+        Call this when the user wants more of a turn than its sentence, or wants to know what a session is doing
+        in the turn it is on. When `more` comes back true there is more of the turn after what you were given:
         ask the user whether to hear it, and call again with `since` set to `more_since` if they want it. When
         `working` comes back true the session is in the middle of a call that has not come back; say what it is
         in the middle of, and read on later rather than now, when what it did will be there.
 
         Args:
             session: The session's id, from list_sessions.
-            since: The record id you last read to, from an earlier call's `more_since`. Empty reads from the start.
+            turn: The turn's number, from read_session.
+            since: The record id you last read to, from an earlier call's `more_since`. Empty reads from the turn's start.
         """
-        member = sessions.membership(SessionId(session))
-        if member is None:
-            return {"error": f"there is no session {session}"}
-        transcript = member.transcript
-        try:
-            reading = await asyncio.to_thread(read_since, transcript, Ref(since) if since else None)
-        except Unseen:
-            # [LAW:no-silent-failure] a mark from another session, or from a transcript since rewritten, is said
-            # rather than read as "from the start", which would narrate the whole session over again unasked.
-            return {"error": f"session {session} has no record {since}; call again with since empty to read from the start"}
-        except OSError as error:
-            # [LAW:no-silent-failure] the model is told why it got nothing, rather than being handed nothing.
-            logger.error(f"cannot read what session {session} did from {transcript}: {error}")
-            return {"error": f"the transcript of session {session} could not be read"}
-        # The earliest of what it has not had, not the newest: read on from `more_since` and a session is
+        found = await _session_reading(sessions, session)
+        if isinstance(found, str):
+            return {"error": found}
+        member, reading = found
+        spans = turns(reading.happenings)
+        if not 1 <= turn <= len(spans):
+            return {"error": f"session {session} has turns 1 to {len(spans)}, and no turn {turn}"}
+        span = spans[turn - 1]
+        # A mark names a record and a reading goes on from after the whole of it.
+        marked = [index for index in span if since and reading.happenings[index].ref == since]
+        if since and not marked:
+            # [LAW:no-silent-failure] a mark from another turn, or from a transcript since rewritten, is said rather
+            # than read as "from the start", which would tell the whole turn over again unasked.
+            return {"error": f"turn {turn} of session {session} has no record {since}; call again with since empty to read from its start"}
+        start = marked[-1] + 1 if marked else span.start
+        rest = reading.happenings[start : span.stop]
+        # The earliest of what it has not had, not the newest: read on from `more_since` and a turn is
         # caught up on in order, which is the only order any of it makes sense in.
-        shown = _page(reading.happenings)
+        shown = _page(rest)
         # A call the session is still waiting on is shown but never marked as read, so its result is told once
         # it lands rather than falling into the gap between one reading and the next.
         # [LAW:one-source-of-truth] whether a session can still answer a call is the registry's to say, not the
         # file's. One that has ended will never write the result of the call it was killed inside, and a mark
         # held behind that call would leave the intermediary saying a dead session is still running something.
         ended = sessions.live_session(member.id) is None
-        settled = shown if ended else shown[: min(reading.settled, len(shown))]
+        settled = shown if ended else shown[: max(0, min(reading.settled - start, len(shown)))]
         # [LAW:one-source-of-truth] the mark names a record, and one record can carry both a settled happening
         # and the call the session is still inside — the text and the call it introduces are written together.
         # Marking that record would go on from after the whole of it, losing the very result the mark is held
         # back for, so the mark is the last record every happening of which is settled.
         waiting = {happening.ref for happening in shown[len(settled) :]}
         return {
-                "happened": [{"record": happening.ref, "what": describe(happening, READBACK_BUDGET)} for happening in shown],
-                # Two different facts, so two answers: history this reading did not reach, and a call that has
-                # not come back. Told as one, the model cannot tell "read on" from "wait and ask again".
-                "more": len(reading.happenings) > len(shown),
-                "working": len(settled) < len(shown),
-                # A record carries no uuid only rarely, and naming nothing reads as "from the start" next time.
-                "more_since": next(
-                    (happening.ref for happening in reversed(settled) if happening.ref is not None and happening.ref not in waiting),
-                    since,
-                ),
-            }
+            "happened": [{"record": happening.ref, "what": describe(happening, READBACK_BUDGET)} for happening in shown],
+            # Two different facts, so two answers: more of the turn this reading did not reach, and a call that has
+            # not come back. Told as one, the model cannot tell "read on" from "wait and ask again".
+            "more": len(rest) > len(shown),
+            "working": len(settled) < len(shown),
+            # A record carries no uuid only rarely, and naming nothing reads as "from the start" next time.
+            "more_since": next(
+                (happening.ref for happening in reversed(settled) if happening.ref is not None and happening.ref not in waiting),
+                since,
+            ),
+        }
 
-    return tool(read_session)
+    return [tool(read_session), tool(read_turn)]
+
+
+def _opened(first: Happening) -> dict[str, object]:
+    """How a turn with no sentence is told: by its request, or, in a transcript that starts part way through one, by the
+    step it was first read at, which nobody asked for."""
+    match first:
+        case Asked() | Notified():
+            return {"asked": describe(first, READBACK_BUDGET)}
+        case _:
+            return {"began": describe(first, READBACK_BUDGET)}
+
+
+async def _session_reading(sessions: Sessions, session: str) -> tuple[Membership, Reading] | str:
+    """All of what a session has done, read fresh from its transcript; or why it could not be read."""
+    member = sessions.membership(SessionId(session))
+    if member is None:
+        return f"there is no session {session}"
+    try:
+        return member, await asyncio.to_thread(read_transcript, member.transcript)
+    except OSError as error:
+        # [LAW:no-silent-failure] the model is told why it got nothing, rather than being handed nothing.
+        logger.error(f"cannot read what session {session} did from {member.transcript}: {error}")
+        return f"the transcript of session {session} could not be read"
 
 
 def _page(happenings: list[Happening]) -> list[Happening]:
