@@ -112,7 +112,16 @@ def test_the_brain_is_slim_strict_and_never_asks_and_runs_on_its_own_login_throu
     assert [argv[argv.index(flag) + 1] for flag in ("--permission-mode", "--setting-sources", "--system-prompt", "--session-id")] == ["dontAsk", "user", "You are hands.", "b1"]
     # Nothing positional: --tools would swallow it.
     assert argv[-1] != ",".join(BUILTIN_TOOLS)
-    env = environment(tmp_path / "brain", "http://127.0.0.1:1", {"PATH": "/bin", "ANTHROPIC_API_KEY": "sk", "CLAUDE_CODE_OAUTH_TOKEN": "t", "ANTHROPIC_BASE_URL": "http://elsewhere"})
+    env = environment(tmp_path / "brain", "http://127.0.0.1:1", {
+        "PATH": "/bin",
+        "ANTHROPIC_API_KEY": "sk",
+        "CLAUDE_CODE_OAUTH_TOKEN": "t",
+        "ANTHROPIC_BASE_URL": "http://elsewhere",
+        # A daemon started inside a tapped session inherits the session's tap; the brain is not that session.
+        "FRITTER_TAP": "http://127.0.0.1:40000",
+        "HANDS_API_URL": "",
+        "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1",
+    })
     assert env == {"PATH": "/bin", **SLIM, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
 
 

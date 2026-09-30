@@ -16,6 +16,10 @@ from hands.sessions.wrapper import shim_script
 
 # Each stand-in says what it was run with, and whether it carries a fritter address.
 RECORDER = '#!/bin/sh\nprintf "%s %s socket=%s\\n" "$(basename "$0")" "$*" "${FRITTER_SOCKET-unset}"\n'
+# Where the shims under test send their sessions' wire; nothing listens there.
+WIRE = Path("/tmp/hands-test-wire.sock")
+# What fritter is asked for before the claude it runs, when the session was given no API of its own.
+TAPPED = f"--tap ANTHROPIC_BASE_URL=https://api.anthropic.com --tap-to {WIRE}"
 
 
 @pytest.fixture
@@ -38,17 +42,17 @@ def installed_shim(root: Path) -> Path:
     bin = root / "bin"
     executable(bin / "fritter", RECORDER)
     executable(root / "real" / "claude", RECORDER)
-    return executable(bin / "claude", shim_script(bin / "fritter"))
+    return executable(bin / "claude", shim_script(bin / "fritter", WIRE))
 
 
 def on_a_pipe(argv: Sequence[str], path: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, env={"PATH": path, **(env or {})}, stdin=subprocess.DEVNULL, capture_output=True, text=True)
 
 
-def on_a_terminal(argv: Sequence[str], path: str) -> str:
+def on_a_terminal(argv: Sequence[str], path: str, env: dict[str, str] | None = None) -> str:
     """What argv prints when a terminal is its stdin, stdout, and stderr."""
     controller, terminal = os.openpty()
-    process = subprocess.Popen(argv, env={"PATH": path, "TMPDIR": "/tmp"}, stdin=terminal, stdout=terminal, stderr=terminal, start_new_session=True)
+    process = subprocess.Popen(argv, env={"PATH": path, "TMPDIR": "/tmp", **(env or {})}, stdin=terminal, stdout=terminal, stderr=terminal, start_new_session=True)
     os.close(terminal)
     printed = b""
     while True:
@@ -67,7 +71,7 @@ def on_a_terminal(argv: Sequence[str], path: str) -> str:
 def test_a_session_on_a_terminal_runs_under_fritter_around_the_real_claude(root: Path) -> None:
     shim = installed_shim(root)
     printed = on_a_terminal([str(shim), "--resume", "abc"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin")
-    assert printed == f"fritter -- {root / 'real' / 'claude'} --resume abc socket=unset\n"
+    assert printed == f"fritter {TAPPED} -- {root / 'real' / 'claude'} --resume abc socket=unset\n"
 
 
 @pytest.mark.parametrize("args", [["-p", "hello"], ["--print", "hello"], ["--model", "opus", "-p", "hello"], ["-cp", "hello"], ["-pc", "hello"]])
@@ -80,7 +84,7 @@ def test_print_on_a_terminal_runs_the_real_claude(root: Path, args: list[str]) -
 def test_a_prompt_after_the_options_that_says_p_is_still_a_session(root: Path) -> None:
     shim = installed_shim(root)
     printed = on_a_terminal([str(shim), "--", "-p"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin")
-    assert printed.startswith("fritter -- ")
+    assert printed.startswith(f"fritter {TAPPED} -- ")
 
 
 def test_off_a_terminal_the_real_claude_runs_without_the_address_of_the_session_it_was_started_from(root: Path) -> None:
@@ -94,13 +98,13 @@ def test_an_option_whose_value_is_p_is_a_session(root: Path, args: list[str]) ->
     # -d and -r take a value, so -dp is a debug filter and -rp a session to resume.
     shim = installed_shim(root)
     printed = on_a_terminal([str(shim), *args], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin")
-    assert printed.startswith("fritter -- ")
+    assert printed.startswith(f"fritter {TAPPED} -- ")
 
 
 def test_every_hands_shim_is_skipped_however_path_names_it(root: Path) -> None:
     # Two homes' shims on one PATH would each take the other for the real claude, and nest fritters without end.
     shim = installed_shim(root)
-    other = executable(root / "other" / "claude", shim_script(root / "other" / "fritter"))
+    other = executable(root / "other" / "claude", shim_script(root / "other" / "fritter", WIRE))
     (root / "alias").mkdir()
     (root / "alias" / "claude").symlink_to(shim)
     ran = on_a_pipe([str(shim)], f"{root / 'alias'}:{root / 'bin'}:{other.parent}:{root / 'bin'}:{root / 'real'}:/usr/bin:/bin")
@@ -117,7 +121,7 @@ def test_an_empty_path_entry_is_the_current_directory(root: Path, entries: str) 
 
 def test_any_home_s_shim_names_the_fritter_it_runs_and_nothing_else_names_one(root: Path) -> None:
     shim = installed_shim(root)
-    other = executable(root / "it's other" / "claude", shim_script(root / "it's other" / "fritter"))
+    other = executable(root / "it's other" / "claude", shim_script(root / "it's other" / "fritter", WIRE))
     assert wrapper.fritter_of(shim) == root / "bin" / "fritter"
     assert wrapper.fritter_of(other) == root / "it's other" / "fritter"
     unreadable = executable(root / "locked" / "claude", "#!/bin/sh\n")
@@ -138,9 +142,9 @@ def test_a_path_with_spaces_and_quotes_is_the_path_the_shim_names(root: Path) ->
     bin = root / "it's a bin"
     executable(bin / "fritter", RECORDER)
     executable(root / "real" / "claude", RECORDER)
-    shim = executable(bin / "claude", shim_script(bin / "fritter"))
+    shim = executable(bin / "claude", shim_script(bin / "fritter", WIRE))
     printed = on_a_terminal([str(shim)], f"{bin}:{root / 'real'}:/usr/bin:/bin")
-    assert printed == f"fritter -- {root / 'real' / 'claude'} socket=unset\n"
+    assert printed == f"fritter {TAPPED} -- {root / 'real' / 'claude'} socket=unset\n"
 
 
 @pytest.mark.skipif(shutil.which("go") is None, reason="building fritter needs go")
@@ -178,3 +182,59 @@ def test_a_relative_home_is_this_directory_s(root: Path, monkeypatch: pytest.Mon
     monkeypatch.setattr(wrapper, "install", install)
     assert main(["--home", "h", "install-fritter"]) == 1
     assert homes == [Home(root / "h")]
+
+
+# Says which API the claude it stands in for would reach.
+API_RECORDER = '#!/bin/sh\nprintf "%s api=%s\\n" "$(basename "$0")" "${ANTHROPIC_BASE_URL-unset}"\n'
+
+
+@pytest.mark.parametrize(("given", "reached"), [("https://gateway.example", "https://gateway.example"), ("", "unset")])
+def test_a_claude_run_from_inside_a_session_reaches_the_api_the_session_was_given_not_its_tap(root: Path, given: str, reached: str) -> None:
+    # The session's own ANTHROPIC_BASE_URL is its fritter's tap, which ends when the session does.
+    shim = installed_shim(root)
+    executable(root / "real" / "claude", API_RECORDER)
+    tap = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:40000", "FRITTER_TAP": "http://127.0.0.1:40000", "HANDS_API_URL": given}
+    ran = on_a_pipe([str(shim), "-p", "hello"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin", tap)
+    assert ran.stdout == f"claude api={reached}\n"
+
+
+def test_a_claude_pointed_elsewhere_from_inside_a_session_reaches_where_it_was_pointed(root: Path) -> None:
+    # hands' brain, run by a daemon started inside a session, is pointed at hands' proxy.
+    shim = installed_shim(root)
+    executable(root / "real" / "claude", API_RECORDER)
+    inside = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:50000", "FRITTER_TAP": "http://127.0.0.1:40000", "HANDS_API_URL": ""}
+    ran = on_a_pipe([str(shim), "-p", "hello"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin", inside)
+    assert ran.stdout == "claude api=http://127.0.0.1:50000\n"
+
+
+def test_a_session_is_tapped_toward_the_api_it_was_given(root: Path) -> None:
+    bin = root / "bin"
+    executable(bin / "fritter", '#!/bin/sh\nprintf "%s kept=%s\\n" "$*" "${HANDS_API_URL-unset}"\n')
+    executable(root / "real" / "claude", RECORDER)
+    shim = executable(bin / "claude", shim_script(bin / "fritter", WIRE))
+    printed = on_a_terminal([str(shim)], f"{bin}:{root / 'real'}:/usr/bin:/bin", {"ANTHROPIC_BASE_URL": "https://gateway.example"})
+    assert printed == f"--tap ANTHROPIC_BASE_URL=https://gateway.example --tap-to {WIRE} -- {root / 'real' / 'claude'} kept=https://gateway.example\n"
+
+
+# Says whether the session was told its API is Anthropic's, past the tap's loopback address.
+ASSUMED_RECORDER = '#!/bin/sh\nprintf "assumed=%s\\n" "${_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL-unset}"\n'
+
+
+@pytest.mark.parametrize(
+    ("given", "assumed"),
+    [({}, "1"), ({"ANTHROPIC_BASE_URL": "https://api.anthropic.com/"}, "1"), ({"ANTHROPIC_BASE_URL": "https://gateway.example"}, "unset")],
+)
+def test_a_session_tapped_toward_anthropic_s_api_is_told_its_api_is_anthropic_s(root: Path, given: dict[str, str], assumed: str) -> None:
+    bin = root / "bin"
+    executable(bin / "fritter", ASSUMED_RECORDER)
+    executable(root / "real" / "claude", RECORDER)
+    shim = executable(bin / "claude", shim_script(bin / "fritter", WIRE))
+    assert on_a_terminal([str(shim)], f"{bin}:{root / 'real'}:/usr/bin:/bin", given) == f"assumed={assumed}\n"
+
+
+def test_a_claude_run_from_inside_a_session_pointed_elsewhere_is_not_told_its_api_is_anthropic_s(root: Path) -> None:
+    shim = installed_shim(root)
+    executable(root / "real" / "claude", ASSUMED_RECORDER)
+    inside = {"ANTHROPIC_BASE_URL": "https://gateway.example", "FRITTER_TAP": "http://127.0.0.1:40000", "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1"}
+    ran = on_a_pipe([str(shim), "-p", "hello"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin", inside)
+    assert ran.stdout == "assumed=unset\n"

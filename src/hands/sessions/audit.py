@@ -69,6 +69,22 @@ class ProxyListening:
 
 
 @dataclass(frozen=True)
+class TapListening:
+    """Where hands took the copies of wrapped sessions' exchanges for this run: the socket each session's fritter dials."""
+
+    path: Path
+
+
+@dataclass(frozen=True)
+class CopiesLost:
+    """Copies of a session's exchanges that its fritter could not hand to hands, told with the first copy since that it
+    did: hands was down, or was not reading them. The session's own exchanges went on regardless."""
+
+    session: str | None
+    lost: int
+
+
+@dataclass(frozen=True)
 class McpConnected:
     """A client of hands' MCP server opened with it: who it says it is, and the protocol version it asked for."""
 
@@ -283,6 +299,8 @@ Entry = (
     | EffectFailed
     | LLMChosen
     | ProxyListening
+    | TapListening
+    | CopiesLost
     | Exchanged
     | McpConnected
     | BrainLaunched
@@ -312,6 +330,9 @@ class AuditLog:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._path = path
         self._clock = clock
+        # The log holds what every tapped session said, as the tap's socket does: the user's alone to read.
+        if path.exists():
+            path.chmod(0o600)
 
     def record(self, entry: Entry) -> None:
         # [LAW:single-enforcer] the log watches what the daemon does and never changes it: a line it cannot encode or
@@ -324,11 +345,15 @@ class AuditLog:
             return
         try:
             # Opened for each line, so a line is on disk when record returns and a log moved aside is started again.
-            with self._path.open("a", encoding="utf-8") as log:
+            with open(self._path, "a", encoding="utf-8", opener=_private) as log:
                 log.write(line + "\n")
         except OSError as error:
             # [LAW:no-silent-failure] said on stderr, as a warning: an error would be sent back to the log that just failed.
             logger.warning(f"the audit log {self._path} lost a {type(entry).__name__} line: {error}")
+
+
+def _private(path: str, flags: int) -> int:
+    return os.open(path, flags, 0o600)
 
 
 def encoded(value: object) -> dict[str, object]:

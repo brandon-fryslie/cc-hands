@@ -5,12 +5,15 @@
 // a unix socket, and anything asked for there is typed into the program's input as
 // though someone at the keyboard had typed it.
 //
-//	fritter [--socket-dir DIR] -- COMMAND [ARGS...]
+//	fritter [--socket-dir DIR] [--tap VARIABLE=UPSTREAM --tap-to SOCKET] -- COMMAND [ARGS...]
 //
 // The socket's path is published to the child in FRITTER_SOCKET, so anything the child
 // spawns - a hook, a subprocess - inherits the address and can hand it on. That is the
 // whole of fritter's coupling to whatever drives it: one environment variable, carried
 // by the operating system along the path that needs it.
+//
+// With a tap (tap.go), the child's requests to one HTTP server go through fritter, which
+// sends a copy of each exchange to SOCKET.
 //
 // fritter knows nothing about Claude Code, and Claude Code is only its first caller.
 package main
@@ -23,7 +26,7 @@ import (
 	"syscall"
 )
 
-const usage = "usage: fritter [--socket-dir DIR] -- COMMAND [ARGS...]"
+const usage = "usage: fritter [--socket-dir DIR] [--tap VARIABLE=UPSTREAM --tap-to SOCKET] -- COMMAND [ARGS...]"
 
 // Exit codes fritter itself produces. Anything else is the child's own, passed through
 // unchanged, because a wrapper that rewrote its child's exit code would make every
@@ -54,20 +57,33 @@ func run(args []string, stdin *os.File, stdout io.Writer) int {
 	// through them.
 	defer signal.Stop(killed)
 
-	dir, argv, err := parse(args)
+	options, err := parse(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fritter: %v\n%s\n", err, usage)
 		return misuse
 	}
 
-	socket, err := listen(dir)
+	socket, err := listen(options.dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fritter: %v\n", err)
 		return failed
 	}
 	defer socket.close()
 
-	wrapped, err := start(argv, []string{"FRITTER_SOCKET=" + socket.address})
+	env := []string{"FRITTER_SOCKET=" + socket.address}
+	if options.tap != nil {
+		tap, err := startTap(*options.tap)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fritter: %v\n", err)
+			return failed
+		}
+		defer tap.close()
+		// FRITTER_TAP names the tap as FRITTER_SOCKET names the socket, so what the child
+		// runs can tell the variable fritter set from one set again after it.
+		env = append(env, options.tap.variable+"="+tap.address, "FRITTER_TAP="+tap.address)
+	}
+
+	wrapped, err := start(options.argv, env)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fritter: %v\n", err)
 		return failed
@@ -82,30 +98,57 @@ func run(args []string, stdin *os.File, stdout io.Writer) int {
 	return code
 }
 
+type options struct {
+	dir  string
+	tap  *tapping // nil when the child's traffic is not tapped
+	argv []string
+}
+
 // parse splits fritter's own arguments from the command it wraps at the "--" that
 // separates them. The separator is required rather than inferred, so a command with a
 // flag fritter also has is never mistaken for fritter's own.
-func parse(args []string) (dir string, argv []string, err error) {
-	dir = os.TempDir()
+func parse(args []string) (options, error) {
+	parsed := options{dir: os.TempDir()}
+	tap, to := "", ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--":
-			argv = args[i+1:]
-			if len(argv) == 0 {
-				return "", nil, fmt.Errorf("no command after --")
+			parsed.argv = args[i+1:]
+			if len(parsed.argv) == 0 {
+				return options{}, fmt.Errorf("no command after --")
 			}
-			return dir, argv, nil
-		case "--socket-dir":
+			// [LAW:types-are-the-program] a tap is both halves or none: a copy with nowhere
+			// to go, or a socket with nothing tapped, is refused here and never run.
+			if (tap == "") != (to == "") {
+				return options{}, fmt.Errorf("--tap and --tap-to go together")
+			}
+			if tap != "" {
+				variable, upstream, err := parseTap(tap)
+				if err != nil {
+					return options{}, err
+				}
+				parsed.tap = &tapping{variable: variable, upstream: upstream, to: to}
+			}
+			return parsed, nil
+		case "--socket-dir", "--tap", "--tap-to":
 			if i+1 >= len(args) {
-				return "", nil, fmt.Errorf("--socket-dir needs a directory")
+				return options{}, fmt.Errorf("%s needs a value", args[i])
 			}
-			dir = args[i+1]
+			value := args[i+1]
+			switch args[i] {
+			case "--socket-dir":
+				parsed.dir = value
+			case "--tap":
+				tap = value
+			case "--tap-to":
+				to = value
+			}
 			i++
 		default:
-			return "", nil, fmt.Errorf("unknown argument %q", args[i])
+			return options{}, fmt.Errorf("unknown argument %q", args[i])
 		}
 	}
-	return "", nil, fmt.Errorf("no -- separating fritter's arguments from the command")
+	return options{}, fmt.Errorf("no -- separating fritter's arguments from the command")
 }
 
 // warn reports something fritter could not do, without stopping what it was doing.

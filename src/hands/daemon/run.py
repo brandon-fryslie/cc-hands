@@ -40,8 +40,8 @@ from pipecat.workers.runner import WorkerRunner
 from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
-from hands.core.wire import Exchanged, Heard, Observed, Sent
-from hands.sessions.audit import AuditLog, LLMChosen, ProxyListening, Record, failures_to
+from hands.core.wire import UPSTREAM, Exchanged, Heard, Observed, Sent
+from hands.sessions.audit import AuditLog, LLMChosen, ProxyListening, Record, TapListening, failures_to
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.statusfile import keep_reading_statuses
@@ -49,8 +49,9 @@ from hands.sessions.tail import Tails, keep_tailing
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
-from hands.sessions.proxy import UPSTREAM, Wire, serve_proxy
+from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.server import serve_hooks
+from hands.sessions.tap import serve_tap
 from hands.sessions.summaries import summaries
 from hands.voice.devices import follow_default_devices
 from hands.voice.cues import cues
@@ -277,6 +278,10 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     wire = Wire(wire_to(audit.record))
     proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=time.time)
     audit.record(ProxyListening(url=proxy.url, upstream=UPSTREAM))
+    # [LAW:one-source-of-truth] the working sessions' exchanges reach the same observer as the brain's, so the log and
+    # whatever listens hear one wire.
+    tap = await serve_tap(home.wire, wire.observe, audit.record, clock=time.time)
+    audit.record(TapListening(path=home.wire))
     quit_event = asyncio.Event()
     # [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the q key, and a failed
     # background task all set this one event, and it is installed before the start, so a stop is heard in every phase of the run.
@@ -300,6 +305,7 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
         await proxy.close()
+        tap.close()
         # From here a signal has its default effect again: nothing is left to stop gracefully.
         for signal_number in QUIT_SIGNALS:
             loop.remove_signal_handler(signal_number)

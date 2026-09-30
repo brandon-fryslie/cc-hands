@@ -140,6 +140,13 @@ def test_count_tokens_is_known_by_its_path() -> None:
     assert classify("/v1/messages/count_tokens?beta=true", {"messages": [said("a file")]}) == CountTokens()
 
 
+def test_a_request_is_told_by_its_newest_cache_marker_whatever_marks_come_before_it() -> None:
+    # A working session marks an earlier message of a long history as well as its last (2.1.285).
+    history = [said("hi"), reply("hello"), said("more", marked=True), reply("ok")]
+    assert classify("/v1/messages", request(*history, said("go on", marked=True))) == MainTurn()
+    assert classify("/v1/messages", request(*history[:-1], reply("ok", marked=True), said("suggest the next prompt"))) == Fork()
+
+
 def test_every_shape_no_rule_matches_is_unknown_and_says_what_it_was() -> None:
     assert classify("/api/hello", None) == Unknown("a request to /api/hello")
     assert classify("/v1/messages", None) == Unknown("a messages request whose body is not a JSON object")

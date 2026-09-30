@@ -28,6 +28,7 @@ from hands.brain.mcp import SERVER_NAME
 from hands.core.session import SessionId
 from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainForked, BrainLaunched, BrainReady, Record
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.wrapper import SESSION_TAP
 
 # The built-in tools the brain is given: it reads, searches, runs commands, and uses skills. It edits nothing itself,
 # and it reaches the working sessions only through hands' tools over MCP.
@@ -102,7 +103,9 @@ def command(launch: Launch) -> list[str]:
 
 def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> dict[str, str]:
     """A slim Claude Code's environment: hands' own, less any credential that is not the login in `config_dir`, reaching the API at `base_url`."""
-    kept = {name: value for name, value in inherited.items() if name not in FOREIGN_CREDENTIALS}
+    # [LAW:one-source-of-truth] the brain is the same brain wherever hands was started: a daemon started inside a tapped
+    # session does not hand the brain that session's tap.
+    kept = {name: value for name, value in inherited.items() if name not in (*FOREIGN_CREDENTIALS, *SESSION_TAP)}
     return {**kept, **SLIM, "CLAUDE_CONFIG_DIR": str(config_dir), "ANTHROPIC_BASE_URL": base_url}
 
 

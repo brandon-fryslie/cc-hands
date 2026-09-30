@@ -51,7 +51,8 @@ from hands.core.narration import Narration, narration, open_questions, reported_
 from hands.core.spoken import spoken
 from hands.core.turn import Answering, Asked, Budget, Continuing, Interruption, Notified, Opening, Step, Turn
 from hands.sessions.home import default_home
-from hands.sessions.proxy import UPSTREAM, serve_proxy
+from hands.core.wire import UPSTREAM
+from hands.sessions.proxy import serve_proxy
 from hands.daemon.run import SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_SECONDS, backend_from_env
 from hands.sessions.transcript import turn_record
 from hands.sessions.turning import Turning
