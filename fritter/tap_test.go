@@ -1,0 +1,244 @@
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/creack/pty"
+)
+
+// line is any copy line, read back with every field any kind has.
+type line struct {
+	Kind    string      `json:"kind"`
+	Method  string      `json:"method"`
+	Path    string      `json:"path"`
+	Headers [][2]string `json:"headers"`
+	Body    []byte      `json:"body"`
+	Lost    int64       `json:"lost"`
+	Status  int         `json:"status"`
+	Bytes   []byte      `json:"bytes"`
+	Error   string      `json:"error"`
+}
+
+// listening is a socket that takes copies, each connection's lines handed over as it closes.
+func listening(t *testing.T, path string) <-chan []line {
+	t.Helper()
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("cannot listen on %s: %v", path, err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	copies := make(chan []line, 16)
+	go func() {
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer connection.Close()
+				var lines []line
+				scanner := bufio.NewScanner(connection)
+				scanner.Buffer(make([]byte, 1<<20), 1<<24)
+				for scanner.Scan() {
+					var read line
+					if err := json.Unmarshal(scanner.Bytes(), &read); err != nil {
+						t.Errorf("a copy line is not JSON: %q", scanner.Text())
+					}
+					lines = append(lines, read)
+				}
+				copies <- lines
+			}()
+		}
+	}()
+	return copies
+}
+
+func tapped(t *testing.T, upstream string, to string) *Tap {
+	t.Helper()
+	parsed, err := url.Parse(upstream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tap, err := startTap(tapping{variable: "BASE_URL", upstream: parsed, to: to})
+	if err != nil {
+		t.Fatalf("startTap: %v", err)
+	}
+	t.Cleanup(tap.close)
+	return tap
+}
+
+func streaming(t *testing.T) *httptest.Server {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		if request.Header.Get("X-Api-Key") != "secret" {
+			http.Error(writer, "the credential did not reach the upstream", http.StatusUnauthorized)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.WriteHeader(http.StatusOK)
+		for _, part := range []string{"event: a\ndata: " + string(body) + "\n\n", "event: b\ndata: {}\n\n"} {
+			writer.Write([]byte(part))
+			writer.(http.Flusher).Flush()
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	return upstream
+}
+
+func ask(t *testing.T, tap *Tap, body string) (int, string) {
+	t.Helper()
+	request, _ := http.NewRequest("POST", tap.address+"/v1/messages?beta=true", strings.NewReader(body))
+	request.Header.Set("X-Api-Key", "secret")
+	request.Header.Set("X-Session", "s1")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("the child's request through the tap failed: %v", err)
+	}
+	defer response.Body.Close()
+	got, _ := io.ReadAll(response.Body)
+	return response.StatusCode, string(got)
+}
+
+func header(pairs [][2]string, name string) (string, bool) {
+	for _, pair := range pairs {
+		if strings.EqualFold(pair[0], name) {
+			return pair[1], true
+		}
+	}
+	return "", false
+}
+
+func TestTheChildIsAnsweredByTheUpstreamAndTheExchangeIsCopiedInOrder(t *testing.T) {
+	to := filepath.Join(shortTempDir(t), "wire.sock")
+	copies := listening(t, to)
+	tap := tapped(t, streaming(t).URL, to)
+
+	status, got := ask(t, tap, `{"q":1}`)
+	if want := "event: a\ndata: {\"q\":1}\n\nevent: b\ndata: {}\n\n"; status != 200 || got != want {
+		t.Fatalf("the child got %d %q, want the upstream's 200 %q", status, got, want)
+	}
+
+	lines := <-copies
+	kinds := []string{}
+	var streamed string
+	for _, read := range lines {
+		kinds = append(kinds, read.Kind)
+		streamed += string(read.Bytes)
+	}
+	if kinds[0] != "request" || kinds[1] != "response" || kinds[len(kinds)-1] != "end" {
+		t.Fatalf("the copy's lines are %v, want request, response, bytes..., end", kinds)
+	}
+	request, response, end := lines[0], lines[1], lines[len(lines)-1]
+	if request.Method != "POST" || request.Path != "/v1/messages?beta=true" || string(request.Body) != `{"q":1}` {
+		t.Errorf("the copied request is %s %s %q", request.Method, request.Path, request.Body)
+	}
+	if session, _ := header(request.Headers, "X-Session"); session != "s1" {
+		t.Errorf("the copied request lost its headers: %v", request.Headers)
+	}
+	// The listener is not who the credential was for.
+	if _, found := header(request.Headers, "X-Api-Key"); found {
+		t.Errorf("the copy carries the child's credential: %v", request.Headers)
+	}
+	if kind, _ := header(response.Headers, "Content-Type"); response.Status != 200 || kind != "text/event-stream" {
+		t.Errorf("the copied reply head is %d %v", response.Status, response.Headers)
+	}
+	if streamed != got {
+		t.Errorf("the copy's bytes are %q, the child's %q", streamed, got)
+	}
+	if end.Error != "" {
+		t.Errorf("a reply read to its end was copied as ending %q", end.Error)
+	}
+}
+
+func TestNoListenerCostsTheChildNothingAndIsToldWithTheNextCopy(t *testing.T) {
+	to := filepath.Join(shortTempDir(t), "wire.sock")
+	tap := tapped(t, streaming(t).URL, to)
+
+	for range 2 {
+		if status, _ := ask(t, tap, `{}`); status != 200 {
+			t.Fatalf("with nobody listening the child got %d", status)
+		}
+	}
+	// The lost copies are counted once their delivery gives up, off the child's path.
+	deadline := time.Now().Add(5 * time.Second)
+	for tap.lost.Load() != 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	copies := listening(t, to)
+	ask(t, tap, `{}`)
+	if lost := (<-copies)[0].Lost; lost != 2 {
+		t.Errorf("the first copy taken says %d were lost, want 2", lost)
+	}
+	ask(t, tap, `{}`)
+	if lost := (<-copies)[0].Lost; lost != 0 {
+		t.Errorf("a copy after one taken says %d were lost, want 0", lost)
+	}
+}
+
+func TestAnUpstreamThatCannotBeReachedIsA502AndCopiedAsUnreached(t *testing.T) {
+	to := filepath.Join(shortTempDir(t), "wire.sock")
+	copies := listening(t, to)
+	closed := httptest.NewServer(http.NotFoundHandler())
+	address := closed.URL
+	closed.Close()
+	tap := tapped(t, address, to)
+
+	if status, _ := ask(t, tap, `{}`); status != http.StatusBadGateway {
+		t.Errorf("an unreachable upstream reached the child as %d, want 502", status)
+	}
+	lines := <-copies
+	if last := lines[len(lines)-1]; last.Kind != "unreached" || last.Error == "" {
+		t.Errorf("the copy ends %+v, want unreached with its error", last)
+	}
+}
+
+func TestATapIsBothHalvesOrNone(t *testing.T) {
+	for _, args := range [][]string{
+		{"--tap", "BASE_URL=https://example.com", "--", "true"},
+		{"--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "BASE_URL", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "BASE_URL=ftp://example.com", "--tap-to", "/tmp/x.sock", "--", "true"},
+	} {
+		if _, err := parse(args); err == nil {
+			t.Errorf("parse(%q) took a tap it cannot run", args)
+		}
+	}
+	parsed, err := parse([]string{"--tap", "BASE_URL=https://example.com/", "--tap-to", "/tmp/x.sock", "--", "true"})
+	if err != nil || parsed.tap == nil || parsed.tap.variable != "BASE_URL" || parsed.tap.upstream.Host != "example.com" || parsed.tap.to != "/tmp/x.sock" {
+		t.Errorf("parse of a whole tap gave %+v, %v", parsed.tap, err)
+	}
+}
+
+func TestTheChildIsGivenTheTapsAddressInItsVariable(t *testing.T) {
+	dir := shortTempDir(t)
+	fritter := exec.Command(os.Args[0], "-test.run=TestHelperFritter")
+	fritter.Env = append(os.Environ(),
+		"FRITTER_HELPER=1",
+		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--tap\x1fBASE_URL=https://example.com\x1f--tap-to\x1f"+filepath.Join(dir, "wire.sock")+"\x1f--\x1fsh\x1f-c\x1fecho \"at=$BASE_URL\"",
+	)
+	terminal, err := pty.Start(fritter)
+	if err != nil {
+		t.Fatalf("cannot start fritter on a terminal: %v", err)
+	}
+	defer terminal.Close()
+	printed, _ := io.ReadAll(terminal)
+	fritter.Wait()
+	if !regexp.MustCompile(`at=http://127\.0\.0\.1:\d+\r?\n`).Match(printed) {
+		t.Errorf("the child saw %q, want BASE_URL at the tap on loopback", printed)
+	}
+}

@@ -14,7 +14,7 @@ from hands.sessions import heartbeat
 from hands.sessions.audit import Entry, LLMChosen, encoded
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
-from hands.sessions.proxy import UPSTREAM
+from hands.core.wire import UPSTREAM
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
 
 HOME = Home(Path("/Users/someone/.hands"))

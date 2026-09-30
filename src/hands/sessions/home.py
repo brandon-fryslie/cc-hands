@@ -17,6 +17,11 @@ class Home:
         return self.root / "hands.sock"
 
     @property
+    def wire(self) -> Path:
+        """Where each wrapped session's fritter sends a copy of every exchange the session has with the API."""
+        return self.root / "wire.sock"
+
+    @property
     def status(self) -> Path:
         """The heartbeat, written by the daemon alone."""
         return self.root / "status.json"

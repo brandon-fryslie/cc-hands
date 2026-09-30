@@ -55,7 +55,11 @@ mocks.
 POST to, the session files the shims write, Claude Code's own status files, the JSONL tail, the git delta reader, the
 process-liveness check, the audit log, and the wire proxy a Claude Code process reaches
 the API through (`ANTHROPIC_BASE_URL`), which passes every byte unchanged and reads a
-copy into `core.wire`'s typed events, one `Exchanged` audit line per request. The one
+copy into `core.wire`'s typed events, one `Exchanged` audit line per request. The
+working sessions' exchanges reach the same observer by another path, the tap
+(`sessions/tap.py`): each session's fritter forwards its requests straight to the API and
+copies each exchange to `<hands home>/wire.sock`, read into the same values, so a session
+never waits on the daemon and has no route through it. The one
 listener joined to it (the brain's stage, with the keeper of the brain's context) routes
 each request: sent with the changes hands makes to it (none, hands' tail appended to its
 newest message, old tool results as one line each, a compaction's prompt replaced), or

@@ -102,7 +102,7 @@ def test_no_claude_to_ask_is_unknown(root: Path) -> None:
 def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -> None:
     # Off a terminal the shim runs the real claude, so the answer is the real one, not fritter's.
     executable(root / "bin" / "fritter", "#!/bin/sh\necho fritter ran >&2\nexit 9\n")
-    executable(root / "bin" / "claude", shim_script(root / "bin" / "fritter"))
+    executable(root / "bin" / "claude", shim_script(root / "bin" / "fritter", root / "wire.sock"))
     path = claude_listing(root, [listed(PLUGIN_ID, True)])
     assert isinstance(readiness.plugin(f"{root / 'bin'}:{path}"), Ready)
 
@@ -113,14 +113,14 @@ def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -
 def test_the_shim_first_on_path_is_ready(root: Path) -> None:
     home = Home(root / "home")
     executable(home.bin / "fritter", "#!/bin/sh\n")
-    executable(home.shim, shim_script(home.bin / "fritter"))
+    executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     executable(root / "real" / "claude", "#!/bin/sh\n")
     assert isinstance(readiness.shim(home, f"{home.bin}:{root / 'real'}"), Ready)
 
 
 def test_an_installed_shim_behind_the_real_claude_wants_only_the_path(root: Path) -> None:
     home = Home(root / "home")
-    executable(home.shim, shim_script(home.bin / "fritter"))
+    executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     executable(root / "real" / "claude", "#!/bin/sh\n")
     found = readiness.shim(home, f"{root / 'real'}:{home.bin}")
     assert isinstance(found, Missing)
@@ -130,7 +130,7 @@ def test_an_installed_shim_behind_the_real_claude_wants_only_the_path(root: Path
 
 def test_a_shim_whose_fritter_is_gone_is_missing(root: Path) -> None:
     home = Home(root / "home")
-    executable(home.shim, shim_script(home.bin / "fritter"))
+    executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     found = readiness.shim(home, f"{home.bin}")
     assert isinstance(found, Missing) and f"its fritter {home.bin / 'fritter'} is not there to run" in found.said
 
@@ -232,7 +232,7 @@ def test_check_says_every_piece_and_exits_by_the_worst(
 ) -> None:
     home = Home(root / "home")
     executable(home.bin / "fritter", "#!/bin/sh\n")
-    executable(home.shim, shim_script(home.bin / "fritter"))
+    executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     monkeypatch.setenv("PATH", f"{home.bin}:{claude_listing(root, plugins)}")
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: granted)
     assert main(["--home", str(home.root), "check"]) == code

@@ -69,6 +69,22 @@ class ProxyListening:
 
 
 @dataclass(frozen=True)
+class TapListening:
+    """Where hands took the copies of wrapped sessions' exchanges for this run: the socket each session's fritter dials."""
+
+    path: Path
+
+
+@dataclass(frozen=True)
+class CopiesLost:
+    """Copies of a session's exchanges that its fritter could not hand to hands, told with the first copy since that it
+    did: hands was down, or was not reading them. The session's own exchanges went on regardless."""
+
+    session: str | None
+    lost: int
+
+
+@dataclass(frozen=True)
 class McpConnected:
     """A client of hands' MCP server opened with it: who it says it is, and the protocol version it asked for."""
 
@@ -283,6 +299,8 @@ Entry = (
     | EffectFailed
     | LLMChosen
     | ProxyListening
+    | TapListening
+    | CopiesLost
     | Exchanged
     | McpConnected
     | BrainLaunched

@@ -14,6 +14,9 @@ from typing import cast
 
 from hands.core.session import SessionId
 
+# Where Claude Code reaches the API when nothing says otherwise.
+UPSTREAM = "https://api.anthropic.com"
+
 # ── What a request is ────────────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -55,7 +58,7 @@ SIDE_QUESTION_OPENING = "<system-reminder>This is a side question from the user.
 def classify(path: str, body: object) -> Kind:
     """Which kind of request this is, from its path and its parsed body alone, decided before any reply exists.
 
-    Claude Code's own loop puts its one message-level cache marker on the last message; a fire-and-forget fork
+    Claude Code's own loop puts its newest message-level cache marker on the last message; a fire-and-forget fork
     (skipCacheWrite in services/api/claude.ts) puts it on the one before, the last point it shares with the loop.
     Compaction and side questions are told by the words Claude Code opens their prompts with, not by where their marker
     lands: a side question asked during a turn is merged into the turn's prompt and followed by another message, and one
@@ -89,9 +92,11 @@ def _classify_messages(body: object) -> Kind:
         return Unknown(f"a messages request with no tools, to {request.get('model')!r}")
     marked = [index for index, message in enumerate(messages) if _cache_marked(message)]
     last = len(messages) - 1
-    if marked == [last]:
+    # By the newest marker: a working session also marks an earlier message of a long history, which the brain's
+    # slim requests never did (2.1.285, markers on messages 5 and 7 of 8).
+    if marked and marked[-1] == last:
         return MainTurn()
-    if marked == [last - 1]:
+    if marked and marked[-1] == last - 1:
         return Fork()
     return Unknown(f"a messages request with cache markers on messages {marked} of {len(messages)}")
 
@@ -786,6 +791,17 @@ class Held:
 
 
 @dataclass(frozen=True)
+class Uncopied:
+    """A tapped exchange whose copy broke off before its reply's head reached hands: how it ended is not known here.
+
+    The session had its reply or its error from the upstream whatever became of the copy.
+    """
+
+    reason: str
+    lost_at: Seconds
+
+
+@dataclass(frozen=True)
 class Exchanged:
     """One request and its reply, whole: the wide record of one unit of the proxy's work."""
 
@@ -799,7 +815,7 @@ class Exchanged:
     changes: tuple[Change, ...]
     requested_at: Seconds
     sent_at: Seconds
-    reply: Reached | Unreached | Held
+    reply: Reached | Unreached | Held | Uncopied
 
 
 Observed = Sent | Heard | Exchanged

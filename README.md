@@ -144,6 +144,15 @@ current `PATH` is the one it wrote, and says what to add when it is not. Run it 
 after fritter changes: it builds fritter from this checkout. A session started before
 the shim stays unreachable until it ends.
 
+A session under fritter reaches the API through its own fritter, which forwards each
+request to the API the session would have used and sends hands a copy of the exchange,
+so the audit log holds every request each session makes, under its session id. The
+session never waits on hands: with hands stopped, its requests go through as before, and
+the copies it could not hand over are counted in the next one hands takes. A firewall
+that asks per program, such as Little Snitch, sees those connections as fritter's and
+holds each one until it is answered: allow `~/.hands/bin/fritter` to reach
+`api.anthropic.com`, and again after `install-fritter` rebuilds it.
+
 The hooks are on whether or not hands is running. While hands is stopped, has never
 run, or is still starting, they cost a session nothing: no hook error, and a permission
 request gets Claude Code's own dialog. A hands that died, hung, or left a heartbeat nothing can read shows

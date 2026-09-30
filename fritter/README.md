@@ -7,7 +7,7 @@ asked for on that socket is typed into the program's input, as though someone at
 keyboard had typed it.
 
 ```
-fritter [--socket-dir DIR] -- COMMAND [ARGS...]
+fritter [--socket-dir DIR] [--tap VARIABLE=UPSTREAM --tap-to SOCKET] -- COMMAND [ARGS...]
 ```
 
 hands is what it was built for, and hands' client for it - `hands.sessions.typing` - is
@@ -77,6 +77,26 @@ the request was refused or the write failed. Writes into the child are made one 
 the user's keys and requests alike, so neither lands inside the other.
 
 A caller has one second and 64 KB to get its request in.
+
+## The tap
+
+With `--tap VARIABLE=UPSTREAM --tap-to SOCKET`, fritter runs an HTTP server on loopback,
+gives the child its address in `VARIABLE`, and forwards each request to `UPSTREAM` as it
+came, streaming the reply back as it comes. A copy of each exchange goes to `SOCKET`, one
+connection per exchange, as JSON lines in the order it happened:
+
+```
+{"kind":"request","at":…,"method":"POST","path":"/v1/messages","headers":[[name,value]…],"body":"<base64>","lost":0}
+{"kind":"response","at":…,"status":200,"headers":[…]}
+{"kind":"bytes","at":…,"bytes":"<base64>"}          (one per chunk, as it came)
+{"kind":"end","at":…,"error":""}                     (or "unreached", with its error, in place of the reply)
+```
+
+`at` is seconds since the epoch. Headers that carry a credential are never copied. The
+child never waits on the copy: nobody listening, or a listener that reads slowly, costs
+the exchange nothing, and a copy that could not be handed over is counted in `lost` on
+the next one that is. Which variable a program reads its server from is the caller's
+knowledge; hands' `claude` shim passes `ANTHROPIC_BASE_URL`.
 
 ## Multi-line text
 
