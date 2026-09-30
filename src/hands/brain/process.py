@@ -84,6 +84,9 @@ START_SECONDS = 10.0
 SETTLE_SECONDS = 0.5
 # How long a typed turn has to be taken: a cold start loads the MCP server before the input is read.
 TAKE_SECONDS = 30.0
+# How far apart two Ctrl-Cs are pressed into the brain: Claude Code exits on a second within 800ms of one that found its
+# input empty.
+EXIT_SECONDS = 1.0
 # How long a brain told to stop has before it is killed.
 STOP_SECONDS = 5.0
 # How long a side question is waited on: one reply of one sentence, with thinking, read from the brain's cache.
@@ -239,6 +242,9 @@ class _Aside:
 
     question: PromptText
     answer: asyncio.Future[str]
+    # Done once its first exchange goes out: Claude Code sends it from the overlay that shows the question, so from then
+    # an Escape cancels the question rather than stopping the turn beneath it.
+    out: asyncio.Future[None]
     # [LAW:one-source-of-truth] the answer is read from the brain's own request for this question, never from whichever
     # fork of the session happens to end first.
     exchanges: set[str]
@@ -295,6 +301,8 @@ class Brain:
         self._turn: _Turn | None = None
         self._typing: set[asyncio.Task[None]] = set()
         self._fork: _Aside | None = None
+        # When the last stop pressed Ctrl-C, on the event loop's clock.
+        self._cleared = float("-inf")
         self._heard = asyncio.ensure_future(self._hear_hooks(hooks))
         self._exit = asyncio.ensure_future(self._run_out())
 
@@ -339,7 +347,8 @@ class Brain:
             raise BrainGone(f"the brain had exited ({self._process.returncode}) before it was asked a side question")
         async with self._queue, self._input:
             typed = pasted(question)
-            fork = self._fork = _Aside(typed, asyncio.get_running_loop().create_future(), set())
+            loop = asyncio.get_running_loop()
+            fork = self._fork = _Aside(typed, loop.create_future(), loop.create_future(), set())
             try:
                 await self._type(lambda: self._typist.command(Command(ASIDE, typed)))
                 reply = await asyncio.wait_for(asyncio.shield(fork.answer), FORK_SECONDS)
@@ -357,6 +366,8 @@ class Brain:
                 raise
             finally:
                 self._fork = None
+                # A stop waiting for the question to go out learns it never will.
+                fork.answer.cancel()
                 # The question or its answer covers the input until it is dismissed.
                 if not self._exit.done():
                     try:
@@ -379,24 +390,34 @@ class Brain:
         # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: a turn ended
         # while its UserPromptSubmit hook is still coming would leave that hook to be taken for the next turn's.
         await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+        if self._turn is not turn:
+            return
+        if not turn.taken.done():
+            # [LAW:no-silent-failure] the turn runs on, told to stop by nobody: its words are the stage's to hold.
+            logger.warning(f"the brain was not stopped: its turn was not taken in {TAKE_SECONDS:.0f}s")
+            return
         fork = self._fork
-        if self._turn is turn and turn.taken.done() and fork is not None and not fork.answer.done():
-            # A side question waiting on its answer holds the input until the answer comes. It fails now, so it cancels
-            # itself with its Escape and lets go at once; that Escape leaves the turn running, for this one to stop.
-            fork.answer.set_exception(ForkFailed("the turn beside it was stopped before it was answered"))
+        if fork is not None:
+            # A side question waiting on its answer holds the input until the answer comes. Once its question is on the
+            # screen it fails, so it cancels itself with its Escape and lets go at once; that Escape leaves the turn running,
+            # for this one to stop. One pressed before the question is up would stop the turn, and this one then land on
+            # the prompt it put back.
+            await asyncio.wait({fork.out, fork.answer}, return_when=asyncio.FIRST_COMPLETED)
+            if self._turn is turn and not fork.answer.done():
+                fork.answer.set_exception(ForkFailed("the turn beside it was stopped before it was answered"))
         try:
             async with self._input:
                 if self._turn is not turn:
                     return
-                if not turn.taken.done():
-                    # [LAW:no-silent-failure] the turn runs on, told to stop by nobody: its words are the stage's to hold.
-                    logger.warning(f"the brain was not stopped: its turn was not taken in {TAKE_SECONDS:.0f}s")
-                    return
                 await self._type(lambda: self._typist.press("escape"))
                 # Escape puts a prompt stopped before any reply back in the input, which the next turn typed would join;
-                # Ctrl-C clears it. On an input left empty it arms Claude Code's exit instead, which the next turn's typing
-                # disarms, so the next stop's Ctrl-C never exits (2.1.285, measured 2026-09-30, three stops 1.6s apart).
+                # Ctrl-C clears it. On an input left empty it arms Claude Code's exit instead, which a second Ctrl-C within
+                # 800ms takes, whatever was typed between (2.1.285, read from its source 2026-09-30); so no two are
+                # pressed that close, counted from when each went and with room for Claude Code to read the first late.
+                loop = asyncio.get_running_loop()
+                await asyncio.sleep(self._cleared + EXIT_SECONDS - loop.time())
                 await self._type(lambda: self._typist.press("ctrl_c"))
+                self._cleared = loop.time()
         except BrainGone as error:
             self._over(turn, error)
             return
@@ -420,6 +441,8 @@ class Brain:
                 session == self.session and fork is not None and any(fork.question in text for text in asked(body))
             ):
                 fork.exchanges.add(exchange)
+                if not fork.out.done():
+                    fork.out.set_result(None)
             case Exchanged(exchange=exchange, reply=reply) if fork is not None and exchange in fork.exchanges and not fork.answer.done():
                 match reply:
                     case Reached(status=200, body=Streamed(message=message)):

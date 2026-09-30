@@ -209,6 +209,23 @@ async def test_an_interrupt_is_escape_and_ends_the_turn_in_flight_and_the_next_t
     assert typed(tmp_path) == [["prompt", " wait"], ["escape", ""], ["ctrl_c", " wait"], ["prompt", " and now?"]]
 
 
+async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_last(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    # A Ctrl-C that finds the input empty arms Claude Code's exit, which a second within 800ms takes.
+    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    pressed: list[float] = []
+    try:
+        for stops in (1, 2):
+            waiting = asyncio.create_task(brain.ask("wait"))
+            await until(lambda: sum(line[0] == "prompt" for line in typed(tmp_path)) == stops)
+            brain.interrupt()
+            await until(lambda: sum(line[0] == "ctrl_c" for line in typed(tmp_path)) == stops)
+            pressed.append(asyncio.get_running_loop().time())
+            assert await asyncio.wait_for(waiting, 5) == BrainAnswered(f"p{stops}", None)
+    finally:
+        await brain.stop()
+    assert pressed[1] - pressed[0] > 0.8
+
+
 async def test_a_side_question_is_btw_typed_answered_from_the_wire_and_dismissed(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
@@ -262,12 +279,15 @@ async def test_a_stop_cancels_the_side_question_on_the_screen_goes_before_those_
         await asyncio.sleep(0.05)
         # A barge-in does not wait on the input: the stage that calls this goes on with its frames.
         brain.interrupt()
-        # Nor on the side question on the screen, whose answer may be a long way off.
+        # A question typed but not yet on the screen is left be, since an Escape then would stop the turn instead.
+        await asyncio.sleep(0.3)
+        assert not first.done()
+        # Once it is up, the stop does not wait on its answer, which may be a long way off.
+        brain.hear(forked("b1", "first", "x1"))
         with pytest.raises(ForkFailed, match="the turn beside it was stopped before it was answered"):
             await asyncio.wait_for(first, 5)
         assert await asyncio.wait_for(waiting, 5) == BrainAnswered("p1", None)
         # A late answer finds no question waiting on it.
-        brain.hear(forked("b1", "first", "x1"))
         brain.hear(answered("b1", "One.", exchange="x1"))
         await until(lambda: sum(line[0] == "btw" for line in typed(tmp_path)) == 2)
         brain.hear(forked("b1", "second", "x2"))
