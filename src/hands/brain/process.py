@@ -168,19 +168,41 @@ class ForkFailed(Exception):
 
 
 class NotLoggedIn(Exception):
-    """The brain's config directory holds no login, so every turn would fail."""
+    """The brain's config directory holds no login on the Claude subscription, so every turn would fail or be billed to a key."""
+
+
+class LoginFailed(Exception):
+    """Claude Code's own login did not finish; whatever login the brain held before, it still holds."""
 
 
 class Unstartable(Exception):
     """The brain could not be started: no claude to run, no fritter to run it under, or a fritter that never opened its socket."""
 
 
-def logged_in(config_dir: Path, base_url: str) -> None:
-    """Returns when `config_dir` holds a login; raises NotLoggedIn, naming the command that makes one, when not."""
+def brain_claude() -> Path:
+    """The Claude Code the brain runs: the real claude on PATH, past every hands shim, which would run it as a session."""
+    claude = real_claude(os.environ.get("PATH", ""))
+    if claude is None:
+        raise Unstartable("no claude on PATH but hands' shims, so there is no Claude Code to run as the brain")
+    return claude
+
+
+def login(config_dir: Path, base_url: str) -> str:
+    """Log `config_dir` in to the Claude subscription with Claude Code's own login, at this terminal; the account it holds after."""
+    # [LAW:one-source-of-truth] the brain's own claude and environment, so the login lands in its config directory,
+    # which the daemon reads, and no credential of this shell's stands in for the one being made.
+    signed = subprocess.run([brain_claude(), "auth", "login", "--claudeai"], env=environment(config_dir, base_url, os.environ))
+    if signed.returncode != 0:
+        raise LoginFailed(f"`claude auth login` for the brain exited {signed.returncode}")
+    return logged_in(config_dir, base_url)
+
+
+def logged_in(config_dir: Path, base_url: str) -> str:
+    """The subscription account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has none."""
     try:
         # A timed-out child is killed and reaped by run itself.
         asked = subprocess.run(
-            ["claude", "auth", "status"],
+            [brain_claude(), "auth", "status"],
             env=environment(config_dir, base_url, os.environ),
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -189,11 +211,18 @@ def logged_in(config_dir: Path, base_url: str) -> None:
     except subprocess.TimeoutExpired:
         raise NotLoggedIn(f"`claude auth status` for the brain did not answer in {AUTH_STATUS_SECONDS:.0f}s") from None
     try:
-        status = Payload.parse(asked.stdout).flag("loggedIn")
+        status = Payload.parse(asked.stdout)
+        if not status.flag("loggedIn"):
+            raise NotLoggedIn(f"the brain has no login; run: {setup(config_dir)}")
+        # [LAW:no-silent-failure] a key the config directory resolves would answer every turn, billed to the API.
+        if (method := status.text("authMethod")) != "claude.ai":
+            raise NotLoggedIn(
+                f"the brain is logged in by {method}, not on the Claude subscription: `hands login` puts it there,"
+                f" unless {config_dir / 'settings.json'} or hands' environment sets {method} ahead of its login"
+            )
+        return status.text("email")
     except Rejected as error:
         raise NotLoggedIn(f"`claude auth status` for the brain answered {asked.stdout[:200]!r} {asked.stderr[:200]!r}, not its status: {error}") from None
-    if not status:
-        raise NotLoggedIn(f"the brain has no login; run: {setup(config_dir)}")
 
 
 def setup(config_dir: Path) -> str:
@@ -537,9 +566,7 @@ class Brain:
 
 async def start(launch: Launch, record: Record) -> Brain:
     """Start the brain under fritter on a terminal of hands' own, on the login its backend was parsed with."""
-    claude = real_claude(os.environ.get("PATH", ""))
-    if claude is None:
-        raise Unstartable("no claude on PATH but hands' shims, so there is no Claude Code to run as the brain")
+    claude = brain_claude()
     if not launch.fritter.is_file():
         raise Unstartable(f"no fritter at {launch.fritter} to run the brain under: run `hands install-fritter`")
     hooks: asyncio.Queue[Payload] = asyncio.Queue()

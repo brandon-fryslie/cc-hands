@@ -82,7 +82,8 @@ Anthropic `tool_use` but drops OpenAI-shape tool calls (2026-09-25), so it is re
 `HANDS_LLM=claude` is the brain: one long-lived Claude Code of hands' own, on the Claude subscription,
 whose requests go through hands' proxy and which reaches the sessions through hands' tools over MCP
 (`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, set up once as any
-Claude Code is, by running `mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude` and answering its first screens, and it does not start without one.
+Claude Code is, by running `mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude` and answering its first screens, and it does not start without one. `hands login` logs it in again, or onto
+another account, and says which account it holds after.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input,
 asks side questions and the Claude Code backend's summaries with `/btw`, and stops a turn with Escape; its hooks
 say when a turn was taken and when it ended. It is the pipeline's LLM stage (`src/hands/brain/stage.py`): what

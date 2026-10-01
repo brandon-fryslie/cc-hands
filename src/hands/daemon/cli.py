@@ -31,6 +31,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("check", help="say whether hands is set up to work here: its plugin, the claude shim on PATH, this terminal's Input Monitoring grant, and the running sessions; exits 0 only when every piece is there, 1 when one is missing, 2 when one could not be looked at")
     shown = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     shown.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
+    commands.add_parser("login", help="log the brain (HANDS_LLM=claude) in again, or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
     commands.add_parser("install-fritter", help="build fritter and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
@@ -79,6 +80,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return check(home, talkkey.granted())
         case "log":
             return tail_log(home, arguments.lines)
+        case "login":
+            return login(home)
         case "install-fritter":
             return install_fritter(home)
         case "indicator":
@@ -151,6 +154,25 @@ def display(finding: readiness.Finding) -> tuple[str, str]:
             return "missing", "WARNING"
         case readiness.Unknown():
             return "unknown", "WARNING"
+
+
+def login(home: Home) -> int:
+    # Imported here, so that no other command loads the brain's process and its aiohttp.
+    from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable
+    from hands.brain.process import login as brain_login
+    from hands.core.wire import UPSTREAM
+
+    try:
+        account = brain_login(home.brain, UPSTREAM)
+    except (LoginFailed, NotLoggedIn, Unstartable) as error:
+        print(f"hands login: {error}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("hands login: interrupted", file=sys.stderr)
+        return 1
+    print(f"the brain at {home.brain} is logged in as {account}")
+    print("a hands already running started its brain on the login before: restart it to start the brain on this one")
+    return 0
 
 
 def install_fritter(home: Home) -> int:

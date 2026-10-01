@@ -39,13 +39,15 @@ def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(mo
     for var in ("HANDS_LLM_URL", "HANDS_LLM_MODEL", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HANDS_LLM", "claude")
-    assert backend_from_env(HOME) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=Path("/Users/someone/.hands/brain"))
+    assert backend_from_env(HOME) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=Path("/Users/someone/.hands/brain"), account="brain@example.com")
     monkeypatch.setenv("HANDS_LLM_MODEL", "claude-other")
     assert backend_from_env(HOME).model == "claude-other"
 
 
-def test_the_brain_is_logged_as_reaching_anthropics_api_through_the_proxy() -> None:
-    assert run._server(ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=HOME.brain)) == UPSTREAM  # pyright: ignore[reportPrivateUsage]
+def test_the_brain_is_logged_as_reaching_anthropics_api_through_the_proxy_on_its_account() -> None:
+    brain = ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=HOME.brain, account="brain@example.com")
+    assert run._server(brain) == UPSTREAM  # pyright: ignore[reportPrivateUsage]
+    assert run._account(brain) == "brain@example.com"  # pyright: ignore[reportPrivateUsage]
 
 
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
@@ -192,7 +194,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
     answered.set()
     assert await starting == config
     # The log says which server and model the run reaches, and never with what key.
-    assert recorded == [LLMChosen(backend="AnthropicBackend", base_url=ANTHROPIC_URL, model=ANTHROPIC_MODEL)]
+    assert recorded == [LLMChosen(backend="AnthropicBackend", base_url=ANTHROPIC_URL, model=ANTHROPIC_MODEL, account=None)]
     assert "sk-secret" not in str([encoded(entry) for entry in recorded])
 
 
