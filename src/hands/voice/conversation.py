@@ -19,8 +19,8 @@ def record_turns(user_turns: LLMUserAggregator, assistant_turns: LLMAssistantAgg
     async def heard(_aggregator: LLMUserAggregator, message: UserTurnMessageAddedMessage) -> None:  # pyright: ignore[reportUnusedFunction]
         record(Transcribed(message.content))
         # The words themselves, in the terminal as well as the audit log: the latency line says only that a
-        # transcript came, and whoever is talking wants to see what was heard.
-        logger.info(f"heard: {message.content!r}")
+        # transcript came, and whoever is talking wants to see what was heard: the plain words, on one line.
+        logger.info(f"heard: {' '.join(message.content.split())}")
 
     @assistant_turns.event_handler("on_assistant_turn_stopped")
     async def replied(_aggregator: LLMAssistantAggregator, message: AssistantTurnStoppedMessage) -> None:  # pyright: ignore[reportUnusedFunction]

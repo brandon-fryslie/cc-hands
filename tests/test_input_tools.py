@@ -132,18 +132,20 @@ async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to
     assert [datetime.fromisoformat(line["at"]) for line in written] == sorted(datetime.fromisoformat(line["at"]) for line in written)
 
 
-async def test_what_was_heard_is_shown_in_the_terminal_in_the_words_heard(tmp_path: Path) -> None:
+async def test_what_was_heard_is_shown_in_the_terminal_in_the_words_heard() -> None:
+    from hands.daemon.cli import TERMINAL_LEVELS
+
     lines: list[str] = []
-    sink = logger.add(lambda message: lines.append(message.record["message"]), level="INFO", filter="hands")
+    sink = logger.add(lambda message: lines.append(message.record["message"]), filter=TERMINAL_LEVELS)
     pair = LLMContextAggregatorPair(LLMContext())
     user, assistant = pair.user(), pair.assistant()
-    record_turns(user, assistant, AuditLog(tmp_path / "audit.jsonl", clock=lambda: datetime.now(UTC)).record)
+    record_turns(user, assistant, unrecorded)
     try:
-        await fire(user, "on_user_turn_message_added", UserTurnMessageAddedMessage("Can you hear me?", "t1"))
+        await fire(user, "on_user_turn_message_added", UserTurnMessageAddedMessage("Don't say \"stop\",\n  can you hear me?", "t1"))
     finally:
         logger.remove(sink)
 
-    assert lines == ["heard: 'Can you hear me?'"]
+    assert lines == ['heard: Don\'t say "stop", can you hear me?']
 
 
 async def wrapped(tmp: Path, typist: Callable[[Type[Input]], None], record: Record = unrecorded) -> tuple[Sessions, SessionId]:
