@@ -358,11 +358,15 @@ class Brain:
 
     async def _send(self, text: str, turn: _Turn) -> None:
         try:
+            # [LAW:no-ambient-temporal-coupling] the input is the turn's from its first key until Claude Code says it took
+            # the turn. Claude Code reads keys that reach it together as one paste, and a Return inside a paste sends
+            # nothing: a side question typed 10ms behind a turn joined the turn's prompt, or was left in the input with
+            # it (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
             async with self._input:
                 # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
                 await self._type(lambda: self._typist.type(Text(pasted(text)).typed))
-            self._record(BrainAsked(text))
-            await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+                self._record(BrainAsked(text))
+                await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
             if not (turn.taken.done() or turn.answered.done()):
                 raise Untaken(f"the brain did not take the turn typed into it in {TAKE_SECONDS:.0f}s; if it is on a setup screen, run: {setup(self._config_dir)}")
         except (BrainGone, Untaken) as error:

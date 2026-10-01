@@ -336,6 +336,25 @@ async def test_a_turn_goes_before_the_side_questions_waiting_to_type(tmp_path: P
     assert [line[:2] for line in typed(tmp_path)] == [["btw", "first"], ["dismissed", ""], ["prompt", " are you listening?"], ["btw", "second"], ["dismissed", ""]]
 
 
+async def test_a_side_question_asked_as_a_turn_is_typed_is_typed_once_the_turn_is_taken(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    try:
+        asked = asyncio.create_task(brain.ask("are you listening?"))
+        # Asked for while the turn is being typed, so it is next at the input.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        aside = asyncio.create_task(brain.fork("first"))
+        await until(lambda: any(line[0] == "btw" for line in typed(tmp_path)))
+        brain.hear(forked("b1", "first", "x1"))
+        brain.hear(answered("b1", "One.", exchange="x1"))
+        assert await aside == "One."
+        assert await asyncio.wait_for(asked, 5) == BrainAnswered("p1", None)
+    finally:
+        await brain.stop()
+    # Typed right behind the turn, the question would reach Claude Code with it and join its prompt.
+    assert typed(tmp_path) == [["prompt", " are you listening?"], ["btw", "first"], ["dismissed", ""]]
+
+
 def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_are_still_heard() -> None:
     brain = object.__new__(Brain)
     brain.session = SessionId("b1")
