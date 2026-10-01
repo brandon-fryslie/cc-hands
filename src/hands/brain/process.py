@@ -15,6 +15,7 @@ and it runs in that empty directory of hands' own, never in a project.
 """
 
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
@@ -293,8 +294,17 @@ class ClaudeCode:
             try:
                 await asyncio.wait_for(self._process.wait(), STOP_SECONDS)
             except TimeoutError:
-                self._process.kill()
+                self._kill()
+            except asyncio.CancelledError:
+                # [LAW:no-silent-failure] a stopper told to leave waits no longer, and leaves nothing running behind it.
+                self._kill()
+                raise
         await asyncio.shield(self.exit)
+
+    def _kill(self) -> None:
+        # One that ended as it was about to be killed is what killing it is for.
+        with contextlib.suppress(ProcessLookupError):
+            self._process.kill()
 
     async def _run_out(self) -> int:
         code = await self._process.wait()

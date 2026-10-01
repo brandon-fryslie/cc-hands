@@ -98,11 +98,16 @@ def page(batch: Sequence[Due], text_limit: int) -> str:
     return "\n\n".join(_item(due, text_limit) for due in batch)
 
 
+def cut(text: str, limit: int) -> str:
+    """`text` in `limit` of its characters: whole, or how it starts and how it ends, around a line saying how many were left out."""
+    # A thing longer than the limit keeps both ends: a ticket's close says when it is done, a turn's says what came of
+    # it, and a tool result's says how it came out, which is what its sentence is judged by.
+    head = (limit + 1) // 2
+    return text if len(text) <= limit else f"{text[:head]}\n[{len(text) - limit} characters left out]\n{text[len(text) - (limit - head) :]}"
+
+
 def _item(due: Due, text_limit: int) -> str:
-    # A thing longer than the limit keeps how it starts and how it ends: a ticket's close says when it is done, and a
-    # turn's says what came of it, which is what its sentence is judged by.
-    head = (text_limit + 1) // 2
-    text = due.text if len(due.text) <= text_limit else f"{due.text[:head]}\n[{len(due.text) - text_limit} characters left out]\n{due.text[len(due.text) - (text_limit - head) :]}"
+    text = cut(due.text, text_limit)
     parts = "".join(f"\n- {id}: {sentence}" for id, sentence in due.parts)
     return f"<item id={json.dumps(due.id)}>\n{text}" + (f"\n<parts>{parts}\n</parts>" if parts else "") + "\n</item>"
 

@@ -25,6 +25,7 @@ from uuid import uuid4
 from loguru import logger
 
 from hands.brain.process import ClaudeCode, Station, Unstartable, brain_claude, slim, spawn
+from hands.core.effects import Command
 from hands.core.session import CommandName, SessionId, pasted
 from hands.core.wire import Exchanged, Fork, Observed, Reached, Streamed
 from hands.core.wire import Text as Said
@@ -41,6 +42,18 @@ ASIDE_SECONDS = 120.0
 class AsideFailed(Exception):
     """A side question has no answer: its Claude Code could not be started, ended first, answered with no words, or did
     not answer in time."""
+
+
+def _unanswered(error: BaseException) -> str:
+    """Why a question has no answer, as its line says it."""
+    match error:
+        case asyncio.CancelledError():
+            return "its asker stopped waiting"
+        case AsideFailed():
+            return str(error)
+        case _:
+            # A fault of hands' own, said as itself: the line never gives a cause that did not happen.
+            return repr(error)
 
 
 @dataclass
@@ -69,29 +82,30 @@ class Asides:
         asked = _Asked(SessionId(str(uuid4())), loop.create_future())
         # When its Claude Code was started: never, for a question whose asker left while it waited its turn.
         began = math.inf
-        # What the question's one line says unless it is answered or fails: nothing else ends it but its asker leaving.
-        reply, failed = "its asker stopped waiting", True
+
+        def said(reply: str, failed: bool) -> None:
+            ended = loop.time()
+            started = min(began, ended)
+            # [LAW:nothing-unseen] one line for each question, however it ended, in its turn or waiting for it.
+            self._record(AsideAnswered(question, reply, failed, asked.session, started - queued, ended - started))
+
         try:
             async with self._one:
                 began = loop.time()
                 self._asked = asked
                 try:
-                    reply, failed = await self._answer(asked, question), False
+                    reply = await self._answer(asked, question)
                 finally:
                     self._asked = None
-        except AsideFailed as error:
-            reply = str(error)
+        except BaseException as error:
+            said(_unanswered(error), True)
             raise
-        finally:
-            ended = loop.time()
-            began = min(began, ended)
-            # [LAW:nothing-unseen] one line for each question, however it ended, in its turn or waiting for it.
-            self._record(AsideAnswered(question, reply, failed, asked.session, began - queued, ended - began))
+        said(reply, False)
         return reply
 
     async def _answer(self, asked: _Asked, question: str) -> str:
         # The question as the characters it shows, behind the command, as the prompt its Claude Code opens with.
-        opening = f"/{ASIDE} {pasted(question)}"
+        opening = Command(ASIDE, pasted(question)).typed
         try:
             claude = await spawn(self._station, [*slim(brain_claude(), self._station.model, asked.session, (), NO_SERVERS), opening])
         except (Unstartable, OSError) as error:

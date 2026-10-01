@@ -103,7 +103,7 @@ def test_a_question_shows_the_call_and_its_result_a_long_one_by_its_ends_and_the
     # The question stands alone: whoever answers it has no conversation, so it names no call of theirs.
     assert "call7" not in question(result)
     long = Result("call8", "Bash", {"command": "x" * 400}, "head " + "8" * 2 * SHOWN + " tail", 8)
-    assert f"head {'8' * (SHOWN // 2 - 5)}\n[… {len(long.text) - SHOWN} characters left out …]\n{'8' * (SHOWN // 2 - 5)} tail\n</recorded_result>" in question(long)
+    assert f"head {'8' * (SHOWN // 2 - 5)}\n[{len(long.text) - SHOWN} characters left out]\n{'8' * (SHOWN // 2 - 5)} tail\n</recorded_result>" in question(long)
     assert 'Input: {"command": "' + "x" * (QUOTED - len('{"command": "')) + "…\n" in question(long)
     assert key(result) == key(Result("call9", "Read", {"file_path": "/7"}, result.text, 2))
     assert key(result) != key(Result("call7", "Read", {"file_path": "/7"}, "8" * LONG, 7))

@@ -307,6 +307,14 @@ async def test_a_side_question_with_no_answer_fails_saying_why_and_leaves_no_cla
     with pytest.raises(asyncio.CancelledError):
         await leaving
     assert running(tmp_path) == [] and sessions_asked("behind") == []
+    # A fault of hands' own is the line's reason, as itself: never an asker that left.
+    async def fault(*_: object) -> None:
+        raise RuntimeError("no thread")
+
+    with monkeypatch.context() as broken:
+        broken.setattr("hands.brain.asides.spawn", fault)
+        with pytest.raises(RuntimeError, match="no thread"):
+            await asides.ask("broken?")
     # With no claude on PATH there is no Claude Code to ask.
     monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
     with pytest.raises(AsideFailed, match="no claude on PATH"):
@@ -318,12 +326,27 @@ async def test_a_side_question_with_no_answer_fails_saying_why_and_leaves_no_cla
         ("die", "its Claude Code exited (3) before it answered", True),
         ("behind", "its asker stopped waiting", True),
         ("stay", "its asker stopped waiting", True),
+        ("broken?", "RuntimeError('no thread')", True),
         ("anyone?", "no Claude Code to ask", True),
     ]
     # How long each waited its turn, and how long its Claude Code ran.
-    [hold, _, _, behind_said, _, _] = said
+    [hold, _, _, behind_said, _, _, _] = said
     assert hold.waited < 0.5 <= hold.seconds
     assert behind_said.waited >= 0.1 and behind_said.seconds == 0
+
+
+async def test_an_asker_told_to_leave_again_while_its_claude_code_is_ending_leaves_none_running(tmp_path: Path, fake_claude: Path) -> None:
+    asides = Asides(station(tmp_path), lambda _entry: None)
+    leaving = asyncio.create_task(asides.ask("stubborn"))
+    await until(lambda: [line[0] for line in typed(tmp_path)] == ["btw"])
+    leaving.cancel()
+    # Its Claude Code is told to end and does not. The asker is told to leave again while it waits on that, as a daemon
+    # shutting down tells it, and the Claude Code is killed rather than left.
+    await until(lambda: [line[0] for line in typed(tmp_path)] == ["btw", "sigterm"])
+    leaving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await leaving
+    await until(lambda: running(tmp_path) == [])
 
 
 async def test_a_turn_is_typed_into_the_brain_at_once_while_a_side_question_waits_on_an_answer_that_never_comes(

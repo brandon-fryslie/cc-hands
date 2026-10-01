@@ -122,11 +122,11 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     reads its terminal raw, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
-    is never taken, and "die", as a turn or a side question, ends the program."""
+    is never taken, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import json, os, select, sys, time, tty, urllib.request
+import json, os, select, signal, sys, time, tty, urllib.request
 if sys.argv[1] == "auth":
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
 if sys.argv[1:3] == ["auth", "login"]:
@@ -149,15 +149,12 @@ def typed(line):
 tty.setraw(0)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h> ")
-pending, box, turn, turn_text, aside, prompts = b"", "", None, "", False, 0
+pending, box, turn, turn_text, prompts = b"", "", None, "", 0
 def submit(text):
-    global turn, turn_text, aside, prompts
-    if aside:
-        aside = False
-        typed(["dismissed", text])
-        return
+    global turn, turn_text, prompts
     if text.startswith("/btw "):
-        aside = True
+        if text == "/btw stubborn":
+            signal.signal(signal.SIGTERM, lambda *_: typed(["sigterm", text, session]))
         typed(["btw", text[len("/btw "):], session])
         if text == "/btw die":
             os.write(1, b"bye\\r\\n")
@@ -205,11 +202,6 @@ while True:
             pending = pending[end + 6:]
         elif pending.startswith(b"\\x1b"):
             pending = pending[1:]
-            if aside:
-                # Escape over a side question waiting on its answer cancels it, and the turn runs on.
-                aside = False
-                typed(["cancelled", box])
-                continue
             typed(["escape", box])
             if turn is not None:
                 # As Claude Code does, the stopped prompt is put back in the input.
