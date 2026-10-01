@@ -226,6 +226,11 @@ interrupt is Escape, and turn ends come from its UserPromptSubmit, Stop, and Sto
 `--append-system-prompt` in place of `--system-prompt`: the API checks that the system prompt
 opens as Claude Code's does.
 
+Superseded 2026-09-30 (hands-wire-6ic.gnk): nothing but a turn and its stop keys is typed into
+the brain. A side question is not a fork of the brain's: each is the opening prompt
+(`claude "/btw ..."`) of a tool-less interactive Claude Code started for it alone
+(`src/hands/brain/asides.py`).
+
 `--bare` is out. Brandon knew this from use; the help text and the source confirm it:
 "Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and
 keychain are never read)", and `auth.ts:101` in the research fork: "--bare:

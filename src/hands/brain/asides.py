@@ -7,7 +7,9 @@ turn waits on, and nothing asked here is in the brain's conversation.
 Each question has a Claude Code of its own, on the brain's login and with no tools, because a side question's answer
 stays in the history of the ones asked after it (2.1.286, measured 2026-09-30: the third `/btw` typed into one process
 carried the first two and their answers; `x` over an answer cleared all but that answer, and `/clear` cleared none).
-Started for one question, it carries that question and nothing else, and it is ended with its answer.
+Started for one question, it carries that question and nothing else, and it is ended with its answer. It leaves nothing
+of the question in the brain's config directory (2.1.286, measured 2026-09-30 over 12 questions: no transcript, no line
+of history, no session directory).
 
 It is Claude Code as anyone runs it, interactive on a terminal, and the question is the prompt it is started with:
 `claude "/btw ..."`. Claude Code asks its opening prompt itself once its input is up, so nothing is typed into it and
@@ -16,6 +18,7 @@ opening prompt it went out 0.4s after the start, 6 of 6). Its answer is read fro
 """
 
 import asyncio
+import math
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -63,20 +66,27 @@ class Asides:
         """The answer to `question`, from a Claude Code that is asked nothing else; raises AsideFailed when it has none."""
         loop = asyncio.get_running_loop()
         queued = loop.time()
-        async with self._one:
-            began = loop.time()
-            asked = self._asked = _Asked(SessionId(str(uuid4())), loop.create_future())
-            # What the question's one line says unless it is answered or fails: nothing else ends it but its asker leaving.
-            reply, failed = "its asker stopped waiting", True
-            try:
-                reply, failed = await self._answer(asked, question), False
-            except AsideFailed as error:
-                reply = str(error)
-                raise
-            finally:
-                self._asked = None
-                # [LAW:nothing-unseen] one line for each question, however it ended.
-                self._record(AsideAnswered(question, reply, failed, asked.session, began - queued, loop.time() - began))
+        asked = _Asked(SessionId(str(uuid4())), loop.create_future())
+        # When its Claude Code was started: never, for a question whose asker left while it waited its turn.
+        began = math.inf
+        # What the question's one line says unless it is answered or fails: nothing else ends it but its asker leaving.
+        reply, failed = "its asker stopped waiting", True
+        try:
+            async with self._one:
+                began = loop.time()
+                self._asked = asked
+                try:
+                    reply, failed = await self._answer(asked, question), False
+                finally:
+                    self._asked = None
+        except AsideFailed as error:
+            reply = str(error)
+            raise
+        finally:
+            ended = loop.time()
+            began = min(began, ended)
+            # [LAW:nothing-unseen] one line for each question, however it ended, in its turn or waiting for it.
+            self._record(AsideAnswered(question, reply, failed, asked.session, began - queued, ended - began))
         return reply
 
     async def _answer(self, asked: _Asked, question: str) -> str:

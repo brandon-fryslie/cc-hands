@@ -244,7 +244,7 @@ async def test_a_side_question_is_the_prompt_a_claude_code_of_its_own_opens_with
 ) -> None:
     recorded: list[Entry] = []
     asides = Asides(station(tmp_path), recorded.append)
-    asked = asyncio.create_task(asides.ask("what did\n\tthe read say?"))
+    asked = asyncio.create_task(asides.ask("what did\n\tthe read \ud83d say?"))
     await until(lambda: len(typed(tmp_path)) == 1)
     [[_, question, first]] = typed(tmp_path)
     # Another session's side question, and this one's request that failed and is asked again, answer nothing.
@@ -254,8 +254,8 @@ async def test_a_side_question_is_the_prompt_a_claude_code_of_its_own_opens_with
     assert not asked.done()
     asides.hear(answered(first, "It said four."))
     assert await asked == "It said four."
-    # The command and its question whole, newline and all, with a tab as its spaces.
-    assert question == "what did\n    the read say?"
+    # The command and its question whole, newline and all, with a tab as its spaces and half an emoji spelled out.
+    assert question == "what did\n    the read \\ud83d say?"
     assert running(tmp_path) == []
     # The next question has a Claude Code of its own, under a session of its own, which carries nothing of the first.
     again = asyncio.create_task(asides.ask("and then?"))
@@ -268,7 +268,7 @@ async def test_a_side_question_is_the_prompt_a_claude_code_of_its_own_opens_with
     assert await again == "Two."
     assert running(tmp_path) == []
     assert [(entry.question, entry.reply, entry.failed, entry.session) for entry in recorded if isinstance(entry, AsideAnswered)] == [
-        ("what did\n\tthe read say?", "It said four.", False, first),
+        ("what did\n\tthe read \ud83d say?", "It said four.", False, first),
         ("and then?", "Two.", False, second),
     ]
 
@@ -276,38 +276,54 @@ async def test_a_side_question_is_the_prompt_a_claude_code_of_its_own_opens_with
 async def test_a_side_question_with_no_answer_fails_saying_why_and_leaves_no_claude_code_running(
     tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("hands.brain.asides.ASIDE_SECONDS", 0.5)
     recorded: list[Entry] = []
     asides = Asides(station(tmp_path), recorded.append)
-    with pytest.raises(AsideFailed, match="no answer in 0s; its Claude Code showed"):
-        await asides.ask("hold")
+
+    def sessions_asked(question: str) -> list[str]:
+        return [session for kind, text, session in typed(tmp_path) if (kind, text) == ("btw", question)]
+
+    # Only the question that is never answered is given half a second: nothing else here races a clock.
+    with monkeypatch.context() as short:
+        short.setattr("hands.brain.asides.ASIDE_SECONDS", 0.5)
+        with pytest.raises(AsideFailed, match="no answer in 0s; its Claude Code showed"):
+            await asides.ask("hold")
     # A reply that did not end in words: Claude Code shows words of its own for it, which are never the answer.
     silent = asyncio.create_task(asides.ask("silent"))
-    await until(lambda: len(typed(tmp_path)) == 2)
-    asides.hear(answered(typed(tmp_path)[1][2], "", stop="tool_use"))
+    await until(lambda: sessions_asked("silent") != [])
+    asides.hear(answered(sessions_asked("silent")[0], "", stop="tool_use"))
     with pytest.raises(AsideFailed, match="ended 'tool_use'"):
         await silent
     with pytest.raises(AsideFailed, match=r"exited \(3\) before it answered; it showed:\n(.|\n)*bye"):
         await asides.ask("die")
-    # An asker that stops waiting ends its Claude Code too.
-    leaving = asyncio.create_task(asides.ask("hold"))
-    await until(lambda: len(typed(tmp_path)) == 4)
+    # An asker that stops waiting ends its Claude Code too; one that leaves before its turn never had one.
+    leaving = asyncio.create_task(asides.ask("stay"))
+    await until(lambda: sessions_asked("stay") != [])
+    behind = asyncio.create_task(asides.ask("behind"))
+    await asyncio.sleep(0.1)
+    behind.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await behind
     leaving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await leaving
-    assert running(tmp_path) == []
+    assert running(tmp_path) == [] and sessions_asked("behind") == []
     # With no claude on PATH there is no Claude Code to ask.
     monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
     with pytest.raises(AsideFailed, match="no claude on PATH"):
         await asides.ask("anyone?")
-    asides_said = [(entry.question, entry.reply.split(";")[0].split(":")[0], entry.failed) for entry in recorded if isinstance(entry, AsideAnswered)]
-    assert asides_said == [
+    said = [entry for entry in recorded if isinstance(entry, AsideAnswered)]
+    assert [(entry.question, entry.reply.split(";")[0].split(":")[0], entry.failed) for entry in said] == [
         ("hold", "no answer in 0s", True),
         ("silent", "the model's reply ended 'tool_use' with ''", True),
         ("die", "its Claude Code exited (3) before it answered", True),
-        ("hold", "its asker stopped waiting", True),
+        ("behind", "its asker stopped waiting", True),
+        ("stay", "its asker stopped waiting", True),
         ("anyone?", "no Claude Code to ask", True),
     ]
+    # How long each waited its turn, and how long its Claude Code ran.
+    [hold, _, _, behind_said, _, _] = said
+    assert hold.waited < 0.5 <= hold.seconds
+    assert behind_said.waited >= 0.1 and behind_said.seconds == 0
 
 
 async def test_a_turn_is_typed_into_the_brain_at_once_while_a_side_question_waits_on_an_answer_that_never_comes(
@@ -336,6 +352,8 @@ def test_text_passed_on_to_the_brain_is_typed_as_the_characters_it_shows() -> No
     # and a closing backslash is kept from the Return that sends it.
     assert pasted("\x1b[31mred\x1b[0m\r\nnext\rline\n\tgo\tthere\x07 C:\\") == "red\nnext\nline\n    go  there\\x07 C:\\ "
     assert pasted("plain\nwords") == "plain\nwords"
+    # Half of an emoji that was cut in two is spelled out; a whole one is itself.
+    assert pasted("cut \ud83d, whole \U0001f600") == "cut \\ud83d, whole \U0001f600"
 
 
 def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_are_still_heard() -> None:

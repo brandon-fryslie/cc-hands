@@ -127,7 +127,8 @@ class BrainAnswered:
 class AsideAnswered:
     """A side question hands asked in the background, of a slim Claude Code started for it alone, and its answer from
     the wire, or why it has none. `session` is that Claude Code's, which its exchanges on the wire carry. `waited` is how
-    long, in seconds, the question waited behind the ones asked before it, and `seconds` how long its Claude Code ran."""
+    long, in seconds, the question waited behind the ones asked before it, and `seconds` how long its Claude Code ran: 0 for a question whose asker left before its turn, which
+    had none."""
 
     question: str
     reply: str
