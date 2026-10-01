@@ -95,6 +95,13 @@ def test_each_entry_is_one_line_stamped_with_when_it_was_written(tmp_path: Path)
     ]
 
 
+def test_text_cut_mid_emoji_is_a_line_that_reads_back_as_it_was_and_whole_characters_are_written_as_themselves(tmp_path: Path) -> None:
+    log = AuditLog(tmp_path / "audit.jsonl", clock=lambda: AT)
+    log.record(Transcribed("cut \ud83d, whole \U0001f600 é"))
+    assert lines(tmp_path / "audit.jsonl") == [{"at": "2026-09-14T12:00:00.123+00:00", "type": "Transcribed", "text": "cut \ud83d, whole \U0001f600 é"}]
+    assert "cut \\ud83d, whole \U0001f600 é" in (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+
+
 def test_the_tail_is_the_newest_whole_lines_and_following_picks_up_where_it_ended(tmp_path: Path) -> None:
     path = tmp_path / "audit.jsonl"
     assert tail(path, 5) == ([], START)

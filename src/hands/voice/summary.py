@@ -1,5 +1,5 @@
-"""The summariser: one stateless call on the configured model, apart from the intermediary's conversation, or on the
-brain, a side question typed into it that its conversation never keeps."""
+"""The summariser: one stateless call on the configured model, apart from the intermediary's conversation, or under
+the brain, a side question asked of a Claude Code of its own."""
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -9,7 +9,7 @@ from anthropic.types import TextBlock, ThinkingConfigDisabledParam
 from openai import AsyncOpenAI, OpenAIError
 from pipecat.services.anthropic.llm import _SONNET_THINKS_BY_DEFAULT_FROM, _sonnet_generation  # pyright: ignore[reportPrivateUsage]
 
-from hands.brain.process import BrainGone, ForkFailed
+from hands.brain.asides import AsideFailed
 from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 
 # A rendered turn in, the spoken summary out.
@@ -17,7 +17,7 @@ Summariser = Callable[[str], Awaitable[str]]
 
 
 class SummaryFailed(Exception):
-    """The model answered, but with nothing that can be spoken, or the brain could not be asked."""
+    """The model answered, but with nothing that can be spoken, or its side question had no answer."""
 
 
 # Everything one summariser call is expected to fail with: the model's answer unusable, or its API refusing.
@@ -53,20 +53,19 @@ def summariser(backend: AnthropicBackend | OpenAICompatibleBackend, instruction:
             return from_anthropic
 
 
-def aside(fork: Callable[[str], Awaitable[str]], instruction: str, timeout: float) -> Summariser:
-    """The summariser on the brain: the turn typed into it as a side question, with what to make of it, as anyone at its
-    keyboard would ask. Its answer shares the brain's context and never joins it, and fails, as the API's do, once
-    `timeout` has passed, whatever it waited on."""
+def aside(ask: Callable[[str], Awaitable[str]], instruction: str, timeout: float) -> Summariser:
+    """The summariser under the brain: the turn asked as a side question, with what to make of it, of a Claude Code that
+    is asked nothing else. It fails, as the API's do, once `timeout` has passed, whatever it waited on."""
 
-    async def from_the_brain(turn: str) -> str:
+    async def from_an_aside(turn: str) -> str:
         try:
-            return _spoken([await asyncio.wait_for(fork(f"{instruction}\n\nSummarize this:\n\n{turn}"), timeout)])
+            return _spoken([await asyncio.wait_for(ask(f"{instruction}\n\nSummarize this:\n\n{turn}"), timeout)])
         except TimeoutError as error:
-            raise SummaryFailed(f"the brain gave no answer in {timeout:.0f}s") from error
-        except (ForkFailed, BrainGone) as error:
-            raise SummaryFailed(f"the brain could not be asked: {error}") from error
+            raise SummaryFailed(f"the side question had no answer in {timeout:.0f}s") from error
+        except AsideFailed as error:
+            raise SummaryFailed(f"the side question had no answer: {error}") from error
 
-    return from_the_brain
+    return from_an_aside
 
 
 def thinking(model: str) -> ThinkingConfigDisabledParam | Omit:

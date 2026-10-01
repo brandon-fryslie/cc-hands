@@ -26,18 +26,22 @@ PromptText = NewType("PromptText", str)
 
 # Every C0 and C1 control character but newline: each would press a key if it were typed.
 KEYSTROKES = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+# Half of a character that was cut in two, as Claude Code cuts a string mid-emoji: it is no character, and cannot be
+# written as bytes for a terminal or a command line.
+HALVES = re.compile(r"[\ud800-\udfff]")
 # What a terminal is told rather than shown: colour, cursor moves, and the titles and modes set around them.
 ESCAPES = re.compile(r"\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[()*+].|[@-Z\\-_0-9=>])")
 
 
 def pasted(text: str) -> PromptText:
     """Text hands wrote or read, rendered to be typed as the characters it shows: what a terminal is told dropped, line
-    ends as newlines, tabs as the spaces they stand for, any other control character spelled out, and a closing
-    backslash kept from the Return behind it."""
+    ends as newlines, tabs as the spaces they stand for, any other control character and any half of a character
+    spelled out, and a closing backslash kept from the Return behind it."""
     # [LAW:parse-dont-validate] the words the model chose are refused when they do not fit, so it can choose again; text
     # that is only being passed on - a turn to summarise, a note - is made to fit, since there is no one to ask.
     shown = ESCAPES.sub("", text).replace("\r\n", "\n").replace("\r", "\n").expandtabs(4)
-    spelled = KEYSTROKES.sub(lambda control: f"\\x{ord(control.group()):02x}", shown)
+    keyless = KEYSTROKES.sub(lambda control: f"\\x{ord(control.group()):02x}", shown)
+    spelled = HALVES.sub(lambda half: f"\\u{ord(half.group()):04x}", keyless)
     return PromptText(f"{spelled} " if spelled.endswith("\\") else spelled)
 
 

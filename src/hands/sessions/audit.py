@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 from hands.core.effects import AuditRecord, Effect, Input, Type
 from hands.core.events import Event
+from hands.core.session import SessionId
 from hands.core.wire import Exchanged
 from hands.sessions.model_facts import ModelFact
 
@@ -123,14 +124,18 @@ class BrainAnswered:
 
 
 @dataclass(frozen=True)
-class BrainForked:
-    """A side question the brain was asked with /btw, beside any turn, and its answer from the wire, or why it has none.
-    `waited` is how long, in seconds, it waited for the brain's input before it was typed."""
+class AsideAnswered:
+    """A side question hands asked in the background, of a slim Claude Code started for it alone, and its answer from
+    the wire, or why it has none. `session` is that Claude Code's, which its exchanges on the wire carry. `waited` is how
+    long, in seconds, the question waited behind the ones asked before it, and `seconds` how long its Claude Code ran: 0 for a question whose asker left before its turn, which
+    had none."""
 
     question: str
     reply: str
     failed: bool
+    session: SessionId
     waited: float
+    seconds: float
 
 
 @dataclass(frozen=True)
@@ -307,7 +312,7 @@ Entry = (
     | BrainLaunched
     | BrainAsked
     | BrainAnswered
-    | BrainForked
+    | AsideAnswered
     | ResultsStubbed
     | BrainInterrupted
     | BrainSpoke
@@ -345,7 +350,8 @@ class AuditLog:
             return
         try:
             # Opened for each line, so a line is on disk when record returns and a log moved aside is started again.
-            with open(self._path, "a", encoding="utf-8", opener=_private) as log:
+            # Half of a character cut in two is no UTF-8: it is written as its JSON escape, which reads back as itself.
+            with open(self._path, "a", encoding="utf-8", errors="backslashreplace", opener=_private) as log:
                 log.write(line + "\n")
         except OSError as error:
             # [LAW:no-silent-failure] said on stderr, as a warning: an error would be sent back to the log that just failed.

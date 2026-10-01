@@ -1,10 +1,11 @@
 """The brain's process: one long-lived, slim Claude Code on the subscription, behind hands' proxy, reaching hands over MCP.
 
 It is Claude Code as anyone runs it: interactive, on a terminal hands holds, under fritter, and asked nothing a person
-at its keyboard could not ask. A turn is typed into its input and sent with Return, a side question is `/btw` typed
-the same way, and an interrupt is Escape. What it says is read from the wire, not from its screen [the design's rule:
-primary facts from the wire, derivative ones from the harness], and the harness is heard only through the hooks it
-posts to a listener of hands' own: that a typed turn was taken, and that it ended, or that the API failed it.
+at its keyboard could not ask. A turn is typed into its input and sent with Return, and an interrupt is Escape. Nothing
+else is typed into it: its input is the user's, and what hands asks in the background is asked of a Claude Code of its
+own (`hands.brain.asides`). What it says is read from the wire, not from its screen [the design's rule: primary facts
+from the wire, derivative ones from the harness], and the harness is heard only through the hooks it posts to a
+listener of hands' own: that a typed turn was taken, and that it ended, or that the API failed it.
 
 Its login, settings, and skills live in a directory hands owns, set up once, as any Claude Code is, by running it there:
 
@@ -14,6 +15,7 @@ and it runs in that empty directory of hands' own, never in a project.
 """
 
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
@@ -25,7 +27,7 @@ import subprocess
 import tempfile
 import termios
 import threading
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,11 +35,10 @@ from aiohttp import web
 from loguru import logger
 
 from hands.brain.mcp import SERVER_NAME
-from hands.core.effects import Command, Text
-from hands.core.session import ESCAPES, CommandName, Keystroke, PromptText, SessionId, pasted
-from hands.core.wire import Exchanged, Fork, MainTurn, Observed, Reached, Sent, Streamed, asked, tool_names
-from hands.core.wire import Text as Said
-from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainForked, BrainLaunched, Record
+from hands.core.effects import Text
+from hands.core.session import ESCAPES, SessionId, pasted
+from hands.core.wire import MainTurn, Observed, Sent, tool_names
+from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.typing import Typist, Untyped
 from hands.sessions.wrapper import SESSION_TAP, real_claude
@@ -66,9 +67,6 @@ FOREIGN_CREDENTIALS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE
 # Escape ends a turn with none of them (measured on 2.1.285), so a turn told to stop is over when it is told.
 HOOKS = ("UserPromptSubmit", "Stop", "StopFailure")
 
-# The side question Claude Code asks of a fork of the session, which answers from its context and writes nothing into it.
-ASIDE = CommandName("btw")
-
 # The terminal the brain draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
 # How much of what the brain last showed is kept for the line that says it exited.
@@ -78,60 +76,72 @@ SHOWN_LINES = 20
 AUTH_STATUS_SECONDS = 20.0
 # How long fritter has to start the brain and open its socket.
 START_SECONDS = 10.0
-# How long the brain's input takes to come up: after it starts (about 0.22s in, 2.1.285, measured 2026-09-30), and
-# after a side question's answer is dismissed. Text typed before it is up is lost, and a turn lost so is untaken, which
-# says so.
+# How long the brain's input takes to come up after it starts (about 0.22s in, 2.1.285, measured 2026-09-30). Text
+# typed before it is up is lost, and a turn lost so is untaken, which says so.
 SETTLE_SECONDS = 0.5
 # How long a typed turn has to be taken: a cold start loads the MCP server before the input is read.
 TAKE_SECONDS = 30.0
 # How far apart two Ctrl-Cs are pressed into the brain: Claude Code exits on a second within 800ms of one that found its
 # input empty.
 EXIT_SECONDS = 1.0
-# How long a brain told to stop has before it is killed.
+# How long a Claude Code told to stop has before it is killed.
 STOP_SECONDS = 5.0
-# How long a side question is waited on: one reply of one sentence, with thinking, read from the brain's cache.
-FORK_SECONDS = 120.0
 
 # What a terminal is told rather than shown, and the keys it is sent.
 _CONTROL = re.compile(rf"{ESCAPES.pattern}|[\x00-\x09\x0b-\x1f\x7f]")
 
 
 @dataclass(frozen=True)
-class Launch:
-    """Everything the brain is started with."""
+class Station:
+    """What every slim Claude Code of hands' own runs on, the brain and each one a side question is asked of."""
 
     config_dir: Path
     cwd: Path
     model: str
-    instruction: str
     proxy_url: str
+
+
+@dataclass(frozen=True)
+class Launch:
+    """Everything the brain is started with."""
+
+    station: Station
+    instruction: str
     mcp_config: str
     # [LAW:one-source-of-truth] chosen by hands, so the brain's requests are known as its own from the first one on the
     # wire, and its hooks from the first one posted.
     session: SessionId
-    # hands' own fritter, from `hands install-fritter`.
+    # hands' own fritter, from `hands install-fritter`: the brain is typed into through it.
     fritter: Path
 
 
-def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
-    """The brain's command line: the real claude, interactive, posting its hooks to the listener at `hooks`."""
+def slim(claude: Path, model: str, session: SessionId, tools: Sequence[str], mcp_config: str) -> list[str]:
+    """A slim Claude Code's command line: the real claude, interactive, with these built-in tools and the MCP servers
+    `mcp_config` names, and no others."""
     return [
         str(claude),
-        "--model", launch.model,
-        "--session-id", launch.session,
-        # After Claude Code's own system prompt, never in place of it: the API checks that it opens as Claude Code's does.
-        "--append-system-prompt", launch.instruction,
-        "--tools", ",".join(BUILTIN_TOOLS),
-        # [LAW:single-enforcer] what the brain may do without asking is said here, and nothing else is allowed: nobody
-        # sits at its keyboard to be asked, so anything outside the list is denied rather than left waiting.
-        "--allowedTools", ",".join((*BUILTIN_TOOLS, f"mcp__{SERVER_NAME}")),
+        "--model", model,
+        "--session-id", session,
+        "--tools", ",".join(tools),
+        # Nobody sits at its keyboard to be asked, so what it is not allowed is denied rather than left waiting.
         "--permission-mode", "dontAsk",
         # Without it the claude.ai connectors on the account load after the first turn and join every request after it
         # (turn 2 grew from 8.7 KB to 112 KB; hands-wire-6ic.eph, 2.1.284).
         "--strict-mcp-config",
-        "--mcp-config", launch.mcp_config,
+        "--mcp-config", mcp_config,
         # The config directory's settings.json is the only settings file read: none from the working directory.
         "--setting-sources", "user",
+    ]
+
+
+def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
+    """The brain's command line: a slim Claude Code with its instruction and its tools, posting its hooks to the listener at `hooks`."""
+    return [
+        *slim(claude, launch.station.model, launch.session, BUILTIN_TOOLS, launch.mcp_config),
+        # After Claude Code's own system prompt, never in place of it: the API checks that it opens as Claude Code's does.
+        "--append-system-prompt", launch.instruction,
+        # [LAW:single-enforcer] what the brain may do without asking is said here, and nothing else is allowed.
+        "--allowedTools", ",".join((*BUILTIN_TOOLS, f"mcp__{SERVER_NAME}")),
         "--settings", json.dumps({"hooks": {event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}"}]}] for event in HOOKS}}),
     ]
 
@@ -156,15 +166,11 @@ def _cwd(config_dir: Path) -> Path:
 
 
 class BrainGone(Exception):
-    """The brain ended, or cannot be typed into, while a turn or a side question waited on it, or before one was asked."""
+    """The brain ended, or cannot be typed into, while a turn waited on it, or before one was asked."""
 
 
 class Untaken(Exception):
     """The brain was typed a turn and never took it: it is on a screen that is not its input."""
-
-
-class ForkFailed(Exception):
-    """The brain's side question was answered with no words, or not at all."""
 
 
 class NotLoggedIn(Exception):
@@ -176,14 +182,14 @@ class LoginFailed(Exception):
 
 
 class Unstartable(Exception):
-    """The brain could not be started: no claude to run, no fritter to run it under, or a fritter that never opened its socket."""
+    """A Claude Code of hands' own could not be started: no claude to run, or for the brain no fritter to run it under, or a fritter that never opened its socket."""
 
 
 def brain_claude() -> Path:
-    """The Claude Code the brain runs: the real claude on PATH, past every hands shim, which would run it as a session."""
+    """The Claude Code hands runs as its own: the real claude on PATH, past every hands shim, which would run it as a session."""
     claude = real_claude(os.environ.get("PATH", ""))
     if claude is None:
-        raise Unstartable("no claude on PATH but hands' shims, so there is no Claude Code to run as the brain")
+        raise Unstartable("no claude on PATH but hands' shims, so there is no Claude Code for hands to run as its own")
     return claude
 
 
@@ -232,7 +238,7 @@ def setup(config_dir: Path) -> str:
 
 
 class _Terminal:
-    """The terminal the brain runs on, held by hands: read as fast as it is written, and the last of it kept."""
+    """The terminal a Claude Code of hands' own runs on, held by hands: read as fast as it is written, and the last of it kept."""
 
     def __init__(self, master: int) -> None:
         self._master = master
@@ -255,35 +261,81 @@ class _Terminal:
             os.close(master)
             loop.call_soon_threadsafe(lambda: None if self.closed.done() else self.closed.set_result(None))
 
-        threading.Thread(target=read, name="the brain's terminal", daemon=True).start()
+        threading.Thread(target=read, name="a Claude Code's terminal", daemon=True).start()
 
     def last(self) -> str:
-        """The last lines the brain showed, as text."""
+        """The last lines it showed, as text."""
         with self._lock:
             shown = self._shown.decode(errors="replace")
         lines = [line.rstrip() for line in _CONTROL.sub("", shown.replace("\r", "\n")).split("\n") if line.strip()]
         return "\n".join(lines[-SHOWN_LINES:])
 
 
-@dataclass
-class _Aside:
-    """A side question typed into the brain: its text as typed, the exchanges on the wire that ask it, and its answer."""
+class ClaudeCode:
+    """A slim Claude Code of hands' own, running on a terminal hands holds, until it ends or is stopped."""
 
-    question: PromptText
-    answer: asyncio.Future[str]
-    # Done once its first exchange goes out: Claude Code sends it from the overlay that shows the question, so from then
-    # an Escape cancels the question rather than stopping the turn beneath it.
-    out: asyncio.Future[None]
-    # [LAW:one-source-of-truth] the answer is read from the brain's own request for this question, never from whichever
-    # fork of the session happens to end first.
-    exchanges: set[str]
-    # Whether the answer came, and so is what covers the input: Return dismisses an answer, and Escape a question still
-    # waiting on one, which it cancels and leaves the turn running (2.1.285, measured 2026-09-30).
-    shown: bool = False
+    def __init__(self, process: asyncio.subprocess.Process, terminal: _Terminal) -> None:
+        self._process = process
+        self._terminal = terminal
+        # Its exit code, once it has ended and what it showed last is read.
+        self.exit = asyncio.ensure_future(self._run_out())
 
     @property
-    def dismissal(self) -> Keystroke:
-        return "enter" if self.shown else "escape"
+    def pid(self) -> int:
+        return self._process.pid
+
+    def shown(self) -> str:
+        """The last lines it showed on its terminal."""
+        return self._terminal.last()
+
+    async def stop(self) -> None:
+        if self._process.returncode is None:
+            self._process.terminate()
+            try:
+                await asyncio.wait_for(self._process.wait(), STOP_SECONDS)
+            except TimeoutError:
+                self._kill()
+            except asyncio.CancelledError:
+                # [LAW:no-silent-failure] a stopper told to leave waits no longer, and leaves nothing running behind it.
+                self._kill()
+                raise
+        await asyncio.shield(self.exit)
+
+    def _kill(self) -> None:
+        # One that ended as it was about to be killed is what killing it is for.
+        with contextlib.suppress(ProcessLookupError):
+            self._process.kill()
+
+    async def _run_out(self) -> int:
+        code = await self._process.wait()
+        try:
+            # What it showed last, read to its end; a terminal some child of it still holds is not waited on for long.
+            await asyncio.wait_for(asyncio.shield(self._terminal.closed), 1.0)
+        except TimeoutError:
+            pass
+        return code
+
+
+async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
+    """Run a slim Claude Code's command on a terminal of hands' own, in its own directory and environment."""
+    master, slave = pty.openpty()
+    try:
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=station.cwd,
+            env={**environment(station.config_dir, station.proxy_url, os.environ), "TERM": "xterm-256color"},
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            start_new_session=True,
+        )
+    except BaseException:
+        os.close(master)
+        raise
+    finally:
+        os.close(slave)
+    return ClaudeCode(process, _Terminal(master))
 
 
 @dataclass
@@ -301,36 +353,29 @@ class Brain:
 
     def __init__(
         self,
-        process: asyncio.subprocess.Process,
+        claude: ClaudeCode,
         session: SessionId,
         typist: Typist,
-        terminal: _Terminal,
         hooks: "asyncio.Queue[Payload]",
         listener: web.AppRunner,
         sockets: Path,
         config_dir: Path,
         record: Record,
     ) -> None:
-        self._process = process
+        self._claude = claude
         self._config_dir = config_dir
         self.session = session
         self._typist = typist
-        self._terminal = terminal
         self._listener = listener
         self._sockets = sockets
         self._record = record
-        # [LAW:single-enforcer] one thing is typed at a time, and nothing until Claude Code has taken what was typed last:
-        # a turn keeps the input until its hook says it was taken, and a side question until its answer is dismissed, since
-        # what is typed sooner joins the turn's prompt or goes into the answer. Side questions wait their turn in the queue,
-        # so a turn the user asked for, or a stop, each of which takes the input alone, waits behind one of them at most;
-        # a stop fails that one once its question is on the screen, so that it lets go at once.
-        self._queue = asyncio.Lock()
+        # [LAW:single-enforcer] the input is the user's, and only two things are ever typed into it: a turn, and the
+        # keys that stop one. A turn keeps it until its hook says Claude Code took the turn, and a stop's keys go in alone.
         self._input = asyncio.Lock()
         # [LAW:no-ambient-temporal-coupling] the turn in flight is the brain's own state, not its asker's: it is over
         # when its hook says so, whether or not anyone still waits on it, and the next is typed only then.
         self._turn: _Turn | None = None
         self._typing: set[asyncio.Task[None]] = set()
-        self._fork: _Aside | None = None
         # When the last stop pressed Ctrl-C, on the event loop's clock.
         self._cleared = float("-inf")
         self._heard = asyncio.ensure_future(self._hear_hooks(hooks))
@@ -338,13 +383,13 @@ class Brain:
 
     @property
     def pid(self) -> int:
-        return self._process.pid
+        return self._claude.pid
 
     async def ask(self, text: str) -> BrainAnswered:
         while self._turn is not None:
             await asyncio.wait({self._turn.answered})
         if self._exit.done():
-            raise BrainGone(f"the brain had exited ({self._process.returncode}) before it was asked")
+            raise BrainGone(f"the brain had exited ({self._exit.result()}) before it was asked")
         loop = asyncio.get_running_loop()
         turn = self._turn = _Turn(loop.create_future(), loop.create_future())
         # An asker that stops waiting leaves the turn to be typed and to run to its end, which is still the brain's to hear.
@@ -361,11 +406,11 @@ class Brain:
         try:
             # [LAW:no-ambient-temporal-coupling] the input is the turn's from its first key until Claude Code says it took
             # the turn. Claude Code reads keys that reach it together as one paste, and a Return inside a paste sends
-            # nothing: a side question typed 10ms behind a turn joined the turn's prompt, or was left in the input with
-            # it (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
+            # nothing: what was typed 10ms behind a turn joined the turn's prompt, or was left in the input with it
+            # (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
             async with self._input:
                 # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
-                await self._type(lambda: self._typist.type(Text(pasted(text)).typed))
+                await self._type(lambda typist: typist.type(Text(pasted(text)).typed))
                 self._record(BrainAsked(text))
                 await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
             if not (turn.taken.done() or turn.answered.done()):
@@ -373,58 +418,9 @@ class Brain:
         except (BrainGone, Untaken) as error:
             self._over(turn, error)
 
-    async def fork(self, question: str) -> str:
-        """The brain's answer to a side question, asked with /btw of a fork that shares its context, writes nothing into its
-        history, and may run while a turn is in flight; raises ForkFailed on an answer of no words or none in time, and
-        BrainGone when the brain ends or cannot be typed into."""
-        if self._exit.done():
-            raise BrainGone(f"the brain had exited ({self._process.returncode}) before it was asked a side question")
-        loop = asyncio.get_running_loop()
-        asked = loop.time()
-        async with self._queue:
-            typed = pasted(question)
-            # The brain's question from here, before it has the input: a stop that comes while it waits there, behind a turn
-            # not yet taken, knows of it, and fails it once it is on the screen rather than wait behind it for its answer.
-            fork = self._fork = _Aside(typed, loop.create_future(), loop.create_future(), set())
-            try:
-                async with self._input:
-                    waited = loop.time() - asked
-                    try:
-                        await self._type(lambda: self._typist.command(Command(ASIDE, typed)))
-                        reply = await asyncio.wait_for(asyncio.shield(fork.answer), FORK_SECONDS)
-                    except TimeoutError as error:
-                        # [LAW:no-silent-failure] a question the brain never answers ends here, said as such.
-                        # What the brain showed says why: a question it never saw, one it is still answering, or a screen over its input.
-                        failure = ForkFailed(f"no answer in {FORK_SECONDS:.0f}s; the brain showed:\n{self._terminal.last()}")
-                        self._record(BrainForked(question, str(failure), failed=True, waited=waited))
-                        raise failure from error
-                    except (ForkFailed, BrainGone) as error:
-                        self._record(BrainForked(question, str(error), failed=True, waited=waited))
-                        raise
-                    except asyncio.CancelledError:
-                        self._record(BrainForked(question, "its asker stopped waiting", failed=True, waited=waited))
-                        raise
-                    finally:
-                        # A stop waiting for the question to go out learns it never will.
-                        fork.answer.cancel()
-                        # The question or its answer covers the input until it is dismissed.
-                        if not self._exit.done():
-                            try:
-                                await self._type(lambda: self._typist.press(fork.dismissal))
-                            except BrainGone:
-                                logger.exception("the brain's side question could not be dismissed")
-                            await asyncio.sleep(SETTLE_SECONDS)
-            finally:
-                self._fork = None
-                # Given up on while it still waited for the input, it will not go out either, and a stop waiting on it learns so.
-                fork.answer.cancel()
-        self._record(BrainForked(question, reply, failed=False, waited=waited))
-        return reply
-
     def interrupt(self) -> None:
         """Stop the turn in flight with Escape, as at the keyboard. Returns at once: the Escape is the brain's to press,
-        before anything else waiting to type and without waiting on a side question's answer, and no hook says a turn was
-        stopped, so the turn ends where it is pressed."""
+        and no hook says a turn was stopped, so the turn ends where it is pressed."""
         turn = self._turn
         if turn is not None:
             self._keep(self._stop(turn))
@@ -439,27 +435,18 @@ class Brain:
             # [LAW:no-silent-failure] the turn runs on, told to stop by nobody: its words are the stage's to hold.
             logger.warning(f"the brain was not stopped: its turn was not taken in {TAKE_SECONDS:.0f}s")
             return
-        fork = self._fork
-        if fork is not None:
-            # A side question waiting on its answer holds the input until the answer comes. Once its question is on the
-            # screen it fails, so it cancels itself with its Escape and lets go at once; that Escape leaves the turn running,
-            # for this one to stop. One pressed before the question is up would stop the turn, and this one then land on
-            # the prompt it put back.
-            await asyncio.wait({fork.out, fork.answer}, return_when=asyncio.FIRST_COMPLETED)
-            if self._turn is turn and not fork.answer.done():
-                fork.answer.set_exception(ForkFailed("the turn beside it was stopped before it was answered"))
         try:
             async with self._input:
                 if self._turn is not turn:
                     return
-                await self._type(lambda: self._typist.press("escape"))
+                await self._type(lambda typist: typist.press("escape"))
                 # Escape puts a prompt stopped before any reply back in the input, which the next turn typed would join;
                 # Ctrl-C clears it. On an input left empty it arms Claude Code's exit instead, which a second Ctrl-C within
                 # 800ms takes, whatever was typed between (2.1.285, read from its source 2026-09-30); so no two are
                 # pressed that close, counted from when each went and with room for Claude Code to read the first late.
                 loop = asyncio.get_running_loop()
                 await asyncio.sleep(self._cleared + EXIT_SECONDS - loop.time())
-                await self._type(lambda: self._typist.press("ctrl_c"))
+                await self._type(lambda typist: typist.press("ctrl_c"))
                 self._cleared = loop.time()
         except BrainGone as error:
             self._over(turn, error)
@@ -472,32 +459,13 @@ class Brain:
         self._over(turn, stopped)
 
     def hear(self, observed: Observed) -> None:
-        """The brain's own requests, read from the wire: whether a turn reached hands' tools, and a side question's answer."""
-        fork = self._fork
+        """The brain's own requests, read from the wire: whether a turn reached hands' tools."""
         match observed:
             case Sent(session=session, kind=MainTurn(), body=body) if session == self.session and not any(
                 name.startswith(f"mcp__{SERVER_NAME}__") for name in tool_names(body)
             ):
                 # [LAW:no-silent-failure] a brain without hands' tools answers every question about the sessions from nothing.
                 logger.error(f"the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server ({tool_names(body)})")
-            case Sent(exchange=exchange, session=session, kind=Fork(), body=body) if (
-                session == self.session and fork is not None and any(fork.question in text for text in asked(body))
-            ):
-                fork.exchanges.add(exchange)
-                if not fork.out.done():
-                    fork.out.set_result(None)
-            case Exchanged(exchange=exchange, reply=reply) if fork is not None and exchange in fork.exchanges and not fork.answer.done():
-                match reply:
-                    case Reached(status=200, body=Streamed(message=message)):
-                        fork.shown = True
-                        said = " ".join(block.text for block in message.content if isinstance(block, Said)).strip()
-                        if said:
-                            fork.answer.set_result(said)
-                        else:
-                            fork.answer.set_exception(ForkFailed(f"the brain answered the side question with no words ({message.stop_reason})"))
-                    case _:
-                        # Claude Code asks again after a request that failed; the question waits for that, or for its time.
-                        logger.warning(f"a side question of the brain's was answered {reply}")
             case _:
                 pass
 
@@ -506,36 +474,24 @@ class Brain:
         return await asyncio.shield(self._exit)
 
     async def stop(self) -> None:
-        if self._process.returncode is None:
-            self._process.terminate()
-            try:
-                await asyncio.wait_for(self._process.wait(), STOP_SECONDS)
-            except TimeoutError:
-                self._process.kill()
+        await self._claude.stop()
         await self.exited()
         self._heard.cancel()
         await self._listener.cleanup()
         shutil.rmtree(self._sockets, ignore_errors=True)
 
-    async def _type(self, typing: Callable[[], None]) -> None:
+    async def _type(self, typing: Callable[[Typist], None]) -> None:
         try:
-            await asyncio.to_thread(typing)
+            await asyncio.to_thread(typing, self._typist)
         except Untyped as error:
             raise BrainGone(f"the brain cannot be typed into: {error}") from error
 
     async def _run_out(self) -> int:
-        code = await self._process.wait()
-        try:
-            # What it showed last, read to its end; a terminal some child of it still holds is not waited on for long.
-            await asyncio.wait_for(asyncio.shield(self._terminal.closed), 1.0)
-        except TimeoutError:
-            pass
-        # [LAW:no-silent-failure] a turn or a side question that can never end is said to have failed, not left waiting.
+        code = await asyncio.shield(self._claude.exit)
+        # [LAW:no-silent-failure] a turn that can never end is said to have failed, not left waiting.
         if self._turn is not None:
             self._over(self._turn, BrainGone(f"the brain exited ({code}) before it answered"))
-        if self._fork is not None and not self._fork.answer.done():
-            self._fork.answer.set_exception(BrainGone(f"the brain exited ({code}) before it answered a side question"))
-        self._record(BrainExited(code, self._terminal.last()))
+        self._record(BrainExited(code, self._claude.shown()))
         return code
 
     async def _hear_hooks(self, hooks: "asyncio.Queue[Payload]") -> None:
@@ -587,39 +543,21 @@ async def start(launch: Launch, record: Record) -> Brain:
     listener, url = await _listen(hooks)
     # A unix socket's path is capped near 104 bytes on macOS, so not under the brain's own directory.
     sockets = Path(tempfile.mkdtemp(prefix="hands-brain-"))
-    process: asyncio.subprocess.Process | None = None
+    running: ClaudeCode | None = None
     try:
-        master, slave = pty.openpty()
-        try:
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-            process = await asyncio.create_subprocess_exec(
-                str(launch.fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url),
-                cwd=launch.cwd,
-                env={**environment(launch.config_dir, launch.proxy_url, os.environ), "TERM": "xterm-256color"},
-                stdin=slave,
-                stdout=slave,
-                stderr=slave,
-                start_new_session=True,
-            )
-        except BaseException:
-            os.close(master)
-            raise
-        finally:
-            os.close(slave)
-        terminal = _Terminal(master)
-        record(BrainLaunched(process.pid, launch.config_dir, launch.cwd, launch.model))
-        typist = await _typist(process, sockets, launch.session)
+        running = await spawn(launch.station, [str(launch.fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url)])
+        record(BrainLaunched(running.pid, launch.station.config_dir, launch.station.cwd, launch.station.model))
+        typist = await _typist(running, sockets, launch.session)
         await asyncio.sleep(SETTLE_SECONDS)
     except BaseException:
         # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
         # its own, so nothing else would end it when hands does.
-        if process is not None and process.returncode is None:
-            process.kill()
-            await process.wait()
+        if running is not None:
+            await running.stop()
         await listener.cleanup()
         shutil.rmtree(sockets, ignore_errors=True)
         raise
-    return Brain(process, launch.session, typist, terminal, hooks, listener, sockets, launch.config_dir, record)
+    return Brain(running, launch.session, typist, hooks, listener, sockets, launch.station.config_dir, record)
 
 
 async def _listen(hooks: "asyncio.Queue[Payload]") -> tuple[web.AppRunner, str]:
@@ -644,16 +582,16 @@ async def _listen(hooks: "asyncio.Queue[Payload]") -> tuple[web.AppRunner, str]:
     return runner, f"http://{host}:{port}"
 
 
-async def _typist(process: asyncio.subprocess.Process, sockets: Path, session: SessionId) -> Typist:
+async def _typist(running: ClaudeCode, sockets: Path, session: SessionId) -> Typist:
     """The brain as fritter types into it: the socket fritter opened under `sockets`, and the claude it started."""
     deadline = asyncio.get_running_loop().time() + START_SECONDS
-    while asyncio.get_running_loop().time() < deadline and process.returncode is None:
+    while asyncio.get_running_loop().time() < deadline and not running.exit.done():
         found = [path for path in sockets.rglob("*") if path.is_socket()]
-        child = await asyncio.to_thread(_child_of, process.pid)
+        child = await asyncio.to_thread(_child_of, running.pid)
         if found and child is not None:
             return Typist(session, found[0], child)
         await asyncio.sleep(0.05)
-    raise Unstartable(f"fritter did not start the brain and open its socket in {START_SECONDS:.0f}s (exit {process.returncode})")
+    raise Unstartable(f"fritter did not start the brain and open its socket in {START_SECONDS:.0f}s (exit {running.exit.result() if running.exit.done() else None})")
 
 
 def _child_of(pid: int) -> int | None:
