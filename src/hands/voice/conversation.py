@@ -1,5 +1,6 @@
 """The conversation with the intermediary, written to the audit log turn by turn as it enters the model's context."""
 
+from loguru import logger
 from pipecat.processors.aggregators.llm_response_universal import (
     AssistantTurnStoppedMessage,
     LLMAssistantAggregator,
@@ -17,6 +18,9 @@ def record_turns(user_turns: LLMUserAggregator, assistant_turns: LLMAssistantAgg
     @user_turns.event_handler("on_user_turn_message_added")
     async def heard(_aggregator: LLMUserAggregator, message: UserTurnMessageAddedMessage) -> None:  # pyright: ignore[reportUnusedFunction]
         record(Transcribed(message.content))
+        # The words themselves, in the terminal as well as the audit log: the latency line says only that a
+        # transcript came, and whoever is talking wants to see what was heard: the plain words, on one line.
+        logger.info(f"heard: {' '.join(message.content.split())}")
 
     @assistant_turns.event_handler("on_assistant_turn_stopped")
     async def replied(_aggregator: LLMAssistantAggregator, message: AssistantTurnStoppedMessage) -> None:  # pyright: ignore[reportUnusedFunction]
