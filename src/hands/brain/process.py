@@ -416,6 +416,8 @@ class Brain:
                             await asyncio.sleep(SETTLE_SECONDS)
             finally:
                 self._fork = None
+                # Given up on while it still waited for the input, it will not go out either, and a stop waiting on it learns so.
+                fork.answer.cancel()
         self._record(BrainForked(question, reply, failed=False, waited=waited))
         return reply
 
