@@ -186,7 +186,10 @@ while True:
     # Claude Code reads what reaches it close together as one burst (2.1.286).
     time.sleep(0.05)
     while select.select([0], [], [], 0)[0]:
-        pending += os.read(0, 65536)
+        more = os.read(0, 65536)
+        if not more:
+            break
+        pending += more
     while pending:
         if pending.startswith(b"\\x1b[200~"):
             end = pending.find(b"\\x1b[201~")
