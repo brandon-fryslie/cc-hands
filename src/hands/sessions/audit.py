@@ -350,7 +350,8 @@ class AuditLog:
             return
         try:
             # Opened for each line, so a line is on disk when record returns and a log moved aside is started again.
-            with open(self._path, "a", encoding="utf-8", opener=_private) as log:
+            # Half of a character cut in two is no UTF-8: it is written as its JSON escape, which reads back as itself.
+            with open(self._path, "a", encoding="utf-8", errors="backslashreplace", opener=_private) as log:
                 log.write(line + "\n")
         except OSError as error:
             # [LAW:no-silent-failure] said on stderr, as a warning: an error would be sent back to the log that just failed.
