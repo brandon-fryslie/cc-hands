@@ -81,7 +81,7 @@ from hands.voice.threads import off_loop
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.tools import Tool, audited, intermediary_tools, standing
 from hands.brain.mcp import serve_mcp
-from hands.brain.process import Brain, Launch, NotLoggedIn, logged_in, start as start_brain, workdir
+from hands.brain.process import Brain, Launch, NotLoggedIn, Unstartable, logged_in, start as start_brain, workdir
 from hands.brain.context import EVERY, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.core.session import SessionId
@@ -136,10 +136,10 @@ def backend_from_env(home: Home) -> LLMBackend:
             sys.exit("HANDS_LLM_URL does not apply to HANDS_LLM=claude, whose requests go through hands' proxy to Anthropic's API; unset it.")
         # A brain with no login is refused here, before the voice loads, rather than once every turn has failed.
         try:
-            logged_in(home.brain, UPSTREAM)
-        except NotLoggedIn as error:
+            account = logged_in(home.brain, UPSTREAM)
+        except (NotLoggedIn, Unstartable) as error:
             sys.exit(f"hands: {error}")
-        return ClaudeCodeBackend(model=os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL), config_dir=home.brain)
+        return ClaudeCodeBackend(model=os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL), config_dir=home.brain, account=account)
     sys.exit(f"HANDS_LLM={choice!r} is not one of: anthropic, openai, claude.")
 
 
@@ -264,6 +264,15 @@ def _server(backend: LLMBackend) -> str:
             return UPSTREAM
 
 
+def _account(backend: LLMBackend) -> str | None:
+    """The subscription account the brain runs on, as it was when the run started; None for a keyed variant, whose key is never said."""
+    match backend:
+        case AnthropicBackend() | OpenAICompatibleBackend():
+            return None
+        case ClaudeCodeBackend(account=account):
+            return account
+
+
 async def outlived(brain: Brain) -> None:
     # [LAW:no-silent-failure] a brain that ends while hands runs leaves every question unanswered, so it stops the run.
     code = await brain.exited()
@@ -332,7 +341,7 @@ async def configured(configure: Callable[[], VoiceConfig], survey: Callable[[], 
     await sweep(home, sessions, frozenset())
     config = await off_loop(configure, "the configuration read")
     # [LAW:nothing-unseen] which server and model the environment chose is read from the log, not re-derived from a shell.
-    record(LLMChosen(backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model))
+    record(LLMChosen(backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model, account=_account(config.llm)))
     return config
 
 

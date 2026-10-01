@@ -70,6 +70,8 @@ class ClaudeCodeBackend:
     # No URL of its own: its requests go through hands' proxy, whose address is known only once the run has it listening.
     model: str
     config_dir: Path
+    # The account its login held when the run started.
+    account: str
 
 
 LLMBackend = AnthropicBackend | OpenAICompatibleBackend | ClaudeCodeBackend

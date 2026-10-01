@@ -55,11 +55,13 @@ class EffectFailed:
 
 @dataclass(frozen=True)
 class LLMChosen:
-    """The model a run reaches and the server it reaches it on, from the configuration it started with; never its key."""
+    """The model a run reaches and the server it reaches it on, from the configuration it started with, and the brain's
+    subscription account (None for a keyed variant); never its key."""
 
     backend: str
     base_url: str
     model: str
+    account: str | None
 
 
 @dataclass(frozen=True)

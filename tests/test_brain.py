@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -25,6 +26,7 @@ from hands.daemon.run import mind
 from hands.sessions.proxy import Wire
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
+from hands.sessions.wrapper import MARK
 from hands.voice.sentences import SummaryStore
 from hands.voice.speech import Pushed, Tailed
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, VoiceConfig
@@ -437,10 +439,22 @@ def test_a_brain_with_no_login_is_refused_naming_the_command(tmp_path: Path, fak
 def test_hands_login_logs_the_brain_in_on_the_subscription_in_its_own_config_and_says_the_account(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "not the brain's")
+    # A hands shim ahead of the real claude would run the login at this terminal as a session, under fritter.
+    shim = tmp_path / "shim" / "claude"
+    shim.parent.mkdir()
+    shim.write_text(f"#!/bin/sh\n{MARK}\nexit 99\n")
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim.parent}:{os.environ['PATH']}")
     assert main(["--home", str(tmp_path), "login"]) == 0
     # Claude Code's own login, run where the brain's login lives, with no credential of this shell's beside it.
     assert json.loads((tmp_path / "brain" / "login.json").read_text()) == {"argv": ["auth", "login", "--claudeai"], "credentials": []}
-    assert capsys.readouterr().out == f"the brain at {tmp_path / 'brain'} is logged in as brain@example.com\n"
+    assert capsys.readouterr().out.splitlines()[0] == f"the brain at {tmp_path / 'brain'} is logged in as brain@example.com"
+
+
+def test_a_brain_logged_in_off_the_subscription_is_refused_naming_how_it_is(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTH_METHOD", "api_key")
+    with pytest.raises(NotLoggedIn, match="logged in by api_key, not on the Claude subscription"):
+        logged_in(tmp_path / "brain", "http://127.0.0.1:1")
 
 
 def test_hands_login_that_claude_code_fails_exits_1_saying_so(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -483,7 +497,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     async with mind(api, [], sessions, "http://127.0.0.1:1", wire, store, fritter, recorded.append) as minded:
         assert isinstance(minded.llm, AnthropicLLMService) and minded.watches == () and minded.telling == Pushed()
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain"), whisper_model="w", voice="v")
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com"), whisper_model="w", voice="v")
     async with mind(claude, [tool(echo)], sessions, "http://127.0.0.1:1", wire, store, fritter, recorded.append) as minded:
         assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed()
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
