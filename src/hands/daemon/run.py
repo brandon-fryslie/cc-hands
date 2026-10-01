@@ -81,7 +81,8 @@ from hands.voice.threads import off_loop
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.tools import Tool, audited, intermediary_tools, standing
 from hands.brain.mcp import serve_mcp
-from hands.brain.process import Brain, Launch, NotLoggedIn, Unstartable, logged_in, start as start_brain, workdir
+from hands.brain.asides import Asides
+from hands.brain.process import Brain, Launch, NotLoggedIn, Station, Unstartable, logged_in, start as start_brain, workdir
 from hands.brain.context import EVERY, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.core.session import SessionId
@@ -224,7 +225,7 @@ async def mind(
     config: VoiceConfig, tools: Sequence[Tool], sessions: Sessions, proxy_url: str, wire: Wire, store: Store, fritter: Path, record: Record
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
-    through, the stage that speaks for it from the wire, and the keeper of its context."""
+    through, the stage that speaks for it from the wire, the keeper of its context, and what answers hands' side questions."""
     # [LAW:single-enforcer] the one place the backend's variant decides the LLM stage.
     match config.llm:
         case AnthropicBackend() | OpenAICompatibleBackend() as backend:
@@ -237,18 +238,18 @@ async def mind(
         case ClaudeCodeBackend(model=model, config_dir=config_dir):
             server = await serve_mcp(tools, record)
             try:
-                session = SessionId(str(uuid4()))
-                launch = Launch(config_dir, workdir(config_dir), model, INTERMEDIARY_INSTRUCTION, proxy_url, server.config(), session, fritter)
-                brain = await start_brain(launch, record)
+                station = Station(config_dir, workdir(config_dir), model, proxy_url)
+                brain = await start_brain(Launch(station, INTERMEDIARY_INSTRUCTION, server.config(), SessionId(str(uuid4())), fritter), record)
                 try:
+                    # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
+                    # its own: nothing but the user's turns and their stops is ever typed into the brain.
+                    asides = Asides(station, record)
                     stage = BrainStage(brain, tools, lambda: tail(standing(sessions)), record)
-                    keeper = Keeper(brain, store, EVERY, record)
-                    with wire.joined(Kept(stage, keeper, brain)):
+                    keeper = Keeper(brain.session, asides.ask, store, EVERY, record)
+                    with wire.joined(Kept(stage, keeper, brain, asides)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
-                        # Its summaries are side questions typed into it: no other Claude Code is started, and no request
-                        # is sent that the brain did not send itself. What it answers is as long as it takes: only its time
-                        # is the summary's own.
-                        yield Mind(stage, watches, Tailed(), lambda instruction, _max_tokens, timeout: aside(brain.fork, instruction, timeout))
+                        # A summary is as long as its Claude Code makes it: only its time is the summary's own.
+                        yield Mind(stage, watches, Tailed(), lambda instruction, _max_tokens, timeout: aside(asides.ask, instruction, timeout))
                 finally:
                     await brain.stop()
             finally:

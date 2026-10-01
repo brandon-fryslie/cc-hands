@@ -1147,9 +1147,9 @@ the block holding Claude Code's cache marker (`hands.voice.briefing.tail`). The 
 prefix is exactly what Claude Code sent, and its history never keeps a stale listing. The
 brain's history is kept small on the way out the same way (`hands.brain.context`): a long
 tool result more than K turns old goes as `<tool>: <sentence>`, a batch every K turns so
-the cached prefix changes once a batch, with the sentence asked of a fork of the brain
-(`Brain.fork`, a `/btw` typed into it) once the result's turn ends and kept in the
-summary store by the result's content; and its compaction is asked for what a voice
+the cached prefix changes once a batch, with the sentence asked once the result's turn
+ends, as a side question that shows the result to a Claude Code started for that question
+alone (`hands.brain.asides`), and kept in the summary store by the result's content; and its compaction is asked for what a voice
 session keeps rather than what a coding session does. This is the single decision that avoids
 most of Happy's trouble: it pushed history in and could not pull, so it needed a
 bootstrap dump, an eviction policy it never wrote, and a window that only grew.

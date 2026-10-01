@@ -52,13 +52,18 @@ class CountTokens:
 
 
 @dataclass(frozen=True)
+class Hello:
+    """The request a Claude Code makes as it starts, to /api/hello: a round trip, not a model call."""
+
+
+@dataclass(frozen=True)
 class Unknown:
     """A request no rule recognises, and what about it did not match. Its reply is never spoken."""
 
     shape: str
 
 
-Kind = MainTurn | Subagent | Fork | Compaction | CountTokens | Unknown
+Kind = MainTurn | Subagent | Fork | Compaction | CountTokens | Hello | Unknown
 
 # The first words of every compaction request's last message, in Claude Code's services/compact/prompt.ts.
 COMPACTION_OPENING = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
@@ -82,6 +87,9 @@ def classify(path: str, body: object) -> Kind:
     match path.split("?", 1)[0]:
         case "/v1/messages/count_tokens":
             return CountTokens()
+        case "/api/hello":
+            # Every Claude Code hands starts makes one, and one is started for each side question.
+            return Hello()
         case "/v1/messages":
             return _classify_messages(body)
         case other:

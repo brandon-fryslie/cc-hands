@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 from hands.core.effects import AuditRecord, Effect, Input, Type
 from hands.core.events import Event
+from hands.core.session import SessionId
 from hands.core.wire import Exchanged
 from hands.sessions.model_facts import ModelFact
 
@@ -123,14 +124,17 @@ class BrainAnswered:
 
 
 @dataclass(frozen=True)
-class BrainForked:
-    """A side question the brain was asked with /btw, beside any turn, and its answer from the wire, or why it has none.
-    `waited` is how long, in seconds, it waited for the brain's input before it was typed."""
+class AsideAnswered:
+    """A side question hands asked in the background, of a slim Claude Code started for it alone, and its answer from
+    the wire, or why it has none. `session` is that Claude Code's, which its exchanges on the wire carry. `waited` is how
+    long, in seconds, the question waited behind the ones asked before it, and `seconds` how long its Claude Code ran."""
 
     question: str
     reply: str
     failed: bool
+    session: SessionId
     waited: float
+    seconds: float
 
 
 @dataclass(frozen=True)
@@ -307,7 +311,7 @@ Entry = (
     | BrainLaunched
     | BrainAsked
     | BrainAnswered
-    | BrainForked
+    | AsideAnswered
     | ResultsStubbed
     | BrainInterrupted
     | BrainSpoke

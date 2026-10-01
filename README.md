@@ -84,9 +84,11 @@ whose requests go through hands' proxy and which reaches the sessions through ha
 (`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, set up once as any
 Claude Code is, by running `mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude` and answering its first screens, and it does not start without one. `hands login` logs it in again, or onto
 another account, and says which account it holds after.
-It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input,
-asks side questions and the Claude Code backend's summaries with `/btw`, and stops a turn with Escape; its hooks
-say when a turn was taken and when it ended. It is the pipeline's LLM stage (`src/hands/brain/stage.py`): what
+It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
+and stops a turn with Escape, and types nothing else into it; its hooks say when a turn was taken and when it ended.
+What hands asks in the background, the Claude Code backend's summaries and the sentence an old tool result goes as,
+is asked of a second interactive Claude Code started for each question, with `/btw` and the question as its opening
+prompt (`src/hands/brain/asides.py`), so a spoken turn never waits on one; each has its `AsideAnswered` audit line. It is the pipeline's LLM stage (`src/hands/brain/stage.py`): what
 it says is spoken from its requests on the wire, never from its screen; each turn's `BrainSpoke` audit line names the
 exchanges its words came from. A barge-in stops it, except while a tool whose effect must land is running,
 which finishes and has its readback, or why it failed, spoken; after that, and after `stay_silent`, hands

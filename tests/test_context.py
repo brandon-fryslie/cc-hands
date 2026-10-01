@@ -1,14 +1,15 @@
-"""The brain's context kept from the proxy: old results as a line, in batches, from sentences forks said while the results were whole."""
+"""The brain's context kept from the proxy: old results as a line, in batches, from sentences asked for as side questions that show the results."""
 
 import asyncio
-from collections.abc import Callable, Mapping
+import re
+from collections.abc import Mapping
 from typing import cast
 
 import pytest
 
 from hands.brain.context import VOICE_COMPACTION, Keeper, Kept
-from hands.brain.process import ForkFailed
-from hands.core.context import LONG, Result, aged, boundary, key, line, question, sentence
+from hands.brain.asides import AsideFailed
+from hands.core.context import LONG, QUOTED, SHOWN, Result, aged, boundary, key, line, question
 from hands.core.sentences import Digest
 from hands.core.session import SessionId
 from hands.core.wire import (
@@ -33,8 +34,6 @@ from hands.core.wire import (
     Stub,
     Tail,
     Text,
-    Observed,
-    ToolUse,
     classify,
     edited,
 )
@@ -98,59 +97,32 @@ def test_the_trim_stubs_exactly_the_old_results_and_the_prefix_is_byte_identical
     assert changed == [6, 9, 12, 15]
 
 
-def test_a_forks_reply_is_one_line_and_one_that_is_not_an_answer_is_refused() -> None:
-    assert sentence(said("  The file\nholds 400 zeros. ")) == "The file holds 400 zeros."
-    with pytest.raises(ValueError):
-        sentence(said(" \n"))
-    with pytest.raises(ValueError):
-        sentence(Message("m", "claude-opus-5-5", (ToolUse("t", "Read", {}),), "tool_use", {}))
-
-
-def test_a_question_names_the_call_by_tool_id_input_and_the_ends_of_its_result_and_the_key_is_what_came_back() -> None:
+def test_a_question_shows_the_call_and_its_result_a_long_one_by_its_ends_and_the_key_is_what_came_back() -> None:
     result = Result("call7", "Read", {"file_path": "/7"}, "head " + "7" * LONG + " tail", 7)
-    assert "Read call call7 with input {\"file_path\": \"/7\"}" in question(result)
-    # Two reads of one thing a turn apart are told apart by what each came back with.
-    assert question(result) != question(Result("call7", "Read", {"file_path": "/7"}, "head " + "7" * LONG + " later", 7))
+    assert 'Tool: Read\nInput: {"file_path": "/7"}\n\n<recorded_result>\n' + result.text + "\n</recorded_result>" in question(result)
+    # The question stands alone: whoever answers it has no conversation, so it names no call of theirs.
+    assert "call7" not in question(result)
+    long = Result("call8", "Bash", {"command": "x" * 400}, "head " + "8" * 2 * SHOWN + " tail", 8)
+    assert f"head {'8' * (SHOWN // 2 - 5)}\n[… {len(long.text) - SHOWN} characters left out …]\n{'8' * (SHOWN // 2 - 5)} tail\n</recorded_result>" in question(long)
+    assert 'Input: {"command": "' + "x" * (QUOTED - len('{"command": "')) + "…\n" in question(long)
     assert key(result) == key(Result("call9", "Read", {"file_path": "/7"}, result.text, 2))
     assert key(result) != key(Result("call7", "Read", {"file_path": "/7"}, "8" * LONG, 7))
 
 
-class Brain:
-    """A brain whose forks send their request on the wire, from its history as it stands, before they answer."""
-
-    session = BRAIN
+class Asked:
+    """What answers the keeper's side questions: a sentence for the read each one shows."""
 
     def __init__(self) -> None:
-        self.asked: list[str] = []
+        self.files: list[str] = []
         self.failing: set[str] = set()
-        self.history: dict[str, object] = history(0)
-        self.wire: Callable[[Observed], None] = lambda _observed: None
-        # What the fork's model replies over the wire, given the question.
-        self.reply: Callable[[str], Message] = lambda question: said(f"the read of {question.split(' call ', 1)[1].split(' ', 1)[0]} said its digit")
 
-    async def fork(self, question: str) -> str:
-        self.asked.append(question)
-        exchange = f"fork{len(self.asked)}"
-        messages = cast(list[object], self.history["messages"])
-        body = {**self.history, "messages": [*messages[:-1], prompt(f"{SIDE_QUESTION_OPENING} ...</system-reminder>\n\n{question}", marked=True)]}
-        if any(call in question for call in self.failing):
-            # Refused by Claude Code before any request of its own.
-            raise ForkFailed("no snapshot")
-        self.wire(Sent(exchange, BRAIN, classify("/v1/messages", body), body))
-        message = self.reply(question)
-        self.wire(Exchanged(exchange, BRAIN, Fork(), "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Streamed(message))))
-        return "what Claude Code hands back, which is not kept"
-
-
-def said(text: str, stop_reason: str = "end_turn") -> Message:
-    return Message("m", "claude-opus-5-5", (Text(text),), stop_reason, {})
-
-
-class Deaf:
-    """The brain's own ear on the wire, which these tests do not listen with."""
-
-    def hear(self, observed: Observed) -> None:
-        pass
+    async def ask(self, question: str) -> str:
+        [file] = re.findall(r'Input: \{"file_path": "(/\d+)"\}', question)
+        self.files.append(file)
+        if file in self.failing:
+            raise AsideFailed("no answer in 120s")
+        # Broken over lines, as a model may break it.
+        return f"  file {file}\nholds its digit. "
 
 
 class Store:
@@ -185,17 +157,15 @@ def ended(kind: Kind = MainTurn(None)) -> Exchanged:
 
 class Rig:
     def __init__(self, every: int = 3) -> None:
-        self.brain = Brain()
+        self.asked = Asked()
         self.store = Store()
         self.recorded: list[Entry] = []
-        self.keeper = Keeper(self.brain, self.store, every, self.recorded.append)
-        self.kept = Kept(Stage(), self.keeper, Deaf())
-        self.brain.wire = self.kept.hear
+        self.keeper = Keeper(BRAIN, self.asked.ask, self.store, every, self.recorded.append)
+        self.kept = Kept(Stage(), self.keeper)
 
     async def turn(self, finished: int) -> Route:
         """The brain's main turn after `finished` turns: routed, heard, and ended, and its results asked about."""
-        self.brain.history = history(finished)
-        request = sent(self.brain.history)
+        request = sent(history(finished))
         self.kept.hear(request)
         route = self.kept.route(request)
         self.kept.hear(ended())
@@ -210,24 +180,24 @@ async def rig() -> Rig:
     return Rig()
 
 
-async def test_each_result_is_asked_of_a_fork_once_after_its_turn_ends_and_goes_as_its_line_once_its_batch_comes(rig: Rig) -> None:
+async def test_each_result_is_asked_about_once_after_its_turn_ends_and_goes_as_its_line_once_its_batch_comes(rig: Rig) -> None:
     worker = asyncio.create_task(rig.keeper.keep_asking())
     try:
         routes = [await rig.turn(finished) for finished in range(0, 8)]
     finally:
         worker.cancel()
     # Each result asked about once, in the order its turn ended.
-    assert [question.split(" call ", 1)[1].split(" ", 1)[0] for question in rig.brain.asked] == [f"call{n}" for n in range(7)]
+    assert rig.asked.files == [f"/{n}" for n in range(7)]
     stubs = {finished: [change for change in route.changes if isinstance(change, Stub)] for finished, route in enumerate(routes) if isinstance(route, Send)}
     assert all(stubs[finished] == [] for finished in range(0, 6))
-    assert stubs[6] == stubs[7] == [Stub(f"call{n}", f"Read: the read of call{n} said its digit") for n in range(3)]
+    assert stubs[6] == stubs[7] == [Stub(f"call{n}", f"Read: file /{n} holds its digit.") for n in range(3)]
     # The stubs go before the stage's own tail.
     assert routes[7] == Send((*stubs[7], Tail("[hands] tail")))
     assert [entry for entry in rig.recorded if isinstance(entry, ResultsStubbed)] == [ResultsStubbed(("call0", "call1", "call2"), ())]
 
 
 async def test_a_result_with_no_sentence_when_its_batch_comes_goes_whole_for_good_and_says_so(rig: Rig) -> None:
-    rig.brain.failing.add("call1")
+    rig.asked.failing.add("/1")
     errors: list[str] = []
     from loguru import logger
 
@@ -244,7 +214,7 @@ async def test_a_result_with_no_sentence_when_its_batch_comes_goes_whole_for_goo
         logger.remove(sink)
     assert isinstance(route, Send) and [change.call for change in route.changes if isinstance(change, Stub)] == ["call0", "call2"]
     assert [entry for entry in rig.recorded if isinstance(entry, ResultsStubbed)] == [ResultsStubbed(("call0", "call2"), ("call1",))]
-    assert [error for error in errors if "call1" in error] == ["no sentence for Read call call1: no snapshot"]
+    assert [error for error in errors if "call1" in error] == ["no sentence for Read call call1: no answer in 120s"]
 
 
 async def test_forks_and_compaction_share_the_stubs_and_only_main_turns_move_the_batch(rig: Rig) -> None:
@@ -282,40 +252,5 @@ async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> No
         def route(self, sent: Sent) -> Route:
             return Hold("(stayed silent)")
 
-    keeper = Keeper(Brain(), Store(), 3, lambda _entry: None)
-    assert Kept(Holding(), keeper, Deaf()).route(sent(history(6))) == Hold("(stayed silent)")
-
-
-async def test_a_sentence_is_kept_only_when_the_forks_own_request_held_the_result_whole(rig: Rig) -> None:
-    errors: list[str] = []
-    from loguru import logger
-
-    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
-    await rig.turn(0)
-    # A compaction lands before the queue drains: the brain's history is its summary, and the forks see no results.
-    request = sent(history(1))
-    rig.kept.hear(request)
-    rig.kept.route(request)
-    rig.brain.history = {**history(0), "messages": [prompt("the summary", marked=True)]}
-    rig.kept.hear(ended())
-    worker = asyncio.create_task(rig.keeper.keep_asking())
-    try:
-        for _ in range(20):
-            await asyncio.sleep(0)
-    finally:
-        worker.cancel()
-        logger.remove(sink)
-    assert rig.brain.asked and rig.store.said == {}
-    assert errors == ["no sentence for Read call call0: the fork's request did not hold the result whole"]
-
-
-async def test_what_claude_code_says_for_a_fork_whose_request_failed_is_never_kept(rig: Rig) -> None:
-    # Claude Code hands back "(API error: ...)" as a fork's answer; on the wire the model's reply never ended in words.
-    rig.brain.reply = lambda _question: said("", stop_reason="max_tokens")
-    worker = asyncio.create_task(rig.keeper.keep_asking())
-    try:
-        await rig.turn(0)
-        await rig.turn(1)
-    finally:
-        worker.cancel()
-    assert rig.brain.asked and rig.store.said == {}
+    keeper = Keeper(BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
+    assert Kept(Holding(), keeper).route(sent(history(6))) == Hold("(stayed silent)")
