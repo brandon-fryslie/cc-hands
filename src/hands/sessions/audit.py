@@ -124,11 +124,13 @@ class BrainAnswered:
 
 @dataclass(frozen=True)
 class BrainForked:
-    """A side question the brain was asked with /btw, beside any turn, and its answer from the wire, or why it has none."""
+    """A side question the brain was asked with /btw, beside any turn, and its answer from the wire, or why it has none.
+    `waited` is how long, in seconds, it waited for the brain's input before it was typed."""
 
     question: str
     reply: str
     failed: bool
+    waited: float
 
 
 @dataclass(frozen=True)

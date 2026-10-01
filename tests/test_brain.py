@@ -336,6 +336,55 @@ async def test_a_turn_goes_before_the_side_questions_waiting_to_type(tmp_path: P
     assert [line[:2] for line in typed(tmp_path)] == [["btw", "first"], ["dismissed", ""], ["prompt", " are you listening?"], ["btw", "second"], ["dismissed", ""]]
 
 
+async def test_a_side_question_asked_as_a_turn_is_typed_is_typed_once_the_turn_is_taken(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
+    try:
+        asked = asyncio.create_task(brain.ask("are you listening?"))
+        # Asked for once the turn is typed and before Claude Code has taken it, so it is next at the input.
+        while not any(isinstance(entry, BrainAsked) for entry in recorded):
+            await asyncio.sleep(0)
+        began = asyncio.get_running_loop().time()
+        aside = asyncio.create_task(brain.fork("first"))
+        await until(lambda: any(line[0] == "btw" for line in typed(tmp_path)))
+        typed_by = asyncio.get_running_loop().time() - began
+        brain.hear(forked("b1", "first", "x1"))
+        brain.hear(answered("b1", "One.", exchange="x1"))
+        assert await aside == "One."
+        assert await asyncio.wait_for(asked, 5) == BrainAnswered("p1", None)
+    finally:
+        await brain.stop()
+    # Typed right behind the turn, the question would reach Claude Code with it and join its prompt.
+    assert typed(tmp_path) == [["prompt", " are you listening?"], ["btw", "first"], ["dismissed", ""]]
+    # The log says how long it was kept from the input: as long as the turn took to be taken, and no longer than it took to be typed.
+    [waited] = [entry.waited for entry in recorded if isinstance(entry, BrainForked)]
+    assert 0 < waited <= typed_by
+
+
+async def test_a_stop_asked_for_before_the_turn_is_taken_does_not_wait_on_the_answer_to_a_side_question_typed_behind_the_turn(
+    tmp_path: Path, fake_claude: Path, fritter: Path
+) -> None:
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
+    try:
+        waiting = asyncio.create_task(brain.ask("wait"))
+        while not any(isinstance(entry, BrainAsked) for entry in recorded):
+            await asyncio.sleep(0)
+        # Next at the input, behind the turn typed and not yet taken, when the stop is asked for.
+        first = asyncio.create_task(brain.fork("first"))
+        await asyncio.sleep(0)
+        brain.interrupt()
+        await until(lambda: any(line[0] == "btw" for line in typed(tmp_path)))
+        brain.hear(forked("b1", "first", "x1"))
+        with pytest.raises(ForkFailed, match="the turn beside it was stopped before it was answered"):
+            await asyncio.wait_for(first, 5)
+        assert await asyncio.wait_for(waiting, 5) == BrainAnswered("p1", None)
+        await until(lambda: typed(tmp_path)[-1][0] == "ctrl_c")
+    finally:
+        await brain.stop()
+    assert typed(tmp_path) == [["prompt", " wait"], ["btw", "first"], ["cancelled", ""], ["escape", ""], ["ctrl_c", " wait"]]
+
+
 def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_are_still_heard() -> None:
     brain = object.__new__(Brain)
     brain.session = SessionId("b1")

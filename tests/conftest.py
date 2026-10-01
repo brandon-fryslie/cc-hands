@@ -119,13 +119,13 @@ def fritter(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A `claude` first on PATH that reports its login from LOGGED_IN, or from an `auth login` it recorded, made by AUTH_METHOD (claude.ai unless named), and as the brain is Claude Code at a keyboard: it
-    reads its terminal raw, takes a prompt when Return sends it, and posts the hooks its --settings name. Everything it
+    reads its terminal raw, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names. A turn "wait" runs until Escape, "fail" is failed by the
     API, "deaf" is never taken, and "die" ends the program."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import json, os, sys, time, tty, urllib.request
+import json, os, select, sys, time, tty, urllib.request
 if sys.argv[1] == "auth":
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
 if sys.argv[1:3] == ["auth", "login"]:
@@ -183,6 +183,13 @@ while True:
     if not data:
         break
     pending += data
+    # Claude Code reads what reaches it close together as one burst (2.1.286).
+    time.sleep(0.05)
+    while select.select([0], [], [], 0)[0]:
+        more = os.read(0, 65536)
+        if not more:
+            break
+        pending += more
     while pending:
         if pending.startswith(b"\\x1b[200~"):
             end = pending.find(b"\\x1b[201~")
@@ -207,6 +214,9 @@ while True:
             box = ""
         elif pending.startswith(b"\\r"):
             pending = pending[1:]
+            if pending:
+                # A Return with more behind it in the same burst is read as pasted, and sends nothing (2.1.286).
+                continue
             text, box = box, ""
             submit(text)
         else:

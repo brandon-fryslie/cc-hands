@@ -319,10 +319,11 @@ class Brain:
         self._listener = listener
         self._sockets = sockets
         self._record = record
-        # [LAW:single-enforcer] one thing is typed at a time, and nothing while a side question's answer covers the input,
-        # where whatever is typed goes into the answer instead. Side questions wait their turn for the input in the queue,
-        # so a turn the user asked for, or a stop, each of which takes the input alone, is next once whatever holds it lets go;
-        # a stop fails a side question still waiting on its answer, so that it lets go at once.
+        # [LAW:single-enforcer] one thing is typed at a time, and nothing until Claude Code has taken what was typed last:
+        # a turn keeps the input until its hook says it was taken, and a side question until its answer is dismissed, since
+        # what is typed sooner joins the turn's prompt or goes into the answer. Side questions wait their turn in the queue,
+        # so a turn the user asked for, or a stop, each of which takes the input alone, waits behind one of them at most;
+        # a stop fails that one once its question is on the screen, so that it lets go at once.
         self._queue = asyncio.Lock()
         self._input = asyncio.Lock()
         # [LAW:no-ambient-temporal-coupling] the turn in flight is the brain's own state, not its asker's: it is over
@@ -358,11 +359,15 @@ class Brain:
 
     async def _send(self, text: str, turn: _Turn) -> None:
         try:
+            # [LAW:no-ambient-temporal-coupling] the input is the turn's from its first key until Claude Code says it took
+            # the turn. Claude Code reads keys that reach it together as one paste, and a Return inside a paste sends
+            # nothing: a side question typed 10ms behind a turn joined the turn's prompt, or was left in the input with
+            # it (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
             async with self._input:
                 # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
                 await self._type(lambda: self._typist.type(Text(pasted(text)).typed))
-            self._record(BrainAsked(text))
-            await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+                self._record(BrainAsked(text))
+                await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
             if not (turn.taken.done() or turn.answered.done()):
                 raise Untaken(f"the brain did not take the turn typed into it in {TAKE_SECONDS:.0f}s; if it is on a setup screen, run: {setup(self._config_dir)}")
         except (BrainGone, Untaken) as error:
@@ -374,37 +379,46 @@ class Brain:
         BrainGone when the brain ends or cannot be typed into."""
         if self._exit.done():
             raise BrainGone(f"the brain had exited ({self._process.returncode}) before it was asked a side question")
-        async with self._queue, self._input:
+        loop = asyncio.get_running_loop()
+        asked = loop.time()
+        async with self._queue:
             typed = pasted(question)
-            loop = asyncio.get_running_loop()
+            # The brain's question from here, before it has the input: a stop that comes while it waits there, behind a turn
+            # not yet taken, knows of it, and fails it once it is on the screen rather than wait behind it for its answer.
             fork = self._fork = _Aside(typed, loop.create_future(), loop.create_future(), set())
             try:
-                await self._type(lambda: self._typist.command(Command(ASIDE, typed)))
-                reply = await asyncio.wait_for(asyncio.shield(fork.answer), FORK_SECONDS)
-            except TimeoutError as error:
-                # [LAW:no-silent-failure] a question the brain never answers ends here, said as such.
-                # What the brain showed says why: a question it never saw, one it is still answering, or a screen over its input.
-                failure = ForkFailed(f"no answer in {FORK_SECONDS:.0f}s; the brain showed:\n{self._terminal.last()}")
-                self._record(BrainForked(question, str(failure), failed=True))
-                raise failure from error
-            except (ForkFailed, BrainGone) as error:
-                self._record(BrainForked(question, str(error), failed=True))
-                raise
-            except asyncio.CancelledError:
-                self._record(BrainForked(question, "its asker stopped waiting", failed=True))
-                raise
+                async with self._input:
+                    waited = loop.time() - asked
+                    try:
+                        await self._type(lambda: self._typist.command(Command(ASIDE, typed)))
+                        reply = await asyncio.wait_for(asyncio.shield(fork.answer), FORK_SECONDS)
+                    except TimeoutError as error:
+                        # [LAW:no-silent-failure] a question the brain never answers ends here, said as such.
+                        # What the brain showed says why: a question it never saw, one it is still answering, or a screen over its input.
+                        failure = ForkFailed(f"no answer in {FORK_SECONDS:.0f}s; the brain showed:\n{self._terminal.last()}")
+                        self._record(BrainForked(question, str(failure), failed=True, waited=waited))
+                        raise failure from error
+                    except (ForkFailed, BrainGone) as error:
+                        self._record(BrainForked(question, str(error), failed=True, waited=waited))
+                        raise
+                    except asyncio.CancelledError:
+                        self._record(BrainForked(question, "its asker stopped waiting", failed=True, waited=waited))
+                        raise
+                    finally:
+                        # A stop waiting for the question to go out learns it never will.
+                        fork.answer.cancel()
+                        # The question or its answer covers the input until it is dismissed.
+                        if not self._exit.done():
+                            try:
+                                await self._type(lambda: self._typist.press(fork.dismissal))
+                            except BrainGone:
+                                logger.exception("the brain's side question could not be dismissed")
+                            await asyncio.sleep(SETTLE_SECONDS)
             finally:
                 self._fork = None
-                # A stop waiting for the question to go out learns it never will.
+                # Given up on while it still waited for the input, it will not go out either, and a stop waiting on it learns so.
                 fork.answer.cancel()
-                # The question or its answer covers the input until it is dismissed.
-                if not self._exit.done():
-                    try:
-                        await self._type(lambda: self._typist.press(fork.dismissal))
-                    except BrainGone:
-                        logger.exception("the brain's side question could not be dismissed")
-                    await asyncio.sleep(SETTLE_SECONDS)
-        self._record(BrainForked(question, reply, failed=False))
+        self._record(BrainForked(question, reply, failed=False, waited=waited))
         return reply
 
     def interrupt(self) -> None:
