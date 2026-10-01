@@ -216,7 +216,10 @@ def logged_in(config_dir: Path, base_url: str) -> str:
             raise NotLoggedIn(f"the brain has no login; run: {setup(config_dir)}")
         # [LAW:no-silent-failure] a key the config directory resolves would answer every turn, billed to the API.
         if (method := status.text("authMethod")) != "claude.ai":
-            raise NotLoggedIn(f"the brain is logged in by {method}, not on the Claude subscription; run: hands login")
+            raise NotLoggedIn(
+                f"the brain is logged in by {method}, not on the Claude subscription: `hands login` puts it there,"
+                f" unless {config_dir / 'settings.json'} or hands' environment sets {method} ahead of its login"
+            )
         return status.text("email")
     except Rejected as error:
         raise NotLoggedIn(f"`claude auth status` for the brain answered {asked.stdout[:200]!r} {asked.stderr[:200]!r}, not its status: {error}") from None
