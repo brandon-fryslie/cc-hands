@@ -118,7 +118,7 @@ def fritter(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A `claude` first on PATH that reports its login from LOGGED_IN, and as the brain is Claude Code at a keyboard: it
+    """A `claude` first on PATH that reports its login from LOGGED_IN, or from an `auth login` it recorded, and as the brain is Claude Code at a keyboard: it
     reads its terminal raw, takes a prompt when Return sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names. A turn "wait" runs until Escape, "fail" is failed by the
     API, "deaf" is never taken, and "die" ends the program."""
@@ -126,8 +126,15 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
 import json, os, sys, time, tty, urllib.request
+if sys.argv[1] == "auth":
+    login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
+if sys.argv[1:3] == ["auth", "login"]:
+    os.makedirs(os.environ["CLAUDE_CONFIG_DIR"], exist_ok=True)
+    with open(login, "w") as made:
+        json.dump({{"argv": sys.argv[1:], "credentials": sorted(set(os.environ) & {{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}})}}, made)
+    sys.exit(int(os.environ.get("LOGIN_EXIT", "0")))
 if sys.argv[1:3] == ["auth", "status"]:
-    print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1"}}))
+    print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1" or os.path.exists(login), "email": "brain@example.com"}}))
     sys.exit(0)
 hooks = json.loads(sys.argv[sys.argv.index("--settings") + 1])["hooks"]
 session = sys.argv[sys.argv.index("--session-id") + 1]

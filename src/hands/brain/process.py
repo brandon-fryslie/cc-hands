@@ -175,8 +175,18 @@ class Unstartable(Exception):
     """The brain could not be started: no claude to run, no fritter to run it under, or a fritter that never opened its socket."""
 
 
-def logged_in(config_dir: Path, base_url: str) -> None:
-    """Returns when `config_dir` holds a login; raises NotLoggedIn, naming the command that makes one, when not."""
+def login(config_dir: Path, base_url: str) -> str:
+    """Log `config_dir` in to the Claude subscription with Claude Code's own login, at this terminal; the account it holds after."""
+    # [LAW:one-source-of-truth] the brain's own environment, so the login lands in its config directory, which the
+    # daemon reads, and no credential of this shell's stands in for the one being made.
+    signed = subprocess.run(["claude", "auth", "login", "--claudeai"], env=environment(config_dir, base_url, os.environ))
+    if signed.returncode != 0:
+        raise NotLoggedIn(f"`claude auth login` for the brain exited {signed.returncode}")
+    return logged_in(config_dir, base_url)
+
+
+def logged_in(config_dir: Path, base_url: str) -> str:
+    """The account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has none."""
     try:
         # A timed-out child is killed and reaped by run itself.
         asked = subprocess.run(
@@ -189,11 +199,12 @@ def logged_in(config_dir: Path, base_url: str) -> None:
     except subprocess.TimeoutExpired:
         raise NotLoggedIn(f"`claude auth status` for the brain did not answer in {AUTH_STATUS_SECONDS:.0f}s") from None
     try:
-        status = Payload.parse(asked.stdout).flag("loggedIn")
+        status = Payload.parse(asked.stdout)
+        if not status.flag("loggedIn"):
+            raise NotLoggedIn(f"the brain has no login; run: {setup(config_dir)}")
+        return status.text("email")
     except Rejected as error:
         raise NotLoggedIn(f"`claude auth status` for the brain answered {asked.stdout[:200]!r} {asked.stderr[:200]!r}, not its status: {error}") from None
-    if not status:
-        raise NotLoggedIn(f"the brain has no login; run: {setup(config_dir)}")
 
 
 def setup(config_dir: Path) -> str:

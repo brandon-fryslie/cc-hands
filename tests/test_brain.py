@@ -20,6 +20,7 @@ from hands.brain.stage import BrainStage
 from hands.core.session import SessionId, pasted
 from hands.core.wire import Exchanged, Fork, Garbled, MainTurn, Message, Reached, Sent, Streamed
 from hands.core.wire import Text as Said
+from hands.daemon.cli import main
 from hands.daemon.run import mind
 from hands.sessions.proxy import Wire
 from hands.sessions.registry import Sessions
@@ -427,10 +428,25 @@ async def test_a_brain_with_no_fritter_to_run_under_is_refused_naming_the_instal
 
 
 def test_a_brain_with_no_login_is_refused_naming_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    logged_in(tmp_path / "brain", "http://127.0.0.1:1")
+    assert logged_in(tmp_path / "brain", "http://127.0.0.1:1") == "brain@example.com"
     monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(NotLoggedIn, match=f"CLAUDE_CONFIG_DIR={tmp_path / 'brain'} claude"):
         logged_in(tmp_path / "brain", "http://127.0.0.1:1")
+
+
+def test_hands_login_logs_the_brain_in_on_the_subscription_in_its_own_config_and_says_the_account(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("LOGGED_IN", "0")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not the brain's")
+    assert main(["--home", str(tmp_path), "login"]) == 0
+    # Claude Code's own login, run where the brain's login lives, with no credential of this shell's beside it.
+    assert json.loads((tmp_path / "brain" / "login.json").read_text()) == {"argv": ["auth", "login", "--claudeai"], "credentials": []}
+    assert capsys.readouterr().out == f"the brain at {tmp_path / 'brain'} is logged in as brain@example.com\n"
+
+
+def test_hands_login_that_claude_code_fails_exits_1_saying_so(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("LOGIN_EXIT", "3")
+    assert main(["--home", str(tmp_path), "login"]) == 1
+    assert capsys.readouterr().err == "hands login: `claude auth login` for the brain exited 3\n"
 
 
 def test_the_brain_config_is_one_line_of_json_naming_only_hands() -> None:
