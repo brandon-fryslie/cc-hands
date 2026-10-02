@@ -5,8 +5,10 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
+import torch
 
 from hands.daemon import run
 from hands.daemon.run import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, backend_from_env
@@ -15,7 +17,7 @@ from hands.sessions.audit import Entry, LLMChosen, encoded
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.core.wire import UPSTREAM
-from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
+from hands.voice.pipeline import DEFAULT_VOICE, AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
 
 HOME = Home(Path("/Users/someone/.hands"))
 
@@ -225,8 +227,32 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
 
 def test_the_default_voice_is_charles_shipped_in_the_package(monkeypatch: pytest.MonkeyPatch) -> None:
     """With HANDS_VOICE unset, the voice is a Pocket TTS state file that ships with hands, so a fresh install speaks it."""
-    monkeypatch.delenv("HANDS_VOICE", raising=False)
+    for var in ("HANDS_VOICE", "HANDS_LLM", "HANDS_LLM_URL", "HANDS_LLM_MODEL"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     voice = Path(run.config_from_env(Home(Path("/nonexistent"))).voice)
     assert voice.name == "charles.safetensors"
     assert voice.is_file()
+
+
+def test_the_shipped_voice_was_primed_by_the_weights_the_package_loads() -> None:
+    """A voice state is a cache computed by one network; under another it is noise, and the loader does not check.
+
+    The state's metadata names the config and weights that primed it (scripts/import-voice-prompt.py). This holds
+    them to the English model Pipecat loads from the installed pocket_tts, so a dependency bump that moves the
+    weights fails here, in the commit that moved them, and the fix is to re-run the import.
+    """
+    import yaml
+    from pocket_tts.models.tts_model import CONFIGS_DIR, _import_model_state  # pyright: ignore[reportPrivateUsage]
+    from safetensors import safe_open
+
+    with safe_open(DEFAULT_VOICE, framework="pt") as voice:  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        provenance = cast(dict[str, str], voice.metadata())  # pyright: ignore[reportUnknownMemberType]
+    packaged = cast(dict[str, object], yaml.safe_load((CONFIGS_DIR / provenance["config"]).read_text()))
+    assert provenance["config"] == "english.yaml"
+    assert provenance["weights"] == packaged["weights_path"]
+    assert provenance["source"] == "voice-charles-75efd9b32a2e.safetensors"
+    # And it is the layout the package's own importer reads: six attention layers, each a cache and an offset.
+    state = _import_model_state(DEFAULT_VOICE, torch.device("cpu"))  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    assert len(state) == 6
+    assert all(set(layer) == {"cache", "offset"} for layer in state.values())  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType]

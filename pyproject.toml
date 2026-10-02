@@ -29,7 +29,7 @@ build-backend = "hatchling.build"
 packages = ["src/hands"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false
