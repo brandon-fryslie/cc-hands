@@ -13,8 +13,9 @@ from collections.abc import Mapping
 TRUST = "NODE_EXTRA_CA_CERTS"
 
 # [LAW:one-source-of-truth] what fritter sets in a tapped session: its address in each proxy variable (`proxied` in
-# fritter/tap.go), and in TRUST a file holding its authority. It keeps each one's earlier value in FRITTER_OUTER_<name>.
-REPLACED = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", TRUST)
+# fritter/tap.go), each NO_PROXY empty (`exempted`), and in TRUST a file holding its authority. It keeps each one's
+# earlier value in FRITTER_OUTER_<name>.
+REPLACED = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy", TRUST)
 
 
 def _outer(name: str) -> str:
@@ -26,12 +27,17 @@ def tapped(environ: Mapping[str, str]) -> bool:
     return bool(tap := environ.get("FRITTER_TAP")) and environ.get("HTTPS_PROXY") == tap
 
 
+# What fritter keeps of a tap beside what it replaced: never left behind, tapped or not, so a tap's earlier values are
+# never given back to a session they were not taken from.
+KEPT = ("FRITTER_TAP", *map(_outer, REPLACED))
+
+
 def untapped(environ: Mapping[str, str]) -> dict[str, str]:
-    """environ with what its session's tap replaced given back; environ as it is when it is not a tapped session's."""
+    """environ with what its session's tap replaced given back, and the tap's own variables gone."""
+    kept = {name: value for name, value in environ.items() if name not in KEPT}
     if not tapped(environ):
-        return dict(environ)
-    tap = {"FRITTER_TAP", *REPLACED, *map(_outer, REPLACED)}
-    return {name: value for name, value in environ.items() if name not in tap} | {name: environ[_outer(name)] for name in REPLACED if _outer(name) in environ}
+        return kept
+    return {name: value for name, value in kept.items() if name not in REPLACED} | {name: environ[_outer(name)] for name in REPLACED if _outer(name) in environ}
 
 
 def untap_script() -> str:
@@ -39,9 +45,4 @@ def untap_script() -> str:
     given = "".join(
         f'  if [ -n "${{{_outer(name)}+x}}" ]; then export {name}="${_outer(name)}"; else unset {name}; fi\n' for name in REPLACED
     )
-    return (
-        'if [ -n "${FRITTER_TAP-}" ] && [ "${HTTPS_PROXY-}" = "$FRITTER_TAP" ]; then\n'
-        f"{given}"
-        f"  unset FRITTER_TAP {shlex.join(map(_outer, REPLACED))}\n"
-        "fi\n"
-    )
+    return f'if [ -n "${{FRITTER_TAP-}}" ] && [ "${{HTTPS_PROXY-}}" = "$FRITTER_TAP" ]; then\n{given}fi\nunset {shlex.join(KEPT)}\n'

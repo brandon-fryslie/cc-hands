@@ -15,7 +15,7 @@ from aiohttp import web
 
 from hands.core.events import Closed
 from hands.core.session import PromptId, SessionId
-from hands.core.wire import Block, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Streamed, Subagent, Text, TextDelta, ToolUse, Uncopied, Unreached
+from hands.core.wire import Block, Elsewhere, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Streamed, Subagent, Text, TextDelta, ToolUse, Uncopied, Unkept, Unreached
 from hands.sessions.audit import CopiesLost, Entry
 from hands.sessions.tap import moves, serve_tap
 from hands.sessions.wrapper import FRITTER_SOURCE
@@ -112,6 +112,23 @@ async def test_a_copied_exchange_is_the_wire_s_values_with_the_session_s_id(tap:
         case other:
             pytest.fail(f"the reply was read as {other!r}")
     assert tap.entries == []
+
+
+async def test_a_reply_from_elsewhere_than_the_model_s_endpoint_is_kept_as_its_size_alone(tap: Heard_, socket_path: Path) -> None:
+    profile = b'{"account": {"email_address": "user@example.com"}, "raw_key": "sk-ant-secret"}'
+    await copy(
+        socket_path,
+        [
+            {**request_line(), "method": "GET", "path": "/api/oauth/profile", "body": None},
+            {**HEAD, "headers": [["Content-Type", "application/json"]]},
+            {"kind": "bytes", "at": 101.0, "bytes": b64(profile)},
+            END,
+        ],
+    )
+    await asyncio.wait_for(tap.done.wait(), 5)
+    exchanged = tap.exchanged()
+    assert exchanged.kind == Elsewhere("/api/oauth/profile")
+    assert exchanged.reply == Reached(200, 101.0, 101.0, len(profile), Unkept())
 
 
 async def test_copies_lost_before_this_one_are_a_line_of_the_session_that_lost_them(tap: Heard_, socket_path: Path) -> None:

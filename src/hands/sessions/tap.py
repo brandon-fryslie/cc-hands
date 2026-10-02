@@ -19,7 +19,7 @@ from loguru import logger
 
 from hands.core.events import Closed
 from hands.core.session import SessionId
-from hands.core.wire import Exchanged, Garbled, Heard, MainTurn, Message, Observed, Reached, Seconds, Sent, Streamed, Text, Uncopied, Unreached, WireEvent
+from hands.core.wire import Exchanged, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Seconds, Sent, Streamed, Text, Uncopied, Unreached, WireEvent
 from hands.sessions.audit import CopiesLost, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.replies import Reader, reply_reader, sent_of, shielded
@@ -157,7 +157,7 @@ async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], 
     if request.lost:
         record(CopiesLost(sent.session, request.lost))
     tell(sent)
-    reply = await _reply(reader, lambda event: tell(Heard(sent.exchange, event)), clock)
+    reply = await _reply(reader, sent.kind, lambda event: tell(Heard(sent.exchange, event)), clock)
     tell(Exchanged(sent.exchange, sent.session, sent.kind, request.method, request.path, len(request.body), (), request.at, request.at, reply))
 
 
@@ -185,7 +185,7 @@ async def _next(reader: asyncio.StreamReader) -> Line | str:
         return f"a line hands cannot read: {error}"
 
 
-async def _reply(reader: asyncio.StreamReader, hear: Callable[[WireEvent], None], clock: Callable[[], Seconds]) -> Reached | Unreached | Uncopied:
+async def _reply(reader: asyncio.StreamReader, kind: Kind, hear: Callable[[WireEvent], None], clock: Callable[[], Seconds]) -> Reached | Unreached | Uncopied:
     """How the exchange ended, as its copy tells it; a copy that breaks off, however it does, is a reply of its own."""
     reading: tuple[Response, Reader] | None = None
     first: Seconds | None = None
@@ -195,7 +195,7 @@ async def _reply(reader: asyncio.StreamReader, hear: Callable[[WireEvent], None]
         line = await _next(reader)
         match (line, reading):
             case (Response() as head, None):
-                reading = (head, reply_reader(head.headers, hear))
+                reading = (head, reply_reader(kind, head.headers, hear))
                 continue
             case (Chunk(at=at, data=data), (_, feeder)):
                 first = at if first is None else first

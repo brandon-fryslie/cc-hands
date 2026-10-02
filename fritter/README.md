@@ -92,7 +92,9 @@ A caller has one second and 64 KB to get its request in.
 
 With `--tap UPSTREAM --tap-ca VARIABLE --tap-to SOCKET`, fritter is the child's HTTP
 proxy. It gives the child its address in `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY` and
-`http_proxy`, and the child goes on naming UPSTREAM as its server: to the child, where it
+`http_proxy`, and `NO_PROXY` and `no_proxy` empty, so every connection the child makes
+reaches fritter; fritter reaches the hosts they named directly, as the child did, from its
+own environment. The child goes on naming UPSTREAM as its server: to the child, where it
 talks has not changed, so nothing it keeps for that server is lost.
 
 A connection the child opens to UPSTREAM's host, fritter answers itself, with a
@@ -115,7 +117,8 @@ JSON lines in the order it happened:
 {"kind":"end","at":…,"error":""}                     (or "unreached", with its error, in place of the reply)
 ```
 
-`at` is seconds since the epoch. Headers that carry a credential are never copied. The
+`at` is seconds since the epoch. Headers that carry a credential are never copied; bodies
+are copied whole, and what of them to keep is the listener's to decide. The
 child never waits on the copy: nobody listening, or a listener that stops reading, costs
 the exchange nothing, and a copy whose request never reached the listener is counted in
 `lost` on the next one that does. A copy that breaks off after its request was heard ends

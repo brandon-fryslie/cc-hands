@@ -61,6 +61,11 @@ type tapping struct {
 // The variables HTTP clients read their proxy from, each spelling, as fritter sets them.
 var proxied = []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"}
 
+// The variables HTTP clients read the hosts they reach without a proxy from, which the
+// child is given empty: every connection it makes reaches fritter, and fritter reaches
+// the hosts they named as directly as the child did, from its own environment.
+var exempted = []string{"NO_PROXY", "no_proxy"}
+
 // Headers that carry a credential. A copy never holds one: it is the exchange as the
 // listener needs to read it, and the listener is not the one it was sent to.
 var credentials = map[string]bool{
@@ -258,14 +263,17 @@ func startTap(t tapping, dir string) (*Tap, error) {
 	return tap, nil
 }
 
-// env is what the child is given: fritter as its proxy, the certificates to trust, and
-// what each of those variables held before, so what it runs can put that back.
+// env is what the child is given: fritter as its proxy for every host, the certificates to
+// trust, and what each of those variables held before, so what it runs can put that back.
 func (tap *Tap) env(trust string) []string {
 	given := []string{"FRITTER_TAP=" + tap.address, trust + "=" + tap.trusted}
 	for _, variable := range proxied {
 		given = append(given, variable+"="+tap.address)
 	}
-	for _, variable := range append([]string{trust}, proxied...) {
+	for _, variable := range exempted {
+		given = append(given, variable+"=")
+	}
+	for _, variable := range append(append([]string{trust}, proxied...), exempted...) {
 		if outer, found := os.LookupEnv(variable); found {
 			given = append(given, "FRITTER_OUTER_"+variable+"="+outer)
 		}

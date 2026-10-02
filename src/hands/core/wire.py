@@ -517,7 +517,14 @@ class Answered:
     body: object
 
 
-Body = Streamed | Garbled | Answered
+@dataclass(frozen=True)
+class Unkept:
+    """A reply from an endpoint other than the model's, read none of and kept none of: what those hold - the account, a
+    key made for it, Remote Control's tokens - is the user's credentials, never the session speaking. Its size is on its
+    exchange."""
+
+
+Body = Streamed | Garbled | Answered | Unkept
 
 
 # A block not yet stopped: what it holds so far, and the pieces of a tool call's input not yet joined.

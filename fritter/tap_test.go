@@ -266,8 +266,9 @@ func TestTheChildIsGivenTheTapAsItsProxyAndCanPutBackWhatItReplaced(t *testing.T
 	fritter.Env = append(os.Environ(),
 		"FRITTER_HELPER=1",
 		"HTTPS_PROXY=http://outer.example:3128",
+		"NO_PROXY=.example.com",
 		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--tap\x1fhttps://example.com\x1f--tap-ca\x1fEXTRA_CA\x1f--tap-to\x1f"+filepath.Join(dir, "wire.sock")+"\x1f--\x1fsh\x1f-c\x1f"+
-			`echo "https=$HTTPS_PROXY http=$http_proxy tap=$FRITTER_TAP outer=$FRITTER_OUTER_HTTPS_PROXY ca=$EXTRA_CA outer_ca=${FRITTER_OUTER_EXTRA_CA-unset}"`,
+			`echo "https=$HTTPS_PROXY http=$http_proxy tap=$FRITTER_TAP outer=$FRITTER_OUTER_HTTPS_PROXY ca=$EXTRA_CA outer_ca=${FRITTER_OUTER_EXTRA_CA-unset} no=${NO_PROXY-unset}/${no_proxy-unset} outer_no=$FRITTER_OUTER_NO_PROXY"`,
 	)
 	terminal, err := pty.Start(fritter)
 	if err != nil {
@@ -277,8 +278,8 @@ func TestTheChildIsGivenTheTapAsItsProxyAndCanPutBackWhatItReplaced(t *testing.T
 	printed, _ := io.ReadAll(terminal)
 	fritter.Wait()
 	at := `http://127\.0\.0\.1:\d+`
-	if !regexp.MustCompile(`https=(` + at + `) http=(` + at + `) tap=(` + at + `) outer=http://outer\.example:3128 ca=\S+/trusted\.pem outer_ca=unset\r?\n`).Match(printed) {
-		t.Errorf("the child saw %q, want the tap as its proxy, the certificates to trust, and the proxy it had before", printed)
+	if !regexp.MustCompile(`https=(` + at + `) http=(` + at + `) tap=(` + at + `) outer=http://outer\.example:3128 ca=\S+/trusted\.pem outer_ca=unset no=/ outer_no=\.example\.com\r?\n`).Match(printed) {
+		t.Errorf("the child saw %q, want the tap as its proxy for every host, the certificates to trust, and what it had before", printed)
 	}
 }
 

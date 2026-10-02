@@ -15,7 +15,7 @@ import brotli
 import zstandard
 from loguru import logger
 
-from hands.core.wire import Body, Garbled, Observed, Seconds, UsageLimitReached, Sent, Unknown, WireEvent, answered, assemble, classify, frames, is_stream, parse, session_of
+from hands.core.wire import Body, Elsewhere, Garbled, Kind, Observed, Seconds, UsageLimitReached, Sent, Unknown, Unkept, WireEvent, answered, assemble, classify, frames, is_stream, parse, session_of
 
 
 def sent_of(headers: Mapping[str, str], path: str, body: bytes) -> Sent:
@@ -85,10 +85,23 @@ def _named(headers: Mapping[str, str]) -> dict[str, str]:
     return {name.lower(): value for name, value in headers.items()}
 
 
-def reply_reader(headers: Mapping[str, str], hear: Callable[[WireEvent], None]) -> Reader:
-    """What reads a reply with these headers: each event heard as its frame completes, and the whole at the end."""
+def reply_reader(kind: Kind, headers: Mapping[str, str], hear: Callable[[WireEvent], None]) -> Reader:
+    """What reads the reply to a request of this kind with these headers: each event heard as its frame completes, and the
+    whole at the end; nothing of a reply from elsewhere than the model's endpoint."""
     named = _named(headers)
-    return _Decoded(named.get("content-encoding", "identity"), _Events(hear) if is_stream(named.get("content-type", "")) else _Whole())
+    match kind:
+        case Elsewhere():
+            return _Unread()
+        case _:
+            return _Decoded(named.get("content-encoding", "identity"), _Events(hear) if is_stream(named.get("content-type", "")) else _Whole())
+
+
+class _Unread:
+    def feed(self, plain: bytes) -> None:
+        pass
+
+    def finish(self) -> Body:
+        return Unkept()
 
 
 class _Events:

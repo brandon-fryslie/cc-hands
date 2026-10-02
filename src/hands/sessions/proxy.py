@@ -150,7 +150,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
             response = web.StreamResponse(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers))
             if "Content-Length" in reached.headers:
                 response.content_length = int(reached.headers["Content-Length"])
-            reader = reply_reader(reached.headers, lambda event: tell(Heard(exchange, event)))
+            reader = reply_reader(kind, reached.headers, lambda event: tell(Heard(exchange, event)))
             first: Seconds | None = None
             ended: Seconds | None = None
             size = 0

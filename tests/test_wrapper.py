@@ -224,7 +224,7 @@ def test_a_proxy_set_again_inside_a_session_is_the_one_a_claude_run_there_reache
     shim = installed_shim(root)
     executable(root / "real" / "claude", REACH_RECORDER)
     ran = on_a_pipe([str(shim), "-p", "hello"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin", {**INSIDE, "HTTPS_PROXY": "http://other:8080"})
-    assert ran.stdout == f"claude api=https://gateway.example proxy=http://other:8080 trust=/tmp/fritter-1/trusted.pem tap={TAP}\n"
+    assert ran.stdout == "claude api=https://gateway.example proxy=http://other:8080 trust=/tmp/fritter-1/trusted.pem tap=unset\n"
 
 
 @pytest.mark.parametrize(("given", "tapped"), [({}, "https://api.anthropic.com"), ({"ANTHROPIC_BASE_URL": "https://gateway.example/v1"}, "https://gateway.example/v1")])
