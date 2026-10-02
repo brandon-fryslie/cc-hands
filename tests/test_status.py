@@ -211,11 +211,13 @@ def test_a_process_exits_without_waiting_for_work_left_running_off_the_loop(tmp_
         "    work = asyncio.create_task(off_loop(lambda: time.sleep(30), 'slow'))\n"
         "    await asyncio.sleep(0.1)\n"
         "    work.cancel()\n"
+        "    print(time.monotonic(), flush=True)\n"
         "asyncio.run(main())\n"
     )
-    started = time.monotonic()
-    subprocess.run([sys.executable, "-c", script], check=True, timeout=10)
-    assert time.monotonic() - started < 5
+    # Timed from the cancel, not the launch, so interpreter startup and imports are outside the budget. The
+    # monotonic clock is system-wide, so the child's reading and ours are on one timeline.
+    ran = subprocess.run([sys.executable, "-c", script], check=True, timeout=10, capture_output=True, text=True)
+    assert time.monotonic() - float(ran.stdout) < 5
 
 
 def test_each_verdict_has_its_own_light_and_the_broken_ones_warn(tmp_path: Path) -> None:
