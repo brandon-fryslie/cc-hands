@@ -25,7 +25,7 @@ class MainTurn:
     """The session's own loop asking the model for its next step: the one kind of request whose reply is the session speaking.
 
     `prompt` is the turn it asks for, the id its hooks carry as prompt_id; None when the request names none, which Claude
-    Code's does only toward Anthropic's API, told so of a tap by the shim (see `hands.sessions.wrapper`).
+    Code's does only toward Anthropic's API.
     """
 
     prompt: PromptId | None
