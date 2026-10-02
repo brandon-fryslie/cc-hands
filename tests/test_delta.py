@@ -1,6 +1,7 @@
 """What a turn changed in the repository it ran in, read from git without disturbing it."""
 
 import asyncio
+import os
 import subprocess
 import time
 from collections.abc import Mapping
@@ -165,6 +166,24 @@ async def test_a_delta_is_told_once_and_never_twice(tmp_path: Path) -> None:
     await deltas.compare(SID, again=False)
     assert await deltas.taken(SID)
     assert not await deltas.taken(SID)
+
+
+async def test_an_edit_that_keeps_a_files_size_and_second_is_still_told(tmp_path: Path) -> None:
+    """Git trusts a file whose stat matches its index entry unless the file is as new as the index itself. Pinned
+    here to the one second the commit, the index and the edit all share, which a fast turn lands in by chance."""
+    root = repo(tmp_path)
+    # The edit changes ctime, which a real turn inside the same second leaves in that second too.
+    git(root, "config", "core.trustctime", "false")
+    second = time.time() - 100
+    os.utime(root / "a.py", (second, second))
+    git(root, "update-index", "--refresh")
+    os.utime(root / ".git" / "index", (second, second))
+    deltas = Deltas()
+    await deltas.snapshot(SID, root)
+    (root / "a.py").write_text("x = 3\n")
+    os.utime(root / "a.py", (second, second))
+    await deltas.compare(SID, again=False)
+    assert [file.path for file in (await deltas.taken(SID)).files] == ["a.py"]
 
 
 async def test_a_new_turn_reads_against_its_own_beginning_and_not_the_one_before(tmp_path: Path) -> None:

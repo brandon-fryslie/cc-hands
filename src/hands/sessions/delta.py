@@ -290,7 +290,9 @@ class Deltas:
             known = await self._git(root, "rev-parse", "--git-path", "index", deadline=deadline)
             if known is not None:
                 try:
-                    shutil.copyfile(Path(known) if Path(known).is_absolute() else root / known, index)
+                    # With its mtime: git re-reads a file whose stat matches its entry only when the file is as new
+                    # as the index, and a copy stamped now hides a same-size edit made in the second of the commit.
+                    shutil.copy2(Path(known) if Path(known).is_absolute() else root / known, index)
                 except OSError as error:
                     # Missing before a first commit, or being rewritten as this read it: start from nothing.
                     logger.debug(f"the index of {root} could not be copied, so the snapshot reads every file: {error}")
