@@ -17,18 +17,10 @@ from pathlib import Path
 from hands.core.wire import UPSTREAM
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
+from hands.sessions.untap import TRUST, untap_script
 
 # fritter's Go module, in the checkout this hands runs from.
 FRITTER_SOURCE = Path(__file__).resolve().parents[3] / "fritter"
-
-# Claude Code switches off what it keeps for Anthropic's own API - Remote Control among them - when ANTHROPIC_BASE_URL
-# names any other host, as the tap's loopback address does. This private switch restores the part of that which asks
-# whether the backend is Anthropic's (Ms() in 2.1.285); what reads the URL itself stays off under the tap.
-ASSUME_FIRST_PARTY = "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"
-
-# What the shim puts in a tapped session's environment for the claude runs inside it, which anything started from
-# inside the session inherits.
-SESSION_TAP = ("FRITTER_TAP", "HANDS_API_URL", ASSUME_FIRST_PARTY)
 
 # Every shim's second line, by which a shim knows another hands shim on PATH for what it is.
 MARK = "# A hands claude shim, written whole by `hands install-fritter`: change hands.sessions.wrapper, not this."
@@ -95,22 +87,16 @@ def shim_script(fritter: Path, wire: Path) -> str:
     # drive, and on a pty they would not be what they are; they run the real claude, without the address of any
     # session they were started from, so none of them claims a fritter that does not type into it. -c is the one
     # flag that takes no value and leaves a run going, so `-cp` is print too.
-    # A session's ANTHROPIC_BASE_URL is its fritter's tap, which ends with it, so a claude run from inside one reaches
-    # the API the session was given, kept in HANDS_API_URL: a session is tapped once, by its own fritter, and a run that
-    # outlives the session it started in is not left with an address nothing answers. A session whose API is Anthropic's
-    # is told so past its loopback address (ASSUME_FIRST_PARTY), and no run is told so but a session tapped toward it. Only
-    # the tap is given back: an ANTHROPIC_BASE_URL set again since, as the brain's is set to hands' proxy, is what that
-    # run was meant to reach.
+    # A session reaches its API as it would without the shim, ANTHROPIC_BASE_URL unchanged, so Claude Code keeps all it
+    # keeps for Anthropic's own API: fritter is its proxy instead, and opens only the connections to that API's host. What
+    # the tap replaced is given back first, so a claude run from inside a session is tapped once, by its own fritter, and
+    # one that outlives the session is not left with a proxy nothing answers.
     return f"""#!/bin/sh
 {MARK}
 fritter={shlex.quote(str(fritter))}
 wire={shlex.quote(str(wire))}
 
-if [ -n "${{FRITTER_TAP-}}" ] && [ "${{ANTHROPIC_BASE_URL-}}" = "$FRITTER_TAP" ]; then
-  if [ -n "${{HANDS_API_URL-}}" ]; then export ANTHROPIC_BASE_URL="$HANDS_API_URL"; else unset ANTHROPIC_BASE_URL; fi
-fi
-unset {ASSUME_FIRST_PARTY}
-
+{untap_script()}
 set -f
 real=
 IFS=:
@@ -139,12 +125,7 @@ for arg; do
   esac
 done
 case $session in
-  yes)
-    export HANDS_API_URL="${{ANTHROPIC_BASE_URL-}}"
-    case ${{ANTHROPIC_BASE_URL:-{UPSTREAM}}} in
-      {UPSTREAM}|{UPSTREAM}/*) export {ASSUME_FIRST_PARTY}=1 ;;
-    esac
-    exec "$fritter" --tap "ANTHROPIC_BASE_URL=${{ANTHROPIC_BASE_URL:-{UPSTREAM}}}" --tap-to "$wire" -- "$real" "$@" ;;
+  yes) exec "$fritter" --tap "${{ANTHROPIC_BASE_URL:-{UPSTREAM}}}" --tap-ca {TRUST} --tap-to "$wire" -- "$real" "$@" ;;
   no) unset FRITTER_SOCKET; exec "$real" "$@" ;;
 esac
 """

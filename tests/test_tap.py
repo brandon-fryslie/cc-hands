@@ -201,9 +201,9 @@ async def test_a_session_under_a_real_fritter_is_answered_by_the_api_and_heard_o
     body.write_bytes(REQUEST)
     session = (
         'curl -sS -X POST -H "X-Api-Key: the-sessions-own" -H "X-Claude-Code-Session-Id: s1" '
-        f'--data-binary @{body} "$ANTHROPIC_BASE_URL/v1/messages?beta=true"'
+        f'--data-binary @{body} "http://{host}:{port}/v1/messages?beta=true"'
     )
-    argv = [str(fritter), "--socket-dir", str(socket_path.parent), "--tap", f"ANTHROPIC_BASE_URL=http://{host}:{port}", "--tap-to", str(socket_path), "--", "sh", "-c", session]
+    argv = [str(fritter), "--socket-dir", str(socket_path.parent), "--tap", f"http://{host}:{port}", "--tap-ca", "NODE_EXTRA_CA_CERTS", "--tap-to", str(socket_path), "--", "sh", "-c", session]
     controller, terminal = os.openpty()
     process = await asyncio.create_subprocess_exec(*argv, stdin=terminal, stdout=terminal, stderr=terminal, start_new_session=True)
     os.close(terminal)

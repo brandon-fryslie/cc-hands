@@ -165,10 +165,11 @@ def test_the_brain_is_interactive_slim_strict_and_never_asks_and_runs_on_its_own
         "ANTHROPIC_BASE_URL": "http://elsewhere",
         # A daemon started inside a tapped session inherits the session's tap; the brain is not that session.
         "FRITTER_TAP": "http://127.0.0.1:40000",
-        "HANDS_API_URL": "",
-        "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1",
+        "HTTPS_PROXY": "http://127.0.0.1:40000",
+        "NODE_EXTRA_CA_CERTS": "/tmp/fritter-1/trusted.pem",
+        "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128",
     })
-    assert env == {"PATH": "/bin", **SLIM, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
+    assert env == {"PATH": "/bin", "HTTPS_PROXY": "http://corp:3128", **SLIM, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
 
 
 async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_both_ends_in_the_log(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:

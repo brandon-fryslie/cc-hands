@@ -1,6 +1,6 @@
 """The tap: each wrapped session's exchanges with the API, as its fritter copies them to hands, read as the wire's values.
 
-    fritter --tap ANTHROPIC_BASE_URL=<upstream> --tap-to <home>/wire.sock -- claude ...
+    fritter --tap <upstream> --tap-ca NODE_EXTRA_CA_CERTS --tap-to <home>/wire.sock -- claude ...
 
 A copy is one connection of JSON lines, in the order the exchange happened: the request, then the reply's head and each
 chunk of its bytes as they came, then its end, or instead that the upstream was never reached (fritter/tap.go). Each is

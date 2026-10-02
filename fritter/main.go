@@ -5,15 +5,15 @@
 // a unix socket, and anything asked for there is typed into the program's input as
 // though someone at the keyboard had typed it.
 //
-//	fritter [--socket-dir DIR] [--tap VARIABLE=UPSTREAM --tap-to SOCKET] -- COMMAND [ARGS...]
+//	fritter [--socket-dir DIR] [--tap UPSTREAM --tap-ca VARIABLE --tap-to SOCKET] -- COMMAND [ARGS...]
 //
 // The socket's path is published to the child in FRITTER_SOCKET, so anything the child
 // spawns - a hook, a subprocess - inherits the address and can hand it on. That is the
 // whole of fritter's coupling to whatever drives it: one environment variable, carried
 // by the operating system along the path that needs it.
 //
-// With a tap (tap.go), the child's requests to one HTTP server go through fritter, which
-// sends a copy of each exchange to SOCKET.
+// With a tap (tap.go), fritter is the child's HTTP proxy, and sends a copy of each of its
+// exchanges with one server to SOCKET.
 //
 // fritter knows nothing about Claude Code, and Claude Code is only its first caller.
 package main
@@ -26,7 +26,7 @@ import (
 	"syscall"
 )
 
-const usage = "usage: fritter [--socket-dir DIR] [--tap VARIABLE=UPSTREAM --tap-to SOCKET] -- COMMAND [ARGS...]"
+const usage = "usage: fritter [--socket-dir DIR] [--tap UPSTREAM --tap-ca VARIABLE --tap-to SOCKET] -- COMMAND [ARGS...]"
 
 // Exit codes fritter itself produces. Anything else is the child's own, passed through
 // unchanged, because a wrapper that rewrote its child's exit code would make every
@@ -72,15 +72,13 @@ func run(args []string, stdin *os.File, stdout io.Writer) int {
 
 	env := []string{"FRITTER_SOCKET=" + socket.address}
 	if options.tap != nil {
-		tap, err := startTap(*options.tap)
+		tap, err := startTap(*options.tap, socket.dir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "fritter: %v\n", err)
 			return failed
 		}
 		defer tap.close()
-		// FRITTER_TAP names the tap as FRITTER_SOCKET names the socket, so what the child
-		// runs can tell the variable fritter set from one set again after it.
-		env = append(env, options.tap.variable+"="+tap.address, "FRITTER_TAP="+tap.address)
+		env = append(env, tap.env(options.tap.trust)...)
 	}
 
 	wrapped, err := start(options.argv, env)
@@ -109,7 +107,7 @@ type options struct {
 // flag fritter also has is never mistaken for fritter's own.
 func parse(args []string) (options, error) {
 	parsed := options{dir: os.TempDir()}
-	tap, to := "", ""
+	tap, trust, to := "", "", ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--":
@@ -117,20 +115,21 @@ func parse(args []string) (options, error) {
 			if len(parsed.argv) == 0 {
 				return options{}, fmt.Errorf("no command after --")
 			}
-			// [LAW:types-are-the-program] a tap is both halves or none: a copy with nowhere
-			// to go, or a socket with nothing tapped, is refused here and never run.
-			if (tap == "") != (to == "") {
-				return options{}, fmt.Errorf("--tap and --tap-to go together")
+			// [LAW:types-are-the-program] a tap is all of its parts or none: a copy with
+			// nowhere to go, a socket with nothing tapped, or an upstream answered with a
+			// certificate the child was never given, is refused here and never run.
+			if (tap == "") != (to == "") || (tap == "") != (trust == "") {
+				return options{}, fmt.Errorf("--tap, --tap-ca and --tap-to go together")
 			}
 			if tap != "" {
-				variable, upstream, err := parseTap(tap)
+				upstream, err := parseUpstream(tap)
 				if err != nil {
 					return options{}, err
 				}
-				parsed.tap = &tapping{variable: variable, upstream: upstream, to: to}
+				parsed.tap = &tapping{upstream: upstream, trust: trust, to: to}
 			}
 			return parsed, nil
-		case "--socket-dir", "--tap", "--tap-to":
+		case "--socket-dir", "--tap", "--tap-ca", "--tap-to":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s needs a value", args[i])
 			}
@@ -140,6 +139,8 @@ func parse(args []string) (options, error) {
 				parsed.dir = value
 			case "--tap":
 				tap = value
+			case "--tap-ca":
+				trust = value
 			case "--tap-to":
 				to = value
 			}

@@ -16,7 +16,7 @@ from hands.core.wire import (
     BlockStarted,
     Compaction,
     CountTokens,
-    Hello,
+    Elsewhere,
     Fork,
     Frame,
     Garbled,
@@ -166,9 +166,10 @@ def test_a_compaction_followed_by_a_message_of_claude_codes_own_is_a_compaction_
     assert messages[3] == cast(list[object], COMPACTING["messages"])[3]
 
 
-def test_count_tokens_and_a_starting_claude_codes_hello_are_known_by_their_paths() -> None:
+def test_count_tokens_and_every_endpoint_but_the_model_s_are_known_by_their_paths() -> None:
     assert classify("/v1/messages/count_tokens?beta=true", {"messages": [said("a file")]}) == CountTokens()
-    assert classify("/api/hello", None) == Hello()
+    assert classify("/api/hello", None) == Elsewhere("/api/hello")
+    assert classify("/v1/code/sessions/cse_1/worker/heartbeat?x=1", {}) == Elsewhere("/v1/code/sessions/cse_1/worker/heartbeat")
 
 
 def test_a_request_is_told_by_its_newest_cache_marker_whatever_marks_come_before_it() -> None:
@@ -179,7 +180,6 @@ def test_a_request_is_told_by_its_newest_cache_marker_whatever_marks_come_before
 
 
 def test_every_shape_no_rule_matches_is_unknown_and_says_what_it_was() -> None:
-    assert classify("/api/oauth/profile", None) == Unknown("a request to /api/oauth/profile")
     assert classify("/v1/messages", None) == Unknown("a messages request whose body is not a JSON object")
     assert classify("/v1/messages", request()) == Unknown("a messages request with no messages")
     assert classify("/v1/messages", request(said("title this", marked=True), tools=[])) == Unknown(

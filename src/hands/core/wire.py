@@ -52,8 +52,11 @@ class CountTokens:
 
 
 @dataclass(frozen=True)
-class Hello:
-    """The request a Claude Code makes as it starts, to /api/hello: a round trip, not a model call."""
+class Elsewhere:
+    """A request to an endpoint other than the model's - a starting Claude Code's hello, its account and settings, Remote
+    Control's worker - at `path`: a round trip, not a model call, and nothing in it is ever spoken."""
+
+    path: str
 
 
 @dataclass(frozen=True)
@@ -63,7 +66,7 @@ class Unknown:
     shape: str
 
 
-Kind = MainTurn | Subagent | Fork | Compaction | CountTokens | Hello | Unknown
+Kind = MainTurn | Subagent | Fork | Compaction | CountTokens | Elsewhere | Unknown
 
 # The first words of every compaction request's last message, in Claude Code's services/compact/prompt.ts.
 COMPACTION_OPENING = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
@@ -82,18 +85,17 @@ def classify(path: str, body: object) -> Kind:
     lands: a side question asked during a turn is merged into the turn's prompt and followed by another message, and one
     asked before any turn has finished carries no marker at all (hands-wire-6ic.l2o, 2.1.285).
     """
-    # [LAW:dataflow-not-control-flow] every rule is a value test on the request; what none of them matches is Unknown,
-    # so a shape no one has seen yet is heard and never spoken.
+    # [LAW:dataflow-not-control-flow] every rule is a value test on the request; a messages request none of them
+    # matches is Unknown, so a shape no one has seen yet is heard and never spoken.
     match path.split("?", 1)[0]:
         case "/v1/messages/count_tokens":
             return CountTokens()
-        case "/api/hello":
-            # Every Claude Code hands starts makes one, and one is started for each side question.
-            return Hello()
         case "/v1/messages":
             return _classify_messages(body)
         case other:
-            return Unknown(f"a request to {other}")
+            # A session whose API is Anthropic's reaches many of them, Remote Control's every few seconds; only the model's
+            # endpoint has shapes still being learned.
+            return Elsewhere(other)
 
 
 def _classify_messages(body: object) -> Kind:

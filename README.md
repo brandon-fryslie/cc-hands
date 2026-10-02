@@ -149,19 +149,19 @@ current `PATH` is the one it wrote, and says what to add when it is not. Run it 
 after fritter changes: it builds fritter from this checkout. A session started before
 the shim stays unreachable until it ends.
 
-A session under fritter reaches the API through its own fritter, which forwards each
-request to the API the session would have used and sends hands a copy of the exchange,
-so the audit log holds every request each session makes, under its session id. The
-session never waits on hands: with hands stopped, its requests go through as before, and
-the copies it could not hand over are counted in the next one hands takes. A firewall
-that asks per program, such as Little Snitch, sees those connections as fritter's and
-holds each one until it is answered: allow `~/.hands/bin/fritter` to reach
-`api.anthropic.com`, and again after `install-fritter` rebuilds it.
-
-Claude Code takes fritter's loopback address for a third-party API, and turns off what it
-keeps for Anthropic's own: hands tells it the backend is Anthropic's, which restores most
-of that, but what reads the address itself stays off in a session under fritter. Remote
-Control is among it.
+A session under fritter reaches the API through its own fritter, which is the session's
+proxy: the session still names the API it would have used, fritter answers its
+connections to that API's host with a certificate of its own that only the session is
+given to trust, forwards each request on, and sends hands a copy of the exchange, so the
+audit log holds every request each session makes, under its session id. Every other
+connection goes through fritter unopened. Because the session still names Anthropic's
+API, Claude Code keeps all it keeps for it, Remote Control included. The session never
+waits on hands: with hands stopped, its requests go through as before, and the copies it
+could not hand over are counted in the next one hands takes. The session's shell
+commands, and any `claude` started from it, run with the proxy the session had before
+fritter. A firewall that asks per program, such as Little Snitch, sees the session's
+connections as fritter's and holds each one until it is answered: allow
+`~/.hands/bin/fritter` out, and again after `install-fritter` rebuilds it.
 
 The hooks are on whether or not hands is running. While hands is stopped, has never
 run, or is still starting, they cost a session nothing: no hook error, and a permission

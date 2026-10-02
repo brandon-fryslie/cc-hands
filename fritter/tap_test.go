@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"io"
 	"net"
@@ -77,16 +79,38 @@ func listeningAfter(t *testing.T, path string, delay time.Duration) <-chan []lin
 
 func tapped(t *testing.T, upstream string, to string) *Tap {
 	t.Helper()
-	parsed, err := url.Parse(upstream)
+	return tappedTrusting(t, upstream, to, nil)
+}
+
+// tappedTrusting is tapped by a fritter that trusts the upstream's certificate with roots.
+func tappedTrusting(t *testing.T, upstream string, to string, roots *x509.CertPool) *Tap {
+	t.Helper()
+	parsed, err := parseUpstream(upstream)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tap, err := startTap(tapping{variable: "BASE_URL", upstream: parsed, to: to})
+	tap, err := startTap(tapping{upstream: parsed, trust: "EXTRA_CA", to: to, roots: roots}, shortTempDir(t))
 	if err != nil {
 		t.Fatalf("startTap: %v", err)
 	}
 	t.Cleanup(tap.close)
 	return tap
+}
+
+// child is an HTTP client as the child is one: fritter its proxy, and trusting what the
+// tap gave it to trust and nothing else.
+func child(t *testing.T, tap *Tap) *http.Client {
+	t.Helper()
+	proxy, _ := url.Parse(tap.address)
+	given, err := os.ReadFile(tap.trusted)
+	if err != nil {
+		t.Fatalf("the child was given no certificates it can read: %v", err)
+	}
+	trusted := x509.NewCertPool()
+	if !trusted.AppendCertsFromPEM(given) {
+		t.Fatalf("the certificates the child was given hold none: %q", given)
+	}
+	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxy), TLSClientConfig: &tls.Config{RootCAs: trusted}}}
 }
 
 func streaming(t *testing.T) *httptest.Server {
@@ -108,12 +132,13 @@ func streaming(t *testing.T) *httptest.Server {
 	return upstream
 }
 
+// ask is the child's request to the upstream, by way of the tap.
 func ask(t *testing.T, tap *Tap, body string) (int, string) {
 	t.Helper()
-	request, _ := http.NewRequest("POST", tap.address+"/v1/messages?beta=true", strings.NewReader(body))
+	request, _ := http.NewRequest("POST", tap.upstream.String()+"/v1/messages?beta=true", strings.NewReader(body))
 	request.Header.Set("X-Api-Key", "secret")
 	request.Header.Set("X-Session", "s1")
-	response, err := http.DefaultClient.Do(request)
+	response, err := child(t, tap).Do(request)
 	if err != nil {
 		t.Fatalf("the child's request through the tap failed: %v", err)
 	}
@@ -216,29 +241,33 @@ func TestAnUpstreamThatCannotBeReachedIsA502AndCopiedAsUnreached(t *testing.T) {
 	}
 }
 
-func TestATapIsBothHalvesOrNone(t *testing.T) {
+func TestATapIsAllItsPartsOrNone(t *testing.T) {
 	for _, args := range [][]string{
-		{"--tap", "BASE_URL=https://example.com", "--", "true"},
+		{"--tap", "https://example.com", "--tap-ca", "EXTRA_CA", "--", "true"},
 		{"--tap-to", "/tmp/x.sock", "--", "true"},
-		{"--tap", "BASE_URL", "--tap-to", "/tmp/x.sock", "--", "true"},
-		{"--tap", "BASE_URL=ftp://example.com", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "https://example.com", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "example.com", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "ftp://example.com", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
 	} {
 		if _, err := parse(args); err == nil {
 			t.Errorf("parse(%q) took a tap it cannot run", args)
 		}
 	}
-	parsed, err := parse([]string{"--tap", "BASE_URL=https://example.com/", "--tap-to", "/tmp/x.sock", "--", "true"})
-	if err != nil || parsed.tap == nil || parsed.tap.variable != "BASE_URL" || parsed.tap.upstream.Host != "example.com" || parsed.tap.to != "/tmp/x.sock" {
+	parsed, err := parse([]string{"--tap", "https://example.com/v1", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"})
+	if err != nil || parsed.tap == nil || parsed.tap.upstream.String() != "https://example.com" || parsed.tap.trust != "EXTRA_CA" || parsed.tap.to != "/tmp/x.sock" {
 		t.Errorf("parse of a whole tap gave %+v, %v", parsed.tap, err)
 	}
 }
 
-func TestTheChildIsGivenTheTapsAddressInItsVariable(t *testing.T) {
+func TestTheChildIsGivenTheTapAsItsProxyAndCanPutBackWhatItReplaced(t *testing.T) {
 	dir := shortTempDir(t)
 	fritter := exec.Command(os.Args[0], "-test.run=TestHelperFritter")
 	fritter.Env = append(os.Environ(),
 		"FRITTER_HELPER=1",
-		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--tap\x1fBASE_URL=https://example.com\x1f--tap-to\x1f"+filepath.Join(dir, "wire.sock")+"\x1f--\x1fsh\x1f-c\x1fecho \"at=$BASE_URL\"",
+		"HTTPS_PROXY=http://outer.example:3128",
+		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--tap\x1fhttps://example.com\x1f--tap-ca\x1fEXTRA_CA\x1f--tap-to\x1f"+filepath.Join(dir, "wire.sock")+"\x1f--\x1fsh\x1f-c\x1f"+
+			`echo "https=$HTTPS_PROXY http=$http_proxy tap=$FRITTER_TAP outer=$FRITTER_OUTER_HTTPS_PROXY ca=$EXTRA_CA outer_ca=${FRITTER_OUTER_EXTRA_CA-unset}"`,
 	)
 	terminal, err := pty.Start(fritter)
 	if err != nil {
@@ -247,19 +276,20 @@ func TestTheChildIsGivenTheTapsAddressInItsVariable(t *testing.T) {
 	defer terminal.Close()
 	printed, _ := io.ReadAll(terminal)
 	fritter.Wait()
-	if !regexp.MustCompile(`at=http://127\.0\.0\.1:\d+\r?\n`).Match(printed) {
-		t.Errorf("the child saw %q, want BASE_URL at the tap on loopback", printed)
+	at := `http://127\.0\.0\.1:\d+`
+	if !regexp.MustCompile(`https=(` + at + `) http=(` + at + `) tap=(` + at + `) outer=http://outer\.example:3128 ca=\S+/trusted\.pem outer_ca=unset\r?\n`).Match(printed) {
+		t.Errorf("the child saw %q, want the tap as its proxy, the certificates to trust, and the proxy it had before", printed)
 	}
 }
 
-// fritterAround runs fritter as its own process around `sh -c script`, tapping BASE_URL
-// toward upstream, and returns once the process has ended.
+// fritterAround runs fritter as its own process around `sh -c script`, tapping upstream,
+// and returns once the process has ended.
 func fritterAround(t *testing.T, dir string, upstream string, to string, script string) []byte {
 	t.Helper()
 	fritter := exec.Command(os.Args[0], "-test.run=TestHelperFritter")
 	fritter.Env = append(os.Environ(),
 		"FRITTER_HELPER=1",
-		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--tap\x1fBASE_URL="+upstream+"\x1f--tap-to\x1f"+to+"\x1f--\x1fsh\x1f-c\x1f"+script,
+		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--tap\x1f"+upstream+"\x1f--tap-ca\x1fEXTRA_CA\x1f--tap-to\x1f"+to+"\x1f--\x1fsh\x1f-c\x1f"+script,
 	)
 	terminal, err := pty.Start(fritter)
 	if err != nil {
@@ -294,7 +324,7 @@ func TestTheChildsLastExchangeIsCopiedToItsEndThoughFritterEndsWithTheChild(t *t
 		<-request.Context().Done()
 	}))
 	t.Cleanup(slow.Close)
-	fritterAround(t, dir, slow.URL, to, `curl -s -m 0.5 --data-binary @`+body+` "$BASE_URL/v1/messages"`)
+	fritterAround(t, dir, slow.URL, to, `curl -s -m 0.5 --data-binary @`+body+` "`+slow.URL+`/v1/messages"`)
 	select {
 	case lines := <-copies:
 		if last := lines[len(lines)-1]; last.Kind != "end" || last.Error == "" {
@@ -360,7 +390,7 @@ func TestAnUpgradedExchangeJoinsTheChildToTheUpstreamAndIsCopiedToItsHead(t *tes
 		t.Fatal(err)
 	}
 	defer connection.Close()
-	connection.Write([]byte("GET /ws HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n"))
+	connection.Write([]byte("GET " + upstream.URL + "/ws HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n"))
 	reader := bufio.NewReader(connection)
 	response, err := http.ReadResponse(reader, nil)
 	if err != nil || response.StatusCode != http.StatusSwitchingProtocols {
@@ -379,5 +409,79 @@ func TestAnUpgradedExchangeJoinsTheChildToTheUpstreamAndIsCopiedToItsHead(t *tes
 	}
 	if strings.Join(kinds, ",") != "request,response,end" || lines[1].Status != 101 || lines[2].Error == "" {
 		t.Errorf("the upgraded exchange was copied as %v", lines)
+	}
+}
+
+func TestAConnectionToTheUpstreamIsOpenedWithTheTapsOwnCertificateAndCopied(t *testing.T) {
+	to := filepath.Join(shortTempDir(t), "wire.sock")
+	copies := listening(t, to)
+	upstream := httptest.NewTLSServer(streaming(t).Config.Handler)
+	t.Cleanup(upstream.Close)
+	roots := x509.NewCertPool()
+	roots.AddCert(upstream.Certificate())
+	tap := tappedTrusting(t, upstream.URL, to, roots)
+
+	request, _ := http.NewRequest("POST", upstream.URL+"/v1/messages?beta=true", strings.NewReader(`{"q":2}`))
+	request.Header.Set("X-Api-Key", "secret")
+	response, err := child(t, tap).Do(request)
+	if err != nil {
+		t.Fatalf("the child's request over TLS through the tap failed: %v", err)
+	}
+	got, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != 200 || !strings.Contains(string(got), `{"q":2}`) {
+		t.Fatalf("the child got %d %q, want the upstream's answer", response.StatusCode, got)
+	}
+	if issuer := response.TLS.PeerCertificates[0].Issuer.CommonName; !strings.HasPrefix(issuer, "fritter ") {
+		t.Errorf("the child was answered with a certificate from %q, want the tap's own", issuer)
+	}
+	lines := <-copies
+	if lines[0].Path != "/v1/messages?beta=true" || string(lines[0].Body) != `{"q":2}` || lines[len(lines)-1].Kind != "end" {
+		t.Errorf("the opened exchange was copied as %+v", lines)
+	}
+}
+
+func TestAConnectionAnywhereElseGoesThroughUnopenedAndUncopied(t *testing.T) {
+	to := filepath.Join(shortTempDir(t), "wire.sock")
+	copies := listening(t, to)
+	elsewhere := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("elsewhere"))
+	}))
+	t.Cleanup(elsewhere.Close)
+	tap := tapped(t, "https://api.example.com", to)
+	client := child(t, tap)
+	// The child trusts the server it reached as itself, which only a connection fritter
+	// never opened can show it.
+	client.Transport.(*http.Transport).TLSClientConfig.RootCAs.AddCert(elsewhere.Certificate())
+
+	response, err := client.Get(elsewhere.URL + "/")
+	if err != nil {
+		t.Fatalf("the child could not reach a server it does not talk to through the tap: %v", err)
+	}
+	got, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if string(got) != "elsewhere" || !response.TLS.PeerCertificates[0].Equal(elsewhere.Certificate()) {
+		t.Errorf("the child got %q from %q, want the server's own answer and certificate", got, response.TLS.PeerCertificates[0].Subject)
+	}
+	select {
+	case lines := <-copies:
+		t.Errorf("an exchange with another server was copied: %+v", lines)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestTheChildStillTrustsWhatItWasGivenToTrustBefore(t *testing.T) {
+	outer := filepath.Join(shortTempDir(t), "outer.pem")
+	if err := os.WriteFile(outer, []byte("-----BEGIN CERTIFICATE-----\nouter\n-----END CERTIFICATE-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EXTRA_CA", outer)
+	tap := tapped(t, "https://api.example.com", filepath.Join(shortTempDir(t), "wire.sock"))
+	given, err := os.ReadFile(tap.trusted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(given), "-----BEGIN CERTIFICATE-----\nouter\n") || strings.Count(string(given), "BEGIN CERTIFICATE") != 2 {
+		t.Errorf("the child is given %q, want what it trusted before and the tap's authority", given)
 	}
 }

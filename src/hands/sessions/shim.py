@@ -19,7 +19,7 @@ import json
 import os
 import socket
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,6 +29,7 @@ from hands.sessions.home import Home, default_home
 from hands.sessions.hookconfig import post_timeout
 from hands.sessions.membership import held, remove_membership, write_membership
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.untap import tapped, untap_script
 
 # [LAW:no-silent-failure] Claude Code shows a hook's stderr for exit 1 and carries
 # on. Exit 2 would instead block the prompt or the stop and hand the message to
@@ -69,6 +70,7 @@ def record(home: Home, payload: Payload) -> None:
     match payload.text("hook_event_name"):
         case "SessionStart":
             write_membership(home, _membership(payload))
+            give_back(os.environ)
         case "SessionEnd":
             remove_membership(home, payload.session_id())
         case _ if not held(home, os.getppid()):
@@ -82,6 +84,18 @@ def record(home: Home, payload: Payload) -> None:
             write_membership(home, _membership(payload))
         case _:
             pass
+
+
+def give_back(environ: Mapping[str, str]) -> None:
+    """A tapped session's shell commands are given back what its tap replaced, as they run outside it.
+
+    Claude Code sources the file CLAUDE_ENV_FILE names before each of the session's commands. Without it, a command that
+    calls Anthropic's API itself would meet the tap's authority, which nothing but Claude Code was given to trust, and a
+    job left running after the session would be left with a proxy nothing answers.
+    """
+    if tapped(environ) and (commands := environ.get("CLAUDE_ENV_FILE")):
+        with open(commands, "a") as sourced:
+            sourced.write(untap_script())
 
 
 def told(payload: Payload) -> str:
