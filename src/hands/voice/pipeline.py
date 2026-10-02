@@ -77,6 +77,12 @@ class ClaudeCodeBackend:
 LLMBackend = AnthropicBackend | OpenAICompatibleBackend | ClaudeCodeBackend
 
 
+# The voice hands speaks with unless HANDS_VOICE names another. [LAW:one-source-of-truth] a name from Pocket TTS's own
+# catalogue, which the package resolves to the state primed by the very weights it loads; a state primed elsewhere
+# is a cache from another network, and the loader cannot tell.
+DEFAULT_VOICE = "charles"
+
+
 @dataclass(frozen=True)
 class VoiceConfig:
     """Everything that varies between two runs of the pipeline."""

@@ -221,3 +221,19 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
 
     with pytest.raises(SystemExit, match="no key"):
         asyncio.run(run.start(lambda: run.configured(refused, lambda: None, home, sessions, lambda _event: None), heart, sessions, asyncio.Event()))
+
+
+def test_the_default_voice_is_charles_from_the_package_catalogue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With HANDS_VOICE unset, the voice is Charles by the name the installed pocket_tts resolves itself.
+
+    A voice state is a cache computed by one network and noise under another, and the loader does not check; so the
+    default is a catalogue name, which the package maps to the state primed by the weights it loads. The membership
+    check here is the one get_state_for_audio_prompt makes, so a dependency bump that drops the name fails in its commit.
+    """
+    from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
+
+    for var in ("HANDS_VOICE", "HANDS_LLM", "HANDS_LLM_URL", "HANDS_LLM_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    assert run.config_from_env(Home(Path("/nonexistent"))).voice == "charles"
+    assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
