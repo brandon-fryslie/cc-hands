@@ -5,10 +5,8 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
 
 import pytest
-import torch
 
 from hands.daemon import run
 from hands.daemon.run import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, backend_from_env
@@ -17,7 +15,7 @@ from hands.sessions.audit import Entry, LLMChosen, encoded
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.core.wire import UPSTREAM
-from hands.voice.pipeline import DEFAULT_VOICE, AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
+from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
 
 HOME = Home(Path("/Users/someone/.hands"))
 
@@ -225,34 +223,17 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
         asyncio.run(run.start(lambda: run.configured(refused, lambda: None, home, sessions, lambda _event: None), heart, sessions, asyncio.Event()))
 
 
-def test_the_default_voice_is_charles_shipped_in_the_package(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With HANDS_VOICE unset, the voice is a Pocket TTS state file that ships with hands, so a fresh install speaks it."""
+def test_the_default_voice_is_charles_from_the_package_catalogue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With HANDS_VOICE unset, the voice is Charles by the name the installed pocket_tts resolves itself.
+
+    A voice state is a cache computed by one network and noise under another, and the loader does not check; so the
+    default is a catalogue name, which the package maps to the state primed by the weights it loads. The membership
+    check here is the one get_state_for_audio_prompt makes, so a dependency bump that drops the name fails in its commit.
+    """
+    from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
+
     for var in ("HANDS_VOICE", "HANDS_LLM", "HANDS_LLM_URL", "HANDS_LLM_MODEL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    voice = Path(run.config_from_env(Home(Path("/nonexistent"))).voice)
-    assert voice.name == "charles.safetensors"
-    assert voice.is_file()
-
-
-def test_the_shipped_voice_was_primed_by_the_weights_the_package_loads() -> None:
-    """A voice state is a cache computed by one network; under another it is noise, and the loader does not check.
-
-    The state's metadata names the config and weights that primed it (scripts/import-voice-prompt.py). This holds
-    them to the English model Pipecat loads from the installed pocket_tts, so a dependency bump that moves the
-    weights fails here, in the commit that moved them, and the fix is to re-run the import.
-    """
-    import yaml
-    from pocket_tts.models.tts_model import CONFIGS_DIR, _import_model_state  # pyright: ignore[reportPrivateUsage]
-    from safetensors import safe_open
-
-    with safe_open(DEFAULT_VOICE, framework="pt") as voice:  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-        provenance = cast(dict[str, str], voice.metadata())  # pyright: ignore[reportUnknownMemberType]
-    packaged = cast(dict[str, object], yaml.safe_load((CONFIGS_DIR / provenance["config"]).read_text()))
-    assert provenance["config"] == "english.yaml"
-    assert provenance["weights"] == packaged["weights_path"]
-    assert provenance["source"] == "voice-charles-75efd9b32a2e.safetensors"
-    # And it is the layout the package's own importer reads: six attention layers, each a cache and an offset.
-    state = _import_model_state(DEFAULT_VOICE, torch.device("cpu"))  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-    assert len(state) == 6
-    assert all(set(layer) == {"cache", "offset"} for layer in state.values())  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType]
+    assert run.config_from_env(Home(Path("/nonexistent"))).voice == "charles"
+    assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
