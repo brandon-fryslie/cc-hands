@@ -486,3 +486,25 @@ func TestTheChildStillTrustsWhatItWasGivenToTrustBefore(t *testing.T) {
 		t.Errorf("the child is given %q, want what it trusted before and the tap's authority", given)
 	}
 }
+
+func TestTheUpstreamsHostIsOpenedWhateverCaseItIsNamedIn(t *testing.T) {
+	to := filepath.Join(shortTempDir(t), "wire.sock")
+	tap := tapped(t, "https://API.Example.com", to)
+	connection, err := net.Dial("tcp", strings.TrimPrefix(tap.address, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	connection.Write([]byte("CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com:443\r\n\r\n"))
+	reader := bufio.NewReader(connection)
+	if response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect}); err != nil || response.StatusCode != 200 {
+		t.Fatalf("the CONNECT came back %v, %v", response, err)
+	}
+	opened := tls.Client(&read{Conn: connection, from: reader}, &tls.Config{ServerName: "api.example.com", InsecureSkipVerify: true})
+	if err := opened.Handshake(); err != nil {
+		t.Fatalf("the connection was not answered over TLS: %v", err)
+	}
+	if issuer := opened.ConnectionState().PeerCertificates[0].Issuer.CommonName; !strings.HasPrefix(issuer, "fritter ") {
+		t.Errorf("api.example.com was answered by %q, want the tap's own certificate", issuer)
+	}
+}

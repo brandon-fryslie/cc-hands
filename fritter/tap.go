@@ -67,7 +67,8 @@ var proxied = []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"}
 var exempted = []string{"NO_PROXY", "no_proxy"}
 
 // Headers that carry a credential. A copy never holds one: it is the exchange as the
-// listener needs to read it, and the listener is not the one it was sent to.
+// listener needs to read it, and the listener is not the one it was sent to. A body is
+// copied whole, whatever it holds, and what of it to keep is the listener's to say.
 var credentials = map[string]bool{
 	"authorization":       true,
 	"proxy-authorization": true,
@@ -240,18 +241,19 @@ func startTap(t tapping, dir string) (*Tap, error) {
 	opening := handing(listener.Addr())
 	tap.opened = &http.Server{Handler: copied, ErrorLog: quiet}
 	go tap.opened.Serve(opening)
+	// A host is named in any case, and a client may send it lowered: one host either way.
 	tapped := authorityOf(t.upstream)
 	answer := &tls.Config{Certificates: []tls.Certificate{authority.leaf}, NextProtos: []string{"http/1.1"}}
 	tap.server = &http.Server{
 		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			switch {
-			case request.Method == http.MethodConnect && request.Host == tapped && t.upstream.Scheme == "https":
+			case request.Method == http.MethodConnect && strings.EqualFold(request.Host, tapped) && t.upstream.Scheme == "https":
 				joined(writer, func(connection net.Conn) { opening.hand(tls.Server(connection, answer)) })
 			case request.Method == http.MethodConnect:
 				tunnel(writer, request.Host)
 			case !request.URL.IsAbs():
 				http.Error(writer, "fritter is a proxy: ask it for an absolute URL, or CONNECT", http.StatusBadRequest)
-			case request.URL.Scheme == t.upstream.Scheme && authorityOf(request.URL) == tapped:
+			case request.URL.Scheme == t.upstream.Scheme && strings.EqualFold(authorityOf(request.URL), tapped):
 				copied.ServeHTTP(writer, request)
 			default:
 				passing.ServeHTTP(writer, request)

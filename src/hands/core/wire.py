@@ -97,6 +97,9 @@ def classify(path: str, body: object) -> Kind:
             return CountTokens()
         case "/v1/messages":
             return _classify_messages(body)
+        case other if "/v1/messages" in other:
+            # [LAW:no-silent-failure] a path of the model's own that is neither endpoint is heard, never passed over.
+            return Unknown(f"a request to {other}")
         case other:
             # A session whose API is Anthropic's reaches many of them, Remote Control's every few seconds; only the model's
             # endpoint has shapes still being learned.

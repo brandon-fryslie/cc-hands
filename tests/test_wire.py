@@ -172,6 +172,11 @@ def test_count_tokens_and_every_endpoint_but_the_model_s_are_known_by_their_path
     assert classify("/v1/code/sessions/cse_1/worker/heartbeat?x=1", {}) == Elsewhere("/v1/code/sessions/cse_1/worker/heartbeat")
 
 
+def test_a_path_of_the_model_s_that_is_neither_endpoint_is_unknown() -> None:
+    assert classify("/v1/messages/", {}) == Unknown("a request to /v1/messages/")
+    assert classify("/v1/messages/batches", {}) == Unknown("a request to /v1/messages/batches")
+
+
 def test_an_endpoint_behind_a_gateway_s_own_path_is_the_endpoint() -> None:
     assert classify("/anthropic/v1/messages/count_tokens", {"messages": [said("a file")]}) == CountTokens()
     assert classify("/anthropic/v1/messages?beta=true", {"messages": [said("hi")]}) == classify("/v1/messages?beta=true", {"messages": [said("hi")]})
