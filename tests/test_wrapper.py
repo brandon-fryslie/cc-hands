@@ -19,7 +19,7 @@ RECORDER = '#!/bin/sh\nprintf "%s %s socket=%s\\n" "$(basename "$0")" "$*" "${FR
 # Where the shims under test send their sessions' wire; nothing listens there.
 WIRE = Path("/tmp/hands-test-wire.sock")
 # What fritter is asked for before the claude it runs, when the session was given no API of its own.
-TAPPED = f"--tap ANTHROPIC_BASE_URL=https://api.anthropic.com --tap-to {WIRE}"
+TAPPED = f"--tap https://api.anthropic.com --tap-ca NODE_EXTRA_CA_CERTS --tap-to {WIRE}"
 
 
 @pytest.fixture
@@ -196,57 +196,43 @@ def test_a_relative_home_is_this_directory_s(root: Path, monkeypatch: pytest.Mon
     assert homes == [Home(root / "h")]
 
 
-# Says which API the claude it stands in for would reach.
-API_RECORDER = '#!/bin/sh\nprintf "%s api=%s\\n" "$(basename "$0")" "${ANTHROPIC_BASE_URL-unset}"\n'
+# Says what the claude it stands in for would reach the API through.
+REACH_RECORDER = '#!/bin/sh\nprintf "%s api=%s proxy=%s trust=%s tap=%s\\n" "$(basename "$0")" "${ANTHROPIC_BASE_URL-unset}" "${HTTPS_PROXY-unset}" "${NODE_EXTRA_CA_CERTS-unset}" "${FRITTER_TAP-unset}"\n'
+TAP = "http://127.0.0.1:40000"
+# A session's environment as its fritter left it: its own API, and the tap as its proxy in place of the one it had.
+INSIDE = {"ANTHROPIC_BASE_URL": "https://gateway.example", "FRITTER_TAP": TAP, "HTTPS_PROXY": TAP, "NODE_EXTRA_CA_CERTS": "/tmp/fritter-1/trusted.pem", "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128"}
 
 
-@pytest.mark.parametrize(("given", "reached"), [("https://gateway.example", "https://gateway.example"), ("", "unset")])
-def test_a_claude_run_from_inside_a_session_reaches_the_api_the_session_was_given_not_its_tap(root: Path, given: str, reached: str) -> None:
-    # The session's own ANTHROPIC_BASE_URL is its fritter's tap, which ends when the session does.
+def test_a_claude_run_from_inside_a_session_reaches_the_api_as_the_session_would_have_without_its_tap(root: Path) -> None:
+    # The tap ends when the session does; a run started inside it may not.
     shim = installed_shim(root)
-    executable(root / "real" / "claude", API_RECORDER)
-    tap = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:40000", "FRITTER_TAP": "http://127.0.0.1:40000", "HANDS_API_URL": given}
-    ran = on_a_pipe([str(shim), "-p", "hello"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin", tap)
-    assert ran.stdout == f"claude api={reached}\n"
+    executable(root / "real" / "claude", REACH_RECORDER)
+    ran = on_a_pipe([str(shim), "-p", "hello"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin", INSIDE)
+    assert ran.stdout == "claude api=https://gateway.example proxy=http://corp:3128 trust=unset tap=unset\n"
 
 
-def test_a_claude_pointed_elsewhere_from_inside_a_session_reaches_where_it_was_pointed(root: Path) -> None:
-    # hands' brain, run by a daemon started inside a session, is pointed at hands' proxy.
-    shim = installed_shim(root)
-    executable(root / "real" / "claude", API_RECORDER)
-    inside = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:50000", "FRITTER_TAP": "http://127.0.0.1:40000", "HANDS_API_URL": ""}
-    ran = on_a_pipe([str(shim), "-p", "hello"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin", inside)
-    assert ran.stdout == "claude api=http://127.0.0.1:50000\n"
-
-
-def test_a_session_is_tapped_toward_the_api_it_was_given(root: Path) -> None:
+def test_a_session_started_inside_a_session_is_tapped_by_its_own_fritter_alone(root: Path) -> None:
     bin = root / "bin"
-    executable(bin / "fritter", '#!/bin/sh\nprintf "%s kept=%s\\n" "$*" "${HANDS_API_URL-unset}"\n')
+    executable(bin / "fritter", REACH_RECORDER)
     executable(root / "real" / "claude", RECORDER)
     shim = executable(bin / "claude", shim_script(bin / "fritter", WIRE))
-    printed = on_a_terminal([str(shim)], f"{bin}:{root / 'real'}:/usr/bin:/bin", {"ANTHROPIC_BASE_URL": "https://gateway.example"})
-    assert printed == f"--tap ANTHROPIC_BASE_URL=https://gateway.example --tap-to {WIRE} -- {root / 'real' / 'claude'} kept=https://gateway.example\n"
+    printed = on_a_terminal([str(shim)], f"{bin}:{root / 'real'}:/usr/bin:/bin", INSIDE)
+    assert printed == "fritter api=https://gateway.example proxy=http://corp:3128 trust=unset tap=unset\n"
 
 
-# Says whether the session was told its API is Anthropic's, past the tap's loopback address.
-ASSUMED_RECORDER = '#!/bin/sh\nprintf "assumed=%s\\n" "${_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL-unset}"\n'
+def test_a_proxy_set_again_inside_a_session_is_the_one_a_claude_run_there_reaches_through(root: Path) -> None:
+    shim = installed_shim(root)
+    executable(root / "real" / "claude", REACH_RECORDER)
+    ran = on_a_pipe([str(shim), "-p", "hello"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin", {**INSIDE, "HTTPS_PROXY": "http://other:8080"})
+    assert ran.stdout == "claude api=https://gateway.example proxy=http://other:8080 trust=/tmp/fritter-1/trusted.pem tap=unset\n"
 
 
-@pytest.mark.parametrize(
-    ("given", "assumed"),
-    [({}, "1"), ({"ANTHROPIC_BASE_URL": "https://api.anthropic.com/"}, "1"), ({"ANTHROPIC_BASE_URL": "https://gateway.example"}, "unset")],
-)
-def test_a_session_tapped_toward_anthropic_s_api_is_told_its_api_is_anthropic_s(root: Path, given: dict[str, str], assumed: str) -> None:
+@pytest.mark.parametrize(("given", "tapped"), [({}, "https://api.anthropic.com"), ({"ANTHROPIC_BASE_URL": "https://gateway.example/v1"}, "https://gateway.example/v1")])
+def test_a_session_is_tapped_toward_the_api_it_was_given_and_still_names_it(root: Path, given: dict[str, str], tapped: str) -> None:
+    # Claude Code keeps what it keeps for Anthropic's own API only while the API it names is Anthropic's.
     bin = root / "bin"
-    executable(bin / "fritter", ASSUMED_RECORDER)
+    executable(bin / "fritter", '#!/bin/sh\nprintf "%s api=%s\\n" "$*" "${ANTHROPIC_BASE_URL-unset}"\n')
     executable(root / "real" / "claude", RECORDER)
     shim = executable(bin / "claude", shim_script(bin / "fritter", WIRE))
-    assert on_a_terminal([str(shim)], f"{bin}:{root / 'real'}:/usr/bin:/bin", given) == f"assumed={assumed}\n"
-
-
-def test_a_claude_run_from_inside_a_session_pointed_elsewhere_is_not_told_its_api_is_anthropic_s(root: Path) -> None:
-    shim = installed_shim(root)
-    executable(root / "real" / "claude", ASSUMED_RECORDER)
-    inside = {"ANTHROPIC_BASE_URL": "https://gateway.example", "FRITTER_TAP": "http://127.0.0.1:40000", "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1"}
-    ran = on_a_pipe([str(shim), "-p", "hello"], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin", inside)
-    assert ran.stdout == "assumed=unset\n"
+    printed = on_a_terminal([str(shim)], f"{bin}:{root / 'real'}:/usr/bin:/bin", given)
+    assert printed == f"--tap {tapped} --tap-ca NODE_EXTRA_CA_CERTS --tap-to {WIRE} -- {root / 'real' / 'claude'} api={given.get('ANTHROPIC_BASE_URL', 'unset')}\n"

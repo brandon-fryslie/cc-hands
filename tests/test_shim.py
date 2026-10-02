@@ -25,6 +25,7 @@ from hands.sessions.liveness import sweep
 from hands.sessions.membership import read_membership, write_membership
 from hands.sessions.registry import Sessions
 from hands.sessions.server import serve_hooks
+from hands.sessions.untap import untapped
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
 COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/code/a"}
@@ -54,12 +55,13 @@ async def sessions(home: Home) -> AsyncIterator[Sessions]:
     await runner.cleanup()
 
 
-async def shim(home: Home, payload: Mapping[str, object], fritter: str | None = None) -> tuple[int | None, str, str]:
+async def shim(home: Home, payload: Mapping[str, object], fritter: str | None = None, given: Mapping[str, str] = {}) -> tuple[int | None, str, str]:
     """The shim's exit, stdout, and stderr for one hook, run as the plugin runs it: with only HANDS_HOME to go on."""
     # The shim reads FRITTER_SOCKET from its environment, so the tests say what is in it
     # rather than inheriting whatever the run happens to have. Without this, running the
     # suite from inside a wrapped session would change what the shim records.
-    environment = {key: value for key, value in os.environ.items() if key != "FRITTER_SOCKET"}
+    # A tap and its file of commands are a session's too, and a run inside one must not write into that session's file.
+    environment = {key: value for key, value in untapped(os.environ).items() if key not in ("FRITTER_SOCKET", "CLAUDE_ENV_FILE")} | dict(given)
     if fritter is not None:
         environment["FRITTER_SOCKET"] = fritter
     process = await asyncio.create_subprocess_exec(
@@ -289,3 +291,24 @@ async def test_an_empty_fritter_address_is_no_address(home: Home, sessions: Sess
     assert await shim(home, START, fritter="") == (0, STARTED, "")
     [listing] = sessions.live()
     assert listing.session.membership.fritter is None
+
+
+TAP = "http://127.0.0.1:40000"
+TAPPED = {"FRITTER_TAP": TAP, "HTTPS_PROXY": TAP, "https_proxy": TAP, "HTTP_PROXY": TAP, "http_proxy": TAP, "NODE_EXTRA_CA_CERTS": "/tmp/fritter-1/trusted.pem", "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128"}
+
+
+async def test_a_tapped_session_s_commands_run_with_what_its_tap_replaced_given_back(home: Home, tmp_path: Path) -> None:
+    # Claude Code sources this file before each of the session's commands, in the session's environment.
+    commands = tmp_path / "sessionstart-hook-0.sh"
+    assert await shim(home, START, given={**TAPPED, "CLAUDE_ENV_FILE": str(commands)}) == (0, STARTED, "")
+    ran = subprocess.run(
+        ["/bin/sh", "-c", f'. {commands}; echo "$HTTPS_PROXY ${{http_proxy-unset}} ${{NODE_EXTRA_CA_CERTS-unset}} ${{FRITTER_TAP-unset}}"'],
+        env=TAPPED, capture_output=True, text=True, check=True,
+    )
+    assert ran.stdout == "http://corp:3128 unset unset unset\n"
+
+
+async def test_an_untapped_session_s_commands_are_given_nothing(home: Home, tmp_path: Path) -> None:
+    commands = tmp_path / "sessionstart-hook-0.sh"
+    assert await shim(home, START, given={"HTTPS_PROXY": "http://corp:3128", "CLAUDE_ENV_FILE": str(commands)}) == (0, STARTED, "")
+    assert not commands.exists()

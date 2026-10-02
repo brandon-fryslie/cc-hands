@@ -7,7 +7,7 @@ asked for on that socket is typed into the program's input, as though someone at
 keyboard had typed it.
 
 ```
-fritter [--socket-dir DIR] [--tap VARIABLE=UPSTREAM --tap-to SOCKET] -- COMMAND [ARGS...]
+fritter [--socket-dir DIR] [--tap UPSTREAM --tap-ca VARIABLE --tap-to SOCKET] -- COMMAND [ARGS...]
 ```
 
 hands is what it was built for, and hands' client for it - `hands.sessions.typing` - is
@@ -90,10 +90,25 @@ A caller has one second and 64 KB to get its request in.
 
 ## The tap
 
-With `--tap VARIABLE=UPSTREAM --tap-to SOCKET`, fritter runs an HTTP server on loopback,
-gives the child its address in `VARIABLE`, and forwards each request to `UPSTREAM` as it
-came, streaming the reply back as it comes. A copy of each exchange goes to `SOCKET`, one
-connection per exchange, as JSON lines in the order it happened:
+With `--tap UPSTREAM --tap-ca VARIABLE --tap-to SOCKET`, fritter is the child's HTTP
+proxy. It gives the child its address in `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY` and
+`http_proxy`, and `NO_PROXY` and `no_proxy` empty, so every connection the child makes
+reaches fritter; fritter reaches the hosts they named directly, as the child did, from its
+own environment. The child goes on naming UPSTREAM as its server: to the child, where it
+talks has not changed, so nothing it keeps for that server is lost.
+
+A connection the child opens to UPSTREAM's host, fritter answers itself, with a
+certificate for that host signed by an authority fritter makes when it starts and keeps
+only in memory. `VARIABLE` names the file the child reads the certificates it trusts
+besides its own from (`NODE_EXTRA_CA_CERTS` for Node); fritter names a file in its socket
+directory that holds what the old file held and its authority. Each request on that
+connection is forwarded to UPSTREAM as it came, and its reply streamed back as it comes.
+An `http` UPSTREAM is tapped the same way, from the child's plain requests to it. Every
+other connection goes through fritter unopened, through the proxy fritter itself was
+given if there was one.
+
+A copy of each exchange with UPSTREAM goes to `SOCKET`, one connection per exchange, as
+JSON lines in the order it happened:
 
 ```
 {"kind":"request","at":…,"method":"POST","path":"/v1/messages","headers":[[name,value]…],"body":"<base64>","lost":0}
@@ -102,17 +117,19 @@ connection per exchange, as JSON lines in the order it happened:
 {"kind":"end","at":…,"error":""}                     (or "unreached", with its error, in place of the reply)
 ```
 
-`at` is seconds since the epoch. Headers that carry a credential are never copied. The
+`at` is seconds since the epoch. Headers that carry a credential are never copied; bodies
+are copied whole, and what of them to keep is the listener's to decide. The
 child never waits on the copy: nobody listening, or a listener that stops reading, costs
 the exchange nothing, and a copy whose request never reached the listener is counted in
 `lost` on the next one that does. A copy that breaks off after its request was heard ends
 without its last lines, and the listener sees it end that way. When the child exits,
 fritter gives the copies still under way a moment to finish before it exits too.
 
-The tap's address is also published in `FRITTER_TAP`, so what the child runs can tell
-`VARIABLE` as fritter set it from a value set again since. Which variable a program reads
-its server from is the caller's knowledge; hands' `claude` shim passes
-`ANTHROPIC_BASE_URL`.
+The proxy and the file end with fritter, and what the child starts inherits them. So
+fritter publishes its address in `FRITTER_TAP`, and what each variable it set held before
+in `FRITTER_OUTER_<name>`: what the child runs can tell a proxy that is still the tap's,
+and put back what was there. Which variable a program reads its certificates from is the
+caller's knowledge; hands' `claude` shim passes `NODE_EXTRA_CA_CERTS`.
 
 ## Multi-line text
 

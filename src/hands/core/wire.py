@@ -52,8 +52,11 @@ class CountTokens:
 
 
 @dataclass(frozen=True)
-class Hello:
-    """The request a Claude Code makes as it starts, to /api/hello: a round trip, not a model call."""
+class Elsewhere:
+    """A request to an endpoint other than the model's - a starting Claude Code's hello, its account and settings, Remote
+    Control's worker - at `path`: a round trip, not a model call, and nothing in it is ever spoken."""
+
+    path: str
 
 
 @dataclass(frozen=True)
@@ -63,7 +66,7 @@ class Unknown:
     shape: str
 
 
-Kind = MainTurn | Subagent | Fork | Compaction | CountTokens | Hello | Unknown
+Kind = MainTurn | Subagent | Fork | Compaction | CountTokens | Elsewhere | Unknown
 
 # The first words of every compaction request's last message, in Claude Code's services/compact/prompt.ts.
 COMPACTION_OPENING = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
@@ -71,6 +74,9 @@ COMPACTION_OPENING = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
 SIDE_QUESTION_OPENING = "<system-reminder>This is a side question from the user."
 # The line Claude Code opens its system prompt with, in its attribution header builder: `key=value;` pairs after it.
 BILLING_OPENING = "x-anthropic-billing-header:"
+
+
+_ENDPOINTS = ("/v1/messages/count_tokens", "/v1/messages")
 
 
 def classify(path: str, body: object) -> Kind:
@@ -82,18 +88,22 @@ def classify(path: str, body: object) -> Kind:
     lands: a side question asked during a turn is merged into the turn's prompt and followed by another message, and one
     asked before any turn has finished carries no marker at all (hands-wire-6ic.l2o, 2.1.285).
     """
-    # [LAW:dataflow-not-control-flow] every rule is a value test on the request; what none of them matches is Unknown,
-    # so a shape no one has seen yet is heard and never spoken.
-    match path.split("?", 1)[0]:
+    # [LAW:dataflow-not-control-flow] every rule is a value test on the request; a messages request none of them
+    # matches is Unknown, so a shape no one has seen yet is heard and never spoken.
+    path = path.split("?", 1)[0]
+    # The endpoint ends the path: a gateway named in ANTHROPIC_BASE_URL puts its own path before it.
+    match next((endpoint for endpoint in _ENDPOINTS if path.endswith(endpoint)), path):
         case "/v1/messages/count_tokens":
             return CountTokens()
-        case "/api/hello":
-            # Every Claude Code hands starts makes one, and one is started for each side question.
-            return Hello()
         case "/v1/messages":
             return _classify_messages(body)
-        case other:
+        case other if "/v1/messages" in other:
+            # [LAW:no-silent-failure] a path of the model's own that is neither endpoint is heard, never passed over.
             return Unknown(f"a request to {other}")
+        case other:
+            # A session whose API is Anthropic's reaches many of them, Remote Control's every few seconds; only the model's
+            # endpoint has shapes still being learned.
+            return Elsewhere(other)
 
 
 def _classify_messages(body: object) -> Kind:
@@ -515,7 +525,14 @@ class Answered:
     body: object
 
 
-Body = Streamed | Garbled | Answered
+@dataclass(frozen=True)
+class Unkept:
+    """A reply from an endpoint other than the model's, read none of and kept none of: what those hold - the account, a
+    key made for it, Remote Control's tokens - is the user's credentials, never the session speaking. Its size is on its
+    exchange."""
+
+
+Body = Streamed | Garbled | Answered | Unkept
 
 
 # A block not yet stopped: what it holds so far, and the pieces of a tool call's input not yet joined.

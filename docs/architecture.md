@@ -57,8 +57,8 @@ process-liveness check, the audit log, and the wire proxy a Claude Code process 
 the API through (`ANTHROPIC_BASE_URL`), which passes every byte unchanged and reads a
 copy into `core.wire`'s typed events, one `Exchanged` audit line per request. The
 working sessions' exchanges reach the same observer by another path, the tap
-(`sessions/tap.py`): each session's fritter forwards its requests straight to the API and
-copies each exchange to `<hands home>/wire.sock`, read into the same values, so a session
+(`sessions/tap.py`): each session's fritter is its proxy, forwards its requests to the API it
+still names, and copies each exchange to `<hands home>/wire.sock`, read into the same values, so a session
 never waits on the daemon and has no route through it. The one
 listener joined to it (the brain's stage, with the keeper of the brain's context) routes
 each request: sent with the changes hands makes to it (none, hands' tail appended to its
