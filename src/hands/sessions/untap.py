@@ -1,9 +1,10 @@
 """What fritter's tap replaces in a session's environment, and how what the session runs is given it back.
 
 A tapped session reaches its API with fritter as its proxy, trusting the authority fritter answers the API's host with
-(fritter/tap.go). Both end with the session, so nothing the session starts is left with them: a claude run inside it
+(fritter/tap.go). Both end with the session, so what is given back here is not left with them: a claude run inside it
 taps itself or reaches the API directly, the session's shell commands run as they would outside it, and hands' brain is
 the same brain wherever hands was started. Each is given back what the session's own environment held before fritter.
+What Claude Code starts on its own - its MCP servers, its hooks - inherits the tap as it is.
 """
 
 import shlex

@@ -76,6 +76,9 @@ SIDE_QUESTION_OPENING = "<system-reminder>This is a side question from the user.
 BILLING_OPENING = "x-anthropic-billing-header:"
 
 
+_ENDPOINTS = ("/v1/messages/count_tokens", "/v1/messages")
+
+
 def classify(path: str, body: object) -> Kind:
     """Which kind of request this is, from its path and its parsed body alone, decided before any reply exists.
 
@@ -87,7 +90,9 @@ def classify(path: str, body: object) -> Kind:
     """
     # [LAW:dataflow-not-control-flow] every rule is a value test on the request; a messages request none of them
     # matches is Unknown, so a shape no one has seen yet is heard and never spoken.
-    match path.split("?", 1)[0]:
+    path = path.split("?", 1)[0]
+    # The endpoint ends the path: a gateway named in ANTHROPIC_BASE_URL puts its own path before it.
+    match next((endpoint for endpoint in _ENDPOINTS if path.endswith(endpoint)), path):
         case "/v1/messages/count_tokens":
             return CountTokens()
         case "/v1/messages":

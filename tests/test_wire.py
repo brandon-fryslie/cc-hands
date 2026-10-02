@@ -172,6 +172,11 @@ def test_count_tokens_and_every_endpoint_but_the_model_s_are_known_by_their_path
     assert classify("/v1/code/sessions/cse_1/worker/heartbeat?x=1", {}) == Elsewhere("/v1/code/sessions/cse_1/worker/heartbeat")
 
 
+def test_an_endpoint_behind_a_gateway_s_own_path_is_the_endpoint() -> None:
+    assert classify("/anthropic/v1/messages/count_tokens", {"messages": [said("a file")]}) == CountTokens()
+    assert classify("/anthropic/v1/messages?beta=true", {"messages": [said("hi")]}) == classify("/v1/messages?beta=true", {"messages": [said("hi")]})
+
+
 def test_a_request_is_told_by_its_newest_cache_marker_whatever_marks_come_before_it() -> None:
     # A working session marks an earlier message of a long history as well as its last (2.1.285).
     history = [said("hi"), reply("hello"), said("more", marked=True), reply("ok")]
