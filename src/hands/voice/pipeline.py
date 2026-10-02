@@ -77,6 +77,11 @@ class ClaudeCodeBackend:
 LLMBackend = AnthropicBackend | OpenAICompatibleBackend | ClaudeCodeBackend
 
 
+# The voice hands speaks with unless HANDS_VOICE names another: Charles, a Pocket TTS voice state exported from
+# Brandon's own catalogue by scripts/import-voice-prompt.py, shipped inside the package so a fresh install speaks it.
+DEFAULT_VOICE = str(Path(__file__).with_name("charles.safetensors"))
+
+
 @dataclass(frozen=True)
 class VoiceConfig:
     """Everything that varies between two runs of the pipeline."""

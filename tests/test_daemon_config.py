@@ -221,3 +221,12 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
 
     with pytest.raises(SystemExit, match="no key"):
         asyncio.run(run.start(lambda: run.configured(refused, lambda: None, home, sessions, lambda _event: None), heart, sessions, asyncio.Event()))
+
+
+def test_the_default_voice_is_charles_shipped_in_the_package(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With HANDS_VOICE unset, the voice is a Pocket TTS state file that ships with hands, so a fresh install speaks it."""
+    monkeypatch.delenv("HANDS_VOICE", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    voice = Path(run.config_from_env(Home(Path("/nonexistent"))).voice)
+    assert voice.name == "charles.safetensors"
+    assert voice.is_file()

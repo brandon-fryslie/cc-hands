@@ -59,6 +59,7 @@ from hands.voice.cues import cues
 from hands.voice.hold import Move
 from hands.voice.keys import drive_quit, drive_talk_key
 from hands.voice.pipeline import (
+    DEFAULT_VOICE,
     AnthropicBackend,
     ClaudeCodeBackend,
     LLMBackend,
@@ -197,7 +198,7 @@ def config_from_env(home: Home) -> VoiceConfig:
     return VoiceConfig(
         llm=backend_from_env(home),
         whisper_model=os.environ.get("HANDS_WHISPER_MODEL", MLXModel.LARGE_V3_TURBO),
-        voice=os.environ.get("HANDS_VOICE", "alba"),
+        voice=os.environ.get("HANDS_VOICE", DEFAULT_VOICE),
     )
 
 
