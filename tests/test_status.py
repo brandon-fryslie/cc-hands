@@ -218,8 +218,13 @@ async def test_a_process_exits_without_waiting_for_work_left_running_off_the_loo
     assert said is not None
     # Startup and the Pipecat import get their own generous bound, so a hang there fails here and not as a slow
     # exit; only the interval from the cancel to the exit is held to the budget.
-    assert await asyncio.wait_for(said.readline(), 30) == b"cancelled\n"
-    assert await asyncio.wait_for(child.wait(), 5) == 0
+    try:
+        assert await asyncio.wait_for(said.readline(), 30) == b"cancelled\n"
+        assert await asyncio.wait_for(child.wait(), 5) == 0
+    finally:
+        if child.returncode is None:
+            child.kill()
+            await child.wait()
 
 
 def test_each_verdict_has_its_own_light_and_the_broken_ones_warn(tmp_path: Path) -> None:
