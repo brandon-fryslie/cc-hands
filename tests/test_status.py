@@ -5,7 +5,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -203,7 +202,7 @@ async def test_work_off_the_loop_returns_its_result_or_raises_its_error() -> Non
         await off_loop(lambda: (_ for _ in ()).throw(ValueError("no models")), "failure")
 
 
-def test_a_process_exits_without_waiting_for_work_left_running_off_the_loop(tmp_path: Path) -> None:
+async def test_a_process_exits_without_waiting_for_work_left_running_off_the_loop() -> None:
     script = (
         "import asyncio, time\n"
         "from hands.voice.threads import off_loop\n"
@@ -211,13 +210,16 @@ def test_a_process_exits_without_waiting_for_work_left_running_off_the_loop(tmp_
         "    work = asyncio.create_task(off_loop(lambda: time.sleep(30), 'slow'))\n"
         "    await asyncio.sleep(0.1)\n"
         "    work.cancel()\n"
-        "    print(time.monotonic(), flush=True)\n"
+        "    print('cancelled', flush=True)\n"
         "asyncio.run(main())\n"
     )
-    # Timed from the cancel, not the launch, so interpreter startup and imports are outside the budget. The
-    # monotonic clock is system-wide, so the child's reading and ours are on one timeline.
-    ran = subprocess.run([sys.executable, "-c", script], check=True, timeout=10, capture_output=True, text=True)
-    assert time.monotonic() - float(ran.stdout) < 5
+    child = await asyncio.create_subprocess_exec(sys.executable, "-c", script, stdout=subprocess.PIPE)
+    said = child.stdout
+    assert said is not None
+    # Startup and the Pipecat import get their own generous bound, so a hang there fails here and not as a slow
+    # exit; only the interval from the cancel to the exit is held to the budget.
+    assert await asyncio.wait_for(said.readline(), 30) == b"cancelled\n"
+    assert await asyncio.wait_for(child.wait(), 5) == 0
 
 
 def test_each_verdict_has_its_own_light_and_the_broken_ones_warn(tmp_path: Path) -> None:
