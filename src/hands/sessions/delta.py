@@ -11,7 +11,6 @@ the new file a code generator wrote is exactly what a turn must be able to name 
 
 import asyncio
 import os
-import shutil
 import tempfile
 import time
 from collections import deque
@@ -290,7 +289,14 @@ class Deltas:
             known = await self._git(root, "rev-parse", "--git-path", "index", deadline=deadline)
             if known is not None:
                 try:
-                    shutil.copyfile(Path(known) if Path(known).is_absolute() else root / known, index)
+                    # With its mtime: git re-reads a file whose stat matches its entry only when the file is as new
+                    # as the index, and a copy stamped now hides a same-size edit made in the second of the commit.
+                    # Both come from one open file, so an index renamed into place mid-copy cannot lend the old
+                    # entries its newer mtime; and only the mtime, which is the one fact git reads off the file.
+                    with (Path(known) if Path(known).is_absolute() else root / known).open("rb") as real:
+                        index.write_bytes(real.read())
+                        written = os.fstat(real.fileno()).st_mtime_ns
+                    os.utime(index, ns=(written, written))
                 except OSError as error:
                     # Missing before a first commit, or being rewritten as this read it: start from nothing.
                     logger.debug(f"the index of {root} could not be copied, so the snapshot reads every file: {error}")
