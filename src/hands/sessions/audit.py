@@ -796,6 +796,12 @@ def tail(directory: Path, count: int) -> tuple[list[str], int]:
     return (lines[-count:] if count > 0 else []), bases[-1] + end
 
 
+def backwards(directory: Path) -> Iterator[str]:
+    """Every complete line of the log, newest first, reading an older segment only once the caller asks past the newer."""
+    for base in reversed(segments(directory)):
+        yield from reversed(_lines(segment(directory, base), 0)[0])
+
+
 def follow(directory: Path, offset: int, poll: Callable[[], None]) -> Iterator[str]:
     """Each complete line written to the log past offset, calling poll between reads, for as long as the caller asks."""
     while True:

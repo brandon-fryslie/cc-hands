@@ -9,7 +9,7 @@ import asyncio
 import functools
 import inspect
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, TypedDict, cast, get_args, get_origin, get_type_hints, is_typeddict
@@ -835,22 +835,27 @@ def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -
         Args:
             minutes: How far back to look, when the user says, such as 60 for "the last hour". 0 for since they last spoke to you before this.
         """
+        if minutes < 0:
+            return {"error": f"minutes is how far back to look, so it cannot be {minutes}"}
         at = now()
+        opening = catchup.LastSpoke() if minutes == 0 else at - timedelta(minutes=minutes)
         try:
-            missed = await asyncio.to_thread(catchup.missed, home.audit, at, minutes)
+            missed = await asyncio.to_thread(catchup.missed, home.audit, opening)
         except OSError as error:
             logger.error(f"catch_up could not read the audit log: {error}")
             return {"error": f"hands could not read its log: {error}"}
         share = max(CATCH_UP_LEAST, CATCH_UP_CLOSINGS // max(1, len(missed.finished)))
         return {
-            # [LAW:nothing-unseen] where the window opened rides on the result, so the Called line says what was read.
+            # [LAW:nothing-unseen] where the window opened and what of it could not be read ride on the result, so the
+            # Called line says what was read.
             "since_minutes_ago": None if missed.since is None else round((at - missed.since).total_seconds() / 60),
+            "unreadable_lines": missed.unreadable,
             "finished": [
                 {"session": spoken_name(sessions, done.session), "turns": done.turns, "closing": None if done.closing is None else cut(done.closing, share)}
                 for done in missed.finished
             ],
             "ended": [spoken_name(sessions, session) for session in missed.ended],
-            "announced": list(missed.announced),
+            "announced": [{"text": said.text, "times": said.times} for said in missed.announced],
         }
 
     return tool(catch_up)

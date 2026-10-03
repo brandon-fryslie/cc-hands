@@ -1,19 +1,24 @@
 """What the user missed: what sessions finished and hands said while they were away, read back out of the audit log.
 
-The log is the long memory [LAW:one-source-of-truth]: every turn a session finishes is an Applied line, and everything
-hands says unprompted an Announced one, so nothing here keeps a record of its own; it folds the lines of a window.
+The log is the long memory [LAW:one-source-of-truth]: every turn the reducer tells is a Summarise it decided, every
+session it says is gone a SessionGone, and everything hands says unprompted an Announced line, so nothing here keeps a
+record of its own or decides again what the reducer decided; it folds the lines of a window.
 """
 
 import json
-import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
 from hands.core.session import SessionId
-from hands.sessions.audit import tail
+from hands.sessions.audit import backwards
+
+
+@dataclass(frozen=True)
+class LastSpoke:
+    """The window opens where the user was last heard before the words being answered."""
 
 
 @dataclass(frozen=True)
@@ -26,60 +31,68 @@ class Finished:
 
 
 @dataclass(frozen=True)
+class Announcement:
+    """Something hands said unprompted in the window, and how many times it said it."""
+
+    text: str
+    times: int
+
+
+@dataclass(frozen=True)
 class Missed:
-    """What the window holds. `since` is when it opens, None when it reaches back to the start of the log."""
+    """What the window holds. `since` is when it opens, None when it reaches back to the start of the log. `unreadable`
+    counts the lines in it that are not JSON: the fragment a write that failed partway leaves, ended by the next line."""
 
     since: datetime | None
     finished: tuple[Finished, ...]
     ended: tuple[SessionId, ...]
-    announced: tuple[str, ...]
+    announced: tuple[Announcement, ...]
+    unreadable: int
 
 
-def missed(directory: Path, now: datetime, minutes: int) -> Missed:
-    """What happened in the last `minutes`, or with 0, since the user's words before the ones being answered.
+def missed(directory: Path, opening: datetime | LastSpoke) -> Missed:
+    """What happened since `opening`, or since the user's words before the ones being answered.
 
     The words being answered are already the newest Transcribed line: the user's turn is written as it enters the
     model's context, before any tool it calls runs, so the user was last heard at the one before it.
     """
-    lines, _ = tail(directory, sys.maxsize)
-    since = now - timedelta(minutes=minutes) if minutes > 0 else None
+    since = None if isinstance(opening, LastSpoke) else opening
     heard = 0
     window: list[Mapping[str, object]] = []
-    for line in reversed(lines):
-        entry = cast(Mapping[str, object], json.loads(line))
+    unreadable = 0
+    # Newest first, so a window of minutes reads no further back than it opens.
+    for line in backwards(directory):
+        try:
+            entry = cast(Mapping[str, object], json.loads(line))
+        except json.JSONDecodeError:
+            unreadable += 1
+            continue
         at = datetime.fromisoformat(cast(str, entry["at"]))
         if since is not None and at < since:
             break
-        if minutes <= 0 and entry["type"] == "Transcribed":
+        if isinstance(opening, LastSpoke) and entry["type"] == "Transcribed":
             heard += 1
             if heard == 2:
                 since = at
                 break
         window.append(entry)
-    return _fold(reversed(window), since)
+    return _fold(reversed(window), since, unreadable)
 
 
-def _fold(entries: Iterable[Mapping[str, object]], since: datetime | None) -> Missed:
-    # Keyed by the turn: a turn's reply is heard on the wire before its Stop, and a Stop blocked by a hook comes again,
-    # each under the one prompt id, so a turn is counted once and keeps its newest words.
-    turns: dict[tuple[SessionId, str], str | None] = {}
+def _fold(entries: Iterable[Mapping[str, object]], since: datetime | None, unreadable: int) -> Missed:
+    closings: dict[SessionId, list[str | None]] = {}
     ended: dict[SessionId, None] = {}
-    announced: list[str] = []
+    announced: dict[str, int] = {}
     for entry in entries:
         match entry:
-            case {"type": "Applied", "event": {"type": "Stopped" | "Closed", "session": str(session), "prompt": str(prompt), "closing": str() | None as closing}}:
-                key = (SessionId(session), prompt)
-                turns[key] = closing or turns.get(key)
-            case {"type": "Applied", "event": {"type": "Ended", "session": str(session)}}:
-                ended[SessionId(session)] = None
-            case {"type": "Applied", "event": {"type": "Died" | "MovedOn", "membership": {"id": str(session)}}}:
+            # A turn is told once however its telling went: one whose summary failed still finished.
+            case {"type": "Performed" | "EffectFailed", "effect": {"type": "Summarise", "session": str(session), "closing": str() | None as closing}}:
+                closings.setdefault(SessionId(session), []).append(closing)
+            case {"type": "Performed" | "EffectFailed", "effect": {"type": "SessionGone", "session": str(session)}}:
                 ended[SessionId(session)] = None
             case {"type": "Announced", "text": str(text)}:
-                announced.append(text)
+                announced[text] = announced.get(text, 0) + 1
             case _:
                 pass
-    by_session: dict[SessionId, list[str | None]] = {}
-    for (session, _), closing in turns.items():
-        by_session.setdefault(session, []).append(closing)
-    finished = tuple(Finished(session, len(closings), next((said for said in reversed(closings) if said), None)) for session, closings in by_session.items())
-    return Missed(since, finished, tuple(ended), tuple(announced))
+    finished = tuple(Finished(session, len(said), next((words for words in reversed(said) if words), None)) for session, said in closings.items())
+    return Missed(since, finished, tuple(ended), tuple(Announcement(text, times) for text, times in announced.items()), unreadable)
