@@ -83,10 +83,12 @@ class LLMChosen:
 @dataclass(frozen=True)
 class SettingsRead:
     """Where a run's settings came from: the home's config.toml, or None where it has none and every setting is its
-    default; and the Whisper model they name. The backend they name is LLMChosen."""
+    default; the Whisper model they name; and the collector each wide event is also sent to, None where it is sent
+    nowhere but this log. The backend they name is LLMChosen."""
 
     path: str | None
     whisper_model: str
+    collector: str | None
 
 
 @dataclass(frozen=True)
@@ -599,13 +601,16 @@ class Restarting:
 
 
 @dataclass(frozen=True)
-class Undelivered:
-    """Wide events sent to the collector that it did not take, each named by its span id, and why: it could not be
-    reached, it refused the request, or it rejected spans in it, when it does not say which. Each is in the log still."""
+class Exported:
+    """A batch of wide events sent to the collector, each named by its span id; how long the send took; and why the
+    collector did not take it, None where it took every span: it could not be reached, it refused the request, it
+    rejected spans in it without saying which, or hands stopped before the batch could be sent. Each is in the log
+    still."""
 
     collector: str
     spans: tuple[str, ...]
-    error: str
+    duration_ms: float
+    error: str | None
 
 
 @dataclass(frozen=True)
@@ -687,7 +692,7 @@ Entry = (
     | Rolled
     | Failure
     | WideEvent
-    | Undelivered
+    | Exported
 )
 Record = Callable[[Entry], None]
 Level = Literal["error", "info"]
@@ -695,13 +700,13 @@ Level = Literal["error", "info"]
 
 def level(entry: Entry) -> Level:
     """Whether a line tells of something that went wrong: a Failure; an effect, a backlog read, a unit of work or a
-    name that failed; a wide event the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
+    name that failed; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
     broke off; a tool that answered with an error; or a brain turn or side question that came to nothing."""
     # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | EffectFailed() | Undelivered() | BacklogUnread() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
+        case Failure() | EffectFailed() | Exported(error=str()) | BacklogUnread() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)
@@ -725,7 +730,7 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
-            | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
+            | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | Exported() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()

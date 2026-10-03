@@ -8,12 +8,14 @@ catch-up, `hands log`), so what it holds never depends on a network [LAW:dataflo
 sent the same event, encoded as OTLP/HTTP JSON, so the homelab's stores and Grafana hold it beside every other
 service's. What sits behind the collector is the homelab's: hands names only its address.
 
-[LAW:nothing-unseen] a telemetry failure is itself telemetry: a batch the collector did not take is an Undelivered line
-in the log, naming each span by its id and saying why. Events are sent from a thread of their own, in batches, so a
+[LAW:nothing-unseen] each batch sent is an Exported line in the log, naming each span by its id, how long the send took,
+and, where the collector did not take it, why: a telemetry failure is itself telemetry, and a run whose events all
+reached the collector says so rather than saying nothing. Events are sent from a thread of their own, in batches, so a
 collector that is slow or gone costs a unit of work nothing.
 """
 
 import json
+import math
 import queue
 import threading
 import time
@@ -21,11 +23,12 @@ from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Literal
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from loguru import logger
 
-from hands.sessions.audit import Entry, Record, Undelivered, jsonable
+from hands.sessions.audit import Entry, Exported, Record, jsonable
 from hands.sessions.wide import Outcome, WideEvent
 
 # OpenTelemetry's service.name, which every span carries on its resource.
@@ -46,7 +49,7 @@ _INTERNAL = 1
 @contextmanager
 def exporting(collector: str | None, record: Record) -> Generator[Record]:
     """`record`, and where a collector is set, each wide event recorded through it also sent there; what is still to be
-    sent as this ends is sent before it returns."""
+    sent as this ends is sent, or recorded unsent, before it returns."""
     if collector is None:
         yield record
         return
@@ -71,13 +74,15 @@ _CLOSED = _Closed()
 
 
 class Exporter:
-    """Sends wide events to `collector` in batches, from a thread of its own, recording each batch it did not take."""
+    """Sends wide events to `collector` in batches, from a thread of its own, recording each batch and what became of it."""
 
-    def __init__(self, collector: str, record: Callable[[Undelivered], None], linger: float = LINGER_SECONDS, timeout: float = TIMEOUT_SECONDS) -> None:
+    def __init__(self, collector: str, record: Callable[[Exported], None], linger: float = LINGER_SECONDS, timeout: float = TIMEOUT_SECONDS) -> None:
         self._collector = collector
         self._record = record
         self._linger = linger
         self._timeout = timeout
+        # [LAW:no-shared-mutable-globals] close alone writes it, once; the thread reads it as it sends each batch.
+        self._deadline = math.inf
         # [LAW:no-shared-mutable-globals] send puts, the thread alone takes; nothing else reads it.
         self._queue: queue.SimpleQueue[WideEvent | _Closed] = queue.SimpleQueue()
         self._thread = threading.Thread(target=self._run, name="otlp export", daemon=True)
@@ -87,7 +92,12 @@ class Exporter:
         self._queue.put(event)
 
     def close(self) -> None:
-        """Send what is queued and stop: every event sent before this is delivered or recorded Undelivered when it returns."""
+        """Send what is queued and stop: every event sent before this is in an Exported line when it returns. The batches
+        still to send share the one timeout from now, and those it leaves no time for are recorded unsent, so a collector
+        that is gone holds up a stop by the timeout, however much is queued."""
+        # [LAW:no-ambient-temporal-coupling] set before the end of the queue is marked, so every batch sent from here on
+        # reads it, whether or not the thread has reached the mark yet.
+        self._deadline = time.monotonic() + self._timeout
         self._queue.put(_CLOSED)
         self._thread.join(self._timeout + 1)
         if self._thread.is_alive():
@@ -119,26 +129,42 @@ class Exporter:
         return batch, False
 
     def _deliver(self, batch: Sequence[WideEvent]) -> None:
+        began = time.monotonic()
+        left = min(self._timeout, self._deadline - began)
+        refused = self._sent(batch, left) if left > 0 else "hands stopped before the batch could be sent"
+        self._record(Exported(self._collector, tuple(event.span_id for event in batch), (time.monotonic() - began) * 1000, refused))
+
+    def _sent(self, batch: Sequence[WideEvent], timeout: float) -> str | None:
+        """Why the collector did not take `batch`, None where it took every span."""
         try:
-            request = Request(f"{self._collector}/v1/traces", data=json.dumps(spans(batch), ensure_ascii=False).encode(), headers={"Content-Type": "application/json"}, method="POST")
-            with urlopen(request, timeout=self._timeout) as response:
-                refused = rejected(response.read(), len(batch))
+            request = Request(f"{self._collector}/v1/traces", data=json.dumps(spans(batch), ensure_ascii=False, allow_nan=False).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            with urlopen(request, timeout=timeout) as response:
+                return rejected(response.read(), len(batch))
         except Exception as error:
             # Unreachable, an HTTP error status, or an event that would not encode: the batch is lost to the collector
             # alike, and said alike.
-            refused = f"{type(error).__name__}: {error}"
-        if refused is not None:
-            self._record(Undelivered(self._collector, tuple(event.span_id for event in batch), refused))
+            return _why(error)
+
+
+def _why(error: Exception) -> str:
+    said = f"{type(error).__name__}: {error}"
+    if not isinstance(error, HTTPError):
+        return said
+    # The collector's reason for an error status is the body it answered with, an OTLP Status.
+    try:
+        return f"{said}: {error.read().decode(errors='replace')}"
+    except OSError as unread:
+        return f"{said}, its body unread: {unread}"
 
 
 def rejected(body: bytes, sent: int) -> str | None:
     """Why the collector rejected spans of a batch of `sent` it answered with success, from its
     ExportTraceServiceResponse; None where it took them all."""
-    answered: dict[str, object] = json.loads(body) if body.strip() else {}
-    match answered.get("partialSuccess"):
-        case {"rejectedSpans": int() | str() as count, "errorMessage": str(why)} if int(count) > 0:
+    # rejectedSpans is an int64, which OTLP's JSON may spell as a string; a body of any other shape rejects nothing.
+    match json.loads(body) if body.strip() else None:
+        case {"partialSuccess": {"rejectedSpans": int() | str() as count, "errorMessage": str(why)}} if str(count).isdecimal() and int(count) > 0:
             return f"the collector rejected {int(count)} of {sent} spans: {why}"
-        case {"rejectedSpans": int() | str() as count} if int(count) > 0:
+        case {"partialSuccess": {"rejectedSpans": int() | str() as count}} if str(count).isdecimal() and int(count) > 0:
             return f"the collector rejected {int(count)} of {sent} spans"
         case _:
             return None
@@ -191,6 +217,11 @@ def _value(value: object) -> dict[AnyValue, object]:
             return {"boolValue": value}
         case int():
             return {"intValue": str(value)}
+        case float() if math.isnan(value):
+            # proto3 JSON's spellings of the doubles JSON has no number for.
+            return {"doubleValue": "NaN"}
+        case float() if math.isinf(value):
+            return {"doubleValue": "Infinity" if value > 0 else "-Infinity"}
         case float():
             return {"doubleValue": value}
         case str():

@@ -88,7 +88,8 @@ collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTT
 
 With a collector set, each wide event hands writes to its audit log is also sent there as a
 span, so it can be found in whatever stores and Grafana sit behind the collector. The log stays
-the whole record either way; a batch the collector did not take is an `Undelivered` line in it.
+the whole record either way, and each batch sent is an `Exported` line in it, naming its spans and, where the
+collector did not take them, why.
 
 The LLM is a backend variant: `anthropic`, the default, is Claude Sonnet 5, keyed by
 `ANTHROPIC_API_KEY` or, when that is not set, by the keychain's `HANDS_LLM_ANT_KEY`; `openai`

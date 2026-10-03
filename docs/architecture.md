@@ -1786,8 +1786,10 @@ OpenTelemetry collector, as an OTLP/HTTP span carrying `service.name=hands`
 (`hands.sessions.otlp`). The event is written to the log first, whatever becomes of the
 collector, because hands reads the log back (`catch_up`, `hands log`): what it holds never
 depends on the network. Events are sent in batches from a thread of their own, so a slow
-or absent collector costs a unit of work nothing, and a batch the collector did not take
-is an `Undelivered` line naming each event by its span id `[LAW:nothing-unseen]`. hands
+or absent collector costs a unit of work nothing. Each batch is an `Exported` line naming
+each event by its span id, how long the send took, and, where the collector did not take
+it, why `[LAW:nothing-unseen]`; a stop waits on the batches still queued for one timeout
+in all, and records those it leaves unsent. `SettingsRead` names the collector. hands
 names only the collector; which stores sit behind it is the homelab's.
 
 ## Endurance

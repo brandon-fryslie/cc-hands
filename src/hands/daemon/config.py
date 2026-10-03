@@ -190,8 +190,15 @@ def _collector(table: Mapping[str, object]) -> str | None:
         return None
     # [LAW:parse-dont-validate] spelled one way from here on: the base each OTLP signal's path is appended to.
     url = _text(table, "[telemetry]", "collector", "").rstrip("/")
-    if urlsplit(url).scheme not in ("http", "https") or not urlsplit(url).netloc:
-        raise Rejected(f"[telemetry] collector {url!r} is not an http(s) URL; it is the collector's OTLP/HTTP address, as http://host:4318")
+    unusable = Rejected(f"[telemetry] collector {url!r} is not an OTLP/HTTP collector's base address, as http://host:4318, to which hands appends /v1/traces")
+    try:
+        parts = urlsplit(url)
+        # Read for what it raises: a port that is not a number, or out of range.
+        parts.port
+    except ValueError as error:
+        raise unusable from error
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.query or parts.fragment or parts.path.endswith("/v1/traces"):
+        raise unusable
     return url
 
 

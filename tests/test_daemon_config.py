@@ -76,8 +76,12 @@ def test_a_refused_file_is_refused_naming_itself(tmp_path: Path) -> None:
 def test_the_collector_is_an_http_address_spelled_without_a_trailing_slash() -> None:
     assert config.parse("").collector is None
     assert config.parse('[telemetry]\ncollector = "http://otel.example:4318/"\n').collector == "http://otel.example:4318"
-    with pytest.raises(Rejected, match="is not an http\\(s\\) URL"):
-        config.parse('[telemetry]\ncollector = "otel.example:4317"\n')
+    assert config.parse('[telemetry]\ncollector = "https://[::1]:4318/otel"\n').collector == "https://[::1]:4318/otel"
+    # No scheme, a bracket left open, no host, a port out of range, the traces endpoint itself, a query: none is a
+    # base address a batch could ever be posted under, so each is refused as the file is read, not batch by batch.
+    for unusable in ("otel.example:4317", "http://[::1:4318", "http://:4318", "http://otel.example:99999", "http://otel.example:4318/v1/traces", "http://otel.example:4318?x=1"):
+        with pytest.raises(Rejected, match="is not an OTLP/HTTP collector's base address"):
+            config.parse(f'[telemetry]\ncollector = "{unusable}"\n')
     with pytest.raises(Rejected, match="\\[telemetry\\] has no 'endpoint'"):
         config.parse('[telemetry]\nendpoint = "http://otel.example:4318"\n')
 
@@ -183,7 +187,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
 
     def prompted() -> run.Configured:
         answered.wait()
-        return run.Configured(config, home.config)
+        return run.Configured(config, home.config, "http://otel.example:4318")
 
     recorded: list[Entry] = []
     starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda: None, home, sessions, recorded.append), heart, sessions.live_count, asyncio.Event()))
@@ -196,9 +200,9 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         await asyncio.sleep(0.005)
     answered.set()
     assert await starting == config
-    # The log says which file the settings came from and the Whisper model they name, which server and model the run
+    # The log says which file the settings came from, the Whisper model and collector they name, which server and model the run
     # reaches, and never with what key, and the voice it speaks in.
-    assert recorded == [SettingsRead(path=str(home.config), whisper_model="w"), LLMChosen(backend="AnthropicBackend", base_url=ANTHROPIC_URL, model=ANTHROPIC_MODEL, account=None), VoiceChosen(voice=voices.DEFAULT)]
+    assert recorded == [SettingsRead(path=str(home.config), whisper_model="w", collector="http://otel.example:4318"), LLMChosen(backend="AnthropicBackend", base_url=ANTHROPIC_URL, model=ANTHROPIC_MODEL, account=None), VoiceChosen(voice=voices.DEFAULT)]
     assert "sk-secret" not in str([encoded(entry) for entry in recorded])
 
 
