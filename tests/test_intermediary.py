@@ -19,7 +19,7 @@ import pytest
 
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, MainTurn, Unreached
-from hands.sessions.audit import AuditLog, BacklogUnread, Called, Transcribed, segment
+from hands.sessions.audit import SEGMENT_GLOB, AuditLog, BacklogUnread, Called, Transcribed, segment
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.briefing import brief, briefing, tail
@@ -108,7 +108,7 @@ def test_only_the_brain_which_has_bash_is_told_of_the_log_and_it_keeps_the_closi
     assert ".jsonl" not in INTERMEDIARY_INSTRUCTION and "Bash" not in INTERMEDIARY_INSTRUCTION
     assert told.startswith(INTERMEDIARY_INSTRUCTION.split("\n\n# Above all")[0]) and told.endswith(INTERMEDIARY_INSTRUCTION.split("\n\n")[-1])
     # A home with a space in it is one argument to every command the brain is shown.
-    assert "'/my home/audit'/*.jsonl" in told
+    assert f"'/my home/audit'/{SEGMENT_GLOB}" in told
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="the brain's commands read the log with jq")
@@ -122,6 +122,8 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("no route", 0.0), True))
     log.record(Called("list_sessions", {}, {"sessions": []}))
     log.record(BacklogUnread(project="/code/p", error="lit exited 3", seconds=0.1))
+    # A file that is no segment is no part of the log.
+    (path / "audit.jsonl").write_text(json.dumps({"level": "error", "type": "Stray"}) + "\n")
     shown = [line[2:].partition(": ") for line in brain_instruction(path).splitlines() if line.startswith("- ")]
     commands = {label: command for label, _, command in shown if " | jq " in command}
     assert len(commands) == 3

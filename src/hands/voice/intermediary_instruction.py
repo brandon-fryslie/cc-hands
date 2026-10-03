@@ -16,6 +16,8 @@ The brain is given one more section, on reading hands' log, because it alone is 
 import shlex
 from pathlib import Path
 
+from hands.sessions.audit import SEGMENT_GLOB
+
 
 _BODY = """\
 You are hands, and the name is the job: you are the user's hands. They speak, and you do what they ask with the \
@@ -140,7 +142,7 @@ def brain_instruction(log: Path) -> str:
 
 
 def _reading(log: Path) -> str:
-    segments = f"{shlex.quote(str(log))}/*.jsonl"
+    segments = f"{shlex.quote(str(log))}/{SEGMENT_GLOB}"
     return f"""\
 # What hands did is in its log
 
@@ -165,4 +167,6 @@ keep the end, never whole. Its segments are named so that they list oldest first
 - the latest errors: cat {segments} | jq -cR 'fromjson? | select(.level == "error")' | tail -n 20
 - what happened lately: cat {segments} | jq -cR 'fromjson? | select(.type != "Exchanged")' | tail -n 100
 - one kind of line: cat {segments} | jq -cR 'fromjson? | select(.type == "Called")' | tail -n 10
+When the log rolls between the shell listing the segments and cat reading them, cat says the oldest is gone, and that is \
+nothing wrong with hands.
 Then say what it amounts to, in a sentence, the way you say what a session did."""

@@ -523,6 +523,8 @@ def _reply_level(reply: Reached | Unreached | Held | Uncopied) -> Level:
 SEGMENT_BYTES = 32 * 1024 * 1024
 
 _SEGMENT = re.compile(r"(\d{20})\.jsonl")
+# The segments as a shell glob matches them, and no other file in the directory.
+SEGMENT_GLOB = f"{'[0-9]' * 20}.jsonl"
 
 
 def segment(directory: Path, base: int) -> Path:
@@ -547,8 +549,6 @@ class AuditLog:
         self._directory = directory
         self._clock = clock
         self._segment_bytes = segment_bytes
-        # [LAW:one-source-of-truth] the active segment is the newest on disk; from here on this writer alone moves it.
-        self._active = max(segments(directory), default=0)
         # [LAW:no-ambient-temporal-coupling] errors are recorded from whichever thread logged them; one writer at a time
         # means every line is on disk before the roll that closes its segment, which is what lets a reader trust a closed one.
         self._writing = threading.Lock()
@@ -568,23 +568,32 @@ class AuditLog:
                 # Rolled line in front of it, so "at" never runs backwards down the log.
                 at = json.dumps(self._clock().isoformat(timespec="milliseconds"))
                 line = _stamped(body, at)
-                size = _size(segment(self._directory, self._active))
+                # Made again for each line, as a segment's file is: a log deleted under a running daemon begins again.
+                self._directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                # [LAW:one-source-of-truth] the active segment is the newest on disk, listed for each line: no writer holds
+                # a copy of it that another writer's roll, or a roll that failed partway, could leave behind.
+                bases = segments(self._directory)
+                active = max(bases, default=0)
+                size = _size(segment(self._directory, active))
                 if size > 0 and size + len(line) > self._segment_bytes:
-                    line = _stamped(_body(self._roll(size)), at) + line
+                    rolled = _roll(self._directory, bases, active + size)
+                    active = rolled.base
+                    line = _stamped(_body(rolled), at) + line
                 # Opened for each line, so a line is on disk when record returns.
-                with open(segment(self._directory, self._active), "ab", opener=_private) as log:
+                with open(segment(self._directory, active), "ab", opener=_private) as log:
                     log.write(line)
         except OSError as error:
             # [LAW:no-silent-failure] said on stderr, as a warning: an error would be sent back to the log that just failed.
             logger.warning(f"the audit log {self._directory} lost a {type(entry).__name__} line: {error}")
 
-    def _roll(self, size: int) -> Rolled:
-        """Closes the active segment at size bytes and makes the next the active one; retention keeps the closed one."""
-        closed, self._active = self._active, self._active + size
-        deleted = tuple(base for base in segments(self._directory) if base < closed)
-        for base in deleted:
-            segment(self._directory, base).unlink(missing_ok=True)
-        return Rolled(self._active, deleted)
+
+def _roll(directory: Path, bases: list[int], base: int) -> Rolled:
+    """Rolls the log to a new active segment at base: retention keeps the segment it closes and deletes those before it.
+    The new segment exists once its first line is written, so a roll that fails here is tried again by the next line."""
+    deleted = tuple(bases[:-1])
+    for held in deleted:
+        segment(directory, held).unlink(missing_ok=True)
+    return Rolled(base, deleted)
 
 
 def _stamped(body: str, at: str) -> bytes:
@@ -697,9 +706,12 @@ def _past(directory: Path, offset: int) -> tuple[list[str], int]:
     bases = segments(directory)
     if not bases:
         return [], offset
-    # A reader that fell behind retention goes on at the oldest segment kept, whose Rolled line says what was deleted.
-    base = max([held for held in bases if held <= offset] or bases[:1])
-    lines, end = _lines(segment(directory, base), max(offset - base, 0))
+    # An offset out of range - behind retention, or past the end of a log begun again from zero - goes on at the oldest
+    # segment kept. Behind retention, the Rolled line naming the segment the reader missed is still ahead of it.
+    if not bases[0] <= offset <= bases[-1] + _size(segment(directory, bases[-1])):
+        offset = bases[0]
+    base = max(held for held in bases if held <= offset)
+    lines, end = _lines(segment(directory, base), offset - base)
     later = [held for held in bases if held > base]
     return lines, (later[0] if later else base + end)
 

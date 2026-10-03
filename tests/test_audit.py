@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import json
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -171,8 +172,10 @@ def test_the_tail_is_the_newest_complete_lines_and_following_picks_up_where_it_e
 def test_the_log_never_holds_more_than_two_segments_of_the_bound(tmp_path: Path) -> None:
     log = tmp_path / "audit"
     writer = AuditLog(log, clock=lambda: AT, segment_bytes=1000)
+    seen: set[int] = set()
     for number in range(200):
         writer.record(Transcribed(f"line {number}"))
+        seen.update(segments(log))
         assert len(segments(log)) <= 2
         assert all(segment(log, base).stat().st_size <= 1000 for base in segments(log))
     closed, active = segments(log)
@@ -181,7 +184,7 @@ def test_the_log_never_holds_more_than_two_segments_of_the_bound(tmp_path: Path)
     assert active == closed + segment(log, closed).stat().st_size
     # The active segment opens with the roll that began it, and which segments retention deleted.
     first, second = [json.loads(line) for line in segment(log, active).read_text().splitlines()][:2]
-    assert first["type"] == "Rolled" and first["base"] == active and first["deleted"] == [max(base for base in first["deleted"])]
+    assert first["type"] == "Rolled" and first["base"] == active and first["deleted"] == [max(base for base in seen if base < closed)]
     assert second["type"] == "Transcribed"
     assert lines(log)[-1]["text"] == "line 199"
 
@@ -228,6 +231,59 @@ def test_a_reader_behind_retention_goes_on_at_the_oldest_segment_kept(tmp_path: 
     log.mkdir()
     segment(log, 100).write_text("kept\n")
     assert next(follow(log, 40, lambda: None)) == "kept"
+
+
+def test_a_reader_past_the_end_of_a_log_begun_again_goes_on_at_its_start(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    log.mkdir()
+    segment(log, 0).write_text("fresh\n")
+    assert next(follow(log, 50_000_000, lambda: None)) == "fresh"
+
+
+def test_a_log_deleted_under_its_writer_begins_again_at_the_next_line(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    writer = AuditLog(log, clock=lambda: AT, segment_bytes=1000)
+    for number in range(20):
+        writer.record(Transcribed(f"line {number}"))
+    shutil.rmtree(log)
+    writer.record(Transcribed("after"))
+    assert segments(log) == [0]
+    assert [line["text"] for line in lines(log)] == ["after"]
+
+
+def test_a_writer_appends_to_the_segment_another_writer_rolled_to(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    first = AuditLog(log, clock=lambda: AT, segment_bytes=1000)
+    second = AuditLog(log, clock=lambda: AT, segment_bytes=1000)
+    for number in range(15):
+        second.record(Transcribed(f"line {number}"))
+    first.record(Transcribed("first"))
+    assert lines(log)[-1]["text"] == "first"
+    newest = [json.loads(line) for line in segment(log, segments(log)[-1]).read_text().splitlines()]
+    assert newest[0]["type"] == "Rolled" and newest[-1]["text"] == "first"
+
+
+def test_a_roll_retention_could_not_finish_is_rolled_again_by_the_next_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    log = tmp_path / "audit"
+    writer = AuditLog(log, clock=lambda: AT, segment_bytes=1000)
+    while len(segments(log)) < 2:
+        writer.record(Transcribed("filling"))
+    refusals: list[Path] = []
+
+    def refused(path: Path, missing_ok: bool = False) -> None:
+        refusals.append(path)
+        raise PermissionError(f"refused {path}")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "unlink", refused)
+        before = segments(log)
+        while not refusals:
+            writer.record(Transcribed("filling"))
+        assert segments(log) == before
+    writer.record(Transcribed("kept"))
+    assert segments(log) == [before[-1], before[-1] + segment(log, before[-1]).stat().st_size]
+    newest = [json.loads(line) for line in segment(log, segments(log)[-1]).read_text().splitlines()]
+    assert [line["type"] for line in newest] == ["Rolled", "Transcribed"] and newest[1]["text"] == "kept"
 
 
 def test_the_tail_reaches_into_the_older_segment_when_the_active_one_is_short(tmp_path: Path) -> None:
