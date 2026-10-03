@@ -278,7 +278,8 @@ class BrainStage(FrameProcessor):
             return Send(refusal="final")
         # Only the calls this turn's last reply opened: a request carries every result of the brain's history.
         answers = [(turn.calls[answer.call], answer) for answer in tool_answers(sent.body) if answer.call in turn.calls]
-        if not (turn.interrupted or any(self._silent(name, answer) for name, answer in answers)):
+        # A reply is the whole of what is said only when every call in it was: a refused one is the model's to answer.
+        if not (turn.interrupted or (answers and all(self._silent(name, answer) for name, answer in answers))):
             turn.exchanges.append(sent.exchange)
             turn.opening, turn.calls, turn.failure = {}, {}, _UNNAMED
             # Refused once is the turn's failure, said at once as the API variants say theirs, who ask once.

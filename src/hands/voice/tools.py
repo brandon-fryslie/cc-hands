@@ -126,13 +126,22 @@ def pipecat_function(tool: Tool) -> FunctionSchema:
     # [LAW:single-enforcer] the one place a tool meets Pipecat, so what "silence" and "completes" mean there is said once.
     async def handler(params: FunctionCallParams) -> None:
         result = await tool.body(**params.arguments)
-        properties = FunctionCallResultProperties(run_llm=False) if silent(tool, result) else None
+        properties = _then(tool, result)
         await params.result_callback(result, properties=properties)
 
     # Pipecat's decorator is untyped; it only marks the handler with its call options.
     options = cast(Callable[[Handler], Handler], direct_function.tool_options(cancel_on_interruption=not tool.completes))  # pyright: ignore[reportUnknownMemberType]
 
     return FunctionSchema(tool.name, tool.description, {name: dict(schema) for name, schema in tool.properties.items()}, list(tool.required), handler=options(handler))
+
+
+def _then(tool: Tool, result: Result) -> FunctionCallResultProperties | None:
+    """Whether Pipecat runs the model on the result. Pipecat decides per result, and the last of a reply's calls to
+    finish decides for them all, so a refusal asks for the model outright: a silent sibling finishing after it would
+    otherwise hold its error unanswered. Any other result leaves it to Pipecat, which runs the model once all are in."""
+    if "error" in result:
+        return FunctionCallResultProperties(run_llm=True)
+    return FunctionCallResultProperties(run_llm=False) if silent(tool, result) else None
 
 
 def silent(tool: Tool, result: Result) -> bool:

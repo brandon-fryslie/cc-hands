@@ -461,6 +461,23 @@ async def test_a_refused_call_to_a_silence_tool_is_the_models_to_answer(rig: Rig
     rig.brain.end()
 
 
+async def test_a_reply_with_one_draft_said_and_one_refused_is_the_models_to_answer(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "make both add tests too"})
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "mcp__hands__amend_draft"), ("t2", "mcp__hands__amend_draft"))
+    results: tuple[tuple[str, dict[str, str]], ...] = (("t1", {"said": "amended for api: add tests too"}), ("t2", {"error": "There is no session web."}))
+    body: dict[str, object] = {
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": call, "name": "mcp__hands__amend_draft", "input": {}} for call, _ in results]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call, "content": [{"type": "text", "text": json.dumps(result)}]} for call, result in results]},
+        ]
+    }
+    _, route = rig.request(body)
+    assert route == Send((Tail(TAIL),), refusal="final")
+    rig.brain.end()
+
+
 async def test_a_barge_in_while_a_reading_tool_runs_stops_the_brain_at_once(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "what did the api session do?"})
     exchange, _ = rig.request()

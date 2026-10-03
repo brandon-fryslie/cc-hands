@@ -116,7 +116,8 @@ async def test_a_draft_for_no_session_or_with_none_staged_is_refused_to_the_mode
     assert await call([stage], "stage_draft", session="cc-hands", text="run the tests", resolutions=[]) == {"error": "There is no session cc-hands."}
     assert await call([amend], "amend_draft", session=id, text="run the tests", resolutions=[]) == {"error": "There is no draft for cc-hands."}
     assert lines.frames == []
-    assert await handled(amend, session=id, text="run the tests", resolutions=[]) is None
+    refused = await handled(amend, session=id, text="run the tests", resolutions=[])
+    assert refused is not None and refused.run_llm is True
 
 
 async def test_the_draft_tools_say_their_arguments_and_complete_through_a_barge_in(tmp_path: Path) -> None:
@@ -130,7 +131,7 @@ async def test_the_draft_tools_say_their_arguments_and_complete_through_a_barge_
 
 
 async def handled(tool: Tool, **arguments: object) -> FunctionCallResultProperties | None:
-    """What Pipecat is told once the call is answered: None asks the model to go on."""
+    """What Pipecat is told once the call is answered: None leaves it to run the model once the reply's calls are in."""
     told: list[FunctionCallResultProperties | None] = []
 
     async def result_callback(_: object, *, properties: FunctionCallResultProperties | None = None) -> None:
@@ -149,7 +150,9 @@ async def test_pipecat_runs_no_model_after_a_staged_draft_and_asks_it_to_answer_
     [stage, *_] = draft_tools(sessions, Lines())
     staged = await handled(stage, session=id, text="run the tests", resolutions=[])
     assert staged is not None and staged.run_llm is False
-    assert await handled(stage, session=id, text="  ", resolutions=[]) is None
+    # Asked for outright: a sibling call staged with it, finishing after it, would otherwise decide that no model runs.
+    refused = await handled(stage, session=id, text="  ", resolutions=[])
+    assert refused is not None and refused.run_llm is True
 
 
 async def test_pipecat_is_told_a_barge_in_cancels_no_draft_tool(tmp_path: Path) -> None:
