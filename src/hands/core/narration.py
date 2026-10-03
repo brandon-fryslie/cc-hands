@@ -13,22 +13,17 @@ did is left to the words of the session that did it.
 import re
 from dataclasses import dataclass
 
-from hands.core.delta import Delta
+from hands.core.delta import Branched, Committed, Delta, GitChange, PullRequested, Pushed
 from hands.core.spoken import spoken, spoken_count, spoken_ref
 from hands.core.turn import (
-    Branched,
     Budget,
-    Committed,
     Delegated,
     Edited,
     Happening,
-    GitChange,
     Interruption,
     Looked,
     Other,
     Planned,
-    PullRequested,
-    Pushed,
     Question,
     Questioned,
     Ran,
@@ -392,16 +387,18 @@ def _sections(steps: list[Sectioned]) -> tuple[Segment, ...]:
 def _repository(delta: Delta, changes: tuple[GitChange, ...]) -> tuple[Segment, ...]:
     """What the turn did to the repository, from the two records of it, or nothing where it did not move.
 
-    Both sources are read because each sees what the other misses: a `git commit` inside a compound command
-    carries no operation for a step to record, and a delta read against the turn's start names the commit
-    anyway. Whichever saw it, the same words come out, and a change both of them saw is said once.
+    Both sources are read because each sees what the other misses: a `git commit`, a push, or a `checkout -b`
+    inside a compound command carries no operation for a step to record, and a delta read against the turn's
+    start names it anyway. Whichever saw it, the same words come out, and a change both of them saw is said once.
     """
     said: list[str] = [
         *(_action(change) for change in changes),
         *(["committed"] if delta.commits else []),
+        *(_action(change) for change in delta.changes),
         *([f"left {_counted(len(delta.files), 'file')} different"] if delta.files else []),
     ]
-    # Ordered and deduplicated in one step: the steps and the delta both see a commit, and it is said once.
+    # Ordered and deduplicated in one step: the steps and the delta both see a commit, a push, or a pull request,
+    # and each is said once.
     did = list(dict.fromkeys(said))
     if did:
         return (Segment(THE_REPOSITORY, f"It {_listed(did)}.", (), delta),)

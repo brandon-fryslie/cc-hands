@@ -1088,11 +1088,15 @@ them a word. A ref is therefore said where its type already knows what it is, wi
 separators as spaces and every word kept, because a branch is named so it can be told from
 the others `[LAW:single-enforcer]`.
 
-Only a commit has both sources. A push, a branch, or a pull request is known solely
-from the `gitOperation` Claude Code writes beside the step, because none of them changes a
-file or adds a local commit for the delta to find — so `git commit -m x && git push`, or a
-push inside a heredoc, is read by hands as a commit and never as a push; only the session's
-own reply can say it. `hands-narration-k08` owns closing it.
+A push, a branch, or a pull request changes no file and adds no local commit, and Claude Code
+writes no `gitOperation` for one inside a heredoc, a script, or a compound command it does not
+parse — two commands in five that push, and nearly every `checkout -b`. So the delta reads each
+where it does leave a mark: a remote-tracking ref whose log says `update by push` (a fetch moves
+the same ref and logs `fetch`), a local branch the mark did not hold, and, for a branch the turn
+pushed, a pull request the forge says was opened since the mark. The forge is asked only after a
+push, because asking every turn costs a request a turn for an answer that is nearly always no,
+and it is given `FORGING` of the reading so a slow forge costs the pull request and never the
+commit. Both sources speak in the same `GitChange` values, so a push both saw is said once.
 
 What git says is *not* said of a turn told twice. `Compare` pops the mark and only
 `UserPromptSubmit` sets one, so the second telling of a turn whose first `Stop` was blocked

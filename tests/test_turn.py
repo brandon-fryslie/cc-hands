@@ -1,12 +1,10 @@
 """A turn, rendered for the summariser: every kind of step says what it did, and each part is cut to its budget."""
 
-from hands.core.delta import Changed, Commit, Delta
+from hands.core.delta import Branched, Changed, Commit, Committed, Delta, PullRequested, Pushed
 from hands.core.turn import (
     CUT,
     Asked,
-    Branched,
     Budget,
-    Committed,
     Continuing,
     Delegated,
     Edited,
@@ -14,8 +12,6 @@ from hands.core.turn import (
     Notified,
     Other,
     Planned,
-    PullRequested,
-    Pushed,
     Question,
     Questioned,
     Ran,
@@ -111,10 +107,11 @@ def test_a_long_turn_keeps_how_it_started_and_how_it_ended_and_each_part_is_cut_
 
 
 def test_what_the_repository_says_is_told_after_the_steps_and_named_file_by_file() -> None:
-    """A turn's result is not only what its steps report: a `sed` names no file, and a commit no step made."""
+    """A turn's result is not only what its steps report: a `sed` names no file, and a commit or a push no step made."""
     delta = Delta(
         files=(Changed("src/a.py", 12, 9), Changed("logo.png", None, None)),
         commits=(Commit("abc1234", "tidy up"),),
+        changes=(Pushed("main"), PullRequested(7, "https://x/7", "created")),
         patch="@@ -1 +1 @@\n-x = 1\n+x = 2\n",
     )
     told = render(Turn(Asked(None, "tidy up"), (Said(None, "Done."),)), delta, ROOMY)
@@ -124,6 +121,8 @@ def test_what_the_repository_says_is_told_after_the_steps_and_named_file_by_file
             "Claude said:\nDone.",
             "The repository is different, whether or not a step above says so:\n  src/a.py +12 -9\n  logo.png (binary)",
             "It made 1 commit:\n  abc1234 tidy up",
+            "It pushed main.",
+            "It created pull request 7, https://x/7.",
             "What changed:\n@@ -1 +1 @@\n-x = 1\n+x = 2",
         ]
     )

@@ -11,6 +11,7 @@ import pytest
 from loguru import logger
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 
+from hands.core import delta as repository
 from hands.core.delta import Changed, Delta
 from hands.core.events import Ended, Joined, PermissionRequested, Prompted, Stopped
 from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId
@@ -299,6 +300,18 @@ async def test_a_turn_that_only_a_shell_command_changed_is_still_told_by_what_th
     delta = Delta(files=(Changed("src/a.py", 12, 9), Changed("src/b.py", 3, 3)), commits=(), patch="@@\n-x\n+y\n")
     told = handed(await recount(tailing(transcript), SID, None, None, "cc-hands", lambda _: None, delta, "on", Pushed()))
     assert "finished a turn. It said nothing. From its record, hands adds: It left two files different. Tell the user" in told
+
+
+async def test_a_push_and_a_pull_request_no_step_recorded_are_told_and_land_on_the_audit_line(tmp_path: Path) -> None:
+    """A push made in a script leaves no step and no file; read off the repository, it is what the turn did."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text('{"uuid":"u1","type":"user","message":{"role":"user","content":"ship it"}}\n')
+    delta = Delta(changes=(repository.Pushed("fix"), repository.PullRequested(7, "https://x/7", "created")))
+    recorded: list[Entry] = []
+    told = handed(await recount(tailing(transcript), SID, None, None, "cc-hands", recorded.append, delta, "on", Pushed()))
+    assert "From its record, hands adds: It pushed fix and created a pull request. Tell the user" in told
+    [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
+    assert "It pushed fix and created a pull request." in recounted.told
 
 
 async def test_a_turn_that_did_nothing_and_changed_nothing_is_still_silent(tmp_path: Path) -> None:

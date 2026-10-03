@@ -6,9 +6,12 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from hands.core.delta import Delta
+import pytest
+
+from hands.core.delta import Branched, Delta, PullRequested, Pushed
 from hands.core.effects import SessionGone, Summarise
 from hands.core.events import Closed, Ended, Joined, Prompted, StatusReported, Stopped, Taken
 from hands.core import status
@@ -138,6 +141,105 @@ async def test_reading_a_repository_leaves_it_exactly_as_it_was_found(tmp_path: 
     assert (git(root, "status", "--porcelain"), git(root, "rev-parse", "HEAD"), git(root, "stash", "list"), git(root, "diff"), git(root, "diff", "--cached")) == before
     assert (root / "a.py").read_text() == "x = 1\nuncommitted\n"
     assert (root / "scratch.py").read_text() == "not git's yet\n"
+
+
+def published(tmp_path: Path) -> Path:
+    """A repository with a remote it has pushed its trunk to, as one a session opens pull requests from."""
+    root = repo(tmp_path)
+    git(tmp_path, "init", "-q", "--bare", str(tmp_path / "remote.git"))
+    git(root, "remote", "add", "origin", str(tmp_path / "remote.git"))
+    git(root, "push", "-q", "-u", "origin", "HEAD")
+    return root
+
+
+def forge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: str) -> Path:
+    """A `gh` on the PATH that answers every question with `answer` and writes down what it was asked."""
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    asked = tmp_path / "asked"
+    gh = bin / "gh"
+    gh.write_text(f"#!/bin/sh\necho \"$*\" >> {asked}\ncat <<'EOF'\n{answer}\nEOF\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin}{os.pathsep}{os.environ['PATH']}")
+    return asked
+
+
+def stamp(at: datetime) -> str:
+    return at.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def test_a_push_no_step_recorded_is_read_from_the_remote_tracking_ref_git_logged_it_on(tmp_path: Path) -> None:
+    """`git commit -m x && git push` carries no push operation, and the remote-tracking ref says it anyway."""
+    root = published(tmp_path)
+
+    def push() -> None:
+        (root / "a.py").write_text("x = 2\n")
+        git(root, "commit", "-qam", "tidy")
+        git(root, "push", "-q")
+
+    delta = await turn(root, push)
+    assert delta.changes == (Pushed(git(root, "branch", "--show-current")),)
+
+
+async def test_a_fetch_moves_the_same_ref_and_is_not_heard_as_a_push(tmp_path: Path) -> None:
+    root = published(tmp_path)
+    other = tmp_path / "other"
+    git(tmp_path, "clone", "-q", str(tmp_path / "remote.git"), str(other))
+    git(other, "config", "user.email", "t@example.com")
+    git(other, "config", "user.name", "Test")
+    git(other, "commit", "-q", "--allow-empty", "-m", "someone else")
+    git(other, "push", "-q")
+    delta = await turn(root, lambda: git(root, "fetch", "-q"))
+    assert delta.changes == ()
+
+
+async def test_a_branch_the_turn_made_is_read_from_the_branches_the_mark_did_not_hold(tmp_path: Path) -> None:
+    """`checkout -b` inside a compound command is the one Claude Code nearly never records."""
+    root = repo(tmp_path)
+    delta = await turn(root, lambda: git(root, "checkout", "-q", "-b", "feature/narration"))
+    assert delta.changes == (Branched("feature/narration", "created branch"),)
+    assert delta  # a new branch alone is something to tell
+
+
+async def test_a_pull_request_opened_from_a_branch_the_turn_pushed_is_read_from_the_forge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`gh pr create` writes nothing in the repository, so the forge is the one witness — and a pull request the
+    branch had before the turn is not the turn's."""
+    root = published(tmp_path)
+    now, before = datetime.now(UTC), datetime.now(UTC) - timedelta(days=1)
+    asked = forge(
+        tmp_path,
+        monkeypatch,
+        f'[{{"number": 7, "url": "https://x/7", "createdAt": "{stamp(now)}"}}, {{"number": 3, "url": "https://x/3", "createdAt": "{stamp(before)}"}}]',
+    )
+
+    def open_one() -> None:
+        git(root, "checkout", "-q", "-b", "fix")
+        git(root, "push", "-q", "-u", "origin", "fix")
+
+    delta = await turn(root, open_one)
+    assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"), PullRequested(7, "https://x/7", "created"))
+    assert asked.read_text().split() == ["pr", "list", "--head", "fix", "--state", "all", "--json", "number,url,createdAt"]
+
+
+async def test_the_forge_is_not_asked_about_a_turn_that_pushed_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = published(tmp_path)
+    asked = forge(tmp_path, monkeypatch, "[]")
+
+    def commit() -> None:
+        (root / "a.py").write_text("x = 2\n")
+        git(root, "commit", "-qam", "tidy")
+
+    await turn(root, commit)
+    assert not asked.exists()
+
+
+async def test_a_forge_that_answers_in_a_shape_hands_does_not_read_costs_the_pull_request_and_not_the_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = published(tmp_path)
+    forge(tmp_path, monkeypatch, "not json")
+    delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")))
+    assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
 
 
 async def test_a_session_that_works_outside_a_repository_is_told_by_its_steps_alone(tmp_path: Path) -> None:

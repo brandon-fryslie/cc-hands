@@ -12,24 +12,8 @@ from dataclasses import dataclass
 from typing import cast
 
 from hands.core.testrun import report_of
-from hands.core.turn import (
-    Branched,
-    Committed,
-    Delegated,
-    Edited,
-    GitChange,
-    Looked,
-    Other,
-    Planned,
-    PullRequested,
-    Pushed,
-    Question,
-    Questioned,
-    Ran,
-    Ref,
-    Step,
-    Tested,
-)
+from hands.core.delta import Branched, Committed, GitChange, PullRequested, Pushed
+from hands.core.turn import Delegated, Edited, Looked, Other, Planned, Question, Questioned, Ran, Ref, Step, Tested
 
 
 @dataclass(frozen=True)
