@@ -18,9 +18,9 @@ from hands.core.effects import (
     Asking,
     DeadlineNear,
     Expired,
+    Heard,
     ModeChanged,
     Note,
-    Progress,
     Reply,
     SessionGone,
     Speak,
@@ -324,6 +324,7 @@ SAID_TWICE_FROM: list[Registry] = [
     holding(IDLE, Told(TURN, frozenset())),
     in_turn(AT_DIALOG, HELD),
     in_turn(AT_DIALOG, replace(HELD, warned=True)),
+    in_turn(AT_DIALOG, LetGo(BASH)),
 ]
 
 
@@ -347,7 +348,7 @@ def test_the_same_event_heard_twice_is_said_once(before: Registry, event: Event)
     # tail only for what it has not told, by record, which a turn told has none of (see tests/test_narrator.py).
     once, _ = reduce(before, event)
     _, again = reduce(once, event)
-    assert [effect for effect in again if isinstance(effect, Speak | Narrate | Note | Progress | SessionGone)] == []
+    assert [effect for effect in again if isinstance(effect, Heard | SessionGone)] == []
 
 
 def test_a_tick_moves_only_sessions_waiting_on_a_deadline() -> None:

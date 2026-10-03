@@ -426,7 +426,7 @@ before it. A folded telling shares one `REPLY_SHOWN` bound among its turns. A `P
 queue is not the player's bookmarks: resuming replays a bookmarked sentence and never
 re-enqueues a telling. Each item is a transition, never a state, so nothing is announced
 twice `[LAW:one-source-of-truth]`: a request is narrated, warned of, and expired by its
-request id, and a heard-again request keeps its deadline and warning; a turn's `Summarise` asks the
+request id, which the daemon mints per hook delivery, so a second delivery is a second request; a turn's `Summarise` asks the
 tail only for the records it has not told. The same event heard twice is said once
 (`tests/test_reducer.py`).
 
