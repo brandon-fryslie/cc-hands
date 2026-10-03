@@ -16,12 +16,14 @@ Keep:
 - Every request, constraint, and decision the user gave, in their own words where the words carry the meaning: "don't
   touch the tests" stays "don't touch the tests".
 - Why, when they said why.
+- What they named roughly, named exactly where you resolved it: "the billing parser" becomes the file it is, listed in
+  resolutions.
 - A boundary or a "stop when" they gave for a long piece of work, as the last sentence, where the session looks back to.
 
 Drop:
 - Fillers, false starts, and whatever they took back. "The billing one, no, the invoices one" is only "the invoices one".
 - The words addressed to you: "tell it to", "ask the docs session".
-- Anything they did not say: no added steps, tests, checks, cautions, or "let me know when you're done". The session
+- Anything they did not ask for: no added steps, tests, checks, cautions, or "let me know when you're done". The session
   does everything the prompt says, so a line you add is an order the user never gave. When you cannot tell what they
   meant, ask them; don't guess it into the draft.
 

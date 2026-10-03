@@ -70,6 +70,10 @@ SLIM = {
 # The skills hands gives the brain, as a plugin of its own: shipped with the code that runs the jobs they are for, beside
 # the skills of the brain's own setup and never in it.
 PLUGIN = Path(__file__).parent / "plugin"
+# Each named as the brain calls it, plugin:skill, so it may use them without asking, as it may hands' tools.
+PLUGIN_SKILLS = tuple(
+    f"Skill({json.loads((PLUGIN / '.claude-plugin' / 'plugin.json').read_text())['name']}:{skill.name})" for skill in sorted((PLUGIN / "skills").iterdir())
+)
 
 # Credentials Claude Code prefers to its own login. Inherited from hands' environment, any of them would put the brain
 # on another account or off the subscription without a word, so none is passed on.
@@ -160,8 +164,9 @@ def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
         "--mcp-config", launch.mcp_config,
         # After Claude Code's own system prompt, never in place of it: the API checks that it opens as Claude Code's does.
         "--append-system-prompt", launch.instruction,
-        # hands' tools are how the brain reaches the sessions at all; a deny rule in its own setup still outranks this.
-        "--allowedTools", f"mcp__{SERVER_NAME}",
+        # hands' tools are how the brain reaches the sessions at all, and its skills how it does its jobs there; a deny rule
+        # in its own setup still outranks this.
+        "--allowedTools", f"mcp__{SERVER_NAME}", *PLUGIN_SKILLS,
         "--plugin-dir", str(PLUGIN),
         # [LAW:single-enforcer] each hook declared as the plugin declares it: a held permission's lives as long as a working
         # session's, and is denied by the same deadline.

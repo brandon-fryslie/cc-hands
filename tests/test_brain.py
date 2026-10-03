@@ -166,11 +166,12 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert argv[0] == "/real/claude" and "-p" not in argv and "--print" not in argv
     # Its tools, what it may do without asking, and its MCP servers are its config directory's: nothing here narrows them.
     assert not {"--tools", "--disallowedTools", "--permission-mode", "--strict-mcp-config", "--system-prompt", "--bare"} & set(argv)
-    assert argv[argv.index("--allowedTools") + 1] == "mcp__hands"
+    assert argv[argv.index("--allowedTools") + 1 : argv.index("--plugin-dir")] == ["mcp__hands", "Skill(hands:prompt)"]
     assert argv[argv.index("--mcp-config") + 1] == launch(tmp_path).mcp_config
     # Beside its setup's skills, hands gives it its own: the one it writes a session's prompt with among them.
-    skill = Path(argv[argv.index("--plugin-dir") + 1]) / "skills" / "prompt" / "SKILL.md"
-    assert "\nname: prompt\n" in skill.read_text() and "stage_draft" in skill.read_text()
+    plugin = Path(argv[argv.index("--plugin-dir") + 1])
+    assert json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())["name"] == "hands"
+    assert (plugin / "skills" / "prompt" / "SKILL.md").read_text().startswith("---\nname: prompt\n")
     assert [argv[argv.index(flag) + 1] for flag in ("--setting-sources", "--append-system-prompt", "--session-id")] == ["user", "You are hands.", "b1"]
     hooks = json.loads(argv[argv.index("--settings") + 1])["hooks"]
     assert {event: hooks.pop(event) for event in ("UserPromptSubmit", "Stop", "StopFailure", "Elicitation")} == {
