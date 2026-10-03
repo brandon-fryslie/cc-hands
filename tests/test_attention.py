@@ -5,6 +5,7 @@ import asyncio
 import json
 import zlib
 from pathlib import Path
+from typing import cast
 
 import pytest
 from loguru import logger
@@ -22,7 +23,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.summaries import Summaries, summaries
 from hands.sessions.tail import Tails
-from hands.voice.narrator import Recounts, delivery, narrate, recount
+from hands.voice.narrator import Recount, Recounts, delivery, narrate, recount
 from hands.voice.speech import Pushed
 from hands.voice.tools import tell_turn_tool, turn_summaries_tool, watch_session_tool
 
@@ -71,12 +72,26 @@ async def test_every_way_a_turn_is_told_tells_the_one_summary(tmp_path: Path) ->
         recounts = Recounts()
         frame = await recount(Tails(sessions), member.id, PromptId("p1"), None, "one", lambda _: None, Delta(), delivered, recounts, Pushed())
         asked = await tell_turn_tool(sessions, recounts).body(session=member.id)
-        assert asked == {"turn": recounts.of(member.id)}
+        assert asked == {"turn": "\n\n".join(cast(Recount, recounts.of(member.id)).tellings), "now": "not reported yet"}
         told[delivered] = handed(frame) if frame is not None else str(asked["turn"])
         assert (frame is None) == (delivered == "on request")
     assert len(set(told.values())) == 1
     [summary] = set(told.values())
     assert summary.endswith(f"so they can answer without looking at the screen: It said: {REPLY.split('. ')[1]}")
+
+
+async def test_a_turn_is_asked_for_only_of_a_running_session_and_one_with_nothing_to_tell_says_so(tmp_path: Path) -> None:
+    member = membership(tmp_path, "one")
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    recounts = Recounts()
+    asked = tell_turn_tool(sessions, recounts)
+    assert await asked.body(session=member.id) == {"error": "no running session has the id 'one'; take one from list_sessions"}
+    await sessions.apply(Joined(member, "startup"))
+    recounts.put(member.id, PromptId("p1"), None)
+    assert await asked.body(session=member.id) == {
+        "turn": "[hands] The Claude Code session one finished a turn with nothing in it hands could tell. Tell the user so.",
+        "now": "not reported yet",
+    }
 
 
 async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatched_one_s_until_asked(tmp_path: Path) -> None:
@@ -100,7 +115,7 @@ async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatche
     finally:
         narrating.cancel()
     assert frames.empty()
-    assert told == recounts.of(watched.id) and "session watched finished a turn" in told
+    assert recounts.of(watched.id) == Recount(PromptId("p1"), (told,)) and "session watched finished a turn" in told
     assert "session other finished a turn" in str(recounts.of(other.id))
     assert [(entry.session, entry.delivered) for entry in entries if isinstance(entry, Recounted)] == [(other.id, "on request"), (watched.id, "watched")]
 
@@ -131,8 +146,10 @@ async def test_a_session_whose_overlay_cannot_be_read_is_told_as_unwatched_and_t
 
 
 async def test_a_turn_asked_for_before_any_has_finished_is_said_to_be_missing(tmp_path: Path) -> None:
+    member = membership(tmp_path, "one")
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
-    result = await tell_turn_tool(sessions, Recounts()).body(session=ONE)
+    await sessions.apply(Joined(member, "startup"))
+    result = await tell_turn_tool(sessions, Recounts()).body(session=member.id)
     assert "error" in result and "has finished since hands started" in str(result["error"])
 
 

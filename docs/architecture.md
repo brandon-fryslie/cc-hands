@@ -132,11 +132,11 @@ Turn = Opened | Untold | Told
 @dataclass(frozen=True)
 class Opened:    turn: PromptId; others: frozenset[PromptId]; queued: bool
 @dataclass(frozen=True)
-class Untold:    turn: PromptId; others: frozenset[PromptId]; by: Stamp; asking: bool
+class Untold:    turn: PromptId; others: frozenset[PromptId]; by: Stamp
 @dataclass(frozen=True)
-class Told:      turn: PromptId | None; others: frozenset[PromptId]; asking: bool
+class Told:      turn: PromptId | None; others: frozenset[PromptId]
 
-Dialog = Held | LetGo | Unanswered
+Dialog = Held | LetGo
 @dataclass(frozen=True)
 class Held:
     on: Blocker

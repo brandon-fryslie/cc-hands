@@ -314,7 +314,7 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # open turn is over, though its idle may never have been read. An Escape and the next prompt set idle and
             # busy again 93 ms apart (2.1.283), inside one status read. Told as it stands, and compared now, while this
             # prompt's hook holds Claude Code, so before the next turn has changed anything; then that turn is marked.
-            return Opened(prompt), [*_over(id, opened, None, was.dialog)[1], Snapshot(id, was.membership.cwd)]
+            return Opened(prompt), [*_over(id, opened)[1], Snapshot(id, was.membership.cwd)]
         case (Prompted(prompt=prompt), Told() as told) if _names(told, prompt):
             # Submitted after the wire told the turn and before its Stop fired: filed under the turn's id, as a message
             # queued behind a running turn is, and run as its own turn once that Stop's hook returns. Marked here, while
@@ -355,7 +355,7 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # The user stopped the turn Claude was answering, and Claude Code goes on in no turn it interrupted (on every
             # interrupt record in this machine's transcripts): over, whether or not the idle it set was read, and told
             # as it stands. An interrupt that flushes a queued message names that message's id instead (see Taken).
-            return _over(id, opened, None, was.dialog)
+            return _over(id, opened)
         case (Read(through=through), Untold(by=by)) if through >= by:
             # Read through the point where the record of how it ended would be, and it was not there: told with what was read.
             return _told(id, turn, None)
@@ -438,9 +438,9 @@ def _told(session: SessionId, turn: Turn, closing: str | None) -> tuple[Turn, li
             return turn, []
 
 
-def _over(session: SessionId, opened: Opened, closing: str | None, dialog: Dialog | None) -> tuple[Turn, list[Effect]]:
+def _over(session: SessionId, opened: Opened) -> tuple[Turn, list[Effect]]:
     """The open turn over before Claude Code's idle was read, told now as it stands."""
-    return Told(opened.turn, opened.others), [Compare(session, again=False), Summarise(session, opened.turn, closing)]
+    return Told(opened.turn, opened.others), [Compare(session, again=False), Summarise(session, opened.turn, None)]
 
 
 def _names(turn: Turn, prompt: PromptId) -> bool:

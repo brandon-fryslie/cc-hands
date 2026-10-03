@@ -36,7 +36,7 @@ from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
 from hands.sessions.summaries import described, set_summaries
-from hands.voice.narrator import Recounts
+from hands.voice.narrator import Recount, Recounts
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.speech import answer_readback
@@ -523,10 +523,11 @@ def _waiting_on(on: Blocker) -> str:
 
 def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool:
     async def tell_turn(session: str) -> Result:
-        """What a session's last finished turn did, as hands tells a turn when it finishes.
+        """What a session's last finished turn did, as hands tells a turn when it finishes, and how it stands now.
 
-        Call this when the user asks what a session just did, how its last turn went, or what it is waiting on. Tell
-        them as the returned turn says to.
+        Call this when the user asks what a session just did or how its last turn went. Tell them as the returned turn
+        says to. `now` is how the session stands at this moment, as list_sessions says it: a question the turn ended
+        on may have been answered at the keyboard since, and a session working again is no longer waiting on it.
 
         Args:
             session: The session's id, from list_sessions.
@@ -535,11 +536,19 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool:
             id = _session_id(session)
         except Rejected as error:
             return {"error": str(error)}
-        news = recounts.of(id)
-        if news is None:
-            # [LAW:no-silent-failure] said as what it is, never as a turn that did nothing.
-            return {"error": f"no turn of {spoken_name(sessions, id)} has finished since hands started; read_session reads what it did before"}
-        return {"turn": news}
+        live = sessions.live_session(id)
+        if live is None:
+            return {"error": f"no running session has the id {id!r}; take one from list_sessions"}
+        name = spoken_name(sessions, id)
+        now = _spoken_state(live.state, live.dialog)
+        match recounts.of(id):
+            case None:
+                # [LAW:no-silent-failure] said as what it is, never as a turn that did nothing.
+                return {"error": f"no turn of {name} has finished since hands started; read_session reads what it did before"}
+            case Recount(tellings=()):
+                return {"turn": f"[hands] The Claude Code session {name} finished a turn with nothing in it hands could tell. Tell the user so.", "now": now}
+            case Recount(tellings=tellings):
+                return {"turn": "\n\n".join(tellings), "now": now}
 
     return tool(tell_turn)
 

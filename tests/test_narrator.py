@@ -21,7 +21,7 @@ from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.summaries import Summaries, summaries
 from hands.sessions.tail import Tails
-from hands.voice.narrator import REPLY_SHOWN, Recounts, narrate, recount
+from hands.voice.narrator import REPLY_SHOWN, Recount, Recounts, narrate, recount
 from hands.voice.speech import Narrated, Pushed, Tailed
 from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
@@ -180,7 +180,26 @@ async def test_a_turn_held_until_asked_for_is_told_once(tmp_path: Path) -> None:
     assert await recount(tails, SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "on request", recounts, Tailed()) is None
     assert await recount(tails, SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "summaries", Recounts(), Tailed()) is None
     [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
-    assert (recounted.delivered, recounted.told) == ("on request", recounts.of(SID))
+    assert recounted.delivered == "on request" and recounts.of(SID) == Recount(PromptId("p1"), (recounted.told,))
+
+
+async def test_a_turn_held_until_asked_for_whose_transcript_cannot_be_read_says_nothing_and_holds_the_failure(tmp_path: Path) -> None:
+    recounts = Recounts()
+    assert await recount(tailing(tmp_path / "gone.jsonl"), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "on request", recounts, Tailed()) is None
+    assert recounts.of(SID) == Recount(PromptId("p1"), ("[hands] The Claude Code session cc-hands finished a turn, and hands could not read it. Tell the user so.",))
+
+
+def test_a_turn_told_again_is_held_whole_and_the_next_turn_replaces_it_even_with_nothing_to_tell() -> None:
+    recounts = Recounts()
+    recounts.put(SID, PromptId("p1"), "first")
+    recounts.put(SID, PromptId("p1"), "then")
+    recounts.put(SID, PromptId("p1"), None)
+    assert recounts.of(SID) == Recount(PromptId("p1"), ("first", "then"))
+    recounts.put(SID, PromptId("p2"), None)
+    assert recounts.of(SID) == Recount(PromptId("p2"), ())
+    recounts.put(SID, None, "unnamed")
+    recounts.put(SID, None, "another")
+    assert recounts.of(SID) == Recount(None, ("another",))
 
 
 async def test_a_turn_a_slash_command_opened_is_logged_as_commanded_rather_than_asked(tmp_path: Path) -> None:

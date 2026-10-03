@@ -57,7 +57,7 @@ def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, r
         case "PostToolUse" | "PostToolUseFailure":
             return ToolFinished(session, at, _ran(payload), _mode(payload))
         case other:
-            raise Rejected(f"hook event {other!r} is not one hands handles")
+            raise Rejected(f"hook event {other!r} is not one hands handles; a session that loaded hands' hooks before hands stopped hooking it takes the current ones with /reload-plugins")
 
 
 def _call(payload: Payload) -> Blocker:

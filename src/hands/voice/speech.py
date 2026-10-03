@@ -45,7 +45,7 @@ class Narrated(DataFrame, UninterruptibleFrame):
 
     Never put in Pipecat's context, where it would be one message with whatever the user said beside it: the brain keeps
     its own history. Kept through a barge-in, which stops what is said, not what is still to be told. `unsaid` is what
-    hands says as written if the brain cannot take the turn, so what it was waiting on is still heard.
+    hands says as written if the brain cannot take the turn: that it could not be told, never the turn's own words.
     """
 
     text: str

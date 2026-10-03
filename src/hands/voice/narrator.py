@@ -12,6 +12,7 @@ until the user asks for it (tell_turn). Nothing of a turn is said as written pas
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
@@ -40,19 +41,32 @@ REPLY_SHOWN = 1500
 _FAILURES = (Rejected, OSError)
 
 
-class Recounts:
-    """The summary of each session's last finished turn, for the user to ask for: tell_turn hands it to the model.
+@dataclass(frozen=True)
+class Recount:
+    """What was told of one turn, each telling of it in the order it was told; none when it finished with nothing to tell."""
 
-    One per session, replaced by its next turn's and let go of when the session is gone [LAW:carrying-cost].
+    turn: PromptId | None
+    tellings: tuple[str, ...]
+
+
+class Recounts:
+    """Each session's last finished turn, for the user to ask for: tell_turn hands it to the model.
+
+    One per session, replaced by its next turn's and let go of when the session is gone [LAW:carrying-cost]. A turn told
+    again, as one that went on past its Stop is, adds what it did since to what was told of it, so the turn held is the
+    whole turn. A turn with no id is never taken for the one held.
     """
 
     def __init__(self) -> None:
-        self._last: dict[SessionId, str] = {}
+        self._last: dict[SessionId, Recount] = {}
 
-    def put(self, session: SessionId, news: str) -> None:
-        self._last[session] = news
+    def put(self, session: SessionId, turn: PromptId | None, told: str | None) -> None:
+        """`told` is None when the telling found nothing new: the turn held stays as it is, and another replaces it."""
+        held = self._last.get(session)
+        earlier = held.tellings if held is not None and turn is not None and held.turn == turn else ()
+        self._last[session] = Recount(turn, (*earlier, *([] if told is None else [told])))
 
-    def of(self, session: SessionId) -> str | None:
+    def of(self, session: SessionId) -> Recount | None:
         return self._last.get(session)
 
     def gone(self, session: SessionId) -> None:
@@ -123,9 +137,12 @@ async def recount(
     try:
         told = await tails.tell(session, turn, closing)
     except _FAILURES as error:
-        return as_written(_unread(session, name, error), telling)
+        unread = _unread(session, name, error)
+        recounts.put(session, turn, f"[hands] The Claude Code session {name} finished a turn, and hands could not read it. Tell the user so.")
+        return _delivered(delivered, as_written(unread, telling))
     if told is None or not (told.turn.steps or delta):
         logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")
+        recounts.put(session, turn, None)
         return None
     tree = narration(told.turn, delta)
     news = _news(name, told.turn, tree)
@@ -141,10 +158,15 @@ async def recount(
     )
     # Marked told however it is delivered: the summary holds what the user is told of it, so the steps are let go of.
     await tails.spoken(told)
-    recounts.put(session, news)
+    recounts.put(session, turn, news)
+    return _delivered(delivered, handed(news, f"{name} finished a turn, and I could not tell it.", telling))
+
+
+def _delivered(delivered: Delivery, frame: Frame) -> Frame | None:
+    """The frame, as the turn finishes with summaries on or the session watched; none when it waits to be asked for."""
     match delivered:
         case "summaries" | "watched":
-            return handed(news, f"{name} finished a turn, and I could not tell it.", telling)
+            return frame
         case "on request":
             return None
 
