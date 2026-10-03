@@ -374,8 +374,9 @@ def _ending(was: Session, prompt: PromptId, closing: str | None, again: bool) ->
         case Opened() as opened if _names(opened, prompt):
             # Compared before the turn is handed over to be summarised, never after: see Compare. A turn queued behind it
             # is marked while its Stop hook holds Claude Code, or, heard on the wire first, before that hook is let go
-            # (see Sessions): so before Claude Code can run the queued turn.
-            return Told(opened.turn, opened.others), [Compare(id, again), Summarise(id, prompt, closing), *_following(was.membership, opened)]
+            # (see Sessions): so before Claude Code can run the queued turn. Read against its prompt's mark even when the
+            # Stop is one again: a first Stop hands never heard told nothing, so no reading left off anywhere for this turn.
+            return Told(opened.turn, opened.others), [Compare(id, again=False), Summarise(id, prompt, closing), *_following(was.membership, opened)]
         case Untold() as untold if _names(untold, prompt):
             # Its Stop fired after Claude Code set idle, as an Escape's can: told with the reply it carries.
             return _told(id, untold, closing)
@@ -398,8 +399,9 @@ def _stopping(was: Session, stop: Unnamed) -> tuple[Turn, list[Effect]] | None:
     id, turn, prompt = was.membership.id, was.turn, stop.prompt
     match (_ending(was, prompt, stop.closing, stop.again), turn):
         case (None, Told()) if not _heard(was, prompt):
-            # A turn hands never had open, such as the one a session was in when it was attached.
-            return _alone(was, prompt, stop.closing, stop.again)
+            # A turn hands never had open, such as the one a session was in when it was attached. Told here for the first
+            # time whatever its Stop says: where the last reading left off is another turn's end [LAW:one-source-of-truth].
+            return _alone(was, prompt, stop.closing, again=False)
         case (None, Opened() | Untold()) if not _heard(was, prompt) and status_stamp(was.state) is not None:
             # Whether it is the open or waiting turn's, gone on under a queued message whose record is unread, or a turn
             # after it whose record is unread, only the transcript says, and a Stop told as the wrong turn is heard as
