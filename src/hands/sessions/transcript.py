@@ -177,6 +177,10 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | None:
 _RAN = re.compile(r"\s*<(command-name|command-message|bash-input|local-command-stdout|local-command-stderr|bash-stdout|bash-stderr)>")
 # Each output tag, and how what it holds is told: what went to stderr is marked, so a command that failed is not told as
 # one that printed its answer.
+# A command Claude Code writes as the words typed: /compact ahead of the compaction it asks for, and a skill run in a
+# fork of its own. A slash and a name first, which no prompt Claude Code sends on to Claude opens with: one that names
+# no command is refused at the keyboard. 9 such records in 500 transcripts on 2.1.286, every one a command.
+_TYPED = re.compile(r"\s*(/[A-Za-z][\w:.-]*)(?:\s+(.*?))?\s*", re.DOTALL)
 _OUTPUTS = (("local-command-stdout", ""), ("bash-stdout", ""), ("local-command-stderr", "stderr: "), ("bash-stderr", "stderr: "))
 
 
@@ -186,12 +190,14 @@ def _ran(ref: Ref | None, text: str, parent: Ref | None) -> Commanded | Shelled 
     [LAW:types-are-the-program] each kind is read as itself, so neither a command's markup nor its output's
     terminal colours ever reach the narration as something the user asked.
     """
-    match _RAN.match(text):
-        case None:
+    match _RAN.match(text), _TYPED.fullmatch(text):
+        case None, None:
             return None
-        case found if found.group(1) in ("command-name", "command-message"):
+        case None, typed:
+            return Commanded(ref, typed.group(1), typed.group(2) or "")
+        case found, _ if found.group(1) in ("command-name", "command-message"):
             return Commanded(ref, _tagged(text, "command-name"), _tagged(text, "command-args"))
-        case found if found.group(1) == "bash-input":
+        case found, _ if found.group(1) == "bash-input":
             return Shelled(ref, _tagged(text, "bash-input"))
         case _:
             return Printed(parent, "\n".join(f"{mark}{output}" for tag, mark in _OUTPUTS if (output := _tagged(text, tag))))

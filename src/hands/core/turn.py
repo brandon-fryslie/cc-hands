@@ -181,11 +181,7 @@ def printed(opening: Opening, of: Ref | None, output: str) -> Opening | None:
         case Commanded() | Shelled():
             # Empty output printed nothing.
             return opening if not output else replace(opening, output=output if opening.output is None else f"{opening.output}\n{output}")
-        case Asked(ref=ref, text=text):
-            # A skill run in a fork of its own is written as the words typed, and is known for a command by its output.
-            name, _, args = text.strip().partition(" ")
-            return Commanded(ref, name, args.strip(), output or None)
-        case Notified():
+        case Asked() | Notified():
             return None
 
 # One thing that happened in a session: what opened a turn, or a step of the answer to it. A Turn holds the two

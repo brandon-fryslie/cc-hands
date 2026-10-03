@@ -7,7 +7,7 @@ Claude Code writes to the subagent's file rather than this one.
 
 from pathlib import Path
 
-from hands.core.turn import Asked, Delegated, Edited, Happening, Interruption, Ran, Ref, Said, Shelled
+from hands.core.turn import Asked, Commanded, Delegated, Edited, Happening, Interruption, Ran, Ref, Said, Shelled
 from hands.sessions.backfill import read_transcript
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
@@ -160,3 +160,13 @@ def test_a_command_that_printed_nothing_is_read_as_having_no_output(tmp_path: Pa
     output = '{"uuid":"u6","parentUuid":"u5","type":"user","message":{"role":"user","content":"<bash-stdout></bash-stdout><bash-stderr></bash-stderr>"}}'
     happenings = read_transcript(written(tmp_path / "t.jsonl", PROMPT, DONE, shell, output)).happenings
     assert happenings[2:] == [Shelled(Ref("u5"), "true", None)]
+
+
+def test_compact_typed_as_words_ahead_of_its_compaction_is_read_as_the_command_it_is(tmp_path: Path) -> None:
+    """As 2.1.286 writes it, live: the words `/compact`, the compaction, then its command record and what it printed."""
+    typed = '{"uuid":"u5","type":"user","promptId":"p2","message":{"role":"user","content":"/compact"}}'
+    summary = '{"uuid":"u6","type":"user","isCompactSummary":true,"promptId":"p2","message":{"role":"user","content":"This session is being continued"}}'
+    command = '{"uuid":"u7","type":"user","promptId":"p2","message":{"role":"user","content":"<command-name>/compact</command-name>\\n<command-message>compact</command-message>\\n<command-args></command-args>"}}'
+    output = '{"uuid":"u8","parentUuid":"u7","type":"user","promptId":"p2","message":{"role":"user","content":"<local-command-stdout>\\u001b[2mCompacted\\u001b[22m</local-command-stdout>"}}'
+    happenings = read_transcript(written(tmp_path / "t.jsonl", PROMPT, DONE, typed, summary, command, output)).happenings
+    assert happenings[2:] == [Commanded(Ref("u5"), "/compact", ""), Commanded(Ref("u7"), "/compact", "", "Compacted")]
