@@ -8,7 +8,7 @@ from pathlib import PurePath
 
 from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
 
-from hands.core.attention import Overlay, Route, progress_route
+from hands.core.attention import Amount, Attention, Overlay, Route, progress_route
 from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Progress, SessionGone, Speak
 from hands.core.pending import Briefing, Finished, News, Pending, Unread, Working, went_on
 from hands.core.progress import lowered, said
@@ -28,6 +28,12 @@ REPLY_SHOWN = 1500
 _INPUT_SHOWN = 800
 
 Names = Callable[[SessionId], str]
+
+# How much of a finished turn the model is asked to say, as the user set it.
+_HOW_MUCH: Mapping[Amount, str] = {
+    "brief": "Tell the user in a few words which session finished and the one thing it did, naming the session.",
+    "full": "Tell the user what it concretely did, in your own words, in one or two spoken sentences, naming the session.",
+}
 
 # How an approved plan goes on, in the words of the choice that approved it.
 _AFTER_PLAN: Mapping[ModeAfterPlan, str] = {
@@ -119,11 +125,12 @@ def bounded(text: str, limit: int) -> str:
     return text if len(text) <= limit else f"{text[:limit]}... (cut short)"
 
 
-# How a session is attended to as its progress is relayed: whether it is the focus, and its overlay, read as it is.
-Attending = Callable[[SessionId], Awaitable[tuple[bool, Overlay]]]
+# How a session is attended to as its progress is relayed: what hands is set to say unprompted, whether the session is
+# the focus, and its overlay, each read as it is.
+Attending = Callable[[SessionId], Awaitable[tuple[Attention, bool, Overlay]]]
 
 
-async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]], record: Record, attending: Attending, play: Callable[[Progress], None]) -> None:
+async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]], record: Record, attending: Attending, play: Callable[[Progress, Amount], None]) -> None:
     """Hand what the sessions say to the floor, in the order it was decided, until cancelled; progress to be played is
     handed to `play`, since text in it waits on a summary, and what a session asks never waits behind that."""
     while True:
@@ -131,19 +138,19 @@ async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[Non
         record(Relayed(heard))
         match heard:
             case Progress(session=session):
-                focused, overlay = await attending(session)
-                route = progress_route(focused, overlay)
+                attention, focused, overlay = await attending(session)
+                route = progress_route(attention, focused, overlay)
                 # [LAW:nothing-unseen] which way progress went, and what decided it.
-                record(Routed(session, focused, overlay, route))
+                record(Routed(session, attention, focused, overlay, route))
                 _routed(route, heard, play)
             case Speak() | Narrate() | Note():
                 await queue_frame(Unprompted(heard))
 
 
-def _routed(route: Route, progress: Progress, play: Callable[[Progress], None]) -> None:
+def _routed(route: Route, progress: Progress, play: Callable[[Progress, Amount], None]) -> None:
     match route:
-        case "play":
-            play(progress)
+        case "brief" | "full":
+            play(progress, route)
         case "note":
             # [LAW:one-source-of-truth] the session listing says what a working session last set out to do, for either
             # model to read when asked, so nothing is added to a context that keeps every message it is given.
@@ -164,9 +171,9 @@ def frames(pending: Pending, telling: Telling, names: Names) -> Sequence[Frame]:
         case Note(), Tailed():
             # [LAW:one-source-of-truth] the tail of the brain's next request says how the session stands now.
             return ()
-        case Finished(session=session, news=news), _:
+        case Finished(session=session, news=news, amount=amount), _:
             name = names(session)
-            return handed(told(session, name, news), f"{name} finished {_turns(news)}, and I could not tell it.", session, telling)
+            return handed(told(session, name, news, amount), f"{name} finished {_turns(news)}, and I could not tell it.", session, telling)
         case Unread(session=session), _:
             return (as_written(TTSSpeakFrame(f"{names(session)} finished a turn, and I could not read it.", append_to_context=False), telling),)
         case SessionGone(session=session), _:
@@ -189,9 +196,9 @@ def _doer(name: str, of: frozenset[PromptId] | AgentTask) -> str:
             return name
 
 
-def told(session: SessionId, name: str, news: Sequence[News]) -> str:
+def told(session: SessionId, name: str, news: Sequence[News], amount: Amount) -> str:
     """Finished turns as the model is handed them: the last thing the session said in each, what hands read of each
-    that those words may not say, and what it is waiting on, which the model ends by asking.
+    that those words may not say, what it is waiting on, which the model ends by asking, and how much of it to say.
 
     Only the last turn's question is put: a session that went on to another turn was answered, at the keyboard or
     by the turn that followed.
@@ -207,7 +214,7 @@ def told(session: SessionId, name: str, news: Sequence[News]) -> str:
     )
     return (
         f"[hands] The Claude Code session {name} (id {session}) finished {_turns(news)}. {accounts}"
-        f"Tell the user what it concretely did, in your own words, in one or two spoken sentences, naming the session. {ending}"
+        f"{_HOW_MUCH[amount]} {ending}"
     )
 
 

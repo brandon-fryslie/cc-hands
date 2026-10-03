@@ -378,21 +378,25 @@ words, what its record adds, and what it is waiting on. `speech.told` is the one
 becomes what the model is handed, under the session's name as it is when told, for the model
 to say in its own words. How that one summary reaches the user is its `Delivery`: as a turn of the intermediary's own
 — an `LLMMessagesAppendFrame` with `run_llm` on for an API model, a `Narrated` frame for
-the brain — when spoken summaries are on (`summaries`), or when they are off and the
-session is watched (`watched`); otherwise it is held (`on request`) and `tell_turn` hands it
+the brain — when finished turns are set to be told, briefly or in full, or when the session is
+watched (`Spoken`); otherwise it is held (`Withheld`, saying why) and `tell_turn` hands it
 to the model when the user asks. Each session's last summary is held in `Recounts` either
 way, as its `News`, and each is a `Recounted` audit line naming its delivery. Nothing of a turn is said as
 written past the model, and nothing is said of a session that sits at its prompt.
 `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
 with `run_llm` off. Each session has an overlay, `normal`, `watched`, or `muted`, one file per
 session under `~/.hands/overlays` (`hands/core/attention.py`), which the narrator reads at
-every finished turn. `delivery` is the table over the summaries switch and the overlay: a
-muted session's turn is held whatever the switch says, until the user asks for it through
-`tell_turn`. The user sets the overlay by voice with `set_overlay`, and the summaries
-switch with `turn_summaries` or `/hands:summaries`. A muted session's permission requests,
+every finished turn. What hands says unprompted is one control, `Attention`
+(`hands/core/attention.py`), kept in `~/.hands/attention.json`: a level for each kind it
+says unasked — finished turns, the focused session's progress, a session ending — and
+quiet, which holds all of them without touching their levels. `delivery`, `progress_route`,
+and `ended_route` are the tables over it and the overlay; a muted session's turn is held
+whatever is set, until the user asks for it through `tell_turn`. The user sets the overlay
+by voice with `set_overlay`, and what is said unprompted with `attention` or
+`/hands:attention`. A muted session's permission requests,
 questions, and plans are still narrated: held unsaid, each would wait out its deadline and
-be refused. Progress has its row of the table today, `attention.progress_route` over the
-focus and the overlay (see "Streaming"); the player and the table over every other event kind
+be refused. Progress has its row of the table today, `attention.progress_route` over what
+is set, the focus, and the overlay (see "Streaming"); the player and the table over every other event kind
 below are planned.
 
 The routing table is a value in `core`:
@@ -410,9 +414,10 @@ becomes `note`, and its `narrate` stays, since a session that asks needs an answ
 value is a new column `[LAW:one-type-per-behavior]`.
 
 Pending speech is ordered as the floor lets it go, and nothing starts while the key is
-down. `coalesce` (`core/pending.py`) is pure: it drops what no longer waits on the user, a
-request answered at the keyboard while you talked and a deadline counted down on it, read
-off each session's held dialog, by request id, as the floor lets go; it folds one session's
+down. `coalesce` (`core/pending.py`) is pure: it drops what is no longer so, read off the
+live sessions as the floor lets go: a request answered at the keyboard while you talked and
+a deadline counted down on it, by the held dialog's request id, and progress of a turn that
+ended meanwhile, whether or not its ending was told; it folds one session's
 finished turns into one `Finished` where the first stood, whose headline covers them all
 ("finished 3 turns") and whose tellings keep their narration parts and so their record ids,
 so three `Stop`s that arrived while you were talking start with one sentence, not three, and
@@ -572,7 +577,7 @@ never holds the agent up.
 **Installing the hooks.** The repository is a Claude Code marketplace
 (`.claude-plugin/marketplace.json`) holding one plugin, `plugin/`:
 `plugin/.claude-plugin/plugin.json`, `plugin/hooks/hooks.json`, the launcher
-`plugin/hooks/python`, the `/hands:summaries` skill in `plugin/skills/summaries`, and
+`plugin/hooks/python`, the `/hands:attention` skill in `plugin/skills/attention`, and
 `plugin/src`, a link to the repository's `src`. The plugin is
 a directory of its own so that an install copies those and not the repository's venv.
 Installing the plugin installs the hooks; disabling or uninstalling it removes them,

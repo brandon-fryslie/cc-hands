@@ -7,6 +7,7 @@ from typing import cast
 
 from loguru import logger
 
+from hands.core.attention import Spoken
 from hands.core.delta import Delta
 from hands.core.session import Membership, PromptId, SessionId
 from hands.core.steps import Call, Result, recognise
@@ -98,7 +99,7 @@ def reviewer(transcript: Path, *, forked: bool = False) -> None:
 async def told(transcript: Path, recorded: list[Entry]) -> Recounts:
     recounts = Recounts()
     tails = Tails(Registry(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript)))
-    await recount(tails, SID, PromptId("p2"), None, recorded.append, Delta(), "summaries", recounts)
+    await recount(tails, SID, PromptId("p2"), None, recorded.append, Delta(), Spoken("full", "finished"), recounts)
     return recounts
 
 

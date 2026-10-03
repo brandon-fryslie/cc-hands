@@ -2,12 +2,15 @@
 
 from collections.abc import Mapping, Sequence
 
+from pathlib import Path
+
 import pytest
 
 from hands.core.effects import Asking, DeadlineNear, Expired, ModeChanged, Narrate, Note, SessionGone, Speak
 from hands.core.narration import THE_TESTS, Segment
 from hands.core.pending import Briefing, Finished, News, Pending, Unread, coalesce
-from hands.core.session import Held, Permission, PromptId, RequestId, SessionId
+from hands.core.session import Held, Membership, Permission, PromptId, RequestId, Running, Session, SessionId
+from hands.core.status import Busy, Stamp
 
 API, WEB = SessionId("api"), SessionId("web")
 BASH = Permission("Bash", {"command": "ls"})
@@ -19,15 +22,17 @@ def news(reply: str) -> News:
 
 
 def finished(session: SessionId, *replies: str) -> Finished:
-    return Finished(session, tuple(news(reply) for reply in replies))
+    return Finished(session, tuple(news(reply) for reply in replies), "full")
 
 
 def asks(session: SessionId, request: str, on: Permission = BASH) -> Narrate:
     return Narrate(Asking(session, RequestId(request), on))
 
 
-def held(session: SessionId, request: str, on: Permission = BASH) -> Mapping[SessionId, Held]:
-    return {session: Held(on, RequestId(request), deadline=60.0, warned=False)}
+def held(session: SessionId, request: str, on: Permission = BASH) -> Mapping[SessionId, Session]:
+    """The session live, its dialog waiting on an answer to `request`."""
+    member = Membership(session, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl"))
+    return {session: Session(member, Running(Busy(), Stamp(1000), None), mode=None, dialog=Held(on, RequestId(request), deadline=60.0, warned=False))}
 
 
 NOTE = Note(ModeChanged(API, "acceptEdits"))
@@ -124,11 +129,11 @@ GONE = SessionGone(SessionId("old"))
         ),
     ],
 )
-def test_coalesce(pending: Sequence[Pending], waiting: Mapping[SessionId, Held], told: tuple[Pending, ...]) -> None:
+def test_coalesce(pending: Sequence[Pending], waiting: Mapping[SessionId, Session], told: tuple[Pending, ...]) -> None:
     assert coalesce(pending, waiting) == told
 
 
 def test_a_folded_telling_keeps_every_turn_s_parts() -> None:
     first, second = News(None, "one", "", "", (Segment(THE_TESTS, "one test run"),), frozenset()), News(None, "two", "It committed.", "Push it?", (), frozenset())
-    [folded] = coalesce((Finished(API, (first,)), Finished(API, (second,))), {})
-    assert folded == Finished(API, (first, second))
+    [folded] = coalesce((Finished(API, (first,), "full"), Finished(API, (second,), "brief")), {})
+    assert folded == Finished(API, (first, second), "brief")

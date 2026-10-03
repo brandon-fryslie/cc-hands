@@ -31,7 +31,7 @@ from hands.core.progress import Doing, said
 from hands.core.session import Blocker, Membership, CommandName, Dialog, Opened, Turn, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
-from hands.core.attention import Delivery, Overlay
+from hands.core.attention import Attention, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.sentences import Due, cut, turn_digest
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
@@ -44,9 +44,9 @@ from hands.sessions.payload import Payload, Rejected
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
-from hands.sessions.summaries import described, set_summaries, summaries
+from hands.sessions import attention as settings
 from hands.core import playback
-from hands.voice.narrator import Recount, Recounts, delivery, switch
+from hands.voice.narrator import Recount, Recounts, delivery, set_to
 from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
@@ -277,7 +277,7 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
         *(defaulting_to_focus(tool, home) for tool in on_a_session),
         *permission_tools(sessions),
         catch_up_tool(sessions, home, lambda: datetime.now(UTC)),
-        turn_summaries_tool(home),
+        attention_tool(home),
         *voice_tools(Voices(home, player.lines, fetched)),
         *playback_tools(player),
         stay_silent_tool(),
@@ -770,7 +770,7 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts, refocus: Refocus) -> 
                 turn = f"[hands] The Claude Code session {name} finished a turn with nothing in it hands could tell. Tell the user so."
             case Recount(tellings=tellings, unread=unread):
                 failed = (f"[hands] hands could not read {'the rest of ' if tellings else ''}the turn the Claude Code session {name} finished. Tell the user so.",)
-                turn = "\n\n".join((*(told(id, name, (telling,)) for telling in tellings), *(failed if unread else ())))
+                turn = "\n\n".join((*(told(id, name, (telling,), "full") for telling in tellings), *(failed if unread else ())))
         # Told as a turn that finishes is told, so the focus moves to it as it does then, recorded as that move is.
         await refocus(id)
         return {"turn": turn, "now": now}
@@ -863,28 +863,44 @@ def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -
     return tool(catch_up)
 
 
-def turn_summaries_tool(home: Home) -> Tool:
-    async def turn_summaries(on: bool) -> Result:
-        """Turn spoken turn summaries on or off.
+class Change(TypedDict):
+    kind: Literal["finished", "progress", "ended", "quiet"]
+    level: Literal["off", "brief", "full", "on"]
 
-        On, every turn any session finishes is told to the user as it finishes, except a muted session's. Off, only a watched
-        session's turns are (set_overlay), and any session's last turn is told when the user asks for it (tell_turn). What a session
-        asks them, a permission, a question, or a plan, is said either way. Call this when the user asks to hear every
-        session's turns, or to stop hearing them. It lasts until they change it, across restarts. Say the returned
-        readback to the user.
+
+def attention_tool(home: Home) -> Tool:
+    async def attention(changes: list[Change]) -> Result:
+        """Change what you say to the user without being asked, or hear what is set: with no changes, it only says.
+
+        Kinds, and their levels:
+        - finished: each turn a session finishes. off holds it until they ask (tell_turn, catch_up), except a watched
+          session's; brief tells it in a few words; full tells what it did.
+        - progress: the focused session's steps as it works. off says none; brief says what it says it is doing; full
+          says each step.
+        - ended: a session ending, on or off.
+        - quiet: on holds everything above, whatever its level, until it is off again, and leaves the levels as they
+          were. "Be quiet for a while" is quiet on; "you can talk again" is quiet off.
+        What a session asks, a permission, a question, or a plan, is said whatever is set: it needs an answer.
+
+        Call this as soon as the user says what they want to hear more or less of, mapping their words to the nearest
+        kind and level yourself, several changes at once if they said several; never ask which they meant. "Stop telling
+        me when sessions finish" is finished off; "just the headlines" is finished brief; "less detail while it works" is
+        progress brief. Call it with no changes when they ask what you tell them. It lasts until they change it, across
+        restarts, from the next thing you would say. Say the returned readback to the user; for quiet on, say in a few words
+        that you will keep quiet, never nothing, so they know it took.
 
         Args:
-            on: true to tell every finished turn, false to tell only watched sessions' turns.
+            changes: each kind to set and its level, in the order said; none to hear what is set.
         """
-        to = "on" if on else "off"
         try:
-            await asyncio.to_thread(set_summaries, home, to)
-        except OSError as error:
-            logger.error(f"turn_summaries could not set the switch {to}: {error}")
+            said = [_change(change) for change in _items(changes, "changes")]
+            to = await asyncio.to_thread(settings.asked, home, said)
+        except (Rejected, OSError) as error:
+            logger.error(f"attention could not set {changes!r}: {error}")
             return {"error": str(error)}
-        return {"readback": described(to)}
+        return {"readback": settings.described(to)}
 
-    return tool(turn_summaries, completes=True)
+    return tool(attention, completes=True)
 
 
 def voice_tools(voices: Voices) -> list[Tool]:
@@ -946,13 +962,13 @@ def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
     async def set_overlay(session: str, overlay: Overlay) -> Result:
         """Set how the user hears a session's finished turns: watched, normal, or muted.
 
-        `watched` tells them each turn it finishes, as it finishes. `normal` tells its turns only with spoken summaries
-        on (turn_summaries), and otherwise when they ask (tell_turn); every session is normal until they change it.
-        `muted` tells its turns only when they ask, even with spoken summaries on. Whatever its overlay, a session's
+        `watched` tells them each turn it finishes, as it finishes, even with finished turns off. `normal` tells its
+        turns as finished turns are set to be told (attention), and otherwise when they ask (tell_turn); every session is
+        normal until they change it. `muted` tells its turns only when they ask. Whatever its overlay, a session's
         permission requests, questions, and plans are said: they need an answer. Call this with watched when the user
         asks to be told when a session finishes, with muted when they ask to stop hearing about it or to mute it, and
         with normal when they unmute or unwatch it. It lasts until they change it, across restarts. Say the returned
-        readback to the user: it says how the session's turns now reach them, spoken summaries considered.
+        readback to the user: it says how the session's turns now reach them, what is set considered.
 
         Args:
             session: The session's id, from list_sessions.
@@ -968,24 +984,28 @@ def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
         except (Rejected, OSError) as error:
             logger.error(f"set_overlay could not set session {session!r} to {overlay!r}: {error}")
             return {"error": str(error)}
-        # [LAW:one-source-of-truth] the delivery the narrator computes, from the switch as it reads it, so the readback
+        # [LAW:one-source-of-truth] the delivery the narrator computes, from what is set as it reads it, so the readback
         # says what will happen to the session's next turn.
-        delivered = delivery(await switch(lambda: summaries(overlays.home)), overlay)
-        return {"readback": _overlay_readback(spoken_name(sessions, id), delivered)}
+        return {"readback": _overlay_readback(spoken_name(sessions, id), await set_to(lambda: settings.attention(overlays.home)), overlay)}
 
     return tool(set_overlay, completes=True)
 
 
-def _overlay_readback(name: str, delivered: Delivery) -> str:
-    match delivered:
-        case "watched":
-            return f"I'll tell you each turn {name} finishes."
-        case "summaries":
-            return f"I'll tell you each turn {name} finishes, as I tell every session's with spoken summaries on."
-        case "on request":
-            return f"I'll hold {name}'s turns until you ask for one."
-        case "muted":
-            return f"{name} is muted: I'll hold its turns until you ask, even with spoken summaries on. It still speaks when it needs your answer."
+def _overlay_readback(name: str, attention: Attention, overlay: Overlay) -> str:
+    match delivery(attention, overlay):
+        case Spoken(why=why):
+            return {
+                "watched": f"I'll tell you each turn {name} finishes.",
+                "finished": f"I'll tell you each turn {name} finishes, as I tell every session's.",
+            }[why]
+        case Withheld(why="quiet"):
+            # What quiet holds is told as it is set once hands talks again, so that is said too.
+            return f"For now I'm keeping quiet and holding {name}'s turns. After that, {_overlay_readback(name, replace(attention, quiet='off'), overlay)}"
+        case Withheld(why=why):
+            return {
+                "off": f"I'll hold {name}'s turns until you ask for one.",
+                "muted": f"{name} is muted: I'll hold its turns until you ask. It still speaks when it needs your answer.",
+            }[why]
 
 
 class Resolved(TypedDict):
@@ -1288,6 +1308,16 @@ def _items(value: object, what: str) -> list[object]:
             return cast(list[object], value)
         case other:
             raise Rejected(f"{what} should be a list, got {type(other).__name__}")
+
+
+def _change(item: object) -> tuple[str, str]:
+    """A change as the model gave it, its kind and level left to `changed`, the one place they are read."""
+    match item:
+        case dict():
+            fields = Payload(cast(dict[str, object], item))
+            return fields.text("kind"), fields.text("level")
+        case other:
+            raise Rejected(f"each change should be an object with kind and level, got {type(other).__name__}")
 
 
 def _resolution(item: object) -> Resolution:

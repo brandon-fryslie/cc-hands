@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     # Defined only in loguru's type stubs.
     from loguru import Message
 
-from hands.core.attention import Delivery, Overlay, Route
+from hands.core.attention import Amount, Attention, Delivery, EndedRoute, Overlay, Route
 from hands.core.delta import Branched, PullRequested, Pushed
 from hands.core.effects import AfterEnd, Allow, AuditRecord, Deny, Effect, Heard, Holding, Input, Type, Unclosed, Unmatched, Unregistered, Unsettled
 from hands.core.events import Event
@@ -306,13 +306,24 @@ class Relayed:
 
 @dataclass(frozen=True)
 class Routed:
-    """Which way a session's progress went: played, for the focused session, or noted for the model; and the focus and
-    overlay that decided it, as they were read."""
+    """Which way a session's progress went: played, briefly or in full, for the focused session, or noted for the
+    model; and what hands was set to say unprompted, the focus, and the overlay that decided it, as they were read."""
 
     session: SessionId
+    attention: Attention
     focused: bool
     overlay: Overlay
     route: Route
+
+
+@dataclass(frozen=True)
+class EndedRouted:
+    """Whether a session's ending was said, or left to the log for catch_up; and what hands was set to say unprompted
+    that decided it, as it was read."""
+
+    session: SessionId
+    attention: Attention
+    route: EndedRoute
 
 
 RefocusOutcome = Literal["moved", "ended", "failed"]
@@ -340,6 +351,8 @@ class ProgressTold:
     explained: str | None
     failed: str | None
     current: bool
+    # How much of it the user set to be said: briefly, a burst is said by its text alone, and one with none is not said.
+    amount: Amount
 
 
 @dataclass(frozen=True)
@@ -348,7 +361,7 @@ class Recounted:
 
     `reply` is the last thing the session said in the turn and `facts` what hands adds from its record: what the model
     is handed to say in its own words, under the session's name as it is when told. `delivered` is how it reached the
-    user: told as the turn finished, or held for when they ask (tell_turn).
+    user and what decided it: told as the turn finished, and how much of it, or held for when they ask (tell_turn).
     `topics` is every part of the turn's narration that was built and not played — its sections, and what it
     asked through a dialog and is no longer waiting on — which makes this line the
     one place a developer who cannot see the screen can find out what "more on that" has to open. `questions`
@@ -554,6 +567,7 @@ Entry = (
     | Yielded
     | Relayed
     | Routed
+    | EndedRouted
     | Refocused
     | ProgressTold
     | Recounted
@@ -604,7 +618,7 @@ def level(entry: Entry) -> Level:
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
             | Applied() | Performed() | Typing() | LLMChosen() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
-            | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Routed() | Recounted() | Summarised()
+            | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()
         ):
             return "info"

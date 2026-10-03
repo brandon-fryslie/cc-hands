@@ -1,5 +1,5 @@
 """The focused session heard as it works: each burst of its progress played in the order it settled, its text said by
-a summary of it."""
+a summary of it; briefly, what it says it is doing alone, without the calls it makes."""
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -7,17 +7,18 @@ from collections.abc import Awaitable, Callable
 from loguru import logger
 from pipecat.frames.frames import Frame
 
+from hands.core.attention import Amount
 from hands.core.effects import Progress
-from hands.core.pending import Working
+from hands.core.pending import Working, current
 from hands.core.progress import WRITING, Doing, explained
-from hands.core.session import Opened, PromptId, Session, SessionId, ids
-from hands.core.turn import AgentTask
+from hands.core.session import Session, SessionId
 from hands.sessions.audit import ProgressTold, Record
 from hands.voice.speech import Unprompted
 from hands.voice.summary import SUMMARY_FAILURES, Summariser
 
-# The one lane progress to be played goes by, from the relay that routes it to the task that plays it.
-Playing = asyncio.Queue[Progress]
+# The one lane progress to be played goes by, from the relay that routes it to the task that plays it, with how much of
+# it is said.
+Playing = asyncio.Queue[tuple[Progress, Amount]]
 
 
 async def keep_playing(
@@ -31,24 +32,35 @@ async def keep_playing(
     it did as the summary is ready, and progress of a turn that has ended is not played, since that turn's result is
     told instead.
     """
-    summarising: asyncio.Queue[tuple[Progress, asyncio.Task[tuple[Doing | None, str | None]]]] = asyncio.Queue()
+    summarising: asyncio.Queue[tuple[Progress, Amount, asyncio.Task[tuple[Doing | None, str | None]]]] = asyncio.Queue()
 
     async def begin(group: asyncio.TaskGroup) -> None:
         while True:
-            progress = await playing.get()
-            summarising.put_nowait((progress, group.create_task(_explained(progress, explain))))
+            progress, amount = await playing.get()
+            summarising.put_nowait((progress, amount, group.create_task(_explained(progress, explain))))
 
     async with asyncio.TaskGroup() as group:
         group.create_task(begin(group))
         while True:
-            progress, summary = await summarising.get()
+            progress, amount, summary = await summarising.get()
             explaining, failed = await summary
-            current = _current(live_session(progress.session), progress.of)
-            # [LAW:nothing-unseen] what the text came to, and whether it was played.
-            record(ProgressTold(progress.session, len(progress.written), None if explaining is None else explaining.alone, failed, current))
-            if current:
-                said = progress.doings if explaining is None else (explaining, *progress.doings)
+            ongoing = current(live_session(progress.session), progress.of)
+            # [LAW:nothing-unseen] what the text came to, whether it was played, and how much of it.
+            record(ProgressTold(progress.session, len(progress.written), None if explaining is None else explaining.alone, failed, ongoing, amount))
+            said = _said(amount, explaining, progress.doings)
+            if ongoing and said:
                 await queue_frame(Unprompted(Working(progress.session, progress.of, said)))
+
+
+def _said(amount: Amount, explaining: Doing | None, calls: tuple[Doing, ...]) -> tuple[Doing, ...]:
+    """What of a burst is said: all of it; or, briefly, what the session says it is doing, which is nothing for a burst
+    of calls alone."""
+    told = () if explaining is None else (explaining,)
+    match amount:
+        case "full":
+            return (*told, *calls)
+        case "brief":
+            return told
 
 
 async def _explained(progress: Progress, explain: Summariser) -> tuple[Doing | None, str | None]:
@@ -66,14 +78,3 @@ async def _explained(progress: Progress, explain: Summariser) -> tuple[Doing | N
                 logger.error(f"the text session {progress.session} wrote could not be summarised, so it is said to have been written: {type(error).__name__}: {error}")
                 return Doing(WRITING, None), f"{type(error).__name__}: {error}"
 
-
-def _current(session: Session | None, of: frozenset[PromptId] | AgentTask) -> bool:
-    """Whether the session still runs the turn that goes by any of these ids; for a subagent's work, whether the session
-    is still live, since the turn its work is told with may not have opened yet."""
-    match session, of:
-        case Session(turn=Opened() as opened), frozenset() as turn:
-            return not ids(opened).isdisjoint(turn)
-        case Session(), AgentTask():
-            return True
-        case _:
-            return False

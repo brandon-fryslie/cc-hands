@@ -142,12 +142,16 @@ with the same menu-bar item and every running session still listed, and the skil
 so in one line once the new run is up, usually within seconds. No change is taken up
 without a restart; a skill added to the plugin reaches a session on `/reload-plugins`.
 
-`/hands:summaries on|off`, which you can also say to
-hands, decides whether every finished turn is summarised aloud. Summaries are off
-until you turn them on; while they are off, only the turns of a session you asked hands
-to watch are told as they finish, and any session's last turn is told when you ask for
-it. Permission requests, questions asked in a dialog, and plans are spoken either way.
-The setting lasts across restarts and takes effect from the next turn.
+`/hands:attention`, which you can also say to hands in your own words ("stop telling
+me when sessions finish", "be quiet for a while"), sets what hands says without being
+asked: each finished turn (`finished off|brief|full`), the focused session's steps as it
+works (`progress off|brief|full`), and a session ending (`ended on|off`). `quiet on`
+holds all of it until `quiet off`, and leaves the rest as it was set. With no
+arguments it says what is set. Finished turns are off until you turn them on; while they
+are off, only the turns of a session you asked hands to watch are told as they finish,
+and any session's last turn is told when you ask for it. Permission requests, questions
+asked in a dialog, and plans are spoken whatever is set. Settings last across restarts
+and take effect from the next thing hands would have said.
 
 Hands speaks in Charles, one of Pocket TTS's own voices, until you choose another. Ask
 it which voices there are and to let you hear some: each says a line in its own voice.

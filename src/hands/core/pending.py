@@ -9,10 +9,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from hands.core.attention import Amount
 from hands.core.effects import DeadlineNear, Expired, Narrate, Note, SessionGone, Speak
 from hands.core.narration import Segment
 from hands.core.progress import Doing
-from hands.core.session import Held, PromptId, SessionId
+from hands.core.session import Held, Opened, PromptId, RequestId, Session, SessionId, ids
 from hands.core.turn import AgentId, AgentTask
 
 
@@ -40,10 +41,12 @@ def went_on(before: News, after: News) -> bool:
 
 @dataclass(frozen=True)
 class Finished:
-    """A session finished one or more turns, told together: `coalesce` folds a session's pending tellings into one."""
+    """A session finished one or more turns, told together, as much of them as the user set: `coalesce` folds a
+    session's pending tellings into one, told as the last of them was set to be."""
 
     session: SessionId
     news: tuple[News, ...]
+    amount: Amount
 
 
 @dataclass(frozen=True)
@@ -92,7 +95,7 @@ def priority(pending: Pending) -> Priority:
             return "fyi"
 
 
-def coalesce(pending: Sequence[Pending], held: Mapping[SessionId, Held]) -> tuple[Pending, ...]:
+def coalesce(pending: Sequence[Pending], live: Mapping[SessionId, Session]) -> tuple[Pending, ...]:
     """What is told of `pending`, in the order it is told: what no longer waits on the user dropped, each session's
     finished turns folded into one telling, then soonest first, in arrival order within a priority.
 
@@ -100,10 +103,11 @@ def coalesce(pending: Sequence[Pending], held: Mapping[SessionId, Held]) -> tupl
     thing, never after it, so its next turn's request is not heard ahead of the turn that came before it. What is only
     known is apart from any story: it is never spoken, so it goes first without telling anything out of order.
 
-    `held` is each session's dialog that still waits on an answer, read as the floor lets go: a request answered at
-    the keyboard while the user talked is no longer one, and neither is a deadline counted down on it.
+    `live` is each session that has not ended, read as the floor lets go: a request answered at the keyboard while the
+    user talked is no longer one, and neither is a deadline counted down on it; and progress of a turn that ended
+    meanwhile is out of date, however the ending was told, or whether it was told at all.
     """
-    told = _folded(_current([each for each in pending if _waits(each, held)]))
+    told = _folded(_current([each for each in pending if _waits(each, live)]))
     stories = [_story(each, at) for at, each in enumerate(told)]
     # Walked from the last: each thing is told as soon as the soonest thing its story tells after it.
     soonest: dict[SessionId | int, int] = {}
@@ -114,15 +118,38 @@ def coalesce(pending: Sequence[Pending], held: Mapping[SessionId, Held]) -> tupl
     return tuple(each for _, each in sorted(zip(ranks, told, strict=True), key=lambda ranked: ranked[0]))
 
 
-def _waits(pending: Pending, held: Mapping[SessionId, Held]) -> bool:
+def _waits(pending: Pending, live: Mapping[SessionId, Session]) -> bool:
     """Whether what `pending` tells is still so as it is told."""
     match pending:
         case Narrate(moment=moment):
-            return (dialog := held.get(moment.session)) is not None and dialog.request == moment.request
+            return _asks(live.get(moment.session), moment.request)
         case Speak(announcement=DeadlineNear(session=session, request=request)):
-            return (dialog := held.get(session)) is not None and dialog.request == request
+            return _asks(live.get(session), request)
+        case Working(session=session, of=of):
+            return current(live.get(session), of)
         case _:
             return True
+
+
+def _asks(session: Session | None, request: RequestId) -> bool:
+    """Whether the session's dialog still waits on an answer to `request`."""
+    match session:
+        case Session(dialog=Held() as dialog):
+            return dialog.request == request
+        case _:
+            return False
+
+
+def current(session: Session | None, of: frozenset[PromptId] | AgentTask) -> bool:
+    """Whether the session still runs the turn that goes by any of these ids; for a subagent's work, whether the session
+    is still live, since the turn its work is told with may not have opened yet."""
+    match session, of:
+        case Session(turn=Opened() as opened), frozenset() as turn:
+            return not ids(opened).isdisjoint(turn)
+        case Session(), AgentTask():
+            return True
+        case _:
+            return False
 
 
 def _story(pending: Pending, at: int) -> SessionId | int:
@@ -190,8 +217,8 @@ def _folded(pending: Sequence[Pending]) -> list[Pending]:
 def _joined(before: Pending | None, each: Finished | Working) -> Pending:
     """`each` folded into the telling of its kind that came before it in its slot, or standing alone in a slot of its own."""
     match before, each:
-        case Finished(news=earlier), Finished(session=session, news=news):
-            return Finished(session, (*earlier, *news))
+        case Finished(news=earlier), Finished(session=session, news=news, amount=amount):
+            return Finished(session, (*earlier, *news), amount)
         case Working(of=frozenset() as was, doings=earlier), Working(session=session, of=frozenset() as turn, doings=doings):
             return Working(session, was | turn, (*earlier, *doings))
         case Working(of=AgentTask() as agent, doings=earlier), Working(session=session, doings=doings):
