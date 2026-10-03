@@ -190,7 +190,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     reads its terminal raw, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
-    is never taken, "write" asks permission and an MCP server's input, and waits unless their hooks answer no, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
+    is never taken, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
@@ -210,7 +210,7 @@ session = sys.argv[sys.argv.index("--session-id") + 1]
 def post(event, **fields):
     [[url]] = [[hook["url"] for hook in matcher["hooks"]] for matcher in hooks[event]]
     body = json.dumps({{"session_id": session, "hook_event_name": event, **fields}}).encode()
-    return json.loads(urllib.request.urlopen(urllib.request.Request(url, body, {{"Content-Type": "application/json"}}), timeout=5).read())
+    return json.loads(urllib.request.urlopen(urllib.request.Request(url, body, {{"Content-Type": "application/json"}}), timeout=30).read())
 def typed(line):
     with open(os.environ["TYPED"], "a") as log:
         log.write(json.dumps(line) + "\\n")
@@ -244,13 +244,20 @@ def submit(text):
     if said == "slow":
         time.sleep(0.5)
     if said == "write":
-        # Its setup asks before a write, and an MCP server asks for input: each answered no at its hook, the turn goes on;
-        # left unanswered, the dialog waits.
-        denied = post("PermissionRequest", prompt_id=prompt, tool_name="Write", tool_input={{"file_path": "/tmp/x"}})
+        # Its setup asks before a write, held at its hook until it is answered: the file is written only on an allow,
+        # and the turn goes on either way. Then an MCP server asks for input.
+        notes = os.path.join(os.path.dirname(os.environ["TYPED"]), "notes.txt")
+        decision = post("PermissionRequest", prompt_id=prompt, tool_name="Write", tool_input={{"file_path": notes, "content": "hello"}})["hookSpecificOutput"]["decision"]
+        if decision["behavior"] == "allow":
+            with open(notes, "w") as written:
+                written.write("hello")
+        typed(["permission", decision["behavior"], decision.get("message", "")])
         declined = post("Elicitation", prompt_id=prompt, mcp_server_name="probe", message="Which?")
-        if (denied.get("hookSpecificOutput", {{}}).get("decision", {{}}).get("behavior"), declined.get("hookSpecificOutput", {{}}).get("action")) != ("deny", "decline"):
-            turn, turn_text = prompt, text
-            return
+        typed(["elicitation", declined["hookSpecificOutput"]["action"]])
+    if said == "stray":
+        # A permission an earlier turn left behind, posted under that turn's prompt id.
+        stray = post("PermissionRequest", prompt_id="p0", tool_name="Write", tool_input={{"file_path": "notes.txt", "content": "hello"}})["hookSpecificOutput"]["decision"]
+        typed(["permission", stray["behavior"], stray.get("message", "")])
     if said == "fail":
         post("StopFailure", prompt_id=prompt, error="unknown", last_assistant_message="API Error: 400 refused")
     else:

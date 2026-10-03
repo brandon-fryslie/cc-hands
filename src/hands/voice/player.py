@@ -14,11 +14,12 @@ still waiting in its queue.
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
-from pipecat.frames.frames import AggregatedTextFrame, Frame, InterruptionFrame, TTSSpeakFrame, TTSTextFrame
+from pipecat.frames.frames import AggregatedTextFrame, DataFrame, Frame, InterruptionFrame, TTSSpeakFrame, TTSTextFrame
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.processors.filters.identity_filter import IdentityFilter
-from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core import playback
 from hands.core.playback import LastOne, NothingCut, NothingSaid, Played, Playback, Replay
@@ -96,6 +97,28 @@ def said(played: Played) -> tuple[str, ...]:
             return ("I haven't said anything yet.",)
         case LastOne():
             return ("That was the last of it.",)
+
+
+@dataclass
+class Mark(DataFrame):
+    """A point in what is said: `played` is called once the speaker has played everything handed it ahead of the mark, and
+    never if a barge-in cut any of that off. The TTS service keeps a data frame behind the audio of what was handed it
+    first, and the output transport passes it on only once that audio is written, or drops it with that audio on a barge-in
+    (Pipecat 1.10.0)."""
+
+    played: Callable[[], None]
+
+
+class Marks(FrameProcessor):
+    """Stood right behind the output transport: calls each mark's `played` as it arrives, and passes the rest on."""
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        match frame:
+            case Mark(played=played):
+                played()
+            case _:
+                await self.push_frame(frame, direction)
 
 
 class _Watch(BaseObserver):

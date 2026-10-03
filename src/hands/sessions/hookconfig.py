@@ -73,7 +73,7 @@ def plugin_hooks() -> dict[str, object]:
     # Python, so the shim is the process Claude Code spawned and its parent is the claude process whose pid it records.
     command = {"type": "command", "command": f"${{CLAUDE_PLUGIN_ROOT}}/{LAUNCHER}", "args": ["-m", SHIM_MODULE]}
     display = {"type": "http", "url": DISPLAY_URL, "timeout": DISPLAY_TIMEOUT_SECONDS}
-    return {"hooks": {**{event: [{"hooks": [{**command, **_declared(event)}]}] for event in SUBSCRIBED}, "MessageDisplay": [{"hooks": [display]}]}}
+    return {"hooks": {**{event: [{"hooks": [{**command, **declared(event)}]}] for event in SUBSCRIBED}, "MessageDisplay": [{"hooks": [display]}]}}
 
 
 def rendered() -> str:
@@ -81,7 +81,8 @@ def rendered() -> str:
     return json.dumps(plugin_hooks(), indent=2) + "\n"
 
 
-def _declared(event: str) -> dict[str, object]:
+def declared(event: str) -> dict[str, object]:
+    """What a hook declares beyond what runs it: how long Claude Code waits on it, and whether it runs in the background."""
     timeout = _DECLARED_TIMEOUTS.get(event)
     return {**({} if timeout is None else {"timeout": timeout}), **({"async": True} if event in _IN_BACKGROUND else {})}
 

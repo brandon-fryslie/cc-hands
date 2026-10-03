@@ -49,7 +49,7 @@ from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus, Refocusing
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
-from hands.voice.player import Player
+from hands.voice.player import Marks, Player
 from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.tools import RunsReplies, Tool, context_tools
@@ -258,8 +258,9 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
     # context or the model's stage takes it, and follows the user's words when given back.
     # Right behind the model's stage, so the focus moves to a session told of in order with the user's words to the model.
     # What the player says again enters just ahead of the speaker, and it reads what is played off the speaker's pushes.
+    # Right behind the output transport, which passes a mark on only once what was said ahead of it has played.
     output = transport.output()
-    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, Refocusing(refocus), pieces, player.lines, tts, output, assistant_aggregator])
+    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, Refocusing(refocus), pieces, player.lines, tts, output, Marks(), assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True),

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from hands.core.effects import Allow, AllowWith, Answers, Approve, Decision, Deny, KeepPlanning, Reply
-from hands.core.permissions import Answer, Answered, NotWaiting, Unfit, answer
+from hands.core.permissions import Answer, Answered, NotWaiting, Unfit, answer, heard
 from hands.core.session import AskedQuestion, Blocker, Gone, Held, Idle, Membership, Option, Permission, Plan, Question, Registry, RequestId, Running, Session, SessionId
 from hands.core.status import Busy, Going, Stamp, Waiting
 
@@ -127,3 +127,14 @@ def test_a_plan_is_approved_for_the_mode_chosen_or_sent_back_to_planning(decisio
         Answered(ONE.id, PLAN, decision),
         [Reply(ONE.id, REQUEST, reply)],
     )
+
+
+@pytest.mark.parametrize("words", ["Yes.", "yeah", "Yep!", "Okay, go ahead.", "Sure, do it.", "Go for it.", "All right.", "Yes please", "Sounds good.", "That’s fine."])
+def test_a_plain_yes_spoken_to_a_permission_allows_it(words: str) -> None:
+    assert heard(words) == Allow()
+
+
+@pytest.mark.parametrize("words", ["No.", "Don't.", "Yes, but put it in the other file.", "Wait.", "Go ahead and delete everything else too.", "Please.", "", "Not yet.", "Yes 2."])
+def test_anything_else_spoken_to_a_permission_refuses_it_carrying_the_words(words: str) -> None:
+    # A yes with more said beside it is the brain's to read: it may want something other than what was asked.
+    assert heard(words) == Deny(f'The user was asked whether to allow this, and answered by voice, so it did not run. Do what they said, which was: "{words}"')

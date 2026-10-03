@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import get_args
+from typing import get_args, overload
 
 from loguru import logger
 
@@ -68,14 +68,14 @@ def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, r
         case "Stop":
             return Stopped(session, _closing(payload), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"), heard, request)
         case "PermissionRequest":
-            return PermissionRequested(session, at, request, _call(payload), _mode(payload))
+            return PermissionRequested(session, at, request, called(payload), _mode(payload))
         case "PostToolUse" | "PostToolUseFailure":
             return ToolFinished(session, at, _ran(payload), _mode(payload))
         case other:
             raise Rejected(f"hook event {other!r} is not one hands handles; a session that loaded hands' hooks before hands stopped hooking it takes the current ones with /reload-plugins")
 
 
-def _call(payload: Payload) -> Blocker:
+def called(payload: Payload) -> Blocker:
     """A tool call as its hooks name it: AskUserQuestion is a question put to the user, ExitPlanMode a plan put up for
     approval, every other tool a permission to run it."""
     match payload.text("tool_name"):
@@ -198,6 +198,10 @@ def name_output(name: str) -> Mapping[str, object]:
     return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "sessionTitle": name}}
 
 
+@overload
+def hook_output(reply: Allow | AllowWith | Approve | Deny) -> Mapping[str, object]: ...
+@overload
+def hook_output(reply: HookReply) -> Mapping[str, object] | None: ...
 def hook_output(reply: HookReply) -> Mapping[str, object] | None:
     """What a waiting PermissionRequest hook prints for Claude Code; None leaves the question to its dialog."""
     # The reply shape Claude Code parses from a PermissionRequest hook's stdout (2.1.270; the plan's, 2.1.281).
