@@ -6,12 +6,17 @@ from dataclasses import dataclass
 
 from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
 
-from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Speak
+from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, SessionGone, Speak
+from hands.core.pending import Briefing, Finished, News, Pending, Unread
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
 from hands.core.session import AskedQuestion, Blocker, Permission, Plan, Question, SessionId
 from hands.sessions.audit import Record, Relayed
 from hands.sessions.registry import Sessions
-from hands.voice.readback import spoken_mode, spoken_name
+from hands.voice.readback import spoken_mode
+
+# How much of a reply is handed to the model. Every turn told grows the model's history toward compaction, so what is
+# handed is bounded; a session asked to end on a concise overview writes far less than this.
+REPLY_SHOWN = 1500
 
 # A tool input is shown to the model whole up to this many characters; a longer one is cut and says so.
 _INPUT_SHOWN = 800
@@ -53,6 +58,14 @@ class Narrated(DataFrame, UninterruptibleFrame):
 
 
 @dataclass
+class Unprompted(DataFrame, UninterruptibleFrame):
+    """Something hands has to tell of the sessions, on its way to the floor, which makes the frames that tell it as it
+    lets it go. Kept through a barge-in: none of it has started to play."""
+
+    pending: Pending
+
+
+@dataclass
 class Aloud(DataFrame, UninterruptibleFrame):
     """A line hands says as written, held in hands' lane behind what it has already handed the brain, so the user
     hears a session's story in the order it happened."""
@@ -84,18 +97,17 @@ def bounded(text: str, limit: int) -> str:
     return text if len(text) <= limit else f"{text[:limit]}... (cut short)"
 
 
-async def relay(sessions: Sessions, telling: Telling, queue_frame: Callable[[Frame], Awaitable[None]], record: Record) -> None:
-    """Hand what the sessions say to the pipeline, in the order it was decided, until cancelled."""
+async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]], record: Record) -> None:
+    """Hand what the sessions say to the floor, in the order it was decided, until cancelled."""
     while True:
         heard = await sessions.heard()
         record(Relayed(heard))
-        for each in frames(heard, telling, lambda id: spoken_name(sessions, id)):
-            await queue_frame(each)
+        await queue_frame(Unprompted(heard))
 
 
-def frames(heard: Heard, telling: Telling, names: Names) -> Sequence[Frame]:
-    # [LAW:one-type-per-behavior] the route is the effect's own variant: Speak needs no model, Narrate needs one to explain.
-    match heard, telling:
+def frames(pending: Pending, telling: Telling, names: Names) -> Sequence[Frame]:
+    # [LAW:one-type-per-behavior] the route is the pending thing's own variant: Speak needs no model, Narrate needs one to explain.
+    match pending, telling:
         case Speak(announcement=announcement), _:
             # Kept in the context, so the intermediary knows what the user has already been told. In hands' lane under the
             # brain, so a deadline is heard after the question it counts down, never ahead of it.
@@ -107,6 +119,45 @@ def frames(heard: Heard, telling: Telling, names: Names) -> Sequence[Frame]:
         case Note(), Tailed():
             # [LAW:one-source-of-truth] the tail of the brain's next request says how the session stands now.
             return ()
+        case Finished(session=session, news=news), _:
+            name = names(session)
+            return (handed(told(session, name, news), f"{name} finished {_turns(news)}, and I could not tell it.", telling),)
+        case Unread(session=session), _:
+            return (as_written(TTSSpeakFrame(f"{names(session)} finished a turn, and I could not read it.", append_to_context=False), telling),)
+        case SessionGone(session=session), _:
+            return (as_written(TTSSpeakFrame(f"The session {names(session)} is gone."), telling),)
+        case Briefing(note=note), _:
+            return (LLMMessagesAppendFrame([{"role": "user", "content": note}], run_llm=False),)
+
+
+def told(session: SessionId, name: str, news: Sequence[News]) -> str:
+    """Finished turns as the model is handed them: the last thing the session said in each, what hands read of each
+    that those words may not say, and what it is waiting on, which the model ends by asking.
+
+    Only the last turn's question is put: a session that went on to another turn was answered, at the keyboard or
+    by the turn that followed.
+    """
+    accounts = "Then, in the turn after that: ".join(_account(each) for each in news)
+    asked = news[-1].asked
+    ending = (
+        f"It is waiting on the user's answer to this, so end by asking it, with what it refers to, so they can answer without looking at the screen: {asked}"
+        if asked
+        else "It asks the user nothing."
+    )
+    return (
+        f"[hands] The Claude Code session {name} (id {session}) finished {_turns(news)}. {accounts}"
+        f"Tell the user what it concretely did, in your own words, in one or two spoken sentences, naming the session. {ending}"
+    )
+
+
+def _account(news: News) -> str:
+    reply = f"The last thing it said was:\n\n{bounded(news.reply, REPLY_SHOWN)}\n\n" if news.reply is not None else "It said nothing. "
+    facts = f"From its record, hands adds: {news.facts} " if news.facts else ""
+    return f"{reply}{facts}"
+
+
+def _turns(news: Sequence[News]) -> str:
+    return "a turn" if len(news) == 1 else f"{len(news)} turns"
 
 
 def noted(fact: ModeChanged, names: Names) -> str:

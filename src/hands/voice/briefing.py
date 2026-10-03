@@ -11,12 +11,13 @@ sessions stand as the request leaves and no stale note piles up in its history.
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 
-from pipecat.frames.frames import Frame, LLMMessagesAppendFrame
+from pipecat.frames.frames import Frame
 
 from hands.sessions.focus import Focus, Unreadable, focused
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
-from hands.voice.speech import Pushed, Tailed, Telling
+from hands.core.pending import Briefing
+from hands.voice.speech import Pushed, Tailed, Telling, Unprompted
 from hands.voice.tools import standing
 
 
@@ -76,7 +77,7 @@ async def brief(sessions: Sessions, home: Home, telling: Telling, queue_frame: C
     thing in the model's context and every change it hears of came after what the note says.
     """
     for note in _notes(telling, sessions, home):
-        await queue_frame(LLMMessagesAppendFrame([{"role": "user", "content": note}], run_llm=False))
+        await queue_frame(Unprompted(Briefing(note)))
 
 
 def _notes(telling: Telling, sessions: Sessions, home: Home) -> Sequence[str]:

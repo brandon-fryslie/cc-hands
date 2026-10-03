@@ -269,10 +269,12 @@ class Announced:
 
 @dataclass(frozen=True)
 class Yielded:
-    """What hands had to say unprompted while the user's turn was open, passed on as it closed: each frame's kind, in
-    order, and how long the turn held the floor."""
+    """What hands had to say unprompted, let go by the floor: the kind of each thing that came, in the order it came,
+    the kind of each thing told of it, in the order told, and how long the user's turn held it, 0 when no turn was
+    open. `held` longer than `told` is something folded into a session's telling or no longer waiting on the user."""
 
     held: tuple[str, ...]
+    told: tuple[str, ...]
     waited: float
 
 

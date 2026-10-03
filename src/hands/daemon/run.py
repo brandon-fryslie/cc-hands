@@ -59,6 +59,8 @@ from hands.voice.devices import follow_default_devices
 from hands.voice.cues import cues
 from hands.voice.hold import Move
 from hands.voice.keys import drive_quit, drive_talk_key
+from hands.voice.floor import Floor
+from hands.voice.readback import spoken_name
 from hands.voice.pipeline import (
     AnthropicBackend,
     ClaudeCodeBackend,
@@ -330,7 +332,8 @@ async def run(
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
             async with mind(config, tools, lambda: as_sent(sessions, home), proxy.url, wire, store, home.fritter, home.audit, audit.record) as minded:
-                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, player, audit.record), "the voice load"), heart, sessions.live_count, quit_event)
+                floor = Floor(audit.record, minded.telling, lambda id: spoken_name(sessions, id), sessions.held)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, player, floor), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences, names, recounts)
@@ -400,8 +403,8 @@ async def converse(
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
-        asyncio.create_task(relay(sessions, minded.telling, voice.worker.queue_frame, record), name="the session speech relay"),
-        asyncio.create_task(narrate(sessions, tails, minded.telling, voice.worker.queue_frame, record, lambda: summaries(home), Overlays(home), recounts, changes=deltas), name="the session narrator"),
+        asyncio.create_task(relay(sessions, voice.worker.queue_frame, record), name="the session speech relay"),
+        asyncio.create_task(narrate(sessions, tails, voice.worker.queue_frame, record, lambda: summaries(home), Overlays(home), recounts, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
         asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),

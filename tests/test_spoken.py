@@ -23,7 +23,9 @@ from pipecat.tests.utils import run_test
 from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_transcript
+from hands.voice.floor import Floor
 from hands.voice.player import Player
+from hands.voice.speech import Pushed
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice import voices
 
@@ -353,7 +355,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         tools=[],
         llm=FrameProcessor(),
         player=(player := Player(lambda _: None)),
-        record=lambda _: None,
+        floor=Floor(lambda _: None, Pushed(), lambda id: id, dict),
     )
     filters = given["text_filters"]
     assert isinstance(filters, list) and [type(one) for one in cast(list[object], filters)] == [SpokenForm]

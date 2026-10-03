@@ -16,7 +16,6 @@ from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
     LLMContextFrame,
-    LLMMessagesAppendFrame,
     TextFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
@@ -34,7 +33,10 @@ from hands.voice import pipeline as built
 from hands.voice.floor import Floor
 from hands.voice.player import Player
 from hands.voice.ptt import Key, KeyedAudio
-from hands.voice.speech import Aloud
+from hands.core.effects import Asking, Narrate, SessionGone
+from hands.core.pending import Finished, News
+from hands.core.session import Held, Permission, RequestId, SessionId
+from hands.voice.speech import Pushed, Unprompted
 from hands.voice.turnstop import TurnOpened, TurnResolved
 from hands.voice.whisper import Whisper
 from hands.voice import voices
@@ -57,11 +59,14 @@ class Recorded(FrameProcessor):
         self.resolved: list[int] = []
         # The user's turn and what hands said around it, in the order the model's stage would take them.
         self.order: list[str] = []
+        # Every message in the model's context as the last frame of it passed: appends that land together share one.
+        self.context: list[str] = []
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame:
             case LLMContextFrame(context=context):
+                self.context = [str(message.get("content")) for message in context.get_messages() if not isinstance(message, LLMSpecificMessage)]
                 said = context.get_messages()[-1]
                 # The aggregator writes the user's turn as a plain message, never a provider's own.
                 assert not isinstance(said, LLMSpecificMessage)
@@ -73,8 +78,8 @@ class Recorded(FrameProcessor):
             case UserStoppedSpeakingFrame():
                 self.stopped += 1
                 self.order.append("stopped")
-            case Aloud(spoken=spoken):
-                self.order.append(f"said: {spoken.text}")
+            case TTSSpeakFrame(text=text):
+                self.order.append(f"said: {text}")
             case TextFrame(text=text):
                 self.order.append(text)
             case TurnResolved(hold=hold):
@@ -112,6 +117,8 @@ class Rig:
     out: Recorded
     recorded: list[Entry]
     clock: Clock
+    # Each session's dialog that waits on the user, as the floor reads it when it lets go.
+    held: dict[SessionId, Held]
     # What each transcription, oldest first, will find; it waits for the test to say.
     texts: asyncio.Queue[str] = field(default_factory=asyncio.Queue[str])
     # The audio each transcription was given.
@@ -151,9 +158,9 @@ async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
         tools=[],
         llm=FrameProcessor(),
         player=Player(recorded.append),
-        record=recorded.append,
+        floor=Floor(lambda _: None, Pushed(), lambda id: id, dict),
     )
-    out, clock = Recorded(), Clock()
+    out, clock, held = Recorded(), Clock(), dict[SessionId, Held]()
     texts: asyncio.Queue[str] = asyncio.Queue()
     heard: list[bytes] = []
 
@@ -165,8 +172,8 @@ async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
 
     monkeypatch.setattr(WhisperSTTServiceMLX, "run_stt", transcribe)
     # The floor sits where build_voice puts it, between Whisper and the user aggregator.
-    async with running([voice.stt, Floor(recorded.append, clock), voice.user_turns, out]) as run:
-        yield Rig(run.worker, voice.stt, out, recorded, clock, texts, heard)
+    async with running([voice.stt, Floor(recorded.append, Pushed(), lambda id: id, lambda: held, clock), voice.user_turns, out]) as run:
+        yield Rig(run.worker, voice.stt, out, recorded, clock, held, texts, heard)
 
 
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
@@ -257,7 +264,16 @@ async def test_a_hold_that_heard_nothing_does_not_end_the_hold_pressed_after_it(
     assert await rig.everything_sent(holds=2) == ["how many sessions are running"]
 
 
-WAITING = Aloud(TTSSpeakFrame("api is waiting for you."))
+API, WEB = SessionId("api"), SessionId("web")
+WAITING = Unprompted(SessionGone(API))
+
+
+def asking(session: SessionId, request: str) -> Unprompted:
+    return Unprompted(Narrate(Asking(session, RequestId(request), Permission("Bash", {"command": "ls"}))))
+
+
+def finished(session: SessionId, reply: str) -> Unprompted:
+    return Unprompted(Finished(session, (News(reply, "", "", ()),)))
 
 
 async def test_a_session_waiting_while_the_key_is_held_is_said_after_the_users_turn_is_sent_and_not_before(rig: Rig) -> None:
@@ -270,21 +286,42 @@ async def test_a_session_waiting_while_the_key_is_held_is_said_after_the_users_t
     rig.clock.now = 13.5
     await rig.hold(["up"])
     await rig.texts.put("what time is it")
-    await rig.until(lambda: "said: api is waiting for you." in rig.out.order)
-    assert rig.out.order == ["started", "marker", "stopped", "sent: what time is it", "said: api is waiting for you."]
-    assert [(entry.held, entry.waited) for entry in rig.recorded if isinstance(entry, Yielded)] == [(("Aloud",), 3.5)]
+    await rig.until(lambda: "said: The session api is gone." in rig.out.order)
+    assert rig.out.order == ["started", "marker", "stopped", "sent: what time is it", "said: The session api is gone."]
+    assert [(entry.held, entry.told, entry.waited) for entry in rig.recorded if isinstance(entry, Yielded)] == [(("SessionGone",), ("SessionGone",), 3.5)]
 
 
-async def test_a_note_for_an_api_model_while_the_key_is_held_joins_the_context_after_the_users_turn(rig: Rig) -> None:
+async def test_a_request_for_an_api_model_while_the_key_is_held_joins_the_context_after_the_users_turn(rig: Rig) -> None:
+    rig.held[API] = Held(Permission("Bash", {"command": "ls"}), RequestId("r1"), deadline=60.0, warned=False)
     await rig.hold(["down", "down"])
     await rig.until(lambda: rig.out.started == 1)
-    note = LLMMessagesAppendFrame([{"role": "user", "content": "api asks to run ls"}], run_llm=True)
-    await rig.worker.queue_frames([note, TextFrame("marker")])
+    await rig.worker.queue_frames([asking(API, "r1"), TextFrame("marker")])
     await rig.until(lambda: "marker" in rig.out.order)
     await rig.hold(["up"])
     await rig.texts.put("what time is it")
-    await rig.until(lambda: "sent: api asks to run ls" in rig.out.order)
-    assert rig.out.order == ["started", "marker", "stopped", "sent: what time is it", "sent: api asks to run ls"]
+    await rig.until(lambda: len(rig.out.order) == 5)
+    assert rig.out.order[:4] == ["started", "marker", "stopped", "sent: what time is it"]
+    assert rig.out.order[4].startswith("sent: [hands] The Claude Code session api is waiting for permission to use Bash")
+
+
+async def test_two_sessions_finishing_during_one_held_key_are_told_asks_first_and_one_telling_a_session(rig: Rig) -> None:
+    """What a session waits on the user for is told before what a session did; a session's turns that finished while
+    the user talked are one telling; and a request answered at the keyboard meanwhile is not told at all."""
+    rig.held[WEB] = Held(Permission("Bash", {"command": "ls"}), RequestId("w2"), deadline=60.0, warned=False)
+    await rig.hold(["down", "down"])
+    await rig.until(lambda: rig.out.started == 1)
+    # web's first request was answered at the keyboard while the key was down; its second still waits.
+    await rig.worker.queue_frames([finished(API, "Fixed the parser."), asking(WEB, "w1"), finished(API, "Pushed it."), asking(WEB, "w2"), TextFrame("marker")])
+    await rig.until(lambda: "marker" in rig.out.order)
+    await rig.hold(["up"])
+    await rig.texts.put("what time is it")
+    await rig.until(lambda: len(rig.out.context) == 3)
+    said, asked, told = rig.out.context
+    assert said == "what time is it"
+    assert asked.startswith("[hands] The Claude Code session web is waiting for permission") and "Request id: w2." in asked
+    assert told.startswith("[hands] The Claude Code session api (id api) finished 2 turns. The last thing it said was:\n\nFixed the parser.\n\nThen, in the turn after that: The last thing it said was:\n\nPushed it.")
+    [yielded] = [entry for entry in rig.recorded if isinstance(entry, Yielded)]
+    assert (yielded.held, yielded.told) == (("Finished", "Narrate", "Finished", "Narrate"), ("Narrate", "Finished"))
 
 
 async def test_a_hold_that_was_shift_after_all_gives_back_what_waited_for_it(rig: Rig) -> None:
@@ -292,14 +329,21 @@ async def test_a_hold_that_was_shift_after_all_gives_back_what_waited_for_it(rig
     await rig.until(lambda: rig.out.started == 1)
     await rig.worker.queue_frame(WAITING)
     await rig.hold(["dropped"])
-    await rig.until(lambda: "said: api is waiting for you." in rig.out.order)
-    assert rig.out.order == ["started", "stopped", "said: api is waiting for you."]
+    await rig.until(lambda: "said: The session api is gone." in rig.out.order)
+    assert rig.out.order == ["started", "stopped", "said: The session api is gone."]
 
 
 async def test_what_hands_says_with_no_turn_open_passes_at_once_and_records_no_wait(rig: Rig) -> None:
     await rig.worker.queue_frame(WAITING)
-    await rig.until(lambda: rig.out.order == ["said: api is waiting for you."])
-    assert not any(isinstance(entry, Yielded) for entry in rig.recorded)
+    await rig.until(lambda: rig.out.order == ["said: The session api is gone."])
+    assert [(entry.held, entry.told, entry.waited) for entry in rig.recorded if isinstance(entry, Yielded)] == [(("SessionGone",), ("SessionGone",), 0.0)]
+
+
+async def test_a_request_answered_before_it_reaches_the_floor_is_not_told(rig: Rig) -> None:
+    await rig.worker.queue_frames([asking(API, "gone"), TextFrame("marker")])
+    await rig.until(lambda: "marker" in rig.out.order)
+    assert rig.out.order == ["marker"]
+    assert [(entry.held, entry.told) for entry in rig.recorded if isinstance(entry, Yielded)] == [(("Narrate",), ())]
 
 
 async def test_whisper_has_loaded_the_model_its_turns_transcribe_with_once_built(monkeypatch: pytest.MonkeyPatch) -> None:
