@@ -19,9 +19,11 @@ from hands.core.session import Membership, SessionId
 from hands.daemon import readiness
 from hands.daemon.cli import main
 from hands.daemon.readiness import Missing, Ready, Unknown
+from hands.sessions import liveness
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
+from hands.sessions.payload import Rejected
 from hands.sessions.processes import Terminal
 from hands.sessions.wrapper import shim_script
 
@@ -253,7 +255,17 @@ def test_a_session_that_never_ran_a_hook_is_named_by_cwd_and_pid_with_the_fix(ro
     with at_a_terminal(root / "install" / "9.9.9", project) as pid:
         found = readiness.sessions(home, path)
     assert isinstance(found, Missing)
-    assert f"{project} (pid {pid}) has run no hook since the plugin was installed, so hands does not know of it: /reload-plugins in it" in found.said
+    assert f"{project} (pid {pid}) is a session hands has no record of, so it cannot be reached: /reload-plugins in it" in found.said
+
+
+def test_a_reused_pid_of_an_ended_session_hides_no_session_hands_has_no_record_of(root: Path) -> None:
+    home = Home(root / "home")
+    path = installed(root)
+    with at_a_terminal(root / "install" / "9.9.9", root) as pid:
+        # Written before the process under its pid started, as an ended session's file left behind is.
+        os.utime(home.membership(joined(home, "ended", pid, None).id), (0, 0))
+        found = readiness.sessions(home, path)
+    assert isinstance(found, Missing) and f"(pid {pid}) is a session hands has no record of" in found.said
 
 
 def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
@@ -277,9 +289,7 @@ def terminal(pid: int, executable: str, cwd: str) -> Terminal:
 
 def test_a_session_is_a_terminal_process_of_any_version_of_the_real_claudes_install(root: Path) -> None:
     home = Home(root / "home")
-    claude = root / "bin" / "claude"
-    claude.parent.mkdir()
-    claude.symlink_to(root / "versions" / "2.1.288")
+    claude = root / "versions" / "2.1.288"
     terminals = [
         terminal(1, f"{root}/versions/2.1.286", "/code/old"),
         terminal(2, f"{root}/versions/2.1.288", "/code/joined"),
@@ -290,10 +300,44 @@ def test_a_session_is_a_terminal_process_of_any_version_of_the_real_claudes_inst
     assert readiness.unjoined(home, claude, terminals, {2}) == [terminals[0]]
 
 
-def test_with_no_real_claude_a_session_that_never_ran_a_hook_cannot_be_found() -> None:
-    assert readiness.unjoined(Home(Path("/nowhere")), None, [terminal(1, "/x/claude", "/code")], set()) is None
-    found = readiness.sessions_found([], set(), [], None)
-    assert isinstance(found, Missing) and "no `claude` on this PATH but hands' shims" in found.said
+def test_a_cask_keeps_each_version_in_a_directory_named_for_it() -> None:
+    claude = Path("/opt/homebrew/Caskroom/claude-code/2.1.288/claude")
+    old = terminal(1, "/opt/homebrew/Caskroom/claude-code/2.1.286/claude", "/code")
+    assert readiness.unjoined(Home(Path("/nowhere")), claude, [old], set()) == [old]
+
+
+def test_a_plain_claude_is_itself_and_not_its_directorys_other_programs() -> None:
+    claude = Path("/usr/local/bin/claude")
+    terminals = [terminal(1, "/usr/local/bin/claude", "/code"), terminal(2, "/usr/local/bin/nvim", "/code")]
+    assert readiness.unjoined(Home(Path("/nowhere")), claude, terminals, set()) == [terminals[0]]
+
+
+def test_the_brain_under_a_linked_home_is_not_a_session(root: Path) -> None:
+    (root / "real").mkdir()
+    (root / "link").symlink_to(root / "real")
+    home = Home(root / "link" / "home")
+    claude = root / "versions" / "2.1.288"
+    brain = terminal(1, str(claude), f"{root}/real/home/brain/cwd")
+    assert readiness.unjoined(home, claude, [brain], set()) == []
+
+
+def test_with_no_real_claude_a_session_hands_has_no_record_of_cannot_be_found(root: Path) -> None:
+    found = readiness.sessions(Home(root / "home"), "/nowhere")
+    assert isinstance(found, Unknown) and "this PATH has no `claude` of its own" in found.said
+
+
+def test_a_claude_that_is_a_script_cannot_tell_its_sessions(root: Path) -> None:
+    (root / "bin").mkdir()
+    (root / "bin" / "claude").write_text("#!/usr/bin/env node\n")
+    (root / "bin" / "claude").chmod(0o755)
+    found = readiness.sessions(Home(root / "home"), str(root / "bin"))
+    assert isinstance(found, Unknown) and "is a script, so its sessions run as its interpreter" in found.said
+
+
+def test_sessions_that_cannot_be_looked_for_are_said_beside_the_ones_that_cannot_be_reached() -> None:
+    unreadable = liveness.Unreadable(Path("/h/sessions/bad.json"), b"{", Rejected("not json"))
+    found = readiness.sessions_found([], set(), [unreadable], readiness.Unfindable("why"))
+    assert isinstance(found, Missing) and "bad.json names no session" in found.said and "cannot be found: why" in found.said
 
 
 def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -326,8 +370,12 @@ def test_check_says_every_piece_and_exits_by_the_worst(
     executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     monkeypatch.setenv("PATH", f"{home.bin}:{claude_listing(root, plugins)}")
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: granted)
+
+    # The fake claude is a script, whose sessions cannot be told; take it for a native one that runs nowhere.
+    def native(_claude: Path | None) -> Path:
+        return root / "versions" / "9.9.9"
+
+    monkeypatch.setattr(readiness, "claude_code", native)
     assert main(["--home", str(home.root), "check"]) == code
     lines = capsys.readouterr().out.splitlines()
     assert [line.split()[0] for line in lines] == marks
-
-

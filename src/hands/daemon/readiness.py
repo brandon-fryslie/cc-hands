@@ -8,6 +8,7 @@ lines as it starts, and a daemon that is up says nothing about any of them, so t
 """
 
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Collection, Sequence
@@ -128,67 +129,94 @@ def sessions(home: Home, path: str) -> Finding:
         # A socket that is gone is a fritter that is gone. It is never dialled here: fritter writes what it cannot read
         # into the session's own terminal.
         listening = {member.fritter for member in running if member.fritter is not None and member.fritter.is_socket()}
-        terminals = terminal_processes()
     except OSError as error:
         return Unknown(f"cannot look at the running sessions in {home.memberships}: {error}")
-    return sessions_found(
-        running,
-        listening,
-        unreadable,
-        unjoined(
-            home,
-            wrapper.real_claude(path),
-            terminals,
-            {record.membership.pid for record in records},
-        ),
-    )
+    return sessions_found(running, listening, unreadable, unrecorded(home, path, {member.pid for member in running}))
 
 
-def unjoined(
-    home: Home,
-    claude: Path | None,
-    terminals: Sequence[Terminal],
-    members: Collection[int],
-) -> list[Terminal] | None:
-    """The sessions running that no membership file names: started before the plugin, and not reloaded since.
+@dataclass(frozen=True)
+class Unfindable:
+    said: str  # why a running session hands has no record of cannot be told from the other programs at a terminal
 
-    A session is a process at a terminal running a Claude Code from the install the real `claude` on PATH is, any
-    version of it, since an update leaves running sessions on the version they started on. The hook records that same
-    process, so it is matched by pid. None when there is no real claude on PATH to tell Claude Code by.
-    """
+
+def unrecorded(home: Home, path: str, members: Collection[int]) -> list[Terminal] | Unfindable:
+    """The sessions running at a terminal that hands has no record of, among this user's processes now."""
+    match claude_code(wrapper.real_claude(path)):
+        case Unfindable() as unfindable:
+            return unfindable
+        case executable:
+            try:
+                terminals = terminal_processes()
+            except OSError as error:
+                return Unfindable(f"cannot look at this user's processes at a terminal: {error}")
+            return unjoined(home, executable, terminals, members)
+
+
+def claude_code(claude: Path | None) -> Path | Unfindable:
+    """The executable a session of the real `claude` on PATH runs as."""
     if claude is None:
-        return None
-    install = claude.resolve().parent
+        return Unfindable("this PATH has no `claude` of its own, apart from any hands shim")
+    executable = claude.resolve()
+    try:
+        with executable.open("rb") as start:
+            script = start.read(2) == b"#!"
+    except OSError as error:
+        return Unfindable(f"cannot read the real `claude`, {executable}: {error}")
+    if script:
+        return Unfindable(f"the real `claude`, {executable}, is a script, so its sessions run as its interpreter")
+    return executable
+
+
+def unjoined(home: Home, claude: Path, terminals: Sequence[Terminal], members: Collection[int]) -> list[Terminal]:
+    """The sessions at a terminal that no running membership names: started before the plugin, and not reloaded since.
+
+    A session is a process at a terminal running `claude`, the Claude Code executable, or any other version of it, since
+    an update leaves running sessions on the version they started on. The hook records that same process, so it is
+    matched by pid.
+    """
     # The brain, and the Claude Code it asks asides of, run in hands' own directory under their own config, which
-    # hands' plugin is never installed into: they talk to hands by other means.
-    return [process for process in terminals if process.executable.parent == install and process.pid not in members and not process.cwd.is_relative_to(home.brain)]
+    # hands' plugin is never installed into: they talk to hands by other means. The kernel names a cwd with every link
+    # resolved.
+    brain = home.brain.resolve()
+    install = _unversioned(claude)
+    return [process for process in terminals if _unversioned(process.executable) == install and process.pid not in members and not process.cwd.is_relative_to(brain)]
+
+
+# Claude Code keeps each version under a name that is the version: a file in the native installer's versions
+# directory, a directory in a Homebrew cask's.
+_VERSION = re.compile(r"\d+(\.\d+)+")
+
+
+def _unversioned(executable: Path) -> tuple[str | None, ...]:
+    """The executable's path with each part that names a version blanked: the same for every version of one install."""
+    return tuple(None if _VERSION.fullmatch(part) else part for part in executable.parts)
 
 
 def sessions_found(
     running: Sequence[Membership],
     listening: Collection[Path],
     unreadable: Sequence[liveness.Unreadable],
-    unknown: Sequence[Terminal] | None,
-) -> Ready | Missing:
+    unrecorded: Sequence[Terminal] | Unfindable,
+) -> Finding:
     """What the running sessions are to hands, given which fritter sockets are there, which files did not parse, and
-    which sessions never ran a hook (None when there was no claude to tell them by)."""
+    which sessions at a terminal hands has no record of."""
+    match unrecorded:
+        case Unfindable(said):
+            unknown, unseen = [], [f"a session hands has no record of cannot be found: {said}"]
+        case processes:
+            unknown, unseen = [f"{process.cwd} (pid {process.pid}) is a session hands has no record of, so it cannot be reached: /reload-plugins in it" for process in processes], []
     unreached = [
         *(line for member in running for line in _untypable(member, listening)),
         *(f"{file.path} names no session hands can read ({file.error}): hands run removes it" for file in unreadable),
-        *_unjoined(unknown),
+        *unknown,
     ]
     known = f"running sessions hands knows of: {len(running)}"
+    # [LAW:no-silent-failure] sessions that could not be looked for are said, never taken for none.
     if unreached:
-        return Missing(f"{known}, and hands cannot reach these:" + "".join(f"\n    {line}" for line in unreached))
+        return Missing(f"{known}, and hands cannot reach these:" + "".join(f"\n    {line}" for line in [*unreached, *unseen]))
+    if unseen:
+        return Unknown(f"{known}, and each can be typed into, but {unseen[0]}")
     return Ready(f"{known}, and each can be typed into")
-
-
-def _unjoined(unknown: Sequence[Terminal] | None) -> list[str]:
-    match unknown:
-        case None:
-            return ["no `claude` on this PATH but hands' shims, so a session that never ran a hook cannot be found"]
-        case processes:
-            return [f"{process.cwd} (pid {process.pid}) has run no hook since the plugin was installed, so hands does not know of it: /reload-plugins in it" for process in processes]
 
 
 def _untypable(member: Membership, listening: Collection[Path]) -> list[str]:
