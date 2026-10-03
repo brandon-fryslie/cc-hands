@@ -1250,8 +1250,8 @@ back `{"says": ...}`, and the API path says it as the call returns while the bra
 says it once the brain's own words are done, so a barge-in before then does not lose it.
 A reply is the whole of what is said only when every call in it was silent: one refused
 (`error`) or one that asks a reply puts the model back on. Pipecat lets each result decide
-and the last to finish wins, so `Replies` follows each reply's calls from the service's
-`on_function_calls_started` and has only the last answer for them all.
+and the last to finish wins, so `Replies` is told each reply's calls as the service starts
+them (`RunsReplies.run_function_calls`) and has only the last answer for them all.
 
 ## Push pointers, pull content
 

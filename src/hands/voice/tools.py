@@ -123,29 +123,37 @@ def _schema(hint: object) -> JsonSchema:
             raise TypeError(f"a tool argument typed {hint!r} has no schema here")
 
 
-def pipecat_functions(tools: Sequence[Tool], lines: FrameProcessor, llm: FrameProcessor) -> ToolsSchema:
-    """The tools as Pipecat's LLM stage calls them, their replies followed on `llm` as one.
+def context_tools(tools: Sequence[Tool], lines: FrameProcessor, llm: FrameProcessor) -> ToolsSchema:
+    """The tools as the model's stage calls them. Only an API service runs them through Pipecat; the brain's calls are
+    answered by its MCP server, and its stage decides for each reply itself, so its context carries none.
 
     `lines` stands ahead of the TTS service: what a call hands hands to say is said through it, as written.
     """
-    replies = Replies()
-    if isinstance(llm, LLMService):
-        _follow(cast(LLMService[Any], llm), replies)
-    return ToolsSchema(standard_tools=[pipecat_function(tool, lines, replies) for tool in tools])
+    match llm:
+        case RunsReplies():
+            return ToolsSchema(standard_tools=[pipecat_function(tool, lines, llm.replies) for tool in tools])
+        case _:
+            return ToolsSchema(standard_tools=[])
 
 
-def _follow(llm: LLMService[Any], replies: "Replies") -> None:
-    """The calls of each reply an API service runs, told to `replies` as Pipecat starts and cancels them. The brain's
-    calls are not Pipecat's: its MCP server answers them, and its stage decides for each reply itself."""
+class RunsReplies(LLMService[Any]):
+    """An API service that tells hands' tools of each reply's calls before Pipecat runs any of them."""
 
-    async def started(_: LLMService[Any], calls: Sequence[FunctionCallFromLLM]) -> None:
-        replies.started([call.tool_call_id for call in calls])
+    @functools.cached_property
+    def replies(self) -> "Replies":
+        return Replies()
 
-    async def cancelled(_: LLMService[Any], items: Sequence[FunctionCallRunnerItem]) -> None:
-        replies.cancelled([item.tool_call_id for item in items])
+    async def _call_event_handler(self, event_name: str, *args: Any, **kwargs: Any) -> None:
+        if event_name == "on_function_calls_cancelled":
+            [items] = args
+            self.replies.cancelled([item.tool_call_id for item in cast(Sequence[FunctionCallRunnerItem], items)])
+        await super()._call_event_handler(event_name, *args, **kwargs)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
-    llm.add_event_handler("on_function_calls_started", started)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
-    llm.add_event_handler("on_function_calls_cancelled", cancelled)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+    async def run_function_calls(self, function_calls: Sequence[FunctionCallFromLLM]) -> None:
+        # [LAW:no-ambient-temporal-coupling] told here, before any call runs: Pipecat's own started event runs as a task
+        # of its own, which a call's handler can outrun. A call to no function of hands' is Pipecat's to answer.
+        self.replies.started([call.tool_call_id for call in function_calls if self.has_function(call.function_name)])
+        await super().run_function_calls(function_calls)
 
 
 def pipecat_function(tool: Tool, lines: FrameProcessor, replies: "Replies") -> FunctionSchema:

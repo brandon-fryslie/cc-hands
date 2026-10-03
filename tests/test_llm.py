@@ -21,7 +21,7 @@ from conftest import Api, ServeApi, ServeChat, running
 from hands.sessions.model_facts import ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.voice.pipeline import AnthropicBackend, AnthropicService, OpenAICompatibleBackend, build_llm
 from hands.voice.system import model_fact
-from hands.voice.tools import pipecat_functions, stay_silent_tool
+from hands.voice.tools import context_tools, stay_silent_tool
 
 PATIENCE_SECS = 5.0
 
@@ -158,7 +158,7 @@ class Ends(FrameProcessor):
 
 
 def asked(llm: FrameProcessor) -> LLMContextFrame:
-    return LLMContextFrame(LLMContext(messages=[{"role": "user", "content": "What is running?"}], tools=pipecat_functions([stay_silent_tool()], IdentityFilter(), llm)))
+    return LLMContextFrame(LLMContext(messages=[{"role": "user", "content": "What is running?"}], tools=context_tools([stay_silent_tool()], IdentityFilter(), llm)))
 
 
 @pytest.mark.parametrize("shape", ["openai", "anthropic"])
@@ -233,7 +233,7 @@ def answered(llm: FrameProcessor, *after: ChatCompletionUserMessageParam) -> LLM
                 {"role": "tool", "tool_call_id": "call_1", "content": '{"steps": []}'},
                 *after,
             ],
-            tools=pipecat_functions([stay_silent_tool()], IdentityFilter(), llm),
+            tools=context_tools([stay_silent_tool()], IdentityFilter(), llm),
         )
     )
 
