@@ -886,7 +886,8 @@ def attention_tool(home: Home) -> Tool:
         kind and level yourself, several changes at once if they said several; never ask which they meant. "Stop telling
         me when sessions finish" is finished off; "just the headlines" is finished brief; "less detail while it works" is
         progress brief. Call it with no changes when they ask what you tell them. It lasts until they change it, across
-        restarts, from the next thing you would say. Say the returned readback to the user.
+        restarts, from the next thing you would say. Say the returned readback to the user; for quiet on, say in a few words
+        that you will keep quiet, never nothing, so they know it took.
 
         Args:
             changes: each kind to set and its level, in the order said; none to hear what is set.
