@@ -1,5 +1,4 @@
-"""When hands' processes started, from the kernel, and whether a pid still names the process it named before; and
-which of this user's processes run at a terminal.
+"""When hands' processes started, from the kernel, and whether a pid still names the process it named before.
 
 A pid is a number the OS hands out again. A running process under a remembered pid is the remembered process only
 if it was already running when it was remembered; one that started later took the number of one that is dead. The
@@ -8,11 +7,8 @@ session sweep and the daemon's heartbeat both ask that, and both answer it here.
 
 import ctypes
 import ctypes.util
-import errno
 import os
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
-from pathlib import Path
 
 from hands.sessions.payload import Rejected
 
@@ -66,113 +62,3 @@ def _process_start(pid: int) -> float | None:
     if size.value == 0:
         return None  # no process has the pid; the kernel answers with an empty record
     return ctypes.c_int64.from_buffer(record, 0).value + ctypes.c_int32.from_buffer(record, 8).value / 1_000_000
-
-
-@dataclass(frozen=True)
-class Terminal:
-    """A process of this user's with a controlling terminal: what it runs, and where."""
-
-    pid: int
-    # The program it was started as, with links resolved as they are now: a file deleted since, as an updater prunes
-    # old versions, is still named.
-    executable: Path
-    cwd: Path
-
-
-def terminal_processes() -> list[Terminal]:
-    """Every process of this user's that has a controlling terminal: interactive programs, never daemons or apps."""
-    return [process for pid in _own_pids() if (process := _terminal(pid)) is not None]
-
-
-# libproc, the library ps and lsof read: struct proc_bsdinfo (136 bytes, flags first) and struct proc_vnodepathinfo
-# (two vnode_info_path of 1176 bytes, the cwd's first, its path after a 152-byte vnode_info).
-_libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-_PROC_UID_ONLY = 4
-_PROC_PIDTBSDINFO, _BSDINFO_SIZE = 3, 136
-_PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE, _CWD_PATH_AT, _MAXPATHLEN = 9, 2352, 152, 1024
-_PROC_FLAG_CONTROLT = 0x80
-# kern.procargs2.<pid>: the process's argc, then the path it was exec'd by, as execve was given it.
-_KERN_PROCARGS2 = (1, 49)  # CTL_KERN, KERN_PROCARGS2
-
-
-def _own_pids() -> list[int]:
-    # Asked once for the room needed, then with room to spare for processes started between the two calls.
-    room = _listpids(None, 0)
-    pids = (ctypes.c_int * (room // ctypes.sizeof(ctypes.c_int) + 256))()
-    filled = _listpids(pids, ctypes.sizeof(pids))
-    # A pid of 0 is an unused slot.
-    return [pid for pid in pids[: filled // ctypes.sizeof(ctypes.c_int)] if pid]
-
-
-def _listpids(into: ctypes.Array[ctypes.c_int] | None, size: int) -> int:
-    used = _libproc.proc_listpids(_PROC_UID_ONLY, os.getuid(), into, size)
-    if used <= 0:
-        failure = ctypes.get_errno()
-        raise OSError(failure, f"proc_listpids could not list this user's processes: {os.strerror(failure)}")
-    return used
-
-
-def _terminal(pid: int) -> Terminal | None:
-    """The process under pid, if it has a controlling terminal; None if it has none, or has exited since it was listed."""
-    try:
-        bsd = _pidinfo(pid, _PROC_PIDTBSDINFO, _BSDINFO_SIZE)
-        if not ctypes.c_uint32.from_buffer(bsd, 0).value & _PROC_FLAG_CONTROLT:
-            return None
-        cwd = Path(os.fsdecode(_pidinfo(pid, _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE).raw[_CWD_PATH_AT : _CWD_PATH_AT + _MAXPATHLEN].split(b"\0", 1)[0]))
-        executable = _exec_path(pid)
-    except _Exited:
-        return None
-    # A path exec'd relative to the directory the process was started in; a session keeps that directory.
-    return Terminal(pid, (cwd / executable).resolve(), cwd)
-
-
-def _exec_path(pid: int) -> Path:
-    mib = (ctypes.c_int * 3)(*_KERN_PROCARGS2, pid)
-    size = ctypes.c_size_t(0)
-    if _libc.sysctl(mib, len(mib), None, ctypes.byref(size), None, 0) != 0:
-        _raise_unless_gone(pid)
-    record = ctypes.create_string_buffer(size.value)
-    if _libc.sysctl(mib, len(mib), record, ctypes.byref(size), None, 0) != 0:
-        _raise_unless_gone(pid)
-    return Path(os.fsdecode(record.raw[ctypes.sizeof(ctypes.c_int) : size.value].split(b"\0", 1)[0]))
-
-
-def _raise_unless_gone(pid: int) -> None:
-    failure = ctypes.get_errno()
-    # kern.procargs2 answers EINVAL for a pid no process of this user's has; the same answer for a running one is a
-    # refusal, never taken for an exit.
-    if failure == errno.EINVAL and not _running(pid):
-        raise _Exited
-    raise OSError(failure, f"sysctl could not say what pid {pid} was started as: {os.strerror(failure)}")
-
-
-def _running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-class _Exited(Exception):
-    pass
-
-
-def _pidinfo(pid: int, flavor: int, size: int) -> ctypes.Array[ctypes.c_char]:
-    record = ctypes.create_string_buffer(size)
-    filled = _libproc.proc_pidinfo(pid, flavor, 0, record, size)
-    if filled <= 0:
-        _raise_unless_exited(pid, f"proc_pidinfo flavor {flavor}")
-    if filled != size:
-        # A record of another size is a kernel whose struct is not the one laid out above; no errno says so.
-        raise OSError(f"proc_pidinfo flavor {flavor} gave {filled} bytes for pid {pid}, where this kernel's struct was taken to be {size}")
-    return record
-
-
-def _raise_unless_exited(pid: int, call: str) -> None:
-    failure = ctypes.get_errno()
-    # A process that exited, or is a zombie waiting on its parent, has no info left: it is no longer running.
-    if failure == errno.ESRCH:
-        raise _Exited
-    # [LAW:no-silent-failure] anything else is the kernel refusing a question about one of this user's own processes.
-    raise OSError(failure, f"{call} could not look at pid {pid}: {os.strerror(failure)}")

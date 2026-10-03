@@ -11,7 +11,7 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,7 +21,8 @@ from hands.sessions import liveness, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.processes import Terminal, process_starts, terminal_processes
+from hands.sessions.processes import process_starts
+from hands.sessions.terminals import Terminal, terminal_processes
 
 
 @dataclass(frozen=True)
@@ -139,7 +140,15 @@ class Unfindable:
     said: str  # why a running session hands has no record of cannot be told from the other programs at a terminal
 
 
-def unrecorded(home: Home, path: str, members: Collection[int]) -> list[Terminal] | Unfindable:
+@dataclass(frozen=True)
+class Unjoined:
+    """A running session hands has no record of, and whether hands could type into it once it joins."""
+
+    process: Terminal
+    under_fritter: bool
+
+
+def unrecorded(home: Home, path: str, members: Collection[int]) -> list[Unjoined] | Unfindable:
     """The sessions running at a terminal that hands has no record of, among this user's processes now."""
     match claude_code(wrapper.real_claude(path)):
         case Unfindable() as unfindable:
@@ -149,7 +158,7 @@ def unrecorded(home: Home, path: str, members: Collection[int]) -> list[Terminal
                 terminals = terminal_processes()
             except OSError as error:
                 return Unfindable(f"cannot look at this user's processes at a terminal: {error}")
-            return unjoined(home, executable, terminals, members)
+            return unjoined(home, executable, config_dir(os.environ), terminals, members)
 
 
 def claude_code(claude: Path | None) -> Path | Unfindable:
@@ -163,23 +172,36 @@ def claude_code(claude: Path | None) -> Path | Unfindable:
     except OSError as error:
         return Unfindable(f"cannot read the real `claude`, {executable}: {error}")
     if script:
-        return Unfindable(f"the real `claude`, {executable}, is a script, so its sessions run as its interpreter")
+        return Unfindable(f"the real `claude`, {executable}, is a script, so its sessions run as its interpreter: `claude install` puts in the native one, whose sessions hands can tell")
     return executable
 
 
-def unjoined(home: Home, claude: Path, terminals: Sequence[Terminal], members: Collection[int]) -> list[Terminal]:
-    """The sessions at a terminal that no running membership names: started before the plugin, and not reloaded since.
+def config_dir(environment: Mapping[str, str]) -> Path:
+    """The Claude Code config a process with this environment runs under: its plugins, and so whether hands' is one."""
+    return Path(environment.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+
+
+def unjoined(home: Home, claude: Path, config: Path, terminals: Sequence[Terminal], members: Collection[int]) -> list[Unjoined]:
+    """The sessions at a terminal under `config` that no running membership names: started before the plugin, and not
+    reloaded since.
 
     A session is a process at a terminal running `claude`, the Claude Code executable, or any other version of it, since
-    an update leaves running sessions on the version they started on. The hook records that same process, so it is
-    matched by pid.
+    an update leaves running sessions on the version they started on; one whose parent is one is that session's own
+    helper. The hook records that same process, so it is matched by pid. One under another config, as the brain is,
+    has other plugins, and is no session of the plugin this check looks at.
     """
-    # The brain, and the Claude Code it asks asides of, run in hands' own directory under their own config, which
-    # hands' plugin is never installed into: they talk to hands by other means. The kernel names a cwd with every link
-    # resolved.
-    brain = home.brain.resolve()
+    by_pid = {process.pid: process for process in terminals}
     install = _unversioned(claude)
-    return [process for process in terminals if _unversioned(process.executable) == install and process.pid not in members and not process.cwd.is_relative_to(brain)]
+
+    def runs_claude(pid: int) -> bool:
+        return pid in by_pid and _unversioned(by_pid[pid].executable) == install
+
+    fritter = home.fritter.resolve()
+    return [
+        Unjoined(process, process.parent in by_pid and by_pid[process.parent].executable == fritter)
+        for process in terminals
+        if runs_claude(process.pid) and not runs_claude(process.parent) and config_dir(process.environment) == config and process.pid not in members
+    ]
 
 
 # Claude Code keeps each version under a name that is the version: a file in the native installer's versions
@@ -196,15 +218,15 @@ def sessions_found(
     running: Sequence[Membership],
     listening: Collection[Path],
     unreadable: Sequence[liveness.Unreadable],
-    unrecorded: Sequence[Terminal] | Unfindable,
+    unrecorded: Sequence[Unjoined] | Unfindable,
 ) -> Finding:
     """What the running sessions are to hands, given which fritter sockets are there, which files did not parse, and
     which sessions at a terminal hands has no record of."""
     match unrecorded:
         case Unfindable(said):
             unknown, unseen = [], [f"a session hands has no record of cannot be found: {said}"]
-        case processes:
-            unknown, unseen = [f"{process.cwd} (pid {process.pid}) is a session hands has no record of, so it cannot be reached: /reload-plugins in it" for process in processes], []
+        case sessions:
+            unknown, unseen = [_unjoined(session) for session in sessions], []
     unreached = [
         *(line for member in running for line in _untypable(member, listening)),
         *(f"{file.path} names no session hands can read ({file.error}): hands run removes it" for file in unreadable),
@@ -219,13 +241,22 @@ def sessions_found(
     return Ready(f"{known}, and each can be typed into")
 
 
+def _unjoined(session: Unjoined) -> str:
+    where = f"{session.process.cwd} (pid {session.process.pid}) is a session hands has no record of"
+    if session.under_fritter:
+        return f"{where}, so it cannot be reached: /reload-plugins in it"
+    return f"{where}, started outside fritter, so it cannot be typed into: {_RESTART}"
+
+
+_RESTART = "restart it from a PATH whose `claude` is hands' shim"
+
+
 def _untypable(member: Membership, listening: Collection[Path]) -> list[str]:
     where = f"{member.cwd} (pid {member.pid})"
-    restart = "restart it from a PATH whose `claude` is hands' shim"
     match member.fritter:
         case None:
-            return [f"{where} was started outside fritter, so it cannot be typed into: {restart}"]
+            return [f"{where} was started outside fritter, so it cannot be typed into: {_RESTART}"]
         case socket if socket not in listening:
-            return [f"{where} has lost its fritter, whose socket {socket} is gone, so it cannot be typed into: {restart}"]
+            return [f"{where} has lost its fritter, whose socket {socket} is gone, so it cannot be typed into: {_RESTART}"]
         case _:
             return []

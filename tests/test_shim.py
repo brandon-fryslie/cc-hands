@@ -237,6 +237,15 @@ async def test_a_file_a_dead_process_left_under_this_session_is_replaced_on_its_
     assert [listing.session.membership.pid for listing in sessions.live()] == [os.getpid()]
 
 
+async def test_a_file_an_ended_session_left_under_this_process_pid_does_not_stop_it_joining(home: Home, sessions: Sessions) -> None:
+    """A session that ended while hands was off left its file, and its pid came round to this one."""
+    ended = SessionId("0f1e2d3c-aaaa-bbbb-cccc-00000000000e")
+    write_membership(home, Membership(ended, pid=os.getpid(), cwd=Path("/code/old"), transcript=Path("/nowhere/old.jsonl")))
+    os.utime(home.membership(ended), (0, 0))
+    assert await shim(home, PROMPT) == (0, "", "")
+    assert read_membership(home, SID).pid == os.getpid()
+
+
 async def test_an_end_removes_membership_and_leaves_the_listing(home: Home, sessions: Sessions) -> None:
     await shim(home, START)
     assert await shim(home, END) == (0, "", "")

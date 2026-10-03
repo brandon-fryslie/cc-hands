@@ -24,7 +24,7 @@ from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
-from hands.sessions.processes import Terminal
+from hands.sessions.terminals import Terminal
 from hands.sessions.wrapper import shim_script
 
 
@@ -254,8 +254,7 @@ def test_a_session_that_never_ran_a_hook_is_named_by_cwd_and_pid_with_the_fix(ro
     project.mkdir()
     with at_a_terminal(root / "install" / "9.9.9", project) as pid:
         found = readiness.sessions(home, path)
-    assert isinstance(found, Missing)
-    assert f"{project} (pid {pid}) is a session hands has no record of, so it cannot be reached: /reload-plugins in it" in found.said
+    assert isinstance(found, Missing) and f"{project} (pid {pid}) is a session hands has no record of" in found.said
 
 
 def test_a_reused_pid_of_an_ended_session_hides_no_session_hands_has_no_record_of(root: Path) -> None:
@@ -294,48 +293,60 @@ def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
     assert found == Ready("running sessions hands knows of: 1, and each can be typed into")
 
 
-def terminal(pid: int, executable: str, cwd: str) -> Terminal:
-    return Terminal(pid, Path(executable), Path(cwd))
+CONFIG = Path("/home/.claude")
 
 
-def test_a_session_is_a_terminal_process_of_any_version_of_the_real_claudes_install(root: Path) -> None:
-    home = Home(root / "home")
-    claude = root / "versions" / "2.1.288"
+def terminal(pid: int, executable: str, cwd: str = "/code", parent: int = 0, config: Path = CONFIG) -> Terminal:
+    return Terminal(pid, parent, Path(executable), Path(cwd), {"CLAUDE_CONFIG_DIR": str(config)})
+
+
+def unjoined(claude: str, terminals: list[Terminal], members: set[int] | None = None, home: Home = Home(Path("/h"))) -> list[Terminal]:
+    return [session.process for session in readiness.unjoined(home, Path(claude), CONFIG, terminals, members or set())]
+
+
+def test_a_session_is_a_terminal_process_of_any_version_of_the_real_claudes_install() -> None:
     terminals = [
-        terminal(1, f"{root}/versions/2.1.286", "/code/old"),
-        terminal(2, f"{root}/versions/2.1.288", "/code/joined"),
+        terminal(1, "/v/2.1.286", "/code/old"),
+        terminal(2, "/v/2.1.288", "/code/joined"),
         terminal(3, "/bin/zsh", "/code/shell"),
-        terminal(4, "/elsewhere/versions/2.1.288", "/code/other-install"),
-        terminal(5, f"{root}/versions/2.1.288", f"{home.brain}/cwd"),
+        terminal(4, "/elsewhere/v/2.1.288", "/code/other-install"),
     ]
-    assert readiness.unjoined(home, claude, terminals, {2}) == [terminals[0]]
+    assert unjoined("/v/2.1.288", terminals, {2}) == [terminals[0]]
 
 
 def test_a_cask_keeps_each_version_in_a_directory_named_for_it() -> None:
-    claude = Path("/opt/homebrew/Caskroom/claude-code/2.1.288/claude")
-    old = terminal(1, "/opt/homebrew/Caskroom/claude-code/2.1.286/claude", "/code")
-    assert readiness.unjoined(Home(Path("/nowhere")), claude, [old], set()) == [old]
+    old = terminal(1, "/opt/homebrew/Caskroom/claude-code/2.1.286/claude")
+    assert unjoined("/opt/homebrew/Caskroom/claude-code/2.1.288/claude", [old]) == [old]
 
 
 def test_a_pre_release_is_a_version_of_the_same_install() -> None:
-    claude = Path("/v/2.1.299")
-    beta = terminal(1, "/v/2.1.300-beta.1", "/code")
-    assert readiness.unjoined(Home(Path("/nowhere")), claude, [beta], set()) == [beta]
+    beta = terminal(1, "/v/2.1.300-beta.1")
+    assert unjoined("/v/2.1.299", [beta]) == [beta]
 
 
 def test_a_plain_claude_is_itself_and_not_its_directorys_other_programs() -> None:
-    claude = Path("/usr/local/bin/claude")
-    terminals = [terminal(1, "/usr/local/bin/claude", "/code"), terminal(2, "/usr/local/bin/nvim", "/code")]
-    assert readiness.unjoined(Home(Path("/nowhere")), claude, terminals, set()) == [terminals[0]]
+    terminals = [terminal(1, "/usr/local/bin/claude"), terminal(2, "/usr/local/bin/nvim")]
+    assert unjoined("/usr/local/bin/claude", terminals) == [terminals[0]]
 
 
-def test_the_brain_under_a_linked_home_is_not_a_session(root: Path) -> None:
-    (root / "real").mkdir()
-    (root / "link").symlink_to(root / "real")
-    home = Home(root / "link" / "home")
-    claude = root / "versions" / "2.1.288"
-    brain = terminal(1, str(claude), f"{root}/real/home/brain/cwd")
-    assert readiness.unjoined(home, claude, [brain], set()) == []
+def test_a_session_under_another_config_as_the_brain_is_has_other_plugins_and_is_not_named() -> None:
+    brain = terminal(1, "/v/2.1.288", config=Path("/h/brain"))
+    assert unjoined("/v/2.1.288", [brain]) == []
+
+
+def test_a_sessions_own_helper_run_from_its_executable_is_not_a_session() -> None:
+    session, helper = terminal(10, "/v/2.1.288"), terminal(11, "/v/2.1.288", parent=10)
+    assert unjoined("/v/2.1.288", [session, helper], {10}) == []
+
+
+def test_a_session_started_outside_fritter_is_told_to_restart_and_one_inside_to_reload(root: Path) -> None:
+    home = Home(root / "home")
+    fritter = terminal(5, str(home.fritter))
+    inside, outside = terminal(10, "/v/2.1.288", "/code/in", parent=5), terminal(11, "/v/2.1.288", "/code/out", parent=6)
+    found = readiness.sessions_found([], set(), [], readiness.unjoined(home, Path("/v/2.1.288"), CONFIG, [fritter, inside, outside], set()))
+    assert isinstance(found, Missing)
+    assert "/code/in (pid 10) is a session hands has no record of, so it cannot be reached: /reload-plugins in it" in found.said
+    assert "/code/out (pid 11) is a session hands has no record of, started outside fritter, so it cannot be typed into: restart it" in found.said
 
 
 def test_with_no_real_claude_a_session_hands_has_no_record_of_cannot_be_found(root: Path) -> None:
