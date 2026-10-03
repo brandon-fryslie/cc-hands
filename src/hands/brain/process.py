@@ -336,7 +336,23 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
         raise
     finally:
         os.close(slave)
+    try:
+        await _held(master, process)
+    except BaseException:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        os.close(master)
+        raise
     return ClaudeCode(process, _Terminal(master))
+
+
+async def _held(terminal: int, process: asyncio.subprocess.Process) -> None:
+    """Until `process` holds `terminal` as its session's, or has ended without taking it.
+
+    [LAW:no-ambient-temporal-coupling] what is spawned is ended by hands' end only once it holds its terminal: a hands
+    that died before then would hang up nothing, and leave the child opening a terminal with no other end, for good."""
+    while process.returncode is None and os.tcgetpgrp(terminal) != process.pid:
+        await asyncio.sleep(0.002)
 
 
 def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:
@@ -603,7 +619,10 @@ async def _typist(running: ClaudeCode, sockets: Path, session: SessionId) -> Typ
         if found and child is not None:
             return Typist(session, found[0], child)
         await asyncio.sleep(0.05)
-    raise Unstartable(f"fritter did not start the brain and open its socket in {START_SECONDS:.0f}s (exit {running.exit.result() if running.exit.done() else None})")
+    # What fritter's terminal showed says why: a fritter that could not be run at all fails there, in the shell it was run by.
+    if running.exit.done():
+        raise Unstartable(f"fritter exited ({running.exit.result()}) before it started the brain and opened its socket; it showed:\n{running.shown()}")
+    raise Unstartable(f"fritter did not start the brain and open its socket in {START_SECONDS:.0f}s; it showed:\n{running.shown()}")
 
 
 def _child_of(pid: int) -> int | None:

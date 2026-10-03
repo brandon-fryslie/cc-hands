@@ -452,7 +452,20 @@ async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_n
     assert turns == [BrainAsked("slow"), BrainAnswered("p1", None), BrainAsked("and now?"), BrainAnswered("p2", None)]
 
 
-async def test_a_hands_that_dies_without_stopping_its_brain_leaves_neither_fritter_nor_claude_running(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+# How a hands starts a Claude Code of its own, and the pids of what it started: its brain under fritter, or an aside's
+# Claude Code run directly, as the leader of its own session.
+BRAIN = """
+brain = await start(launch, lambda _entry: None)
+print(brain.pid, _child_of(brain.pid), flush=True)
+"""
+ASIDE = """
+claude = await spawn(launch.station, [str(brain_claude()), "--session-id", "s1"])
+print(claude.pid, flush=True)
+"""
+
+
+@pytest.mark.parametrize("started", [BRAIN, ASIDE], ids=["brain", "aside"])
+async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing_it_started_running(tmp_path: Path, fake_claude: Path, fritter: Path, started: str) -> None:
     # hands killed outright: no stop, no cleanup, only the kernel's hangup of the terminal it held.
     # Its temp dir is the test's, so what a dead hands leaves there - the brain's socket dir - goes with the test.
     temp = Path(tempfile.mkdtemp(dir="/tmp"))  # short: the sockets in it are held to the unix socket path limit
@@ -461,24 +474,18 @@ async def test_a_hands_that_dies_without_stopping_its_brain_leaves_neither_fritt
     def alive(pid: int) -> bool:
         try:
             os.kill(pid, 0)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):  # gone, or the pid is now another user's
             return False
         return True
 
-    hands = await asyncio.create_subprocess_exec(sys.executable, "-c", """
-import asyncio, os, pickle, sys
-from hands.brain.process import _child_of, start
-async def main():
-    brain = await start(pickle.load(sys.stdin.buffer), lambda _entry: None)
-    print(brain.pid, _child_of(brain.pid), flush=True)
-    os._exit(0)
-asyncio.run(main())
-""", stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
+    script = "import asyncio, os, pickle, sys\nfrom hands.brain.process import _child_of, brain_claude, spawn, start\nasync def main():\n    launch = pickle.load(sys.stdin.buffer)\n"
+    script += "".join(f"    {line}\n" for line in started.strip().splitlines()) + "    os._exit(0)\nasyncio.run(main())\n"
+    hands = await asyncio.create_subprocess_exec(sys.executable, "-c", script, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
     try:
         out, err = await asyncio.wait_for(hands.communicate(pickle.dumps(launch(tmp_path, fritter))), 30)
         assert hands.returncode == 0, err.decode()
         pids = [int(pid) for pid in out.split()]
-        assert len(pids) == 2
+        assert pids
 
         await until(lambda: not any(map(alive, pids)))
     finally:
@@ -489,6 +496,14 @@ asyncio.run(main())
         for pid in filter(alive, pids):
             os.kill(pid, signal.SIGKILL)
         shutil.rmtree(temp)
+
+
+async def test_a_fritter_that_cannot_be_run_is_refused_with_what_its_terminal_showed(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    unrunnable = tmp_path / "fritter"
+    shutil.copy(fritter, unrunnable)
+    unrunnable.chmod(0o644)
+    with pytest.raises(Unstartable, match=r"(?s)fritter exited \(126\).*[Pp]ermission denied"):
+        await start(launch(tmp_path, unrunnable), lambda _entry: None)
 
 
 async def test_a_brain_with_no_fritter_to_run_under_is_refused_naming_the_install(tmp_path: Path, fake_claude: Path) -> None:
