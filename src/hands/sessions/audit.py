@@ -398,6 +398,14 @@ class BacklogUnread:
 
 
 @dataclass(frozen=True)
+class Restarting:
+    """The daemon was asked to restart: it has stopped, and starts again as pid `pid`, the same process, from the code
+    and configuration on disk now."""
+
+    pid: int
+
+
+@dataclass(frozen=True)
 class Retired:
     """The first line of a new log: the one before it reached the bound and was moved to `path` at `size` bytes."""
 
@@ -452,6 +460,7 @@ Entry = (
     | NameGiven
     | NameWithheld
     | BacklogUnread
+    | Restarting
     | Retired
     | Failure
 )
@@ -488,7 +497,7 @@ def level(entry: Entry) -> Level:
             | Applied() | Performed() | Typing() | LLMChosen() | ProxyListening() | TapListening() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Recounted() | Summarised()
-            | TurnsSummarised() | NameGiven() | Retired()
+            | TurnsSummarised() | NameGiven() | Restarting() | Retired()
         ):
             return "info"
         case _:

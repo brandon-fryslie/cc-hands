@@ -190,11 +190,14 @@ def describe(verdict: Verdict, now: datetime) -> str:
             return f"hands is stopped: pid {status.pid} finished its pipeline {_span(now - status.written_at)} ago"
         case Up(status=status):
             heard = "never" if status.last_audio_out is None else f"{_span(now - status.last_audio_out)} ago"
-            sessions = "1 live session" if status.live_sessions == 1 else f"{status.live_sessions} live sessions"
             return (
                 f"hands is up: pid {status.pid}, up {_span(now - status.started_at)}, pipeline {status.pipeline}, "
-                f"last audio out {heard}, {sessions}"
+                f"last audio out {heard}, {live_sessions(status)}"
             )
+
+
+def live_sessions(status: Status) -> str:
+    return "1 live session" if status.live_sessions == 1 else f"{status.live_sessions} live sessions"
 
 
 def _span(elapsed: timedelta) -> str:

@@ -7,7 +7,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -15,8 +15,8 @@ import pytest
 
 from hands.daemon import indicator
 from hands.sessions import heartbeat
-from hands.daemon.cli import launch, main
-from hands.daemon.starting import keep_beating
+from hands.daemon.cli import Run, launch, main
+from hands.daemon.starting import Ended, keep_beating
 from hands.threads import off_loop
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -72,10 +72,11 @@ async def test_a_start_still_importing_pipecat_beats_starting_until_the_run_it_l
     imported = threading.Event()
     ran: list[asyncio.Event] = []
 
-    async def run(quit_event: asyncio.Event) -> None:
+    async def run(quit_event: asyncio.Event) -> Ended:
         ran.append(quit_event)
+        return Ended(None, 0)
 
-    def load() -> Callable[[asyncio.Event], Coroutine[object, object, None]]:
+    def load() -> Run:
         imported.wait()
         return run
 
@@ -96,7 +97,7 @@ async def test_a_stop_during_the_pipecat_import_ends_the_run_as_stopped(tmp_path
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
     never = threading.Event()
 
-    def load() -> Callable[[asyncio.Event], Coroutine[object, object, None]]:
+    def load() -> Run:
         never.wait()
         raise AssertionError("the import never finished")
 

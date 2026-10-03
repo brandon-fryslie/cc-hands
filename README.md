@@ -121,8 +121,15 @@ The same commands work as `/plugin ...` inside a session. A session picks up a c
 when it starts, or on `/reload-plugins`. Installed from a local directory, the plugin
 runs from this checkout, so a `git pull` here updates the hooks too.
 
-The plugin also holds one skill, `/hands:summaries on|off`, which you can also say to
-hands. It decides whether every finished turn is summarised aloud. Summaries are off
+The plugin also holds two skills. `/hands:restart` restarts a running hands from the
+session you are in, so it runs the code, the brain's prompt, and the brain's setup on
+disk now: hands stops as `q` stops it and starts again in the same terminal and process,
+with the same menu-bar item and every running session still listed, and the skill says
+so in one line once the new run is up, usually within seconds. No change is taken up
+without a restart; a skill added to the plugin reaches a session on `/reload-plugins`.
+
+`/hands:summaries on|off`, which you can also say to
+hands, decides whether every finished turn is summarised aloud. Summaries are off
 until you turn them on; while they are off, only the turns of a session you asked hands
 to watch are told as they finish, and any session's last turn is told when you ask for
 it. Permission requests, questions asked in a dialog, and plans are spoken either way.
