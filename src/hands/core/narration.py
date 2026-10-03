@@ -121,7 +121,7 @@ def opened(segment: Segment, budget: Budget) -> str:
 
 @dataclass(frozen=True)
 class Narration:
-    """A turn's narration tree: what hands says of it at Stop, and what is there to be opened afterwards.
+    """A turn's narration tree: what hands hands the model of it at Stop, and what is there to be opened afterwards.
 
     `repository` holds nothing at all for a turn that left the repository where it found it, rather than being a
     segment that may be absent, so the caller speaks it unconditionally [LAW:dataflow-not-control-flow]. So do
@@ -137,17 +137,16 @@ class Narration:
     settled: tuple[Segment, ...]
     sections: tuple[Segment, ...]
 
-    def said(self) -> str:
-        """What hands says of the turn from its types: that it was stopped, what git says, and what it asked.
+    def facts(self) -> str:
+        """What hands adds of the turn from its types: that it was stopped, and what git says.
 
         Whether a turn committed is a fact its steps and its delta both record, and a summariser asked for it was
-        measured on 2026-09-22 both dropping it and reporting it with the hash read out: said from the types it can
-        be neither [LAW:one-source-of-truth]. The question goes last: it is the one sentence the listener answers, and
-        a fact read out after it leaves them holding the answer to something already gone by. The sections are built
-        and not said: a listener who wants a topic asks for it.
+        measured on 2026-09-22 both dropping it and reporting it with the hash read out: handed on from the types it
+        can be neither [LAW:one-source-of-truth]. The sections are built and not handed on: a listener who wants a
+        topic asks for it.
         """
         # That the user stopped it goes first: it is what they are listening for, and it says why what follows is unfinished.
-        return " ".join(part.text for part in (*self.interrupted, *self.repository, *self.questions))
+        return " ".join(part.text for part in (*self.interrupted, *self.repository))
 
     def asked(self) -> str:
         """What the turn is waiting on the listener to answer."""
@@ -306,10 +305,6 @@ def asked_in(text: str) -> list[str]:
 
 def reading(text: str) -> list[tuple[bool, str]]:
     """The text's sentences in order, each with whether it asks the listener something.
-
-    One definition, because Claude's own closing text is read for its questions by the narration and by the idle
-    nudge, and were there two rules the narration could ask what the nudge says is no question, or the nudge promise
-    one that is never said [LAW:one-source-of-truth].
 
     A question put to the listener outright is asked wherever it stands: "Want me to do it?" asked above three
     more sections still waits on an answer. Any other question is asked only where the text ends on it — its

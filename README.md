@@ -121,11 +121,12 @@ The same commands work as `/plugin ...` inside a session. A session picks up a c
 when it starts, or on `/reload-plugins`. Installed from a local directory, the plugin
 runs from this checkout, so a `git pull` here updates the hooks too.
 
-The plugin also holds one skill, `/hands:summaries on|off`. It decides whether every
-finished turn is summarised aloud. Summaries are off until you turn them on, and while
-they are off a finished turn is not narrated. Permission requests, questions asked in a
-dialog, and plans are spoken either way. The setting lasts across restarts and takes
-effect from the next turn.
+The plugin also holds one skill, `/hands:summaries on|off`, which you can also say to
+hands. It decides whether every finished turn is summarised aloud. Summaries are off
+until you turn them on; while they are off, only the turns of a session you asked hands
+to watch are told as they finish, and any session's last turn is told when you ask for
+it. Permission requests, questions asked in a dialog, and plans are spoken either way.
+The setting lasts across restarts and takes effect from the next turn.
 
 The hooks need a Python 3.12 or newer on `PATH` (`python3.14`, `python3.13`,
 `python3.12`, or a `python3` that is new enough); they run hands' own `src` and need no

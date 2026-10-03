@@ -99,14 +99,12 @@ what each has and what remains.
   segments, step summaries built as steps arrive, the git delta, the length as a config
   number, and the eval script.
 - **Question detection.** Questions in the final text, and choices Claude offered,
-  become question segments that play at every length, ahead of the sections; a
-  turn that ends on one makes the idle nudge say the session has a question. Done
+  become question segments that play at every length, ahead of the sections. Done
   by fixtures of real turns that do and do not end on a question, with the eval
   reporting misses and false alarms. Built: the daemon reads a turn's closing text
   and its unanswered `AskUserQuestion` calls for what it is waiting on, the question
   segment plays last at every length in the summariser's words or, where it left the
-  question out, Claude's put in spoken form, and the nudge says "X has a question for
-  you." Nine eval cases, four asking and five not, run with no miss and no false alarm.
+  question out, Claude's put in spoken form. Nine eval cases, four asking and five not, run with no miss and no false alarm.
 - **The intermediary's prompt.** The conversational model's own deliverable,
   separate from the summariser's: titles for sessions and no ids aloud, replies in
   spoken form, "speak what changed" for readbacks, calling `expand`, `resume`,
@@ -197,18 +195,17 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
 - **Mode readback.** `permission_mode` from every hook payload lands in
   `Session.mode`; `list_sessions` speaks it; a mode change is a `Note`. Done when
   shift-tab in a session is reflected in the next `list_sessions`.
-- **Waiting-for-you nudge.** The `idle_prompt` notification becomes a `Speak`: "X
-  is waiting for you.", or "X has a question for you." when its turn ended on one.
-  Done when leaving a watched session idle triggers exactly one nudge.
-  Built: heard live on 2.1.280, once per idle period, 60 s after the turn ended.
-  Said only for a session the user asked to hear from (`watch_session`), which holds
-  across restarts; every other session's nudge is dropped (hands-announce-5md).
+- **One turn summary.** Every finished turn is summarised once, and that summary is
+  what the user hears of it: as the turn finishes for every session with spoken
+  summaries on, or for a watched session (`watch_session`) with them off, and when the
+  user asks for it (`tell_turn`) otherwise. Both settings are set by voice and hold
+  across restarts. Nothing is said of a session that sits at its prompt
+  (hands-narration-2mc.d52).
 - **An interrupted turn.** Escape or Ctrl-C mid-turn fires no `Stop` and no later
   `idle_prompt`, so the tail reads the transcript's own record of the interrupt, which
   names the prompt of the turn it stopped. That turn, and no other, goes idle; it is
-  told as a stopped turn is, opening with "You interrupted it."; and hands times its
-  nudge itself, 60 s on. Built: verified live on 2.1.281 mid-tool, mid-text, at a
-  permission dialog, and by Ctrl-C, each left idle and told, and nudged once.
+  told as a stopped turn is, opening with "You interrupted it.". Built: verified live on
+  2.1.281 mid-tool, mid-text, at a permission dialog, and by Ctrl-C, each left idle and told.
 
 ## Attention (`hands-attention-ssy`)
 

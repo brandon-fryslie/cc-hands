@@ -39,7 +39,7 @@ def switch(home: Home, cwd: Path, path: str, *arguments: str) -> subprocess.Comp
 def test_the_skill_turns_summaries_on_and_off_and_says_where_they_stand(tmp_path: Path, python312: str) -> None:
     home = Home(tmp_path / "home")
     asked = switch(home, tmp_path, python312)
-    assert (asked.returncode, asked.stdout, asked.stderr) == (0, "Spoken turn summaries are off: a finished turn is not narrated.\n", "")
+    assert (asked.returncode, asked.stdout, asked.stderr) == (0, "Spoken turn summaries are off: only a watched session's turns are told as they finish, and any session's last turn when you ask for it.\n", "")
     on = switch(home, tmp_path, python312, "on")
     assert (on.returncode, on.stdout, on.stderr) == (0, "Spoken turn summaries are on: every turn a session finishes is told aloud.\n", "")
     assert summaries(home) == "on"

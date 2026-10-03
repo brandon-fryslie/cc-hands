@@ -94,7 +94,7 @@ def test_every_question_the_turn_waits_on_is_in_its_one_question_segment() -> No
 def test_a_question_is_said_in_claudes_words_put_in_spoken_form() -> None:
     """A turn waiting on an answer it never asks for is the failure the question segment exists to prevent."""
     asked = Questioned(None, (Question("Roll `src/auth.py` back to a1b2c3d?", ("Roll back (Recommended)", "Press on"), None),))
-    said = told(Edited(None, "/a/b.py", False, "@@"), asked).said()
+    said = told(Edited(None, "/a/b.py", False, "@@"), asked).asked()
     heard = spoken(said)
     assert heard.text == said and heard.leaks == ()
     assert said.startswith("It is asking: Roll ") and said.endswith(" Either Roll back or Press on.")
@@ -104,18 +104,18 @@ def test_a_question_is_said_in_claudes_words_put_in_spoken_form() -> None:
 def test_a_question_asked_in_prose_plays_though_no_hook_blocked_on_it() -> None:
     closing = Said(Ref("u4"), "Fixed the refresh test.\n\nWant me to look at the other flaky ones too?")
     narrated = told(Ran(None, "pytest", None, False, "ok", ()), closing)
-    assert narrated.said() == "It said: Want me to look at the other flaky ones too?"
+    assert narrated.asked() == "It said: Want me to look at the other flaky ones too?"
     assert [question.refs for question in narrated.questions] == [(Ref("u4"),)]
 
 
 def test_an_offer_with_no_question_mark_is_said_in_claudes_words() -> None:
     closing = Said(None, "The dev build should not be on that Mac. Say the word and I'll remove it.")
-    assert told(closing).said() == "It said: Say the word and I'll remove it."
+    assert told(closing).asked() == "It said: Say the word and I'll remove it."
 
 
 def test_a_turn_waiting_on_two_things_says_each() -> None:
     dialog = Questioned(None, (Question("Merge now?", ("Merge", "Wait"), None), Question("Re-run the review?", (), None)))
-    said = told(Ran(None, "pytest", None, False, "ok", ()), dialog).said()
+    said = told(Ran(None, "pytest", None, False, "ok", ()), dialog).asked()
     assert said == "It is asking: Merge now? Either Merge or Wait. It is asking: Re-run the review?"
 
 
@@ -127,7 +127,7 @@ def test_a_dialog_claude_went_on_past_is_there_to_open_and_is_not_asked() -> Non
 
 
 def test_a_choice_split_over_two_sentences_is_said_as_the_one_thing_it_is() -> None:
-    said = told(Said(None, "The rename is in. Should I update the logout code?\nOr roll it back?")).said()
+    said = told(Said(None, "The rename is in. Should I update the logout code?\nOr roll it back?")).asked()
     assert said == "It said: Should I update the logout code? Or roll it back?"
 
 
@@ -139,12 +139,12 @@ def test_a_dialog_escaped_is_still_waiting_and_one_claude_went_on_past_is_not() 
 
 def test_a_turn_that_asked_nothing_has_nothing_to_say_of_a_question() -> None:
     narrated = told(Said(None, "Fixed it. All twelve tests pass."))
-    assert narrated.said() == "" and narrated.questions == ()
+    assert narrated.asked() == "" and narrated.questions == ()
 
 
 def test_a_question_the_turn_went_on_working_past_is_not_waiting() -> None:
     narrated = told(Said(None, "Want me to run the tests?"), Ran(None, "pytest", None, False, "ok", ()))
-    assert narrated.questions == () and narrated.said() == ""
+    assert narrated.questions == () and narrated.asked() == ""
 
 
 def test_a_question_cut_off_by_an_interruption_is_not_waiting() -> None:
@@ -158,7 +158,7 @@ def test_what_the_repository_did_is_said_from_the_types_and_never_from_the_model
     narrated = told(Ran(None, "make fmt", None, False, "", ()), delta=delta)
     [repository] = narrated.repository
     assert repository.text == "It committed and left two files different."
-    assert narrated.said() == "It committed and left two files different."
+    assert narrated.facts() == "It committed and left two files different."
 
 
 def test_a_commit_both_the_step_and_the_delta_saw_is_said_once() -> None:
@@ -212,7 +212,7 @@ def test_a_pull_request_is_named_without_its_number() -> None:
 
 def test_a_repository_that_did_not_move_is_said_nothing_about_because_a_listener_is_told_what_happened() -> None:
     narrated = told(Said(None, "Thought about it."))
-    assert narrated.repository == () and narrated.said() == ""
+    assert narrated.repository == () and narrated.facts() == ""
 
 
 def test_a_delta_that_holds_only_a_patch_still_says_the_repository_moved() -> None:
@@ -222,7 +222,7 @@ def test_a_delta_that_holds_only_a_patch_still_says_the_repository_moved() -> No
 
 def test_a_turn_with_no_steps_at_all_has_nothing_to_say_and_no_section() -> None:
     narrated = told()
-    assert narrated.said() == "" and narrated.sections == ()
+    assert narrated.facts() == narrated.asked() == "" and narrated.sections == ()
 
 
 def test_opening_a_section_renders_exactly_its_own_steps_by_the_rules_the_whole_turn_got() -> None:
@@ -254,15 +254,6 @@ def test_every_kind_of_step_lands_in_some_section_so_nothing_a_turn_did_is_dropp
     assert sum(len(section.covers) for section in narrated.sections) == len(steps)
 
 
-ASKING = Said(None, "The rename is in, but three tests fail.\n\nWant me to roll the rename back?")
-
-
-def test_the_question_is_said_last() -> None:
-    """A fact read out after the question leaves the listener holding the answer to something already gone by."""
-    pushed = Ran(None, "git push", None, False, "", (Pushed("main"),))
-    assert told(pushed, ASKING).said() == "It pushed main. It said: Want me to roll the rename back?"
-
-
 def test_a_branch_is_said_in_words_because_the_speaker_reads_a_slash_aloud() -> None:
     """This clause is the one part of the top level no model wrote, so the instruction cannot cover it, and the
     filter in front of the speaker will not read a bare `feature/x` as a path — by its own deliberate choice,
@@ -286,7 +277,7 @@ def test_nothing_the_repository_clause_says_is_rewritten_by_the_filter_in_front_
 
 def test_a_turn_the_user_interrupted_says_so_first_from_the_types_and_never_as_a_section() -> None:
     narrated = told(Said(None, "# Rivers"), Interruption(Ref("u9")), delta=Delta(files=(Changed("a.md", 3, 0),)))
-    assert narrated.said() == "You interrupted it. It left one file different."
+    assert narrated.facts() == "You interrupted it. It left one file different."
     assert topics(narrated) == ["what it said"]
     assert [segment.refs for segment in narrated.interrupted] == [(Ref("u9"),)]
 
@@ -301,8 +292,8 @@ def test_a_turn_that_went_on_after_an_interruption_is_not_said_to_be_interrupted
 
 
 def test_a_turn_with_two_interruptions_says_so_once() -> None:
-    assert told(Interruption(Ref("u8")), Said(None, "On it."), Interruption(Ref("u9"))).said() == "You interrupted it."
+    assert told(Interruption(Ref("u8")), Said(None, "On it."), Interruption(Ref("u9"))).facts() == "You interrupted it."
 
 
 def test_a_turn_with_nothing_to_report_is_the_interruption_alone() -> None:
-    assert told(Interruption(Ref("u9"))).said() == "You interrupted it."
+    assert told(Interruption(Ref("u9"))).facts() == "You interrupted it."

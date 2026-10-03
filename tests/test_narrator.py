@@ -18,9 +18,10 @@ from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.sessions.audit import Entry, Failure, Recounted, failures_to
 from hands.sessions.registry import Sessions
 from hands.sessions.home import Home
+from hands.sessions.overlays import Overlays
 from hands.sessions.summaries import Summaries, summaries
 from hands.sessions.tail import Tails
-from hands.voice.narrator import REPLY_SHOWN, narrate, recount
+from hands.voice.narrator import REPLY_SHOWN, Recount, Recounts, narrate, recount
 from hands.voice.speech import Narrated, Pushed, Tailed
 from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
@@ -103,7 +104,7 @@ async def test_a_finished_turn_is_handed_to_the_model_with_its_reply_and_the_ses
     recorded: list[Entry] = []
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, recorded.append, on))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, recorded.append, on, Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
@@ -116,18 +117,19 @@ async def test_a_finished_turn_is_handed_to_the_model_with_its_reply_and_the_ses
     assert "API Error" in told
     assert told.endswith("in one or two spoken sentences, naming the session. It asks the user nothing.")
     [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
-    assert recounted == Recounted(SID, told, ("what it said", "the commands"), (), by_model=True, opened="Asked")
+    assert recounted == Recounted(SID, told, ("what it said", "the commands"), (), "summaries", opened="Asked")
 
 
 async def test_the_brain_takes_a_finished_turn_as_a_narration_and_never_through_the_pipelines_context(tmp_path: Path) -> None:
-    told = await recount(tailing(said_turn(tmp_path, "Fixed it.")), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "on", Tailed())
+    told = await recount(tailing(said_turn(tmp_path, "Fixed it.")), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "summaries", Recounts(), Tailed())
     assert isinstance(told, Narrated) and "The last thing it said was:\n\nFixed it.\n\n" in told.text
     assert told.unsaid == "cc-hands finished a turn, and I could not tell it."
 
 
-async def test_a_narration_the_brain_cannot_take_still_has_the_question_to_say_as_written(tmp_path: Path) -> None:
-    told = await recount(tailing(said_turn(tmp_path, "Fixed it. Want me to push it?")), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "on", Tailed())
-    assert isinstance(told, Narrated) and told.unsaid == "cc-hands finished a turn, and I could not tell it. It said: Want me to push it?"
+async def test_a_narration_the_brain_cannot_take_says_only_that_it_could_not_be_told(tmp_path: Path) -> None:
+    """Nothing of a turn is said as written past the brain: a question said bare was answered by a user whose brain never heard it."""
+    told = await recount(tailing(said_turn(tmp_path, "Fixed it. Want me to push it?")), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "summaries", Recounts(), Tailed())
+    assert isinstance(told, Narrated) and told.unsaid == "cc-hands finished a turn, and I could not tell it."
 
 
 async def test_a_turn_interrupted_mid_work_is_handed_on_with_the_last_thing_it_said(tmp_path: Path) -> None:
@@ -136,18 +138,18 @@ async def test_a_turn_interrupted_mid_work_is_handed_on_with_the_last_thing_it_s
     result = '{"type":"user","uuid":"u4","promptId":"p1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"1 passed"}]}}'
     stop = '{"type":"user","uuid":"u5","promptId":"p1","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}'
     transcript.write_text(f"{_prompt('p1', 'fix it')}\n{_said('u2', 'Fixed the parser; running the tests.')}\n{call}\n{result}\n{stop}\n")
-    told = handed(await recount(tailing(transcript), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "on", Pushed()))
+    told = handed(await recount(tailing(transcript), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "summaries", Recounts(), Pushed()))
     assert "The last thing it said was:\n\nFixed the parser; running the tests.\n\nFrom its record, hands adds: You interrupted it." in told
 
 
 async def test_a_turn_waiting_on_an_answer_is_handed_on_with_the_question_the_daemon_found_for_the_model_to_ask(tmp_path: Path) -> None:
-    told = handed(await recount(tailing(said_turn(tmp_path, "Fixed it. Want me to push it?")), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "on", Pushed()))
-    assert told.endswith("It is waiting on the user's answer to this, so end by asking it: It said: Want me to push it?")
+    told = handed(await recount(tailing(said_turn(tmp_path, "Fixed it. Want me to push it?")), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "summaries", Recounts(), Pushed()))
+    assert told.endswith("so end by asking it, with what it refers to, so they can answer without looking at the screen: It said: Want me to push it?")
 
 
 async def test_what_is_handed_of_a_long_reply_is_bounded(tmp_path: Path) -> None:
     """Every turn told grows the brain's history toward compaction."""
-    told = handed(await recount(tailing(said_turn(tmp_path, "x" * (REPLY_SHOWN * 3))), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "on", Pushed()))
+    told = handed(await recount(tailing(said_turn(tmp_path, "x" * (REPLY_SHOWN * 3))), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "summaries", Recounts(), Pushed()))
     assert "x" * REPLY_SHOWN + "... (cut short)" in told and "x" * (REPLY_SHOWN + 1) not in told
 
 
@@ -156,7 +158,7 @@ async def test_a_session_that_ends_after_its_turn_is_heard_ending_after_that_tur
     shutil.copy(FIXTURE, transcript)
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, lambda _: None, on))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, lambda _: None, on, Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
@@ -170,12 +172,46 @@ async def test_a_session_that_ends_after_its_turn_is_heard_ending_after_that_tur
     assert isinstance(second, TTSSpeakFrame) and second.text == "The session cc-hands is gone."
 
 
+async def test_a_turn_held_until_asked_for_is_told_once(tmp_path: Path) -> None:
+    """Held, it is told: a later telling of the same turn has nothing new, whatever the switch says by then."""
+    tails = tailing(said_turn(tmp_path, "Fixed it. Want me to push it?"))
+    recorded: list[Entry] = []
+    recounts = Recounts()
+    assert await recount(tails, SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "on request", recounts, Tailed()) is None
+    assert await recount(tails, SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "summaries", Recounts(), Tailed()) is None
+    [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
+    assert recounted.delivered == "on request" and recounts.of(SID) == Recount(PromptId("p1"), (recounted.told,))
+
+
+async def test_a_turn_held_until_asked_for_whose_transcript_cannot_be_read_says_nothing_and_holds_the_failure(tmp_path: Path) -> None:
+    recounts = Recounts()
+    assert await recount(tailing(tmp_path / "gone.jsonl"), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "on request", recounts, Tailed()) is None
+    assert recounts.of(SID) == Recount(PromptId("p1"), (), unread=True)
+    recounts.put(SID, PromptId("p1"), "read after all")
+    assert recounts.of(SID) == Recount(PromptId("p1"), ("read after all",))
+    recounts.unread(SID, PromptId("p1"))
+    assert recounts.of(SID) == Recount(PromptId("p1"), ("read after all",), unread=True)
+
+
+def test_a_turn_told_again_is_held_whole_and_the_next_turn_replaces_it_even_with_nothing_to_tell() -> None:
+    recounts = Recounts()
+    recounts.put(SID, PromptId("p1"), "first")
+    recounts.put(SID, PromptId("p1"), "then")
+    recounts.put(SID, PromptId("p1"), None)
+    assert recounts.of(SID) == Recount(PromptId("p1"), ("first", "then"))
+    recounts.put(SID, PromptId("p2"), None)
+    assert recounts.of(SID) == Recount(PromptId("p2"), ())
+    recounts.put(SID, None, "unnamed")
+    recounts.put(SID, None, "another")
+    assert recounts.of(SID) == Recount(None, ("another",))
+
+
 async def test_a_turn_a_slash_command_opened_is_logged_as_commanded_rather_than_asked(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     skill = json.dumps({"type": "user", "uuid": "c1", "promptId": "p1", "message": {"role": "user", "content": "<command-message>ship</command-message>\n<command-name>/ship</command-name>\n<command-args>it</command-args>"}}, separators=(",", ":"))
     transcript.write_text(f"{skill}\n{_said('u2', 'Shipped.')}\n")
     recorded: list[Entry] = []
-    await recount(tailing(transcript), SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "on", Tailed())
+    await recount(tailing(transcript), SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "summaries", Recounts(), Tailed())
     assert [entry.opened for entry in recorded if isinstance(entry, Recounted)] == ["Commanded"]
 
 
@@ -186,7 +222,7 @@ async def test_a_switch_that_cannot_be_read_is_logged(tmp_path: Path) -> None:
     failed: asyncio.Queue[Failure] = asyncio.Queue()
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     sink = logger.add(failures_to(lambda entry: failed.put_nowait(entry) if isinstance(entry, Failure) else None), level="ERROR", filter="hands")
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), asyncio.Queue[Frame]().put, lambda _: None, lambda: summaries(home)))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), asyncio.Queue[Frame]().put, lambda _: None, lambda: summaries(home), Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
@@ -205,7 +241,7 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
     transcript.write_text(f"{_prompt('p1', 'fix it')}\n{_said('u2', 'Looked.')}\n")
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, lambda _: None, on))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, lambda _: None, on, Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
@@ -229,7 +265,7 @@ async def test_a_missing_transcript_is_said_to_have_failed_and_logged(tmp_path: 
     recorded: list[Entry] = []
     sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
     try:
-        spoken = await recount(tailing(tmp_path / "gone.jsonl"), SID, None, None, "cc-hands", recorded.append, Delta(), "on", Pushed())
+        spoken = await recount(tailing(tmp_path / "gone.jsonl"), SID, None, None, "cc-hands", recorded.append, Delta(), "summaries", Recounts(), Pushed())
     finally:
         logger.remove(sink)
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands finished a turn, and I could not read it."
@@ -241,7 +277,7 @@ async def test_a_missing_transcript_is_said_to_have_failed_and_logged(tmp_path: 
 async def test_a_session_that_stops_before_any_prompt_says_nothing(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text('{"type":"ai-title","aiTitle":"x"}\n')
-    assert await recount(tailing(transcript), SID, None, None, "cc-hands", lambda _: None, Delta(), "on", Pushed()) is None
+    assert await recount(tailing(transcript), SID, None, None, "cc-hands", lambda _: None, Delta(), "summaries", Recounts(), Pushed()) is None
 
 
 async def test_a_turn_that_only_a_shell_command_changed_is_still_told_by_what_the_repository_says(tmp_path: Path) -> None:
@@ -253,7 +289,7 @@ async def test_a_turn_that_only_a_shell_command_changed_is_still_told_by_what_th
     transcript = tmp_path / "t.jsonl"
     transcript.write_text('{"uuid":"u1","type":"user","message":{"role":"user","content":"run the formatter"}}\n')
     delta = Delta(files=(Changed("src/a.py", 12, 9), Changed("src/b.py", 3, 3)), commits=(), patch="@@\n-x\n+y\n")
-    told = handed(await recount(tailing(transcript), SID, None, None, "cc-hands", lambda _: None, delta, "on", Pushed()))
+    told = handed(await recount(tailing(transcript), SID, None, None, "cc-hands", lambda _: None, delta, "summaries", Recounts(), Pushed()))
     assert "finished a turn. It said nothing. From its record, hands adds: It left two files different. Tell the user" in told
 
 
@@ -263,7 +299,7 @@ async def test_a_push_and_a_pull_request_no_step_recorded_are_told_and_land_on_t
     transcript.write_text('{"uuid":"u1","type":"user","message":{"role":"user","content":"ship it"}}\n')
     delta = Delta(changes=(repository.Pushed("fix"), repository.PullRequested(7, "https://x/7", "created")))
     recorded: list[Entry] = []
-    told = handed(await recount(tailing(transcript), SID, None, None, "cc-hands", recorded.append, delta, "on", Pushed()))
+    told = handed(await recount(tailing(transcript), SID, None, None, "cc-hands", recorded.append, delta, "summaries", Recounts(), Pushed()))
     assert "From its record, hands adds: It pushed fix and created a pull request. Tell the user" in told
     [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
     assert "It pushed fix and created a pull request." in recounted.told
@@ -273,17 +309,17 @@ async def test_a_turn_that_did_nothing_and_changed_nothing_is_still_silent(tmp_p
     """The delta is a reason to speak, not an excuse to: a turn with neither steps nor changes has no news."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text('{"uuid":"u1","type":"user","message":{"role":"user","content":"hello"}}\n')
-    assert await recount(tailing(transcript), SID, None, None, "cc-hands", lambda _: None, Delta(), "on", Pushed()) is None
+    assert await recount(tailing(transcript), SID, None, None, "cc-hands", lambda _: None, Delta(), "summaries", Recounts(), Pushed()) is None
 
 
-async def test_a_turn_stopped_before_it_did_anything_is_said_to_be_interrupted_without_the_model(tmp_path: Path) -> None:
+async def test_a_turn_stopped_before_it_did_anything_is_handed_to_the_model_as_interrupted(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(
         '{"type":"user","promptId":"p1","message":{"role":"user","content":"Write an essay."}}\n'
         '{"type":"user","promptId":"p1","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}\n'
     )
-    spoken = await recount(tailing(transcript), SID, None, None, "cc-hands", lambda _: None, Delta(), "on", Pushed())
-    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: You interrupted it."
+    told = handed(await recount(tailing(transcript), SID, None, None, "cc-hands", lambda _: None, Delta(), "summaries", Recounts(), Pushed()))
+    assert "It said nothing. From its record, hands adds: You interrupted it. Tell the user" in told
 
 
 async def test_the_openai_compatible_summariser_sends_the_instruction_and_the_turn_with_its_key_and_returns_the_text(

@@ -39,7 +39,7 @@ def running(going: Going = Busy()) -> Running:
 AT_DIALOG = running(Waiting("permission prompt"))
 
 
-IDLE = Idle(Stamp(1), due=61.0, after=None)
+IDLE = Idle(Stamp(1), after=None)
 
 
 def registry(state: SessionState, member: Membership = ONE, turn: Turn = Told()) -> Registry:

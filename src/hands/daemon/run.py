@@ -71,7 +71,7 @@ from hands.voice.pipeline import (
     build_voice,
 )
 from hands.voice.naming import NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS, keep_naming
-from hands.voice.narrator import narrate
+from hands.voice.narrator import Recounts, narrate
 from hands.voice.speech import Pushed, Tailed, Telling, relay
 from hands.voice.summary import Summariser, aside, summariser
 from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
@@ -308,7 +308,9 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     audit.record(TapListening(path=home.wire))
     voice: Voice | None = None
     store = SummaryStore(Sentences(home.sentences))
-    tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store, Overlays(home))]
+    # [LAW:one-source-of-truth] one holder of each session's last turn: the narrator fills it, tell_turn reads it.
+    recounts = Recounts()
+    tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store, home, recounts)]
     try:
         config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions.live_count, quit_event)
         if config is not None:
@@ -317,7 +319,7 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, audit.record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences, names)
+                    await converse(voice, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences, names, recounts)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -352,6 +354,7 @@ async def converse(
     store: SummaryStore,
     sentences: Summariser,
     names: Names,
+    recounts: Recounts,
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
@@ -383,8 +386,8 @@ async def converse(
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
-        asyncio.create_task(relay(sessions, Overlays(home), minded.telling, voice.worker.queue_frame, record), name="the session speech relay"),
-        asyncio.create_task(narrate(sessions, tails, minded.telling, voice.worker.queue_frame, record, lambda: summaries(home), changes=deltas), name="the session narrator"),
+        asyncio.create_task(relay(sessions, minded.telling, voice.worker.queue_frame, record), name="the session speech relay"),
+        asyncio.create_task(narrate(sessions, tails, minded.telling, voice.worker.queue_frame, record, lambda: summaries(home), Overlays(home), recounts, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
         asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),

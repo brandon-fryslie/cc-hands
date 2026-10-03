@@ -1,20 +1,15 @@
 """What sessions say to the user unasked: announcements spoken as written, moments the intermediary explains."""
 
-import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from loguru import logger
 from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
 
-from hands.core.attention import DEFAULT, Overlay, routed, speaker
-from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Speak, WaitingForYou
+from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Speak
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
 from hands.core.session import AskedQuestion, Blocker, Permission, Plan, Question, SessionId
-from hands.sessions.audit import Record, Routed
-from hands.sessions.overlays import Overlays
-from hands.sessions.payload import Rejected
+from hands.sessions.audit import Record, Relayed
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode, spoken_name
 
@@ -50,7 +45,7 @@ class Narrated(DataFrame, UninterruptibleFrame):
 
     Never put in Pipecat's context, where it would be one message with whatever the user said beside it: the brain keeps
     its own history. Kept through a barge-in, which stops what is said, not what is still to be told. `unsaid` is what
-    hands says as written if the brain cannot take the turn, so what it was waiting on is still heard.
+    hands says as written if the brain cannot take the turn: that it could not be told, never the turn's own words.
     """
 
     text: str
@@ -89,29 +84,13 @@ def bounded(text: str, limit: int) -> str:
     return text if len(text) <= limit else f"{text[:limit]}... (cut short)"
 
 
-async def relay(sessions: Sessions, overlays: Overlays, telling: Telling, queue_frame: Callable[[Frame], Awaitable[None]], record: Record) -> None:
-    """Hand what the sessions say to the pipeline, in the order it was decided, as each one's overlay lets it through, until cancelled."""
+async def relay(sessions: Sessions, telling: Telling, queue_frame: Callable[[Frame], Awaitable[None]], record: Record) -> None:
+    """Hand what the sessions say to the pipeline, in the order it was decided, until cancelled."""
     while True:
         heard = await sessions.heard()
-        overlay, unreadable = await _overlay(overlays, speaker(heard))
-        passed = routed(heard, overlay)
-        # [LAW:nothing-unseen] the route taken, and the overlay that took it, for what was kept quiet as for what was said.
-        record(Routed(heard, overlay, passed, unreadable))
-        for each in frames(heard, telling, lambda id: spoken_name(sessions, id)) if passed else ():
+        record(Relayed(heard))
+        for each in frames(heard, telling, lambda id: spoken_name(sessions, id)):
             await queue_frame(each)
-
-
-async def _overlay(overlays: Overlays, session: SessionId) -> tuple[Overlay, str | None]:
-    """The session's overlay, read off the loop the speaker runs on; the default, and why, where it cannot be read.
-
-    [LAW:no-silent-failure] an overlay that cannot be read is logged as the error it is, which is an audit line, and what
-    the session said is routed as the default routes it.
-    """
-    try:
-        return await asyncio.to_thread(overlays.of, session), None
-    except (Rejected, OSError) as error:
-        logger.error(f"cannot read the overlay of session {session}, so what it says is routed as by default, {DEFAULT}: {error}")
-        return DEFAULT, str(error)
 
 
 def frames(heard: Heard, telling: Telling, names: Names) -> Sequence[Frame]:
@@ -122,7 +101,7 @@ def frames(heard: Heard, telling: Telling, names: Names) -> Sequence[Frame]:
             # brain, so a deadline is heard after the question it counts down, never ahead of it.
             return (as_written(TTSSpeakFrame(announcement_text(announcement, names)), telling),)
         case Narrate(moment=moment), _:
-            return (handed(narration(moment, names), announcement_text(WaitingForYou(moment.session, isinstance(moment.on, Question)), names), telling),)
+            return (handed(narration(moment, names), f"{names(moment.session)} is waiting on you about {_what(moment.on)}.", telling),)
         case Note(fact=fact), Pushed():
             return (LLMMessagesAppendFrame([{"role": "user", "content": noted(fact, names)}], run_llm=False),)
         case Note(), Tailed():
@@ -183,8 +162,6 @@ def announcement_text(announcement: Announcement, names: Names) -> str:
         case Expired(session=session, on=on):
             # Said as what hands did: an answer typed at the dialog meanwhile would already have settled it.
             return f"Nobody answered {names(session)} about {_what(on)} in time, so {_left(on)}."
-        case WaitingForYou(session=session, asking=asking):
-            return f"{names(session)} {'has a question for you' if asking else 'is waiting for you'}."
 
 
 def answer_readback(outcome: Outcome, names: Names) -> str:

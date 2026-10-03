@@ -29,7 +29,7 @@ from hands.sessions.hooks import hook_output
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent / PLUGIN_DIR
 
 
-def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_tool_hooks_run_in_the_background_and_only_idle_notifies() -> None:
+def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_and_tool_hooks_run_in_the_background() -> None:
     hooks = cast(dict[str, object], plugin_hooks()["hooks"])
     assert list(hooks) == list(SUBSCRIBED)
     command = {"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/python", "args": ["-m", "hands.sessions.shim"]}
@@ -39,8 +39,7 @@ def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_tool_hook
             "PostToolUse": {"async": True},
             "PostToolUseFailure": {"async": True},
         }.get(event, {})
-        matched = {"matcher": "idle_prompt"} if event == "Notification" else {}
-        assert entries == [{**matched, "hooks": [{**command, **declared}]}]
+        assert entries == [{"hooks": [{**command, **declared}]}]
 
 
 def test_the_checked_in_hooks_json_is_what_hookconfig_declares() -> None:

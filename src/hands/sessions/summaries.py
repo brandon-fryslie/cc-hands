@@ -53,7 +53,7 @@ def described(to: Summaries) -> str:
         case "on":
             return "Spoken turn summaries are on: every turn a session finishes is told aloud."
         case "off":
-            return "Spoken turn summaries are off: a finished turn is not narrated."
+            return "Spoken turn summaries are off: only a watched session's turns are told as they finish, and any session's last turn when you ask for it."
 
 
 def main(argv: Sequence[str]) -> int:

@@ -13,13 +13,13 @@ from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.sessions.home import Home
-from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Sessions
 from hands.voice.briefing import brief, briefing, tail
 from hands.voice.speech import Tailed
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.sessions.sentences import Sentences
 from hands.voice.sentences import SummaryStore
+from hands.voice.narrator import Recounts
 from hands.voice.tools import intermediary_tools, pipecat_function, stay_silent_tool
 
 _SPEC = importlib.util.spec_from_file_location("intermediary_eval", Path(__file__).parents[1] / "evals" / "intermediary.py")
@@ -34,7 +34,7 @@ FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "name": "cc-hands", "stat
 
 def names(sessions: Sessions) -> list[str]:
     with tempfile.TemporaryDirectory() as home:
-        return [tool.name for tool in intermediary_tools(sessions, SummaryStore(Sentences(Path(home) / "sentences.db")), Overlays(Home(Path(home))))]
+        return [tool.name for tool in intermediary_tools(sessions, SummaryStore(Sentences(Path(home) / "sentences.db")), Home(Path(home)), Recounts())]
 
 
 def test_the_briefing_names_each_session_by_name_state_and_mode_with_the_id_for_the_tools() -> None:
