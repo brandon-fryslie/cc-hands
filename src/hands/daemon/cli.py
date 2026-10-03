@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable, Coroutine, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, TextIO
 
 from loguru import logger
 
@@ -22,6 +23,29 @@ from hands.threads import off_loop
 
 # The lowest level each module's lines reach the terminal at, by loguru's module prefix: "" is every module not named.
 TERMINAL_LEVELS: dict[str | None, str | int | bool] = {"": "WARNING", "hands": "INFO"}  # loguru's FilterDict
+
+if TYPE_CHECKING:
+    from loguru import Record
+
+# Every C0 and C1 control and DEL, written as its escape: a line's text comes from transcripts, replies, and session
+# names, and a raw ESC, BEL, or BS in it would move the cursor, ring the bell, or rewrite the line. A line break and a
+# tab are layout, and pass.
+VISIBLE = {code: f"\\x{code:02x}" for code in (*range(0x20), *range(0x7F, 0xA0)) if chr(code) not in "\n\t"}
+
+
+def shown(record: "Record") -> str:
+    """loguru's default line, with the message in its visible form."""
+    record["extra"]["shown"] = record["message"].translate(VISIBLE)
+    return (
+        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | "
+        "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{extra[shown]}</level>\n{exception}"
+    )
+
+
+def to_terminal(stream: TextIO) -> int:
+    """[LAW:single-enforcer] the one terminal sink: hands' own lines from INFO, every library's only from WARNING, and
+    no line's text read by the terminal as a control."""
+    return logger.add(stream, filter=TERMINAL_LEVELS, format=shown)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -57,10 +81,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 talkkey.ask()
                 print(f"hands: {readiness.grant(granted).said}, then run hands again.", file=sys.stderr)
                 return 1
-            # [LAW:single-enforcer] the one terminal sink, in place of loguru's DEBUG default: hands' own lines from
-            # INFO, and Pipecat's and every other library's only from WARNING, so a run's terminal is hands' to read.
+            # In place of loguru's DEBUG default, so a run's terminal is hands' to read.
             logger.remove()
-            logger.add(sys.stderr, filter=TERMINAL_LEVELS)
+            to_terminal(sys.stderr)
             # Read before this run's first heartbeat replaces it.
             after_crash = crashed_before(home)
             heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
