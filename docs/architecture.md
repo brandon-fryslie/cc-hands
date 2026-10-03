@@ -76,7 +76,10 @@ three speech channels below. It never imports from `daemon`.
 **`daemon`** is the composition root: it parses the config file into a frozen
 `Config`, builds the sessions package and the voice package from it, runs both under
 one supervisor, publishes the heartbeat, and provides the `hands` CLI. Nothing below
-`daemon` reads the environment or the config file `[LAW:one-source-of-truth]`.
+`daemon` reads the environment or the config file `[LAW:one-source-of-truth]`: the
+environment is read only where a process starts (the daemon, the hook shim, and the
+attention tool), and what lies below is handed what it needs from it
+(`tests/test_environment.py`).
 
 The arrows point one way and never loop `[LAW:one-way-deps]`. When a lower package
 seems to need something from a higher one, the missing thing is a type that belongs in
@@ -1739,16 +1742,31 @@ transcripts governs the intermediary's own past.
 
 ## Configuration: one file, parsed once
 
-`~/.config/hands/config.toml` is read by `daemon` at startup and parsed into a frozen
-`Config` whose fields are the variants above: the LLM backend, the transport, the
-gate edge, the Whisper model, the voice, the policy overrides, and the permission
-timeout. Secrets come from the environment and nothing else does. The
-spike's environment variables are deleted when the file arrives, so there is one
-source `[LAW:one-source-of-truth]`.
+`config.toml` in the home (`~/.hands`, or `HANDS_HOME`) is read by `daemon` at startup
+and parsed into a frozen `Config` (`hands.daemon.config`). It is in the home, beside
+everything else one hands keeps, so a second home is a second hands with settings of
+its own. A file left out, or a key, is the default; a key misspelled, or one its
+variant has no use for, stops the start naming it. Secrets come from the environment
+and nothing else does: an API key, or the keychain's when the server is Anthropic's
+own. The spike's `HANDS_LLM*` and `HANDS_WHISPER_MODEL` variables are deleted, so there
+is one source `[LAW:one-source-of-truth]`. `HANDS_HOME` is not a setting: it says where
+the settings are, and it is the one thing a hook, run by Claude Code with no arguments
+of hands', can be told.
 
 The settings cap `[LAW:no-mode-explosion]`: each config field names a variant or a
 number. There are no boolean feature flags. A field that would be a flag is either a
-variant with a real alternative or it does not exist.
+variant with a real alternative or it does not exist. The fields:
+
+| key | what it names |
+|---|---|
+| `[llm] backend` | `anthropic` (the default), `openai`, or `claude`, the brain |
+| `[llm] model` | the model, for any backend |
+| `[llm] url` | another server that speaks the API, for `anthropic` and `openai` |
+| `[whisper] model` | the Whisper model the STT loads |
+
+The voice is not a setting: the user chooses it by voice while hands runs, and it is
+kept in the home's `voice` file. The permission timeout is declared in the hook
+config, which `hooks.json` is generated from.
 
 ## Stack
 

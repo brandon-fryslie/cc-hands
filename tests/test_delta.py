@@ -63,7 +63,7 @@ def repo(tmp_path: Path) -> Path:
 
 async def turn(root: Path, work: object = None, record: list[Entry] | None = None) -> Delta:
     """One turn: mark where the repository is, let `work` happen, then read what changed, writing its audit line to `record`."""
-    deltas = Deltas(record=(record if record is not None else []).append)
+    deltas = Deltas(record=(record if record is not None else []).append, inherited=os.environ)
     await deltas.snapshot(SID, root)
     if callable(work):
         work()
@@ -359,7 +359,7 @@ async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit
 
     record: list[Entry] = []
     # A narrator far less patient than the daemon's, so a forge budget not taken from its patience would outlast it.
-    deltas = Deltas(record=record.append, patience=1.0)
+    deltas = Deltas(record=record.append, inherited=os.environ, patience=1.0)
     await deltas.snapshot(SID, root)
     commit_and_push()
     await deltas.compare(SID, again=False)
@@ -468,7 +468,7 @@ async def test_a_directory_that_is_not_there_is_told_by_its_steps_alone(tmp_path
 
 async def test_a_turn_stopping_with_no_mark_before_it_reads_nothing(tmp_path: Path) -> None:
     """The daemon started in the middle of a turn: there is no beginning to compare against, so there is no delta."""
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
     await deltas.compare(SID, again=False)
     assert not await deltas.taken(SID)
 
@@ -476,7 +476,7 @@ async def test_a_turn_stopping_with_no_mark_before_it_reads_nothing(tmp_path: Pa
 async def test_a_delta_is_told_once_and_never_twice(tmp_path: Path) -> None:
     """A delta told is a delta spent; the next turn's is the next turn's."""
     root = repo(tmp_path)
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("x = 3\n")
     await deltas.compare(SID, again=False)
@@ -494,7 +494,7 @@ async def test_an_edit_that_keeps_a_files_size_and_second_is_still_told(tmp_path
     os.utime(root / "a.py", (second, second))
     git(root, "update-index", "--refresh")
     os.utime(root / ".git" / "index", (second, second))
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("x = 3\n")
     os.utime(root / "a.py", (second, second))
@@ -504,7 +504,7 @@ async def test_an_edit_that_keeps_a_files_size_and_second_is_still_told(tmp_path
 
 async def test_a_new_turn_reads_against_its_own_beginning_and_not_the_one_before(tmp_path: Path) -> None:
     root = repo(tmp_path)
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("first turn\n")
     await deltas.compare(SID, again=False)
@@ -520,7 +520,7 @@ async def test_a_turn_that_stops_again_tells_only_what_it_changed_after_its_firs
     """Another Stop hook blocked the first Stop and Claude went on, with no prompt to mark from: the second part is read
     against where the first part's reading found the repository, so each change is told once."""
     root = repo(tmp_path)
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("first part\n")
     await deltas.compare(SID, again=False)
@@ -534,7 +534,7 @@ async def test_a_turn_that_stops_again_tells_only_what_it_changed_after_its_firs
 async def test_a_turn_no_prompt_marked_is_not_read_against_where_the_turn_before_ended(tmp_path: Path) -> None:
     """Between the two, the user may have edited by hand or pulled for hours: none of it is this turn's."""
     root = repo(tmp_path)
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("first turn\n")
     await deltas.compare(SID, again=False)
@@ -556,7 +556,7 @@ async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed
     from hands.sessions.registry import Sessions
 
     root = repo(tmp_path)
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
 
@@ -576,7 +576,7 @@ async def test_a_mark_that_would_cost_more_than_the_hook_can_afford_is_not_taken
     """A prompt's hook waits on this one, and the shim gives up after two seconds and says it cannot reach
     the daemon — on every prompt and every stop. A repository too slow to mark has its turn told without."""
     root = repo(tmp_path)
-    deltas = Deltas(record=lambda _entry: None, marking=0.0)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ, marking=0.0)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("changed\n")
     await deltas.compare(SID, again=False)
@@ -587,7 +587,7 @@ async def test_a_stop_waits_for_none_of_the_reading_it_starts(tmp_path: Path) ->
     """The turn's telling is queued right after this, and a reading that is slow, that fails, or whose hook
     gives up must cost the turn its delta and never its telling."""
     root = repo(tmp_path)
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("changed by something\n")
     start = time.perf_counter()
@@ -608,7 +608,7 @@ from hands.sessions.delta import Deltas
 root = Path(sys.argv[1])
 
 async def ends(after: float) -> None:
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
     await deltas.snapshot("s", root)
     (root / "a.py").write_text(f"x = {after}\\n")
     await deltas.compare("s", again=False)
@@ -647,7 +647,7 @@ async def test_two_turns_that_stop_before_either_is_told_keep_their_own_changes(
     """The narrator summarises one turn at a time and takes seconds over each, so a session can stop twice
     before the first is told. Told the newer delta, the first turn would be given results it never had."""
     root = repo(tmp_path)
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
 
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
@@ -666,7 +666,7 @@ async def test_a_turn_that_stops_with_nothing_to_read_still_takes_its_place_in_t
     step. A stop that reads nothing must still leave something to take, or every later turn is told the one
     before's changes."""
     root = repo(tmp_path)
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
     await deltas.compare(SID, again=False)  # no mark: the daemon started in the middle of this turn
 
     await deltas.snapshot(SID, root)
@@ -764,7 +764,7 @@ async def test_a_mark_that_ran_out_of_time_reading_where_it_stands_is_no_mark_at
         git(root, "add", "-A")
         git(root, "commit", "-qm", f"made long before this turn {n}")
 
-    deltas = Slow(record=lambda _entry: None)
+    deltas = Slow(record=lambda _entry: None, inherited=os.environ)
     await deltas.snapshot(SID, root)
     (root / "during.py").write_text("the turn's own work\n")
     await deltas.compare(SID, again=False)
@@ -801,7 +801,7 @@ async def test_more_turns_than_can_be_held_lose_the_newest_deltas_and_never_the_
     """
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = Deltas(record=record.append)
+    deltas = Deltas(record=record.append, inherited=os.environ)
     for n in range(HELD + 2):
         await deltas.snapshot(SID, root)
         (root / f"turn{n}.py").write_text(f"turn {n}\n")
@@ -831,7 +831,7 @@ class Endless(Deltas):
 async def test_a_reading_that_raises_is_one_failed_audit_line(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = Exploding(record=record.append)
+    deltas = Exploding(record=record.append, inherited=os.environ)
     await deltas.snapshot(SID, root)
     await deltas.compare(SID, again=False)
     assert not await deltas.taken(SID)
@@ -841,7 +841,7 @@ async def test_a_reading_that_raises_is_one_failed_audit_line(tmp_path: Path) ->
 async def test_a_reading_cancelled_by_the_shutdown_is_one_cancelled_audit_line(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = Endless(record=record.append)
+    deltas = Endless(record=record.append, inherited=os.environ)
     await deltas.snapshot(SID, root)
     await deltas.compare(SID, again=False)
     [reading] = [task for task in asyncio.all_tasks() if task.get_name().startswith("what a turn of session")]
@@ -884,7 +884,7 @@ async def test_a_head_that_could_not_be_read_is_no_more_a_repository_with_no_com
         git(root, "commit", "-q", "--allow-empty", "-m", f"made long before this turn {n}")
     stood = (root / ".git" / "HEAD").read_text()
 
-    deltas = Torn(record=lambda _entry: None)
+    deltas = Torn(record=lambda _entry: None, inherited=os.environ)
     await deltas.snapshot(SID, root)
     (root / ".git" / "HEAD").write_text(stood)  # the checkout finished, and the repository reads again
     (root / "during.py").write_text("the turn's own work\n")
@@ -919,7 +919,7 @@ async def test_a_commit_is_still_told_when_the_tree_it_left_behind_cannot_be_rea
     reading's deadline on a large repository — so the commits are read first and kept whatever the tree does.
     """
     root = repo(tmp_path)
-    deltas = Blind(record=lambda _entry: None)
+    deltas = Blind(record=lambda _entry: None, inherited=os.environ)
     await deltas.snapshot(SID, root)
     (root / "b.py").write_text("y = 2\n")
     git(root, "add", "-A")
@@ -950,7 +950,7 @@ async def test_a_turn_whose_changes_could_not_be_counted_has_its_patch_left_unre
     much is still told.
     """
     root = repo(tmp_path)
-    deltas = Uncounted(record=lambda _entry: None)
+    deltas = Uncounted(record=lambda _entry: None, inherited=os.environ)
     await deltas.snapshot(SID, root)
     (root / "generated.csv").write_text("n,x\n" * (MOST_LINES + 10))
     git(root, "add", "-A")
@@ -966,7 +966,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
     """The next prompt's hook landed before the record of p1's interrupt was read. p1 is compared there, before p2 is
     marked, so p2 is told only what p2 changed."""
     root = repo(tmp_path)
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
@@ -986,7 +986,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
 async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_changed(tmp_path: Path) -> None:
     """hands-status-bpp.44l: no prompt of its own marks it, so p1's Stop does, while its hook holds Claude Code (2.1.282)."""
     root = repo(tmp_path)
-    deltas = Deltas(record=lambda _entry: None)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(StatusReported(SID, Report(status.Idle(), Stamp(1)), at=0.5))

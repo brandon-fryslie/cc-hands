@@ -124,7 +124,7 @@ async def test_a_request_without_the_brains_token_reaches_no_tool() -> None:
 
 
 def station(tmp: Path) -> Station:
-    return Station(tmp / "brain", workdir(tmp / "brain"), "claude-sonnet-5", "http://127.0.0.1:1")
+    return Station(tmp / "brain", workdir(tmp / "brain"), "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
 
 
 def unasked(asked: Asked) -> None:
@@ -462,10 +462,11 @@ async def test_a_side_question_with_no_answer_fails_saying_why_and_leaves_no_cla
         broken.setattr("hands.brain.asides.spawn", fault)
         with pytest.raises(RuntimeError, match="no thread"):
             await asides.ask("broken?")
-    # With no claude on PATH there is no Claude Code to ask.
-    monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
+    # With no claude on the PATH hands was started with there is no Claude Code to ask.
+    nowhere = station(tmp_path)
+    nowhere = replace(nowhere, inherited={**nowhere.inherited, "PATH": str(tmp_path / "nowhere")})
     with pytest.raises(AsideFailed, match="no claude on PATH"):
-        await asides.ask("anyone?")
+        await Asides(nowhere, recorded.append).ask("anyone?")
     said = [entry for entry in recorded if isinstance(entry, AsideAnswered)]
     assert [(entry.question, entry.reply.split(";")[0].split(":")[0], entry.failed) for entry in said] == [
         ("hold", "no answer in 0s", True),
@@ -607,7 +608,7 @@ brain = await start(launch, lambda _entry: None)
 print(brain.pid, _child_of(brain.pid), flush=True)
 """
 ASIDE = """
-claude = await spawn(launch.station, [str(brain_claude()), "--session-id", "s1"])
+claude = await spawn(launch.station, [str(brain_claude(launch.station.inherited)), "--session-id", "s1"])
 print(claude.pid, flush=True)
 """
 
@@ -660,10 +661,10 @@ async def test_a_brain_with_no_fritter_to_run_under_is_refused_naming_the_instal
 
 
 def test_a_brain_with_no_login_is_refused_naming_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    assert logged_in(tmp_path / "brain", "http://127.0.0.1:1") == "brain@example.com"
+    assert logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ) == "brain@example.com"
     monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(NotLoggedIn, match=f"CLAUDE_CONFIG_DIR={tmp_path / 'brain'} claude"):
-        logged_in(tmp_path / "brain", "http://127.0.0.1:1")
+        logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ)
 
 
 def test_hands_login_logs_the_brain_in_on_the_subscription_in_its_own_config_and_says_the_account(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -684,7 +685,7 @@ def test_hands_login_logs_the_brain_in_on_the_subscription_in_its_own_config_and
 def test_a_brain_logged_in_off_the_subscription_is_refused_naming_how_it_is(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTH_METHOD", "api_key")
     with pytest.raises(NotLoggedIn, match="logged in by api_key, not on the Claude subscription"):
-        logged_in(tmp_path / "brain", "http://127.0.0.1:1")
+        logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ)
 
 
 def test_hands_login_that_claude_code_fails_exits_1_saying_so(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -725,10 +726,10 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     api = VoiceConfig(llm=AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m"), whisper_model="w", voice=voices.DEFAULT)
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     refocus = Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
-    async with mind(api, [], lambda: "", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", recorded.append) as minded:
+    async with mind(api, [], lambda: "", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, AnthropicLLMService) and minded.watches == () and minded.telling == Pushed()
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com"), whisper_model="w", voice=voices.DEFAULT)
-    async with mind(claude, [tool(echo)], lambda: "", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", recorded.append) as minded:
+    async with mind(claude, [tool(echo)], lambda: "", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed()
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
         [launched] = [entry for entry in recorded if isinstance(entry, BrainLaunched)]

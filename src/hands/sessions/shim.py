@@ -176,7 +176,7 @@ def main(argv: Sequence[str]) -> int:
             return USAGE
     body = sys.stdin.buffer.read()
     try:
-        home = default_home()
+        home = default_home(os.environ)
     except Rejected as error:
         print(f"hands: {error}", file=sys.stderr)
         return FAILED

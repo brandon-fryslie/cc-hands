@@ -81,6 +81,15 @@ class LLMChosen:
 
 
 @dataclass(frozen=True)
+class SettingsRead:
+    """Where a run's settings came from: the home's config.toml, or None where it has none and every setting is its
+    default; and the Whisper model they name. The backend they name is LLMChosen."""
+
+    path: str | None
+    whisper_model: str
+
+
+@dataclass(frozen=True)
 class VoiceChosen:
     """The voice a run starts speaking in: the one the user kept, or the default where they kept none."""
 
@@ -541,6 +550,7 @@ Entry = (
     | Typing
     | EffectFailed
     | LLMChosen
+    | SettingsRead
     | VoiceChosen
     | ProxyListening
     | TapListening
@@ -616,7 +626,7 @@ def level(entry: Entry) -> Level:
             return "error" if outcome == "failed" else "info"
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
-            | Applied() | Performed() | Typing() | LLMChosen() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | CopiesLost()
+            | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()

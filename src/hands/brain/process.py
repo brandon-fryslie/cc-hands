@@ -30,7 +30,7 @@ import tempfile
 import termios
 import threading
 from collections.abc import Callable, Coroutine, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from aiohttp import web
@@ -120,6 +120,8 @@ class Station:
     cwd: Path
     model: str
     proxy_url: str
+    # hands' own environment, which each is started in less what environment() keeps out; kept out of the repr, as it holds keys.
+    inherited: Mapping[str, str] = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -202,22 +204,22 @@ class Unstartable(Exception):
     """A Claude Code of hands' own could not be started: no claude to run, or for the brain no fritter to run it under, or a fritter that never opened its socket."""
 
 
-def brain_claude() -> Path:
+def brain_claude(inherited: Mapping[str, str]) -> Path:
     """The Claude Code hands runs as its own: the real claude on PATH, past every hands shim, which would run it as a session."""
-    claude = real_claude(os.environ.get("PATH", ""))
+    claude = real_claude(inherited.get("PATH", ""))
     if claude is None:
         raise Unstartable("no claude on PATH but hands' shims, so there is no Claude Code for hands to run as its own")
     return claude
 
 
-def login(config_dir: Path, base_url: str) -> str:
+def login(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> str:
     """Log `config_dir` in to the Claude subscription with Claude Code's own login, at this terminal; the account it holds after."""
     # [LAW:one-source-of-truth] the brain's own claude and environment, so the login lands in its config directory,
     # which the daemon reads, and no credential of this shell's stands in for the one being made.
-    signed = subprocess.run([brain_claude(), "auth", "login", "--claudeai"], env=environment(config_dir, base_url, os.environ))
+    signed = subprocess.run([brain_claude(inherited), "auth", "login", "--claudeai"], env=environment(config_dir, base_url, inherited))
     if signed.returncode != 0:
         raise LoginFailed(f"`claude auth login` for the brain exited {signed.returncode}")
-    return logged_in(config_dir, base_url)
+    return logged_in(config_dir, base_url, inherited)
 
 
 def account_kept_out(config_dir: Path) -> None:
@@ -236,13 +238,13 @@ def account_kept_out(config_dir: Path) -> None:
         raise Unstartable(f"the brain would load its account's {' and '.join(synced)}: {fix}")
 
 
-def logged_in(config_dir: Path, base_url: str) -> str:
+def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> str:
     """The subscription account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has none."""
     try:
         # A timed-out child is killed and reaped by run itself.
         asked = subprocess.run(
-            [brain_claude(), "auth", "status"],
-            env=environment(config_dir, base_url, os.environ),
+            [brain_claude(inherited), "auth", "status"],
+            env=environment(config_dir, base_url, inherited),
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=AUTH_STATUS_SECONDS,
@@ -357,7 +359,7 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
         process = await asyncio.create_subprocess_exec(
             *_holding_terminal(os.ttyname(slave), argv),
             cwd=station.cwd,
-            env={**environment(station.config_dir, station.proxy_url, os.environ), "TERM": "xterm-256color"},
+            env={**environment(station.config_dir, station.proxy_url, station.inherited), "TERM": "xterm-256color"},
             stdin=slave,
             stdout=slave,
             stderr=slave,
@@ -696,7 +698,7 @@ class Brain:
 
 async def start(launch: Launch, record: Record) -> Brain:
     """Start the brain under fritter on a terminal of hands' own, on the login its backend was parsed with."""
-    claude = brain_claude()
+    claude = brain_claude(launch.station.inherited)
     if not launch.fritter.is_file():
         raise Unstartable(f"no fritter at {launch.fritter} to run the brain under: run `hands install-fritter`")
     hooks: asyncio.Queue[_Posted] = asyncio.Queue()

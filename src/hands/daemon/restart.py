@@ -100,7 +100,7 @@ def said(outcome: Outcome, now: datetime) -> str:
 
 def main() -> int:
     try:
-        home = default_home()
+        home = default_home(os.environ)
     except Rejected as error:
         print(f"hands restart: {error}", file=sys.stderr)
         return 2

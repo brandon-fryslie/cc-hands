@@ -132,8 +132,10 @@ class NoChanges:
 class Deltas:
     """Where each session's repository stood when its turn began, so what the turn changed can be read at its end."""
 
-    def __init__(self, record: Record, marking: float = MARKING, reading: float = READING, patience: float = PATIENCE) -> None:
+    def __init__(self, record: Record, inherited: Mapping[str, str], marking: float = MARKING, reading: float = READING, patience: float = PATIENCE) -> None:
         self._record = record
+        # The daemon's environment, which git runs in: its PATH, and whatever the user set git's own variables to.
+        self._inherited = inherited
         self._marking = marking
         self._reading = reading
         self._patience = patience
@@ -486,7 +488,7 @@ class Deltas:
             return None
         try:
             ran = await run(
-                "git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", **(env or {})}
+                "git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**self._inherited, "GIT_OPTIONAL_LOCKS": "0", **(env or {})}
             )
         except TimeoutError:
             logger.error(f"git {args[0]} in {cwd} did not answer in {left:.1f}s, so the turn is told without it")

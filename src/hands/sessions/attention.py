@@ -10,6 +10,7 @@ every session ending, and holds no copy [LAW:one-source-of-truth], so a change i
 """
 
 import json
+import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
@@ -103,7 +104,7 @@ def described(attention: Attention) -> str:
 
 def main(argv: Sequence[str]) -> int:
     try:
-        home = default_home()
+        home = default_home(os.environ)
         if len(argv) % 2:
             print(f"hands attention: expected a kind and its level, in pairs, got {' '.join(argv)!r}", file=sys.stderr)
             return 2
