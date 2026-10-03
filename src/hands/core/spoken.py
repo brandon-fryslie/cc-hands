@@ -146,6 +146,60 @@ def spoken_ref(ref: str) -> str:
     return " ".join(ref.translate(_REF_SEPARATORS).split())
 
 
+# Every mark a word can be typed with, by the name a developer reads it out by. All of them but the apostrophe,
+# which a contraction carries and every voice says, because a word that is spelled is spelled whole.
+_MARKS = {
+    "/": "slash", "\\": "backslash", ".": "dot", "_": "underscore", "-": "dash", "~": "tilde", "@": "at",
+    ":": "colon", "+": "plus", "#": "hash", "=": "equals", "|": "pipe", "$": "dollar", "*": "star",
+    "&": "ampersand", "%": "percent", "^": "caret", "<": "less than", ">": "greater than", "`": "backtick",
+    "(": "open paren", ")": "close paren", "[": "open bracket", "]": "close bracket", "{": "open brace",
+    "}": "close brace", ",": "comma", ";": "semicolon", "!": "bang", "?": "question mark", '"': "quote",
+}
+_SPELLED_MARKS = str.maketrans({mark: f" {name} " for mark, name in _MARKS.items()})
+# A hump is where a lower case letter or digit meets a capital, or where an acronym meets the word after it:
+# `XMLHttpRequest` is XML, Http and Request.
+_HUMP = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_JUNCTION = re.compile(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])")
+# The one tell `spoken` reads off the word in front: an id of a dozen characters is dropped after "session", and
+# alone it is a name. So a word spelled only where the filter would change it alone must also be spelled here.
+_NAMED_ID = re.compile(_id(12))
+# The full stop, comma, quote or bracket around a word belongs to the sentence, not the word: "fix src/auth.py."
+# ends a sentence and "(see notes.md)" is an aside. A word made of nothing else is its own: `cd ..` is typed with
+# both dots, so it is spelled whole. And a bracket the word opened is the word's to close: `foo.bar()`.
+_STOPS = "\"'.,;:!?)\\]"
+_TOKEN = re.compile(rf"(?P<open>[\"'(\[]*)(?P<core>\S*?[^\s{_STOPS}]|\S+)(?P<close>[{_STOPS}]*)(?=\s|$)")
+_CLOSES = {")": "(", "]": "["}
+
+
+def spelled(text: str) -> str:
+    """`text` said so that it can be typed back from what was heard: every word `spoken` would say otherwise than
+    as it is typed, and every word with a slash in it, has each mark said by its name and is broken into the runs
+    of letters and of digits it is made of, with each capital kept.
+
+    For a caller that needs the listener to hear what will be typed, which `spoken` deliberately does not give: it
+    says `src/auth.py` as "auth" and `a1b2c3d` as "a commit", the way a developer refers to them in passing. The
+    filter is the judge of which words those are [LAW:one-source-of-truth], so prose it leaves alone — "well-known",
+    "2nd", "e.g." — is left alone here too. A slash is the one tell added: the filter will not call `scripts/run` a
+    path because "and/or" would lose a word, but spelling loses none, and a path is what a readback must not blur.
+    Every tell `spoken` acts on inside a word needs a mark, a hump, or a letter and a digit in one run, and a
+    spelled word has none of them, so the filter keeps one behaviour for every utterance [LAW:no-mode-explosion].
+    """
+    return _TOKEN.sub(_spelled_token, text)
+
+
+def _spelled_token(found: re.Match[str]) -> str:
+    core, close = found["core"], found["close"]
+    while close[:1] in _CLOSES and core.count(_CLOSES[close[0]]) > core.count(close[0]):
+        core, close = core + close[0], close[1:]
+    return found["open"] + _spelled_word(core) + close
+
+
+def _spelled_word(word: str) -> str:
+    if spoken(word).text == word and "/" not in word and "\\" not in word and not _NAMED_ID.fullmatch(word):
+        return word
+    return " ".join(_JUNCTION.sub(" ", _HUMP.sub(" ", word.translate(_SPELLED_MARKS))).split())
+
+
 def spoken(text: str) -> Spoken:
     """`text` in a form that can be spoken: the one conversion every utterance goes through.
 
@@ -457,7 +511,7 @@ def _identifiers(text: str) -> str:
     text = _DOTTED_CALL.sub(lambda found: found.group(0).replace(".", " "), text)
     text = _DOTTED_NAME.sub(lambda found: found.group(0).replace(".", " "), text)
     text = _SNAKE.sub(lambda found: found.group(0).replace("_", " ").strip(), text)
-    return _CAMEL.sub(lambda found: re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", found.group(0)).lower(), text)
+    return _CAMEL.sub(lambda found: _HUMP.sub(" ", found.group(0)).lower(), text)
 
 
 def _tidied(text: str) -> str:

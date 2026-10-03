@@ -46,8 +46,8 @@ async def test_a_draft_staged_amended_and_discarded_is_read_back_at_each_step(tm
 
     staged = await call(tools, "stage_draft", session=id, text="refactor authMiddleware.ts to use the old helper", resolutions=resolved)
     assert staged == {
-        "readback": "Draft for cc-hands, reading 'auth middleware' as authMiddleware.ts: "
-        "refactor authMiddleware.ts to use the old helper"
+        "readback": "Draft for cc-hands, reading 'auth middleware' as auth Middleware dot ts: "
+        "refactor auth Middleware dot ts to use the old helper"
     }
     amended = await call(tools, "amend_draft", session=id, text="refactor authMiddleware.ts to use the new token helper", resolutions=resolved)
     assert amended == {"readback": "In the draft for cc-hands: 'old' is now 'new token'"}
