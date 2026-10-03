@@ -7,9 +7,13 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Generator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib.machinery import ModuleSpec
 from pathlib import Path
+from types import ModuleType
 
 from loguru import logger
 
@@ -67,7 +71,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             heart.beat("starting", None, 0, False)
             start_indicator(home)
             # Imported here, after that heartbeat, and so that `hands status` answers without loading Pipecat.
-            from hands.daemon.run import config_from_env, run
+            with beating_while_importing(heart, time.monotonic):
+                from hands.daemon.run import config_from_env, run
 
             path = os.environ.get("PATH", "")
             asyncio.run(run(lambda: config_from_env(home), lambda: survey(readiness.check(home, path, granted)), home, heart, after_crash))
@@ -95,6 +100,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         case other:
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
+
+
+@dataclass
+class ImportBeat:
+    """A finder that finds nothing: each import that begins says "starting" again, at most once a heartbeat period."""
+
+    heart: heartbeat.Heart
+    clock: Callable[[], float]
+    last: float
+
+    def find_spec(self, fullname: str, path: Sequence[str] | None, target: ModuleType | None = None, /) -> ModuleSpec | None:
+        now = self.clock()
+        if now - self.last >= self.heart.period.total_seconds():
+            # Set before the beat, so an import the write itself begins finds the beat already out.
+            self.last = now
+            self.heart.beat("starting", None, 0, False)
+        return None
+
+
+@contextmanager
+def beating_while_importing(heart: heartbeat.Heart, clock: Callable[[], float]) -> Generator[None]:
+    """Beat "starting" while the body imports, for as long as each module it loads leads on to the next.
+
+    Pipecat's import takes seconds before any loop exists to beat from. [LAW:no-silent-failure] the beat follows the
+    import's progress, not a timer: an import that stops getting anywhere stops the beats, and reads as not responding.
+    """
+    finder = ImportBeat(heart, clock, clock())
+    sys.meta_path.insert(0, finder)
+    try:
+        yield
+    finally:
+        sys.meta_path.remove(finder)
 
 
 def start_indicator(home: Home) -> None:

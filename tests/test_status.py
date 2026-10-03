@@ -13,7 +13,7 @@ import pytest
 
 from hands.daemon import indicator
 from hands.sessions import heartbeat
-from hands.daemon.cli import main
+from hands.daemon.cli import beating_while_importing, main
 from hands.daemon.run import keep_beating
 from hands.threads import off_loop
 from hands.sessions.home import Home
@@ -63,6 +63,43 @@ def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -
     assert (second.pid, second.started_at, second.heartbeat, second.pipeline, second.last_audio_out) == (4242, NOW, BEAT, "running", NOW)
     assert (first.listening, second.listening) == (False, True)
     assert second.written_at >= first.written_at
+
+
+def test_a_start_still_importing_beats_starting_once_a_period_while_modules_keep_loading_and_stops_with_the_import(
+    tmp_path: Path,
+) -> None:
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT)
+    package = tmp_path / "slowly"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    for name in ("first", "second", "third"):
+        (package / f"{name}.py").write_text("")
+    sys.path.insert(0, str(tmp_path))
+    now = [100.0]
+    beats: list[heartbeat.Status] = []
+
+    def imported(module: str, seconds: float) -> None:
+        now[0] += seconds
+        __import__(module)
+        if (status := heartbeat.read(heart.path)) is not None and status not in beats:
+            beats.append(status)
+
+    try:
+        with beating_while_importing(heart, lambda: now[0]):
+            imported("slowly", 0.5)  # inside the period: the beat before the import still stands
+            imported("slowly.first", 1.5)  # a period after the context opened
+            imported("slowly.second", 1.0)  # half a period after that one
+            imported("slowly.third", 1.0)  # a period after it
+        assert [(status.pid, status.pipeline) for status in beats] == [(4242, "starting"), (4242, "starting")]
+        # The finder is gone with the import: nothing loaded later beats as starting.
+        imported_after = len(beats)
+        (package / "fourth.py").write_text("")
+        imported("slowly.fourth", 60.0)
+        assert len(beats) == imported_after
+    finally:
+        sys.path.remove(str(tmp_path))
+        for module in [name for name in sys.modules if name == "slowly" or name.startswith("slowly.")]:
+            del sys.modules[module]
 
 
 def test_no_file_is_a_daemon_that_never_ran(tmp_path: Path) -> None:
