@@ -120,6 +120,7 @@ Its prompt names its setup's directory, so a skill you ask it by voice to instal
 `~/.hands/brain/skills`, never in your `~/.claude`; it has a new skill from its next turn, with no restart.
 Beside them, hands gives it skills of hands' own, shipped with the code they serve (`src/hands/brain/plugin`):
 `hands:prompt` is how it writes a draft for a session from what you said, a small cut of `laws:prompt` made for that one job.
+`hands:chat` is how it talks with you, a small cut of `laws:chat` made for replies you hear.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
 and stops a turn with Escape, and types nothing else into it; its hooks say when a turn was taken and when it ended.
 What hands asks in the background, the Claude Code backend's summaries and the sentence an old tool result goes as,

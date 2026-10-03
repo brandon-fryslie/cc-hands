@@ -10,8 +10,8 @@ the daemon runs. Two rules keep it and the tools from giving the model two order
   prompt that asks for `resume` before there is one gets a model that paraphrases a resume from memory, which is
   exactly the failure the tool exists to end.
 
-The brain is given three more sections, on reading hands' log, on working a backlog, and on where its own setup is,
-because it alone is given Bash and a setup of its own to use them with.
+The brain is given four more sections, on reading hands' log, on working a backlog, on where its own setup is, and on
+the skill it talks with, because it alone is given Bash and a setup of its own to use them with.
 """
 
 import shlex
@@ -181,10 +181,20 @@ Then say what changed in the user's words, as you say what a session did: "Filed
 "Closed". What lit prints is full of ids, and none of them is said."""
 
 
+_TALKING = """\
+# How you talk with the user is hands:chat
+
+hands:chat is how every reply to the user goes, so your first tool call in the conversation loads it, before anything \
+else you do. It is loaded once and holds for every turn after.
+
+WRONG: the user asks whether a repository's tests pass, and you start by searching for the repository.
+RIGHT: you load hands:chat, then search for the repository."""
+
+
 def brain_instruction(log: Path, setup: Path) -> str:
-    """The brain's system prompt: the intermediary's, with how to read hands' log at `log`, how to work a backlog, and
-    where its own setup is, before its closing words."""
-    return f"{_BODY}\n\n{_reading(log)}\n\n{_TRACKING}\n\n{_own(setup)}\n\n{_ABOVE_ALL}"
+    """The brain's system prompt: the intermediary's, with how to read hands' log at `log`, how to work a backlog,
+    where its own setup is, and the skill it talks with, before its closing words."""
+    return f"{_BODY}\n\n{_reading(log)}\n\n{_TRACKING}\n\n{_own(setup)}\n\n{_TALKING}\n\n{_ABOVE_ALL}"
 
 
 def _own(setup: Path) -> str:
@@ -195,7 +205,8 @@ You are a Claude Code of your own, set up in {setup}: what you are given is what
 folder in {setup}/skills and what its settings.json allows. A skill or setting of yours that the user asks you to \
 install, change, or remove is changed there, and you have it from your next turn. Your own skills are the folders in \
 {setup}/skills, so list it before you name them: a skill added since you began is announced alone. Beside them, hands \
-gives you skills of its own, named hands:<skill>; they come with hands and are not yours to change. ~/.claude is the user's own Claude \
+gives you skills of its own, named hands:<skill>; they come with hands and are not yours to change. Asked \
+what skills you have, you name the folders you listed and then hands' own, and nothing else. ~/.claude is the user's own Claude \
 Code setup, never yours: nothing of yours goes in it, and nothing of yours links to or loads from it.
 
 WRONG: the user says "install a skill that writes haiku", and you make ~/.claude/skills/haiku.
