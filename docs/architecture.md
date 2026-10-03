@@ -178,7 +178,7 @@ class Summarise: narration: NarrationId; steps: Sequence[Step]; expand: SegmentI
 @dataclass(frozen=True)
 class Snapshot: session: SessionId; cwd: Path                # where the turn's repository stands as it opens
 @dataclass(frozen=True)
-class Compare:  session: SessionId; mark: Marked              # what it changed, read when the turn stops
+class Compare:  session: SessionId; again: bool               # what it changed, read when the turn stops
 @dataclass(frozen=True)
 class Audit:    record: AuditRecord
 
@@ -814,7 +814,8 @@ shell command changes files that no `Edited` step names. So at `UserPromptSubmit
 reducer emits `Snapshot`, and the reader records the target's `HEAD` and a tree of
 everything git would keep; at `Stop` it emits `Compare`, which diffs that tree against
 one taken now, and lists the commits reachable from where the turn ended and not from
-where it began. The summariser gets the `Delta` beside the steps, because it is the
+where it began. A turn told a second time is read from where its first reading left off
+instead (see "What git says is not the model's to say"). The summariser gets the `Delta` beside the steps, because it is the
 result of all of them together and the file a `sed` changed belongs to no step at all.
 
 A mark is taken only from a session sitting at the prompt, because a turn opens there
@@ -1109,7 +1110,11 @@ A turn told twice has git read twice, each telling against where the one before 
 No prompt marks where the part after a blocked `Stop` began, so every reading also keeps where
 it found the repository, and `Compare(again=True)` reads against that instead of the prompt's
 mark: a commit made in the turn's second half — a heredoc commit, which no step records
-either — is told with the second telling, and nothing the first told is told again.
+either — is told with the second telling, and nothing the first told is told again. A first
+reading that could not say where the repository stood leaves the second telling without a
+delta. Only a turn hands told before is read this way: one whose first `Stop` it never heard
+is read against its prompt's mark, or not at all where no prompt was heard, since the last
+reading is then another turn's.
 
 **What the turn asked always plays, once, and the daemon decides whether it asked.** A turn
 that ends on a question is waiting on the listener whether or not a hook blocks, so

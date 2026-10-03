@@ -239,7 +239,7 @@ class Compare:
     """
 
     session: SessionId
-    # Whether this is the turn going on after another Stop hook blocked its Stop (Stopped.again): read against where
+    # Whether this is a turn hands told before, going on after another Stop hook blocked its Stop: read against where
     # the reading of its last Stop found the repository, since no prompt marked where the part going on began.
     again: bool
 

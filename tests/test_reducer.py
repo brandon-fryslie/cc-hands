@@ -575,15 +575,19 @@ def test_the_stop_of_a_turn_over_before_the_next_prompt_ends_nothing() -> None:
     assert effects == [Note(ModeChanged(ONE.id, "plan")), Audit(Unmatched(ONE.id, late.prompt)), LET_STOP] and live(after).turn == Opened(NEXT)
 
 
-@pytest.mark.parametrize(("turn", "again", "earlier"), [(TURN, False, frozenset({TURN})), (None, False, frozenset[PromptId]()), (PromptId("q"), True, frozenset[PromptId]())])
+@pytest.mark.parametrize(
+    ("turn", "again", "earlier"),
+    [(TURN, False, frozenset({TURN})), (TURN, True, frozenset({TURN})), (None, False, frozenset[PromptId]()), (PromptId("q"), True, frozenset[PromptId]())],
+)
 @pytest.mark.parametrize("state", [IDLE, BUSY])
 def test_a_stop_with_no_turn_open_tells_the_turn_it_names(state: SessionState, turn: PromptId | None, again: bool, earlier: frozenset[PromptId]) -> None:
     """The turn a session was in when hands attached to it, one it was never heard to open, or the last one stopping
     again after another Stop hook blocked its Stop, which Claude Code stops under the same id."""
     after, effects = reduce(holding(state, Told(turn)), Stopped(ONE.id, "Done.", mode=None, prompt=PromptId("q"), again=again, heard=STOP_HEARD, request=STOP_REQUEST))
     assert after == holding(state, Told(PromptId("q")), earlier=earlier)
-    # The turn stopping again is read against where its last Stop's reading ended: no prompt marked where it went on.
-    assert effects == [Compare(ONE.id, again), Summarise(ONE.id, PromptId("q"), "Done."), LET_STOP]
+    # Only the turn hands told before is read against where its last Stop's reading ended: no prompt marked where it went
+    # on. One stopping again whose first Stop hands never heard is told whole, and the last reading is another turn's.
+    assert effects == [Compare(ONE.id, again=turn == PromptId("q")), Summarise(ONE.id, PromptId("q"), "Done."), LET_STOP]
 
 
 def test_the_stop_of_a_turn_already_told_ends_nothing_and_keeps_the_idle_period_it_lands_in() -> None:
@@ -1154,6 +1158,12 @@ def test_a_turn_that_goes_on_after_a_blocked_stop_has_each_of_its_endings_told_o
     _, heard = through(*ending("done", again=False), *ending("BANANA", again=True))
     assert [effect for effect in heard if isinstance(effect, Summarise)] == [Summarise(ONE.id, TURN, "done"), Summarise(ONE.id, TURN, "BANANA")]
     assert [effect for effect in heard if isinstance(effect, Compare)] == [Compare(ONE.id, again=False), Compare(ONE.id, again=True)]
+
+
+def test_an_open_turn_stopping_again_is_read_against_its_own_prompt_s_mark() -> None:
+    """Its first Stop never reached hands, so no reading of it left off anywhere: where the last one did is another turn's."""
+    _, heard = through(stop("Second.", again=True))
+    assert heard == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Second."), LET_STOP]
 
 
 def test_a_reply_on_the_wire_of_a_turn_told_already_ends_nothing() -> None:
