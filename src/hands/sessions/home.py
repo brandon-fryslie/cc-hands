@@ -1,6 +1,6 @@
 """Where the daemon and the shims meet on disk."""
 
-import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +36,11 @@ class Home:
     def attention(self) -> Path:
         """What hands says unprompted, written by the attention tool and `/hands:attention` alone."""
         return self.root / "attention.json"
+
+    @property
+    def config(self) -> Path:
+        """The settings, read by the daemon once when it starts (hands.daemon.config), and written by the user alone."""
+        return self.root / "config.toml"
 
     @property
     def voice(self) -> Path:
@@ -89,10 +94,12 @@ class Home:
         return self.overlays / session
 
 
-def default_home() -> Home:
+def default_home(environment: Mapping[str, str]) -> Home:
     """HANDS_HOME, or ~/.hands: the hook shim, which Claude Code runs with no arguments of hands', finds it as the CLI does."""
     # [LAW:one-source-of-truth] the one place the default is named; the CLI's --home and the shim both start here.
-    root = Path(os.environ.get("HANDS_HOME") or Path.home() / ".hands").expanduser()
+    # HANDS_HOME is no setting but where the settings are: the one thing a process started by Claude Code, with no
+    # arguments of hands', can be told.
+    root = Path(environment.get("HANDS_HOME") or Path.home() / ".hands").expanduser()
     # [LAW:parse-dont-validate] a hook runs in its session's directory, so a relative home would be a different
     # home in every project; it is refused here, where every reader of the home gets it.
     if not root.is_absolute():

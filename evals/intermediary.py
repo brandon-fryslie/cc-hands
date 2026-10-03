@@ -5,7 +5,7 @@ Run it against whatever model the daemon runs:
 
     uv run python evals/intermediary.py                 # Claude, one run each
     uv run python evals/intermediary.py --runs 3        # three runs each, for a model that samples
-    HANDS_LLM=openai uv run --env-file .env python evals/intermediary.py
+    uv run --env-file .env python evals/intermediary.py   # on the backend the home's config.toml names
 
 Each case under `evals/conversations` is one decision point: the conversation up to a moment, and what the model
 must do next. The model is asked with the daemon's own prompt, its own tool schemas, and its own start-up note, and
@@ -37,6 +37,7 @@ turn fails the same way.
 import argparse
 import asyncio
 import json
+import os
 import re
 import statistics
 import sys
@@ -61,7 +62,8 @@ from pipecat.services.openai.llm import OpenAILLMService
 
 from hands.core.spoken import spoken
 from hands.sessions.home import Home, default_home
-from hands.daemon.run import backend_from_env
+from hands.daemon.config import load
+from hands.daemon.run import backend as backend_of
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
 from hands.voice.briefing import briefing
@@ -175,7 +177,7 @@ def asker(backend: LLMBackend) -> Ask:
             return from_anthropic
         case ClaudeCodeBackend():
             # [LAW:no-silent-failure] the eval asks a Pipecat LLM stage, and the brain is a process with none.
-            sys.exit("HANDS_LLM=claude has no Pipecat LLM stage for this eval to ask; pick anthropic or openai.")
+            sys.exit("the claude backend has no Pipecat LLM stage for this eval to ask; pick anthropic or openai.")
 
 
 # How many times a model may look before the step it takes is judged: once is caution, three times is lost.
@@ -316,7 +318,8 @@ async def main() -> int:
     logger.remove()
     logger.add(sys.stderr, level="WARNING")
 
-    backend = backend_from_env(default_home())
+    home = default_home(os.environ)
+    backend = backend_of(load(home)[0].llm, home, os.environ)
     ask = asker(backend)
     chosen = [case for case in cases() if args.only in case.name]
     if not chosen:

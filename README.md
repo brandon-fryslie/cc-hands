@@ -69,17 +69,30 @@ mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts �
                   hook shims ──► unix socket ──► sessions
 ```
 
-The LLM is a backend variant: `HANDS_LLM=anthropic`, the default, is Claude Sonnet 5, keyed by
-`ANTHROPIC_API_KEY` or, when that is not set, by the keychain's `HANDS_LLM_ANT_KEY`; `HANDS_LLM=openai`
-is `gpt-4.1-mini` through OpenAI's API, keyed by `OPENAI_API_KEY`. `HANDS_LLM_MODEL` names another
-model for either. `HANDS_LLM_URL` moves either to another server that speaks its API, keyed only by
+hands' settings are `~/.hands/config.toml`, read once when it starts; with no file, every setting is
+its default:
+
+```toml
+[llm]
+backend = "claude"            # "anthropic" (the default), "openai", or "claude"
+model = "claude-sonnet-5"     # another model, for any backend
+url = "https://..."           # another server, for anthropic and openai
+
+[whisper]
+model = "mlx-community/whisper-large-v3-turbo"
+```
+
+The LLM is a backend variant: `anthropic`, the default, is Claude Sonnet 5, keyed by
+`ANTHROPIC_API_KEY` or, when that is not set, by the keychain's `HANDS_LLM_ANT_KEY`; `openai`
+is `gpt-4.1-mini` through OpenAI's API, keyed by `OPENAI_API_KEY`. `model` names another
+model for either. `url` moves either to another server that speaks its API, keyed only by
 the environment's key (the keychain's key is Anthropic's own and goes nowhere else), and the two take
 it differently: the Anthropic client appends `/v1/messages`, so its URL has no `/v1`
 (`https://api-chicago.codexapi.pro`), while the OpenAI client appends `/chat/completions`, so its URL
 usually ends in `/v1` (`https://api-chicago.codexapi.pro/v1`: the bare host answers 404). The server
 must stream tool calls, because the pipeline's service always streams: api-chicago.codexapi.pro streams
 Anthropic `tool_use` but drops OpenAI-shape tool calls (2026-09-25), so it is reached as `anthropic`.
-`HANDS_LLM=claude` is the brain: one long-lived Claude Code of hands' own, on the Claude subscription,
+`claude` is the brain: one long-lived Claude Code of hands' own, on the Claude subscription,
 whose requests go through hands' proxy and which reaches the sessions through hands' tools over MCP
 (`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, set up once as any
 Claude Code is, by running `mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude` and answering its first screens, and it does not start without one. `hands login` logs it in again, or onto
@@ -216,9 +229,8 @@ uv run python -m hands.sessions.hookconfig > plugin/hooks/hooks.json
 
 ```
 uv sync
-uv run hands run                        # Claude, keyed by ANTHROPIC_API_KEY, else the keychain's HANDS_LLM_ANT_KEY; hold Right Shift in any app to talk, release to send; q in its terminal quits
-HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
-HANDS_LLM=claude uv run hands run      # the brain on the subscription; once first: mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude
+uv run hands run                        # the backend ~/.hands/config.toml names; hold Right Shift in any app to talk, release to send; q in its terminal quits
+uv run --env-file .env hands run        # its key in .env: ANTHROPIC_API_KEY (else the keychain's HANDS_LLM_ANT_KEY) or OPENAI_API_KEY
 uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at

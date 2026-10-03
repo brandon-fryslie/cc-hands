@@ -1,8 +1,7 @@
 """`hands run`: the daemon, in the foreground of the terminal it was started in.
 
-    uv run hands run              # Sonnet 5 (HANDS_LLM=anthropic, the default); ANTHROPIC_API_KEY, else the keychain's HANDS_LLM_ANT_KEY
-    HANDS_LLM=openai uv run --env-file .env hands run    # OPENAI_API_KEY=... in .env
-    HANDS_LLM=claude uv run hands run   # a slim Claude Code on the subscription, once: mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude
+    uv run hands run                          # the backend ~/.hands/config.toml names (hands.daemon.config); Sonnet 5 on the Anthropic API when it names none
+    uv run --env-file .env hands run          # its key in .env: ANTHROPIC_API_KEY (else the keychain's HANDS_LLM_ANT_KEY) or OPENAI_API_KEY
 
 Sessions join through the hook socket at ~/.hands/hands.sock (the home is
 HANDS_HOME when that is set). A Claude Code session is registered when the hands
@@ -18,11 +17,10 @@ Latency from key release to the first audio out is logged for every turn.
 
 import asyncio
 import atexit
-import os
 import subprocess
 import sys
 import time
-from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
+from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -35,14 +33,14 @@ from loguru import logger
 from pipecat.frames.frames import Frame
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
-from pipecat.services.whisper.stt import MLXModel
 from pipecat.workers.runner import WorkerRunner
 
+from hands.daemon.config import ANTHROPIC_URL, LLM, Anthropic, Claude, OpenAI, load
 from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
-from hands.sessions.audit import AuditLog, LLMChosen, ProxyListening, Record, TapListening, VoiceChosen, failures_to
+from hands.sessions.audit import AuditLog, LLMChosen, ProxyListening, Record, SettingsRead, TapListening, VoiceChosen, failures_to
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT, PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.statusfile import keep_reading_statuses
@@ -99,16 +97,10 @@ from hands.brain.context import EVERY, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.core.session import SessionId
 
-# The SDK appends /v1/messages to this, so an Anthropic-compatible server's URL has no /v1 of its own.
-ANTHROPIC_URL = "https://api.anthropic.com"
-ANTHROPIC_MODEL = "claude-sonnet-5"
 # Where the Anthropic key lives when ANTHROPIC_API_KEY is not set: a generic password in the keychain.
 # A prompt to allow access that nobody answers is a failed read, not a daemon that never starts.
 KEYCHAIN_TIMEOUT_SECONDS = 30.0
 ANTHROPIC_KEYCHAIN_SERVICE = "HANDS_LLM_ANT_KEY"
-OPENAI_URL = "https://api.openai.com/v1"
-# Not a reasoning model, so no thinking precedes the first spoken word; it calls tools and takes max_tokens.
-OPENAI_MODEL = "gpt-4.1-mini"
 # How late a permission deadline can be heard.
 TICK_SECONDS = 1.0
 # How late a session whose process died, or one that started unheard, is noticed.
@@ -120,66 +112,46 @@ TAIL_SECONDS = 0.1
 STATUS_SECONDS = 0.1
 
 
-def backend_from_env(home: Home) -> LLMBackend:
-    """HANDS_LLM picks the variant: `anthropic` (default), `openai`, or `claude`; HANDS_LLM_MODEL moves any, HANDS_LLM_URL the first two."""
-    # [LAW:parse-dont-validate] the environment is parsed here, once, into a
-    # variant that carries exactly what its service needs; an unknown choice
-    # or a missing key stops the process at the door.
-    choice = os.environ.get("HANDS_LLM", "anthropic")
-    if choice == "openai":
-        return OpenAICompatibleBackend(
-            base_url=_environment_url() or OPENAI_URL,
-            api_key=_key("OPENAI_API_KEY", choice),
-            model=os.environ.get("HANDS_LLM_MODEL", OPENAI_MODEL),
-        )
-    if choice == "anthropic":
-        model = os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL)
-        url = _environment_url()
-        if url is None:
-            key = _environment_key("ANTHROPIC_API_KEY") or _keychain_key(ANTHROPIC_KEYCHAIN_SERVICE, "ANTHROPIC_API_KEY", choice)
-            return AnthropicBackend(base_url=ANTHROPIC_URL, api_key=key, model=model)
-        # The keychain's key is Anthropic's own, so it is never sent to another server: that server's key is named in the environment.
-        if url.rstrip("/").endswith("/v1"):
-            sys.exit(f"HANDS_LLM_URL={url!r} ends in /v1, and the Anthropic client appends /v1/messages itself; drop the /v1.")
-        return AnthropicBackend(base_url=url, api_key=_key("ANTHROPIC_API_KEY", choice), model=model)
-    if choice == "claude":
-        # [LAW:no-silent-failure] the brain reaches the API through hands' proxy, which forwards to Anthropic's; a URL
-        # named for it would be ignored, so it is refused instead.
-        if _environment_url() is not None:
-            sys.exit("HANDS_LLM_URL does not apply to HANDS_LLM=claude, whose requests go through hands' proxy to Anthropic's API; unset it.")
-        # A brain with no login is refused here, before the voice loads, rather than once every turn has failed.
-        try:
-            account = logged_in(home.brain, UPSTREAM)
-            account_kept_out(home.brain)
-        except (NotLoggedIn, Unstartable) as error:
-            sys.exit(f"hands: {error}")
-        return ClaudeCodeBackend(model=os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL), config_dir=home.brain, account=account)
-    sys.exit(f"HANDS_LLM={choice!r} is not one of: anthropic, openai, claude.")
+def backend(llm: LLM, home: Home, environment: Mapping[str, str]) -> LLMBackend:
+    """The backend the settings name, given the key or the login it reaches its model with; one it cannot have stops the process."""
+    # [LAW:single-enforcer] where a setting meets its secret: the key from the environment, or the keychain, or the
+    # brain's login, is checked here, once, before the voice loads, rather than once every turn has failed.
+    match llm:
+        case OpenAI(url=url, model=model):
+            return OpenAICompatibleBackend(base_url=url, api_key=_key(environment, "OPENAI_API_KEY"), model=model)
+        case Anthropic(url=url, model=model) if url == ANTHROPIC_URL:
+            key = _environment_key(environment, "ANTHROPIC_API_KEY") or _keychain_key(ANTHROPIC_KEYCHAIN_SERVICE, "ANTHROPIC_API_KEY")
+            return AnthropicBackend(base_url=url, api_key=key, model=model)
+        case Anthropic(url=url, model=model):
+            # The keychain's key is Anthropic's own, so it is never sent to another server: that server's key is named in the environment.
+            return AnthropicBackend(base_url=url, api_key=_key(environment, "ANTHROPIC_API_KEY"), model=model)
+        case Claude(model=model):
+            try:
+                account = logged_in(home.brain, UPSTREAM, environment)
+                account_kept_out(home.brain)
+            except (NotLoggedIn, Unstartable) as error:
+                sys.exit(f"hands: {error}")
+            return ClaudeCodeBackend(model=model, config_dir=home.brain, account=account)
 
 
-def _key(var: str, choice: str) -> str:
-    """The API key a keyed variant cannot run without, or the process stops naming the variable."""
-    key = _environment_key(var)
+def _key(environment: Mapping[str, str], var: str) -> str:
+    """The API key a keyed backend cannot run without, or the process stops naming the variable."""
+    key = _environment_key(environment, var)
     if not key:
-        sys.exit(f"{var} is not set; HANDS_LLM={choice} needs it to reach its model.")
+        sys.exit(f"{var} is not set; the [llm] backend hands is set to run on needs it to reach its model.")
     return key
 
 
-def _environment_url() -> str | None:
-    """The server HANDS_LLM_URL names, or None when it names none: a blank line in a .env is no URL, as a blank key is no key."""
-    return os.environ.get("HANDS_LLM_URL", "").strip() or None
-
-
-def _environment_key(var: str) -> str:
+def _environment_key(environment: Mapping[str, str], var: str) -> str:
     # A key has no whitespace in it: space around one in a .env is dropped, and a blank one is no key.
-    return os.environ.get(var, "").strip()
+    return environment.get(var, "").strip()
 
 
-def _keychain_key(service: str, var: str, choice: str) -> str:
+def _keychain_key(service: str, var: str) -> str:
     """The key the keychain holds under `service`; when it holds none, the process stops naming both places a key can be."""
     key = keychain_password(service)
     if not key:
-        sys.exit(f"{var} is not set and the keychain holds no {service}; HANDS_LLM={choice} needs one to reach its model.")
+        sys.exit(f"{var} is not set and the keychain holds no {service}; the [llm] backend hands is set to run on needs one to reach its model.")
     return key
 
 
@@ -205,13 +177,25 @@ def keychain_password(service: str) -> str | None:
     return out.strip() or None
 
 
-def config_from_env(home: Home) -> VoiceConfig:
-    """The process boundary: environment in, typed configuration out."""
-    return VoiceConfig(
-        llm=backend_from_env(home),
-        whisper_model=os.environ.get("HANDS_WHISPER_MODEL", MLXModel.LARGE_V3_TURBO),
-        voice=_voice(home),
-    )
+@dataclass(frozen=True)
+class Configured:
+    """The configuration a run starts with, and the settings file it was read from: None where the home has none."""
+
+    voice: VoiceConfig
+    settings: Path | None
+
+
+def configured_from(home: Home, environment: Mapping[str, str]) -> Configured:
+    """The process boundary: the settings file and the environment's secrets in, typed configuration out."""
+    # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
+    # config.toml, and HANDS_HOME, where that is, is the one variable of hands' own it reads.
+    if stray := sorted(name for name in environment if name.startswith("HANDS_") and name != "HANDS_HOME"):
+        sys.exit(f"hands: {', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
+    try:
+        settings, read = load(home)
+    except Rejected as error:
+        sys.exit(f"hands: {error}")
+    return Configured(VoiceConfig(llm=backend(settings.llm, home, environment), whisper_model=settings.whisper_model, voice=_voice(home)), read)
 
 
 def _voice(home: Home) -> voices.Voice:
@@ -243,7 +227,8 @@ class Mind:
 
 @asynccontextmanager
 async def mind(
-    config: VoiceConfig, tools: Sequence[Tool], tail: Callable[[], str], refocus: Refocus, proxy_url: str, wire: Wire, store: Store, fritter: Path, log: Path, record: Record
+    config: VoiceConfig, tools: Sequence[Tool], tail: Callable[[], str], refocus: Refocus, proxy_url: str, wire: Wire, store: Store, fritter: Path, log: Path, record: Record,
+    environment: Mapping[str, str],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
     through, the stage that speaks for it from the wire, the keeper of its context, and what answers hands' side questions."""
@@ -259,7 +244,7 @@ async def mind(
         case ClaudeCodeBackend(model=model, config_dir=config_dir):
             server = await serve_mcp(tools, record)
             try:
-                station = Station(config_dir, workdir(config_dir), model, proxy_url)
+                station = Station(config_dir, workdir(config_dir), model, proxy_url, environment)
                 brain = await start_brain(Launch(station, brain_instruction(log, config_dir), server.config(), SessionId(str(uuid4())), fritter), record)
                 try:
                     # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
@@ -302,7 +287,8 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[], VoiceConfig], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, audit: AuditLog, quit_event: asyncio.Event, after_crash: bool
+    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, audit: AuditLog, quit_event: asyncio.Event, after_crash: bool,
+    environment: Mapping[str, str],
 ) -> Ended:
     voice: Voice | None = None
     # [LAW:single-enforcer] one owner lets go of all the run took, in reverse, whichever step of taking it raised: a run
@@ -312,7 +298,7 @@ async def run(
         failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
         held.callback(logger.remove, failures)
         # What each turn changed in the repository it ran in, which no transcript record need name.
-        deltas = Deltas(audit.record)
+        deltas = Deltas(audit.record, environment)
         sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record, changes=deltas)
         # Before the hooks are served: a turn that finishes while the models load is named once they have.
         names = Names()
@@ -342,10 +328,11 @@ async def run(
         # [LAW:single-enforcer] one mover of the focus to a session just told of, for the model's stage and tell_turn alike.
         refocus = Refocus(sessions, home, audit.record)
         tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus)]
-        config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions.live_count, quit_event)
+        # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
+        config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, audit.record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, lambda: as_sent(sessions, home), refocus, proxy.url, wire, store, home.fritter, home.audit, audit.record) as minded:
+            async with mind(config, tools, lambda: as_sent(sessions, home), refocus, proxy.url, wire, store, home.fritter, home.audit, audit.record, environment) as minded:
                 floor = Floor(audit.record, minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, player, floor, refocus), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
@@ -354,13 +341,16 @@ async def run(
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[], VoiceConfig], survey: Callable[[], None], home: Home, sessions: Sessions, record: Record) -> VoiceConfig:
+async def configured(configure: Callable[[], Configured], survey: Callable[[], None], home: Home, sessions: Sessions, record: Record) -> VoiceConfig:
     """The configuration, once what hands is missing has been said and the sessions already running are listed."""
     await off_loop(survey, "the readiness check")
     # A restart is back where it was before the models load: every session with a file and a running process is listed.
     await sweep(home, sessions, frozenset())
-    config = await off_loop(configure, "the configuration read")
-    # [LAW:nothing-unseen] which server and model the environment chose is read from the log, not re-derived from a shell.
+    read = await off_loop(configure, "the configuration read")
+    config = read.voice
+    # [LAW:nothing-unseen] which file the settings came from, and the server and model they chose, is read from the log,
+    # not re-derived from a shell.
+    record(SettingsRead(path=None if read.settings is None else str(read.settings), whisper_model=config.whisper_model))
     record(LLMChosen(backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model, account=_account(config.llm)))
     record(VoiceChosen(voice=config.voice))
     return config

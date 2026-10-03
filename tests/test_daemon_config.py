@@ -1,6 +1,7 @@
-"""The process boundary: which LLM backend the environment names."""
+"""The process boundary: the settings file, parsed once, and the secret each backend it names reaches its model with."""
 
 import asyncio
+import os
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -8,12 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from hands.daemon import run
+from hands.daemon import config, run
+from hands.daemon.config import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, Anthropic, Claude, Config, OpenAI
 from hands.daemon.starting import start
-from hands.daemon.run import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, backend_from_env
+from hands.daemon.run import backend
 from hands.sessions import heartbeat
-from hands.sessions.audit import Entry, LLMChosen, VoiceChosen, encoded
+from hands.sessions.audit import Entry, LLMChosen, SettingsRead, VoiceChosen, encoded
 from hands.sessions.home import Home
+from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.core.wire import UPSTREAM
 from hands.voice import voices
@@ -22,43 +25,108 @@ from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, OpenAIComp
 HOME = Home(Path("/Users/someone/.hands"))
 
 
-def test_default_is_claude_on_the_anthropic_api(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in ("HANDS_LLM", "HANDS_LLM_URL", "HANDS_LLM_MODEL", "OPENAI_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    assert backend_from_env(HOME) == AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model=ANTHROPIC_MODEL)
+def test_no_file_is_claude_on_the_anthropic_api_and_whisper_large_v3_turbo(tmp_path: Path) -> None:
+    assert config.load(Home(tmp_path)) == (Config(llm=Anthropic(url=ANTHROPIC_URL, model=ANTHROPIC_MODEL), whisper_model="mlx-community/whisper-large-v3-turbo"), None)
+    assert config.parse("") == Config()
 
 
-def test_anthropic_url_and_model_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("HANDS_LLM", raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    monkeypatch.setenv("HANDS_LLM_URL", "https://api-chicago.codexapi.pro")
-    monkeypatch.setenv("HANDS_LLM_MODEL", "claude-other")
-    assert backend_from_env(HOME) == AnthropicBackend(base_url="https://api-chicago.codexapi.pro", api_key="k", model="claude-other")
+def test_the_file_names_the_backend_its_server_and_model_and_the_whisper_model(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[llm]\nbackend = "openai"\nurl = "https://reseller.example/v1"\nmodel = "gpt-other"\n\n[whisper]\nmodel = "w"\n')
+    assert config.load(home) == (Config(llm=OpenAI(url="https://reseller.example/v1", model="gpt-other"), whisper_model="w"), home.config)
+    assert config.parse('[llm]\nbackend = "openai"\n').llm == OpenAI(url=OPENAI_URL, model=OPENAI_MODEL)
+    assert config.parse('[llm]\nurl = "https://api-chicago.codexapi.pro"\nmodel = "claude-other"\n').llm == Anthropic(url="https://api-chicago.codexapi.pro", model="claude-other")
+    assert config.parse('[llm]\nbackend = "claude"\nmodel = "claude-other"\n').llm == Claude(model="claude-other")
 
 
-def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(monkeypatch: pytest.MonkeyPatch, fake_claude: Path, tmp_path: Path) -> None:
-    for var in ("HANDS_LLM_URL", "HANDS_LLM_MODEL", "ANTHROPIC_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("HANDS_LLM", "claude")
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        ("[llm\n", "not TOML"),
+        ('[llm]\nbackend = "local"\n', "backend 'local' is not one of: anthropic, openai, claude"),
+        ('[llm]\nbackend = "gpt"\n', "is not one of"),
+        # A url for the brain would be ignored, its requests going through hands' proxy, so it is refused.
+        ('[llm]\nbackend = "claude"\nurl = "http://localhost:8080"\n', "[llm] for claude has no 'url'; it takes backend, model"),
+        ('[llm]\nurl = "http://localhost:8080/v1"\n', "ends in /v1"),
+        ('[llm]\nurl = "https://api-chicago.codexapi.pro/v1/"\n', "ends in /v1"),
+        # A key misspelled is refused, not a setting silently left at its default.
+        ('[llm]\nmodle = "m"\n', "has no 'modle'"),
+        ('voice = "charles"\n', "the file has no 'voice'"),
+        ('[llm]\nurl = "  "\n', "url should be a non-empty string"),
+        ("[llm]\nmodel = 4\n", "model should be a non-empty string, got 4"),
+        ('llm = "claude"\n', "llm should be a table"),
+    ],
+)
+def test_a_file_that_does_not_parse_is_refused_saying_what_is_wrong(text: str, said: str) -> None:
+    with pytest.raises(Rejected) as refused:
+        config.parse(text)
+    assert said in str(refused.value)
+
+
+def test_a_refused_file_stops_the_start_naming_itself(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[llm]\nbackend = "local"\n')
+    with pytest.raises(SystemExit, match=f"{home.config}: \\[llm\\] backend 'local'"):
+        run.configured_from(home, {"ANTHROPIC_API_KEY": "k"})
+
+
+def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
+    # The variables settings used to be: one still exported would run hands on the default backend, silently.
+    home = Home(tmp_path)
+    with pytest.raises(SystemExit, match=f"HANDS_LLM, HANDS_WHISPER_MODEL set, .* settings go in {home.config}"):
+        run.configured_from(home, {"ANTHROPIC_API_KEY": "k", "HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"})
+
+
+def test_anthropic_on_its_own_url_spelled_with_a_slash_is_its_own_api() -> None:
+    assert config.parse('[llm]\nurl = "https://api.anthropic.com/"\n').llm == config.Anthropic()
+
+
+def test_anthropic_on_its_own_api_is_keyed_by_the_environment_else_the_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
+    kept: dict[str, str] = {}
+    monkeypatch.setattr(run, "keychain_password", kept.get)
+    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set and the keychain holds no HANDS_LLM_ANT_KEY"):
+        backend(Anthropic(), HOME, {})
+    kept["HANDS_LLM_ANT_KEY"] = "from-keychain"
+    assert backend(Anthropic(), HOME, {}) == AnthropicBackend(base_url=ANTHROPIC_URL, api_key="from-keychain", model=ANTHROPIC_MODEL)
+    assert backend(Anthropic(), HOME, {"ANTHROPIC_API_KEY": "k"}) == AnthropicBackend(base_url=ANTHROPIC_URL, api_key="k", model=ANTHROPIC_MODEL)
+
+
+def test_the_keychain_key_never_leaves_for_another_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(run, "keychain_password", {"HANDS_LLM_ANT_KEY": "anthropic-own"}.get)
+    other = Anthropic(url="https://api-chicago.codexapi.pro", model="claude-other")
+    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set"):
+        backend(other, HOME, {})
+    assert backend(other, HOME, {"ANTHROPIC_API_KEY": "k"}) == AnthropicBackend(base_url="https://api-chicago.codexapi.pro", api_key="k", model="claude-other")
+
+
+def test_openai_needs_its_key() -> None:
+    # Unset, or an empty line in a .env, or only space, is no key.
+    for environment in ({}, {"OPENAI_API_KEY": ""}, {"OPENAI_API_KEY": "   "}):
+        with pytest.raises(SystemExit, match="OPENAI_API_KEY is not set"):
+            backend(OpenAI(), HOME, environment)
+    # Space around a key in a .env line is not part of the key.
+    assert backend(OpenAI(), HOME, {"OPENAI_API_KEY": " k "}) == OpenAICompatibleBackend(base_url=OPENAI_URL, api_key="k", model=OPENAI_MODEL)
+    assert backend(OpenAI(url="https://reseller.example/v1", model="gpt-other"), HOME, {"OPENAI_API_KEY": "k"}) == OpenAICompatibleBackend(
+        base_url="https://reseller.example/v1", api_key="k", model="gpt-other"
+    )
+
+
+def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     home.brain.mkdir(parents=True)
     (home.brain / "settings.json").write_text('{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false}')
-    assert backend_from_env(home) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account="brain@example.com")
-    monkeypatch.setenv("HANDS_LLM_MODEL", "claude-other")
-    assert backend_from_env(home).model == "claude-other"
+    assert backend(Claude(), home, os.environ) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account="brain@example.com")
+    assert backend(Claude(model="claude-other"), home, os.environ).model == "claude-other"
 
 
-def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_switches(monkeypatch: pytest.MonkeyPatch, fake_claude: Path, tmp_path: Path) -> None:
-    monkeypatch.delenv("HANDS_LLM_URL", raising=False)
-    monkeypatch.setenv("HANDS_LLM", "claude")
+def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_switches(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     home.brain.mkdir(parents=True)
     with pytest.raises(SystemExit, match="settings could not be read"):
-        backend_from_env(home)
+        backend(Claude(), home, os.environ)
     (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}')
     with pytest.raises(SystemExit, match='its account\'s syncClaudeAiSkills: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'):
-        backend_from_env(home)
+        backend(Claude(), home, os.environ)
 
 
 def test_the_brain_is_logged_as_reaching_anthropics_api_through_the_proxy_on_its_account() -> None:
@@ -68,119 +136,18 @@ def test_the_brain_is_logged_as_reaching_anthropics_api_through_the_proxy_on_its
 
 
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
-    monkeypatch.delenv("HANDS_LLM_URL", raising=False)
-    monkeypatch.setenv("HANDS_LLM", "claude")
     monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(SystemExit, match="cd /Users/someone/.hands/brain/cwd && CLAUDE_CONFIG_DIR=/Users/someone/.hands/brain claude"):
-        backend_from_env(HOME)
-
-
-def test_a_url_for_the_brain_is_refused_rather_than_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HANDS_LLM", "claude")
-    monkeypatch.setenv("HANDS_LLM_URL", "http://localhost:8080")
-    with pytest.raises(SystemExit, match="does not apply to HANDS_LLM=claude"):
-        backend_from_env(HOME)
-
-
-def test_the_keychain_key_never_leaves_for_another_server(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("HANDS_LLM", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setenv("HANDS_LLM_URL", "https://api-chicago.codexapi.pro")
-    monkeypatch.setattr(run, "keychain_password", {"HANDS_LLM_ANT_KEY": "anthropic-own"}.get)
-    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set"):
-        backend_from_env(HOME)
-
-
-def test_a_blank_url_is_no_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("HANDS_LLM_MODEL", raising=False)
-    monkeypatch.setenv("HANDS_LLM_URL", "  ")
-    monkeypatch.setattr(run, "keychain_password", {"HANDS_LLM_ANT_KEY": "anthropic-own"}.get)
-    monkeypatch.setenv("HANDS_LLM", "anthropic")
-    assert backend_from_env(HOME) == AnthropicBackend(base_url=ANTHROPIC_URL, api_key="anthropic-own", model=ANTHROPIC_MODEL)
-    monkeypatch.setenv("HANDS_LLM", "openai")
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
-    assert backend_from_env(HOME) == OpenAICompatibleBackend(base_url=OPENAI_URL, api_key="k", model=OPENAI_MODEL)
-
-
-def test_an_anthropic_url_with_its_own_v1_stops_at_the_door(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("HANDS_LLM", raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    for url in ("http://localhost:8080/v1", "https://api-chicago.codexapi.pro/v1/"):
-        monkeypatch.setenv("HANDS_LLM_URL", url)
-        with pytest.raises(SystemExit, match="ends in /v1"):
-            backend_from_env(HOME)
-
-
-def test_the_local_variant_is_gone(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HANDS_LLM", "local")
-    with pytest.raises(SystemExit, match="HANDS_LLM='local' is not one of: anthropic, openai"):
-        backend_from_env(HOME)
-
-
-def test_anthropic_needs_its_key_from_the_environment_or_the_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HANDS_LLM", "anthropic")
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("HANDS_LLM_URL", raising=False)
-    monkeypatch.delenv("HANDS_LLM_MODEL", raising=False)
-    kept: dict[str, str] = {}
-    monkeypatch.setattr(run, "keychain_password", kept.get)
-    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set and the keychain holds no HANDS_LLM_ANT_KEY"):
-        backend_from_env(HOME)
-    kept["HANDS_LLM_ANT_KEY"] = "from-keychain"
-    assert backend_from_env(HOME) == AnthropicBackend(base_url=ANTHROPIC_URL, api_key="from-keychain", model=ANTHROPIC_MODEL)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    assert backend_from_env(HOME) == AnthropicBackend(base_url=ANTHROPIC_URL, api_key="k", model=ANTHROPIC_MODEL)
-
-
-def test_openai_needs_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HANDS_LLM", "openai")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    with pytest.raises(SystemExit, match="OPENAI_API_KEY is not set"):
-        backend_from_env(HOME)
-    # An empty line in a .env reads as set to nothing, which is no key either.
-    monkeypatch.setenv("OPENAI_API_KEY", "")
-    with pytest.raises(SystemExit, match="OPENAI_API_KEY is not set"):
-        backend_from_env(HOME)
-    monkeypatch.setenv("OPENAI_API_KEY", "   ")
-    with pytest.raises(SystemExit, match="OPENAI_API_KEY is not set"):
-        backend_from_env(HOME)
-    # Space around a key in a .env line is not part of the key.
-    monkeypatch.setenv("OPENAI_API_KEY", " k ")
-    monkeypatch.delenv("HANDS_LLM_URL", raising=False)
-    monkeypatch.delenv("HANDS_LLM_MODEL", raising=False)
-    assert backend_from_env(HOME) == OpenAICompatibleBackend(base_url=OPENAI_URL, api_key="k", model=OPENAI_MODEL)
-
-
-def test_openai_reaches_openai_with_its_key_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HANDS_LLM", "openai")
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
-    monkeypatch.delenv("HANDS_LLM_URL", raising=False)
-    monkeypatch.delenv("HANDS_LLM_MODEL", raising=False)
-    assert backend_from_env(HOME) == OpenAICompatibleBackend(base_url="https://api.openai.com/v1", api_key="k", model=OPENAI_MODEL)
-
-
-def test_openai_url_and_model_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HANDS_LLM", "openai")
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
-    monkeypatch.setenv("HANDS_LLM_URL", "https://reseller.example/v1")
-    monkeypatch.setenv("HANDS_LLM_MODEL", "gpt-other")
-    assert backend_from_env(HOME) == OpenAICompatibleBackend(base_url="https://reseller.example/v1", api_key="k", model="gpt-other")
+        backend(Claude(), HOME, os.environ)
 
 
 def test_a_backend_printed_does_not_print_its_key() -> None:
     """The eval prints the backend it runs on, and a key printed is a key leaked."""
-    for backend in (
+    for printed in (
         OpenAICompatibleBackend(base_url=OPENAI_URL, api_key="sk-secret", model=OPENAI_MODEL),
         AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL),
     ):
-        assert "sk-secret" not in repr(backend) and "sk-secret" not in str(backend)
-
-
-def test_unknown_choice_stops_at_the_door(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HANDS_LLM", "gpt")
-    with pytest.raises(SystemExit):
-        backend_from_env(HOME)
+        assert "sk-secret" not in repr(printed) and "sk-secret" not in str(printed)
 
 
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
@@ -195,9 +162,9 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
     home, sessions, heart, config = _starting(tmp_path)
     answered = threading.Event()
 
-    def prompted() -> run.VoiceConfig:
+    def prompted() -> run.Configured:
         answered.wait()
-        return config
+        return run.Configured(config, home.config)
 
     recorded: list[Entry] = []
     starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda: None, home, sessions, recorded.append), heart, sessions.live_count, asyncio.Event()))
@@ -210,8 +177,9 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         await asyncio.sleep(0.005)
     answered.set()
     assert await starting == config
-    # The log says which server and model the run reaches, and never with what key, and the voice it speaks in.
-    assert recorded == [LLMChosen(backend="AnthropicBackend", base_url=ANTHROPIC_URL, model=ANTHROPIC_MODEL, account=None), VoiceChosen(voice=voices.DEFAULT)]
+    # The log says which file the settings came from and the Whisper model they name, which server and model the run
+    # reaches, and never with what key, and the voice it speaks in.
+    assert recorded == [SettingsRead(path=str(home.config), whisper_model="w"), LLMChosen(backend="AnthropicBackend", base_url=ANTHROPIC_URL, model=ANTHROPIC_MODEL, account=None), VoiceChosen(voice=voices.DEFAULT)]
     assert "sk-secret" not in str([encoded(entry) for entry in recorded])
 
 
@@ -219,7 +187,7 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
     home, sessions, heart, _config = _starting(tmp_path)
     never = threading.Event()
 
-    def prompted() -> run.VoiceConfig:
+    def prompted() -> run.Configured:
         never.wait()
         raise AssertionError("the prompt was never answered")
 
@@ -233,14 +201,14 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
     # Run as the CLI runs it: a SystemExit from a task leaves the event loop itself, so only asyncio.run's caller sees it.
     home, sessions, heart, _config = _starting(tmp_path)
 
-    def refused() -> run.VoiceConfig:
+    def refused() -> run.Configured:
         raise SystemExit("no key")
 
     with pytest.raises(SystemExit, match="no key"):
         asyncio.run(start(lambda: run.configured(refused, lambda: None, home, sessions, lambda _event: None), heart, sessions.live_count, asyncio.Event()))
 
 
-def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(tmp_path: Path) -> None:
     """Charles by the name the installed pocket_tts resolves itself, until the user chooses another, which the next run
     is built in.
 
@@ -250,20 +218,18 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     """
     from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
 
-    for var in ("HANDS_LLM", "HANDS_LLM_URL", "HANDS_LLM_MODEL"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    keyed = {"ANTHROPIC_API_KEY": "sk-test"}
     home = Home(tmp_path)
-    assert run.config_from_env(home).voice == "charles"
+    assert run.configured_from(home, keyed).voice.voice == "charles"
     assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
     voices.keep(home, voices.parse_voice("Bill Boerst"))
-    assert run.config_from_env(home).voice == "bill_boerst"
+    assert run.configured_from(home, keyed).voice.voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
     home.voice.write_text("zed\n")
     with pytest.raises(SystemExit, match=f"{home.voice} says 'zed'"):
-        run.config_from_env(home)
+        run.configured_from(home, keyed)
     # One it cannot read stops it the same way, naming the file.
     home.voice.unlink()
     home.voice.mkdir()
     with pytest.raises(SystemExit, match=str(home.voice)):
-        run.config_from_env(home)
+        run.configured_from(home, keyed)

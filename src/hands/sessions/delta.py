@@ -132,8 +132,10 @@ class NoChanges:
 class Deltas:
     """Where each session's repository stood when its turn began, so what the turn changed can be read at its end."""
 
-    def __init__(self, record: Record, marking: float = MARKING, reading: float = READING, patience: float = PATIENCE) -> None:
+    def __init__(self, record: Record, inherited: Mapping[str, str], marking: float = MARKING, reading: float = READING, patience: float = PATIENCE) -> None:
         self._record = record
+        # The daemon's environment, which git and gh are found and run in: its PATH, and whatever the user set their own variables to.
+        self._inherited = inherited
         self._marking = marking
         self._reading = reading
         self._patience = patience
@@ -415,7 +417,7 @@ class Deltas:
         or refuses is what a forge a network away is some days, so neither is a failure here: the reading's audit line
         says which it was, and the turn is told without its pull request.
         """
-        gh = shutil.which("gh")
+        gh = shutil.which("gh", path=self._inherited.get("PATH", ""))
         if gh is None:
             # A machine with no gh has no forge to ask, which is how it is set up and not something that went wrong.
             return (), Asked("absent", 0.0)
@@ -424,7 +426,8 @@ class Deltas:
             return (), Asked("unanswered", 0.0)
         try:
             ran = await run(
-                gh, "pr", "list", "--head", branch, "--author", "@me", "--state", "all", "--json", "number,url,createdAt", timeout=deadline - began, cwd=mark.root
+                gh, "pr", "list", "--head", branch, "--author", "@me", "--state", "all", "--json", "number,url,createdAt", timeout=deadline - began, cwd=mark.root,
+                env=self._inherited,
             )
         except TimeoutError:
             return (), Asked("unanswered", round(time.monotonic() - began, 3))
@@ -486,7 +489,7 @@ class Deltas:
             return None
         try:
             ran = await run(
-                "git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", **(env or {})}
+                "git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**self._inherited, "GIT_OPTIONAL_LOCKS": "0", **(env or {})}
             )
         except TimeoutError:
             logger.error(f"git {args[0]} in {cwd} did not answer in {left:.1f}s, so the turn is told without it")

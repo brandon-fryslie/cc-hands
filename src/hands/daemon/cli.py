@@ -63,7 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("check", help="say whether hands is set up to work here: its plugin, the claude shim on PATH, this terminal's Input Monitoring grant, and the running sessions; exits 0 only when every piece is there, 1 when one is missing, 2 when one could not be looked at")
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
-    commands.add_parser("login", help="log the brain (HANDS_LLM=claude) in again, or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
+    commands.add_parser("login", help="log the brain (the claude backend of the home's config.toml) in again, or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
     commands.add_parser("install-fritter", help="build fritter and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
@@ -71,7 +71,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         # HANDS_HOME is read only when --home is not given, so a bad one never stands in the way of an explicit home.
         # A relative --home is this directory's, made absolute here, since the home is written into the shim.
-        home = default_home() if arguments.home is None else Home(arguments.home.absolute())
+        home = default_home(os.environ) if arguments.home is None else Home(arguments.home.absolute())
     except Rejected as error:
         print(f"hands: {error}", file=sys.stderr)
         return 2
@@ -178,10 +178,10 @@ async def launch(load: Callable[[], Run], heart: heartbeat.Heart) -> Ending:
 def loaded(home: Home, heart: heartbeat.Heart, audit_log: audit.AuditLog, after_crash: bool, granted: bool) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
-    from hands.daemon.run import config_from_env, run
+    from hands.daemon.run import configured_from, run
 
     path = os.environ.get("PATH", "")
-    return lambda quit_event: run(lambda: config_from_env(home), lambda: survey(readiness.check(home, path, granted)), home, heart, audit_log, quit_event, after_crash)
+    return lambda quit_event: run(lambda environment: configured_from(home, environment), lambda: survey(readiness.check(home, path, granted)), home, heart, audit_log, quit_event, after_crash, os.environ)
 
 
 def start_indicator(home: Home) -> int:
@@ -257,7 +257,7 @@ def login(home: Home) -> int:
     from hands.core.wire import UPSTREAM
 
     try:
-        account = brain_login(home.brain, UPSTREAM)
+        account = brain_login(home.brain, UPSTREAM, os.environ)
     except (LoginFailed, NotLoggedIn, Unstartable) as error:
         print(f"hands login: {error}", file=sys.stderr)
         return 1
