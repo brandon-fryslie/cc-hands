@@ -1097,7 +1097,7 @@ was created from something other than the remote branch of its name (a checkout 
 not a branch made), a remote-tracking ref of it whose log says `update by push` since the mark (a
 fetch moves the same ref and logs `fetch`), and, for a pushed branch that is not the one a
 remote's HEAD follows, a pull request the forge says was opened since the mark. The forge is asked
-beside the tree and given `FORGING`, inside the narrator's `PATIENCE`, so a slow forge costs the
+beside the tree and must answer `SPARE` before the narrator's `PATIENCE` runs out, so a slow forge costs the
 pull request and never the commit. Both sources speak in the same `GitChange` values, so a push
 both saw is said once. Each reading is one `DeltaRead` line in the audit log.
 

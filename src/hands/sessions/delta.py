@@ -12,6 +12,7 @@ the new file a code generator wrote is exactly what a turn must be able to name 
 import asyncio
 import json
 import os
+import shutil
 import tempfile
 import time
 from collections import deque
@@ -54,10 +55,10 @@ MOST = 40_000
 # one line a file, before the diff itself is ever asked for: see _between.
 MOST_LINES = 20_000
 
-# What asking the forge which pull requests a pushed branch has may spend. It is asked beside the tree and not
-# before it, and a narrator waits PATIENCE for the whole reading, so with this inside that a slow forge costs the
-# turn its pull request and never its commit: the forge is a network away where git is a disk away.
-FORGING = 2.0
+# How long before the narrator stops waiting the forge must have answered: what is left of the reading once it
+# has is parsing its answer. The narrator waits PATIENCE from no earlier than the reading began, and the forge is
+# a network away where git is a disk away, so a slow forge costs the turn its pull request and never its commit.
+SPARE = 0.5
 
 # What git writes in a remote-tracking ref's log when a push moved it, where a fetch writes `fetch` or `pull`.
 _PUSHED = "update by push"
@@ -227,7 +228,7 @@ class Deltas:
         try:
             mark = await start
             if mark is not None:
-                delta, reached, asked = await self._between(mark, time.monotonic() + self._reading)
+                delta, reached, asked = await self._between(mark, time.monotonic() + self._reading, began + self._patience - SPARE)
                 outcome = "read"
         except asyncio.CancelledError:
             outcome = "cancelled"
@@ -275,7 +276,7 @@ class Deltas:
         """
         return await self._git(root, "symbolic-ref", "--quiet", "HEAD", deadline=deadline) is not None
 
-    async def _between(self, mark: Mark, deadline: float) -> tuple[Delta, Mark | None, Asked]:
+    async def _between(self, mark: Mark, deadline: float, forging: float) -> tuple[Delta, Mark | None, Asked]:
         """What changed from the mark to where the repository stands now, that place as a mark, and what the forge was asked."""
         at = datetime.now(UTC)
         # Read before the tree, because they are two fast commands where the tree is the slow one: a turn
@@ -286,7 +287,7 @@ class Deltas:
         refs = await self._refs(mark.root, deadline)
         # Beside the tree and not before it: the forge is a network away where git is a disk away, and the narrator
         # gives up on the whole reading at once, so a forge read first spends the commit's time on a pull request.
-        (files, patch, tree), (changes, asked) = await asyncio.gather(self._worked(mark, deadline), self._moved(mark, refs, deadline))
+        (files, patch, tree), (changes, asked) = await asyncio.gather(self._worked(mark, deadline), self._moved(mark, refs, deadline, forging))
         # [LAW:parse-dont-validate] as in _mark: where the repository stands is known only if both were read, and a HEAD
         # that would not answer is no commit only where git says there is none yet.
         reached = None if tree is None or (head is None and not await self._unborn(mark.root, deadline)) else Mark(mark.root, head, tree, refs, at)
@@ -336,7 +337,7 @@ class Deltas:
             return None
         return {name: sha for line in listed.splitlines() for name, sha, symbolic in [line.split("\0")] if not symbolic}
 
-    async def _moved(self, mark: Mark, refs: Mapping[str, str] | None, deadline: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
+    async def _moved(self, mark: Mark, refs: Mapping[str, str] | None, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
         """Whether the turn made the branch this worktree is on, whether it pushed it, and the pull requests opened from it.
 
         That branch alone. Every worktree of a repository, and the terminal beside it, share refs/heads and refs/remotes
@@ -361,7 +362,7 @@ class Deltas:
         pushed = any(pushes)
         # [LAW:carrying-cost] no pull request is opened from a remote's default branch, and most pushes are to it: asking
         # the forge after each would spend a request a turn on an answer that is always no.
-        opened, asked = await self._opened(mark, branch, deadline) if pushed and branch not in await self._defaults(mark.root, deadline) else ((), UNASKED)
+        opened, asked = await self._opened(mark, branch, min(deadline, forging)) if pushed and branch not in await self._defaults(mark.root, deadline) else ((), UNASKED)
         return (*([Branched(branch, "created branch")] if made else []), *([Pushed(branch)] if pushed else []), *opened), asked
 
     async def _made(self, root: Path, known: Mapping[str, str], branch: str, tracking: list[str], since: int, deadline: float) -> bool:
@@ -401,12 +402,16 @@ class Deltas:
 
     async def _opened(self, mark: Mark, branch: str, deadline: float) -> tuple[tuple[PullRequested, ...], Asked]:
         """The pull requests the forge says were opened from `branch` since the mark. Nothing on this machine records one."""
+        gh = shutil.which("gh")
+        if gh is None:
+            # A machine with no gh has no forge to ask, which is how it is set up and not something that went wrong.
+            return (), Asked("absent", 0.0)
         began = time.monotonic()
         answer = await self._ask(
             f"gh pr list in {mark.root}",
-            ("gh", "pr", "list", "--head", branch, "--state", "all", "--json", "number,url,createdAt"),
+            (gh, "pr", "list", "--head", branch, "--state", "all", "--json", "number,url,createdAt"),
             cwd=mark.root,
-            deadline=min(deadline, began + FORGING),
+            deadline=deadline,
         )
         took = round(time.monotonic() - began, 3)
         if answer is None:

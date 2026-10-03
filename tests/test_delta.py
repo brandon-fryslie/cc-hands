@@ -358,11 +358,37 @@ async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit
         git(root, "push", "-q", "-u", "origin", "fix")
 
     record: list[Entry] = []
-    delta = await turn(root, commit_and_push, record)
+    # A narrator far less patient than the daemon's, so a forge budget not taken from its patience would outlast it.
+    deltas = Deltas(record=record.append, patience=1.0)
+    await deltas.snapshot(SID, root)
+    commit_and_push()
+    await deltas.compare(SID, again=False)
+    delta = await deltas.taken(SID)
     assert [commit.subject for commit in delta.commits] == ["tidy"]
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
     [read] = [entry for entry in record if isinstance(entry, DeltaRead)]
-    assert read.forge == "unanswered" and read.seconds < 3.0
+    assert read.forge == "unanswered" and read.seconds < 1.0
+
+
+async def test_a_machine_with_no_gh_has_no_forge_to_ask_and_nothing_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from loguru import logger
+
+    root = published(tmp_path)
+    git_dir = Path(subprocess.run(("which", "git"), capture_output=True, text=True, check=True).stdout.strip()).parent
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "git").symlink_to(git_dir / "git")
+    monkeypatch.setenv("PATH", str(bare))
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
+    record: list[Entry] = []
+    try:
+        delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
+    finally:
+        logger.remove(sink)
+    assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
+    assert [entry.forge for entry in record if isinstance(entry, DeltaRead)] == ["absent"]
+    assert errors == []
 
 
 async def test_a_pull_request_stamped_with_no_zone_is_not_told_and_costs_nothing_else(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
