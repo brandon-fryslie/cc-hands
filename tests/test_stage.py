@@ -187,8 +187,10 @@ async def rig() -> AsyncGenerator[Rig, None]:
     async with running([stage, out]) as run:
         # As the daemon runs it: a watch beside the pipeline.
         asking = asyncio.create_task(stage.ask_each())
-        yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now)
-        asking.cancel()
+        try:
+            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now)
+        finally:
+            asking.cancel()
 
 
 def answering(name: str, result: object, call_id: str = "t1") -> dict[str, object]:

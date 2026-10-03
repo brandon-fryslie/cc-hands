@@ -9,7 +9,7 @@ from typing import Literal
 import pytest
 from aiohttp import web
 from anthropic import AsyncAnthropic
-from openai.types.chat import ChatCompletionMessageFunctionToolCallParam
+from openai.types.chat import ChatCompletionMessageFunctionToolCallParam, ChatCompletionUserMessageParam
 from pipecat.frames.frames import Frame, InterruptionFrame, LLMContextFrame, LLMFullResponseEndFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -221,8 +221,8 @@ async def test_an_anthropic_request_that_times_out_is_said_as_the_model_out_of_r
         assert model_fact(error) == ModelUnreachable()
 
 
-def answered() -> LLMContextFrame:
-    """The context Pipecat asks the model again with once a call's result is in."""
+def answered(*after: ChatCompletionUserMessageParam) -> LLMContextFrame:
+    """The context Pipecat asks the model again with once a call's result is in, with any note added while the call ran."""
     call: ChatCompletionMessageFunctionToolCallParam = {"id": "call_1", "type": "function", "function": {"name": "read_session", "arguments": "{}"}}
     return LLMContextFrame(
         LLMContext(
@@ -230,6 +230,7 @@ def answered() -> LLMContextFrame:
                 {"role": "user", "content": "What is api doing?"},
                 {"role": "assistant", "tool_calls": [call]},
                 {"role": "tool", "tool_call_id": "call_1", "content": '{"steps": []}'},
+                *after,
             ],
             tools=[pipecat_function(stay_silent_tool())],  # pyright: ignore[reportArgumentType]
         )
@@ -237,11 +238,12 @@ def answered() -> LLMContextFrame:
 
 
 @pytest.mark.parametrize("shape", ["openai", "anthropic"])
-async def test_an_empty_reply_to_a_calls_result_is_no_failure(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Shape) -> None:
+@pytest.mark.parametrize("after", [(), ({"role": "user", "content": "[hands] web finished a turn."},)])
+async def test_an_empty_reply_to_a_calls_result_is_no_failure(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Shape, after: tuple[ChatCompletionUserMessageParam, ...]) -> None:
     """Claude often ends a turn with nothing once a call has done what it was for, as under the brain."""
     llm = service(shape, await streaming("empty", False))
     async with running([llm, Ends(ended := asyncio.Event())]) as run:
-        await run.worker.queue_frame(answered())
+        await run.worker.queue_frame(answered(*after))
         await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
         await asyncio.sleep(0.1)
         assert run.errors == []

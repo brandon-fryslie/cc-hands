@@ -7,6 +7,7 @@ the whole variability of the pipeline as data.
 """
 
 import asyncio
+from itertools import takewhile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -113,7 +114,7 @@ class EmptyReplyFails(LLMService[Any]):
 
     # The reply streaming now has been opened and nothing in it has been heard yet.
     _empty = False
-    # The context being answered ends on a call's result: its call already did what the turn was for.
+    # The context being answered holds a call's result after the model's last reply: its call already did what the turn was for.
     _answers_call = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
@@ -147,14 +148,17 @@ class EmptyReplyFails(LLMService[Any]):
 
 
 def _answers_call(context: LLMContext) -> bool:
-    messages = context.get_messages()
-    return bool(messages) and isinstance(last := messages[-1], dict) and last.get("role") == "tool"
+    """A call's result came in since the model last replied. Not the last message alone: Pipecat writes a result into the
+    tool message its call opened, and a note hands added while the call ran sits after it."""
+    since = takewhile(lambda message: not (isinstance(message, dict) and message.get("role") == "assistant"), reversed(context.get_messages()))
+    return any(isinstance(message, dict) and message.get("role") == "tool" for message in since)
 
 
 def _cancelling() -> bool:
     """The task pushing a frame is being cancelled, as Pipecat cancels a reply's task to stop it."""
     task = asyncio.current_task()
-    assert task is not None, "Pipecat pushes frames from a task"
+    if task is None:
+        raise RuntimeError("an LLM frame was pushed outside a task, so whether its reply was cancelled cannot be known")
     return task.cancelling() > 0
 
 
