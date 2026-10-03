@@ -27,7 +27,7 @@ from test_narrator import Registry
 SID = SessionId("s1")
 REVIEWER = AgentId("a1b2c3d4e5f6a7b8c")
 FOUND = "parse() drops the last field when a line ends in a comma"
-WORK = "the subagents' own work"
+WORK = "the subagent's work on /code-review medium 66"
 
 
 def _record(fields: dict[str, object]) -> str:
@@ -178,3 +178,25 @@ def test_a_skill_run_in_a_fork_in_the_foreground_reports_its_result_without_clau
 def test_a_skill_loaded_into_the_session_is_no_delegation() -> None:
     loaded = Result("Launching skill: laws:code", {"success": True, "commandName": "laws:code"}, False)
     assert isinstance(recognise(Call(Ref("u1"), "Skill", {"skill": "laws:code"}, loaded)), Other)
+
+
+def test_two_subagents_in_one_turn_are_opened_one_at_a_time() -> None:
+    reviewer, tester = Subagent(REVIEWER, "/code-review medium 66", (Said(None, "One bug."),)), Subagent(AgentId("b2"), "Run the tests", (Said(None, "All pass."),))
+    tree = narration(Turn(Asked(None, "review and test it"), ()), Delta(), (reviewer, tester))
+    assert [segment.topic.name for segment in tree.subagents] == [WORK, "the subagent's work on run the tests"]
+
+
+def test_a_transcript_that_starts_part_way_through_its_parents_keeps_its_first_step(tmp_path: Path) -> None:
+    """A fork written before Claude Code copied the launching call in starts on its own work, under a parent in the
+    parent's transcript."""
+    transcript = tmp_path / "s1.jsonl"
+    folder = transcript.with_suffix("") / "subagents"
+    folder.mkdir(parents=True)
+    own: dict[str, object] = {"isSidechain": True, "agentId": REVIEWER}
+    records: list[dict[str, object]] = [
+        {**own, "parentUuid": "p9", "type": "assistant", "uuid": "a2", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git diff master...HEAD"}}]}},
+        {**own, "parentUuid": "a2", "type": "user", "uuid": "a3", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "+    return line"}]}},
+    ]
+    (folder / f"agent-{REVIEWER}.jsonl").write_text("".join(f"{_record(record)}\n" for record in records))
+    [ran] = read_subagent(transcript, AgentTask(REVIEWER, "/code-review medium 66")).steps
+    assert isinstance(ran, Ran)

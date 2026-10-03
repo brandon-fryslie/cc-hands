@@ -23,12 +23,16 @@ def read_subagent(transcript: Path, task: AgentTask) -> Subagent:
 
 
 def _started_from(own: Path) -> str | None:
-    """The uuid of the record a transcript starts from, the one naming no parent; None for a transcript with none."""
+    """The uuid of the job the transcript starts from: its first record, where that names no parent. A transcript that
+    starts part way through its parent's, as a fork's did before Claude Code copied the launching call in, has none."""
     with own.open("rb") as lines:
         for line in lines:
             match Payload.parse(line).fields:
-                case {"parentUuid": None, "uuid": str() as uuid}:
+                case {"uuid": str() as uuid, "parentUuid": None}:
                     return uuid
+                case {"uuid": str()}:
+                    return None
                 case _:
+                    # A record of Claude Code's own bookkeeping, as a fork's `fork-context-ref` is, which is no record of the work.
                     pass
     return None

@@ -61,7 +61,6 @@ THE_SUBAGENTS = Topic("the subagents", "subagent")
 THE_OTHER_TOOLS = Topic("the other tools", "tool call")
 THE_REPOSITORY = Topic("the repository", "file")
 THE_INTERRUPTION = Topic("the interruption", "interruption")
-THEIR_OWN_WORK = Topic("the subagents' own work", "step")
 
 # The steps a section is cut from. A question and an interruption are not among them: each has a segment of its own
 # at the top level, and an open question and an interruption play at every length, so the type that says which steps
@@ -195,8 +194,10 @@ def narration(turn: Turn, delta: Delta, subagents: tuple[Subagent, ...]) -> Narr
 
 
 def _own_work(subagent: Subagent) -> Segment:
-    """One subagent's work, named by the job it was given, which is how the listener knows which of them they asked about."""
-    return Segment(THEIR_OWN_WORK, f"A subagent's own work on {subagent.description}: {_counted(len(subagent.steps), 'step')}.", subagent.steps)
+    """One subagent's work, a part of its own named by the job it was given: two subagents in one turn are opened one at
+    a time, each as deep as it was asked for. Named in lower case, as a part is asked for."""
+    topic = Topic(f"the subagent's work on {subagent.description.lower()}", "step")
+    return Segment(topic, f"A subagent's own work on {subagent.description}: {_counted(len(subagent.steps), 'step')}.", subagent.steps)
 
 
 @dataclass(frozen=True)

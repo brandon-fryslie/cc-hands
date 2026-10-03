@@ -829,8 +829,8 @@ in `<session>/subagents/agent-<id>.jsonl`, every one with `isSidechain` true; th
 parent's transcript holds none of them. Where the subagent reports back, in a task
 notification whose `<task-id>` is its `agentId` and whose `<summary>` reads `Agent
 "<job>" ...`, or in the result of a call that ran it in the foreground, its transcript is
-folded by the backfill's own fold and told as a part of that turn, "the subagents' own
-work" (failure mode 21), named by the job the parent gave it. The record the transcript
+folded by the backfill's own fold and told as a part of that turn of its own, named by the
+job the parent gave it, "the subagent's work on <job>" (failure mode 21). The record the transcript
 starts from is that job, not work: a subagent's prompt, or for a fork, the parent's
 launching call copied in. A notification whose summary names no agent is a background
 command or a monitor. The notification is read with the telling that answers it, never
