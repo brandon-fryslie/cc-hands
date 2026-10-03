@@ -205,8 +205,9 @@ uv run python evals/intermediary.py    # conversations through the intermediary'
 
 `hands check` looks at each piece hands needs and says it is there or what puts it
 there: the plugin, installed and enabled; `claude` on this `PATH` being hands' shim; this
-terminal's Input Monitoring grant; and each running session hands knows of that cannot
-be typed into, by its directory and pid. `hands run` says the same lines as it starts. An
+terminal's Input Monitoring grant; each running session hands knows of that cannot be
+typed into; and each running session that has run no hook since the plugin was installed,
+so hands does not know of it at all; both by its directory and pid. `hands run` says the same lines as it starts. An
 up daemon is not a working hands: `hands status` says only whether the daemon is running.
 
 `hands run` needs the Input Monitoring grant for the terminal app it runs in (System Settings > Privacy &

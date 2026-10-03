@@ -20,7 +20,7 @@ from hands.sessions import liveness, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.processes import process_starts
+from hands.sessions.processes import Terminal, process_starts, terminal_processes
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ LIST_TIMEOUT_SECONDS = 20.0
 def check(home: Home, path: str, granted: bool) -> list[Finding]:
     """Every piece, in the order a user sets them up. `path` is the PATH sessions are started from; `granted`, this terminal's grant."""
     # [LAW:dataflow-not-control-flow] every piece is looked at every time: one that is missing hides none after it.
-    return [plugin(path), shim(home, path), grant(granted), sessions(home)]
+    return [plugin(path), shim(home, path), grant(granted), sessions(home, path)]
 
 
 def plugin(path: str) -> Finding:
@@ -117,8 +117,8 @@ def grant(granted: bool) -> Ready | Missing:
     )
 
 
-def sessions(home: Home) -> Finding:
-    """Whether every running session hands knows of can be typed into. Nothing is removed or dialled."""
+def sessions(home: Home, path: str) -> Finding:
+    """Whether every running session can be typed into, those hands knows of and those it does not. Nothing is removed or dialled."""
     try:
         records, unreadable = liveness.recorded(home)
         started = process_starts({record.membership.pid for record in records})
@@ -128,21 +128,67 @@ def sessions(home: Home) -> Finding:
         # A socket that is gone is a fritter that is gone. It is never dialled here: fritter writes what it cannot read
         # into the session's own terminal.
         listening = {member.fritter for member in running if member.fritter is not None and member.fritter.is_socket()}
+        terminals = terminal_processes()
     except OSError as error:
         return Unknown(f"cannot look at the running sessions in {home.memberships}: {error}")
-    return sessions_found(running, listening, unreadable)
+    return sessions_found(
+        running,
+        listening,
+        unreadable,
+        unjoined(
+            home,
+            wrapper.real_claude(path),
+            terminals,
+            {record.membership.pid for record in records},
+        ),
+    )
 
 
-def sessions_found(running: Sequence[Membership], listening: Collection[Path], unreadable: Sequence[liveness.Unreadable]) -> Ready | Missing:
-    """What the running sessions are to hands, given which fritter sockets are there and which files did not parse."""
+def unjoined(
+    home: Home,
+    claude: Path | None,
+    terminals: Sequence[Terminal],
+    members: Collection[int],
+) -> list[Terminal] | None:
+    """The sessions running that no membership file names: started before the plugin, and not reloaded since.
+
+    A session is a process at a terminal running a Claude Code from the install the real `claude` on PATH is, any
+    version of it, since an update leaves running sessions on the version they started on. The hook records that same
+    process, so it is matched by pid. None when there is no real claude on PATH to tell Claude Code by.
+    """
+    if claude is None:
+        return None
+    install = claude.resolve().parent
+    # The brain, and the Claude Code it asks asides of, run in hands' own directory under their own config, which
+    # hands' plugin is never installed into: they talk to hands by other means.
+    return [process for process in terminals if process.executable.parent == install and process.pid not in members and not process.cwd.is_relative_to(home.brain)]
+
+
+def sessions_found(
+    running: Sequence[Membership],
+    listening: Collection[Path],
+    unreadable: Sequence[liveness.Unreadable],
+    unknown: Sequence[Terminal] | None,
+) -> Ready | Missing:
+    """What the running sessions are to hands, given which fritter sockets are there, which files did not parse, and
+    which sessions never ran a hook (None when there was no claude to tell them by)."""
     unreached = [
         *(line for member in running for line in _untypable(member, listening)),
         *(f"{file.path} names no session hands can read ({file.error}): hands run removes it" for file in unreadable),
+        *_unjoined(unknown),
     ]
     known = f"running sessions hands knows of: {len(running)}"
     if unreached:
         return Missing(f"{known}, and hands cannot reach these:" + "".join(f"\n    {line}" for line in unreached))
     return Ready(f"{known}, and each can be typed into")
+
+
+def _unjoined(unknown: Sequence[Terminal] | None) -> list[str]:
+    match unknown:
+        case None:
+            return ["no `claude` on this PATH but hands' shims, so a session that never ran a hook cannot be found"]
+        case processes:
+            return [f"{process.cwd} (pid {process.pid}) has run no hook since the plugin was installed, so hands does not know of it: /reload-plugins in it" for process in processes]
 
 
 def _untypable(member: Membership, listening: Collection[Path]) -> list[str]:

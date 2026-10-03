@@ -1,11 +1,16 @@
 """`hands check`: each piece hands needs, found or named as missing, through the same edges a user's machine has."""
 
+import contextlib
+import fcntl
 import json
+import os
+import pty
 import shutil
 import socket
 import subprocess
 import tempfile
-from collections.abc import Iterator
+import termios
+from collections.abc import Generator, Iterator
 from pathlib import Path
 
 import pytest
@@ -17,6 +22,7 @@ from hands.daemon.readiness import Missing, Ready, Unknown
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
+from hands.sessions.processes import Terminal
 from hands.sessions.wrapper import shim_script
 
 
@@ -159,8 +165,42 @@ def joined(home: Home, name: str, pid: int, fritter: Path | None) -> Membership:
     return membership
 
 
+def installed(root: Path) -> str:
+    """A PATH whose real `claude` is a link into an install directory of versions, as Claude Code installs itself."""
+    version = root / "install" / "9.9.9"
+    if not version.exists():
+        version.parent.mkdir(parents=True)
+        shutil.copy("/bin/sleep", version)
+        (root / "bin").mkdir()
+        (root / "bin" / "claude").symlink_to(version)
+    return f"{root / 'bin'}:/usr/bin:/bin"
+
+
+@contextlib.contextmanager
+def at_a_terminal(executable: Path, cwd: Path) -> Generator[int]:
+    """A process running executable in cwd with a terminal of its own, as a session runs; its pid, once it runs executable."""
+    controller, terminal = pty.openpty()
+    # Popen returns only once the child has exec'd, so the process is executable from the first look at it.
+    process = subprocess.Popen(
+        [executable, "30"],
+        cwd=cwd,
+        stdin=terminal,
+        stdout=terminal,
+        stderr=terminal,
+        start_new_session=True,
+        preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0),
+    )
+    try:
+        yield process.pid
+    finally:
+        process.kill()
+        process.wait()
+        os.close(controller)
+        os.close(terminal)
+
+
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
-    assert readiness.sessions(Home(root / "home")) == Ready("running sessions hands knows of: 0, and each can be typed into")
+    assert readiness.sessions(Home(root / "home"), installed(root)) == Ready("running sessions hands knows of: 0, and each can be typed into")
 
 
 def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: Path) -> None:
@@ -174,7 +214,7 @@ def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: 
         joined(home, "wrapped", sleepers[0].pid, root / "live.sock")
         joined(home, "unwrapped", sleepers[1].pid, None)
         joined(home, "orphaned", sleepers[2].pid, root / "gone.sock")
-        found = readiness.sessions(home)
+        found = readiness.sessions(home, installed(root))
     finally:
         listening.close()
         for sleeper in sleepers:
@@ -192,7 +232,7 @@ def test_a_session_whose_process_has_ended_is_not_running(root: Path) -> None:
     ended = subprocess.Popen(["true"])
     ended.wait()
     joined(home, "ended", ended.pid, None)
-    assert readiness.sessions(home) == Ready("running sessions hands knows of: 0, and each can be typed into")
+    assert readiness.sessions(home, installed(root)) == Ready("running sessions hands knows of: 0, and each can be typed into")
 
 
 def test_an_unreadable_membership_file_is_named_and_left_where_it_is(root: Path) -> None:
@@ -200,9 +240,60 @@ def test_an_unreadable_membership_file_is_named_and_left_where_it_is(root: Path)
     home.memberships.mkdir(parents=True)
     bad = home.membership(SessionId("bad"))
     bad.write_text("{not json")
-    found = readiness.sessions(home)
+    found = readiness.sessions(home, installed(root))
     assert isinstance(found, Missing) and f"{bad} names no session hands can read" in found.said
     assert bad.exists()
+
+
+def test_a_session_that_never_ran_a_hook_is_named_by_cwd_and_pid_with_the_fix(root: Path) -> None:
+    home = Home(root / "home")
+    path = installed(root)
+    project = root / "project"
+    project.mkdir()
+    with at_a_terminal(root / "install" / "9.9.9", project) as pid:
+        found = readiness.sessions(home, path)
+    assert isinstance(found, Missing)
+    assert f"{project} (pid {pid}) has run no hook since the plugin was installed, so hands does not know of it: /reload-plugins in it" in found.said
+
+
+def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
+    home = Home(root / "home")
+    path = installed(root)
+    listening = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listening.bind(str(root / "live.sock"))
+    listening.listen()
+    try:
+        with at_a_terminal(root / "install" / "9.9.9", root) as pid:
+            joined(home, "known", pid, root / "live.sock")
+            found = readiness.sessions(home, path)
+    finally:
+        listening.close()
+    assert found == Ready("running sessions hands knows of: 1, and each can be typed into")
+
+
+def terminal(pid: int, executable: str, cwd: str) -> Terminal:
+    return Terminal(pid, Path(executable), Path(cwd))
+
+
+def test_a_session_is_a_terminal_process_of_any_version_of_the_real_claudes_install(root: Path) -> None:
+    home = Home(root / "home")
+    claude = root / "bin" / "claude"
+    claude.parent.mkdir()
+    claude.symlink_to(root / "versions" / "2.1.288")
+    terminals = [
+        terminal(1, f"{root}/versions/2.1.286", "/code/old"),
+        terminal(2, f"{root}/versions/2.1.288", "/code/joined"),
+        terminal(3, "/bin/zsh", "/code/shell"),
+        terminal(4, "/elsewhere/versions/2.1.288", "/code/other-install"),
+        terminal(5, f"{root}/versions/2.1.288", f"{home.brain}/cwd"),
+    ]
+    assert readiness.unjoined(home, claude, terminals, {2}) == [terminals[0]]
+
+
+def test_with_no_real_claude_a_session_that_never_ran_a_hook_cannot_be_found() -> None:
+    assert readiness.unjoined(Home(Path("/nowhere")), None, [terminal(1, "/x/claude", "/code")], set()) is None
+    found = readiness.sessions_found([], set(), [], None)
+    assert isinstance(found, Missing) and "no `claude` on this PATH but hands' shims" in found.said
 
 
 def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -210,7 +301,7 @@ def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: 
         raise OSError(1, "sysctl refused")
 
     monkeypatch.setattr(readiness, "process_starts", refused)
-    found = readiness.sessions(Home(root / "home"))
+    found = readiness.sessions(Home(root / "home"), installed(root))
     assert isinstance(found, Unknown) and "sysctl refused" in found.said
 
 
