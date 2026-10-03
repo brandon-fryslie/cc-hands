@@ -981,8 +981,8 @@ compaction; then what hands read of the turn that those words may not say, from 
 narration tree; then the question it is waiting on, which the intermediary is told to end
 on. If the brain cannot take the turn, hands says as written that it could not tell it,
 and the question. Each working session is told at `SessionStart`, by the plugin's shim, to end every
-turn with a concise, speakable overview. A turn the user stopped before it did anything,
-and the question alone when summaries are off, are said as written with no model. Each
+turn with a concise, speakable overview. A turn the user stopped before it did anything is said as
+written with no model, and with summaries off a finished turn is not narrated. Each
 telling is written to the audit log as `Recounted`, with whether the model was handed it.
 A transcript that cannot be read is said as "cc-hands finished a turn, and I could not
 read it." without the model and out of the context, and logged as a `Failure` line.
@@ -1138,7 +1138,7 @@ the only real closing that asks itself and answers on the same line is a 794 KB 
 
 What the turn is waiting on is one question segment, last, in Claude's own words framed as
 "It is asking:" or "It said:", with "(Recommended)" dropped and put through `spoken`. It is
-handed to the intermediary to end on, and said as written when summaries are off. An
+handed to the intermediary to end on. An
 `AskUserQuestion` the turn is no longer waiting on, answered or gone past, is its own
 segment in `settled`, there to be opened and never played. `tests/test_questions.py` holds
 `open_questions` to no miss and no false alarm over real turns lifted whole out of real
