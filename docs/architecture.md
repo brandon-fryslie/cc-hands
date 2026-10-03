@@ -1370,9 +1370,11 @@ and read at each use. Every tool that acts on a session accepts the omission of 
 `session` argument as "the focus" (`defaulting_to_focus`), and a session it names wins
 over the focus. "Switch to cc-hands" is `focus_session`, with no confirmation. A
 session whose turn or question hands tells becomes the focus too, so the reply that
-follows reaches it (`hands.voice.refocus`). The move rides the pipeline as a `Told`
-frame behind the telling, in order with the user's words, so anything said before
-the telling was taken still goes to the session it was meant for. The
+follows reaches it (`hands.voice.refocus`). It moves as the model takes the telling,
+after the user's words that came before it, so those still go to the session they
+were meant for: the brain's stage moves it before it asks, and behind an API model a
+`Told` frame follows the telling and is dropped with it by a barge-in. A session that
+has ended is never focused. The
 brain is told the focus at the tail of every request, a Pipecat model in its startup
 note, and `list_sessions` gives it to either, so hands, not the prompt, answers
 "which one did you mean".

@@ -89,7 +89,8 @@ RIGHT: you stage the prompt with `session` empty, and the focused session gets i
 Once hands tells you of a session's finished turn or of what it asks, that session is the focus, as though the user \
 had switched to it. What they say next is a reply to it: the answer to its question, or the next thing for it to do, \
 said as they would say it to the session itself. Take it as said to hands, or to another session, only when it \
-plainly is: they name another session, or ask hands for something no session does.
+plainly is: they name another session, answer the question another session just asked, or ask hands for something no \
+session does.
 
 WRONG: hands told you the docs site fixed the links and asked whether to push; the user says "yes, push it", and you \
 ask which session.

@@ -53,7 +53,7 @@ from hands.core.wire import (
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import BrainAnswered, BrainInterrupted, BrainSpoke, Entry
-from hands.voice.speech import Aloud, Narrated, Told
+from hands.voice.speech import Aloud, Narrated
 from hands.voice.tools import Result, Tool, tool
 
 BRAIN = SessionId("brain-session")
@@ -124,7 +124,7 @@ class Spoken(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
-        if isinstance(frame, LLMFullResponseStartFrame | LLMFullResponseEndFrame | LLMTextFrame | TTSSpeakFrame | InterruptionFrame | Told):
+        if isinstance(frame, LLMFullResponseStartFrame | LLMFullResponseEndFrame | LLMTextFrame | TTSSpeakFrame | InterruptionFrame):
             self.frames.append(frame)
         await self.push_frame(frame, direction)
 
@@ -147,6 +147,8 @@ class Rig:
     standing: list[str]
     # The stage's clock, which the test moves.
     now: list[float]
+    # Each session the stage moved the focus to, with how many turns the brain had been asked as it moved.
+    refocused: list[tuple[SessionId, int]]
     context: LLMContext = field(default_factory=LLMContext)
     exchanges: int = 0
 
@@ -192,13 +194,18 @@ async def rig() -> AsyncGenerator[Rig, None]:
     recorded: list[Entry] = []
     standing = [TAIL]
     now = [0.0]
-    stage = BrainStage(brain, TOOLS, lambda: standing[-1], recorded.append, clock=lambda: now[0])
+    refocused: list[tuple[SessionId, int]] = []
+
+    async def refocus(session: SessionId) -> None:
+        refocused.append((session, len(brain.asked)))
+
+    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, recorded.append, clock=lambda: now[0])
     out = Spoken()
     async with running([stage, out]) as run:
         # As the daemon runs it: a watch beside the pipeline.
         asking = asyncio.create_task(stage.ask_each())
         try:
-            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now)
+            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused)
         finally:
             asking.cancel()
 
@@ -230,9 +237,9 @@ async def test_a_finished_turn_hands_narrates_reaches_the_brain_as_a_typed_turn_
     assert rig.context.get_messages() == []
 
 
-async def test_a_narration_says_its_session_was_told_as_the_brain_takes_it_ahead_of_what_the_user_says_meanwhile(rig: Rig) -> None:
-    """The user's next words are taken as said to the session told of: so Told leaves ahead of the telling's words, and
-    words the user speaks while it is said are asked after it."""
+async def test_a_narration_moves_the_focus_as_the_brain_takes_it_ahead_of_what_the_user_says_meanwhile(rig: Rig) -> None:
+    """The user's next words are taken as said to the session told of: so the focus moves before the brain is asked to
+    tell it, and words the user speaks while it is said are asked after it."""
     await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api")))
     await rig.until(lambda: rig.brain.asked == ["[hands] api finished a turn."])
     exchange, _ = rig.request()
@@ -242,8 +249,7 @@ async def test_a_narration_says_its_session_was_told_as_the_brain_takes_it_ahead
     await rig.until(lambda: "api opened pull request 68." in rig.out.said())
     rig.brain.end()
     await rig.until(lambda: rig.brain.asked[1:] == ["push it"])
-    [told] = [frame for frame in rig.out.frames if isinstance(frame, Told)]
-    assert told.session == "api" and rig.out.shape()[:3] == ["Told", "LLMFullResponseStartFrame", "LLMTextFrame"]
+    assert rig.refocused == [(SessionId("api"), 0)]
 
 
 async def test_the_users_turn_goes_ahead_of_a_narration_waiting_for_the_brain(rig: Rig) -> None:
@@ -257,10 +263,11 @@ async def test_the_users_turn_goes_ahead_of_a_narration_waiting_for_the_brain(ri
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
     # Words the user spoke before the telling was taken are not taken as said to the session it tells of.
-    assert not any(isinstance(frame, Told) for frame in rig.out.frames)
+    assert rig.refocused == []
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 3)
     assert rig.brain.asked == ["what is running?", "and the backlog?", "[hands] api finished a turn."]
+    assert rig.refocused == [(SessionId("api"), 2)]
 
 
 async def test_a_narration_records_how_long_it_waited_behind_the_users_turn(rig: Rig) -> None:

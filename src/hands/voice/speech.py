@@ -64,10 +64,11 @@ class Narrated(DataFrame, UninterruptibleFrame):
 
 
 @dataclass
-class Told(DataFrame, UninterruptibleFrame):
-    """The model has taken hands' telling of a session's turn or its question: what the user says next is taken first as
-    said to that session. Passed on in order behind the telling, so words the user spoke before it reach the session
-    they were meant for, and kept through a barge-in, which stops what is said of a telling, not that it was told."""
+class Told(DataFrame):
+    """An API model has said hands' telling of a session's turn or its question: what the user says next is taken first
+    as said to that session. Passed on in order behind the telling, so words the user spoke before it reach the session
+    they were meant for, and dropped with it by a barge-in that cuts it off before it is said, so the focus never moves
+    to a session the user did not hear of."""
 
     session: SessionId
 
@@ -96,7 +97,7 @@ def handed(text: str, unsaid: str, session: SessionId, telling: Telling) -> Sequ
             # telling as said, and words the user speaks while it is said wait behind it.
             return (LLMMessagesAppendFrame([{"role": "user", "content": text}], run_llm=True), Told(session))
         case Tailed():
-            # The brain's stage puts the user's words ahead of hands', so it says Told itself as it takes the telling.
+            # The brain's stage puts the user's words ahead of hands', so it moves the focus itself as it takes the telling.
             return (Narrated(text, unsaid, session),)
 
 

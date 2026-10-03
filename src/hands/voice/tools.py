@@ -36,7 +36,7 @@ from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
 from hands.sessions.audit import Called, Record
-from hands.sessions.focus import Unreadable, focused, set_focus
+from hands.sessions.focus import Unreadable, focused
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
@@ -47,7 +47,7 @@ from hands.voice.narrator import Recount, Recounts, delivery, switch
 from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
-from hands.voice.refocus import refocus
+from hands.voice.refocus import NotRunning, Refocus, move_focus
 from hands.voice.speech import answer_readback, told
 from hands.voice.voices import VOICES, Voices, fetched, parse_voice, spoken
 
@@ -251,7 +251,7 @@ def audited(tool: Tool, record: Record) -> Tool:
     return replace(tool, body=call)
 
 
-def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player) -> list[Tool]:
+def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them.
 
     [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
@@ -261,7 +261,7 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
     # Every tool that acts on one session, each taking the focus for the session the user did not name.
     on_a_session = [
         *session_tools(sessions, store),
-        tell_turn_tool(sessions, recounts, home),
+        tell_turn_tool(sessions, recounts, refocus),
         expand_tool(sessions, recounts),
         *backlog_tools(sessions, store),
         *draft_tools(sessions),
@@ -375,11 +375,8 @@ def focus_session_tool(sessions: Sessions, home: Home) -> Tool:
         """
         try:
             to = None if _unnamed(session) else _session_id(session)
-            # [LAW:parse-dont-validate] only a session the registry holds can be focused.
-            if to is not None and sessions.live_session(to) is None:
-                raise Rejected(f"no running session has the id {to!r}; take one from list_sessions")
-            await asyncio.to_thread(set_focus, home, to)
-        except (Rejected, OSError) as error:
+            await move_focus(sessions, home, to)
+        except (Rejected, NotRunning, OSError) as error:
             logger.error(f"focus_session could not focus {session!r}: {error}")
             return {"error": str(error)}
         return {"readback": "No session is focused now." if to is None else f"Now on {spoken_name(sessions, to)}."}
@@ -739,7 +736,7 @@ def _waiting_on(on: Blocker) -> str:
             return "waiting for the user to approve its plan"
 
 
-def tell_turn_tool(sessions: Sessions, recounts: Recounts, home: Home) -> Tool:
+def tell_turn_tool(sessions: Sessions, recounts: Recounts, refocus: Refocus) -> Tool:
     async def tell_turn(session: str) -> Result:
         """What a session's last finished turn did, as hands tells a turn when it finishes, and how it stands now.
 
@@ -769,13 +766,9 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts, home: Home) -> Tool:
             case Recount(tellings=tellings, unread=unread):
                 failed = (f"[hands] hands could not read {'the rest of ' if tellings else ''}the turn the Claude Code session {name} finished. Tell the user so.",)
                 turn = "\n\n".join((*(told(id, name, (telling,)) for telling in tellings), *(failed if unread else ())))
-        # Told as a turn that finishes is told, so the focus moves to it as it does then.
-        match await refocus(home, id):
-            case None:
-                # [LAW:nothing-unseen] the move rides on the result, so its Called line says the focus went there.
-                return {"turn": turn, "now": now, "focused_session": id}
-            case failed_to:
-                return {"turn": turn, "now": now, "focus_unmoved": failed_to}
+        # Told as a turn that finishes is told, so the focus moves to it as it does then, recorded as that move is.
+        await refocus(id)
+        return {"turn": turn, "now": now}
 
     return tool(tell_turn)
 

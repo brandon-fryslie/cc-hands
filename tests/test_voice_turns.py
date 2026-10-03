@@ -32,6 +32,7 @@ from conftest import running
 from hands.sessions.audit import Entry, Yielded
 from hands.voice import pipeline as built
 from hands.sessions.home import Home
+from hands.sessions.registry import Sessions
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus
 from hands.voice.player import Player
@@ -153,7 +154,7 @@ class Rig:
 
 
 @pytest.fixture
-async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
+async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator[Rig, None]:
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
     voice = built.build_voice(
@@ -162,7 +163,7 @@ async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
         llm=FrameProcessor(),
         player=Player(recorded.append),
         floor=Floor(lambda _: None, Pushed(), lambda id: id, dict),
-        refocus=Refocus(Home(Path("/nonexistent")), recorded.append),
+        refocus=Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append),
     )
     out, clock, held = Recorded(), Clock(), dict[SessionId, Held]()
     texts: asyncio.Queue[str] = asyncio.Queue()

@@ -46,7 +46,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from hands.sessions.model_facts import ModelFault, ModelReplyEmpty
 from hands.voice.floor import Floor
-from hands.voice.refocus import Refocus
+from hands.voice.refocus import Refocus, Refocusing
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.player import Player
@@ -259,7 +259,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
     # Right behind the model's stage, so the focus moves to a session told of in order with the user's words to the model.
     # What the player says again enters just ahead of the speaker, and it reads what is played off the speaker's pushes.
     output = transport.output()
-    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, refocus, pieces, player.lines, tts, output, assistant_aggregator])
+    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, Refocusing(refocus), pieces, player.lines, tts, output, assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True),
