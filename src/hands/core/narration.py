@@ -152,6 +152,11 @@ class Narration:
         """What the turn is waiting on the listener to answer."""
         return " ".join(question.text for question in self.questions)
 
+    @property
+    def parts(self) -> tuple[Segment, ...]:
+        """Every segment there is to open, in the order the top level plays: "more on that" can reach anything the turn did."""
+        return (*self.interrupted, *self.repository, *self.questions, *self.settled, *self.sections)
+
 
 def narration(turn: Turn, delta: Delta) -> Narration:
     """The tree for one turn, all of it arithmetic over the turn's steps and what git says it came to.

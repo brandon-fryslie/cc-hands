@@ -59,9 +59,9 @@ def test_an_edit_shows_its_hunks_and_a_new_file_shows_what_it_now_holds() -> Non
 
 
 def test_a_test_run_is_its_counts_and_the_names_that_failed_rather_than_its_scrollback() -> None:
-    assert rendered(Tested(None, "pytest", 299, 2, ("test_a", "test_b"))) == "Claude ran the pytest tests: 2 failed, 299 passed\n  test_a\n  test_b"
+    assert rendered(Tested(None, "pytest", 299, 2, ("test_a", "test_b"), "")) == "Claude ran the pytest tests: 2 failed, 299 passed\n  test_a\n  test_b"
     # A runner that counts nothing it did not fail says only what failed.
-    assert rendered(Tested(None, "go", None, 1, ("TestX",))) == "Claude ran the go tests: 1 failed\n  TestX"
+    assert rendered(Tested(None, "go", None, 1, ("TestX",), "")) == "Claude ran the go tests: 1 failed\n  TestX"
 
 
 def test_a_look_a_task_and_a_subagent_each_read_as_what_they_are() -> None:
@@ -86,7 +86,7 @@ def test_a_suite_that_failed_whole_has_its_names_cut_to_budget_like_every_other_
     """Hundreds of failing names is exactly what a bad refactor prints, and exactly when one step could fill
     the whole prompt of a model asked for two sentences."""
     failing = tuple(f"test_{n}" for n in range(200))
-    assert rendered(Tested(None, "pytest", 0, 200, failing), budget=Budget(opening=100, said=100, input=100, result=30, steps=10, files=10, commits=10, changes=100)) == (
+    assert rendered(Tested(None, "pytest", 0, 200, failing, ""), budget=Budget(opening=100, said=100, input=100, result=30, steps=10, files=10, commits=10, changes=100)) == (
         "Claude ran the pytest tests: 200 failed, 0 passed\n  test_0\n  test_1\n  test_2\n  test_3\n  te" + CUT
     )
 

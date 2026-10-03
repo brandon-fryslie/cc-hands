@@ -18,11 +18,14 @@ class Report:
     passed: int | None
     failed: int
     failing: tuple[str, ...]
+    # The lines in which the runner says why its tests failed, which is what "more on the tests" opens into.
+    why: str
 
 
 @dataclass(frozen=True)
 class Runner:
-    """One runner as four patterns: what proves it ran, how it counts, and how it names a test that failed.
+    """One runner as five patterns: what proves it ran, how it counts, how it names a test that failed, and the lines
+    that say why.
 
     [LAW:composability] the variability is values, not a function per runner, so a runner nobody here uses
     is added by writing patterns rather than code. `passed` and `failed` may be None where the runner's
@@ -34,6 +37,7 @@ class Runner:
     passed: re.Pattern[str] | None
     failed: re.Pattern[str] | None
     failing: re.Pattern[str]
+    why: re.Pattern[str]
 
 
 # Patterns fitted to output captured from each runner on 2026-09-21, passing and failing.
@@ -47,6 +51,8 @@ RUNNERS: tuple[Runner, ...] = (
         failed=re.compile(r"(\d+) failed"),
         # Each failing test prints its own captured output under this heading, and again under `failures:`.
         failing=re.compile(r"(?m)^---- (\S+) stdout ----"),
+        # `thread 'tests::names' (1541058) panicked at src/lib.rs:9:26:` and the message on the line under it.
+        why=re.compile(r"(?m)^thread '.*panicked at .*\n.+$"),
     ),
     Runner(
         name="go",
@@ -59,6 +65,8 @@ RUNNERS: tuple[Runner, ...] = (
         # A case of a table-driven test prints this indented under the test it belongs to. `go test` counts
         # nothing, so these names are the count, and counting a test's cases counts one failure several times.
         failing=re.compile(r"(?m)^--- FAIL: (\S+)"),
+        # `    sample_test.go:7: want 1, got 0`, indented under the test that logged it.
+        why=re.compile(r"(?m)^\s+\S+\.go:\d+: .*$"),
     ),
     Runner(
         name="vitest",
@@ -67,6 +75,8 @@ RUNNERS: tuple[Runner, ...] = (
         passed=re.compile(r"(\d+) passed"),
         failed=re.compile(r"(\d+) failed"),
         failing=re.compile(r"(?m)^\s*FAIL\s+(\S.*?)\s*$"),
+        # ` FAIL  src/sample.test.ts > names` and the error on the line under it.
+        why=re.compile(r"(?m)^ FAIL  .+\n.+$"),
     ),
     Runner(
         name="pytest",
@@ -75,6 +85,9 @@ RUNNERS: tuple[Runner, ...] = (
         passed=re.compile(r"(\d+) passed"),
         failed=re.compile(r"(\d+) (?:failed|errors?)"),
         failing=re.compile(r"(?m)^(?:FAILED|ERROR) (\S+)"),
+        # Each failure's heading, `____ test_names ____`, and the `E` lines under it: the summary line's own reason is
+        # cut to the terminal's width, `- Asser...`, in a run whose output is not a terminal.
+        why=re.compile(r"(?m)^(?:_{3,} \S+ _{3,}|E +\S.*)$"),
     ),
 )
 
@@ -94,7 +107,8 @@ def report_of(output: str) -> Report | None:
             continue
         failing = tuple(match.group(1) for match in runner.failing.finditer(text))
         counted = _count(runner.failed, summaries)
-        return Report(runner.name, _count(runner.passed, summaries), len(failing) if counted is None else counted, failing)
+        why = "\n".join(match.group(0).strip() for match in runner.why.finditer(text))
+        return Report(runner.name, _count(runner.passed, summaries), len(failing) if counted is None else counted, failing, why)
     return None
 
 

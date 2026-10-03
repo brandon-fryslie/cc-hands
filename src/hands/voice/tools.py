@@ -26,6 +26,7 @@ from hands.core.keyboard import Interrupt, SendCommand
 from hands.core.session import Blocker, Membership, CommandName, Dialog, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
+from hands.core.drilldown import drill
 from hands.core.sentences import Due, turn_digest
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
@@ -160,6 +161,7 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
         list_sessions_tool(sessions, overlays),
         *session_tools(sessions, store),
         tell_turn_tool(sessions, recounts),
+        expand_tool(sessions, recounts),
         *backlog_tools(sessions, store),
         *draft_tools(sessions),
         *keyboard_tools(sessions),
@@ -584,9 +586,46 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool:
                 return {"turn": f"[hands] The Claude Code session {name} finished a turn with nothing in it hands could tell. Tell the user so.", "now": now}
             case Recount(tellings=tellings, unread=unread):
                 failed = (f"[hands] hands could not read {'the rest of ' if tellings else ''}the turn the Claude Code session {name} finished. Tell the user so.",)
-                return {"turn": "\n\n".join((*tellings, *(failed if unread else ()))), "now": now}
+                return {"turn": "\n\n".join((*(telling.news for telling in tellings), *(failed if unread else ()))), "now": now}
 
     return tool(tell_turn)
+
+
+def expand_tool(sessions: Sessions, recounts: Recounts) -> Tool:
+    async def expand(session: str, part: str = "") -> Result:
+        """More of the last turn a session finished, a step deeper each time the user asks: first the parts it can be
+        opened into, such as the change, the tests, or the commit, then a part's records at more length every time.
+
+        Tell it in your own words, in spoken form. There is no word-for-word reading: say what code does and what a
+        command found, and never read out code, output, paths, or hashes as written, however much the user asks for.
+        When `deeper` comes back false, asking again tells no more.
+
+        Args:
+            session: The id of the session whose turn you just told, from the [hands] message that told it or from list_sessions.
+            part: The part the user wants more of, by the name a call with it empty gave, such as "the tests". Empty for the turn as a whole.
+        """
+        try:
+            id = _session_id(session)
+        except Rejected as error:
+            return {"error": str(error)}
+        name = spoken_name(sessions, id)
+        held = recounts.of(id)
+        if held is None or not held.parts:
+            # [LAW:no-silent-failure] said as what it is, never as a turn with nothing in it.
+            return {"error": f"hands holds no finished turn of {name} to open; read_session and read_turn read what it did"}
+        topic = part.strip().lower()
+        chosen = held.parts if not topic else tuple(segment for segment in held.parts if segment.topic.name == topic)
+        if not chosen:
+            named = ", ".join(dict.fromkeys(segment.topic.name for segment in held.parts))
+            return {"error": f"the last turn of {name} has no part {part!r}; its parts are {named}"}
+        # A part's own line is the first rung, and the user heard it when the turn was opened as a whole, so a part
+        # asked for opens at the rung below it.
+        depth = recounts.open(id, topic) + (1 if topic else 0)
+        drilled = drill(chosen, depth)
+        # [LAW:nothing-unseen] the depth rides on the result, so the Called line says how far down this asking went.
+        return {"parts": [{"part": topic, "told": told} for topic, told in drilled.told], "deeper": drilled.deeper, "depth": depth}
+
+    return tool(expand)
 
 
 def turn_summaries_tool(home: Home) -> Tool:

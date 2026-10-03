@@ -23,7 +23,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.summaries import Summaries, summaries
 from hands.sessions.tail import Tails
-from hands.voice.narrator import Recount, Recounts, delivery, narrate, recount
+from hands.voice.narrator import Recount, Recounts, Told, delivery, narrate, recount
 from hands.voice.speech import Pushed
 from hands.voice.tools import tell_turn_tool, turn_summaries_tool, watch_session_tool
 
@@ -72,7 +72,7 @@ async def test_every_way_a_turn_is_told_tells_the_one_summary(tmp_path: Path) ->
         recounts = Recounts()
         frame = await recount(Tails(sessions), member.id, PromptId("p1"), None, "one", lambda _: None, Delta(), delivered, recounts, Pushed())
         asked = await tell_turn_tool(sessions, recounts).body(session=member.id)
-        assert asked == {"turn": "\n\n".join(cast(Recount, recounts.of(member.id)).tellings), "now": "not reported yet"}
+        assert asked == {"turn": "\n\n".join(telling.news for telling in cast(Recount, recounts.of(member.id)).tellings), "now": "not reported yet"}
         told[delivered] = handed(frame) if frame is not None else str(asked["turn"])
         assert (frame is None) == (delivered == "on request")
     assert len(set(told.values())) == 1
@@ -92,7 +92,7 @@ async def test_a_turn_is_asked_for_only_of_a_running_session_and_one_with_nothin
         "turn": "[hands] The Claude Code session one finished a turn with nothing in it hands could tell. Tell the user so.",
         "now": "not reported yet",
     }
-    recounts.put(member.id, PromptId("p1"), "Told.")
+    recounts.put(member.id, PromptId("p1"), Told("Told.", ()))
     recounts.unread(member.id, PromptId("p1"))
     assert (await asked.body(session=member.id))["turn"] == "Told.\n\n[hands] hands could not read the rest of the turn the Claude Code session one finished. Tell the user so."
 
@@ -118,8 +118,8 @@ async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatche
     finally:
         narrating.cancel()
     assert frames.empty()
-    assert recounts.of(watched.id) == Recount(PromptId("p1"), (told,)) and "session watched finished a turn" in told
-    assert "session other finished a turn" in str(recounts.of(other.id))
+    assert [telling.news for telling in cast(Recount, recounts.of(watched.id)).tellings] == [told] and "session watched (id watched) finished a turn" in told
+    assert "session other (id other) finished a turn" in str(recounts.of(other.id))
     assert [(entry.session, entry.delivered) for entry in entries if isinstance(entry, Recounted)] == [(other.id, "on request"), (watched.id, "watched")]
 
 

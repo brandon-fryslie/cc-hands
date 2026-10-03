@@ -908,7 +908,7 @@ summarised or transformed first.
 
 **What runs today** is the top level of the tree: each finished turn is handed to the
 intermediary with what git says the turn did and the turn's question where it ended on
-one, as described below. The sections are built and not yet spoken. When a live session's `Stop` arrives, the reducer emits
+one, as described below. The sections are opened when the user asks for more (`expand`, below). When a live session's `Stop` arrives, the reducer emits
 `Summarise(session, closing)`, and `narrate` in `hands.voice.narrator` asks the tail what
 that session has not been told. A turn opens at the last user record that is
 not `isMeta`, not `isCompactSummary`, whose content is a string or a block list with no
@@ -986,8 +986,7 @@ was answering is asked only once no words of the user's are waiting. What the na
 says as written waits in the same lane (`Aloud`), so a session's end is heard after its
 last turn. `BrainSpoke.waited` is how long each turn waited in its lane.
 
-The rest of this section is planned: step summaries built as steps arrive, children
-below the top level, and streaming.
+The rest of this section is planned: step summaries built as steps arrive, and streaming.
 
 **Spoken form.** Built: `core/spoken.py` is a pure function from text to speakable
 text, installed as the TTS service's one text filter `[LAW:single-enforcer]`. Pipecat
@@ -1068,6 +1067,20 @@ so `opened` renders them through the same `body` the whole turn goes through, an
 `refs` are read off those happenings rather than stored beside them — the record ids a
 segment names are the records it holds, and the two cannot come apart
 `[LAW:one-source-of-truth]`.
+
+**More on that.** Each telling of a turn is held in `Recounts` with the tree's parts beside the
+words the intermediary was handed, and the handed words carry the session's id, so `expand(session,
+part?)` needs no listing first. Asked with no part, it gives each part's line: "The tests: one test
+run." Asked again, or asked for one part, it opens a rung down a ladder of budgets
+(`hands.core.drilldown`), each rung `opened` at a longer one, and the depth is how many times that
+part was asked for, counted in the daemon rather than remembered by the model. Whether there is more
+is measured, by whether the next rung tells any part differently, so a part told whole at a short
+rung says so. The deepest rung is still a rendering cut to its budget, for the intermediary to put
+in its own words: there is no verbatim rung, so asking for more never gets code or output read out.
+A test run keeps the lines its runner says why in (`Runner.why`: pytest's `E` lines, a Go test's
+`file.go:N:` lines, a Rust panic and its message, a vitest `FAIL` and its error), so "the tests"
+opens into what failed and why; pytest's own summary line is no use for this, since outside a
+terminal it cuts the reason to `- Asser...`.
 
 None of the tree is prose from a model. It is arithmetic over typed steps, and that is the
 point rather than an economy: a summariser was measured on 2026-09-21 reporting "version
@@ -1154,7 +1167,7 @@ segment on the speaker, and a stack of bookmarks where earlier readings were cut
 An interruption pushes a bookmark at the segment that was playing. "Go back to what you
 were talking about" is `resume()`, which pops the bookmark and replays that segment from
 its start. "Skip that" and "say that again" are `skip()` and `repeat()`. "That part" is
-the segment playing, or the last one played, and "more on that" is `expand()` on it.
+the segment playing, or the last one played, and "more on that" is `expand()` on the turn it belongs to.
 
 Pipecat's output transport reports text as its audio plays, and on an interruption only
 the text that played reaches the context. pocket-tts reports no word timings, so the
@@ -1356,7 +1369,7 @@ answer_question(request, answers)
 find_path(session?, query)
 catch_up(since?)
 recall(query, since?)
-expand(segment?)                 resume()
+expand(session, part?)           resume()
 skip()                           repeat()
 stay_silent()
 ```
