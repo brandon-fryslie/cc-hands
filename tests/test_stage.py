@@ -55,6 +55,7 @@ from hands.core.wire import (
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import BrainAnswered, BrainInterrupted, BrainSpoke, Entry
+from hands.voice.player import Mark
 from hands.voice.speech import Aloud, Narrated
 from hands.voice.tools import Result, Tool, tool
 
@@ -127,17 +128,27 @@ class FakeBrain:
 
 
 class Spoken(FrameProcessor):
-    """What leaves the stage for TTS."""
+    """What leaves the stage for TTS, played at once, as the speaker and the marks behind it would play it, unless held."""
 
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self.frames: list[Frame] = []
+        # Marks not yet played, while `holding`: what is ahead of them is still being said.
+        self.holding = False
+        self.marks: list[Mark] = []
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
-        if isinstance(frame, LLMFullResponseStartFrame | LLMFullResponseEndFrame | LLMTextFrame | TTSSpeakFrame | InterruptionFrame):
-            self.frames.append(frame)
-        await self.push_frame(frame, direction)
+        match frame:
+            case Mark(played=played) if not self.holding:
+                played()
+            case Mark():
+                self.marks.append(frame)
+            case LLMFullResponseStartFrame() | LLMFullResponseEndFrame() | LLMTextFrame() | TTSSpeakFrame() | InterruptionFrame():
+                self.frames.append(frame)
+                await self.push_frame(frame, direction)
+            case _:
+                await self.push_frame(frame, direction)
 
     def said(self) -> list[str]:
         return [frame.text for frame in self.frames if isinstance(frame, LLMTextFrame | TTSSpeakFrame)]
@@ -880,6 +891,45 @@ async def test_a_permission_to_run_a_command_is_asked_with_the_command_it_would_
     rig.stream(exchange, "On it.")
     rig.brain.permit("Bash", {"command": "git branch -D old", "description": "Delete the old branch"})
     await rig.until(lambda: "May I use Bash to run git branch -D old? Say yes to allow it." in rig.out.said())
+    rig.brain.end()
+
+
+async def test_a_yes_said_before_the_question_has_played_allows_nothing_and_stops_the_turn(rig: Rig) -> None:
+    rig.out.holding = True
+    await rig.say({"role": "user", "content": "clear out the build directory"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "I'll clear out the build directory.")
+    rig.calls(exchange, ("c1", "Bash"))
+    asked = rig.brain.permit("Bash", {"command": "rm -rf build"})
+    await rig.until(lambda: "May I use Bash to run rm -rf build? Say yes to allow it." in rig.out.said())
+    # Said over what is still playing: the question was never heard to its end, so nothing waits on the user's words.
+    await rig.interrupt()
+    assert asked.decision.result() == Deny(SPOKEN_OVER)
+    assert rig.brain.interrupts == 1
+    rig.context.add_message({"role": "user", "content": "yeah"})
+    await rig.worker.queue_frame(LLMContextFrame(rig.context))
+    rig.brain.end()
+    await rig.until(lambda: len(rig.brain.asked) == 2)
+    assert rig.brain.asked == ["clear out the build directory", "yeah"]
+
+
+async def test_permissions_held_at_once_are_asked_one_at_a_time_and_each_answer_goes_to_the_one_heard(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "build both"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "Both, then.")
+    first = rig.brain.permit("Bash", {"command": "make a"})
+    second = rig.brain.permit("Bash", {"command": "make b"})
+    await rig.until(lambda: "May I use Bash to run make a? Say yes to allow it." in rig.out.said())
+    await asyncio.sleep(0.1)
+    assert "May I use Bash to run make b? Say yes to allow it." not in rig.out.said()
+    rig.context.add_message({"role": "user", "content": "yes"})
+    await rig.worker.queue_frame(LLMContextFrame(rig.context))
+    await rig.until(lambda: "May I use Bash to run make b? Say yes to allow it." in rig.out.said())
+    assert first.decision.result() == Allow() and second.open
+    rig.context.add_message({"role": "user", "content": "not that one"})
+    await rig.worker.queue_frame(LLMContextFrame(rig.context))
+    await rig.until(lambda: not second.open)
+    assert isinstance(second.decision.result(), Deny)
     rig.brain.end()
 
 

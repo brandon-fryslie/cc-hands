@@ -15,6 +15,7 @@ history as refused; what it handed back, which the model will not be asked to sa
 import asyncio
 import json
 import time
+from functools import partial
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -59,6 +60,7 @@ from hands.core.wire import (
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Asker, BrainAnswered, BrainInterrupted, BrainSpoke, Record
+from hands.voice.player import Mark
 from hands.voice.speech import Aloud, Narrated, brain_asks
 from hands.voice.tools import Result, Tool, silent, whole
 
@@ -115,8 +117,11 @@ class _Turn:
     # What hands says for the calls of a held request once the turn's own words are said, since the model is not asked to.
     readbacks: list[str] = field(default_factory=list[str])
     interrupted: bool = False
-    # The permissions the turn has put to the user, oldest first: the user's next words answer the oldest still open.
+    # The permissions the turn has put to the user, oldest first, which are asked one at a time.
     asked: list[Asked] = field(default_factory=list[Asked])
+    # The permission whose question the user has heard to its end: what they say next answers it while it is open. Only a
+    # question heard can be answered, so a yes said over the brain's words, or over a question cut off, allows nothing.
+    heard: Asked | None = None
     # Told to stop by hands, which Claude Code 2.1.285 ends with an error_during_execution result: asked for, not a failure.
     stopped: bool = False
     # What the turn failed of, if it fails, as its latest request's answer told it: nothing named until that answer says.
@@ -127,8 +132,11 @@ class _Turn:
         return bool(self.exchanges) and not (self.interrupted or self.replied)
 
     def asking(self) -> Asked | None:
-        """The permission the user's next words answer: the oldest the turn holds for them still open, if any is."""
-        return next((asked for asked in self.asked if asked.open), None)
+        """The permission the user's next words answer: the one they heard asked, while it is still open."""
+        return self.heard if self.heard is not None and self.heard.open else None
+
+    def hear(self, asked: Asked) -> None:
+        self.heard = asked
 
 
 class BrainStage(FrameProcessor):
@@ -225,7 +233,7 @@ class BrainStage(FrameProcessor):
         text = "\n\n".join(part for part in (note, text) if part)
         said: asyncio.Queue[str | Asked | None] = asyncio.Queue()
         spoken: list[str] = []
-        turn = self._turn = _Turn(said, asyncio.create_task(self._speak(said, spoken), name="the brain's words"), spoken)
+        turn = self._turn = _Turn(said, asyncio.create_task(self._speak(said, spoken, lambda asked: turn.hear(asked)), name="the brain's words"), spoken)
         try:
             asked = asyncio.ensure_future(self._brain.ask(text, lambda permission: self._put(turn, permission)))
             await asyncio.wait({asked})
@@ -272,7 +280,7 @@ class BrainStage(FrameProcessor):
         turn.asked.append(asked)
         turn.said.put_nowait(asked)
 
-    async def _speak(self, said: asyncio.Queue[str | Asked | None], spoken: list[str]) -> None:
+    async def _speak(self, said: asyncio.Queue[str | Asked | None], spoken: list[str], heard: Callable[[Asked], None]) -> None:
         await self.push_frame(LLMFullResponseStartFrame())
         while (words := await said.get()) is not None:
             match words:
@@ -284,6 +292,11 @@ class BrainStage(FrameProcessor):
                     # first, so what TTS holds of it is said ahead of the question.
                     await self.push_frame(LLMFullResponseEndFrame())
                     await self.push_frame(TTSSpeakFrame(brain_asks(permission)))
+                    # [LAW:no-ambient-temporal-coupling] answerable once the speaker has played it to its end, which the
+                    # mark is told of, and never if a barge-in cut it off.
+                    await self.push_frame(Mark(partial(heard, asked)))
+                    # One question at a time, so what the user answers is the question they heard last.
+                    await asyncio.wait({asked.decision})
                     await self.push_frame(LLMFullResponseStartFrame())
                 case Asked():
                     # Settled before its turn came to be said, by the deadline, the turn's end, or an answer: nothing asks.
@@ -310,6 +323,9 @@ class BrainStage(FrameProcessor):
         turn.interrupted = True
         # Cancelled before anything else runs, so no word of the turn follows the barge-in down the pipeline.
         turn.speaking.cancel()
+        # None of them was heard to its end, or the user's words would have answered it: now none can be.
+        for asked in turn.asked:
+            asked.settle(Deny(SPOKEN_OVER))
         # A tool whose effect must land runs to its end; stopped by the harness, it would land and be written in
         # history as refused. Its turn's next request is held instead, so the model is not asked to go on either way.
         running = tuple(turn.calls.values())
