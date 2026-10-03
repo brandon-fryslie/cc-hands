@@ -22,7 +22,7 @@ from hands.brain.mcp import McpServer, serve_mcp
 from hands.brain.asides import CLOSED, AsideFailed, Asides
 from hands.brain.process import SLIM, Brain, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, command, environment, logged_in, slim, start, workdir
 from hands.sessions.payload import Payload
-from hands.sessions.audit import AsideAnswered, BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, Called, Entry, McpConnected
+from hands.sessions.audit import AsideAnswered, BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainRefused, Called, Entry, McpConnected
 from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
@@ -159,7 +159,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert argv[argv.index("--mcp-config") + 1] == launch(tmp_path).mcp_config
     assert [argv[argv.index(flag) + 1] for flag in ("--setting-sources", "--append-system-prompt", "--session-id")] == ["user", "You are hands.", "b1"]
     assert json.loads(argv[argv.index("--settings") + 1]) == {"hooks": {
-        event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}"}]}] for event in ("UserPromptSubmit", "Stop", "StopFailure")
+        event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}"}]}] for event in ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest")
     }}
     # A side question's Claude Code is the same slim one, closed whatever the brain's setup holds: no tools, no server.
     bare = [*slim(Path("/real/claude"), "claude-sonnet-5", SessionId("a1")), *CLOSED]
@@ -180,6 +180,8 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert env == {"PATH": "/bin", "HTTPS_PROXY": "http://corp:3128", **SLIM, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
     # The account's claude.ai connectors stay out of every request, whatever the brain's own setup names.
     assert env["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
+    # No turn opens but the ones hands types: no background task and no scheduled prompt opens one of its own.
+    assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == env["CLAUDE_CODE_DISABLE_CRON"] == "1"
 
 
 async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_both_ends_in_the_log(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
@@ -203,6 +205,16 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_bot
         BrainAnswered("p2", None),
         exited,
     ]
+
+
+async def test_what_the_brains_setup_would_ask_about_is_refused_and_its_turn_still_ends(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
+    try:
+        assert await asyncio.wait_for(brain.ask("write"), 10) == BrainAnswered("p1", None)
+    finally:
+        await brain.stop()
+    assert recorded[1:4] == [BrainAsked("write"), BrainRefused("p1", "Write"), BrainAnswered("p1", None)]
 
 
 async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_failed_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:

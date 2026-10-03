@@ -138,6 +138,14 @@ class BrainOffered:
 
 
 @dataclass(frozen=True)
+class BrainRefused:
+    """A permission dialog the brain's setup would have opened, refused by hands: nobody is at its keyboard to answer it."""
+
+    prompt: str  # the prompt id of the turn that asked
+    tool: str | None  # the tool it asked to use, as the hook names it
+
+
+@dataclass(frozen=True)
 class BrainAsked:
     """The typed end of a brain turn: what was typed into it, at this line's time."""
 
@@ -462,6 +470,7 @@ Entry = (
     | McpConnected
     | BrainLaunched
     | BrainOffered
+    | BrainRefused
     | BrainAsked
     | BrainAnswered
     | AsideAnswered
@@ -519,7 +528,7 @@ def level(entry: Entry) -> Level:
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
             | Applied() | Performed() | Typing() | LLMChosen() | VoiceChosen() | ProxyListening() | TapListening() | CopiesLost()
-            | McpConnected() | BrainLaunched() | BrainOffered() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
+            | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()
         ):

@@ -40,14 +40,14 @@ from hands.brain.mcp import SERVER_NAME
 from hands.core.effects import Text
 from hands.core.session import ESCAPES, SessionId, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
-from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, Record
+from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainRefused, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
 from hands.sessions.wrapper import real_claude
 
 # What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu, 2.1.284).
-# LSP and plugin sync need no switch: they come only from plugins, and the brain's config directory has none.
+# LSP needs no switch: it comes only from plugins, and the brain's own setup installs none.
 SLIM = {
     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
     "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
@@ -56,6 +56,8 @@ SLIM = {
     # A background command's notification opens a turn of its own, under a prompt id no turn hands typed carries, which
     # would take a typed turn's place or leave it never ending (hands-wire-6ic.99l review).
     "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+    # A scheduled prompt opens a turn of its own the same way when it fires (hands-brain-d8g.9d6 review, 2.1.288).
+    "CLAUDE_CODE_DISABLE_CRON": "1",
     # The account's claude.ai connectors are Brandon's, never the brain's: loaded, they joined every request after the
     # first (turn 2 grew from 8.7 KB to 112 KB; hands-wire-6ic.eph, 2.1.284). The skills and plugins the account syncs
     # are turned off in the brain's settings.json, the only place Claude Code reads that switch from (2.1.288).
@@ -66,9 +68,18 @@ SLIM = {
 # on another account or off the subscription without a word, so none is passed on.
 FOREIGN_CREDENTIALS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
 
-# What the brain posts to hands, each to its own path: a typed turn taken, a turn ended, and a turn the API failed.
-# Escape ends a turn with none of them (measured on 2.1.285), so a turn told to stop is over when it is told.
-HOOKS = ("UserPromptSubmit", "Stop", "StopFailure")
+# What the brain posts to hands, each to its own path: a typed turn taken, a turn ended, a turn the API failed, and a
+# permission dialog about to open. Escape ends a turn with none of them (measured on 2.1.285), so a turn told to stop is
+# over when it is told.
+HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest")
+# What hands answers each hook. A permission dialog nobody can see would hold its turn open forever with no hook to say
+# so (2.1.288), so what the brain's setup would ask about is refused, and the brain hears why.
+ANSWERS: dict[str, object] = {
+    "PermissionRequest": {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {
+        "behavior": "deny",
+        "message": "Nobody is at this Claude Code's keyboard to answer a permission dialog, so what its settings would ask about is refused.",
+    }}},
+}
 
 # The terminal the brain draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
@@ -532,6 +543,7 @@ class Brain:
             event, session = said.text("hook_event_name"), said.session_id()
             prompt = said.text("prompt_id")
             failed = f"{said.optional_text('error')}: {said.optional_text('last_assistant_message')}"
+            tool = said.optional_text("tool_name")
         except Rejected as error:
             logger.warning(f"the brain posted a hook that does not parse: {error}")
             return
@@ -548,6 +560,9 @@ class Brain:
                 answered = BrainAnswered(prompt, error)
                 self._record(answered)
                 self._over(turn, answered)
+            case "PermissionRequest" if turn.prompt == prompt:
+                # Refused at the listener; said here too, so the refusal is not only the brain's to tell.
+                self._record(BrainRefused(prompt, tool))
             case _:
                 logger.warning(f"the brain's {event} hook for prompt {prompt} does not fit the turn in flight (prompt {turn.prompt})")
 
@@ -598,8 +613,8 @@ async def _listen(hooks: "asyncio.Queue[Payload]") -> tuple[web.AppRunner, str]:
         except Rejected as error:
             logger.warning(f"the brain posted a hook hands cannot read: {error}")
             return web.Response(status=400, text=str(error))
-        # An empty answer: the hook asks nothing of the turn.
-        return web.json_response({})
+        # An empty answer, for a hook that asks nothing of the turn.
+        return web.json_response(ANSWERS.get(request.match_info["event"], {}))
 
     app = web.Application()
     app.router.add_post("/{event}", hook)

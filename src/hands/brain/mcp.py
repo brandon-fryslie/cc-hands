@@ -45,7 +45,7 @@ class McpServer:
         await self.runner.cleanup()
 
     def config(self) -> str:
-        """The --mcp-config that points a Claude Code at this server and at nothing else, with the token that lets it in."""
+        """The --mcp-config that points a Claude Code at this server, beside any its own setup names, with the token that lets it in."""
         return json.dumps({"mcpServers": {SERVER_NAME: {"type": "http", "url": self.url, "headers": {"Authorization": f"Bearer {self.token}"}}}})
 
 
