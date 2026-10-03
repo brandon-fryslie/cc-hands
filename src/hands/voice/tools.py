@@ -23,7 +23,7 @@ from pipecat.services.llm_service import FunctionCallParams
 from hands.core.drafts import AmendDraft, DiscardDraft, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
-from hands.core.progress import Doing
+from hands.core.progress import Doing, said
 from hands.core.session import Blocker, Membership, CommandName, Dialog, Opened, Turn, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
@@ -617,10 +617,10 @@ def _spoken_state(state: SessionState, dialog: Dialog | None, turn: Turn) -> str
             return _waiting_on(on)
         case (LetGo(on=on), _, _):
             return f"{_waiting_on(on)} at the keyboard, too late to answer by voice"
-        case (None, Running(status=Busy()), Opened(latest=Doing(alone=alone))):
+        case (None, Running(status=Busy()), Opened(latest=Doing() as latest)):
             # [LAW:one-source-of-truth] the progress a session that is not the focus is noted with, for the brain, whose
             # notes are this listing at the tail of its every request.
-            return f"working; the last thing it set out to do: {alone}"
+            return f"working; the last thing it set out to do: {said((latest,))}"
         case (None, _, _):
             return _stated(state)
 

@@ -510,7 +510,7 @@ def _remoded(session: SessionId, before: Mode | None, after: Mode | None) -> lis
 def _unheard(event: SessionEvent, record: AuditRecord) -> list[Effect]:
     """What an event for a session the registry does not hold live calls for."""
     match event:
-        case Taken() | Interrupted() | Continued() | Read():
+        case Taken() | Interrupted() | Continued() | Progressed() | Read():
             # Read from a transcript the tail goes on reading a moment after its session ends: behind, not wrong.
             return []
         case _:
@@ -582,10 +582,9 @@ def _gathered(turn: Turn, progressed: Progressed) -> Turn:
     """The turn with the calls it made gathered, until they settle; calls of a turn since over move nothing, since that
     turn's result is told instead."""
     match turn:
-        case Opened(gathering=None) if not _ids(turn).isdisjoint(progressed.turn):
-            return replace(turn, gathering=Gathering(progressed.doings, progressed.at, progressed.at), latest=progressed.doings[-1])
-        case Opened(gathering=Gathering() as gathering) if not _ids(turn).isdisjoint(progressed.turn):
-            return replace(turn, gathering=gathering.joined(progressed.doings, progressed.at), latest=progressed.doings[-1])
+        case Opened(gathering=gathering) if not _ids(turn).isdisjoint(progressed.turn):
+            began = Gathering((), progressed.at, progressed.at) if gathering is None else gathering
+            return replace(turn, gathering=began.joined(progressed.doings, progressed.at), latest=progressed.doings[-1])
         case _:
             return turn
 
@@ -606,7 +605,7 @@ def _burst(session: SessionId, turn: Turn, at: Instant) -> tuple[Turn, list[Effe
     transcript is read moves when a burst is heard, never what it holds."""
     match turn:
         case Opened(gathering=Gathering() as gathering) if at >= gathering.due():
-            return replace(turn, gathering=None), [Progress(session, gathering.doings)]
+            return replace(turn, gathering=None), [Progress(session, _ids(turn), gathering.doings)]
         case _:
             return turn, []
 

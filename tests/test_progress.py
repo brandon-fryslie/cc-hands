@@ -10,10 +10,10 @@ from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 from hands.core.attention import Overlay, Route, progress_route
 from hands.core.effects import Progress
 from hands.core.events import Progressed, StatusReported, Tick
-from hands.core.pending import Finished, News, Noticed, Pending, Working, coalesce
+from hands.core.pending import Finished, News, Noticed, Pending, Unread, Working, coalesce
 from hands.core.progress import EDITING, LONGEST, RUNNING, SETTLE, Doing, Gathering, doing, said
 from hands.core.reducer import reduce
-from hands.core.session import Membership, Opened, PromptId, Registry, Running, Session, SessionId, Told, Turn, Untold
+from hands.core.session import Gone, Membership, Opened, PromptId, Registry, Running, Session, SessionId, Told, Turn, Untold
 from hands.core import status
 from hands.core.status import Busy, Report, Stamp
 from hands.sessions.audit import Applied, Entry, Relayed, Routed, encoded
@@ -25,6 +25,8 @@ from hands.sessions.registry import Listing
 SID = SessionId("bf411065-dc5c-4ec9-8302-61b84bdb5c53")
 OTHER = SessionId("other")
 TURN = PromptId("p1")
+IN_TURN = frozenset({TURN})
+IN_NEXT = frozenset({PromptId("p2")})
 MEMBER = Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl"))
 TESTS = Doing(RUNNING, "run the test suite")
 
@@ -38,6 +40,8 @@ def edit(name: str) -> Doing:
     [
         pytest.param("Bash", {"command": "uv run pytest", "description": "Run the test suite"}, "run the test suite", id="a command by what it is for"),
         pytest.param("Bash", {"command": "ls"}, "run a command", id="a command with no description, never its code"),
+        pytest.param("Grep", {"pattern": r"def\s+_\w+\("}, "search the code", id="a regular expression is code, never read out"),
+        pytest.param("Glob", {"pattern": "**/*.py"}, "search the code", id="a glob is code, never read out"),
         pytest.param("Bash", {"command": "gh pr view", "description": "PR status"}, "PR status", id="an initialism kept as written"),
         pytest.param("Edit", {"file_path": "/code/a/src/tail.py"}, "edit tail.py", id="an edit by the file's name"),
         pytest.param("Write", {"file_path": "/code/a/new.md", "content": "x"}, "edit new.md", id="a write is an edit"),
@@ -50,7 +54,7 @@ def edit(name: str) -> Doing:
 )
 def test_a_call_is_said_by_what_it_sets_out_to_do(tool: str, input: Mapping[str, object], done: str) -> None:
     made = doing(tool, input)
-    assert made is not None and made.alone == done
+    assert made is not None and said((made,)) == done
 
 
 @pytest.mark.parametrize("tool", ["AskUserQuestion", "ExitPlanMode"])
@@ -65,6 +69,7 @@ def test_a_call_that_asks_the_user_is_no_progress(tool: str) -> None:
         pytest.param((TESTS,), "run the test suite", id="one call"),
         pytest.param(tuple(edit(f"f{n}.py") for n in range(10)), "edit ten files", id="ten edits are one clause"),
         pytest.param((edit("tail.py"),) * 10, "edit tail.py", id="ten edits of one file are that file"),
+        pytest.param((Doing(RUNNING, None),) * 8, "run eight commands", id="calls that say nothing of themselves are each their own"),
         pytest.param((edit("a.py"), TESTS, edit("b.py"), TESTS), "edit two files, then run the test suite", id="each kind once, in the order first done"),
     ],
 )
@@ -100,23 +105,33 @@ def finished(session: SessionId) -> Finished:
     ("pending", "told"),
     [
         pytest.param(
-            (Working(SID, (edit("a.py"),)), Working(OTHER, (TESTS,)), Working(SID, (edit("b.py"),))),
-            (Working(SID, (edit("a.py"), edit("b.py"))), Working(OTHER, (TESTS,))),
+            (Working(SID, IN_TURN, (edit("a.py"),)), Working(OTHER, IN_TURN, (TESTS,)), Working(SID, IN_TURN, (edit("b.py"),))),
+            (Working(SID, IN_TURN, (edit("a.py"), edit("b.py"))), Working(OTHER, IN_TURN, (TESTS,))),
             id="a session's progress folds into one telling where its first stood",
         ),
         pytest.param(
-            (Working(SID, (TESTS,)), finished(SID), Working(OTHER, (TESTS,))),
-            (finished(SID), Working(OTHER, (TESTS,))),
+            (Working(SID, IN_TURN, (TESTS,)), finished(SID), Working(OTHER, IN_TURN, (TESTS,))),
+            (finished(SID), Working(OTHER, IN_TURN, (TESTS,))),
             id="progress the turn's result follows is said by the result",
         ),
         pytest.param(
-            (finished(SID), Working(SID, (TESTS,))),
-            (finished(SID), Working(SID, (TESTS,))),
+            (finished(SID), Working(SID, IN_NEXT, (TESTS,))),
+            (finished(SID), Working(SID, IN_NEXT, (TESTS,))),
             id="progress of the turn after a result is still heard",
         ),
         pytest.param(
-            (Working(SID, (TESTS,)), Noticed(OTHER, (edit("a.py"),)), Noticed(OTHER, (edit("b.py"),))),
-            (Noticed(OTHER, (edit("a.py"), edit("b.py"))), Working(SID, (TESTS,))),
+            (Working(SID, IN_NEXT, (TESTS,)), finished(SID)),
+            (Working(SID, IN_NEXT, (TESTS,)), finished(SID)),
+            id="progress of the next turn is heard though the turn before's result is told after it",
+        ),
+        pytest.param(
+            (Working(SID, IN_NEXT, (TESTS,)), Unread(SID)),
+            (Unread(SID),),
+            id="a turn that could not be read goes by no id, so the progress it follows is said by it",
+        ),
+        pytest.param(
+            (Working(SID, IN_TURN, (TESTS,)), Noticed(OTHER, IN_TURN, (edit("a.py"),)), Noticed(OTHER, IN_TURN, (edit("b.py"),))),
+            (Noticed(OTHER, IN_TURN, (edit("a.py"), edit("b.py"))), Working(SID, IN_TURN, (TESTS,))),
             id="what is noticed is known first, folded per session",
         ),
     ],
@@ -126,17 +141,17 @@ def test_progress_folds_and_gives_way_to_the_result(pending: tuple[Pending, ...]
 
 
 def test_progress_heard_is_said_as_written_in_the_lane_its_telling_keeps() -> None:
-    [pushed] = frames(Working(SID, (TESTS,)), Pushed(), names=lambda _: "cc-hands")
+    [pushed] = frames(Working(SID, IN_TURN, (TESTS,)), Pushed(), names=lambda _: "cc-hands")
     assert isinstance(pushed, TTSSpeakFrame) and pushed.text == "cc-hands: run the test suite."
-    [tailed] = frames(Working(SID, (TESTS,)), Tailed(), names=lambda _: "cc-hands")
+    [tailed] = frames(Working(SID, IN_TURN, (TESTS,)), Tailed(), names=lambda _: "cc-hands")
     assert isinstance(tailed, Aloud) and tailed.spoken.text == "cc-hands: run the test suite."
 
 
 def test_progress_noticed_is_put_unsaid_in_a_pushed_context_and_left_to_the_brains_tail() -> None:
-    [note] = frames(Noticed(SID, (TESTS,)), Pushed(), names=lambda _: "cc-hands")
+    [note] = frames(Noticed(SID, IN_TURN, (TESTS,)), Pushed(), names=lambda _: "cc-hands")
     assert isinstance(note, LLMMessagesAppendFrame) and not note.run_llm
     assert "The Claude Code session cc-hands is working; it set out to run the test suite." in str(note.messages)
-    assert frames(Noticed(SID, (TESTS,)), Tailed(), names=lambda _: "cc-hands") == ()
+    assert frames(Noticed(SID, IN_TURN, (TESTS,)), Tailed(), names=lambda _: "cc-hands") == ()
 
 
 def running(turn: Turn) -> Registry:
@@ -158,7 +173,7 @@ def test_calls_are_gathered_on_the_turn_and_told_once_they_settle() -> None:
     waiting, early = reduce(gathered, Tick(11.0 + SETTLE - 0.5))
     assert early == [] and waiting == gathered
     told, effects = reduce(gathered, Tick(11.0 + SETTLE))
-    assert effects == [Progress(SID, (edit("a.py"), TESTS))]
+    assert effects == [Progress(SID, IN_TURN, (edit("a.py"), TESTS))]
     # Told once: what the session last set out to do is kept for anyone who asks.
     assert turn_of(told) == Opened(TURN, latest=TESTS)
     assert reduce(told, Tick(30.0)) == (told, [])
@@ -264,12 +279,12 @@ async def test_the_relay_plays_the_focus_working_notes_any_other_and_says_why() 
 
     sessions = Heard()
     for session in (SID, OTHER):
-        sessions.waiting.put_nowait(Progress(session, (TESTS,)))
+        sessions.waiting.put_nowait(Progress(session, IN_TURN, (TESTS,)))
     relaying = asyncio.create_task(relay(sessions, queue_frame, recorded.append, attending))  # pyright: ignore[reportArgumentType]  (only heard() is asked)
     while len(queued) < 2:
         await asyncio.sleep(0.01)
     relaying.cancel()
-    assert [frame.pending for frame in queued if isinstance(frame, Unprompted)] == [Working(SID, (TESTS,)), Noticed(OTHER, (TESTS,))]
+    assert [frame.pending for frame in queued if isinstance(frame, Unprompted)] == [Working(SID, IN_TURN, (TESTS,)), Noticed(OTHER, IN_TURN, (TESTS,))]
     assert [entry for entry in recorded if not isinstance(entry, Relayed)] == [Routed(SID, True, "normal", "play"), Routed(OTHER, False, "normal", "note")]
 
 
@@ -285,6 +300,12 @@ def test_calls_read_are_a_line_the_audit_log_can_write() -> None:
         "type": "Progressed",
         "session": SID,
         "turn": ["p1"],
-        "doings": [{"type": "Doing", "work": {"type": "Work", "several": "run {count} commands"}, "alone": "run the test suite"}],
+        "doings": [{"type": "Doing", "work": {"type": "Work", "several": "run {count} commands", "one": "run a command"}, "alone": "run the test suite"}],
         "at": 7.0,
     }
+
+
+def test_calls_read_after_their_session_ended_are_behind_not_wrong() -> None:
+    # The tail reads a transcript a moment past its session's end: no audit line says a hook came late.
+    gone = Registry(permission_deadline=60.0, sessions={SID: Gone(MEMBER)}, drafts={})
+    assert reduce(gone, Progressed(SID, (TURN,), (TESTS,), at=10.0)) == (gone, [])

@@ -12,7 +12,7 @@ from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, De
 from hands.core.pending import Briefing, Finished, News, Noticed, Pending, Unread, Working, went_on
 from hands.core.progress import Doing, said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
-from hands.core.session import AskedQuestion, Blocker, Permission, Plan, Question, SessionId
+from hands.core.session import AskedQuestion, Blocker, Permission, Plan, PromptId, Question, SessionId
 from hands.sessions.audit import Record, Relayed, Routed
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode
@@ -116,22 +116,22 @@ async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[Non
 async def _pending(heard: Heard, record: Record, attending: Attending) -> Pending:
     """What the floor is handed of what was heard: progress as the focus and the overlay route it, the rest as it is."""
     match heard:
-        case Progress(session=session, doings=doings):
+        case Progress(session=session, turn=turn, doings=doings):
             focused, overlay = await attending(session)
             route = progress_route(focused, overlay)
             # [LAW:nothing-unseen] which way progress went, and what decided it.
             record(Routed(session, focused, overlay, route))
-            return _routed(route, session, doings)
+            return _routed(route, session, turn, doings)
         case Speak() | Narrate() | Note():
             return heard
 
 
-def _routed(route: Route, session: SessionId, doings: tuple[Doing, ...]) -> Pending:
+def _routed(route: Route, session: SessionId, turn: frozenset[PromptId], doings: tuple[Doing, ...]) -> Pending:
     match route:
         case "play":
-            return Working(session, doings)
+            return Working(session, turn, doings)
         case "note":
-            return Noticed(session, doings)
+            return Noticed(session, turn, doings)
 
 
 def frames(pending: Pending, telling: Telling, names: Names) -> Sequence[Frame]:

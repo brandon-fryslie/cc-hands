@@ -358,9 +358,11 @@ class Tails:
             heard.append((following.reading.number, Progressed(session, tuple(sorted(following.reading.ids)), tuple(made), self._known.now())))
         current = following.current()
         live = [event for number, event in heard if not history or number >= current]
-        if history and heard:
+        if history and (heard or made):
             # [LAW:nothing-unseen] the decision explained: what was held back, and the turn the reading starts from.
-            logger.info(f"read the transcript of session {session} from its start: {len(heard) - len(live)} of {len(heard)} events are of turns before the one it is in, which goes by {sorted(following.reading.ids)}")
+            logger.info(
+                f"read the transcript of session {session} from its start: {len(heard) - len(live)} of {len(heard)} events are of turns before the one it is in, which goes by {sorted(following.reading.ids)}; calls that turn made before hands followed it, not heard as progress: {len(made)}"
+            )
         self._transcribed += live
         # [LAW:no-ambient-temporal-coupling] after the records it covers, so a telling decided by how far the transcript
         # was read has what that reading found; and not while a record is half written, which may have been begun before.

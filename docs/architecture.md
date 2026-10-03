@@ -1177,7 +1177,8 @@ transcripts, under `tests/fixtures/turns`.
 **Streaming.** Built for tool calls (`hands.core.progress`). Each call the tail reads into a
 running turn is said by what it sets out to do, read off its input and never its result:
 a command by the description Claude Code asks for ("run the test suite"), an edit or a read
-by its file's name, and never a command's code. `AskUserQuestion` and `ExitPlanMode` are not
+by its file's name, a search by its pattern only when that is words, and never code: not a
+command, a regular expression, or a glob. `AskUserQuestion` and `ExitPlanMode` are not
 progress: their hook speaks them as they are asked. The tail hands the calls on as a
 `Progressed` event, and none of a turn it read from a file's start, which began before hands
 followed it. The reducer gathers them on the `Opened` turn, so a turn that ends lets go of
@@ -1189,8 +1190,9 @@ as a `Routed` line: the focused session's is `Working`, played as written at `fy
 ("cc-hands: edit ten files, then run the test suite."); any other's, and a muted one's even
 when focused, is `Noticed`, a note in a pushed context and, for the brain, the listing at the
 tail of its every request, which says what a working session last set out to do. `coalesce`
-folds a session's progress into one telling and drops what a later result of the same
-session says better. Text streamed line by line from `MessageDisplay`, summarised while
+folds a session's progress into one telling and drops what a result of the same turn says
+better; progress carries its turn's ids for this, since a result reaches the floor only once
+it is summarised, after the next turn's calls may have. Text streamed line by line from `MessageDisplay`, summarised while
 Claude is still writing it, is planned (hands-narration-2mc.ww1).
 
 ## Playback: bookmarks and resume

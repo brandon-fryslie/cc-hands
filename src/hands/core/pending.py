@@ -62,6 +62,8 @@ class Working:
     """What a session is doing as it works, said as it happens: the focused session's progress."""
 
     session: SessionId
+    # Every id the turn it is doing this in goes by.
+    turn: frozenset[PromptId]
     doings: tuple[Doing, ...]
 
 
@@ -70,6 +72,7 @@ class Noticed:
     """What a session is doing as it works, put in the model's context unsaid, for it to answer from when asked."""
 
     session: SessionId
+    turn: frozenset[PromptId]
     doings: tuple[Doing, ...]
 
 
@@ -142,10 +145,23 @@ def _story(pending: Pending, at: int) -> SessionId | int:
 
 
 def _current(pending: Sequence[Pending]) -> list[Pending]:
-    """What a session was doing, dropped where its story goes on to tell how the turn ended: the result says it better,
-    and progress heard after it would be heard out of date."""
-    ended = {each.session: at for at, each in enumerate(pending) if isinstance(each, Finished | Unread | SessionGone)}
-    return [each for at, each in enumerate(pending) if not (isinstance(each, Working | Noticed) and ended.get(each.session, -1) > at)]
+    """What a session was doing, dropped where its story tells how that turn ended: the result says it better, and
+    progress heard after it would be heard out of date. Progress of the turn after it is news, wherever the result of
+    the turn before stands: a result is told once it is summarised, and the next turn's calls do not wait on that."""
+    ends = [(at, each) for at, each in enumerate(pending) if isinstance(each, Finished | Unread | SessionGone)]
+    return [each for at, each in enumerate(pending) if not (isinstance(each, Working | Noticed) and any(_ends(end, each, at < where) for where, end in ends))]
+
+
+def _ends(end: Finished | Unread | SessionGone, progress: Working | Noticed, before: bool) -> bool:
+    """Whether `end` tells how the turn `progress` was made in went: a result of that turn, or the session gone; and a
+    turn that could not be read, which goes by no id, if it is told after the progress came."""
+    match end:
+        case Finished(session=session, news=news):
+            return session == progress.session and any(each.turn in progress.turn for each in news)
+        case SessionGone(session=session):
+            return session == progress.session
+        case Unread(session=session):
+            return session == progress.session and before
 
 
 def _folded(pending: Sequence[Pending]) -> list[Pending]:
@@ -181,9 +197,9 @@ def _joined(before: Pending | None, each: Finished | Working | Noticed) -> Pendi
     match before, each:
         case Finished(news=earlier), Finished(session=session, news=news):
             return Finished(session, (*earlier, *news))
-        case Working(doings=earlier), Working(session=session, doings=doings):
-            return Working(session, (*earlier, *doings))
-        case Noticed(doings=earlier), Noticed(session=session, doings=doings):
-            return Noticed(session, (*earlier, *doings))
+        case Working(turn=was, doings=earlier), Working(session=session, turn=turn, doings=doings):
+            return Working(session, was | turn, (*earlier, *doings))
+        case Noticed(turn=was, doings=earlier), Noticed(session=session, turn=turn, doings=doings):
+            return Noticed(session, was | turn, (*earlier, *doings))
         case _:
             return each

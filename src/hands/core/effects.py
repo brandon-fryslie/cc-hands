@@ -196,6 +196,8 @@ class Progress:
     session's overlay are read, not here."""
 
     session: SessionId
+    # Every id the turn the calls were made in goes by, so its result is known for theirs wherever it stands.
+    turn: frozenset[PromptId]
     doings: tuple[Doing, ...]
 
 

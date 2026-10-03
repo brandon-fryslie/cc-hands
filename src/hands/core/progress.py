@@ -22,24 +22,27 @@ class Work:
 
     # "{count}" stands for how many different things were done: "edit {count} files".
     several: str
+    # One call of it whose input does not say what it was done to.
+    one: str
 
 
-EDITING = Work("edit {count} files")
-READING = Work("read {count} files")
-SEARCHING = Work("run {count} searches")
-LOOKING_UP = Work("make {count} web lookups")
-RUNNING = Work("run {count} commands")
-DELEGATING = Work("start {count} subagents")
-PLANNING = Work("update its plan")
-USING = Work("use {count} tools")
+EDITING = Work("edit {count} files", "edit a file")
+READING = Work("read {count} files", "read a file")
+SEARCHING = Work("run {count} searches", "search the code")
+LOOKING_UP = Work("make {count} web lookups", "look something up on the web")
+RUNNING = Work("run {count} commands", "run a command")
+DELEGATING = Work("start {count} subagents", "start a subagent")
+PLANNING = Work("update its plan", "update its plan")
+USING = Work("use {count} tools", "use a tool")
 
 
 @dataclass(frozen=True)
 class Doing:
-    """One call as it is made: its kind of work, and what it is said as when it is the only one of its kind."""
+    """One call as it is made: its kind of work, and what it is said as when it is the only one of its kind; None when
+    its input does not say what it was done to, and then no other call is the same thing done."""
 
     work: Work
-    alone: str
+    alone: str | None
 
 
 def doing(tool: str, input: Mapping[str, object]) -> Doing | None:
@@ -51,47 +54,53 @@ def doing(tool: str, input: Mapping[str, object]) -> Doing | None:
 def said(doings: Sequence[Doing]) -> str:
     """A burst of calls as one spoken clause, each kind of work once, in the order it was first done: "edit ten files,
     then run the test suite". A kind done to one thing only is said as that thing."""
-    # Ordered and deduplicated in one step: ten edits of one file are one thing done.
-    grouped: dict[Work, list[str]] = {}
-    for each in dict.fromkeys(doings):
-        grouped.setdefault(each.work, []).append(each.alone)
-    return ", then ".join(alone[0] if len(alone) == 1 else work.several.format(count=spoken_count(len(alone))) for work, alone in grouped.items())
+    # Ordered and deduplicated in one step: ten edits of one file are one thing done, and eight commands that say
+    # nothing of themselves are eight, each its own by where it stands.
+    grouped: dict[Work, dict[str | int, str]] = {}
+    for at, each in enumerate(doings):
+        grouped.setdefault(each.work, {})[at if each.alone is None else each.alone] = each.work.one if each.alone is None else each.alone
+    return ", then ".join(
+        next(iter(things.values())) if len(things) == 1 else work.several.format(count=spoken_count(len(things))) for work, things in grouped.items()
+    )
 
 
 def _ran(_tool: str, input: Mapping[str, object]) -> Doing:
     # Claude Code asks for a description of every command, in the imperative ("Run the test suite"), which is what
     # this sentence is made of; the command itself is code, and never read aloud.
     description = _text(input, "description")
-    return Doing(RUNNING, "run a command" if description is None else _lowered(description))
+    return Doing(RUNNING, None if description is None else _lowered(description))
 
 
 def _edited(_tool: str, input: Mapping[str, object]) -> Doing:
-    return Doing(EDITING, f"edit {_file(input)}")
+    file = _file(input)
+    return Doing(EDITING, None if file is None else f"edit {file}")
 
 
 def _read(_tool: str, input: Mapping[str, object]) -> Doing:
-    return Doing(READING, f"read {_file(input)}")
+    file = _file(input)
+    return Doing(READING, None if file is None else f"read {file}")
 
 
 def _searched(_tool: str, input: Mapping[str, object]) -> Doing:
+    # A pattern is said only when it is words: a regular expression or a glob read out is code, and never heard as such.
     pattern = _text(input, "pattern")
-    return Doing(SEARCHING, "search the code" if pattern is None else f"search for {pattern}")
+    return Doing(SEARCHING, f"search for {pattern}" if pattern is not None and _WORDS.fullmatch(pattern) else None)
 
 
 def _looked_up(_tool: str, input: Mapping[str, object]) -> Doing:
     query = _text(input, "query")
-    return Doing(LOOKING_UP, "look something up on the web" if query is None else f"search the web for {query}")
+    return Doing(LOOKING_UP, None if query is None else f"search the web for {query}")
 
 
 def _fetched(_tool: str, input: Mapping[str, object]) -> Doing:
     # A page by its site: a whole address read out is noise.
     host = _HOST.match(_text(input, "url") or "")
-    return Doing(LOOKING_UP, "read a web page" if host is None else f"read a page on {host[1]}")
+    return Doing(LOOKING_UP, None if host is None else f"read a page on {host[1]}")
 
 
 def _delegated(_tool: str, input: Mapping[str, object]) -> Doing:
     description = _text(input, "description")
-    return Doing(DELEGATING, "start a subagent" if description is None else f"start a subagent to {_lowered(description)}")
+    return Doing(DELEGATING, None if description is None else f"start a subagent to {_lowered(description)}")
 
 
 def _planned(_tool: str, _input: Mapping[str, object]) -> Doing:
@@ -130,14 +139,17 @@ _SAID: Mapping[str, Callable[[str, Mapping[str, object]], Doing | None]] = {
 }
 
 
+# What a listener can follow: words, and the dashes, dots, and underscores names are spelled with.
+_WORDS = re.compile(r"[\w][\w .'-]*")
+
 # The host of a URL: what follows the scheme, up to its port, path, query, or fragment.
 _HOST = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://(?:[^@/]*@)?([^/:?#]+)")
 
 
-def _file(input: Mapping[str, object]) -> str:
+def _file(input: Mapping[str, object]) -> str | None:
     """The file a call works on, by its name: the directories it is in are not worth a listener's time."""
     path = _text(input, "file_path") or _text(input, "notebook_path")
-    return "a file" if path is None else PurePath(path).name
+    return None if path is None else PurePath(path).name
 
 
 def _text(input: Mapping[str, object], key: str) -> str | None:
