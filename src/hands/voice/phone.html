@@ -87,9 +87,9 @@ async function connect() {
   channel.binaryType = "arraybuffer";
   // Twenty milliseconds of the microphone a message.
   const per = Math.round(audio.sampleRate / 50);
-  let pending = [], count = 0, release = null;
+  let pending = [], count = 0, marked = null;
   tap.port.onmessage = ({data}) => {
-    if (data === "mark") { flush(); release(); return; }
+    if (data === "mark") { flush(); marked(); return; }
     pending.push(data); count += data.length;
     if (count >= per) flush();
   };
@@ -97,10 +97,13 @@ async function connect() {
     if (count && channel.readyState === "open") channel.send(pcm(pending));
     pending = []; count = 0;
   }
+  // Each press and release goes out after the one before it has: a press made while a release still waits on its mark
+  // is sent after that release, so hands hears them in the order the button made them, and one mark is out at a time.
+  let sent = Promise.resolve();
   call = {pc, channel, audio, stream, ended: false,
-    press() { channel.send("press"); },
+    press() { sent = sent.then(() => channel.send("press")); },
     // The release waits for the mark to come back through the tap: everything said before it has been sent first.
-    release() { return new Promise((done) => { release = () => { channel.send("release"); done(); }; tap.port.postMessage("mark"); }); },
+    release() { sent = sent.then(() => new Promise((done) => { marked = () => { channel.send("release"); done(); }; tap.port.postMessage("mark"); })); },
   };
   channel.onopen = () => { talk.disabled = false; talk.textContent = "Hold to talk"; say("Connected. Hold the button and speak."); };
   channel.onclose = () => hungUp("hands hung up.");
@@ -147,11 +150,11 @@ async function down(event) {
   call.press();
 }
 
-async function up() {
+function up() {
   if (!held) return;
   held = false;
   talk.classList.remove("held");
-  await call.release();
+  call.release();
 }
 
 talk.addEventListener("pointerdown", down);

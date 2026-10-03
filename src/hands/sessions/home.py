@@ -84,7 +84,8 @@ class Home:
 
     @property
     def phone(self) -> Path:
-        """The phone's key and the certificates its page is served with, written by the daemon alone."""
+        """The phone's key, made by whichever of the daemon and `hands phone` asks first, and the certificates its page
+        is served with, which the daemon alone writes."""
         return self.root / "phone"
 
     def membership(self, session: SessionId) -> Path:

@@ -424,19 +424,23 @@ async def converse(
     for task in background:
         task.add_done_callback(stop_if_failed)
 
-    def after_move(move: Move) -> None:
-        # The move has been made on the gate, so the tone plays where the turn is.
-        for cue in cues(move):
+    def after_move(taken: Move) -> None:
+        # The move has been made on the gate, as the gate took it, so the tone is the turn's and plays where it is.
+        for cue in cues(taken):
             logger.info(cue.line)
             voice.audio.output().cue(cue)
         # The indicator reads the key from the heartbeat, so the edge is written now rather than at the next beat.
         beat()
 
     async def at_desk(move: Move) -> None:
-        voice.key.move(move, "desk")
-        after_move(move)
-        for fact in told(move, voice.audio.devices):
-            await channel.say(fact)
+        match voice.key.move(move, "desk"):
+            case None:
+                # A Shift at the desk while the turn is the phone's: nothing of it is cued, said, or beaten.
+                return
+            case taken:
+                after_move(taken)
+                for fact in told(taken, voice.audio.devices):
+                    await channel.say(fact)
 
     async def drive_talk_key_once_started() -> None:
         # [LAW:no-ambient-temporal-coupling] a move reads the devices, which are known once the pipeline has opened
@@ -447,14 +451,18 @@ async def converse(
     async def answer_the_phone_once_started() -> None:
         # As for the talk key: a call is taken once the pipeline is up to hear it.
         await pipeline.started.wait()
-        page = await serve_phone(voice.phone, home, record)
-        try:
+        async def cue_the_phone() -> None:
             while True:
                 # The phone made the move on the gate as it arrived, in order with its audio.
                 after_move(await voice.phone.moves.get())
+
+        try:
+            # Either failing ends the other, and the phone task with them.
+            async with asyncio.TaskGroup() as phone_tasks:
+                phone_tasks.create_task(serve_phone(voice.phone, home, record), name="the phone's page")
+                phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:
-            await voice.phone.hang_up("stopped")
-            await page.cleanup()
+            await voice.phone.stop()
 
     talk_key = asyncio.create_task(drive_talk_key_once_started(), name="the talk key")
     talk_key.add_done_callback(stop_if_failed)

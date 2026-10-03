@@ -4,7 +4,7 @@ import pytest
 
 from hands.voice.hold import Move
 from hands.sessions.audit import Entry, Moved
-from hands.voice.ptt import Gate, PushToTalk
+from hands.voice.ptt import Gate, Key, PushToTalk
 
 LOUD = b"\x7f\x7f" * 160
 QUIET = b"\x00\x00" * 160
@@ -66,6 +66,35 @@ def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:
     key.move("arm", "desk")
     key.go("phone")  # a call arrives while Shift is held at the desk
     key.move("start", "phone")
+    key.move("stop", "phone")
     key.move("start", "desk")
     key.move("stop", "desk")
     assert recorded == [Moved(to="phone", by="call", dropped=True), Moved(to="desk", by="turn", dropped=False)]
+
+
+@pytest.mark.parametrize("held", ["arming", "down"])
+def test_a_turn_opened_at_one_place_while_a_hold_is_open_at_the_other_drops_both(held: Key) -> None:
+    # Right Shift held at the desk, and the phone's button pressed: two hands on two keys.
+    gate = Gate(held, "desk")
+    assert gate.took("start", "phone") == "drop"
+    assert gate.after("start", "phone") == Gate("dropped", "phone")
+    recorded: list[Entry] = []
+    key = PushToTalk(recorded.append)
+    key.move("start", "phone")
+    assert key.move("start", "desk") == "drop"
+    assert recorded[-1] == Moved(to="desk", by="turn", dropped=True)
+
+
+@pytest.mark.parametrize("ending", ["stop", "drop", "expire"])
+def test_the_end_of_a_hold_the_gate_already_threw_away_ends_nothing_more(ending: Move) -> None:
+    # The phone's turn was dropped by a press at the desk, whose hold now ends: nothing is sent, nothing cued twice.
+    dropped = Gate("dropped", "desk")
+    assert dropped.took(ending, "desk") is None
+    assert dropped.after(ending, "desk") == dropped
+    assert dropped.took("arm", "desk") == "arm"
+
+
+def test_the_other_place_moves_nothing_and_the_gate_says_so() -> None:
+    on_the_phone = Gate("down", "phone")
+    assert on_the_phone.took("stop", "desk") is None
+    assert on_the_phone.took("start", "phone") == "start"

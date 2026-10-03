@@ -51,17 +51,34 @@ class Gate:
     key: Key = "up"
     place: Place = "desk"
 
+    def took(self, move: Move, at: Place) -> Move | None:
+        """What a hold at `at` did to the turn, as the gate takes it; None where it does nothing to it.
+
+        [LAW:one-source-of-truth] the place is moved only by a turn opening there, or by the phone coming and going: a
+        Shift typed at the desk while the user talks on the phone arms nothing and ends nothing of theirs. A turn opened
+        at one place while a hold is open at the other is a second hand on a second key, which drops both, as a key
+        pressed while the talk key is held drops the turn; and the end of a hold the gate has already thrown away, as a
+        call came or went, ends nothing more.
+        """
+        match at == self.place, move, self.key:
+            case True, "stop" | "drop" | "expire", "dropped":
+                return None
+            case True, _, _:
+                return move
+            case False, "start", "arming" | "down":
+                return "drop"
+            case False, "start", "up" | "dropped":
+                return "start"
+            case False, _, _:
+                return None
+
     def after(self, move: Move, at: Place) -> "Gate":
         """The gate once a hold at `at` has moved the turn."""
-        # [LAW:one-source-of-truth] the place is moved only by a turn opening there, or by the phone coming and going:
-        # a Shift typed at the desk while the user talks on the phone arms nothing and ends nothing of theirs.
-        match at == self.place, move:
-            case True, _:
-                return Gate(_key_after(move), self.place)
-            case False, "start":
-                return Gate("down", at)
-            case False, _:
+        match self.took(move, at):
+            case None:
                 return self
+            case taken:
+                return Gate(_key_after(taken), at)
 
     def moved(self, to: Place) -> "Gate":
         """The gate once hands is at `to`: a hold open at the place it leaves is thrown away, not sent."""
@@ -111,9 +128,12 @@ class PushToTalk:
         self._gate = Gate()
         self._record = record
 
-    def move(self, move: Move, at: Place) -> None:
-        """Report what the hold at `at` did to the turn; the edge that reads the talk key or the phone's button calls this."""
+    def move(self, move: Move, at: Place) -> Move | None:
+        """Report what the hold at `at` did to the turn, and get back what the gate took it as, to cue and tell: the edge
+        that reads the talk key or the phone's button calls this."""
+        taken = self._gate.took(move, at)
         self._become(self._gate.after(move, at), "turn")
+        return taken
 
     def go(self, to: Place) -> None:
         """Report that hands is at `to` now: the phone came, or went."""

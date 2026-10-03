@@ -59,15 +59,21 @@ def show_phone(home: Home) -> int:
     """Print every address the phone's page opens at, and the first as a QR code a phone's camera opens."""
     import segno
 
-    from hands.voice.phonepage import Untailed, lan_addresses, page_urls, phone_key, tailnet
+    from hands.voice.phonepage import Untailed, lan_addresses, page_urls, phone_key, tailnet_name
 
-    net = asyncio.run(tailnet(home))
-    match net:
+    # The name alone: the certificate is the daemon's to ask Tailscale for, as it serves the page.
+    name = asyncio.run(tailnet_name())
+    match name:
         case Untailed(reason=reason):
             print(f"hands: no tailnet address, since {reason}; the LAN's alone:", file=sys.stderr)
-        case _:
+        case str():
             pass
-    urls = page_urls(net, lan_addresses(), phone_key(home))
+    try:
+        key = phone_key(home)
+    except Rejected as error:
+        print(f"hands: {error}", file=sys.stderr)
+        return 1
+    urls = page_urls(name, lan_addresses(), key)
     if not urls:
         print("hands: this machine has no address a phone can reach.", file=sys.stderr)
         return 1

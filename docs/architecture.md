@@ -1601,10 +1601,15 @@ run, with no setting to choose between them: the gate holds the place the last t
 was opened at, and that place is where hands is. The pipeline hears only that place's
 microphone, so Whisper gets one stream of frames, and the speaker plays to that place,
 so a reply, a session's news, and a turn's tone go where the user is
-(`hands.voice.ptt`, `hands.voice.microphone`). A call arriving moves hands to the
+(`hands.voice.ptt`, `hands.voice.microphone`). A call connecting moves hands to the
 phone, and the call ending moves it back to the desk in the same step, so nothing is
-played to a phone that has gone. The other place cannot touch a turn that is not its
-own: a Shift typed at the desk while the user talks on the phone arms nothing.
+played to a phone that has gone. An offer answered but not yet connected moves
+nothing, so a page that cannot reach hands never holds its speech; the newest offer
+lets go of any older one not yet up, and replaces the call that is up once it
+connects. The other place cannot touch a turn that is not its own: a Shift typed at
+the desk while the user talks on the phone arms nothing. A turn opened at one place
+while a hold is open at the other drops both, as a key pressed while the talk key is
+held drops the turn, and the gate cues and tells the moves as it took them.
 
 The call (`hands.voice.phone`) is one WebRTC connection made with aiortc directly.
 hands' speech goes to the phone on an audio track. The phone's microphone does not:
@@ -1619,7 +1624,8 @@ button alone.
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts
 as it is; under a LAN address it shows a self-signed one, which the phone is asked
-once to accept. The page is open to anyone who reaches the port; a call is not: an
+once to accept, and which hands makes again at a start within 30 days of its end;
+the tailnet's is asked of Tailscale again daily while the page is served. The page is open to anyone who reaches the port; a call is not: an
 offer must carry the phone's key, a secret in the home that travels in the page
 address's fragment, which a browser never sends with the page request. `hands phone`
 prints the addresses with the key, the first as a QR code. aiortc never notices a

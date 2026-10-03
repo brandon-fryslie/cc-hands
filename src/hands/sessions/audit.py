@@ -167,6 +167,16 @@ class PhoneLeft:
 
 
 @dataclass(frozen=True)
+class PhoneUnreached:
+    """A call from the phone's page was answered and let go before it connected, why, and how long after its offer:
+    hands never moved to it."""
+
+    remote: str
+    reason: PhoneGone
+    seconds: float
+
+
+@dataclass(frozen=True)
 class PhoneRefused:
     """A call was offered without the phone's key, from this address, and was not taken."""
 
@@ -656,6 +666,7 @@ Entry = (
     | PhoneUntailed
     | PhoneArrived
     | PhoneLeft
+    | PhoneUnreached
     | PhoneRefused
     | CopiesLost
     | Exchanged
@@ -708,7 +719,7 @@ def level(entry: Entry) -> Level:
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | EffectFailed() | BacklogUnread() | PhoneRefused() | PhoneLeft(reason="failed"):
+        case Failure() | EffectFailed() | BacklogUnread() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)
@@ -732,7 +743,7 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
-            | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | CopiesLost()
+            | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()

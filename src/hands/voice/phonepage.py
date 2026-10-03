@@ -14,12 +14,14 @@ import datetime
 import hmac
 import ipaddress
 import json
+import os
 import secrets
 import shutil
 import ssl
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
+from typing import Never
 
 import ifaddr
 from aiohttp import web
@@ -39,6 +41,11 @@ PHONE_HOST = "0.0.0.0"
 PHONE_PORT = 47616
 # How long `tailscale` may take to say this machine's name and renew its certificate, which it does online when due.
 TAILSCALE_TIMEOUT_SECONDS = 30.0
+# How often a page served under the tailnet's name asks Tailscale for its certificate again: Tailscale renews one a
+# month before its 90 days are out, so a day is far inside the time a renewed one has before the old one ends.
+RENEW_SECONDS = 24 * 60 * 60.0
+# hands' own certificate is made again at a start this close to its end, rather than shown once it has ended.
+RENEW_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -57,8 +64,8 @@ class Untailed:
     reason: str
 
 
-async def tailnet(home: Home) -> Tailnet | Untailed:
-    """This machine's tailnet name and a current certificate for it, from Tailscale's own command."""
+async def tailnet_name() -> str | Untailed:
+    """This machine's name on the tailnet, as Tailscale's own command says it."""
     command = shutil.which("tailscale")
     if command is None:
         return Untailed("the tailscale command is not on the PATH")
@@ -74,14 +81,23 @@ async def tailnet(home: Home) -> Tailnet | Untailed:
         return Untailed(f"tailscale status said something that is not JSON: {error}")
     match described:
         case {"CertDomains": [str(name), *_]}:  # pyright: ignore[reportUnknownVariableType]  (the first name is all that is read)
-            pass
+            return name
         case _:
             return Untailed("the tailnet has HTTPS certificates turned off, so Tailscale issues none for this machine")
-    folder = home.phone
-    folder.mkdir(parents=True, exist_ok=True)
-    found = Tailnet(name, folder / "tailnet.crt", folder / "tailnet.key")
-    # Tailscale keeps the certificate and renews it when it is due, so asking again at every start is cheap.
-    issued = await _run(command, "cert", "--cert-file", str(found.cert), "--key-file", str(found.key), name)
+
+
+async def tailnet(home: Home) -> Tailnet | Untailed:
+    """This machine's tailnet name and a current certificate for it, from Tailscale's own command."""
+    name = await tailnet_name()
+    match name:
+        case Untailed():
+            return name
+        case str():
+            pass
+    found = Tailnet(name, home.phone / "tailnet.crt", home.phone / "tailnet.key")
+    home.phone.mkdir(parents=True, exist_ok=True)
+    # Tailscale keeps the certificate and renews it when it is due, so asking again is cheap.
+    issued = await _run("tailscale", "cert", "--cert-file", str(found.cert), "--key-file", str(found.key), name)
     match issued:
         case Untailed():
             return issued
@@ -101,15 +117,26 @@ async def _run(*command: str) -> str | Untailed:
     return out.decode()
 
 
-def own_certificate(home: Home) -> tuple[Path, Path]:
-    """The certificate hands shows under any address but its tailnet name: made once, kept in the home."""
+def _private(path: Path, data: bytes) -> Path:
+    """`data` written whole to a new file beside `path`, readable by the user alone, for a rename or a link to put in
+    place: a file of the phone's is never seen half written."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    written = path.with_name(f".{path.name}.{secrets.token_hex(4)}")
+    with os.fdopen(os.open(written, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
+        file.write(data)
+    return written
+
+
+def own_certificate(home: Home, now: datetime.datetime) -> tuple[Path, Path]:
+    """The certificate hands shows under any address but its tailnet name: made once, kept in the home, and made
+    again at a start that finds it within RENEW_DAYS of its end."""
     cert, key = home.phone / "own.crt", home.phone / "own.key"
     if cert.exists() and key.exists():
-        return cert, key
-    home.phone.mkdir(parents=True, exist_ok=True)
+        ends = x509.load_pem_x509_certificate(cert.read_bytes()).not_valid_after_utc
+        if ends - now > datetime.timedelta(days=RENEW_DAYS):
+            return cert, key
     private = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "hands")])
-    now = datetime.datetime.now(datetime.UTC)
     made = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -122,40 +149,32 @@ def own_certificate(home: Home) -> tuple[Path, Path]:
         .add_extension(x509.SubjectAlternativeName([x509.DNSName("hands"), x509.IPAddress(ipaddress.IPv4Address("127.0.0.1"))]), critical=False)
         .sign(private, hashes.SHA256())
     )
-    key.touch(mode=0o600)
-    key.write_bytes(private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-    cert.write_bytes(made.public_bytes(serialization.Encoding.PEM))
+    # The key goes in first: a start stopped between the two leaves the old certificate, near its end, which the next
+    # start makes again, key and all.
+    os.replace(_private(key, private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())), key)
+    os.replace(_private(cert, made.public_bytes(serialization.Encoding.PEM)), cert)
     return cert, key
 
 
-def tls(home: Home, net: Tailnet | Untailed) -> ssl.SSLContext:
-    """The server's TLS: the tailnet's certificate for its name, hands' own for every other."""
-    own = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    own.load_cert_chain(*own_certificate(home))
-    match net:
-        case Untailed():
-            pass
-        case Tailnet(name=name, cert=cert, key=key):
-            tailed = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            tailed.load_cert_chain(cert, key)
-
-            def chosen(connection: ssl.SSLObject, server_name: str | None, _context: ssl.SSLContext) -> None:
-                # [LAW:single-enforcer] the one place a name picks its certificate: the name the phone asked for.
-                if server_name == name:
-                    connection.context = tailed
-
-            own.sni_callback = chosen  # pyright: ignore[reportAttributeAccessIssue]  (typeshed types the callback for SSLSocket alone)
-    return own
-
-
 def phone_key(home: Home) -> str:
-    """The phone's key: made once, kept in the home, readable by the user alone."""
+    """The phone's key: made once, by whichever of hands and `hands phone` asks first, kept in the home, readable by the
+    user alone; raises Rejected where the file holds none."""
     path = home.phone / "key"
     if not path.exists():
-        home.phone.mkdir(parents=True, exist_ok=True)
-        path.touch(mode=0o600)
-        path.write_text(secrets.token_urlsafe(24))
-    return path.read_text().strip()
+        made = _private(path, secrets.token_urlsafe(24).encode())
+        try:
+            # [LAW:one-source-of-truth] a link, unlike a rename, never replaces: of two keys made at once, the first stands.
+            os.link(made, path)
+        except FileExistsError:
+            pass
+        finally:
+            made.unlink()
+    # [LAW:parse-dont-validate] a blank key would let in an offer that carries none.
+    match path.read_text().strip():
+        case "":
+            raise Rejected(f"{path} holds no key; delete it, and hands makes a new one")
+        case key:
+            return key
 
 
 def lan_addresses() -> list[str]:
@@ -170,10 +189,10 @@ def lan_addresses() -> list[str]:
     ]
 
 
-def page_urls(net: Tailnet | Untailed, lan: list[str], key: str) -> list[str]:
-    """Every address the phone can open the page at, the tailnet's first, each carrying the key in its fragment."""
-    match net:
-        case Tailnet(name=name):
+def page_urls(name: str | Untailed, lan: list[str], key: str) -> list[str]:
+    """Every address the phone can open the page at, the tailnet's name first, each carrying the key in its fragment."""
+    match name:
+        case str():
             hosts = [name, *lan]
         case Untailed():
             hosts = lan
@@ -216,22 +235,54 @@ def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
     return app
 
 
-async def serve_phone(phone: Phone, home: Home, record: Record) -> web.AppRunner:
-    """Serve the page and take its calls on every address this machine has, until the returned runner is cleaned up."""
+async def serve_phone(phone: Phone, home: Home, record: Record) -> Never:
+    """Serve the page and take its calls on every address this machine has, until cancelled; under the tailnet's name,
+    with the certificate Tailscale renews, asked for again every RENEW_SECONDS."""
     net = await tailnet(home)
-    app = phone_app(phone, phone_key(home), record)
-    runner = web.AppRunner(app, access_log=None)
+    own = _context(*own_certificate(home, datetime.datetime.now(datetime.UTC)))
+    runner = web.AppRunner(phone_app(phone, phone_key(home), record), access_log=None)
     await runner.setup()
     try:
-        await web.TCPSite(runner, PHONE_HOST, PHONE_PORT, ssl_context=tls(home, net)).start()
-    except OSError as error:
+        match net:
+            case Tailnet(name=name, cert=cert, key=key):
+                tailed = _context(cert, key)
+
+                def chosen(connection: ssl.SSLObject, server_name: str | None, _context: ssl.SSLContext) -> None:
+                    # [LAW:single-enforcer] the one place a name picks its certificate: the name the phone asked for.
+                    if server_name == name:
+                        connection.context = tailed
+
+                own.sni_callback = chosen  # pyright: ignore[reportAttributeAccessIssue]  (typeshed types the callback for SSLSocket alone)
+                await _site(runner, own)
+                record(PhoneServing(port=PHONE_PORT, tailnet=name))
+                while True:
+                    await asyncio.sleep(RENEW_SECONDS)
+                    match await tailnet(home):
+                        case Tailnet(cert=cert, key=key):
+                            # A context's chain, loaded again, is the one every handshake after it shows.
+                            tailed.load_cert_chain(cert, key)
+                        case Untailed(reason=reason):
+                            logger.warning(f"the tailnet's certificate for the phone's page was not renewed: {reason}")
+            case Untailed(reason=reason):
+                await _site(runner, own)
+                # [LAW:no-silent-failure] the page is still served on the LAN; why the tailnet name is not, is said.
+                logger.warning(f"the phone's page is served on the LAN alone: {reason}")
+                record(PhoneUntailed(port=PHONE_PORT, reason=reason))
+                while True:
+                    # Served until cancelled: there is no certificate of Tailscale's to renew.
+                    await asyncio.sleep(RENEW_SECONDS)
+    finally:
         await runner.cleanup()
+
+
+def _context(cert: Path, key: Path) -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    return context
+
+
+async def _site(runner: web.AppRunner, context: ssl.SSLContext) -> None:
+    try:
+        await web.TCPSite(runner, PHONE_HOST, PHONE_PORT, ssl_context=context).start()
+    except OSError as error:
         raise RuntimeError(f"cannot serve the phone's page on port {PHONE_PORT}: {error}") from error
-    match net:
-        case Tailnet(name=name):
-            record(PhoneServing(port=PHONE_PORT, tailnet=name))
-        case Untailed(reason=reason):
-            # [LAW:no-silent-failure] the page is still served on the LAN; why the tailnet name is not, is said.
-            logger.warning(f"the phone's page is served on the LAN alone: {reason}")
-            record(PhoneUntailed(port=PHONE_PORT, reason=reason))
-    return runner

@@ -1,9 +1,12 @@
 """The phone's call, made by a page played here by aiortc over loopback: its microphone and button in, hands' speech out."""
 
 import asyncio
+import datetime
 import json
+import ssl
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
@@ -17,11 +20,13 @@ from av import AudioFrame
 from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
 from pipecat.transports.local.audio import LocalAudioTransportParams
 
-from hands.sessions.audit import Entry, PhoneArrived, PhoneLeft, PhoneRefused
+from hands.sessions.audit import Entry, PhoneArrived, PhoneLeft, PhoneRefused, PhoneUnreached
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
 from hands.voice.phone import Offer, Phone
-from hands.voice.phonepage import phone_app
+from hands.sessions.home import Home
+from hands.sessions.payload import Rejected
+from hands.voice.phonepage import RENEW_DAYS, own_certificate, phone_app, phone_key
 from hands.voice.ptt import KeyedAudio, PushToTalk
 
 KEY = "the-phone-key"
@@ -90,9 +95,11 @@ async def call() -> AsyncGenerator[Call, None]:
     await page.peer.setRemoteDescription(answer)
     async with asyncio.timeout(10):
         await page.opened.wait()
+        while key.gate.place != "phone":
+            await asyncio.sleep(0.01)
     yield Call(phone, key, page, recorded)
     await page.peer.close()
-    await phone.hang_up("stopped")
+    await phone.stop()
 
 
 async def test_a_call_puts_hands_at_the_phone(call: Call) -> None:
@@ -121,7 +128,7 @@ async def test_a_turn_holds_what_was_said_while_the_button_was_down_and_nothing_
 async def test_the_desk_cannot_end_a_turn_held_at_the_phone(call: Call) -> None:
     call.page.send("press")
     await call.until(lambda: call.key.gate.key == "down")
-    call.key.move("disarm", "desk")  # a Shift typed at the desk
+    assert call.key.move("disarm", "desk") is None  # a Shift typed at the desk
     assert (call.key.gate.key, call.key.gate.place) == ("down", "phone")
 
 
@@ -143,11 +150,35 @@ async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was
     assert isinstance(call.recorded[-1], PhoneLeft) and call.recorded[-1].reason == "hung up"
 
 
-async def test_a_newer_call_replaces_the_one_before_it(call: Call) -> None:
+async def test_a_newer_call_replaces_the_one_before_it_once_it_connects(call: Call) -> None:
     page, offer = await a_page()
-    await page.peer.setRemoteDescription(await call.phone.answer(offer, "100.66.66.10"))
+    answer = await call.phone.answer(offer, "100.66.66.10")
+    # Answered, not yet connected: the call that is up is still the one hands is at.
+    assert [type(entry).__name__ for entry in call.recorded] == ["PhoneArrived"]
+    await page.peer.setRemoteDescription(answer)
+    await call.until(lambda: len(call.recorded) == 3)
     assert [type(entry).__name__ for entry in call.recorded] == ["PhoneArrived", "PhoneLeft", "PhoneArrived"]
+    assert call.recorded[-1] == PhoneArrived(remote="100.66.66.10")
     assert call.key.gate.place == "phone"
+    await page.peer.close()
+
+
+async def test_an_offer_that_never_connects_moves_nothing_and_is_let_go_of_by_the_next() -> None:
+    key, recorded = PushToTalk(lambda _: None), list[Entry]()
+    phone = Phone(key, heard_rate=16000, played_rate=24000, record=recorded.append)
+    unheard, offer = await a_page()
+    await phone.answer(offer, "192.168.7.21")  # its page never takes the answer
+    assert key.gate.place == "desk" and recorded == []
+    page, offer = await a_page()
+    await phone.answer(offer, "192.168.7.22")
+    match recorded:
+        case [PhoneUnreached(remote="192.168.7.21", reason="replaced")]:
+            pass
+        case _:
+            pytest.fail(f"the older offer was not let go of as replaced: {recorded}")
+    await phone.stop()
+    assert isinstance(recorded[-1], PhoneUnreached) and recorded[-1].reason == "stopped"
+    await unheard.peer.close()
     await page.peer.close()
 
 
@@ -173,7 +204,7 @@ async def page_server() -> AsyncGenerator[Served, None]:
     client = TestClient(TestServer(phone_app(phone, KEY, recorded.append)))
     await client.start_server()
     yield client, phone, recorded
-    await phone.hang_up("stopped")
+    await phone.stop()
     await client.close()
 
 
@@ -195,7 +226,9 @@ async def test_an_offer_without_the_phone_key_is_refused_and_recorded(page_serve
     taken = await client.post("/offer", data=body, headers={"Authorization": f"Bearer {KEY}"})
     assert taken.status == 200
     await page.peer.setRemoteDescription(RTCSessionDescription(**await taken.json()))
-    assert isinstance(recorded[-1], PhoneArrived)
+    async with asyncio.timeout(10):
+        while not isinstance(recorded[-1], PhoneArrived):
+            await asyncio.sleep(0.01)
     await page.peer.close()
 
 
@@ -254,3 +287,33 @@ async def test_a_page_that_goes_quiet_is_hung_up_and_hands_is_at_the_desk_again(
     await call.until(lambda: call.key.gate.place == "desk")
     left = call.recorded[-1]
     assert isinstance(left, PhoneLeft) and left.reason == "went quiet"
+
+
+def test_the_phone_key_is_made_once_readable_by_the_user_alone(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    key = phone_key(home)
+    assert key and phone_key(home) == key
+    assert (home.phone / "key").stat().st_mode & 0o777 == 0o600
+    # Nothing is left beside it from its making.
+    assert [path.name for path in home.phone.iterdir()] == ["key"]
+
+
+def test_a_key_file_that_holds_no_key_lets_no_call_in(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.phone.mkdir(parents=True)
+    (home.phone / "key").write_text("\n")
+    with pytest.raises(Rejected, match="holds no key"):
+        phone_key(home)
+
+
+def test_hands_own_certificate_is_kept_until_near_its_end_and_made_again_then(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    made = datetime.datetime(2026, 10, 3, tzinfo=datetime.UTC)
+    cert, key = own_certificate(home, made)
+    first = cert.read_bytes()
+    assert own_certificate(home, made + datetime.timedelta(days=300)) == (cert, key) and cert.read_bytes() == first
+    own_certificate(home, made + datetime.timedelta(days=397 - RENEW_DAYS + 1))
+    assert cert.read_bytes() != first
+    # The certificate and its key are a pair a server loads.
+    ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, key)
+    assert key.stat().st_mode & 0o777 == 0o600

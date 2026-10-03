@@ -25,7 +25,7 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 from loguru import logger
 
-from hands.sessions.audit import PhoneArrived, PhoneGone, PhoneLeft, Record
+from hands.sessions.audit import PhoneArrived, PhoneGone, PhoneLeft, PhoneUnreached, Record
 from hands.voice.hold import Move
 from hands.sessions.payload import Rejected
 from hands.voice.ptt import KeyedAudio, PushToTalk
@@ -142,9 +142,15 @@ class _Call:
 class Phone:
     """The one call to the phone, and what it hears, plays, and presses.
 
+    A call is offered once its page's offer is answered, and is where hands is once its channel opens, the page's
+    first word: hands never moves to a call that cannot yet hear it, and an offer that never connects leaves the call
+    that is up as it was. The newest offer is the page in the user's hand, so it lets go of any older one not yet up.
+
     [LAW:no-ambient-temporal-coupling] the microphone and the button come over one ordered channel, and each message is
     acted on as it arrives: a press moves the gate before the audio sent after it is keyed, and a release after the
     audio sent before it, so a turn holds exactly what was said while the button was down, whatever the network did.
+    Every handler acts only for the call it was made for while that call is still the one it was: a word from a call
+    already gone moves nothing.
     """
 
     def __init__(self, key: PushToTalk, heard_rate: int, played_rate: int, record: Record, clock: Callable[[], float] = time.monotonic) -> None:
@@ -153,37 +159,37 @@ class Phone:
         self._played_rate = played_rate
         self._record = record
         self._clock = clock
+        # The call hands is at, and the newest offer answered and not yet up.
         self._call: _Call | None = None
+        self._offered: _Call | None = None
         # The phone's microphone as the pipeline hears it: keyed frames at the pipeline's rate, while hands is at the phone.
         self.heard: asyncio.Queue[KeyedAudio] = asyncio.Queue()
-        # The moves the page's button has made, already made on the gate, for what follows a move: its tone and its words.
+        # The moves the page's button has made, as the gate took them, for what follows a move: its tone and its words.
         self.moves: asyncio.Queue[Move] = asyncio.Queue()
 
     async def answer(self, offer: Offer, remote: str) -> RTCSessionDescription:
-        """Take the call a page offers, ending the one before it; the answer holds every candidate hands has."""
-        await self.hang_up("replaced")
+        """Answer the call a page offers, with every candidate hands has; it is taken once it connects."""
         # [LAW:one-source-of-truth] no ICE server: the phone reaches hands at an address it already has, on the LAN or
         # the tailnet, so hands' own addresses are every candidate there is.
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         outbound = Outbound(self._played_rate)
         resampler = AudioResampler(format="s16", layout="mono", rate=self._heard_rate)
         call = _Call(peer, outbound, resampler, offer.rate, remote, self._clock(), asyncio.Event())
-        self._call = call
         peer.addTrack(outbound)
 
         @peer.on("datachannel")
-        def opened(channel: RTCDataChannel) -> None:  # pyright: ignore[reportUnusedFunction]
+        async def opened(channel: RTCDataChannel) -> None:  # pyright: ignore[reportUnusedFunction]
             # The page closes its channel as it goes: the plainest word that the user hung up.
             @channel.on("close")
             async def closed() -> None:  # pyright: ignore[reportUnusedFunction]
                 if self._call is call:
                     await self.hang_up("hung up")
 
-            # Watched from the channel's opening: the page sends nothing before it.
-            call.watch = asyncio.create_task(self._watch(call), name="the phone's call watch")
-
             @channel.on("message")
             def said(message: object) -> None:  # pyright: ignore[reportUnusedFunction]
+                if self._call is not call:
+                    # Queued before its call was let go: the call it spoke for is gone, and hands is elsewhere.
+                    return
                 call.heard.set()
                 try:
                     self._hear(call, parse_said(message))
@@ -191,17 +197,53 @@ class Phone:
                     # [LAW:no-silent-failure] the page and hands disagree about what it sends: said, not guessed at.
                     logger.error(str(error))
 
+            if self._offered is call:
+                await self._arrive(call)
+
         @peer.on("connectionstatechange")
         async def changed() -> None:  # pyright: ignore[reportUnusedFunction]
-            if peer.connectionState == "failed" and self._call is call:
-                await self.hang_up("failed")
+            if peer.connectionState == "failed":
+                if self._call is call:
+                    await self.hang_up("failed")
+                if self._offered is call:
+                    self._offered = None
+                    await self._let_go(call, "failed")
 
-        await peer.setRemoteDescription(RTCSessionDescription(offer.sdp, offer.type))
-        await peer.setLocalDescription(await peer.createAnswer())
-        # [LAW:one-source-of-truth] hands is where the call is from the moment it is taken.
-        self._key.go("phone")
-        self._record(PhoneArrived(remote=remote))
+        try:
+            await peer.setRemoteDescription(RTCSessionDescription(offer.sdp, offer.type))
+            await peer.setLocalDescription(await peer.createAnswer())
+        except BaseException:
+            # Never offered, so nothing else holds the peer to close it.
+            await peer.close()
+            raise
+        older, self._offered = self._offered, call
+        await self._let_go(older, "replaced")
         return peer.localDescription
+
+    async def _arrive(self, call: _Call) -> None:
+        # [LAW:no-ambient-temporal-coupling] the call that was up goes, and this one comes, in one step before any
+        # await: a speaker reading the gate between them never finds the phone without a call.
+        self._offered = None
+        gone = self._leave("replaced")
+        self._call = call
+        self._key.go("phone")
+        self._record(PhoneArrived(remote=call.remote))
+        # Watched from the channel's opening: the page sends nothing before it.
+        call.watch = asyncio.create_task(self._watch(call), name="the phone's call watch")
+        match gone:
+            case None:
+                pass
+            case _Call():
+                await gone.peer.close()
+
+    async def _let_go(self, offered: _Call | None, reason: PhoneGone) -> None:
+        # An offer is let go of once it is no longer the one offered, so no other handler of it acts again.
+        match offered:
+            case None:
+                pass
+            case _Call():
+                self._record(PhoneUnreached(remote=offered.remote, reason=reason, seconds=round(self._clock() - offered.started, 1)))
+                await offered.peer.close()
 
     async def _watch(self, call: _Call) -> None:
         while True:
@@ -225,24 +267,40 @@ class Phone:
                         audio = out.to_ndarray().astype(np.int16).tobytes()
                         self.heard.put_nowait(KeyedAudio(audio=gate.audible(audio), sample_rate=self._heard_rate, num_channels=1, key=gate.key))
             case move:
-                self._key.move(move, "phone")
-                self.moves.put_nowait(move)
+                match self._key.move(move, "phone"):
+                    case None:
+                        pass
+                    case taken:
+                        self.moves.put_nowait(taken)
 
-    async def hang_up(self, reason: PhoneGone) -> None:
-        """End the call, if there is one, and be at the desk again."""
+    def _leave(self, reason: PhoneGone) -> _Call | None:
+        # [LAW:no-ambient-temporal-coupling] the place moves in the same step the call goes, before any await: a
+        # speaker reading the gate after this never finds the phone without a call.
         call, self._call = self._call, None
         match call:
             case None:
-                return
+                return None
             case _Call():
-                # [LAW:no-ambient-temporal-coupling] the place moves in the same step the call goes, before any await:
-                # a speaker reading the gate after this never finds the phone without a call.
                 self._key.go("desk")
                 call.outbound.stop()
                 if call.watch is not None and call.watch is not asyncio.current_task():
                     call.watch.cancel()
                 self._record(PhoneLeft(remote=call.remote, reason=reason, seconds=round(self._clock() - call.started, 1)))
+                return call
+
+    async def hang_up(self, reason: PhoneGone) -> None:
+        """End the call, if there is one, and be at the desk again."""
+        match self._leave(reason):
+            case None:
+                pass
+            case call:
                 await call.peer.close()
+
+    async def stop(self) -> None:
+        """End the call and let go of any offer, as hands stops."""
+        offered, self._offered = self._offered, None
+        await self._let_go(offered, "stopped")
+        await self.hang_up("stopped")
 
     def play(self, audio: bytes) -> asyncio.Future[None]:
         """Send 16-bit mono audio at the played rate to the phone; resolved once it has gone, or the call has ended."""
