@@ -108,9 +108,9 @@ async def test_a_turn_is_asked_for_only_of_a_running_session_and_one_with_nothin
         "turn": "[hands] The Claude Code session one finished a turn with nothing in it hands could tell. Tell the user so.",
         "now": "not reported yet",
     }
-    recounts.put(member.id, PromptId("p1"), News(None, "Told.", "", "", ()))
+    recounts.put(member.id, PromptId("p1"), News(None, "Told.", "", "", (), frozenset()))
     recounts.unread(member.id, PromptId("p1"))
-    assert (await asked.body(session=member.id))["turn"] == f"{speech.told(member.id, 'one', (News(None, 'Told.', '', '', ()),))}\n\n[hands] hands could not read the rest of the turn the Claude Code session one finished. Tell the user so."
+    assert (await asked.body(session=member.id))["turn"] == f"{speech.told(member.id, 'one', (News(None, 'Told.', '', '', (), frozenset()),))}\n\n[hands] hands could not read the rest of the turn the Claude Code session one finished. Tell the user so."
 
 
 async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatched_one_s_until_asked(tmp_path: Path) -> None:
@@ -171,7 +171,7 @@ async def test_a_turn_asked_for_moves_the_focus_to_its_session_as_a_turn_told_as
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member, "startup"))
     recounts = Recounts()
-    recounts.put(member.id, PromptId("p1"), News(None, "Told.", "", "", ()))
+    recounts.put(member.id, PromptId("p1"), News(None, "Told.", "", "", (), frozenset()))
     recorded: list[Entry] = []
     await tell_turn_tool(sessions, recounts, Refocus(sessions, home, recorded.append)).body(session=member.id)
     assert focused(home) == member.id

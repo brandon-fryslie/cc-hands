@@ -94,6 +94,9 @@ WRITTEN_AND_SPOKEN = [
     ("See hands.core.spoken for details.", "See hands core spoken for details."),
     # The period ends the sentence, and taking it with the address runs the next sentence into this one.
     ("See https://docs.pipecat.ai/guide. It explains the rest.", "See a link. It explains the rest."),
+    # A slash command is its name: a skill run in a subagent is named by the command that invoked it.
+    ("its subagent to /code-review high 152", "its subagent to code review high 152"),
+    ("Run /lit:next to pull it.", "Run lit next to pull it."),
 ]
 
 

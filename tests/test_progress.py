@@ -103,7 +103,7 @@ def test_only_the_focus_is_heard_working_and_never_a_muted_one(focused: bool, ov
 
 
 def finished(session: SessionId) -> Finished:
-    return Finished(session, (News(TURN, "Done.", "", "", ()),))
+    return Finished(session, (News(TURN, "Done.", "", "", (), frozenset()),))
 
 
 @pytest.mark.parametrize(
@@ -475,18 +475,28 @@ RUNS = '{"type":"assistant","parentUuid":"u1","uuid":"u2","message":{"content":[
 SKILL = '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"code-review","args":"high 152"}}]}}'
 
 
-def subagent(transcript: Path, meta: dict[str, object], *records: str) -> Path:
+def subagent(transcript: Path, meta: dict[str, object], *records: str, id: AgentId = AGENT) -> Path:
     """A subagent of the session `transcript` is the transcript of, as Claude Code starts it: the file naming its job, then its own transcript."""
     folder = transcript.with_suffix("") / "subagents"
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"agent-{AGENT}.meta.json").write_text(json.dumps(meta))
-    own = folder / f"agent-{AGENT}.jsonl"
+    (folder / f"agent-{id}.meta.json").write_text(json.dumps(meta))
+    own = folder / f"agent-{id}.jsonl"
     own.write_text(lines(*records))
     return own
 
 
 async def progressed(tails: Tails) -> list[Progressed]:
     return [event for event in await tails.catch_up() if isinstance(event, Progressed)]
+
+
+async def logged[T](level: str, heard: Awaitable[T]) -> tuple[T, list[str]]:
+    """What `heard` comes to, and what the log says at `level` while it runs."""
+    said: list[str] = []
+    sink = logger.add(lambda message: said.append(str(message)), level=level)
+    try:
+        return await heard, said
+    finally:
+        logger.remove(sink)
 
 
 @pytest.mark.parametrize("job", [JOB, LAUNCH], ids=["a prompt", "a fork's launching call"])
@@ -496,7 +506,10 @@ async def test_a_subagent_is_heard_call_by_call_as_the_work_of_the_call_that_sta
     tails = Tails(Known(transcript))
     await tails.catch_up()
     own = subagent(transcript, {"agentType": "general-purpose", "description": "Review the parser change"}, job, READS)
-    assert await progressed(tails) == [Progressed(SID, REVIEW, (READ_TAIL,), 7.0)]
+    heard, infos = await logged("INFO", progressed(tails))
+    assert heard == [Progressed(SID, REVIEW, (READ_TAIL,), 7.0)]
+    # [LAW:nothing-unseen] which said who started it.
+    assert any(f"subagent {AGENT} is heard as the work of the job agent-{AGENT}.meta.json names: 'Review the parser change'" in line for line in infos)
     with own.open("a") as file:
         file.write(lines(RUNS))
     assert await progressed(tails) == [Progressed(SID, REVIEW, (TESTS,), 7.0)]
@@ -508,8 +521,10 @@ async def test_a_subagent_already_working_as_hands_follows_its_session_is_heard_
     transcript.write_text(lines(ASKED))
     own = subagent(transcript, {"description": "Review the parser change"}, JOB, READS)
     tails = Tails(Known(transcript))
-    # What it did before hands followed its session is history.
-    assert await progressed(tails) == []
+    # What it did before hands followed its session is history, and the log says how much.
+    heard, infos = await logged("INFO", progressed(tails))
+    assert heard == []
+    assert any(f"subagent {AGENT} of session {SID} was working before hands followed the session" in line and f"{own.stat().st_size} bytes of it are history" in line for line in infos)
     with own.open("a") as file:
         file.write(lines(RUNS))
     assert await progressed(tails) == [Progressed(SID, REVIEW, (TESTS,), 7.0)]
@@ -524,7 +539,37 @@ async def test_a_skill_run_in_a_subagent_of_its_own_is_the_work_of_the_skill_its
     with transcript.open("a") as file:
         file.write(lines(SKILL))
     subagent(transcript, {"agentType": "general-purpose", "requestShape": "foreground"}, JOB, READS)
-    assert [event for event in await progressed(tails) if isinstance(event.of, AgentTask)] == [Progressed(SID, AgentTask(AGENT, "/code-review high 152"), (READ_TAIL,), 7.0)]
+    heard, infos = await logged("INFO", progressed(tails))
+    assert [event for event in heard if isinstance(event.of, AgentTask)] == [Progressed(SID, AgentTask(AGENT, "/code-review high 152"), (READ_TAIL,), 7.0)]
+    assert any(f"subagent {AGENT} names no job, so it is heard as the work of the one skill its parent is running: '/code-review high 152'" in line for line in infos)
+
+
+async def test_a_subagent_a_subagent_started_is_heard_as_the_work_of_the_call_in_the_session_that_started_the_first(tmp_path: Path) -> None:
+    # Measured: Claude Code keeps a subagent's own subagents beside the session's, each naming the one that started it.
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    tails = Tails(Known(transcript))
+    await tails.catch_up()
+    subagent(transcript, {"description": "Review the parser change", "spawnDepth": 1}, JOB, READS)
+    nested = AgentId("a0b72288f3a9809d1")
+    subagent(transcript, {"description": "Check the fold", "parentAgentId": AGENT, "spawnDepth": 2}, JOB, RUNS, id=nested)
+    heard = await progressed(tails)
+    assert sorted(heard, key=str) == sorted([Progressed(SID, REVIEW, (READ_TAIL,), 7.0), Progressed(SID, REVIEW, (TESTS,), 7.0)], key=str)
+
+
+async def test_a_subagent_s_transcript_written_again_shorter_is_read_again_from_its_start(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    tails = Tails(Known(transcript))
+    await tails.catch_up()
+    own = subagent(transcript, {"description": "Review the parser change"}, JOB, READS, RUNS)
+    assert await progressed(tails) == [Progressed(SID, REVIEW, (READ_TAIL, TESTS), 7.0)]
+    own.write_text(lines(JOB, READS))
+    _, warnings = await logged("WARNING", tails.catch_up())
+    assert any(f"the transcript of subagent {AGENT} of session {SID} is shorter than what was read of it" in line for line in warnings)
+    with own.open("a") as file:
+        file.write(lines(RUNS))
+    assert await progressed(tails) == [Progressed(SID, REVIEW, (TESTS,), 7.0)]
 
 
 async def test_a_subagent_nothing_says_the_start_of_is_said_in_the_log_and_never_told_as_another_s(tmp_path: Path) -> None:
@@ -532,14 +577,18 @@ async def test_a_subagent_nothing_says_the_start_of_is_said_in_the_log_and_never
     transcript.write_text(lines(ASKED))
     tails = Tails(Known(transcript))
     await tails.catch_up()
-    subagent(transcript, {"agentType": "general-purpose"}, JOB, READS)
+    own = subagent(transcript, {"agentType": "general-purpose"}, JOB, READS)
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
     try:
         assert await progressed(tails) == []
+        # Said once: every call it makes after is told as nobody's, and the log does not say so again for each.
+        with own.open("a") as file:
+            file.write(lines(RUNS))
+        assert await progressed(tails) == []
     finally:
         logger.remove(sink)
-    assert len(errors) == 1 and f"subagent {AGENT} of session {SID}" in errors[0] and "Unstarted" in errors[0]
+    assert len(errors) == 1 and f"subagent {AGENT} of session {SID} sets out to do is never told: Unstarted" in errors[0]
 
 
 def idle() -> Registry:
@@ -567,13 +616,18 @@ def test_a_subagent_s_burst_and_its_parent_s_are_told_apart() -> None:
     assert reduce(registry, Tick(10.0 + SETTLE))[1] == [Progress(SID, frozenset({TURN}), (Doing(EDITING, "edit a.py"),), ""), Progress(SID, REVIEW, (TESTS,), "")]
 
 
-def test_a_subagent_s_work_folds_only_with_its_own_and_gives_way_to_a_result_told_after_it() -> None:
+def test_a_subagent_s_work_folds_only_with_its_own_and_gives_way_to_the_result_it_reports_back_to() -> None:
     own = Working(SID, frozenset({TURN}), (Doing(EDITING, "edit a.py"),))
-    finished = Finished(SID, (News(PromptId("p2"), "Done.", "", "", ()),))
+    reported = Finished(SID, (News(PromptId("p2"), "Done.", "", "", (), frozenset({AGENT})),))
     assert coalesce((Working(SID, REVIEW, (READ_TAIL,)), own, Working(SID, REVIEW, (TESTS,))), {}) == (Working(SID, REVIEW, (READ_TAIL, TESTS)), own)
-    # Whichever turn it reports back to tells its work better than progress heard after that turn's result.
-    assert coalesce((Working(SID, REVIEW, (TESTS,)), finished), {}) == (finished,)
-    assert coalesce((finished, Working(SID, REVIEW, (TESTS,))), {}) == (finished, Working(SID, REVIEW, (TESTS,)))
+    # The turn it reports back to tells its work better, wherever its last burst settled.
+    assert coalesce((Working(SID, REVIEW, (TESTS,)), reported), {}) == (reported,)
+    assert coalesce((reported, Working(SID, REVIEW, (TESTS,))), {}) == (reported,)
+
+
+def test_a_subagent_working_on_in_the_background_is_still_news_after_a_result_that_does_not_report_it() -> None:
+    unrelated = Finished(SID, (News(PromptId("p2"), "Done.", "", "", (), frozenset()),))
+    assert coalesce((Working(SID, REVIEW, (TESTS,)), unrelated), {}) == (Working(SID, REVIEW, (TESTS,)), unrelated)
 
 
 def test_a_subagent_s_work_is_said_as_the_job_its_call_gave_it() -> None:

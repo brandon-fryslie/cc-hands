@@ -278,7 +278,7 @@ def asking(session: SessionId, request: str) -> Unprompted:
 
 
 def finished(session: SessionId, reply: str) -> Unprompted:
-    return Unprompted(Finished(session, (News(None, reply, "", "", ()),)))
+    return Unprompted(Finished(session, (News(None, reply, "", "", (), frozenset()),)))
 
 
 async def test_a_session_waiting_while_the_key_is_held_is_said_after_the_users_turn_is_sent_and_not_before(rig: Rig) -> None:

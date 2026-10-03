@@ -15,7 +15,7 @@ EDIT = Permission("Edit", {"file_path": "a.py"})
 
 
 def news(reply: str) -> News:
-    return News(PromptId(reply), reply, "", "", (Segment(THE_TESTS, "one test run"),))
+    return News(PromptId(reply), reply, "", "", (Segment(THE_TESTS, "one test run"),), frozenset())
 
 
 def finished(session: SessionId, *replies: str) -> Finished:
@@ -129,6 +129,6 @@ def test_coalesce(pending: Sequence[Pending], waiting: Mapping[SessionId, Held],
 
 
 def test_a_folded_telling_keeps_every_turn_s_parts() -> None:
-    first, second = News(None, "one", "", "", (Segment(THE_TESTS, "one test run"),)), News(None, "two", "It committed.", "Push it?", ())
+    first, second = News(None, "one", "", "", (Segment(THE_TESTS, "one test run"),), frozenset()), News(None, "two", "It committed.", "Push it?", (), frozenset())
     [folded] = coalesce((Finished(API, (first,)), Finished(API, (second,))), {})
     assert folded == Finished(API, (first, second))

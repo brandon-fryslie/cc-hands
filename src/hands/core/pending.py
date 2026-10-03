@@ -13,7 +13,7 @@ from hands.core.effects import DeadlineNear, Expired, Narrate, Note, SessionGone
 from hands.core.narration import Segment
 from hands.core.progress import Doing
 from hands.core.session import Held, PromptId, SessionId
-from hands.core.turn import AgentTask
+from hands.core.turn import AgentId, AgentTask
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,8 @@ class News:
     facts: str
     asked: str
     parts: tuple[Segment, ...]
+    # The subagents whose reports it carries, and with them their work.
+    reported: frozenset[AgentId]
 
 
 def went_on(before: News, after: News) -> bool:
@@ -147,12 +149,13 @@ def _current(pending: Sequence[Pending]) -> list[Pending]:
 def _ends(end: Finished | Unread | SessionGone, progress: Working, before: bool) -> bool:
     """Whether `end` tells how the turn `progress` was made in went: a result of that turn, or the session gone; and a
     turn that could not be read, which goes by no id, if it is told after the progress came. A subagent's work is told
-    with whichever turn it reports back to, so any result of its session told after the progress came is newer news."""
+    with the turn it reports back to, wherever that stands: a burst that settled after the report was read is the work
+    the report tells. Any other result leaves it news, as it is of a subagent working on in the background."""
     match end, progress.of:
         case Finished(session=session, news=news), frozenset() as turn:
             return session == progress.session and any(each.turn in turn for each in news)
-        case Finished(session=session), AgentTask():
-            return session == progress.session and before
+        case Finished(session=session, news=news), AgentTask(id=agent):
+            return session == progress.session and any(agent in each.reported for each in news)
         case SessionGone(session=session), _:
             return session == progress.session
         case Unread(session=session), _:
