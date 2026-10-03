@@ -61,6 +61,15 @@ def set_attention(home: Home, to: Attention) -> None:
     replace_whole(home.attention, json.dumps(asdict(to)) + "\n", 0o644)
 
 
+def asked(home: Home, changes: Sequence[tuple[str, str]]) -> Attention:
+    """What is set once `changes` are made, as the CLI and the voice tool are both asked: none only reads what is set, and
+    writes nothing, so a question never lands over a change made meanwhile [LAW:single-enforcer]."""
+    to = changed(attention(home), changes)
+    if changes:
+        set_attention(home, to)
+    return to
+
+
 def described(attention: Attention) -> str:
     """What is set, as a sentence a person can be read: each kind, then quiet, then what is spoken whatever is set."""
     finished = {
@@ -87,10 +96,7 @@ def main(argv: Sequence[str]) -> int:
         if len(argv) % 2:
             print(f"hands attention: expected a kind and its level, in pairs, got {' '.join(argv)!r}", file=sys.stderr)
             return 2
-        to = changed(attention(home), list(zip(argv[::2], argv[1::2], strict=True)))
-        if argv:
-            set_attention(home, to)
-        print(described(to))
+        print(described(asked(home, list(zip(argv[::2], argv[1::2], strict=True)))))
     except (Rejected, OSError) as error:
         print(f"hands attention: {error}", file=sys.stderr)
         return 1

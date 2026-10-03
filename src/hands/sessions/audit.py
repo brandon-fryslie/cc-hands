@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     # Defined only in loguru's type stubs.
     from loguru import Message
 
-from hands.core.attention import Amount, Attention, Delivery, Overlay, Route
+from hands.core.attention import Amount, Attention, Delivery, EndedRoute, Overlay, Route
 from hands.core.delta import Branched, PullRequested, Pushed
 from hands.core.effects import AfterEnd, Allow, AuditRecord, Deny, Effect, Heard, Holding, Input, Type, Unclosed, Unmatched, Unregistered, Unsettled
 from hands.core.events import Event
@@ -323,7 +323,7 @@ class EndedRouted:
 
     session: SessionId
     attention: Attention
-    route: Route
+    route: EndedRoute
 
 
 RefocusOutcome = Literal["moved", "ended", "failed"]

@@ -110,6 +110,14 @@ def test_the_focus_is_heard_working_as_much_as_progress_is_set_and_not_at_all_wh
     assert progress_route(Attention(progress=progress, quiet=quiet), True, "normal") == route
 
 
+def working(session: SessionId, turn: Turn) -> Session:
+    return Session(Membership(session, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl")), Running(Busy(), Stamp(1000), None), mode=None, turn=turn)
+
+
+# Each session as the floor reads it letting go: still in the turn its progress came from, and the one after it.
+LIVE = {session: working(session, Opened(TURN, others=IN_NEXT)) for session in (SID, OTHER)}
+
+
 def finished(session: SessionId) -> Finished:
     return Finished(session, (News(TURN, "Done.", "", "", (), frozenset()),), "full")
 
@@ -145,7 +153,7 @@ def finished(session: SessionId) -> Finished:
     ],
 )
 def test_progress_folds_and_gives_way_to_the_result(pending: tuple[Pending, ...], told: tuple[Pending, ...]) -> None:
-    assert coalesce(pending, {}) == told
+    assert coalesce(pending, LIVE) == told
 
 
 def test_progress_heard_is_said_as_written_in_the_lane_its_telling_keeps() -> None:
@@ -690,15 +698,28 @@ def test_a_subagent_s_burst_and_its_parent_s_are_told_apart() -> None:
 def test_a_subagent_s_work_folds_only_with_its_own_and_gives_way_to_the_result_it_reports_back_to() -> None:
     own = Working(SID, frozenset({TURN}), (Doing(EDITING, "edit a.py"),))
     reported = Finished(SID, (News(PromptId("p2"), "Done.", "", "", (), frozenset({AGENT})),), "full")
-    assert coalesce((Working(SID, REVIEW, (READ_TAIL,)), own, Working(SID, REVIEW, (TESTS,))), {}) == (Working(SID, REVIEW, (READ_TAIL, TESTS)), own)
+    assert coalesce((Working(SID, REVIEW, (READ_TAIL,)), own, Working(SID, REVIEW, (TESTS,))), LIVE) == (Working(SID, REVIEW, (READ_TAIL, TESTS)), own)
     # The turn it reports back to tells its work better, wherever its last burst settled.
-    assert coalesce((Working(SID, REVIEW, (TESTS,)), reported), {}) == (reported,)
-    assert coalesce((reported, Working(SID, REVIEW, (TESTS,))), {}) == (reported,)
+    assert coalesce((Working(SID, REVIEW, (TESTS,)), reported), LIVE) == (reported,)
+    assert coalesce((reported, Working(SID, REVIEW, (TESTS,))), LIVE) == (reported,)
 
 
 def test_a_subagent_working_on_in_the_background_is_still_news_after_a_result_that_does_not_report_it() -> None:
     unrelated = Finished(SID, (News(PromptId("p2"), "Done.", "", "", (), frozenset()),), "full")
-    assert coalesce((Working(SID, REVIEW, (TESTS,)), unrelated), {}) == (Working(SID, REVIEW, (TESTS,)), unrelated)
+    assert coalesce((Working(SID, REVIEW, (TESTS,)), unrelated), LIVE) == (Working(SID, REVIEW, (TESTS,)), unrelated)
+
+
+@pytest.mark.parametrize(
+    ("live", "told"),
+    [
+        pytest.param({OTHER: LIVE[OTHER]}, (Working(OTHER, IN_TURN, (TESTS,)),), id="a session gone meanwhile, its ending said or not"),
+        pytest.param({**LIVE, SID: working(SID, Told(TURN))}, (Working(SID, REVIEW, (TESTS,)), Working(OTHER, IN_TURN, (TESTS,))), id="a turn finished meanwhile, its result told or held, its subagent still news"),
+        pytest.param({**LIVE, SID: working(SID, Opened(PromptId("p3")))}, (Working(SID, REVIEW, (TESTS,)), Working(OTHER, IN_TURN, (TESTS,))), id="a turn the next one replaced, its subagent still news"),
+    ],
+)
+def test_progress_of_a_turn_that_ended_while_it_was_held_is_dropped_as_it_is_let_go(live: Mapping[SessionId, Session], told: tuple[Pending, ...]) -> None:
+    """Whatever was queued of the ending: with ended or finished turns off, or quiet, nothing of it reaches the floor."""
+    assert coalesce((Working(SID, IN_TURN, (edit("a.py"),)), Working(SID, REVIEW, (TESTS,)), Working(OTHER, IN_TURN, (TESTS,))), live) == told
 
 
 def test_a_subagent_s_work_is_said_as_the_job_its_call_gave_it() -> None:

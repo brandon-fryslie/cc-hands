@@ -414,9 +414,10 @@ becomes `note`, and its `narrate` stays, since a session that asks needs an answ
 value is a new column `[LAW:one-type-per-behavior]`.
 
 Pending speech is ordered as the floor lets it go, and nothing starts while the key is
-down. `coalesce` (`core/pending.py`) is pure: it drops what no longer waits on the user, a
-request answered at the keyboard while you talked and a deadline counted down on it, read
-off each session's held dialog, by request id, as the floor lets go; it folds one session's
+down. `coalesce` (`core/pending.py`) is pure: it drops what is no longer so, read off the
+live sessions as the floor lets go: a request answered at the keyboard while you talked and
+a deadline counted down on it, by the held dialog's request id, and progress of a turn that
+ended meanwhile, whether or not its ending was told; it folds one session's
 finished turns into one `Finished` where the first stood, whose headline covers them all
 ("finished 3 turns") and whose tellings keep their narration parts and so their record ids,
 so three `Stop`s that arrived while you were talking start with one sentence, not three, and

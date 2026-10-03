@@ -102,11 +102,15 @@ def progress_route(attention: Attention, focused: bool, overlay: Overlay) -> Rou
             return amount
 
 
-def ended_route(attention: Attention) -> Route:
+# How a session ending reaches the user: said as it happens, or a "note", as a Route's is. Ending is a Switch, so it has no amount.
+EndedRoute = Literal["said", "note"]
+
+
+def ended_route(attention: Attention) -> EndedRoute:
     """A session ending is said, unless that is off or hands is quiet; it is in the audit log either way, for catch_up."""
     match attention.quiet, attention.ended:
         case "off", "on":
-            return "full"
+            return "said"
         case "on", _:
             return "note"
         case _, "off":

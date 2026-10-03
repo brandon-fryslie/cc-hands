@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from loguru import logger
 from pipecat.frames.frames import Frame
 
-from hands.core.attention import DEFAULT as DEFAULT_OVERLAY, Amount, Attention, Delivery, Overlay, Route, Spoken, Withheld, delivery, ended_route
+from hands.core.attention import DEFAULT as DEFAULT_OVERLAY, Amount, Attention, Delivery, EndedRoute, Overlay, Spoken, Withheld, delivery, ended_route
 from hands.core.delta import Delta
 from hands.core.effects import SessionGone, Summarise
 from hands.core.narration import Segment, narration
@@ -209,9 +209,9 @@ def _delivered[T](delivered: Delivery, told: Callable[[Amount], T]) -> T | None:
             return None
 
 
-def _routed(route: Route, gone: SessionGone) -> SessionGone | None:
+def _routed(route: EndedRoute, gone: SessionGone) -> SessionGone | None:
     match route:
-        case "brief" | "full":
+        case "said":
             return gone
         case "note":
             # [LAW:one-source-of-truth] the audit log holds the ending, for catch_up to tell when asked.

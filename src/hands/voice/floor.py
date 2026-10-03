@@ -6,8 +6,9 @@ ahead of anything queued, so the floor, which sits ahead of it, is taken the mom
 given back into the aggregator's queue behind the frame that closed the turn, so the user's words reach the model first
 and what hands had to say follows them. A session that stops while the user talks is announced after they let go, never
 over them. As the turn closes, `coalesce` orders what waited: what a session waits on the user for before what a
-session did, each session's finished turns folded into one telling, and what no longer waits on the user, a request
-answered at the keyboard meanwhile, dropped. Nothing else is dropped, since none of it had started to play.
+session did, each session's finished turns folded into one telling, and what is no longer so dropped: a request
+answered at the keyboard meanwhile, and progress of a turn that ended meanwhile. Nothing else is dropped, since none of
+it had started to play.
 
 This is the one queue what hands tells of the sessions waits in before the model's stage, under either telling: the
 brain's stage keeps its own lanes behind it, and an API model's notes join the context here, behind the user's turn. The
@@ -22,7 +23,7 @@ from pipecat.frames.frames import DataFrame, Frame, UserStartedSpeakingFrame, Us
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core.pending import Pending, coalesce
-from hands.core.session import Held, SessionId
+from hands.core.session import Session, SessionId
 from hands.sessions.audit import Record, Yielded
 from hands.voice.speech import Names, Telling, Unprompted, frames
 
@@ -51,14 +52,14 @@ class Floor(FrameProcessor):
         record: Record,
         telling: Telling,
         names: Names,
-        held: Callable[[], Mapping[SessionId, Held]],
+        live: Callable[[], Mapping[SessionId, Session]],
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._record = record
         self._telling = telling
         self._names = names
-        self._held = held
+        self._live = live
         self._now = clock
         self._taken: _Taken | None = None
 
@@ -92,8 +93,8 @@ class Floor(FrameProcessor):
                 await self.push_frame(frame, direction)
 
     async def _let_go(self, pending: list[Pending], waited: float) -> None:
-        """Tell what was pending, as `coalesce` orders and folds it, with what waits on the user read as it is let go."""
-        told = coalesce(pending, self._held())
+        """Tell what was pending, as `coalesce` orders and folds it, with the sessions read as it is let go."""
+        told = coalesce(pending, self._live())
         for each in told:
             for spoken in frames(each, self._telling, self._names):
                 await self.push_frame(spoken)

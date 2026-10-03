@@ -213,7 +213,14 @@ async def test_asking_what_is_set_changes_nothing_and_says_it(tmp_path: Path) ->
     assert result == {
         "readback": "Finished turns wait until you ask, except a watched session's. I tell each step the focused session takes. I say when a session ends. What needs your answer is always said."
     }
-    assert attention(Home(tmp_path)) == Attention()
+    # Read and never written, so it cannot land over a change made meanwhile.
+    assert not Home(tmp_path).attention.exists()
+
+
+async def test_a_change_missing_its_level_is_refused_to_the_model_with_nothing_set(tmp_path: Path) -> None:
+    result = await attention_tool(home := Home(tmp_path)).body(changes=[{"kind": "quiet"}])
+    assert result == {"error": "missing field 'level'"}
+    assert not home.attention.exists()
 
 
 async def test_a_kind_turned_on_is_all_of_it_and_a_level_a_kind_does_not_have_is_refused_with_nothing_set(tmp_path: Path) -> None:
@@ -261,7 +268,11 @@ async def test_setting_a_session_s_overlay_says_what_is_told_of_it_and_holds(tmp
     ("set_to", "readback"),
     [
         (Attention(finished="full"), "I'll tell you each turn dropped finishes, as I tell every session's."),
-        (Attention(finished="full", quiet="on"), "I'll tell you each turn dropped finishes once I'm no longer keeping quiet; until then I'll hold them."),
+        (
+            Attention(finished="full", quiet="on"),
+            "For now I'm keeping quiet and holding dropped's turns. After that, I'll tell you each turn dropped finishes, as I tell every session's.",
+        ),
+        (Attention(quiet="on"), "For now I'm keeping quiet and holding dropped's turns. After that, I'll hold dropped's turns until you ask for one."),
     ],
 )
 async def test_a_normal_session_s_readback_says_how_its_turns_are_told_as_set(tmp_path: Path, set_to: Attention, readback: str) -> None:

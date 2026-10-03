@@ -346,7 +346,7 @@ async def run(
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
             async with mind(config, tools, lambda: as_sent(sessions, home), refocus, proxy.url, wire, store, home.fritter, home.audit, audit.record) as minded:
-                floor = Floor(audit.record, minded.telling, lambda id: spoken_name(sessions, id), sessions.held)
+                floor = Floor(audit.record, minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, player, floor, refocus), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)

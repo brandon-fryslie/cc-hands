@@ -39,7 +39,8 @@ from hands.voice.player import Player
 from hands.voice.ptt import Key, KeyedAudio
 from hands.core.effects import Asking, Narrate, SessionGone
 from hands.core.pending import Finished, News
-from hands.core.session import Held, Permission, RequestId, SessionId
+from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
+from hands.core.status import Busy, Stamp
 from hands.voice.speech import Pushed, Unprompted
 from hands.voice.turnstop import TurnOpened, TurnResolved
 from hands.voice.whisper import Whisper
@@ -121,8 +122,8 @@ class Rig:
     out: Recorded
     recorded: list[Entry]
     clock: Clock
-    # Each session's dialog that waits on the user, as the floor reads it when it lets go.
-    held: dict[SessionId, Held]
+    # Each live session, as the floor reads it when it lets go.
+    live: dict[SessionId, Session]
     # What each transcription, oldest first, will find; it waits for the test to say.
     texts: asyncio.Queue[str] = field(default_factory=asyncio.Queue[str])
     # The audio each transcription was given.
@@ -165,7 +166,7 @@ async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator
         floor=Floor(lambda _: None, Pushed(), lambda id: id, dict),
         refocus=Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append),
     )
-    out, clock, held = Recorded(), Clock(), dict[SessionId, Held]()
+    out, clock, live = Recorded(), Clock(), dict[SessionId, Session]()
     texts: asyncio.Queue[str] = asyncio.Queue()
     heard: list[bytes] = []
 
@@ -177,8 +178,8 @@ async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator
 
     monkeypatch.setattr(WhisperSTTServiceMLX, "run_stt", transcribe)
     # The floor sits where build_voice puts it, between Whisper and the user aggregator.
-    async with running([voice.stt, Floor(recorded.append, Pushed(), lambda id: id, lambda: held, clock), voice.user_turns, out]) as run:
-        yield Rig(run.worker, voice.stt, out, recorded, clock, held, texts, heard)
+    async with running([voice.stt, Floor(recorded.append, Pushed(), lambda id: id, lambda: live, clock), voice.user_turns, out]) as run:
+        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard)
 
 
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
@@ -296,8 +297,15 @@ async def test_a_session_waiting_while_the_key_is_held_is_said_after_the_users_t
     assert [(entry.held, entry.told, entry.waited) for entry in rig.recorded if isinstance(entry, Yielded)] == [(("SessionGone",), ("SessionGone",), 3.5)]
 
 
+def waiting_on(session: SessionId, request: str) -> Session:
+    """The session live, its dialog waiting on the user to answer `request`."""
+    member = Membership(session, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl"))
+    dialog = Held(Permission("Bash", {"command": "ls"}), RequestId(request), deadline=60.0, warned=False)
+    return Session(member, Running(Busy(), Stamp(1000), None), mode=None, dialog=dialog)
+
+
 async def test_a_request_for_an_api_model_while_the_key_is_held_joins_the_context_after_the_users_turn(rig: Rig) -> None:
-    rig.held[API] = Held(Permission("Bash", {"command": "ls"}), RequestId("r1"), deadline=60.0, warned=False)
+    rig.live[API] = waiting_on(API, "r1")
     await rig.hold(["down", "down"])
     await rig.until(lambda: rig.out.started == 1)
     await rig.worker.queue_frames([asking(API, "r1"), TextFrame("marker")])
@@ -312,7 +320,7 @@ async def test_a_request_for_an_api_model_while_the_key_is_held_joins_the_contex
 async def test_two_sessions_finishing_during_one_held_key_are_told_asks_first_and_one_telling_a_session(rig: Rig) -> None:
     """What a session waits on the user for is told before what a session did; a session's turns that finished while
     the user talked are one telling; and a request answered at the keyboard meanwhile is not told at all."""
-    rig.held[WEB] = Held(Permission("Bash", {"command": "ls"}), RequestId("w2"), deadline=60.0, warned=False)
+    rig.live[WEB] = waiting_on(WEB, "w2")
     await rig.hold(["down", "down"])
     await rig.until(lambda: rig.out.started == 1)
     # web's first request was answered at the keyboard while the key was down; its second still waits.

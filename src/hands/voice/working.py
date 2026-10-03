@@ -9,10 +9,9 @@ from pipecat.frames.frames import Frame
 
 from hands.core.attention import Amount
 from hands.core.effects import Progress
-from hands.core.pending import Working
+from hands.core.pending import Working, current
 from hands.core.progress import WRITING, Doing, explained
-from hands.core.session import Opened, PromptId, Session, SessionId, ids
-from hands.core.turn import AgentTask
+from hands.core.session import Session, SessionId
 from hands.sessions.audit import ProgressTold, Record
 from hands.voice.speech import Unprompted
 from hands.voice.summary import SUMMARY_FAILURES, Summariser
@@ -45,11 +44,11 @@ async def keep_playing(
         while True:
             progress, amount, summary = await summarising.get()
             explaining, failed = await summary
-            current = _current(live_session(progress.session), progress.of)
+            ongoing = current(live_session(progress.session), progress.of)
             # [LAW:nothing-unseen] what the text came to, whether it was played, and how much of it.
-            record(ProgressTold(progress.session, len(progress.written), None if explaining is None else explaining.alone, failed, current, amount))
+            record(ProgressTold(progress.session, len(progress.written), None if explaining is None else explaining.alone, failed, ongoing, amount))
             said = _said(amount, explaining, progress.doings)
-            if current and said:
+            if ongoing and said:
                 await queue_frame(Unprompted(Working(progress.session, progress.of, said)))
 
 
@@ -79,14 +78,3 @@ async def _explained(progress: Progress, explain: Summariser) -> tuple[Doing | N
                 logger.error(f"the text session {progress.session} wrote could not be summarised, so it is said to have been written: {type(error).__name__}: {error}")
                 return Doing(WRITING, None), f"{type(error).__name__}: {error}"
 
-
-def _current(session: Session | None, of: frozenset[PromptId] | AgentTask) -> bool:
-    """Whether the session still runs the turn that goes by any of these ids; for a subagent's work, whether the session
-    is still live, since the turn its work is told with may not have opened yet."""
-    match session, of:
-        case Session(turn=Opened() as opened), frozenset() as turn:
-            return not ids(opened).isdisjoint(turn)
-        case Session(), AgentTask():
-            return True
-        case _:
-            return False

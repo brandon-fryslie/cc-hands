@@ -31,7 +31,7 @@ from hands.core.progress import Doing, said
 from hands.core.session import Blocker, Membership, CommandName, Dialog, Opened, Turn, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
-from hands.core.attention import Delivery, Overlay, Spoken, Withheld
+from hands.core.attention import Attention, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.sentences import Due, cut, turn_digest
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
@@ -892,8 +892,8 @@ def attention_tool(home: Home) -> Tool:
             changes: each kind to set and its level, in the order said; none to hear what is set.
         """
         try:
-            to = settings.changed(await asyncio.to_thread(settings.attention, home), [(change["kind"], change["level"]) for change in changes])
-            await asyncio.to_thread(settings.set_attention, home, to)
+            said = [_change(change) for change in _items(changes, "changes")]
+            to = await asyncio.to_thread(settings.asked, home, said)
         except (Rejected, OSError) as error:
             logger.error(f"attention could not set {changes!r}: {error}")
             return {"error": str(error)}
@@ -985,23 +985,24 @@ def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
             return {"error": str(error)}
         # [LAW:one-source-of-truth] the delivery the narrator computes, from what is set as it reads it, so the readback
         # says what will happen to the session's next turn.
-        delivered = delivery(await set_to(lambda: settings.attention(overlays.home)), overlay)
-        return {"readback": _overlay_readback(spoken_name(sessions, id), delivered)}
+        return {"readback": _overlay_readback(spoken_name(sessions, id), await set_to(lambda: settings.attention(overlays.home)), overlay)}
 
     return tool(set_overlay, completes=True)
 
 
-def _overlay_readback(name: str, delivered: Delivery) -> str:
-    match delivered:
+def _overlay_readback(name: str, attention: Attention, overlay: Overlay) -> str:
+    match delivery(attention, overlay):
         case Spoken(why=why):
             return {
                 "watched": f"I'll tell you each turn {name} finishes.",
                 "finished": f"I'll tell you each turn {name} finishes, as I tell every session's.",
             }[why]
+        case Withheld(why="quiet"):
+            # What quiet holds is told as it is set once hands talks again, so that is said too.
+            return f"For now I'm keeping quiet and holding {name}'s turns. After that, {_overlay_readback(name, replace(attention, quiet='off'), overlay)}"
         case Withheld(why=why):
             return {
                 "off": f"I'll hold {name}'s turns until you ask for one.",
-                "quiet": f"I'll tell you each turn {name} finishes once I'm no longer keeping quiet; until then I'll hold them.",
                 "muted": f"{name} is muted: I'll hold its turns until you ask. It still speaks when it needs your answer.",
             }[why]
 
@@ -1306,6 +1307,16 @@ def _items(value: object, what: str) -> list[object]:
             return cast(list[object], value)
         case other:
             raise Rejected(f"{what} should be a list, got {type(other).__name__}")
+
+
+def _change(item: object) -> tuple[str, str]:
+    """A change as the model gave it, its kind and level left to `changed`, the one place they are read."""
+    match item:
+        case dict():
+            fields = Payload(cast(dict[str, object], item))
+            return fields.text("kind"), fields.text("level")
+        case other:
+            raise Rejected(f"each change should be an object with kind and level, got {type(other).__name__}")
 
 
 def _resolution(item: object) -> Resolution:
