@@ -10,7 +10,7 @@ from typing import cast
 
 from hands.core.session import ESCAPES, PromptId
 from hands.core.status import Stamp
-from hands.core.turn import AgentId, AgentTask, Asked, Commanded, Interruption, Notified, Opening, Ref, Shelled
+from hands.core.turn import AgentId, AgentTask, Asked, Commanded, Interruption, Notified, Opening, Ref, Reported, Shelled
 from hands.sessions.payload import Payload, Rejected
 
 # Records are written without spaces, so this finds every title record cheaply.
@@ -42,9 +42,10 @@ def session_name(transcript: Path) -> str | None:
     return name
 
 
-# Only these record types carry a turn; the rest (attachments, modes, titles, snapshots) are skipped unparsed. A
-# command the user ran, and what it printed, are written as either a user record or a system local_command one.
-_TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"', b'"subtype":"local_command"')
+# Only these record types carry a turn; the rest (modes, titles, snapshots, every other attachment) are skipped unparsed.
+# A command the user ran, and what it printed, are written as either a user record or a system local_command one; a
+# background task's notification that arrived while the session was working, as an attachment (`reported_of`).
+_TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"', b'"subtype":"local_command"', b'"commandMode":"task-notification"')
 
 
 def turn_record(line: bytes) -> Payload | None:
@@ -63,6 +64,9 @@ def turn_record(line: bytes) -> Payload | None:
             raise Rejected(f"a local_command record's content should be a string, got {type(other).__name__}")
         case ("user" | "assistant"), _, _:
             pass
+        case "attachment", _, _:
+            # Shaped here for the reason a message is, below.
+            return None if reported_of(record) is None else record
         case _:
             return None
     # [LAW:parse-dont-validate] the message is shaped here, at the one place a line becomes a record, so that
@@ -70,6 +74,22 @@ def turn_record(line: bytes) -> Payload | None:
     shaped = message(record)
     # Claude Code's own stand-in for a reply that never came, not something Claude said.
     return None if shaped.get("model") == "<synthetic>" and result_text(shaped.get("content")) == _NO_RESPONSE else record
+
+
+def reported_of(record: Payload) -> Reported | None:
+    """The notification this record carries, if it is one Claude Code handed a session mid-turn; None for every other record.
+
+    Claude Code writes such a notification as an attachment of the turn under way, `queued_command` with the
+    notification's own markup as its prompt, where one handed to a waiting session is a user record that opens a turn.
+    Seen on 2.1.288. Raises Rejected for one with no prompt that is text.
+    """
+    match record.fields.get("type"), record.fields.get("attachment"):
+        case "attachment", {"type": "queued_command", "commandMode": "task-notification", "prompt": str() as text}:
+            return Reported(ref_of(record), text, _reporter(text))
+        case "attachment", {"type": "queued_command", "commandMode": "task-notification"}:
+            raise Rejected("a mid-turn notification carries no prompt that is text")
+        case _:
+            return None
 
 
 # What Claude Code writes as the reply to a turn the user stopped at a question: 19 of this machine's interrupts are followed by it.
@@ -172,10 +192,15 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | Typed | 
             return None
     match fields.get("origin"):
         case {"kind": "task-notification"}:
-            task, agent = _TASK.search(text), _AGENT.search(text)
-            return Notified(ref, text, None if task is None or agent is None else AgentTask(AgentId(task.group(1)), agent.group(1)))
+            return Notified(ref, text, _reporter(text))
         case _:
             return Asked(ref, text)
+
+
+def _reporter(notification: str) -> AgentTask | None:
+    """The subagent a notification is the report of; None for a notification from a background command or a monitor."""
+    task, agent = _TASK.search(notification), _AGENT.search(notification)
+    return None if task is None or agent is None else AgentTask(AgentId(task.group(1)), agent.group(1))
 
 
 # The task a notification is about, which Claude Code names only inside the notification's own markup, and, where the

@@ -90,8 +90,19 @@ class Planned:
 
 
 @dataclass(frozen=True)
+class Reported:
+    """A background task's notification that Claude Code handed the session while it was still working, folded into the
+    turn under way rather than opening one: a subagent that ran in the background reports back this way about one time
+    in seven. `agent` is the subagent reporting back; None for a background command or a monitor."""
+
+    ref: Ref | None
+    text: str
+    agent: AgentTask | None
+
+
+@dataclass(frozen=True)
 class Delegated:
-    """A subagent Claude dispatched. `report` is None while it is still running: an async agent reports back as a notification, which opens a turn of its own.
+    """A subagent Claude dispatched. `report` is None while it is still running: an async agent reports back as a notification (`Notified`, or `Reported` mid-turn).
 
     `id` names its own transcript; None for a call whose result names no subagent, as a failed one does.
     """
@@ -138,7 +149,7 @@ class Interruption:
 
 # [LAW:types-are-the-program] tool calls are content, not noise: a turn's results are mostly in what it used, and
 # one variant per kind of result is what lets the summariser be shown a test run's counts instead of its scrollback.
-Step = Said | Edited | Ran | Tested | Looked | Planned | Delegated | Questioned | Other | Interruption
+Step = Said | Edited | Ran | Tested | Looked | Planned | Delegated | Reported | Questioned | Other | Interruption
 
 
 @dataclass(frozen=True)
@@ -370,6 +381,8 @@ def describe(happening: Happening, budget: Budget) -> str:
             return f"The user asked:\n{_cut(text, budget.opening)}"
         case Notified(text=text):
             return f"A background task reported:\n{_cut(text, budget.opening)}"
+        case Reported(text=text):
+            return f"While Claude worked, a background task reported:\n{_cut(text, budget.result)}"
         case Commanded(name=name, args=args, output=output):
             ran = f"The user ran the command {_cut(' '.join(part for part in (name, args) if part), budget.opening)}"
             return ran if output is None else f"{ran}\nClaude Code printed: {_cut(output, budget.result)}"

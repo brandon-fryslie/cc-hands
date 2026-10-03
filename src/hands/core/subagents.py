@@ -7,7 +7,7 @@ same fold as a session's [LAW:one-source-of-truth] and joined to the parent's tu
 
 from dataclasses import dataclass
 
-from hands.core.turn import AgentId, AgentTask, Answering, Delegated, Notified, Step, Turn
+from hands.core.turn import AgentId, AgentTask, Answering, Delegated, Notified, Reported, Step, Turn
 
 
 @dataclass(frozen=True)
@@ -23,12 +23,14 @@ def reporting(turn: Turn) -> tuple[AgentTask, ...]:
     """The subagents whose reports this telling of the turn carries, each named with the job it was given.
 
     A subagent reports where its work is done: in the result of the call that ran it, or, run in the background, in
-    the notification that opens a turn of its own. A call that launched one in the background carries no report, and
-    its work is told with the notification that does. The notification is the turn's opening, which only the telling
-    that answers it carries: a later telling of the same turn tells only the steps since, and the work again with them
-    would be told twice.
+    a notification, which opens a turn of its own or, handed to a session still working, is a step of the turn under
+    way. A call that launched one in the background carries no report, and its work is told with the notification that
+    does. A notification that opens the turn is carried only by the telling that answers it: a later telling of the same
+    turn tells only the steps since, and the work again with them would be told twice. One that is a step is carried,
+    as any step is, by the one telling whose steps hold it.
     """
     opening = turn.opening
     notified = (opening.agent,) if isinstance(opening, Notified) and opening.agent is not None and isinstance(turn.standing, Answering) else ()
     returned = tuple(AgentTask(step.id, step.description) for step in turn.steps if isinstance(step, Delegated) and step.id is not None and step.report is not None)
-    return tuple({task.id: task for task in (*notified, *returned)}.values())
+    reported = tuple(step.agent for step in turn.steps if isinstance(step, Reported) and step.agent is not None)
+    return tuple({task.id: task for task in (*notified, *returned, *reported)}.values())

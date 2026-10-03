@@ -13,7 +13,7 @@ from loguru import logger
 from hands.core.steps import Call, Result, recognise
 from hands.core.turn import Commanded, Interruption, Opening, Said, Step, printed, recorded
 from hands.sessions.payload import Payload
-from hands.sessions.transcript import Printed, Typed, blocks, edge_of, holds_a_tool, ref_of, result_text, structured_result
+from hands.sessions.transcript import Printed, Typed, blocks, edge_of, holds_a_tool, ref_of, reported_of, result_text, structured_result
 
 
 @dataclass
@@ -39,6 +39,12 @@ class Turning:
         of the turn it was following at an opening and ends the session's turn at an interruption, and a backfill
         reading a whole morning keeps every one of them.
         """
+        reported = reported_of(record)
+        if reported is not None:
+            # A step of the turn it arrived in, written between that turn's records, and neither a call nor a result:
+            # the record after it is as far into a tool as the one before it was.
+            self.slots.append(reported)
+            return None
         edge = edge_of(record, self.mid_tool)
         parts = blocks(record)
         self.mid_tool = holds_a_tool(record)
