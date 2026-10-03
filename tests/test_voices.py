@@ -1,6 +1,7 @@
 """Choosing the voice: the voices heard in turn, the one kept, and what the speaker says each line in."""
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -44,6 +45,11 @@ class Speaker(TTSService):
 
 def ready(voice: Voice) -> None:
     """Every voice already in the cache."""
+
+
+def downloading(voice: Voice) -> None:
+    """Every voice fetched as a download is: taking long enough for another call to run meanwhile."""
+    time.sleep(0.05)
 
 
 def offline(voice: Voice) -> None:
@@ -107,6 +113,19 @@ async def test_the_voices_heard_each_say_their_line_in_their_own_voice_and_the_n
         await run.worker.queue_frame(TTSSpeakFrame("Like this."))
         assert (await speaker.until(4))[-1] == ("mary", "Like this.")
     assert chosen(Home(tmp_path)) == "mary"
+
+
+async def test_a_hearing_and_a_choice_called_together_each_run_whole(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    lines, speaker = IdentityFilter(), Speaker(DEFAULT)
+    chosen_voices = Voices(home, lines, downloading)
+    async with running([lines, speaker]) as run:
+        # As Pipecat runs two calls of one reply: side by side.
+        await asyncio.gather(chosen_voices.hear((Voice("alba"), Voice("bill_boerst"))), chosen_voices.use(Voice("mary")))
+        await run.worker.queue_frame(TTSSpeakFrame("After both."))
+        said = await speaker.until(3)
+    assert said == [("alba", sample(Voice("alba"))), ("bill_boerst", sample(Voice("bill_boerst"))), ("mary", "After both.")]
+    assert chosen(home) == "mary"
 
 
 async def test_a_hearing_cut_short_still_ends_in_the_voice_hands_speaks_in(tmp_path: Path) -> None:

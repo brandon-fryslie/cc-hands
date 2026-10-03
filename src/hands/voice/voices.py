@@ -92,6 +92,10 @@ class Voices:
         self._home = home
         self._lines = lines
         self._fetch = fetch
+        # [LAW:no-ambient-temporal-coupling] the one owner of a change of voice: Pipecat runs a reply's calls side by
+        # side, and a hearing and a choice interleaved would leave a sample in another's voice, or the speaker in a
+        # voice the file does not hold. Each runs whole, one after another.
+        self._changing = asyncio.Lock()
 
     async def speaking_in(self) -> Voice:
         return await asyncio.to_thread(chosen, self._home)
@@ -99,24 +103,26 @@ class Voices:
     async def hear(self, voices: tuple[Voice, ...]) -> Voice:
         """Each voice says its sample, in order, and then hands goes back to the voice it speaks in, which it returns.
         A voice that cannot be fetched is refused before any is heard."""
-        now = await self.speaking_in()
-        for voice in voices:
-            await asyncio.to_thread(self._fetch, voice)
-        try:
+        async with self._changing:
+            now = await self.speaking_in()
             for voice in voices:
-                await self._speak_in(voice)
-                await self._lines.push_frame(TTSSpeakFrame(sample(voice), append_to_context=False))
-        finally:
-            # A hearing cancelled or failed partway still hands the speaker back the voice it speaks in.
-            await self._speak_in(now)
-        return now
+                await asyncio.to_thread(self._fetch, voice)
+            try:
+                for voice in voices:
+                    await self._speak_in(voice)
+                    await self._lines.push_frame(TTSSpeakFrame(sample(voice), append_to_context=False))
+            finally:
+                # A hearing cancelled or failed partway still hands the speaker back the voice it speaks in.
+                await self._speak_in(now)
+            return now
 
     async def use(self, voice: Voice) -> None:
         """From the next thing hands says on, and across restarts, it speaks in `voice`; a voice that cannot be fetched
         is refused before it is kept, so hands is never left in one it cannot speak."""
-        await asyncio.to_thread(self._fetch, voice)
-        await asyncio.to_thread(keep, self._home, voice)
-        await self._speak_in(voice)
+        async with self._changing:
+            await asyncio.to_thread(self._fetch, voice)
+            await asyncio.to_thread(keep, self._home, voice)
+            await self._speak_in(voice)
 
     async def _speak_in(self, voice: Voice) -> None:
         await self._lines.push_frame(TTSUpdateSettingsFrame(delta=PocketTTSSettings(voice=voice)))
