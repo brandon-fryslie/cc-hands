@@ -545,10 +545,11 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool:
             case None:
                 # [LAW:no-silent-failure] said as what it is, never as a turn that did nothing.
                 return {"error": f"no turn of {name} has finished since hands started; read_session reads what it did before"}
-            case Recount(tellings=()):
+            case Recount(tellings=(), unread=False):
                 return {"turn": f"[hands] The Claude Code session {name} finished a turn with nothing in it hands could tell. Tell the user so.", "now": now}
-            case Recount(tellings=tellings):
-                return {"turn": "\n\n".join(tellings), "now": now}
+            case Recount(tellings=tellings, unread=unread):
+                failed = (f"[hands] hands could not read {'the rest of ' if tellings else ''}the turn the Claude Code session {name} finished. Tell the user so.",)
+                return {"turn": "\n\n".join((*tellings, *(failed if unread else ()))), "now": now}
 
     return tool(tell_turn)
 

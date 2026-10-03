@@ -43,10 +43,12 @@ _FAILURES = (Rejected, OSError)
 
 @dataclass(frozen=True)
 class Recount:
-    """What was told of one turn, each telling of it in the order it was told; none when it finished with nothing to tell."""
+    """What was told of one turn, each telling of it in the order it was told, and whether the last reading of it failed:
+    a reading that fails marks nothing told, so the next that succeeds tells what it could not, and clears it."""
 
     turn: PromptId | None
     tellings: tuple[str, ...]
+    unread: bool = False
 
 
 class Recounts:
@@ -62,9 +64,14 @@ class Recounts:
 
     def put(self, session: SessionId, turn: PromptId | None, told: str | None) -> None:
         """`told` is None when the telling found nothing new: the turn held stays as it is, and another replaces it."""
+        self._last[session] = Recount(turn, (*self._earlier(session, turn), *([] if told is None else [told])))
+
+    def unread(self, session: SessionId, turn: PromptId | None) -> None:
+        self._last[session] = Recount(turn, self._earlier(session, turn), unread=True)
+
+    def _earlier(self, session: SessionId, turn: PromptId | None) -> tuple[str, ...]:
         held = self._last.get(session)
-        earlier = held.tellings if held is not None and turn is not None and held.turn == turn else ()
-        self._last[session] = Recount(turn, (*earlier, *([] if told is None else [told])))
+        return held.tellings if held is not None and turn is not None and held.turn == turn else ()
 
     def of(self, session: SessionId) -> Recount | None:
         return self._last.get(session)
@@ -138,7 +145,7 @@ async def recount(
         told = await tails.tell(session, turn, closing)
     except _FAILURES as error:
         unread = _unread(session, name, error)
-        recounts.put(session, turn, f"[hands] The Claude Code session {name} finished a turn, and hands could not read it. Tell the user so.")
+        recounts.unread(session, turn)
         return _delivered(delivered, as_written(unread, telling))
     if told is None or not (told.turn.steps or delta):
         logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")

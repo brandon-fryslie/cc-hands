@@ -186,7 +186,11 @@ async def test_a_turn_held_until_asked_for_is_told_once(tmp_path: Path) -> None:
 async def test_a_turn_held_until_asked_for_whose_transcript_cannot_be_read_says_nothing_and_holds_the_failure(tmp_path: Path) -> None:
     recounts = Recounts()
     assert await recount(tailing(tmp_path / "gone.jsonl"), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "on request", recounts, Tailed()) is None
-    assert recounts.of(SID) == Recount(PromptId("p1"), ("[hands] The Claude Code session cc-hands finished a turn, and hands could not read it. Tell the user so.",))
+    assert recounts.of(SID) == Recount(PromptId("p1"), (), unread=True)
+    recounts.put(SID, PromptId("p1"), "read after all")
+    assert recounts.of(SID) == Recount(PromptId("p1"), ("read after all",))
+    recounts.unread(SID, PromptId("p1"))
+    assert recounts.of(SID) == Recount(PromptId("p1"), ("read after all",), unread=True)
 
 
 def test_a_turn_told_again_is_held_whole_and_the_next_turn_replaces_it_even_with_nothing_to_tell() -> None:
