@@ -1160,14 +1160,19 @@ Pipecat's output transport reports text as its audio plays, and on an interrupti
 the text that played reaches the context. pocket-tts reports no word timings, so the
 finest position is a sentence. As built (`hands.core.playback`, `hands.voice.player`), a
 reading is the run of sentences handed to the speaker since it last fell quiet, whether
-the model's reply or lines said as written; two taps stand either side of the output
-transport, one seeing each sentence as TTS makes it and one seeing each sentence's
-`TTSTextFrame` once its audio is written. Measured live on 2026-10-03 with pocket-tts into
+the model's reply or lines said as written. An observer reads it off two processors'
+pushes: each sentence as the TTS service makes it, and each sentence's `TTSTextFrame` and
+each barge-in as the output transport lets them go; a processor standing in the pipeline
+instead takes a barge-in ahead of a sentence's end still in its queue. "Go back" goes back
+past the reading the user just cut in on, which is the side answer they are leaving, to
+the one cut off before it. Measured live on 2026-10-03 with pocket-tts into
 BlackHole: all three sentences of a reply were made by 2.6 s, the first one's text frame
 left the transport at 4.2 s as its audio ended, and a barge-in one second into the second
 sentence bookmarked the second. `resume`, `skip`, and `repeat` are tools whose call is the
 whole reply: hands says the sentences again as written, so a model never retells them from
-memory.
+memory. Those lines enter just ahead of the TTS service, not through the model's stage, so a
+barge-in drops them like any sentence not yet played; their reading holds all of them from
+the start, so none is lost to going back.
 
 ## Push pointers, pull content
 

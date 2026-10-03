@@ -262,14 +262,13 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
 
     # Ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
     # context or the model's stage takes it, and follows the user's words when given back.
-    # The player's taps stand either side of the speaker: what it is given, and what it has played (hands.voice.player).
-    pipeline = Pipeline(
-        [transport.input(), stt, Floor(record), user_aggregator, llm, pieces, tts, player.handing, transport.output(), player.playing, assistant_aggregator]
-    )
+    # What the player says again enters just ahead of the speaker, and it reads what is played off the speaker's pushes.
+    output = transport.output()
+    pipeline = Pipeline([transport.input(), stt, Floor(record), user_aggregator, llm, pieces, player.lines, tts, output, assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True),
-        observers=[LatencyObserver()],
+        observers=[LatencyObserver(), player.watching(tts, output)],
         idle_timeout_secs=None,
     )
     return Voice(

@@ -183,21 +183,21 @@ def playback_tools(player: Player) -> list[Tool]:
         Hands says it, exactly as it was said, from the start of the sentence that was cut off. Calling it is the whole
         reply: add no words of your own, and never retell what you remember saying.
         """
-        return {"said": player.act(playback.resume)}
+        return {"said": await player.act(playback.resume)}
 
     async def skip() -> Result:
         """Skip the sentence the user cut in on, and go on with what you were saying from the one after it.
 
         Hands says the rest. Calling it is the whole reply: add no words of your own.
         """
-        return {"said": player.act(playback.skip)}
+        return {"said": await player.act(playback.skip)}
 
     async def repeat() -> Result:
         """Say again the last thing you said, whole, exactly as it was said.
 
         Hands says it. Calling it is the whole reply: add no words of your own, and never say it again yourself.
         """
-        return {"said": player.act(playback.repeat)}
+        return {"said": await player.act(playback.repeat)}
 
     return [tool(resume, then="silence"), tool(skip, then="silence"), tool(repeat, then="silence")]
 
