@@ -410,6 +410,16 @@ class KeyedAudioTransport(LocalAudioTransport):
             case _:
                 raise AssertionError("the devices are known once the pipeline has set up its streams")
 
+    @property
+    def deaf(self) -> bool:
+        """Whether the microphone is open on no device, so a press to talk hears nothing; never before setup opens it."""
+        # [LAW:one-source-of-truth] the device the spoken warning names, read where `devices` reads it.
+        match self._microphone.opened:
+            case Input(device=None):
+                return True
+            case _:
+                return False
+
     def _audio_now(self) -> PortAudio:
         return cast(PortAudio, self._pyaudio)
 

@@ -36,6 +36,7 @@ class Status:
     last_audio_out: datetime | None
     live_sessions: int
     listening: bool  # a turn is open: the talk key is held and has been held long enough to mean talk
+    deaf: bool  # the microphone is open on no device, so a press to talk hears nothing
 
 
 def encode(status: Status) -> str:
@@ -49,6 +50,7 @@ def encode(status: Status) -> str:
             "last_audio_out": None if status.last_audio_out is None else status.last_audio_out.isoformat(),
             "live_sessions": status.live_sessions,
             "listening": status.listening,
+            "deaf": status.deaf,
         },
         indent=2,
     )
@@ -68,6 +70,8 @@ def parse(raw: bytes) -> Status:
         last_audio_out=None if last_audio_out is None else _instant(last_audio_out),
         live_sessions=fields.integer("live_sessions"),
         listening=fields.optional_flag("listening"),
+        # A daemon from before this field never said it could not hear.
+        deaf=fields.optional_flag("deaf"),
     )
 
 
@@ -87,8 +91,8 @@ class Heart:
     started_at: datetime
     period: timedelta
 
-    def beat(self, pipeline: PipelineState, last_audio_out: datetime | None, live_sessions: int, listening: bool) -> None:
-        write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions, listening))
+    def beat(self, pipeline: PipelineState, last_audio_out: datetime | None, live_sessions: int, listening: bool, deaf: bool) -> None:
+        write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions, listening, deaf))
 
 
 def read(path: Path) -> Status | None:
@@ -190,8 +194,9 @@ def describe(verdict: Verdict, now: datetime) -> str:
             return f"hands is stopped: pid {status.pid} finished its pipeline {_span(now - status.written_at)} ago"
         case Up(status=status):
             heard = "never" if status.last_audio_out is None else f"{_span(now - status.last_audio_out)} ago"
+            state = "up but cannot hear, as there is no microphone" if status.deaf else "up"
             return (
-                f"hands is up: pid {status.pid}, up {_span(now - status.started_at)}, pipeline {status.pipeline}, "
+                f"hands is {state}: pid {status.pid}, up {_span(now - status.started_at)}, pipeline {status.pipeline}, "
                 f"last audio out {heard}, {live_sessions(status)}"
             )
 

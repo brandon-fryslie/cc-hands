@@ -92,7 +92,7 @@ def test_a_daemon_that_is_not_running_is_not_asked_and_the_skill_says_why(tmp_pa
 def test_a_daemon_still_starting_is_not_asked(tmp_path: Path, python312: str) -> None:
     # Its pid is this test's, which a restart signal would end: being refused, it is never sent.
     home = Home(tmp_path / "home")
-    heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT).beat("starting", None, 0, False)
+    heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT).beat("starting", None, 0, False, False)
     done = restart(home, tmp_path, python312)
     assert done.returncode == 1
     assert done.stderr.startswith(f"hands was not restarted: hands is up: pid {os.getpid()}, ")

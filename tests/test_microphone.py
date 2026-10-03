@@ -271,10 +271,12 @@ async def test_with_no_microphone_left_the_transport_reopens_to_speak_and_says_i
     log: list[str] = []
     transport = lost_transport(log)
     setattr(transport, "_portaudio", lambda: DeafPortAudio(log))
+    assert not transport.deaf
 
     devices = await transport.reopen()
 
     assert devices == Devices(input=None, output="MacBook Pro Speakers")
+    assert transport.deaf  # what the heartbeat carries to the menu bar
     assert "open microphone" not in log  # nothing to open: the microphone holds a stream of nothing
     assert "start new speaker" in log
     assert isinstance(transport.input()._in_stream, NoInput)  # pyright: ignore[reportPrivateUsage]
@@ -285,16 +287,19 @@ async def test_with_no_microphone_left_the_transport_reopens_to_speak_and_says_i
     log.clear()
     assert (await transport.reopen()).input == "MacBook Pro Microphone"
     assert "open microphone" in log
+    assert not transport.deaf
 
 
 async def test_a_daemon_started_with_no_microphone_runs_rather_than_failing_its_setup() -> None:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
     transport = KeyedAudioTransport(params, PushToTalk(), portaudio=lambda: DeafPortAudio([]), defaults=lambda: DefaultDevices(0, 1))
+    assert not transport.deaf  # nothing is said of hearing before setup opens the microphone
     setup = FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=cast(Any, None), audio_in_sample_rate=16000, audio_out_sample_rate=24000)
     await transport.input().setup(setup)
     assert isinstance(transport.input()._in_stream, NoInput)  # pyright: ignore[reportPrivateUsage]
     opened = transport.input().opened
     assert opened is not None and opened.device is None and isinstance(opened.stream, NoInput)
+    assert transport.deaf
     await transport.input().cleanup()  # and lets go of nothing, without complaint
 
 
