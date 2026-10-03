@@ -18,6 +18,7 @@ from hands.core.effects import (
     Asking,
     DeadlineNear,
     Expired,
+    Heard,
     ModeChanged,
     Note,
     Reply,
@@ -303,6 +304,51 @@ def test_ticking_through_a_whole_wait_warns_exactly_once_then_denies_once() -> N
         Reply(ONE.id, RequestId("r"), Deny(EXPIRED_MESSAGE)),
         Speak(Expired(ONE.id, BASH)),
     ]
+
+
+def test_a_request_heard_again_keeps_its_deadline_and_is_warned_of_once() -> None:
+    asked = PermissionRequested(ONE.id, at=0.0, request=RequestId("r"), on=BASH, mode=None)
+    state, _ = reduce(holding(AT_DIALOG), asked)
+    state, warned = reduce(state, Tick(at=51.0))
+    again, effects = reduce(state, replace(asked, at=52.0))
+    assert (again, effects) == (state, [])
+    assert warned == [Speak(DeadlineNear(ONE.id, RequestId("r"), BASH, remaining=9.0))]
+    assert reduce(again, Tick(at=53.0)) == (again, [])
+
+
+SAID_TWICE_FROM: list[Registry] = [
+    holding(IDLE),
+    holding(BUSY),
+    in_turn(),
+    holding(IDLE, Untold(TURN, frozenset(), Stamp(5000))),
+    holding(IDLE, Told(TURN, frozenset())),
+    in_turn(AT_DIALOG, HELD),
+    in_turn(AT_DIALOG, replace(HELD, warned=True)),
+    in_turn(AT_DIALOG, LetGo(BASH)),
+]
+
+
+@pytest.mark.parametrize("before", SAID_TWICE_FROM)
+@pytest.mark.parametrize(
+    "event",
+    [
+        *HEARD,
+        *SESSION_EVENTS,
+        PermissionRequested(ONE.id, at=5.0, request=HELD.request, on=BASH, mode=None),
+        Died(ONE),
+        Ended(ONE.id, "other"),
+        said(status.Idle()),
+        Read(ONE.id, Stamp(99_999)),
+        Tick(at=55.0),
+        Tick(at=61.0),
+    ],
+)
+def test_the_same_event_heard_twice_is_said_once(before: Registry, event: Event) -> None:
+    # A transition is said, never a state, so the second hearing finds nothing new to say. A second Summarise asks the
+    # tail only for what it has not told, by record, which a turn told has none of (see tests/test_narrator.py).
+    once, _ = reduce(before, event)
+    _, again = reduce(once, event)
+    assert [effect for effect in again if isinstance(effect, Heard | SessionGone)] == []
 
 
 def test_a_tick_moves_only_sessions_waiting_on_a_deadline() -> None:

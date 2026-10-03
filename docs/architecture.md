@@ -424,8 +424,11 @@ A session's own story keeps the order it happened in: what it told before someth
 is told with that sooner thing, so its next turn's request is never heard ahead of the turn
 before it. A folded telling shares one `REPLY_SHOWN` bound among its turns. A `Pending`'s priority is read off its variant, never stored beside it. This
 queue is not the player's bookmarks: resuming replays a bookmarked sentence and never
-re-enqueues a telling. Each item is a transition keyed by the record id that caused it, so
-nothing is announced twice `[LAW:one-source-of-truth]`; that keying is planned.
+re-enqueues a telling. Each item is a transition, never a state, so nothing is announced
+twice `[LAW:one-source-of-truth]`: a request is narrated, warned of, and expired by its
+request id, which the daemon mints per hook delivery, so a second delivery is a second request; a turn's `Summarise` asks the
+tail only for the records it has not told. The same event heard twice is said once
+(`tests/test_reducer.py`).
 
 ## Hooks carry the moment; the transcript carries the record
 
