@@ -1529,24 +1529,28 @@ flushes queued audio. That is barge-in. A turn ends once Whisper is done with ev
 hold it took in (`KeyTurnStop`): a press while the last hold is still being
 transcribed joins that turn, so no hold's words are left out of it.
 
-**The mute is decided where sound is captured, and waits out the speaker.** Measured
-on 2026-09-14 with MacBook Pro speakers and microphone: the interruption stops writes
-to the speaker within a few milliseconds of the press, but what was already written
-stays above the room's floor at the microphone for about 185 ms, and Whisper turned
-that tail into a word ("Wow.", "Well.", "What?") in every run where nobody spoke. A
-Pipecat input filter could not stop it, because it runs when the event loop reaches a
+**The mute is decided where sound is captured, and the speaker's echo is cancelled.**
+Measured on 2026-09-14 with MacBook Pro speakers and microphone: the interruption stops
+writes to the speaker within a few milliseconds of the press, but what was already
+written stays above the room's floor at the microphone for about 185 ms, and Whisper
+turned that tail into a word ("Wow.", "Well.", "What?") in every run where nobody spoke.
+A Pipecat input filter could not stop it, because it runs when the event loop reaches a
 frame, tens of milliseconds after capture. So `hands.voice.microphone` replaces the
-local transport's two halves: the `Speaker` records, on every non-silent write, when
-that sound will have died away at the microphone (the chunk's own length, the output stream's latency, and a
-measured 150 ms echo path, counted from when the chunk is handed over, since an interruption cancels the wait for a write but not the write), and the `KeyedMicrophone` decides each buffer in PortAudio's
-capture callback, dated by the buffer's recording time, not the callback's: silence
-while the key is up or while the speaker's sound is still in the room. With it, a press
-during playback gave no transcript with nobody speaking, and exactly "What time is it?"
-when that was said 250 ms after the press. The cost is half duplex: while the speaker
-is sounding, and for about 265 ms after its last chunk was handed over, the user is not heard, so a word spoken on top of
-the press is lost rather than mixed with the reply. A stalled event loop delays the
-interruption itself, and the mute then covers the reply for as long as it plays.
-Acoustic echo cancellation would lift the half duplex and is a separate ticket.
+local transport's two halves, joined by one echo canceller (`hands.voice.echo`, WebRTC's
+AEC3 through LiveKit's binding). The `Speaker` gives the canceller everything it writes,
+on its writer thread as each chunk goes to the device, so a chunk whose write an
+interruption cancels still counts. The `KeyedMicrophone` hears every buffer through the
+canceller in PortAudio's capture callback, key up or down, so the canceller keeps
+learning the room, and then lets the buffer through only while the key is down. AEC3
+wants one frame of reference for every frame of microphone, as a device that plays and
+records at once gives them, but the pipeline writes only while it speaks, and up to an
+output buffer ahead. So the canceller holds what was written, and each 10 ms of
+microphone takes the next 10 ms of it, or silence when there is none. Measured on
+2026-10-03 through this transport: about 27 dB of echo removed. A press mid-reply with
+nobody speaking left no word of the reply in 8 holds of 8, where the raw microphone made
+one in every hold. "Stop. What time is it?", said from 50 ms after the press, kept
+"Stop." in 8 of 8. The mute this replaced held the microphone shut until the reply's
+sound had died away, and lost that first word in 8 of 8.
 
 **A lost device is followed, not waited on.** PortAudio does not report a device
 that disappears. Measured on 2026-09-24 against a CoreAudio aggregate device destroyed
@@ -1595,8 +1599,7 @@ config value, not modes of the gate `[LAW:one-type-per-behavior]`:
 
 The wake-word edge is the only one that opens the mic without a hand, and it is
 half-duplex: while the output transport is playing, the wake-word detector is deaf,
-because an open mic in a room with speakers hears the pipeline's own voice. Acoustic
-echo cancellation would lift that restriction and is a separate, later ticket.
+because an open mic in a room with speakers hears the pipeline's own voice.
 
 **The phone is a second place, beside the desk.** The desk is the Mac's own mic and
 speakers; the phone is a page hands serves (`hands.voice.phonepage`) that a phone
