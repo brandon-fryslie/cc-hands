@@ -12,7 +12,7 @@ from hands.daemon import run
 from hands.daemon.starting import start
 from hands.daemon.run import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, backend_from_env
 from hands.sessions import heartbeat
-from hands.sessions.audit import Entry, LLMChosen, encoded
+from hands.sessions.audit import Entry, LLMChosen, VoiceChosen, encoded
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.core.wire import UPSTREAM
@@ -195,8 +195,8 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         await asyncio.sleep(0.005)
     answered.set()
     assert await starting == config
-    # The log says which server and model the run reaches, and never with what key.
-    assert recorded == [LLMChosen(backend="AnthropicBackend", base_url=ANTHROPIC_URL, model=ANTHROPIC_MODEL, account=None)]
+    # The log says which server and model the run reaches, and never with what key, and the voice it speaks in.
+    assert recorded == [LLMChosen(backend="AnthropicBackend", base_url=ANTHROPIC_URL, model=ANTHROPIC_MODEL, account=None), VoiceChosen(voice=voices.DEFAULT)]
     assert "sk-secret" not in str([encoded(entry) for entry in recorded])
 
 
@@ -243,3 +243,7 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
     voices.keep(home, voices.parse_voice("Bill Boerst"))
     assert run.config_from_env(home).voice == "bill_boerst"
+    # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
+    home.voice.write_text("zed\n")
+    with pytest.raises(SystemExit, match=f"{home.voice} says b'zed'"):
+        run.config_from_env(home)

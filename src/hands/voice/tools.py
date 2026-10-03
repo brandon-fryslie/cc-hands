@@ -43,7 +43,7 @@ from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.speech import answer_readback
-from hands.voice.voices import VOICES, Voices, parse_voice, spoken
+from hands.voice.voices import VOICES, Voices, fetched, parse_voice, spoken
 
 # What the model is handed back from a call: an object, as every tool API carries a result.
 Result = Mapping[str, object]
@@ -169,7 +169,7 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
         *permission_tools(sessions),
         watch_session_tool(sessions, overlays),
         turn_summaries_tool(home),
-        *voice_tools(Voices(home, player.lines)),
+        *voice_tools(Voices(home, player.lines, fetched)),
         *playback_tools(player),
         stay_silent_tool(),
     ]
@@ -671,7 +671,7 @@ def voice_tools(voices: Voices) -> list[Tool]:
         """
         try:
             return {"speaking_in": await voices.speaking_in(), "voices": VOICES}
-        except Rejected as error:
+        except (Rejected, OSError) as error:
             return {"error": str(error)}
 
     async def hear_voices(names: list[str]) -> Result:
@@ -689,7 +689,7 @@ def voice_tools(voices: Voices) -> list[Tool]:
         try:
             heard = tuple(parse_voice(name) for name in names)
             return {"heard": heard, "speaking_in": await voices.hear(heard)}
-        except Rejected as error:
+        except (Rejected, OSError) as error:
             return {"error": str(error)}
 
     async def use_voice(name: str) -> Result:

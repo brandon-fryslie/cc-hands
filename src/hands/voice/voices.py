@@ -6,14 +6,17 @@ each change goes to the file and to the service together; nothing else holds a c
 """
 
 import asyncio
-import os
+from collections.abc import Callable
 from typing import NewType
 
 from pipecat.frames.frames import TTSSpeakFrame, TTSUpdateSettingsFrame
 from pipecat.processors.frame_processor import FrameProcessor
-from pipecat.services.pocket_tts.tts import PocketTTSSettings
+from pipecat.services.pocket_tts.tts import PocketTTSSettings, language_to_pocket_tts_language
+from pipecat.transcriptions.language import Language
 from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
+from pocket_tts.utils.utils import download_if_necessary, get_predefined_voice
 
+from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 
@@ -26,6 +29,12 @@ VOICES: tuple[Voice, ...] = tuple(Voice(name) for name in _ORIGINS_OF_PREDEFINED
 
 # The voice hands speaks in until the user chooses another (the user's choice of default, 2026-10-02).
 DEFAULT = Voice("charles")
+
+# The language the TTS service speaks, which picks the set of embeddings a voice's name resolves to.
+LANGUAGE = Language.EN
+
+# Whatever a voice needs before it can be spoken in, made ready, or the reason it cannot be.
+Fetch = Callable[[Voice], None]
 
 
 def parse_voice(name: str) -> Voice:
@@ -45,23 +54,30 @@ def spoken(voice: Voice) -> str:
 def chosen(home: Home) -> Voice:
     """The voice the user chose; the default where they never chose one."""
     try:
-        written = home.voice.read_text().strip()
+        # Bytes, not text: a file edited by hand can hold anything, and whatever names no voice is refused alike.
+        written = home.voice.read_bytes().strip()
     except FileNotFoundError:
         return DEFAULT
-    return parse_voice(written)
+    try:
+        return parse_voice(written.decode())
+    except (UnicodeDecodeError, Rejected) as error:
+        raise Rejected(f"{home.voice} says {written!r}, which names no voice hands has; choose another, or remove the file to speak in {spoken(DEFAULT)}") from error
 
 
 def keep(home: Home, voice: Voice) -> None:
-    home.root.mkdir(parents=True, exist_ok=True)
-    # [LAW:no-ambient-temporal-coupling] written beside and renamed into place, so a reader never sees half a name.
-    staging = home.voice.with_suffix(f".{os.getpid()}.tmp")
-    staging.write_text(f"{voice}\n")
-    staging.replace(home.voice)
+    # [LAW:no-ambient-temporal-coupling] replaced whole, so a reader never sees half a name.
+    replace_whole(home.voice, f"{voice}\n", 0o644)
+
+
+def fetched(voice: Voice) -> None:
+    """The voice's embedding in the local cache, downloaded the first time, as the TTS service resolves the name."""
+    download_if_necessary(get_predefined_voice(language=language_to_pocket_tts_language(LANGUAGE), name=voice))
 
 
 def sample(voice: Voice) -> str:
-    """What a voice says when the user hears it: its name, and a line of the kind hands says all day."""
-    return f"This is {spoken(voice)}. Your session finished its turn: the tests pass, and it's waiting for you."
+    """What a voice says when the user hears it: its name, and a line of hands' own that reports nothing, so said again
+    after a barge-in it cannot pass for a session's news."""
+    return f"This is {spoken(voice)}. This is how I would tell you a session has finished its turn and is waiting for you."
 
 
 class Voices:
@@ -72,24 +88,33 @@ class Voices:
     drops only the speech, so a hearing cut short still ends back in the chosen voice.
     """
 
-    def __init__(self, home: Home, lines: FrameProcessor) -> None:
+    def __init__(self, home: Home, lines: FrameProcessor, fetch: Fetch) -> None:
         self._home = home
         self._lines = lines
+        self._fetch = fetch
 
     async def speaking_in(self) -> Voice:
         return await asyncio.to_thread(chosen, self._home)
 
     async def hear(self, voices: tuple[Voice, ...]) -> Voice:
-        """Each voice says its sample, in order, and then hands goes back to the voice it speaks in, which it returns."""
+        """Each voice says its sample, in order, and then hands goes back to the voice it speaks in, which it returns.
+        A voice that cannot be fetched is refused before any is heard."""
         now = await self.speaking_in()
         for voice in voices:
-            await self._speak_in(voice)
-            await self._lines.push_frame(TTSSpeakFrame(sample(voice), append_to_context=False))
-        await self._speak_in(now)
+            await asyncio.to_thread(self._fetch, voice)
+        try:
+            for voice in voices:
+                await self._speak_in(voice)
+                await self._lines.push_frame(TTSSpeakFrame(sample(voice), append_to_context=False))
+        finally:
+            # A hearing cancelled or failed partway still hands the speaker back the voice it speaks in.
+            await self._speak_in(now)
         return now
 
     async def use(self, voice: Voice) -> None:
-        """From the next thing hands says on, and across restarts, it speaks in `voice`."""
+        """From the next thing hands says on, and across restarts, it speaks in `voice`; a voice that cannot be fetched
+        is refused before it is kept, so hands is never left in one it cannot speak."""
+        await asyncio.to_thread(self._fetch, voice)
         await asyncio.to_thread(keep, self._home, voice)
         await self._speak_in(voice)
 

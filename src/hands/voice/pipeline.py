@@ -239,7 +239,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
     # three that keep their text say in their own comments that the context is kept so the model can
     # answer about what the user heard, and before this filter it held what was sent to the speaker,
     # which was never the same string. See voice/spoken.py, which also records what it costs.
-    tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice), text_filters=[SpokenForm()])
+    tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice, language=voices.LANGUAGE), text_filters=[SpokenForm()])
     # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())

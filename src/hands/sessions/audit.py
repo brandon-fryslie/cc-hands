@@ -81,6 +81,13 @@ class LLMChosen:
 
 
 @dataclass(frozen=True)
+class VoiceChosen:
+    """The voice a run starts speaking in: the one the user kept, or the default where they kept none."""
+
+    voice: str
+
+
+@dataclass(frozen=True)
 class ProxyListening:
     """Where the wire proxy took requests for this run: the url a Claude Code process's ANTHROPIC_BASE_URL is set to."""
 
@@ -439,6 +446,7 @@ Entry = (
     | Typing
     | EffectFailed
     | LLMChosen
+    | VoiceChosen
     | ProxyListening
     | TapListening
     | CopiesLost
@@ -501,7 +509,7 @@ def level(entry: Entry) -> Level:
             return "error" if outcome in ("unread", "failed", "refused") else "info"
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
-            | Applied() | Performed() | Typing() | LLMChosen() | ProxyListening() | TapListening() | CopiesLost()
+            | Applied() | Performed() | Typing() | LLMChosen() | VoiceChosen() | ProxyListening() | TapListening() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()
