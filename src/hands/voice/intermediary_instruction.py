@@ -10,8 +10,8 @@ the daemon runs. Two rules keep it and the tools from giving the model two order
   prompt that asks for `resume` before there is one gets a model that paraphrases a resume from memory, which is
   exactly the failure the tool exists to end.
 
-The brain is given two more sections, on reading hands' log and on working a backlog, because it alone is given Bash
-to do them with.
+The brain is given three more sections, on reading hands' log, on working a backlog, and on where its own setup is,
+because it alone is given Bash and a setup of its own to use them with.
 """
 
 import shlex
@@ -181,10 +181,24 @@ Then say what changed in the user's words, as you say what a session did: "Filed
 "Closed". What lit prints is full of ids, and none of them is said."""
 
 
-def brain_instruction(log: Path) -> str:
-    """The brain's system prompt: the intermediary's, with how to read hands' log at `log` and how to work a backlog
-    before its closing words."""
-    return f"{_BODY}\n\n{_reading(log)}\n\n{_TRACKING}\n\n{_ABOVE_ALL}"
+def brain_instruction(log: Path, setup: Path) -> str:
+    """The brain's system prompt: the intermediary's, with how to read hands' log at `log`, how to work a backlog, and
+    where its own setup is, before its closing words."""
+    return f"{_BODY}\n\n{_reading(log)}\n\n{_TRACKING}\n\n{_own(setup)}\n\n{_ABOVE_ALL}"
+
+
+def _own(setup: Path) -> str:
+    return f"""\
+# Your own setup is {setup}
+
+You are a Claude Code of your own, set up in {setup}: what you are given is what that directory says, a skill for each \
+folder in {setup}/skills and what its settings.json allows. A skill or setting of yours that the user asks you to \
+install, change, or remove is changed there, and you have it from your next turn. Your own skills are the folders in \
+{setup}/skills, so list it before you name them: a skill added since you began is announced alone. ~/.claude is the user's own Claude \
+Code setup, never yours: nothing of yours goes in it, and nothing of yours links to or loads from it.
+
+WRONG: the user says "install a skill that writes haiku", and you make ~/.claude/skills/haiku.
+RIGHT: you write {setup}/skills/haiku/SKILL.md, and once it is there you say "Installed"."""
 
 
 def _reading(log: Path) -> str:

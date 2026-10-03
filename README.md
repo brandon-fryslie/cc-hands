@@ -102,6 +102,8 @@ It searches the web and reads pages with the `firecrawl` command from its shell,
 skill of its setup says: `~/.hands/brain/skills/firecrawl/SKILL.md`, with `"deny": ["WebSearch", "WebFetch"]` in its
 settings so Firecrawl is its web. As a skill it adds one line to each request until it is used (about 110 bytes,
 2026-10-03); Firecrawl's MCP server would add every one of its tools' descriptions to every request.
+Its prompt names its setup's directory, so a skill you ask it by voice to install, change, or remove is a folder in
+`~/.hands/brain/skills`, never in your `~/.claude`; it has a new skill from its next turn, with no restart.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
 and stops a turn with Escape, and types nothing else into it; its hooks say when a turn was taken and when it ended.
 What hands asks in the background, the Claude Code backend's summaries and the sentence an old tool result goes as,

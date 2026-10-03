@@ -101,17 +101,20 @@ def test_the_prompt_names_no_tool_the_daemon_does_not_give() -> None:
     # Every tool is snake_case, so every snake_case name in the prompt is a tool, bar the code names it quotes as ones never to say.
     quoted_code_names = {"parse_date", "test_invoice_total"}
     given = set(names(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)))
-    for prompt in (INTERMEDIARY_INSTRUCTION, brain_instruction(Path("/home/hands/audit"))):
+    for prompt in (INTERMEDIARY_INSTRUCTION, brain_instruction(Path("/home/hands/audit"), Path("/home/hands/brain"))):
         named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", prompt)) - quoted_code_names
         assert named, "the prompt names no tool at all"
         assert named <= given, f"the prompt names {sorted(named - given)}, which the daemon does not give"
 
 
 def test_only_the_brain_which_has_bash_is_told_of_the_log_and_of_lit_and_it_keeps_the_closing_words_last() -> None:
-    told = brain_instruction(Path("/my home/audit"))
+    told = brain_instruction(Path("/my home/audit"), Path("/my home/brain"))
     assert ".jsonl" not in INTERMEDIARY_INSTRUCTION and "Bash" not in INTERMEDIARY_INSTRUCTION
     # Working a tracker is done from a shell, so only the brain is told it works one with lit.
     assert "lit quickstart" in told and not re.search(r"\blit\b", INTERMEDIARY_INSTRUCTION)
+    # Asked to install a skill and told nothing of its setup, the brain made it in ~/.claude/skills, the user's own
+    # (hands-brain-d8g.33b, 2.1.288): its skills are installed, listed, changed, and removed in its own config directory.
+    assert "/my home/brain/skills/haiku/SKILL.md" in told and "/my home/brain" not in INTERMEDIARY_INSTRUCTION
     assert told.startswith(INTERMEDIARY_INSTRUCTION.split("\n\n# Above all")[0]) and told.endswith(INTERMEDIARY_INSTRUCTION.split("\n\n")[-1])
     # A home with a space in it is one argument to every command the brain is shown.
     assert f"'/my home/audit'/{SEGMENT_GLOB}" in told
@@ -130,7 +133,7 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     log.record(BacklogUnread(project="/code/p", error="lit exited 3", seconds=0.1))
     # A file that is no segment is no part of the log.
     (path / "audit.jsonl").write_text(json.dumps({"level": "error", "type": "Stray"}) + "\n")
-    shown = [line[2:].partition(": ") for line in brain_instruction(path).splitlines() if line.startswith("- ")]
+    shown = [line[2:].partition(": ") for line in brain_instruction(path, tmp_path / "brain").splitlines() if line.startswith("- ")]
     commands = {label: command for label, _, command in shown if " | jq " in command}
     assert len(commands) == 3
 
