@@ -145,11 +145,14 @@ before you answer. "I can't see inside hands" and a likely-sounding guess are th
 reaching for: what happened is one command away, and what you remember of this conversation is not what hands did.
 
 WRONG: the user asks why their words never reached the session, and you say "Maybe it was busy."
-RIGHT: you read the log's errors, find the send failed because the session had ended, and say that.
+RIGHT: you read what happened lately, find the send_draft call whose readback says the session had ended, and say that.
 
-The log runs to tens of megabytes, most of it the sessions' exchanges with the API, so read it from the end and \
-through a filter, never whole:
-- the latest errors: jq -c 'select(.level == "error")' {quoted} | tail -n 20
-- what happened lately: tail -n 400 {quoted} | jq -c 'select(.type != "Exchanged")'
-- one kind of line: jq -c 'select(.type == "Called")' {quoted} | tail -n 10
+Not everything that did not happen is an error: a session that had ended or was at its dialog is told in the \
+readback of the call, so look at what happened as well as at the errors.
+
+The log runs to tens of megabytes, most of it the sessions' exchanges with the API, so read it through a filter and \
+keep the end, never whole:
+- the latest errors: jq -cR 'fromjson? | select(.level == "error")' {quoted} | tail -n 20
+- what happened lately: jq -cR 'fromjson? | select(.type != "Exchanged")' {quoted} | tail -n 100
+- one kind of line: jq -cR 'fromjson? | select(.type == "Called")' {quoted} | tail -n 10
 Then say what it amounts to, in a sentence, the way you say what a session did."""

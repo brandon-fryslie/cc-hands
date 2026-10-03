@@ -18,6 +18,7 @@ from hands.daemon import cli
 from hands.sessions.audit import (
     Applied,
     AuditLog,
+    AsideAnswered,
     BacklogUnread,
     BrainAnswered,
     BrainSpoke,
@@ -35,11 +36,11 @@ from hands.sessions.audit import (
     tail,
 )
 from hands.sessions.home import Home
-from hands.sessions.model_facts import ModelFailed
+from hands.sessions.model_facts import ModelFailed, ModelReplyEmpty
 from hands.sessions.registry import Sessions
 from hands.voice.tools import Result, Tool, audited, draft_tools, tool
 from hands.core.status import Busy, Report, Stamp
-from hands.core.wire import Answered, Exchanged, Garbled, MainTurn, Reached, Unreached
+from hands.core.wire import Answered, Exchanged, Garbled, MainTurn, Reached, Uncopied, Unreached
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
 STOP_HEARD = Stamp(1500)
@@ -56,7 +57,7 @@ def lines(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
-async def invoke(tool: Tool, **arguments: object) -> object:
+async def invoke(tool: Tool, **arguments: object) -> Result:
     return await tool.body(**arguments)
 
 
@@ -77,7 +78,7 @@ def test_an_entry_is_its_type_and_fields_nested_values_alike() -> None:
 
 def test_a_value_the_log_cannot_write_is_refused_rather_than_guessed_at() -> None:
     with pytest.raises(TypeError, match="cannot encode a set"):
-        encoded(Called("t", {"odd": {1, 2}}, None))
+        encoded(Called("t", {"odd": {1, 2}}, {}))
 
 
 def test_the_log_is_the_user_s_alone_to_read_whether_it_is_new_or_was_there(tmp_path: Path) -> None:
@@ -108,6 +109,11 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
     log.record(BrainAnswered(prompt="p1", error="rate_limit"))
     log.record(BrainAnswered(prompt="p2", error=None))
     log.record(Named(session="s1", outcome="kept", before="a b", name=None, reply="a b", error=None, seconds=0.1))
+    log.record(Named(session="s1", outcome="failed", before="a b", name=None, reply=None, error="timed out", seconds=0.1))
+    log.record(AsideAnswered("q", "", True, SessionId("s2"), 0.0, 9.0))
+    log.record(BrainSpoke(("x1",), "", (), False, "user", 0.0, ModelReplyEmpty()))
+    log.record(BrainSpoke(("x1",), "Sent.", (), False, "user", 0.0, None))
+    log.record(Called("tell_turn", {}, {"error": "no running session has the id 'x'"}))
     # An "error" deep in a line, in what a tool handed back, does not make the line hands' error.
     log.record(Called("read_turn", {}, {"turn": {"error": {"type": "rate_limit_error"}}}))
     for reply in (
@@ -115,6 +121,7 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
         Reached(429, 0.0, 0.0, 2, Answered({"type": "error", "error": {"type": "rate_limit_error"}})),
         Reached(200, 0.0, 0.0, 2, Garbled("the stream ended early")),
         Unreached("ClientConnectorError: no route", 0.0),
+        Uncopied("the copy broke off", 0.0),
     ):
         log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False))
     assert [(line["type"], line["level"]) for line in lines(path)] == [
@@ -123,8 +130,14 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
         ("BrainAnswered", "error"),
         ("BrainAnswered", "info"),
         ("Named", "info"),
+        ("Named", "error"),
+        ("AsideAnswered", "error"),
+        ("BrainSpoke", "error"),
+        ("BrainSpoke", "info"),
+        ("Called", "error"),
         ("Called", "info"),
         ("Exchanged", "info"),
+        ("Exchanged", "error"),
         ("Exchanged", "error"),
         ("Exchanged", "error"),
         ("Exchanged", "error"),
@@ -203,6 +216,13 @@ def _write_heartbeat() -> None:
     except OSError:
         logger.exception("cannot write the heartbeat")
     logger.error("no exception here")
+    try:
+        try:
+            _out_of_space()
+        except OSError as error:
+            raise RuntimeError("the heartbeat is lost") from error
+    except RuntimeError:
+        logger.exception("the daemon is not beating")
 
 
 def test_an_error_logged_anywhere_is_a_failure_line_with_its_exception_where_it_was_logged_and_the_frames_it_came_up_through() -> None:
@@ -219,9 +239,22 @@ def test_an_error_logged_anywhere_is_a_failure_line_with_its_exception_where_it_
             source="test_audit:_write_heartbeat",
             message="cannot write the heartbeat: OSError: no space left",
             where=f"{__file__}:{at['write'] + 5}",
-            trace=(f"{__file__}:{at['write'] + 3} in _write_heartbeat", f"{__file__}:{at['raise'] + 1} in _out_of_space"),
+            trace=("OSError: no space left", f"{__file__}:{at['write'] + 3} in _write_heartbeat", f"{__file__}:{at['raise'] + 1} in _out_of_space"),
         ),
         Failure(source="test_audit:_write_heartbeat", message="no exception here", where=f"{__file__}:{at['write'] + 6}", trace=()),
+        # Raised from another, it comes after the one it was raised from: the first cause, where it began, is first.
+        Failure(
+            source="test_audit:_write_heartbeat",
+            message="the daemon is not beating: RuntimeError: the heartbeat is lost",
+            where=f"{__file__}:{at['write'] + 13}",
+            trace=(
+                "OSError: no space left",
+                f"{__file__}:{at['write'] + 9} in _write_heartbeat",
+                f"{__file__}:{at['raise'] + 1} in _out_of_space",
+                "RuntimeError: the heartbeat is lost",
+                f"{__file__}:{at['write'] + 11} in _write_heartbeat",
+            ),
+        ),
     ]
 
 
@@ -376,7 +409,7 @@ def test_an_entry_the_log_cannot_encode_is_a_failure_line_and_the_daemon_carries
     log = AuditLog(path, clock=lambda: AT)
     sink = logger.add(failures_to(log.record), level="ERROR", filter="hands")
     try:
-        log.record(Called("list_sessions", {}, object()))
+        log.record(Called("list_sessions", {}, {"sessions": object()}))
     finally:
         logger.remove(sink)
     [line] = lines(path)

@@ -115,11 +115,14 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     path = tmp_path / "a home" / "audit.jsonl"
     log = AuditLog(path, clock=lambda: datetime(2026, 10, 3, tzinfo=UTC))
     log.record(Transcribed("send it"))
+    # A line cut short, as a write that failed part way leaves it: the lines after it are still read.
+    with path.open("a", encoding="utf-8") as torn:
+        torn.write('{"at": "2026-10-03T00:00:00.000+00:00", "level": "err\n')
     log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("no route", 0.0), True))
     log.record(Called("list_sessions", {}, {"sessions": []}))
     log.record(BacklogUnread(project="/code/p", error="lit exited 3", seconds=0.1))
     shown = [line[2:].partition(": ") for line in brain_instruction(path).splitlines() if line.startswith("- ")]
-    commands = {label: command for label, _, command in shown if command.startswith(("jq ", "tail "))}
+    commands = {label: command for label, _, command in shown if command.startswith("jq ")}
     assert len(commands) == 3
 
     def found(label: str) -> list[str]:
