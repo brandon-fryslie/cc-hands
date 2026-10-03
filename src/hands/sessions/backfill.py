@@ -65,8 +65,9 @@ def read_transcript(transcript: Path) -> Reading:
         if record is None:
             continue
         match turning.consume(record):
-            case Printed() if turning.opening is not None:
-                # The turning joined it to the opening it holds, which is the last one read.
+            case Printed() | None if turning.opening is not None and openings:
+                # What a command printed, or the record of the command whose words opened the turn: the turning joined it
+                # to the opening it holds, which is the last one read.
                 openings[-1] = replace(openings[-1], opening=turning.opening)
             case Printed():
                 # Printed before any opening was read, which the turning has said.

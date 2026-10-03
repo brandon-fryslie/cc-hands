@@ -1079,6 +1079,16 @@ async def test_what_a_local_command_printed_is_no_answer_of_claudes_under_the_co
     assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Taken(SID, PromptId("p2"), None, 7.0)]
 
 
+async def test_compact_typed_as_words_and_its_command_record_open_one_turn(tmp_path: Path) -> None:
+    """The bug this closes: the words /compact and the record Claude Code writes after the compaction opened a turn each."""
+    typed = '{"uuid":"c7","type":"user","promptId":"p1","message":{"role":"user","content":"/compact"}}'
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, typed, COMPACT, COMPACTED))
+    tails = await following(transcript)
+    assert await turn_of(transcript) == Turn(Commanded(Ref("c2"), "/compact", "", "Compacted (ctrl+o to see full summary)"), ())
+    assert tails._following[SID].reading.number == 2  # pyright: ignore[reportPrivateUsage]
+
+
 async def test_a_skill_run_in_a_fork_written_as_typed_words_is_read_as_a_command_by_its_output(tmp_path: Path) -> None:
     """The bug this closes: `/code-review medium <pr>` was told as words the user asked, and its output dropped."""
     typed = '{"uuid":"c6","type":"user","promptId":"p2","message":{"role":"user","content":"/code-review medium 100"}}'

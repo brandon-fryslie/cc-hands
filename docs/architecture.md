@@ -931,8 +931,11 @@ otherwise. What a command printed (`<local-command-stdout>`, `<bash-stdout>`, an
 stderr, marked) is a record of its own after the command's; it opens nothing, and joins the opening
 whose record it names as its `parentUuid`, with terminal escapes dropped (`hands.core.turn.printed`). A
 command and its output are as often written as a `system` record of subtype `local_command` as a user one,
-and are read the same either way; such a record carries no prompt id and is no answer of Claude's. A skill
-run in a fork of its own is written as the words typed, and its output is what makes it `Commanded`. The steps are assistant text (`Said`) and tool
+and are read the same either way; such a record carries no prompt id and is no answer of Claude's. A command
+written as the words typed — `/compact` ahead of its compaction, a skill run in a fork of its own — is `Commanded`:
+a slash and a name, in a record with no `promptSource`, which Claude Code writes on every prompt it sends Claude, one
+that opens with a slash included. The record `/compact` writes once it has run, under the same prompt id, is that
+same command (`hands.core.turn.recorded`), not a second turn. The steps are assistant text (`Said`) and tool
 calls matched to their results by id, each handed to `recognise`; subagent records and
 thinking blocks are skipped, thinking because it is how Claude reached a result rather
 than a result.

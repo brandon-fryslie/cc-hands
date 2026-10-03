@@ -98,7 +98,16 @@ class Printed:
     output: str
 
 
-def edge_of(record: Payload, mid_tool: bool) -> Opening | Printed | Interruption | None:
+@dataclass(frozen=True)
+class Typed:
+    """A command written as the words typed: a skill run in a fork of its own, and /compact, whose record Claude Code
+    writes once it has run, under another prompt id and naming nothing of these words. That record is this command
+    (`recorded`)."""
+
+    command: Commanded
+
+
+def edge_of(record: Payload, mid_tool: bool) -> Opening | Printed | Typed | Interruption | None:
     """Where this record begins a turn, cuts the one under way off, or carries what a command printed; None for a
     record in the middle of a turn."""
     if record.fields.get("type") == "user" and result_text(message(record).get("content")) in _INTERRUPTED:
@@ -134,7 +143,7 @@ def written_of(record: Payload) -> Stamp | None:
             raise Rejected(f"a transcript record's timestamp should be a string, got {type(other).__name__}")
 
 
-def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | None:
+def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | Typed | None:
     """What opens a turn: a prompt or a notification Claude Code handed a session that was not waiting on a tool.
 
     `mid_tool` says whether the record before this one was a tool call or its result.
@@ -153,7 +162,7 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | None:
     parts = blocks(record)
     match message(record).get("content"):
         case str() as text:
-            ran = _ran(ref, text, ref_of(record, "parentUuid"))
+            ran = _ran(ref, text, ref_of(record, "parentUuid")) or _typed(record, text)
             if ran is not None:
                 return ran
         case list() if parts and not any(block.get("type") == "tool_result" for block in parts):
@@ -178,6 +187,8 @@ _RAN = re.compile(r"\s*<(command-name|command-message|bash-input|local-command-s
 # Each output tag, and how what it holds is told: what went to stderr is marked, so a command that failed is not told as
 # one that printed its answer.
 _OUTPUTS = (("local-command-stdout", ""), ("bash-stdout", ""), ("local-command-stderr", "stderr: "), ("bash-stderr", "stderr: "))
+# A command written as the words typed: /compact ahead of the compaction it asks for, and a skill run in a fork of its own.
+_TYPED = re.compile(r"(/[A-Za-z][\w:.-]*)(?:\s+(.*))?", re.DOTALL)
 
 
 def _ran(ref: Ref | None, text: str, parent: Ref | None) -> Commanded | Shelled | Printed | None:
@@ -195,6 +206,20 @@ def _ran(ref: Ref | None, text: str, parent: Ref | None) -> Commanded | Shelled 
             return Shelled(ref, _tagged(text, "bash-input"))
         case _:
             return Printed(parent, "\n".join(f"{mark}{output}" for tag, mark in _OUTPUTS if (output := _tagged(text, tag))))
+
+
+def _typed(record: Payload, text: str) -> Typed | None:
+    """A command Claude Code wrote as the words typed; None for anything Claude was sent, which may open with a slash too.
+
+    Claude Code marks what it sends Claude with the prompt's source (`typed`, `queued`): ` /help reply pong` carries one,
+    and Claude answered it. The words a command was typed as carry none, and every prompt of a main session carries one
+    from 2.1.197 to 2.1.286.
+    """
+    match record.fields.get("promptSource"), _TYPED.fullmatch(text):
+        case None, typed if typed is not None:
+            return Typed(Commanded(ref_of(record), typed.group(1), (typed.group(2) or "").strip()))
+        case _:
+            return None
 
 
 def _tagged(text: str, tag: str) -> str:

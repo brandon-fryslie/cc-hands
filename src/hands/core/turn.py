@@ -181,12 +181,23 @@ def printed(opening: Opening, of: Ref | None, output: str) -> Opening | None:
         case Commanded() | Shelled():
             # Empty output printed nothing.
             return opening if not output else replace(opening, output=output if opening.output is None else f"{opening.output}\n{output}")
-        case Asked(ref=ref, text=text):
-            # A skill run in a fork of its own is written as the words typed, and is known for a command by its output.
-            name, _, args = text.strip().partition(" ")
-            return Commanded(ref, name, args.strip(), output or None)
-        case Notified():
+        case Asked() | Notified():
             return None
+
+
+def recorded(opening: Opening, command: Commanded) -> Commanded | None:
+    """The command whose words opened the turn, now known by the record Claude Code writes for it once it has run, as it
+    does for /compact after the compaction; None for a command record of anything else, which opens a turn of its own.
+
+    The caller says the words are waiting on their record. Known by the record from here on, because what the command
+    printed names that record and not the words.
+    """
+    match opening:
+        case Commanded(name=command.name, args=command.args, output=None):
+            return command
+        case _:
+            return None
+
 
 # One thing that happened in a session: what opened a turn, or a step of the answer to it. A Turn holds the two
 # apart because it is summarised as a whole, against its request. A reading of a session that nobody was
