@@ -31,7 +31,7 @@ def held(session: SessionId, request: str, on: Permission = BASH) -> Mapping[Ses
 
 
 NOTE = Note(ModeChanged(API, "acceptEdits"))
-GONE = SessionGone(WEB)
+GONE = SessionGone(SessionId("old"))
 
 
 @pytest.mark.parametrize(
@@ -63,6 +63,24 @@ GONE = SessionGone(WEB)
             id="a session gone is told after the turns it ended",
         ),
         pytest.param(
+            (finished(API, "one"), finished(WEB, "two"), asks(API, "a2")),
+            held(API, "a2"),
+            (finished(API, "one"), asks(API, "a2"), finished(WEB, "two")),
+            id="a session's story is told in the order it happened, its turn before its next request",
+        ),
+        pytest.param(
+            (finished(API, "one"), Unread(API), finished(API, "three")),
+            {},
+            (finished(API, "one"), Unread(API), finished(API, "three")),
+            id="a turn that could not be read stands between the turns it came between",
+        ),
+        pytest.param(
+            (finished(API, "one"), NOTE, finished(API, "two")),
+            {},
+            (NOTE, finished(API, "one", "two")),
+            id="what is only known neither breaks a fold nor waits behind it",
+        ),
+        pytest.param(
             (asks(API, "a1"), asks(API, "a2")),
             held(API, "a2"),
             (asks(API, "a2"),),
@@ -75,22 +93,28 @@ GONE = SessionGone(WEB)
             id="a request nothing waits on any more is not told",
         ),
         pytest.param(
-            (Speak(DeadlineNear(API, BASH, 10.0)), Speak(Expired(API, BASH))),
+            (Speak(DeadlineNear(API, RequestId("a1"), BASH, 10.0)), Speak(Expired(API, BASH))),
             {},
             (Speak(Expired(API, BASH)),),
             id="a deadline counted down on a dialog that expired is not told, its expiry is",
         ),
         pytest.param(
-            (Speak(DeadlineNear(API, BASH, 10.0)),),
+            (Speak(DeadlineNear(API, RequestId("a1"), BASH, 10.0)),),
             held(API, "a2", EDIT),
             (),
             id="a deadline on a dialog another replaced is not told",
         ),
         pytest.param(
-            (Speak(DeadlineNear(API, BASH, 10.0)),),
+            (Speak(DeadlineNear(API, RequestId("a1"), BASH, 10.0)),),
             held(API, "a1"),
-            (Speak(DeadlineNear(API, BASH, 10.0)),),
+            (Speak(DeadlineNear(API, RequestId("a1"), BASH, 10.0)),),
             id="a deadline on the dialog still waiting is told",
+        ),
+        pytest.param(
+            (Speak(DeadlineNear(API, RequestId("a1"), BASH, 10.0)),),
+            held(API, "a2"),
+            (),
+            id="a deadline on a request asked again the same way is not told",
         ),
         pytest.param(
             (asks(API, "a1"), Briefing("how the sessions stood")),

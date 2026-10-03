@@ -44,7 +44,7 @@ from hands.voice.narrator import Recount, Recounts, delivery, switch
 from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
-from hands.voice.speech import answer_readback
+from hands.voice.speech import answer_readback, told
 from hands.voice.voices import VOICES, Voices, fetched, parse_voice, spoken
 
 # What the model is handed back from a call: an object, as every tool API carries a result.
@@ -680,7 +680,7 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool:
                 return {"turn": f"[hands] The Claude Code session {name} finished a turn with nothing in it hands could tell. Tell the user so.", "now": now}
             case Recount(tellings=tellings, unread=unread):
                 failed = (f"[hands] hands could not read {'the rest of ' if tellings else ''}the turn the Claude Code session {name} finished. Tell the user so.",)
-                return {"turn": "\n\n".join((*(telling.news for telling in tellings), *(failed if unread else ()))), "now": now}
+                return {"turn": "\n\n".join((*(told(id, name, (telling,)) for telling in tellings), *(failed if unread else ()))), "now": now}
 
     return tool(tell_turn)
 

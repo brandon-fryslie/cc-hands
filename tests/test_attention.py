@@ -24,8 +24,9 @@ from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.summaries import Summaries, set_summaries, summaries
 from hands.sessions.tail import Tails
-from hands.voice.narrator import Recount, Recounts, Told, delivery, narrate, recount
-from hands.core.pending import Pending
+from hands.voice.narrator import Recount, Recounts, delivery, narrate, recount
+from hands.core.pending import News, Pending
+from hands.voice import speech
 from hands.voice.speech import Pushed, Unprompted, frames
 from hands.voice.tools import tell_turn_tool, turn_summaries_tool, set_overlay_tool
 
@@ -83,9 +84,9 @@ async def test_every_way_a_turn_is_told_tells_the_one_summary(tmp_path: Path) ->
     told: dict[Delivery, str] = {}
     for delivered in ("summaries", "watched", "on request", "muted"):
         recounts = Recounts()
-        frame = await recount(Tails(sessions), member.id, PromptId("p1"), None, "one", lambda _: None, Delta(), delivered, recounts)
+        frame = await recount(Tails(sessions), member.id, PromptId("p1"), None, lambda _: None, Delta(), delivered, recounts)
         asked = await tell_turn_tool(sessions, recounts).body(session=member.id)
-        assert asked == {"turn": "\n\n".join(telling.news for telling in cast(Recount, recounts.of(member.id)).tellings), "now": "not reported yet"}
+        assert asked == {"turn": "\n\n".join(speech.told(member.id, "one", (telling,)) for telling in cast(Recount, recounts.of(member.id)).tellings), "now": "not reported yet"}
         told[delivered] = handed(frame) if frame is not None else str(asked["turn"])
         assert (frame is None) == (delivered in ("on request", "muted"))
     assert len(set(told.values())) == 1
@@ -105,9 +106,9 @@ async def test_a_turn_is_asked_for_only_of_a_running_session_and_one_with_nothin
         "turn": "[hands] The Claude Code session one finished a turn with nothing in it hands could tell. Tell the user so.",
         "now": "not reported yet",
     }
-    recounts.put(member.id, PromptId("p1"), Told("Told.", ()))
+    recounts.put(member.id, PromptId("p1"), News("Told.", "", "", ()))
     recounts.unread(member.id, PromptId("p1"))
-    assert (await asked.body(session=member.id))["turn"] == "Told.\n\n[hands] hands could not read the rest of the turn the Claude Code session one finished. Tell the user so."
+    assert (await asked.body(session=member.id))["turn"] == f"{speech.told(member.id, 'one', (News('Told.', '', '', ()),))}\n\n[hands] hands could not read the rest of the turn the Claude Code session one finished. Tell the user so."
 
 
 async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatched_one_s_until_asked(tmp_path: Path) -> None:
@@ -131,8 +132,8 @@ async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatche
     finally:
         narrating.cancel()
     assert queued.empty()
-    assert [telling.news for telling in cast(Recount, recounts.of(watched.id)).tellings] == [told] and "session watched (id watched) finished a turn" in told
-    assert "session other (id other) finished a turn" in str(recounts.of(other.id))
+    assert [speech.told(watched.id, "watched", (telling,)) for telling in cast(Recount, recounts.of(watched.id)).tellings] == [told] and "session watched (id watched) finished a turn" in told
+    assert [telling.reply for telling in cast(Recount, recounts.of(other.id)).tellings] == [REPLY]
     assert [(entry.session, entry.delivered) for entry in entries if isinstance(entry, Recounted)] == [(other.id, "on request"), (watched.id, "watched")]
 
 

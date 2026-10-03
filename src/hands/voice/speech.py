@@ -14,8 +14,9 @@ from hands.sessions.audit import Record, Relayed
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode
 
-# How much of a reply is handed to the model. Every turn told grows the model's history toward compaction, so what is
-# handed is bounded; a session asked to end on a concise overview writes far less than this.
+# How much of what a session replied is handed to the model in one telling, however many turns it folds. Every telling
+# grows the model's history toward compaction, so what is handed is bounded; a session asked to end on a concise
+# overview writes far less than this.
 REPLY_SHOWN = 1500
 
 # A tool input is shown to the model whole up to this many characters; a longer one is cut and says so.
@@ -137,7 +138,8 @@ def told(session: SessionId, name: str, news: Sequence[News]) -> str:
     Only the last turn's question is put: a session that went on to another turn was answered, at the keyboard or
     by the turn that followed.
     """
-    accounts = "Then, in the turn after that: ".join(_account(each) for each in news)
+    # [LAW:single-enforcer] one bound for the whole telling, shared among its turns, however many were folded into it.
+    accounts = "Then, in the turn after that: ".join(_account(each, REPLY_SHOWN // len(news)) for each in news)
     asked = news[-1].asked
     ending = (
         f"It is waiting on the user's answer to this, so end by asking it, with what it refers to, so they can answer without looking at the screen: {asked}"
@@ -150,8 +152,8 @@ def told(session: SessionId, name: str, news: Sequence[News]) -> str:
     )
 
 
-def _account(news: News) -> str:
-    reply = f"The last thing it said was:\n\n{bounded(news.reply, REPLY_SHOWN)}\n\n" if news.reply is not None else "It said nothing. "
+def _account(news: News, shown: int) -> str:
+    reply = f"The last thing it said was:\n\n{bounded(news.reply, shown)}\n\n" if news.reply is not None else "It said nothing. "
     facts = f"From its record, hands adds: {news.facts} " if news.facts else ""
     return f"{reply}{facts}"
 

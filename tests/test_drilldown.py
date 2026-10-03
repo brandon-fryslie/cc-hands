@@ -8,7 +8,8 @@ from hands.core.narration import narration
 from hands.core.session import PromptId, SessionId
 from hands.core.turn import CUT, Asked, Edited, Said, Step, Tested, Turn
 from hands.sessions.registry import Sessions
-from hands.voice.narrator import Recounts, Told
+from hands.core.pending import News
+from hands.voice.narrator import Recounts
 from hands.voice.tools import Body, Result, expand_tool
 
 SID = SessionId("s1")
@@ -22,7 +23,7 @@ STEPS: tuple[Step, ...] = (
 
 def held(steps: tuple[Step, ...] = STEPS, turn: str = "p1") -> Recounts:
     recounts = Recounts()
-    recounts.put(SID, PromptId(turn), Told("news", narration(Turn(Asked(None, "fix the parser"), steps), Delta()).parts))
+    recounts.put(SID, PromptId(turn), News("news", "", "", narration(Turn(Asked(None, "fix the parser"), steps), Delta()).parts))
     return recounts
 
 
@@ -87,7 +88,7 @@ async def test_a_new_telling_of_the_turn_starts_the_opening_over_and_holds_both_
     recounts = held()
     call = expand(recounts)
     await call(session=SID, part="the tests")
-    recounts.put(SID, PromptId("p1"), Told("then", narration(Turn(Asked(None, "fix the parser"), (Edited(None, "/code/quotes.py", True, "+strip"),)), Delta()).parts))
+    recounts.put(SID, PromptId("p1"), News("then", "", "", narration(Turn(Asked(None, "fix the parser"), (Edited(None, "/code/quotes.py", True, "+strip"),)), Delta()).parts))
     again = await call(session=SID, part="the change")
     assert again["depth"] == 1 and [part for part, _ in parts(again)] == ["the change", "the change"]
 

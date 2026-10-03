@@ -31,20 +31,10 @@ from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.summaries import DEFAULT, Summaries
 from hands.sessions.tail import Tails
-from hands.voice.readback import spoken_name
-from hands.voice.speech import Unprompted, told as told_text
+from hands.voice.speech import Unprompted
 
 # Everything reading a turn is expected to fail with; each is said, and the next turn is still heard.
 _FAILURES = (Rejected, OSError)
-
-
-@dataclass(frozen=True)
-class Told:
-    """One telling of a turn: what the model was handed of it, and the parts of the narration tree it was cut from,
-    there to be opened when the user asks for more."""
-
-    news: str
-    parts: tuple[Segment, ...]
 
 
 @dataclass(frozen=True)
@@ -58,7 +48,7 @@ class Recount:
     """
 
     turn: PromptId | None
-    tellings: tuple[Told, ...]
+    tellings: tuple[News, ...]
     unread: bool = False
     opened: tuple[str, ...] = ()
 
@@ -78,7 +68,7 @@ class Recounts:
     def __init__(self) -> None:
         self._last: dict[SessionId, Recount] = {}
 
-    def put(self, session: SessionId, turn: PromptId | None, told: Told | None) -> None:
+    def put(self, session: SessionId, turn: PromptId | None, told: News | None) -> None:
         """`told` is None when the telling found nothing new: the turn held stays as it is, and another replaces it."""
         held = self._held(session, turn)
         self._last[session] = replace(held, unread=False) if told is None else Recount(turn, (*held.tellings, told))
@@ -136,11 +126,10 @@ async def narrate(
     read = changes or NoChanges()
     while True:
         story = await sessions.story()
-        name = spoken_name(sessions, story.session)
         match story:
             case Summarise(session=session, turn=turn, closing=closing):
                 delivered = delivery(await switch(aloud), await _overlay(overlays, session))
-                told = await recount(tails, session, turn, closing, name, record, await read.taken(session), delivered, recounts)
+                told = await recount(tails, session, turn, closing, record, await read.taken(session), delivered, recounts)
             case SessionGone(session=session):
                 recounts.gone(session)
                 told = story
@@ -153,7 +142,6 @@ async def recount(
     session: SessionId,
     turn: PromptId | None,
     closing: str | None,
-    name: str,
     record: Record,
     delta: Delta,
     delivered: Delivery,
@@ -180,12 +168,12 @@ async def recount(
     # The last words wherever they fall: a turn interrupted mid-work, or one ending on a dialog, said what it had done
     # before the step that ended it.
     replied = [step.text for step in told.turn.steps if isinstance(step, Said)][-1:]
-    finished = Finished(session, (News(replied[0] if replied else None, tree.facts(), tree.asked(), tree.parts),))
-    news = told_text(session, name, finished.news)
+    news = News(replied[0] if replied else None, tree.facts(), tree.asked(), tree.parts)
     record(
         Recounted(
             session,
-            news,
+            news.reply,
+            news.facts,
             tuple(dict.fromkeys(segment.topic.name for segment in (*tree.sections, *tree.settled))),
             tuple(question.text for question in tree.questions),
             delivered,
@@ -195,8 +183,8 @@ async def recount(
     # Marked told however it is delivered, so the tail lets the steps go: what is kept of them is the tree's parts, held
     # with the telling until the session's next turn, for the user to open.
     await tails.spoken(told)
-    recounts.put(session, turn, Told(news, tree.parts))
-    return _delivered(delivered, finished)
+    recounts.put(session, turn, news)
+    return _delivered(delivered, Finished(session, (news,)))
 
 
 def _delivered[T](delivered: Delivery, told: T) -> T | None:

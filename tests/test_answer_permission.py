@@ -188,7 +188,7 @@ async def test_a_question_nobody_answers_by_its_deadline_is_left_to_its_dialog_a
     # Printing nothing decides nothing: the dialog, where the user may be answering, stays up.
     assert (code, stdout) == (0, "")
     [warning, expiry] = [await sessions.heard(), await sessions.heard()]
-    assert (warning, expiry) == (Speak(DeadlineNear(SID, moment.on, remaining=10.0)), Speak(Expired(SID, moment.on)))
+    assert (warning, expiry) == (Speak(DeadlineNear(SID, moment.request, moment.on, remaining=10.0)), Speak(Expired(SID, moment.on)))
     spoken = [said for heard in (warning, expiry) for said in frames(heard, Pushed(), names=lambda _: "quiz")]
     assert [cast(TTSSpeakFrame, said).text for said in spoken] == [
         "10 seconds left to answer quiz about its question.",
@@ -228,7 +228,7 @@ def test_the_brain_takes_what_a_session_asks_as_a_turn_of_its_own_after_the_user
 
 
 def test_under_the_brain_an_announcement_waits_in_hands_lane_behind_the_question_it_counts_down() -> None:
-    [said] = frames(Speak(DeadlineNear(SID, Permission("Bash", {"command": "ls"}), 10.0)), Tailed(), names=lambda _: "quiz")
+    [said] = frames(Speak(DeadlineNear(SID, RequestId("r1"), Permission("Bash", {"command": "ls"}), 10.0)), Tailed(), names=lambda _: "quiz")
     assert isinstance(said, Aloud) and said.spoken.text.startswith("10 seconds left to answer quiz")
 
 
@@ -267,7 +267,7 @@ async def test_an_unanswered_request_is_denied_at_its_deadline_after_one_warning
     code, stdout, _ = await shim.finished()
     assert (code, decision(stdout)) == (0, {"behavior": "deny", "message": EXPIRED_MESSAGE})
     assert [await sessions.heard(), await sessions.heard()] == [
-        Speak(DeadlineNear(SID, moment.on, remaining=10.0)),
+        Speak(DeadlineNear(SID, moment.request, moment.on, remaining=10.0)),
         Speak(Expired(SID, moment.on)),
     ]
     assert await call(named(sessions, "answer_permission"), request=moment.request, decision="allow") == {

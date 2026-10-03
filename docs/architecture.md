@@ -373,14 +373,15 @@ makes frames of it only as it lets it go, after `coalesce` (below), and each let
 `Yielded` line in the audit log: what came, what was told of it, and how long it waited.
 `Story` carries finished turns and sessions gone in one ordered
 queue, because an end spoken at once was heard before the last turn it ended. Every
-finished turn is summarised once (`voice/narrator.py`, `_news`): the session's last words,
-what its record adds, and what it is waiting on, for the model to say in its own words. How
-that one summary reaches the user is its `Delivery`: as a turn of the intermediary's own
+finished turn is read once into a `News` (`voice/narrator.py`, `recount`): the session's last
+words, what its record adds, and what it is waiting on. `speech.told` is the one place it
+becomes what the model is handed, under the session's name as it is when told, for the model
+to say in its own words. How that one summary reaches the user is its `Delivery`: as a turn of the intermediary's own
 — an `LLMMessagesAppendFrame` with `run_llm` on for an API model, a `Narrated` frame for
 the brain — when spoken summaries are on (`summaries`), or when they are off and the
 session is watched (`watched`); otherwise it is held (`on request`) and `tell_turn` hands it
 to the model when the user asks. Each session's last summary is held in `Recounts` either
-way, and each is a `Recounted` audit line naming its delivery. Nothing of a turn is said as
+way, as its `News`, and each is a `Recounted` audit line naming its delivery. Nothing of a turn is said as
 written past the model, and nothing is said of a session that sits at its prompt.
 `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
 with `run_llm` off. Each session has an overlay, `normal`, `watched`, or `muted`, one file per
@@ -409,13 +410,16 @@ value is a new column `[LAW:one-type-per-behavior]`.
 Pending speech is ordered as the floor lets it go, and nothing starts while the key is
 down. `coalesce` (`core/pending.py`) is pure: it drops what no longer waits on the user, a
 request answered at the keyboard while you talked and a deadline counted down on it, read
-off each session's held dialog as the floor lets go; it folds one session's finished turns
-into one `Finished` where the first stood, whose headline covers them all ("finished 3
-turns") and whose tellings keep their narration parts and so their record ids, so three
-`Stop`s that arrived while you were talking start with one sentence, not three; and it
-orders the rest `known` (notes and the briefing, never spoken) before `blocking` (what a
-session asks) before `result` (finished turns) before `fyi` (a session gone), arrival order
-within each. A `Pending`'s priority is read off its variant, never stored beside it. This
+off each session's held dialog, by request id, as the floor lets go; it folds one session's
+finished turns into one `Finished` where the first stood, whose headline covers them all
+("finished 3 turns") and whose tellings keep their narration parts and so their record ids,
+so three `Stop`s that arrived while you were talking start with one sentence, not three, and
+a turn that could not be read stays between the turns it came between; and it orders the
+rest `known` (notes and the briefing, never spoken) before `blocking` (what a session asks)
+before `result` (finished turns) before `fyi` (a session gone), arrival order within each.
+A session's own story keeps the order it happened in: what it told before something sooner
+is told with that sooner thing, so its next turn's request is never heard ahead of the turn
+before it. A folded telling shares one `REPLY_SHOWN` bound among its turns. A `Pending`'s priority is read off its variant, never stored beside it. This
 queue is not the player's bookmarks: resuming replays a bookmarked sentence and never
 re-enqueues a telling. Each item is a transition keyed by the record id that caused it, so
 nothing is announced twice `[LAW:one-source-of-truth]`; that keying is planned.

@@ -277,7 +277,7 @@ def test_before_the_warning_window_a_tick_changes_nothing() -> None:
 def test_the_warning_is_spoken_once_as_the_deadline_nears() -> None:
     warned, effects = reduce(holding(AT_DIALOG, dialog=HELD), Tick(at=53.0))
     assert warned == holding(AT_DIALOG, dialog=replace(HELD, warned=True))
-    assert effects == [Speak(DeadlineNear(ONE.id, BASH, remaining=8.0))]
+    assert effects == [Speak(DeadlineNear(ONE.id, RequestId("r0"), BASH, remaining=8.0))]
     assert reduce(warned, Tick(at=54.0)) == (warned, [])
 
 
@@ -297,7 +297,7 @@ def test_ticking_through_a_whole_wait_warns_exactly_once_then_denies_once() -> N
         heard += effects
     assert heard == [
         Narrate(Asking(ONE.id, RequestId("r"), BASH)),
-        Speak(DeadlineNear(ONE.id, BASH, remaining=WARNING_LEAD_SECONDS)),
+        Speak(DeadlineNear(ONE.id, RequestId("r"), BASH, remaining=WARNING_LEAD_SECONDS)),
         Reply(ONE.id, RequestId("r"), Deny(EXPIRED_MESSAGE)),
         Speak(Expired(ONE.id, BASH)),
     ]
