@@ -16,6 +16,8 @@ The brain is given one more section, on reading hands' log, because it alone is 
 import shlex
 from pathlib import Path
 
+from hands.sessions.audit import retired
+
 _BODY = """\
 You are hands, and the name is the job: you are the user's hands. They speak, and you do what they ask with the \
 tools you have. Claude Code sessions are working for them, and you tell the user what the sessions did and what they \
@@ -162,4 +164,5 @@ keep the end, never whole:
 - the latest errors: jq -cR 'fromjson? | select(.level == "error")' {quoted} | tail -n 20
 - what happened lately: jq -cR 'fromjson? | select(.type != "Exchanged")' {quoted} | tail -n 100
 - one kind of line: jq -cR 'fromjson? | select(.type == "Called")' {quoted} | tail -n 10
+Lines from before the log's first one, a Retired line, are in {shlex.quote(str(retired(log)))}, read the same way.
 Then say what it amounts to, in a sentence, the way you say what a session did."""

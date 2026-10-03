@@ -6,10 +6,15 @@ Each line is a value from this module or from the core, encoded the same way: it
 "type" and its fields beside it, nested values alike, with the wall-clock time the line was written
 under "at", and whether it tells of something that went wrong under "level", between the two. Nothing here
 decides what happened; it records what the rest of the daemon already decided.
+
+Log rotation keeps it bounded: a line that would take the log past LIMIT bytes first moves it to its retired name,
+replacing the one retired before, and starts a new log with a Retired line. The two never hold more than twice LIMIT,
+unless one line alone is longer than LIMIT.
 """
 
 import json
 import os
+import threading
 import traceback
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, fields, is_dataclass
@@ -393,6 +398,14 @@ class BacklogUnread:
 
 
 @dataclass(frozen=True)
+class Retired:
+    """The first line of a new log: the one before it reached the bound and was moved to `path` at `size` bytes."""
+
+    path: Path
+    size: int
+
+
+@dataclass(frozen=True)
 class Failure:
     """An error the daemon logged: the module and function that logged it, what it said, the file and line it was logged
     at, and, when it was logged with an exception, that exception and each it was raised from or while handling, the
@@ -439,6 +452,7 @@ Entry = (
     | NameGiven
     | NameWithheld
     | BacklogUnread
+    | Retired
     | Failure
 )
 Record = Callable[[Entry], None]
@@ -474,7 +488,7 @@ def level(entry: Entry) -> Level:
             | Applied() | Performed() | Typing() | LLMChosen() | ProxyListening() | TapListening() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Recounted() | Summarised()
-            | TurnsSummarised() | NameGiven()
+            | TurnsSummarised() | NameGiven() | Retired()
         ):
             return "info"
         case _:
@@ -491,11 +505,24 @@ def _reply_level(reply: Reached | Unreached | Held | Uncopied) -> Level:
             return "info"
 
 
+# How large the log grows before it is retired: two of these on disk at most, a few days of every session's exchanges.
+LIMIT = 32 * 1024 * 1024
+
+
+def retired(log: Path) -> Path:
+    """Where the log is moved when it reaches the bound: the lines just older than its own."""
+    return log.with_name(f"{log.name}.1")
+
+
 class AuditLog:
-    def __init__(self, path: Path, clock: Callable[[], datetime]) -> None:
+    def __init__(self, path: Path, clock: Callable[[], datetime], limit: int = LIMIT) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._path = path
         self._clock = clock
+        self._limit = limit
+        # [LAW:no-ambient-temporal-coupling] errors are recorded from whichever thread logged them; one writer at a time
+        # means no line lands in a log after it was retired, where a reader that has moved on would never see it.
+        self._writing = threading.Lock()
         # The log holds what every tapped session said, as the tap's socket does: the user's alone to read.
         if path.exists():
             path.chmod(0o600)
@@ -504,19 +531,28 @@ class AuditLog:
         # [LAW:single-enforcer] the log watches what the daemon does and never changes it: a line it cannot encode or
         # write is lost here, not a send's answer, a tool's result, a permission's question, or a background task.
         try:
-            line = json.dumps({"at": self._clock().isoformat(timespec="milliseconds"), "level": level(entry), **encoded(entry)}, ensure_ascii=False)
+            line = self._line(entry)
         except TypeError as error:
             # [LAW:no-silent-failure] a bug in what was recorded: logged as an error, it is a Failure line, whose fields always encode.
             logger.error(f"the audit log cannot encode a {type(entry).__name__} line: {error}")
             return
         try:
-            # Opened for each line, so a line is on disk when record returns and a log moved aside is started again.
-            # Half of a character cut in two is no UTF-8: it is written as its JSON escape, which reads back as itself.
-            with open(self._path, "a", encoding="utf-8", errors="backslashreplace", opener=_private) as log:
-                log.write(line + "\n")
+            with self._writing:
+                size = self._path.stat().st_size if self._path.exists() else 0
+                if size > 0 and size + len(line) > self._limit:
+                    os.replace(self._path, retired(self._path))
+                    line = self._line(Retired(retired(self._path), size)) + line
+                # Opened for each line, so a line is on disk when record returns and a log moved aside is started again.
+                with open(self._path, "ab", opener=_private) as log:
+                    log.write(line)
         except OSError as error:
             # [LAW:no-silent-failure] said on stderr, as a warning: an error would be sent back to the log that just failed.
             logger.warning(f"the audit log {self._path} lost a {type(entry).__name__} line: {error}")
+
+    def _line(self, entry: Entry) -> bytes:
+        text = json.dumps({"at": self._clock().isoformat(timespec="milliseconds"), "level": level(entry), **encoded(entry)}, ensure_ascii=False)
+        # Half of a character cut in two is no UTF-8: it is written as its JSON escape, which reads back as itself.
+        return (text + "\n").encode("utf-8", errors="backslashreplace")
 
 
 def _private(path: str, flags: int) -> int:
@@ -596,17 +632,36 @@ START = Position(inode=0, offset=0)
 
 
 def tail(path: Path, count: int) -> tuple[list[str], Position]:
-    """The last count whole lines of the log, and the position just past them, where following it begins."""
+    """The last count whole lines of the log and the one retired before it, and the position just past them, where
+    following it begins."""
     lines, position = _read(path, START)
-    return (lines[-count:] if count > 0 else []), position
+    older, _ = _read(retired(path), START)
+    return ((older + lines)[-count:] if count > 0 else []), position
 
 
 def follow(path: Path, position: Position, poll: Callable[[], None]) -> Iterator[str]:
     """Each whole line written to the log past position, calling poll between looks, for as long as the caller asks."""
     while True:
-        lines, position = _read(path, position)
+        lines, now = _read(path, position)
+        # The log as it is now is read first: a log moved aside by then takes no more lines, so what it gained since the
+        # last look is all there under its retired name. One retired twice between looks is gone, with its last lines.
+        yield from _rest(retired(path), position)
         yield from lines
+        position = now
         poll()
+
+
+def _rest(path: Path, since: Position) -> list[str]:
+    """The whole lines past since when path is the file since was read in; none when it is another, or there is none."""
+    try:
+        with path.open("rb") as log:
+            if os.fstat(log.fileno()).st_ino != since.inode:
+                return []
+            log.seek(since.offset)
+            data = log.read()
+    except FileNotFoundError:
+        return []
+    return data[: data.rfind(b"\n") + 1].decode("utf-8").splitlines()
 
 
 def _read(path: Path, since: Position) -> tuple[list[str], Position]:

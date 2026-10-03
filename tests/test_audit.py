@@ -33,6 +33,7 @@ from hands.sessions.audit import (
     encoded,
     failures_to,
     follow,
+    retired,
     tail,
 )
 from hands.sessions.home import Home
@@ -177,6 +178,43 @@ def test_a_log_moved_aside_is_followed_from_the_first_line_of_the_new_one_even_w
     # Longer than the old log, and the old offset falls inside a two-byte character.
     path.write_text("\u00e9t\u00e9\nsecond\n")
     assert [next(followed), next(followed)] == ["\u00e9t\u00e9", "second"]
+
+
+def test_the_log_and_the_one_retired_before_it_never_hold_more_than_twice_the_bound(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, clock=lambda: AT, limit=1000)
+    for number in range(200):
+        log.record(Transcribed(f"line {number}"))
+        assert path.stat().st_size <= 1000
+    assert retired(path).stat().st_size <= 1000
+    assert retired(path).stat().st_mode & 0o777 == 0o600
+    # The new log opens with where its predecessor went, at how many bytes.
+    first, second = lines(path)[:2]
+    assert first["type"] == "Retired" and first["path"] == str(retired(path)) and 900 < first["size"] <= 1000
+    assert second["type"] == "Transcribed"
+    assert lines(path)[-1]["text"] == "line 199"
+
+
+def test_a_reader_following_the_log_across_its_retirement_loses_no_line(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, clock=lambda: AT, limit=1000)
+    log.record(Transcribed("before"))
+    _, position = tail(path, 1)
+    followed = follow(path, position, lambda: None)
+    # Enough between two looks to retire the log once, with lines left unread in the one retired.
+    for number in range(15):
+        log.record(Transcribed(f"line {number}"))
+    assert retired(path).exists()
+    read = [json.loads(next(followed)) for _ in range(16)]
+    assert [line["text"] for line in read if line["type"] == "Transcribed"] == [f"line {number}" for number in range(15)]
+    assert [line["type"] for line in read].count("Retired") == 1
+
+
+def test_the_tail_reaches_into_the_retired_log_when_the_new_one_is_short(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    retired(path).write_text("one\ntwo\n")
+    path.write_text("three\n")
+    assert tail(path, 2)[0] == ["two", "three"]
 
 
 def test_a_line_the_disk_will_not_take_is_lost_out_loud_and_the_daemon_carries_on(tmp_path: Path) -> None:
