@@ -322,6 +322,41 @@ async def test_a_refusal_routed_final_is_the_proxys_own_502_the_client_does_not_
     assert isinstance(exchange.reply, Reached) and (exchange.reply.status, exchange.reply.reply_bytes, exchange.final) == (status, len(said), final)
 
 
+SPENT = b'{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}'
+
+
+@pytest.mark.parametrize(
+    ("refusal", "retry", "final"),
+    [
+        # Claude Code would wait out the reset and continue the task, hours on, with nobody asking it (hands-wire-zi2).
+        ("final", None, True),
+        ("final", "false", True),
+        ("retried", None, False),
+    ],
+)
+async def test_a_spent_usage_limit_routed_final_reaches_the_client_as_nothing_it_waits_out(
+    serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], refusal: Literal["retried", "final"], retry: str | None, final: bool
+) -> None:
+    limited = {"anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "1790791200"}
+
+    async def answered(_request: web.Request) -> web.Response:
+        told = {} if retry is None else {"X-Should-Retry": retry}
+        return web.Response(status=429, body=SPENT, headers={"Content-Type": "application/json", **limited, **told})
+
+    _, wire = await serve(answered)
+    wire.route = lambda _sent: Send(refusal=refusal)
+    got, headers, body = await post(wire.proxy.url)
+    named = {name.lower(): value for name, value in headers.items()}
+    if final:
+        # No limit for Claude Code to arm its continue on: neither the status, nor the headers, nor the error it reads.
+        assert (got, named.get("x-should-retry"), b"rate_limit_error" in body, limited.keys() & named.keys()) == (502, "false", False, set())
+    else:
+        assert (got, named.get("anthropic-ratelimit-unified-status"), body) == (429, "rejected", SPENT)
+    # Heard as the limit it is, whatever the client was told.
+    [answering] = [seen for seen in wire.seen if isinstance(seen, Answering)]
+    assert (answering.limit, only_exchange(wire).final) == (UsageLimitReached(RESETS), final)
+
+
 @pytest.mark.parametrize(("refusal", "final"), [("final", True), ("retried", False)])
 async def test_an_api_that_cannot_be_reached_is_final_when_routed_so(refusal: Literal["retried", "final"], final: bool) -> None:
     seen: list[Observed] = []
