@@ -136,10 +136,13 @@ class Following:
                 # A record that names no prompt says nothing of which one Claude is answering.
                 was, self.asked = self.asked, prompt_of(record) or self.asked
                 return None if self.asked is None or self.asked == was else Taken(session, self.asked, _written(session, record), at)
-            case _:
-                # An assistant record: Claude answering whatever the user's side last carried.
+            case "assistant":
+                # Claude answering whatever the user's side last carried.
                 was, self.answering = self.answering, self.asked
                 return None if was is None or self.answering is None or was == self.answering else Continued(session, was, self.answering)
+            case _:
+                # A local_command record: Claude Code's own, written under no prompt id, and no answer of Claude's.
+                return None
 
     def restart(self) -> None:
         """Read this file again from its start: nothing read of the file it was says anything about the file it is."""

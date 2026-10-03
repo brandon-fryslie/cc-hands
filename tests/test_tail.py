@@ -1070,3 +1070,10 @@ async def test_a_command_claude_code_writes_as_a_system_record_opens_its_turn_li
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(PROMPT, DONE, mcp, dismissed))
     assert await turn_of(transcript) == Turn(Commanded(Ref("c5"), "/mcp", "", "MCP dialog dismissed"), ())
+
+
+async def test_what_a_local_command_printed_is_no_answer_of_claudes_under_the_commands_prompt(tmp_path: Path) -> None:
+    """The bug this closes: a local_command output record, read as Claude answering, carried p1's turn on under /model's p2."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, WRITING, MODEL, MODEL_SET))
+    assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Taken(SID, PromptId("p2"), None, 7.0)]
