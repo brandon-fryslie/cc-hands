@@ -43,7 +43,7 @@ from pipecat.transports.local.audio import (
 from hands.voice.coreaudio import DefaultDevices, default_devices
 from hands.voice.cues import Cue, sound
 from hands.voice.ptt import Gate, KeyedAudio, PushToTalk
-from hands.voice.threads import SerialThread, off_loop
+from hands.threads import SerialThread, off_loop
 
 Instant = float  # seconds on the monotonic clock
 

@@ -15,10 +15,18 @@ from loguru import logger
 
 async def off_loop[T](work: Callable[[], T], name: str) -> T:
     """The result of work run on a daemon thread of its own."""
+    return await settles_off_loop(work, name)
+
+
+def settles_off_loop[T](work: Callable[[], T], name: str) -> asyncio.Future[T]:
+    """A future settled with work's outcome once a daemon thread of its own has run it.
+
+    Not a task, so the loop's shutdown does not cancel it: a caller cancelled while waiting can still wait for it.
+    """
     loop = asyncio.get_running_loop()
     settled: asyncio.Future[T] = loop.create_future()
     threading.Thread(target=_settle, args=(loop, settled, work), name=name, daemon=True).start()
-    return await settled
+    return settled
 
 
 class SerialThread:

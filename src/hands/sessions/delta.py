@@ -23,7 +23,7 @@ from loguru import logger
 
 from hands.core.delta import Changed, Commit, Delta
 from hands.core.session import SessionId
-from hands.sessions.child import finished
+from hands.sessions.child import run
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 
 # What a mark may spend, all its git commands together. It is taken while a prompt's hook waits on the daemon,
@@ -318,28 +318,19 @@ class Deltas:
             logger.warning(f"there was no time left to run git {args[0]} in {cwd}, so the turn is told without it")
             return None
         try:
-            process = await asyncio.create_subprocess_exec(
-                "git",
-                "--no-optional-locks",
-                "-C",
-                str(cwd),
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", **(env or {})},
+            ran = await run(
+                "git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", **(env or {})}
             )
-        except OSError as error:
-            logger.error(f"cannot run git in {cwd}: {error}")
-            return None
-        try:
-            out, err = await finished(process, left)
         except TimeoutError:
             logger.error(f"git {args[0]} in {cwd} did not answer in {left:.1f}s, so the turn is told without it")
             return None
-        if process.returncode != 0:
-            logger.debug(f"git {args[0]} in {cwd}: {err.decode(errors='replace').strip()}")
+        except OSError as error:
+            logger.error(f"cannot run git in {cwd}: {error}")
             return None
-        return out.decode(errors="replace").strip()
+        if ran.returncode != 0:
+            logger.debug(f"git {args[0]} in {cwd}: {ran.err.decode(errors='replace').strip()}")
+            return None
+        return ran.out.decode(errors="replace").strip()
 
 
 def _files(numstat: str) -> tuple[Changed, ...]:

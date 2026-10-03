@@ -78,7 +78,7 @@ from hands.voice.sentences import SummaryStore
 from hands.voice.briefing import brief, tail
 from hands.voice.conversation import record_turns
 from hands.voice.system import SystemChannel, listen, told
-from hands.voice.threads import off_loop
+from hands.threads import off_loop
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.tools import Tool, audited, intermediary_tools, standing
 from hands.brain.mcp import serve_mcp
