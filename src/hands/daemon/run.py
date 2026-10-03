@@ -82,7 +82,7 @@ from hands.voice.conversation import record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
 from hands.daemon.starting import keep_beating, start
-from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
+from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain_instruction
 from hands.voice.player import Player
 from hands.voice.tools import Tool, audited, intermediary_tools, standing
 from hands.brain.mcp import serve_mcp
@@ -227,7 +227,7 @@ class Mind:
 
 @asynccontextmanager
 async def mind(
-    config: VoiceConfig, tools: Sequence[Tool], sessions: Sessions, proxy_url: str, wire: Wire, store: Store, fritter: Path, record: Record
+    config: VoiceConfig, tools: Sequence[Tool], sessions: Sessions, proxy_url: str, wire: Wire, store: Store, fritter: Path, log: Path, record: Record
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
     through, the stage that speaks for it from the wire, the keeper of its context, and what answers hands' side questions."""
@@ -244,7 +244,7 @@ async def mind(
             server = await serve_mcp(tools, record)
             try:
                 station = Station(config_dir, workdir(config_dir), model, proxy_url)
-                brain = await start_brain(Launch(station, INTERMEDIARY_INSTRUCTION, server.config(), SessionId(str(uuid4())), fritter), record)
+                brain = await start_brain(Launch(station, brain_instruction(log), server.config(), SessionId(str(uuid4())), fritter), record)
                 try:
                     # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
                     # its own: nothing but the user's turns and their stops is ever typed into the brain.
@@ -318,7 +318,7 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
         config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, sessions, proxy.url, wire, store, home.fritter, audit.record) as minded:
+            async with mind(config, tools, sessions, proxy.url, wire, store, home.fritter, home.audit, audit.record) as minded:
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, player, audit.record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
