@@ -58,7 +58,7 @@ async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: h
     a stuck loop as not responding.
     """
     preparing = asyncio.create_task(prepare())
-    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, live(), False), heart.period.total_seconds()))
+    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, live(), listening=False, deaf=False), heart.period.total_seconds()))
     quitting = asyncio.create_task(quit_event.wait())
     try:
         await asyncio.wait({preparing, starting, quitting}, return_when=asyncio.FIRST_COMPLETED)
