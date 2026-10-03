@@ -72,7 +72,7 @@ SLIM = {
 PLUGIN = Path(__file__).parent / "plugin"
 # Each named as the brain calls it, plugin:skill, so it may use them without asking, as it may hands' tools.
 PLUGIN_SKILLS = tuple(
-    f"Skill({json.loads((PLUGIN / '.claude-plugin' / 'plugin.json').read_text())['name']}:{skill.name})" for skill in sorted((PLUGIN / "skills").iterdir())
+    f"Skill({json.loads((PLUGIN / '.claude-plugin' / 'plugin.json').read_text())['name']}:{skill.parent.name})" for skill in sorted((PLUGIN / "skills").glob("*/SKILL.md"))
 )
 
 # Credentials Claude Code prefers to its own login. Inherited from hands' environment, any of them would put the brain
