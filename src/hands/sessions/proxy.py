@@ -152,7 +152,8 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
             tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock()), final))
             return web.Response(status=REFUSED, text=f"hands' proxy could not reach {upstream}: {error}", headers=_told(final))
         async with reached:
-            tell(Answering(exchange, reached.status, spent(reached.status, reached.headers)))
+            limit = spent(reached.status, reached.headers)
+            tell(Answering(exchange, reached.status, limit))
             reader = reply_reader(kind, reached.headers, lambda event: tell(Heard(exchange, event)))
             first: Seconds | None = None
             ended: Seconds | None = None
@@ -182,15 +183,15 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                 else:
                     # A refusal is read whole before it is answered: whether it is held final turns on what it says.
                     # Held final, it reaches the client as the proxy's own, which Claude Code ends on, since it asks
-                    # again after an overload whatever the header says (2.1.286); whoever speaks the turn's failure
-                    # reads it off the wire.
+                    # again after an overload whatever the header says, and waits out a spent limit to continue the task
+                    # at its reset (autoContinueAtUsageLimit, 2.1.286); whoever speaks the turn's failure reads it off the wire.
                     parts: list[bytes] = []
 
                     async def keep(chunk: bytes) -> None:
                         parts.append(chunk)
 
                     await read(keep)
-                    final = refusal == "final" and _asked_again(reached.status, reached.headers, reply)
+                    final = refusal == "final" and (limit is not None or _asked_again(reached.status, reached.headers, reply))
                     response = _refused(reached) if final else web.Response(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers), body=b"".join(parts))
             except (aiohttp.ClientError, OSError) as error:
                 # Upstream dropped the reply, or the client hung up on it: either way the rest is not coming, and the
