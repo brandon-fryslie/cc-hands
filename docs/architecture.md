@@ -1486,7 +1486,12 @@ thing that failed `[LAW:no-silent-failure]`:
    become "unreachable", "usage limit reached, until <when it lifts>" (read from the
    API's message, never spoken from it), or "failed: <category>", Whisper's become "speech recognition
    failed", and a TTS error goes to the screen. Pipecat files an SDK connection error
-   under UNKNOWN, so "unreachable" is recognised from the exception type. A turn Whisper
+   under UNKNOWN, so "unreachable" is recognised from the exception type. A model reply
+   with no words and no call in it is the model's failure too, "sent back nothing": the
+   API services read it off the frames they push (`EmptyReplyFails`), excusing the reply to a call's result, and
+   the brain's stage off the wire across all of a turn's replies; a turn the model ends with stay_silent made a call, so it stays silent,
+   and a reply cancelled mid-stream was abandoned, not empty. An Anthropic request that times out, which Pipecat
+   drops with only an event, is said as unreachable. A turn Whisper
    transcribed to nothing is not said (Brandon, 2026-09-27: "I do not need to hear
    it"), only logged, and so neither is a muted microphone, whose every turn comes back
    empty. The `Whisper` subclass resolves the hold as the transcription ends, so the

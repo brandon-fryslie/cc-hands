@@ -18,7 +18,12 @@ class ModelFailed:
     category: ErrorCategory
 
 
-ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed
+@dataclass(frozen=True)
+class ModelReplyEmpty:
+    """The model answered with nothing: no words, and no call that would say or do something for it."""
+
+
+ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed | ModelReplyEmpty
 
 
 class ModelFault(Exception):

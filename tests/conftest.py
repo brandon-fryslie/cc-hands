@@ -1,19 +1,29 @@
 """Fixtures more than one test module needs."""
 
+import asyncio
 import os
 import shutil
 import stat
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 import mlx_whisper
 import pytest
 from aiohttp import web
+from pipecat.frames.frames import ErrorFrame, Frame
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.worker import PipelineWorker
+from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.workers.runner import WorkerRunner
 
 from hands.sessions.wrapper import FRITTER_SOURCE
+
+# How long a pipeline may take to start before a test fails on it.
+STARTUP_SECS = 5.0
 
 
 @pytest.fixture(autouse=True)
@@ -47,12 +57,45 @@ def python312(tmp_path: Path) -> str:
     return f"/usr/bin:/bin:{interpreters}"
 
 
-@dataclass
-class ChatServer:
-    """A chat completions endpoint at `url` and an Anthropic messages one at `anthropic_url`, and what they have been asked: each request's body and key."""
+@dataclass(frozen=True)
+class Api:
+    """A served model: a chat completions endpoint under `url` and an Anthropic messages one under `anthropic_url`."""
 
     url: str
     # The Anthropic SDK appends /v1/messages itself, so its base is the bare host.
+    anthropic_url: str
+
+
+Endpoint = Callable[[web.Request], Awaitable[web.StreamResponse]]
+ServeApi = Callable[[Endpoint, Endpoint], Awaitable[Api]]
+
+
+@pytest.fixture
+async def api_server() -> AsyncIterator[ServeApi]:
+    """Serves the chat completions endpoint and the Anthropic messages one, each by the handler given; stopped after the test."""
+    runners: list[web.AppRunner] = []
+
+    async def serve(complete: Endpoint, message: Endpoint) -> Api:
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", complete)
+        app.router.add_post("/v1/messages", message)
+        runner = web.AppRunner(app)
+        runners.append(runner)
+        await runner.setup()
+        await web.TCPSite(runner, "127.0.0.1", 0).start()
+        host = f"http://127.0.0.1:{runner.addresses[0][1]}"
+        return Api(url=f"{host}/v1", anthropic_url=host)
+
+    yield serve
+    for runner in runners:
+        await runner.cleanup()
+
+
+@dataclass
+class ChatServer:
+    """A served model answering every request whole, and what it has been asked: each request's body and key."""
+
+    url: str
     anthropic_url: str
     asked: list[dict[str, object]]
     keys: list[str]
@@ -62,9 +105,8 @@ ServeChat = Callable[[str | None], Awaitable[ChatServer]]
 
 
 @pytest.fixture
-async def chat_server() -> AsyncIterator[ServeChat]:
+async def chat_server(api_server: ServeApi) -> ServeChat:
     """Starts a server whose two endpoints answer every request with the content given; stopped after the test."""
-    runners: list[web.AppRunner] = []
 
     async def serve(content: str | None) -> ChatServer:
         asked: list[dict[str, object]] = []
@@ -91,19 +133,44 @@ async def chat_server() -> AsyncIterator[ServeChat]:
                 }
             )
 
-        app = web.Application()
-        app.router.add_post("/v1/chat/completions", complete)
-        app.router.add_post("/v1/messages", message)
-        runner = web.AppRunner(app)
-        runners.append(runner)
-        await runner.setup()
-        await web.TCPSite(runner, "127.0.0.1", 0).start()
-        host = f"http://127.0.0.1:{runner.addresses[0][1]}"
-        return ChatServer(url=f"{host}/v1", anthropic_url=host, asked=asked, keys=keys)
+        api = await api_server(complete, message)
+        return ChatServer(url=api.url, anthropic_url=api.anthropic_url, asked=asked, keys=keys)
 
-    yield serve
-    for runner in runners:
-        await runner.cleanup()
+    return serve
+
+
+@dataclass
+class Running:
+    """A pipeline running as the daemon runs one, and the errors it has raised: what the system channel would say."""
+
+    worker: PipelineWorker
+    errors: list[ErrorFrame]
+
+
+@asynccontextmanager
+async def running(processors: list[FrameProcessor]) -> AsyncGenerator[Running]:
+    """Runs the processors as one pipeline from its start until the block ends, then cancels it."""
+    worker = PipelineWorker(Pipeline(processors), idle_timeout_secs=None)
+    started = asyncio.Event()
+    errors: list[ErrorFrame] = []
+
+    @worker.event_handler("on_pipeline_started")
+    async def _started(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
+        started.set()
+
+    @worker.event_handler("on_pipeline_error")
+    async def _failed(_worker: PipelineWorker, error: ErrorFrame) -> None:  # pyright: ignore[reportUnusedFunction]
+        errors.append(error)
+
+    runner = WorkerRunner(handle_sigint=False)
+    await runner.add_workers(worker)
+    task = asyncio.create_task(runner.run())
+    await asyncio.wait_for(started.wait(), STARTUP_SECS)
+    try:
+        yield Running(worker, errors)
+    finally:
+        await worker.cancel()
+        await task
 
 
 @pytest.fixture(scope="session")

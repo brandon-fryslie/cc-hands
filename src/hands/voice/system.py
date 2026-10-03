@@ -22,7 +22,7 @@ from hands.sessions.audit import Announced, Record
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
 from hands.core.wire import Seconds, UsageLimitReached
-from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelUnreachable
+from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.voice.refusal import usage_limit
 from hands.voice.hold import TURN_LIMIT_SECONDS, Move
 
@@ -57,7 +57,7 @@ class AudioMoved:
     devices: Devices
 
 
-SystemFact = Started | ModelUnreachable | ModelFailed | UsageLimitReached | TranscriptionFailed | NoMicrophone | TurnExpired | AudioMoved
+SystemFact = Started | ModelUnreachable | ModelFailed | ModelReplyEmpty | UsageLimitReached | TranscriptionFailed | NoMicrophone | TurnExpired | AudioMoved
 
 
 def system_text(fact: SystemFact) -> str:
@@ -69,6 +69,8 @@ def system_text(fact: SystemFact) -> str:
             return "The language model is unreachable."
         case ModelFailed(category=category):
             return f"The language model failed: {category.value.replace('_', ' ')}."
+        case ModelReplyEmpty():
+            return "The language model sent back nothing."
         case UsageLimitReached() as limit:
             return f"The language model's usage limit is reached{_until(limit.returns)}."
         case TranscriptionFailed():

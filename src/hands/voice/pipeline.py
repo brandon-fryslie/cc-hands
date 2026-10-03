@@ -6,6 +6,8 @@ microphone or calls an API until the returned worker is run. `VoiceConfig` is
 the whole variability of the pipeline as data.
 """
 
+import asyncio
+from itertools import takewhile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,9 +16,18 @@ from typing import Any
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
+from pipecat.frames.frames import (
+    ErrorFrame,
+    Frame,
+    FunctionCallsStartedFrame,
+    LLMFullResponseEndFrame,
+    LLMContextFrame,
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
-from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregator,
@@ -25,6 +36,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.services.anthropic.llm import AnthropicLLMService
+from pipecat.services.llm_service import LLMService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.pocket_tts.tts import PocketTTSService
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
@@ -33,6 +45,7 @@ from pipecat.turns.user_start import VADUserTurnStartStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from hands.sessions.audit import Record
+from hands.sessions.model_facts import ModelFault, ModelReplyEmpty
 from hands.voice.floor import Floor
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
@@ -95,7 +108,72 @@ class VoiceConfig:
     max_reply_tokens: int = 300
 
 
-class FailFastOpenAILLMService(OpenAILLMService):
+class EmptyReplyFails(LLMService[Any]):
+    """An LLM service whose reply that carries no words, no call, and no error of its own is reported as the model's
+    failure: in a voice turn, a reply with nothing in it is heard as hands not having heard the user at all."""
+
+    # The reply streaming now has been opened and nothing in it has been heard yet.
+    _empty = False
+    # The context being answered holds a call's result after the model's last reply: its call already did what the turn was for.
+    _answers_call = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        if isinstance(frame, LLMContextFrame):
+            self._answers_call = _answers_call(frame.context)
+        await super().process_frame(frame, direction)
+
+    async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+        # [LAW:single-enforcer] the reply is read off the frames the service itself pushes, which both services push alike.
+        match frame:
+            # Claude often answers a call's result with nothing, as the brain's does: a turn that called a tool is no empty reply.
+            case LLMFullResponseStartFrame():
+                self._empty = not self._answers_call
+            # A call is the model choosing what happens, stay_silent included; an error of the service's own is already said.
+            case LLMTextFrame(text=text) if text.strip():
+                self._empty = False
+            case FunctionCallsStartedFrame():
+                self._empty = False
+            case ErrorFrame(processor=processor) if processor is self:
+                self._empty = False
+            case LLMFullResponseEndFrame():
+                # A reply whose task is being cancelled is abandoned, not empty: the user spoke over it or the pipeline is
+                # stopping, and Pipecat closes it with the same end frame as a finished one.
+                if self._empty and not _cancelling():
+                    # [LAW:no-silent-failure] said by the system channel as the model's failure, ahead of the reply's end.
+                    await self.push_error("the language model's reply was empty", exception=ModelFault(ModelReplyEmpty()))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+                self._empty = False
+            case _:
+                pass
+        await super().push_frame(frame, direction)
+
+
+def _answers_call(context: LLMContext) -> bool:
+    """A call's result came in since the model last replied. Not the last message alone: Pipecat writes a result into the
+    tool message its call opened, and a note hands added while the call ran sits after it."""
+    since = takewhile(lambda message: not (isinstance(message, dict) and message.get("role") == "assistant"), reversed(context.get_messages()))
+    return any(isinstance(message, dict) and message.get("role") == "tool" for message in since)
+
+
+def _cancelling() -> bool:
+    """The task pushing a frame is being cancelled, as Pipecat cancels a reply's task to stop it."""
+    task = asyncio.current_task()
+    if task is None:
+        raise RuntimeError("an LLM frame was pushed outside a task, so whether its reply was cancelled cannot be known")
+    return task.cancelling() > 0
+
+
+class AnthropicService(EmptyReplyFails, AnthropicLLMService):
+    """Claude through Pipecat's Anthropic service, whose request that timed out is said as the OpenAI-compatible one's is."""
+
+    async def _call_event_handler(self, event_name: str, *args: Any, **kwargs: Any) -> None:
+        if event_name == "on_completion_timeout":
+            # [LAW:no-silent-failure] Pipecat's Anthropic service drops a request that timed out with this event alone
+            # (1.10.0), where the OpenAI one pushes an error too. A timeout is the model out of reach, not an empty reply.
+            await self.push_error("LLM completion timeout", exception=TimeoutError())  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        await super()._call_event_handler(event_name, *args, **kwargs)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+
+
+class FailFastOpenAILLMService(EmptyReplyFails, OpenAILLMService):
     """An OpenAI-compatible model whose failed request is reported at once, not retried with backoff."""
 
     def create_client(self, *args: Any, **kwargs: Any) -> AsyncOpenAI:
@@ -113,11 +191,11 @@ def build_llm(
     # to the rest of the pipeline; only their construction differs.
     match backend:
         case AnthropicBackend(base_url=base_url, api_key=api_key, model=model):
-            return AnthropicLLMService(
+            return AnthropicService(
                 api_key=api_key,
                 # Reported at once, as for the OpenAI-compatible model: a retry with backoff is silence in a voice turn.
                 client=AsyncAnthropic(base_url=base_url, api_key=api_key, max_retries=0),
-                settings=AnthropicLLMService.Settings(
+                settings=AnthropicService.Settings(
                     model=model, system_instruction=instruction, max_tokens=max_tokens
                 ),
             )

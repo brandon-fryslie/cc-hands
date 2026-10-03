@@ -32,6 +32,7 @@ from hands.voice.system import (
     ModelFailed,
     ModelFault,
     UsageLimitReached,
+    ModelReplyEmpty,
     ModelUnreachable,
     Post,
     Say,
@@ -65,6 +66,7 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
         (NoMicrophone(), "There is no microphone, so hands cannot hear you."),
         (ModelUnreachable(), "The language model is unreachable."),
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
+        (ModelReplyEmpty(), "The language model sent back nothing."),
         (UsageLimitReached(None), "The language model's usage limit is reached."),
         (TranscriptionFailed(), "Speech recognition failed for that turn."),
         (TurnExpired(), "That turn was open for 120 seconds, so hands threw it away."),
@@ -126,6 +128,7 @@ def openai_streamed_error(message: str) -> openai.APIError:
         # Under the brain the stage has read the fact off the wire already, and it is said as read.
         (ModelFault(UsageLimitReached(RETURNS)), ErrorCategory.UNKNOWN, UsageLimitReached(RETURNS)),
         (ModelFault(ModelUnreachable()), ErrorCategory.UNKNOWN, ModelUnreachable()),
+        (ModelFault(ModelReplyEmpty()), ErrorCategory.UNKNOWN, ModelReplyEmpty()),
     ],
 )
 def test_a_spent_usage_limit_is_said_as_itself_and_every_other_refusal_by_its_category(exception: Exception, category: ErrorCategory, fact: SystemFact) -> None:
