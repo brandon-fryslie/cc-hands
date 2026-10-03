@@ -1536,16 +1536,24 @@ written stays above the room's floor at the microphone for about 185 ms, and Whi
 turned that tail into a word ("Wow.", "Well.", "What?") in every run where nobody spoke.
 A Pipecat input filter could not stop it, because it runs when the event loop reaches a
 frame, tens of milliseconds after capture. So `hands.voice.microphone` replaces the
-local transport's two halves, joined by one echo canceller (`hands.voice.echo`, WebRTC's
-AEC3 through LiveKit's binding). The `Speaker` gives the canceller everything it writes,
+local transport's two halves, joined by the echo canceller of the streams open
+(`hands.voice.echo`, WebRTC's AEC3 through LiveKit's binding). Each reopen opens the new
+pair of streams on a new canceller, which learns the new room from nothing. The old
+canceller is closed on the thread that closed its microphone stream, so a stream still
+calling back never reaches a canceller that has been let go of. The `Speaker` gives the canceller everything it writes,
 on its writer thread as each chunk goes to the device, so a chunk whose write an
 interruption cancels still counts. The `KeyedMicrophone` hears every buffer through the
-canceller in PortAudio's capture callback, key up or down, so the canceller keeps
-learning the room, and then lets the buffer through only while the key is down. AEC3
+canceller in PortAudio's capture callback, key up or down and at either place, so the
+canceller keeps learning the room. The callback then lets the buffer through only while
+the key is down. If the canceller raises there, the pipeline is ended and the run with it,
+instead of PyAudio aborting the stream and leaving hands deaf. AEC3
 wants one frame of reference for every frame of microphone, as a device that plays and
 records at once gives them, but the pipeline writes only while it speaks, and up to an
 output buffer ahead. So the canceller holds what was written, and each 10 ms of
-microphone takes the next 10 ms of it, or silence when there is none. Measured on
+microphone takes the next 10 ms of it, or silence when there is none. Each microphone
+stream let go of is one `microphone.let_go` wide event, carrying how many frames its
+canceller heard, how many of those had nothing playing, and how much of the speaker's
+sound it dropped unheard. Measured on
 2026-10-03 through this transport: about 27 dB of echo removed. A press mid-reply with
 nobody speaking left no word of the reply in 8 holds of 8, where the raw microphone made
 one in every hold. "Stop. What time is it?", said from 50 ms after the press, kept

@@ -33,7 +33,7 @@ def test_the_echo_of_what_the_speaker_played_is_taken_out_of_what_the_microphone
         start, end = index * chunk + (6 if index % 2 else 0), (index + 1) * chunk + (0 if index % 2 else 6)
         canceller.played(played_bytes[start:end], PLAYED_RATE, 1)
         buffer = echo[index * 320 : (index + 1) * 320].tobytes()
-        cleaned = canceller.heard(buffer, HEARD_RATE)
+        cleaned = canceller.heard(buffer, HEARD_RATE, 1)
         assert len(cleaned) == len(buffer)
         if index >= 100:  # after two seconds to learn the room
             heard_raw, heard_clean = heard_raw + buffer, heard_clean + cleaned
@@ -43,7 +43,7 @@ def test_the_echo_of_what_the_speaker_played_is_taken_out_of_what_the_microphone
 def test_a_voice_with_nothing_playing_is_heard_as_it_was_said() -> None:
     canceller = EchoCanceller()
     voice = _noise(2.0, HEARD_RATE, seed=2).tobytes()
-    cleaned = b"".join(canceller.heard(voice[start : start + 640], HEARD_RATE) for start in range(0, len(voice), 640))
+    cleaned = b"".join(canceller.heard(voice[start : start + 640], HEARD_RATE, 1) for start in range(0, len(voice), 640))
     assert abs(_power_db(cleaned[16000:]) - _power_db(voice[16000:])) < 3
 
 
@@ -54,12 +54,29 @@ def test_a_voice_after_the_speaker_stops_being_written_to_is_heard_as_it_was_sai
     for index in range(len(played) // 320):  # the reply, and its echo straight back
         buffer = played[index * 320 : (index + 1) * 320].tobytes()
         canceller.played(buffer, HEARD_RATE, 1)
-        canceller.heard(buffer, HEARD_RATE)
+        canceller.heard(buffer, HEARD_RATE, 1)
     voice = _noise(2.0, HEARD_RATE, seed=2).tobytes()  # then the user, with nothing more written
-    cleaned = b"".join(canceller.heard(voice[start : start + 640], HEARD_RATE) for start in range(0, len(voice), 640))
+    cleaned = b"".join(canceller.heard(voice[start : start + 640], HEARD_RATE, 1) for start in range(0, len(voice), 640))
     assert abs(_power_db(cleaned[16000:]) - _power_db(voice[16000:])) < 3
 
 
 def test_a_microphone_buffer_of_part_of_a_frame_is_refused() -> None:
     with pytest.raises(ValueError, match="not whole 10 ms frames"):
-        EchoCanceller().heard(bytes(330), HEARD_RATE)
+        EchoCanceller().heard(bytes(330), HEARD_RATE, 1)
+
+
+def test_a_stereo_microphone_is_heard_in_frames_of_both_channels() -> None:
+    canceller = EchoCanceller()
+    voice = np.repeat(_noise(1.0, HEARD_RATE, seed=3), 2).tobytes()  # each sample on both channels
+    cleaned = b"".join(canceller.heard(voice[start : start + 1280], HEARD_RATE, 2) for start in range(0, len(voice), 1280))
+    assert len(cleaned) == len(voice)
+    assert canceller.counts()["heard"] == 100  # one second of 10 ms frames, not two
+    assert abs(_power_db(cleaned[32000:]) - _power_db(voice[32000:])) < 3
+
+
+def test_the_canceller_counts_frames_heard_with_nothing_playing_and_sound_it_had_to_drop() -> None:
+    canceller = EchoCanceller()
+    canceller.heard(bytes(640), HEARD_RATE, 1)  # two frames, nothing played
+    canceller.played(bytes(320 * 102), HEARD_RATE, 1)  # 102 frames played to a microphone that takes none
+    canceller.heard(bytes(320), HEARD_RATE, 1)
+    assert canceller.counts() == {"heard": 3, "unplayed": 2, "dropped": 2}

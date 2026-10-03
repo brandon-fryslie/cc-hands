@@ -1,6 +1,7 @@
 """What the keyed microphone lets the pipeline hear, decided at capture, with no audio device."""
 
 import asyncio
+import itertools
 import threading
 import time
 from types import SimpleNamespace
@@ -12,12 +13,14 @@ from pipecat.clocks.system_clock import SystemClock
 from pipecat.processors.frame_processor import FrameProcessorSetup
 from pipecat.utils.asyncio.task_manager import TaskManager
 
-from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
+from pipecat.frames.frames import EndWorkerFrame, Frame, InputAudioRawFrame, OutputAudioRawFrame
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
+from hands.sessions.audit import Entry, Record
+from hands.sessions.wide import WideEvent
 from hands.voice.cues import OPENED, sound
 from hands.voice.coreaudio import DefaultDevices
-from hands.voice.echo import Echo
 from hands.voice.microphone import Devices, Input, KeyedAudioTransport, NoInput, Output, PortAudio, default_input
 from hands.voice.phone import Phone
 from hands.voice.ptt import PushToTalk
@@ -34,18 +37,24 @@ def _phone() -> Phone:
 class Room:
     """An echo canceller that keeps what the speaker played and cleans every microphone buffer to CLEANED."""
 
-    def __init__(self) -> None:
-        self.played: list[tuple[bytes, int, int]] = []
-        self.heard: list[bytes] = []
+    def __init__(self, log: list[str] | None = None, name: str = "canceller") -> None:
+        self.plays: list[tuple[bytes, int, int]] = []
+        self.hears: list[bytes] = []
+        self.log = [] if log is None else log
+        self.name = name
 
-    def played_(self, audio: bytes, sample_rate: int, channels: int) -> None:
-        self.played.append((audio, sample_rate, channels))
+    def played(self, audio: bytes, sample_rate: int, channels: int) -> None:
+        self.plays.append((audio, sample_rate, channels))
 
-    def heard_(self, audio: bytes, sample_rate: int) -> bytes:
-        self.heard.append(audio)
+    def heard(self, audio: bytes, sample_rate: int, channels: int) -> bytes:
+        self.hears.append(audio)
         return CLEANED
 
-    def close(self) -> None: ...
+    def counts(self) -> dict[str, int]:
+        return {"heard": len(self.hears), "unplayed": 0, "dropped": 0}
+
+    def close(self) -> None:
+        self.log.append(f"close {self.name}")
 
 
 class Rig:
@@ -58,13 +67,12 @@ class Rig:
         self.pushed: list[bytes] = []
         self.room = Room()
         params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
-        echo = SimpleNamespace(played=self.room.played_, heard=self.room.heard_, close=self.room.close)
-        self.transport = KeyedAudioTransport(params, self.key, self.phone, clock=lambda: self.now, echo=lambda: cast(Echo, echo))
+        self.transport = KeyedAudioTransport(params, self.key, self.phone, lambda _: None, clock=lambda: self.now, echo=lambda: self.room)
         self.speaker = self.transport.output()
         self.microphone = self.transport.input()
         self.microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
         self.stream = SimpleStream()
-        self.speaker.attach(cast(PortAudio, SimpleNamespace()), Output(self.stream, "MacBook Pro Speakers"))  # as setup attaches the stream it opened
+        self.speaker.attach(cast(PortAudio, SimpleNamespace()), Output(self.stream, "MacBook Pro Speakers", self.room))  # as setup attaches the stream it opened
 
         async def push_audio_frame(frame: InputAudioRawFrame) -> None:
             self.pushed.append(frame.audio)
@@ -79,7 +87,7 @@ class Rig:
 
     async def capture(self, at: float) -> None:
         self.now = at
-        self.microphone._audio_in_callback(LOUD, 320, {}, 0)  # pyright: ignore[reportPrivateUsage]
+        self.microphone._captured(self.room, LOUD, 320, {}, 0)  # pyright: ignore[reportPrivateUsage]
         await asyncio.sleep(0.01)
 
 
@@ -108,7 +116,40 @@ async def test_the_microphone_is_heard_through_the_canceller_and_only_while_the_
     devices.key.move("start", "desk")
     await devices.capture(at=1.02)
     assert devices.pushed == [QUIET, CLEANED]
-    assert devices.room.heard == [LOUD, LOUD]  # key up too: the canceller learns the room from every buffer
+    assert devices.room.hears == [LOUD, LOUD]  # key up too: the canceller learns the room from every buffer
+
+
+async def test_the_canceller_hears_the_desk_microphone_while_hands_is_at_the_phone() -> None:
+    devices = Rig()
+    devices.key.go("phone")
+    await devices.capture(at=1.0)
+    assert devices.pushed == []  # the phone's microphone is the pipeline's
+    assert devices.room.hears == [LOUD]  # and the canceller takes the speaker's sound in step all the same
+
+
+class Refusing(Room):
+    def heard(self, audio: bytes, sample_rate: int, channels: int) -> bytes:
+        raise RuntimeError("the audio processing module refused the frame")
+
+
+async def test_a_capture_the_canceller_fails_ends_the_pipeline_rather_than_leaving_hands_deaf() -> None:
+    devices = Rig()
+    errors: list[str] = []
+    pushed: list[tuple[Frame, FrameDirection]] = []
+
+    async def push_error(error_msg: str, exception: Exception | None = None, fatal: bool = False, category: object = None, force_treat_as_permanent: bool = False) -> None:
+        errors.append(f"{error_msg}: {exception}")
+
+    async def push_frame(frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+        pushed.append((frame, direction))
+
+    setattr(devices.microphone, "push_error", push_error)
+    setattr(devices.microphone, "push_frame", push_frame)
+    assert devices.microphone._captured(Refusing(), LOUD, 320, {}, 0) == (None, pyaudio.paAbort)  # pyright: ignore[reportPrivateUsage]
+    await asyncio.sleep(0.01)
+    assert errors == ["the microphone stopped: its capture failed: the audio processing module refused the frame"]
+    assert [(type(frame), direction) for frame, direction in pushed] == [(EndWorkerFrame, FrameDirection.UPSTREAM)]
+    assert devices.pushed == []
 
 
 async def test_a_press_while_the_reply_plays_is_heard_at_once() -> None:
@@ -117,13 +158,13 @@ async def test_a_press_while_the_reply_plays_is_heard_at_once() -> None:
     devices.key.move("start", "desk")
     await devices.capture(at=1.0)  # the reply still in the room, and a word over it
     assert devices.pushed == [CLEANED]
-    assert devices.room.played == [(LOUD, 16000, 1)]
+    assert devices.room.plays == [(LOUD, 16000, 1)]
 
 
 async def test_silence_given_to_the_speaker_is_the_cancellers_reference_too() -> None:
     devices = Rig()
     await devices.play(QUIET, at=1.0)
-    assert devices.room.played == [(QUIET, 16000, 1)]
+    assert devices.room.plays == [(QUIET, 16000, 1)]
     assert devices.speaker.sounded_at is None  # silence padding is no sound for the heartbeat
 
 
@@ -136,7 +177,7 @@ async def test_a_chunk_whose_write_an_interruption_cancels_is_still_given_to_the
     writing.cancel()  # the barge-in; PortAudio's thread plays the chunk out regardless
     devices.stream.blocking = False
     await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
-    assert devices.room.played == [(LOUD, 16000, 1)]
+    assert devices.room.plays == [(LOUD, 16000, 1)]
     assert devices.stream.written == [LOUD]
 
 
@@ -195,16 +236,21 @@ class FreshPortAudio:
         self.log.append("end portaudio")
 
 
-def lost_transport(log: list[str]) -> KeyedAudioTransport:
+def lost_transport(log: list[str], events: list[Entry] | None = None) -> KeyedAudioTransport:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
     defaults = iter([DefaultDevices(input=1, output=1), DefaultDevices(input=2, output=2)])
-    transport = KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), portaudio=lambda: FreshPortAudio(log), defaults=lambda: next(defaults))
+    cancellers = iter(Room(log, f"canceller {n}") for n in itertools.count(1))
+    record: Record = (lambda _: None) if events is None else events.append
+    transport = KeyedAudioTransport(
+        params, PushToTalk(lambda _: None), _phone(), record, portaudio=lambda: FreshPortAudio(log), defaults=lambda: next(defaults), echo=lambda: next(cancellers)
+    )
     speaker, microphone = transport.output(), transport.input()
     speaker.get_event_loop = asyncio.get_running_loop
     microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     speaker._sample_rate = 24000  # pyright: ignore[reportPrivateUsage]
-    speaker.attach(cast(PortAudio, SimpleNamespace()), Output(LostStream(log, "old speaker"), "headset"))
-    microphone.attach(cast(PortAudio, SimpleNamespace()), Input(LostStream(log, "old microphone"), "headset"))
+    old = Room(log, "old canceller")
+    speaker.attach(cast(PortAudio, SimpleNamespace()), Output(LostStream(log, "old speaker"), "headset", old))
+    microphone.attach(cast(PortAudio, SimpleNamespace()), Input(LostStream(log, "old microphone"), "headset", old))
     log.clear()  # the first PortAudio, started by the same factory as every later one
     return transport
 
@@ -223,13 +269,32 @@ async def test_reopening_lets_go_of_the_lost_devices_and_opens_on_the_defaults_a
     assert devices == Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
     assert log == [
         "stop old speaker", "write returned from old speaker", "close old speaker",  # closed only once no write is inside it
-        "stop old microphone", "close old microphone", "end portaudio",
+        "stop old microphone", "close old microphone", "close old canceller", "end portaudio",
         "start portaudio", "open speaker", "open microphone", "start new speaker", "start new microphone",
     ]  # fmt: skip
     assert transport.opened_on == DefaultDevices(input=2, output=2)  # read again, as PortAudio listed them anew
     with pytest.raises(OSError):
         await stuck
     assert speaker.is_usable
+
+
+async def test_a_reopen_opens_both_streams_on_one_new_canceller_and_reports_the_old_ones_life() -> None:
+    log: list[str] = []
+    events: list[Entry] = []
+    transport = lost_transport(log, events)
+    old = transport.input().opened
+    assert old is not None
+    old.echo.heard(LOUD, 16000, 1)  # a buffer heard on the old devices
+
+    await transport.reopen()
+
+    speaker, microphone = transport.output().opened, transport.input().opened
+    assert speaker is not None and microphone is not None
+    assert speaker.echo is microphone.echo is not old.echo
+    assert "close canceller 2" not in log
+    [event] = events
+    assert isinstance(event, WideEvent)
+    assert (event.event, event.outcome, event.facts, dict(event.counts)) == ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0})
 
 
 async def test_a_frame_given_while_the_transport_reopens_waits_and_plays_on_the_new_stream() -> None:
@@ -241,7 +306,7 @@ async def test_a_frame_given_while_the_transport_reopens_waits_and_plays_on_the_
     assert not writing.done()
     assert rig.speaker.sounded_at is None  # nothing has sounded yet
     reopened = SimpleStream()
-    rig.speaker.attach(cast(PortAudio, SimpleNamespace()), Output(reopened, "AirPods"))
+    rig.speaker.attach(cast(PortAudio, SimpleNamespace()), Output(reopened, "AirPods", rig.room))
     assert await writing is True
     assert reopened.written == [LOUD]
     assert rig.speaker.sounded_at == 1.0
@@ -253,7 +318,7 @@ async def test_the_streams_are_opened_as_pipecat_opens_them() -> None:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
     setup = FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=cast(Any, None), audio_in_sample_rate=16000, audio_out_sample_rate=24000)
     for portaudio, output, input_ in (
-        (ours, KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone()).output(), KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone()).input()),
+        (ours, KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None).output(), KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None).input()),
         (pipecats, LocalAudioOutputTransport(cast(pyaudio.PyAudio, pipecats), params), LocalAudioInputTransport(cast(pyaudio.PyAudio, pipecats), params)),
     ):
         setattr(output, "_py_audio", portaudio)
@@ -301,7 +366,7 @@ async def test_with_no_microphone_left_the_transport_reopens_to_speak_and_says_i
 
 async def test_a_daemon_started_with_no_microphone_runs_rather_than_failing_its_setup() -> None:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
-    transport = KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), portaudio=lambda: DeafPortAudio([]), defaults=lambda: DefaultDevices(0, 1))
+    transport = KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None, portaudio=lambda: DeafPortAudio([]), defaults=lambda: DefaultDevices(0, 1), echo=Room)
     assert not transport.deaf  # nothing is said of hearing before setup opens the microphone
     setup = FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=cast(Any, None), audio_in_sample_rate=16000, audio_out_sample_rate=24000)
     await transport.input().setup(setup)
@@ -329,7 +394,7 @@ async def test_a_turns_cue_is_played_at_once_and_the_canceller_hears_it() -> Non
     await devices.capture(at=1.0)  # a word said over the cue
     await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
     assert devices.stream.written == [sound(OPENED, 16000, 1)]
-    assert devices.room.played == [(sound(OPENED, 16000, 1), 16000, 1)]
+    assert devices.room.plays == [(sound(OPENED, 16000, 1), 16000, 1)]
     assert devices.pushed == [CLEANED]  # the word said over it, with the tone taken out
     assert devices.speaker.sounded_at == 1.0
 
@@ -371,4 +436,4 @@ async def test_the_canceller_hears_a_chunk_queued_behind_a_cue_after_the_cue() -
     await asyncio.sleep(0.01)
     devices.stream.blocking = False
     await writing
-    assert [audio for audio, _, _ in devices.room.played] == [sound(OPENED, 16000, 1), LOUD]  # in the order the room hears them
+    assert [audio for audio, _, _ in devices.room.plays] == [sound(OPENED, 16000, 1), LOUD]  # in the order the room hears them
