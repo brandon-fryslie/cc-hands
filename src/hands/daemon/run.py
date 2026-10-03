@@ -88,7 +88,7 @@ from hands.sessions.payload import Rejected
 from hands.voice.tools import Tool, audited, intermediary_tools, standing
 from hands.brain.mcp import serve_mcp
 from hands.brain.asides import Asides
-from hands.brain.process import Brain, Launch, NotLoggedIn, Station, Unstartable, logged_in, start as start_brain, workdir
+from hands.brain.process import Brain, Launch, NotLoggedIn, Station, Unstartable, account_kept_out, logged_in, start as start_brain, workdir
 from hands.brain.context import EVERY, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.core.session import SessionId
@@ -144,6 +144,7 @@ def backend_from_env(home: Home) -> LLMBackend:
         # A brain with no login is refused here, before the voice loads, rather than once every turn has failed.
         try:
             account = logged_in(home.brain, UPSTREAM)
+            account_kept_out(home.brain)
         except (NotLoggedIn, Unstartable) as error:
             sys.exit(f"hands: {error}")
         return ClaudeCodeBackend(model=os.environ.get("HANDS_LLM_MODEL", ANTHROPIC_MODEL), config_dir=home.brain, account=account)

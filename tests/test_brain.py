@@ -19,10 +19,10 @@ import pytest
 from loguru import logger
 
 from hands.brain.mcp import McpServer, serve_mcp
-from hands.brain.asides import AsideFailed, Asides
-from hands.brain.process import BUILTIN_TOOLS, SLIM, Brain, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, command, environment, logged_in, slim, start, workdir
+from hands.brain.asides import CLOSED, AsideFailed, Asides
+from hands.brain.process import SLIM, Brain, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, command, environment, logged_in, slim, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.sessions.payload import Payload
-from hands.sessions.audit import AsideAnswered, BrainAnswered, BrainAsked, BrainExited, BrainLaunched, Called, Entry, McpConnected
+from hands.sessions.audit import AsideAnswered, BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainRefused, Called, Entry, McpConnected
 from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
@@ -149,20 +149,22 @@ def answered(session: str, words: str, stop: str = "end_turn", exchange: str = "
     return Exchanged(exchange, SessionId(session), Fork(), "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Streamed(message)), False)
 
 
-def test_the_brain_is_interactive_slim_strict_and_never_asks_and_runs_on_its_own_login_through_the_proxy(tmp_path: Path) -> None:
+def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_own_login_through_the_proxy(tmp_path: Path) -> None:
     argv = command(launch(tmp_path), Path("/real/claude"), "http://127.0.0.1:7")
     # The real claude, interactive: no -p, and no pipe to speak over.
     assert argv[0] == "/real/claude" and "-p" not in argv and "--print" not in argv
-    assert argv[argv.index("--tools") + 1] == ",".join(BUILTIN_TOOLS)
-    assert argv[argv.index("--allowedTools") + 1] == ",".join((*BUILTIN_TOOLS, "mcp__hands"))
-    assert "--strict-mcp-config" in argv and "--system-prompt" not in argv
-    assert [argv[argv.index(flag) + 1] for flag in ("--permission-mode", "--setting-sources", "--append-system-prompt", "--session-id")] == ["dontAsk", "user", "You are hands.", "b1"]
+    # Its tools, what it may do without asking, and its MCP servers are its config directory's: nothing here narrows them.
+    assert not {"--tools", "--disallowedTools", "--permission-mode", "--strict-mcp-config", "--system-prompt", "--bare"} & set(argv)
+    assert argv[argv.index("--allowedTools") + 1] == "mcp__hands"
+    assert argv[argv.index("--mcp-config") + 1] == launch(tmp_path).mcp_config
+    assert [argv[argv.index(flag) + 1] for flag in ("--setting-sources", "--append-system-prompt", "--session-id")] == ["user", "You are hands.", "b1"]
     assert json.loads(argv[argv.index("--settings") + 1]) == {"hooks": {
-        event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}"}]}] for event in ("UserPromptSubmit", "Stop", "StopFailure")
+        event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}"}]}] for event in ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation")
     }}
-    # A side question's Claude Code is the same slim one with nothing added: no tools, no instruction, no hooks.
-    bare = slim(Path("/real/claude"), "claude-sonnet-5", SessionId("a1"), (), '{"mcpServers": {}}')
+    # A side question's Claude Code is the same slim one, closed whatever the brain's setup holds: no tools, no server.
+    bare = [*slim(Path("/real/claude"), "claude-sonnet-5", SessionId("a1")), *CLOSED]
     assert bare[bare.index("--tools") + 1] == "" and bare[bare.index("--session-id") + 1] == "a1" and "--strict-mcp-config" in bare
+    assert json.loads(bare[bare.index("--mcp-config") + 1]) == {"mcpServers": {}}
     assert not {"-p", "--print", "--settings", "--allowedTools", "--append-system-prompt"} & set(bare)
     env = environment(tmp_path / "brain", "http://127.0.0.1:1", {
         "PATH": "/bin",
@@ -176,6 +178,10 @@ def test_the_brain_is_interactive_slim_strict_and_never_asks_and_runs_on_its_own
         "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128",
     })
     assert env == {"PATH": "/bin", "HTTPS_PROXY": "http://corp:3128", **SLIM, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
+    # The account's claude.ai connectors stay out of every request, whatever the brain's own setup names.
+    assert env["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
+    # No turn opens but the ones hands types: no background task and no scheduled prompt opens one of its own.
+    assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == env["CLAUDE_CODE_DISABLE_CRON"] == "1"
 
 
 async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_both_ends_in_the_log(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
@@ -199,6 +205,35 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_bot
         BrainAnswered("p2", None),
         exited,
     ]
+
+
+async def test_what_the_brains_setup_would_ask_about_is_refused_and_its_turn_still_ends(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
+    try:
+        assert await asyncio.wait_for(brain.ask("write"), 10) == BrainAnswered("p1", None)
+    finally:
+        await brain.stop()
+    assert recorded[1:5] == [BrainAsked("write"), BrainRefused("p1", "PermissionRequest", "Write"), BrainRefused("p1", "Elicitation", "probe"), BrainAnswered("p1", None)]
+
+
+async def test_a_dialog_is_answered_no_and_said_between_turns_and_when_its_body_does_not_parse() -> None:
+    hooks: asyncio.Queue[Payload] = asyncio.Queue()
+    listener, url = await _listen(hooks)  # pyright: ignore[reportPrivateUsage]
+    try:
+        async with aiohttp.ClientSession() as client:
+            async with client.post(f"{url}/Elicitation", data=b"not json") as reply:
+                assert reply.status == 200 and (await reply.json())["hookSpecificOutput"]["action"] == "decline"
+    finally:
+        await listener.cleanup()
+    recorded: list[Entry] = []
+    brain = object.__new__(Brain)
+    brain.session = SessionId("b1")
+    brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
+    brain._turn = None  # pyright: ignore[reportPrivateUsage]
+    # An MCP server asking while it connects, with no turn in flight and so no prompt id.
+    brain._hook(Payload({"hook_event_name": "Elicitation", "session_id": "b1", "mcp_server_name": "probe", "message": "Which?"}))  # pyright: ignore[reportPrivateUsage]
+    assert recorded == [BrainRefused(None, "Elicitation", "probe")]
 
 
 async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_failed_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
@@ -394,20 +429,27 @@ def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_are_st
     brain._hook(Payload({"hook_event_name": "StopFailure", "session_id": "b1", "prompt_id": "p1", "error": {"kind": "odd"}}))  # pyright: ignore[reportPrivateUsage]
 
 
-def test_a_turn_sent_without_hands_tools_is_an_error_and_one_with_them_is_not() -> None:
+def test_the_tools_a_brain_turn_offers_are_audited_when_they_change_and_a_turn_without_hands_tools_is_an_error() -> None:
+    recorded: list[Entry] = []
     brain = object.__new__(Brain)
     brain.session = SessionId("b1")
+    brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
+    brain._offered = None  # pyright: ignore[reportPrivateUsage]
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
         body = {"messages": [{"role": "user", "content": "hi"}], "tools": [{"name": "Read"}]}
-        brain.hear(Sent("x1", SessionId("b1"), MainTurn(None), {**body, "tools": [{"name": "Read"}, {"name": "mcp__hands__read_session"}]}))
-        brain.hear(Sent("x2", SessionId("elsewhere"), MainTurn(None), body))
+        with_hands = {**body, "tools": [{"name": "Read"}, {"name": "mcp__hands__read_session"}]}
+        brain.hear(Sent("x1", SessionId("b1"), MainTurn(None), with_hands))
+        brain.hear(Sent("x2", SessionId("b1"), MainTurn(None), with_hands))
+        brain.hear(Sent("x3", SessionId("elsewhere"), MainTurn(None), body))
         assert errors == []
-        brain.hear(Sent("x3", SessionId("b1"), MainTurn(None), body))
+        brain.hear(Sent("x4", SessionId("b1"), MainTurn(None), body))
     finally:
         logger.remove(sink)
     assert errors == ["the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (('Read',))"]
+    # Said once for the first request and again only for the one that offered other tools; another session's are not the brain's.
+    assert recorded == [BrainOffered(("Read", "mcp__hands__read_session")), BrainOffered(("Read",))]
 
 
 async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_ended(

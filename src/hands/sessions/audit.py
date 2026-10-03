@@ -130,6 +130,23 @@ class BrainLaunched:
 
 
 @dataclass(frozen=True)
+class BrainOffered:
+    """The tools the brain's requests offer the model, from the first of its requests and each that offers others: what
+    its own setup gave it, beside hands' tools."""
+
+    tools: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class BrainRefused:
+    """A dialog the brain's Claude Code would have opened, answered no by hands at its hook: nobody is at its keyboard."""
+
+    prompt: str | None  # the prompt id of the turn that asked; none for what asked between turns
+    dialog: str  # its hook: PermissionRequest, or Elicitation from an MCP server
+    asker: str | None  # what asked, as the hook names it: the tool, or the MCP server
+
+
+@dataclass(frozen=True)
 class BrainAsked:
     """The typed end of a brain turn: what was typed into it, at this line's time."""
 
@@ -453,6 +470,8 @@ Entry = (
     | Exchanged
     | McpConnected
     | BrainLaunched
+    | BrainOffered
+    | BrainRefused
     | BrainAsked
     | BrainAnswered
     | AsideAnswered
@@ -510,7 +529,7 @@ def level(entry: Entry) -> Level:
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
             | Applied() | Performed() | Typing() | LLMChosen() | VoiceChosen() | ProxyListening() | TapListening() | CopiesLost()
-            | McpConnected() | BrainLaunched() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
+            | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()
         ):
