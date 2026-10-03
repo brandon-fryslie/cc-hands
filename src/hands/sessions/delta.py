@@ -544,6 +544,10 @@ async def _settled(*sides: Awaitable[object]) -> tuple[object, ...]:
     """
     gave = await asyncio.gather(*sides, return_exceptions=True)
     raised = [side for side in gave if isinstance(side, BaseException)]
+    # A side cancelled on its own, as the loop's shutdown cancels every task at once, is the reading cancelled: raised
+    # as a cancellation, it is told as one and goes on up, where in a group it would be told as a failure.
+    if any(isinstance(side, asyncio.CancelledError) for side in raised):
+        raise asyncio.CancelledError
     if raised:
         raise BaseExceptionGroup("what a turn changed could not be read", raised)
     return tuple(gave)

@@ -915,6 +915,25 @@ async def test_a_reading_whose_one_side_raises_ends_the_other_with_it_and_says_w
     assert asyncio.all_tasks() == {asyncio.current_task()}
 
 
+class Halted(Deltas):
+    """A reading whose forge side is cancelled on its own, as the loop's shutdown cancels every task at once."""
+
+    async def _moved(self, mark: Mark, refs: object, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
+        raise asyncio.CancelledError
+
+
+async def test_a_reading_whose_one_side_is_cancelled_is_a_cancelled_reading_and_not_a_failed_one(tmp_path: Path) -> None:
+    root = repo(tmp_path)
+    record: list[Entry] = []
+    deltas = Halted(record=record.append, inherited=os.environ)
+    await deltas.snapshot(SID, root)
+    await deltas.compare(SID, again=False)
+    [reading] = [task for task in asyncio.all_tasks() if task.get_name().startswith("what a turn of session")]
+    with pytest.raises(asyncio.CancelledError):
+        await reading
+    assert [event.outcome for event in readings(record)] == ["cancelled"]
+
+
 class Unmade(Deltas):
     """A reading that cannot tell whether the turn made its branch, raising while it reads whether the turn pushed it."""
 
