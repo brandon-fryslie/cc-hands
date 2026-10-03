@@ -87,8 +87,12 @@ another account, and says which account it holds after.
 Its tools, its permission rules and mode, and its MCP servers are that directory's, as for any Claude Code:
 `~/.hands/brain/settings.json`, and `CLAUDE_CONFIG_DIR=~/.hands/brain claude mcp add -s user ...`; hands adds only its
 own MCP server, which it may use without asking, and its hooks, and it keeps the account's claude.ai connectors out.
-Nobody sits at its keyboard to answer a dialog, so hands answers no to whatever its settings would ask about and to any
-MCP server asking for input, and a `BrainRefused` audit line names what asked; its settings say `"defaultMode": "dontAsk"` with the tools it may use in
+Nobody sits at its keyboard to answer a dialog. A permission its settings ask about is put to the user by voice, in
+the turn of theirs that led to it: hands says what the tool would do, and only a plain yes, said once the question has
+played to its end, runs it. Anything else they say refuses it and is handed to the brain, and a permission nobody can
+be asked, or nobody answers in time, is refused; a `BrainPermission` audit line records how each was settled. Any
+other dialog is refused: the brain asks its questions in its reply, and an MCP server asking for input gets a
+`BrainRefused` audit line. Its settings say `"defaultMode": "default"` with the tools it may use without asking in
 `permissions.allow`, and `"syncClaudeAiSkills": false` and `"syncClaudeAiPlugins": false` keep the
 account's skills and plugins out, which Claude Code reads from no other place. A `BrainOffered` audit line names the tools
 its requests offer, at its first request and whenever they change.
