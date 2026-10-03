@@ -229,7 +229,7 @@ Need 3. How several sessions share one ear.
   that caused it and is never repeated; the deadline warning is the
   `warned: False → True` transition. Done by reducer tests: the same event twice
   yields one utterance.
-- **Catch-up.** `catch_up(since)` reads the audit log and narrates what was said
+- **Catch-up.** `catch_up(minutes)` reads the audit log and narrates what was said
   and done while you were away, at summary depth. Done when "what did I miss"
   after ten minutes lists every session that finished.
 - **Quiet.** A global overlay under which only `blocking` speaks and everything else

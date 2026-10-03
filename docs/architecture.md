@@ -1460,7 +1460,7 @@ discard_draft(session?)          send_draft(session?)
 answer_permission(request, decision, message?)
 answer_question(request, answers)
 find_path(session?, query)
-catch_up(since?)
+catch_up(minutes?)
 recall(query, since?)
 expand(session, part?)           resume()
 skip()                           repeat()
@@ -1727,7 +1727,7 @@ Pipecat's context summariser, configured with `LLMAutoContextSummarizationConfig
 compacts the conversation when it crosses a token threshold, keeping the recent
 turns verbatim. That is the eviction story. And because every narration, every tool
 call, and every user transcript is also a line in the audit log, nothing that was
-evicted is lost: `recall(query, since)` searches the log and `catch_up(since)`
+evicted is lost: `recall(query, since)` searches the log and `catch_up(minutes)`
 replays what was said while you were away. The log is the long memory; the context
 window is the working memory; the same pull-not-push rule that governs session
 transcripts governs the intermediary's own past.

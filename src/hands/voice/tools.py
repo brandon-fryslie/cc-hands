@@ -9,6 +9,7 @@ import asyncio
 import functools
 import inspect
 import re
+from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, TypedDict, cast, get_args, get_origin, get_type_hints, is_typeddict
@@ -31,10 +32,11 @@ from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waitin
 from hands.core.delta import Delta
 from hands.core.attention import Delivery, Overlay
 from hands.core.drilldown import drill
-from hands.core.sentences import Due, turn_digest
+from hands.core.sentences import Due, cut, turn_digest
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
+from hands.sessions import catchup
 from hands.sessions.audit import Called, Record
 from hands.sessions.focus import Unreadable, focused
 from hands.sessions.payload import Payload, Rejected
@@ -273,6 +275,7 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
         focus_session_tool(sessions, home),
         *(defaulting_to_focus(tool, home) for tool in on_a_session),
         *permission_tools(sessions),
+        catch_up_tool(sessions, home, lambda: datetime.now(UTC)),
         turn_summaries_tool(home),
         *voice_tools(Voices(home, player.lines, fetched)),
         *playback_tools(player),
@@ -810,6 +813,52 @@ def expand_tool(sessions: Sessions, recounts: Recounts) -> Tool:
         return {"parts": [{"part": topic, "told": told} for topic, told in drilled.told], "deeper": drilled.deeper, "depth": depth}
 
     return tool(expand)
+
+
+# How much of the sessions' closing words one catch-up carries, shared among the sessions that finished: a morning away
+# can be a hundred sessions, and every one of them is still named. Each gets its share, and never less than enough to
+# say what came of its work.
+CATCH_UP_CLOSINGS = 12000
+CATCH_UP_LEAST = 150
+
+
+def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -> Tool:
+    async def catch_up(minutes: int = 0) -> Result:
+        """What the user missed: every session that finished work while they were away and the newest words each closed
+        a turn with, the sessions that ended, and what hands announced.
+
+        Call this when the user asks what they missed, what happened while they were away, or what went on in the last
+        while. Sum it up the way a colleague would after a break: each session that finished in a sentence, by name, then
+        any that ended. Leave nothing out of `finished`: the user is asking because they heard none of it. `turns` is
+        how many turns a session finished; read_session reads what each did, when they want more of one.
+
+        Args:
+            minutes: How far back to look, when the user says, such as 60 for "the last hour". 0 for since they last spoke to you before this.
+        """
+        if minutes < 0:
+            return {"error": f"minutes is how far back to look, so it cannot be {minutes}"}
+        at = now()
+        opening = catchup.LastSpoke() if minutes == 0 else at - timedelta(minutes=minutes)
+        try:
+            missed = await asyncio.to_thread(catchup.missed, home.audit, opening)
+        except OSError as error:
+            logger.error(f"catch_up could not read the audit log: {error}")
+            return {"error": f"hands could not read its log: {error}"}
+        share = max(CATCH_UP_LEAST, CATCH_UP_CLOSINGS // max(1, len(missed.finished)))
+        return {
+            # [LAW:nothing-unseen] where the window opened and what of it could not be read ride on the result, so the
+            # Called line says what was read.
+            "since_minutes_ago": None if missed.since is None else round((at - missed.since).total_seconds() / 60),
+            "unreadable_lines": missed.unreadable,
+            "finished": [
+                {"session": spoken_name(sessions, done.session), "turns": done.turns, "closing": None if done.closing is None else cut(done.closing, share)}
+                for done in missed.finished
+            ],
+            "ended": [spoken_name(sessions, session) for session in missed.ended],
+            "announced": [{"text": said.text, "times": said.times} for said in missed.announced],
+        }
+
+    return tool(catch_up)
 
 
 def turn_summaries_tool(home: Home) -> Tool:
