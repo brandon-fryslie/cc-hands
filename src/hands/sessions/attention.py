@@ -64,10 +64,21 @@ def set_attention(home: Home, to: Attention) -> None:
 def asked(home: Home, changes: Sequence[tuple[str, str]]) -> Attention:
     """What is set once `changes` are made, as the CLI and the voice tool are both asked: none only reads what is set, and
     writes nothing, so a question never lands over a change made meanwhile [LAW:single-enforcer]."""
-    to = changed(attention(home), changes)
-    if changes:
-        set_attention(home, to)
+    if not changes:
+        return attention(home)
+    to = changed(_in_effect(home), changes)
+    set_attention(home, to)
     return to
+
+
+def _in_effect(home: Home) -> Attention:
+    """What is set as the daemon acts on it: a file that cannot be read is in effect as the defaults, so a change is made
+    to them and replaces it, and the readback, which says every setting, says what is set now. A file only a change can
+    mend would leave the user unable to quiet hands by voice."""
+    try:
+        return attention(home)
+    except Rejected:
+        return Attention()
 
 
 def described(attention: Attention) -> str:

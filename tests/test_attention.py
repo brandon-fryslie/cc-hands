@@ -217,6 +217,17 @@ async def test_asking_what_is_set_changes_nothing_and_says_it(tmp_path: Path) ->
     assert not Home(tmp_path).attention.exists()
 
 
+async def test_a_change_mends_a_file_that_cannot_be_read_and_asking_what_is_set_says_it_cannot(tmp_path: Path) -> None:
+    """Unreadable, the file is in effect as the defaults; a change is made to them, so quiet can be set by voice."""
+    home = Home(tmp_path)
+    home.attention.parent.mkdir(parents=True, exist_ok=True)
+    home.attention.write_text('{"volume": "up", "progress": "brief"}\n')
+    setting = attention_tool(home).body
+    assert "error" in await setting(changes=[])
+    await setting(changes=[{"kind": "quiet", "level": "on"}])
+    assert attention(home) == Attention(quiet="on")
+
+
 async def test_a_change_missing_its_level_is_refused_to_the_model_with_nothing_set(tmp_path: Path) -> None:
     result = await attention_tool(home := Home(tmp_path)).body(changes=[{"kind": "quiet"}])
     assert result == {"error": "missing field 'level'"}
