@@ -1077,3 +1077,24 @@ async def test_what_a_local_command_printed_is_no_answer_of_claudes_under_the_co
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING, MODEL, MODEL_SET))
     assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Taken(SID, PromptId("p2"), None, 7.0)]
+
+
+async def test_a_skill_run_in_a_fork_written_as_typed_words_is_read_as_a_command_by_its_output(tmp_path: Path) -> None:
+    """The bug this closes: `/code-review medium <pr>` was told as words the user asked, and its output dropped."""
+    typed = '{"uuid":"c6","type":"user","promptId":"p2","message":{"role":"user","content":"/code-review medium 100"}}'
+    launched = '{"uuid":"c6o","parentUuid":"c6","type":"system","subtype":"local_command","content":"<local-command-stdout>Running in the background as @code-review</local-command-stdout>","level":"info"}'
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, typed, launched))
+    assert await turn_of(transcript) == Turn(Commanded(Ref("c6"), "/code-review", "medium 100", "Running in the background as @code-review"), ())
+
+
+async def test_what_a_command_printed_that_joins_no_turn_is_said(tmp_path: Path) -> None:
+    said: list[str] = []
+    sink = logger.add(lambda message: said.append(message.record["message"]), level="WARNING", filter="hands.sessions.turning")
+    try:
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text(lines(PROMPT, DONE, MODEL_SET))
+        assert await turn_of(transcript) == Turn(Asked(None, "first"), (Said(None, "Done."),))
+    finally:
+        logger.remove(sink)
+    assert any("names record c1, which opened no turn" in line for line in said)

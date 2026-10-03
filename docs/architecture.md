@@ -928,8 +928,11 @@ prompt is named rather than read. The opening is `Commanded` for a record that o
 Claude Code's slash-command markup (`<command-name>` or `<command-message>`), `Shelled` for
 `<bash-input>`, `Notified` when its `origin.kind` is `task-notification`, and `Asked`
 otherwise. What a command printed (`<local-command-stdout>`, `<bash-stdout>`, and their
-stderr) is a record of its own after the command's; it opens nothing, and joins the command's
-opening as its `output`, with terminal escapes dropped (`hands.core.turn.printed`). The steps are assistant text (`Said`) and tool
+stderr, marked) is a record of its own after the command's; it opens nothing, and joins the opening
+whose record it names as its `parentUuid`, with terminal escapes dropped (`hands.core.turn.printed`). A
+command and its output are as often written as a `system` record of subtype `local_command` as a user one,
+and are read the same either way; such a record carries no prompt id and is no answer of Claude's. A skill
+run in a fork of its own is written as the words typed, and its output is what makes it `Commanded`. The steps are assistant text (`Said`) and tool
 calls matched to their results by id, each handed to `recognise`; subagent records and
 thinking blocks are skipped, thinking because it is how Claude reached a result rather
 than a result.

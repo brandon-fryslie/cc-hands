@@ -146,14 +146,14 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | None:
     ref = ref_of(record)
     if fields.get("type") == "system":
         # A local_command record holds nothing but what the user ran or what it printed (`turn_record`).
-        return _ran(ref, cast(str, fields["content"]), _parent_of(record))
+        return _ran(ref, cast(str, fields["content"]), ref_of(record, "parentUuid"))
     # Meta records (skill bodies, command caveats) and compaction's summary are Claude Code's own, not a new request.
     if fields.get("type") != "user" or fields.get("isMeta") is True or fields.get("isCompactSummary") is True:
         return None
     parts = blocks(record)
     match message(record).get("content"):
         case str() as text:
-            ran = _ran(ref, text, _parent_of(record))
+            ran = _ran(ref, text, ref_of(record, "parentUuid"))
             if ran is not None:
                 return ran
         case list() if parts and not any(block.get("type") == "tool_result" for block in parts):
@@ -208,13 +208,9 @@ def holds_a_tool(record: Payload) -> bool:
     return any(block.get("type") in ("tool_use", "tool_result") for block in blocks(record))
 
 
-def ref_of(record: Payload) -> Ref | None:
-    value = record.fields.get("uuid")
-    return Ref(value) if isinstance(value, str) else None
-
-
-def _parent_of(record: Payload) -> Ref | None:
-    value = record.fields.get("parentUuid")
+def ref_of(record: Payload, key: str = "uuid") -> Ref | None:
+    """The record a record names under `key`: itself under its uuid, the record before it under its parentUuid."""
+    value = record.fields.get(key)
     return Ref(value) if isinstance(value, str) else None
 
 

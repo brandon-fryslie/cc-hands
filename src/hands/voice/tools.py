@@ -218,7 +218,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
 
         Call this when the user asks what a session has been doing, or to catch up on one that was already
         running before you attached. Answer from the sentences; call read_turn to hear more of one turn, or of the
-        one it is on. A finished turn with no summary yet has only its request, and its sentence is being written.
+        one it is on. A finished turn with no summary yet has only what opened it (a request, or a command the user ran), and its sentence is being written.
         When `working` comes back true the session is still on its last turn. You are given its newest turns; when
         `earlier` is above zero there are that many before them, and calling again with `before` set to the first
         turn you were given reads those.

@@ -8,6 +8,8 @@ two can never disagree about what a turn did — only about which records they w
 from dataclasses import dataclass, field, replace
 from typing import cast
 
+from loguru import logger
+
 from hands.core.steps import Call, Result, recognise
 from hands.core.turn import Interruption, Opening, Said, Step, printed
 from hands.sessions.payload import Payload
@@ -40,9 +42,13 @@ class Turning:
         self.mid_tool = holds_a_tool(record)
         match edge:
             case Printed(of=of, output=output):
-                # The command's, not the answer's: it joins the opening this turning holds, and a reader holding
-                # its own copy of the opening joins it there.
-                self.opening = None if self.opening is None else printed(self.opening, of, output)
+                # The command's, not the answer's: it joins the opening the command made.
+                joined = None if self.opening is None else printed(self.opening, of, output)
+                if joined is None:
+                    # [LAW:nothing-unseen] output that joins nothing is left out of every telling, and said here.
+                    logger.warning(f"what a command printed names record {of}, which opened no turn being read, so it is told with none: {output[:80]!r}")
+                else:
+                    self.opening = joined
                 return edge
             case Interruption():
                 # The last step of the turn it cuts off, told in its place like any other.

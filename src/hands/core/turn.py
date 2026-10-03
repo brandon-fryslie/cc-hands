@@ -169,18 +169,24 @@ class Shelled:
 Opening = Asked | Notified | Commanded | Shelled
 
 
-def printed(opening: Opening, of: Ref | None, output: str) -> Opening:
-    """The opening with what Claude Code printed for it, which arrives as a record of its own naming the command's as `of`.
+def printed(opening: Opening, of: Ref | None, output: str) -> Opening | None:
+    """The opening with what Claude Code printed for it, which arrives as a record of its own naming the command's as `of`;
+    None for output that names another record, which this opening is not the command of.
 
-    [LAW:one-source-of-truth] the one place output joins its command, for the tail and the backfill alike. Output that
-    names any other record is of a command that opened no turn, and this turn did none of it; output that is empty
-    printed nothing.
+    [LAW:one-source-of-truth] the one place output joins its command, for the tail and the backfill alike.
     """
     match opening:
-        case Commanded(ref=ref) | Shelled(ref=ref) if of is not None and ref == of and output:
-            return replace(opening, output=output if opening.output is None else f"{opening.output}\n{output}")
-        case _:
-            return opening
+        case _ if of is None or opening.ref != of:
+            return None
+        case Commanded() | Shelled():
+            # Empty output printed nothing.
+            return opening if not output else replace(opening, output=output if opening.output is None else f"{opening.output}\n{output}")
+        case Asked(ref=ref, text=text):
+            # A skill run in a fork of its own is written as the words typed, and is known for a command by its output.
+            name, _, args = text.strip().partition(" ")
+            return Commanded(ref, name, args.strip(), output or None)
+        case Notified():
+            return None
 
 # One thing that happened in a session: what opened a turn, or a step of the answer to it. A Turn holds the two
 # apart because it is summarised as a whole, against its request. A reading of a session that nobody was

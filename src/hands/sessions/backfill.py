@@ -10,7 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from hands.core.turn import Happening, Interruption, Opening, Said, Step, printed
+from hands.core.turn import Happening, Interruption, Opening, Said, Step
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import Printed, turn_record
 from hands.sessions.turning import Turning
@@ -65,11 +65,11 @@ def read_transcript(transcript: Path) -> Reading:
         if record is None:
             continue
         match turning.consume(record):
-            case Printed(of=of, output=output) if openings:
-                # Claude Code writes a command's output straight after it, so the opening it names is the last one read.
-                openings[-1] = replace(openings[-1], opening=printed(openings[-1].opening, of, output))
+            case Printed() if turning.opening is not None:
+                # The turning joined it to the opening it holds, which is the last one read.
+                openings[-1] = replace(openings[-1], opening=turning.opening)
             case Printed():
-                # Printed before any opening was read: the command it is of is before where this transcript starts.
+                # Printed before any opening was read, which the turning has said.
                 pass
             case Interruption() | None:
                 # An interruption is a step, and the turning has already put it in its place.
@@ -78,6 +78,8 @@ def read_transcript(transcript: Path) -> Reading:
                 # The tail lets go of the turn before this one; a reading keeps every one of them, each in its place.
                 # What was asked is most of what a session's morning means: the steps alone say how, never what for.
                 openings.append(_Opened(len(turning.slots), opening))
+                # Held by the turning too, so what the command prints is joined to it there, in the one place output is.
+                turning.opening = opening
     happenings, places = _in_order(turning.steps(), openings)
     return Reading(happenings, _settled(happenings, _waiting(turning, places)))
 
