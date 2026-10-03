@@ -48,6 +48,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from hands.sessions.audit import Record
 from hands.sessions.model_facts import ModelFault, ModelReplyEmpty
 from hands.voice.floor import Floor
+from hands.voice.ledger import Ledger
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.ptt import PushToTalk
@@ -224,7 +225,7 @@ class Voice:
     assistant_turns: LLMAssistantAggregator
 
 
-def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, record: Record) -> Voice:
+def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, ledger: Ledger, record: Record) -> Voice:
     """Wire mic, push-to-talk, Whisper on MLX, the model's stage, pocket-tts, speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and Whisper reads it off each
@@ -261,7 +262,8 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
 
     # Ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
     # context or the model's stage takes it, and follows the user's words when given back.
-    pipeline = Pipeline([transport.input(), stt, Floor(record), user_aggregator, llm, pieces, tts, transport.output(), assistant_aggregator])
+    # The ledger sits at the speaker's door, so every line hands says as written is written down there, whoever queued it.
+    pipeline = Pipeline([transport.input(), stt, Floor(record), user_aggregator, llm, pieces, ledger, tts, transport.output(), assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True),

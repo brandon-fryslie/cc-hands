@@ -30,14 +30,18 @@ def briefing(listed: Sequence[Mapping[str, str]]) -> str:
     )
 
 
-def tail(listed: Sequence[Mapping[str, str]]) -> str:
-    """How the sessions stand as a request leaves, in list_sessions' words: what hands appends to its newest message."""
-    if not listed:
-        return "[hands] No Claude Code sessions are running now. Say nothing about this unless the user asks."
-    return (
-        f"[hands] The Claude Code sessions running now: {_running(listed)}. "
-        "That is how they stand as this message is sent. Say nothing about this unless the user asks."
+def tail(listed: Sequence[Mapping[str, str]], heard: Sequence[str] = ()) -> str:
+    """How the sessions stand as a request leaves, in list_sessions' words, and the last lines hands said to the user
+    in its own words: what hands appends to its newest message."""
+    sessions = (
+        "[hands] No Claude Code sessions are running now."
+        if not listed
+        else f"[hands] The Claude Code sessions running now: {_running(listed)}. That is how they stand as this message is sent."
     )
+    # [LAW:one-source-of-truth] what the user heard hands say is the speaker's ledger, read as the request leaves; the
+    # brain's own words are its history's and are not repeated to it.
+    said = f" Lately the user heard hands say, oldest first: {'; '.join(f'"{line}"' for line in heard)}. What the user says may answer one of these." if heard else ""
+    return f"{sessions}{said} Say nothing about this unless the user asks."
 
 
 def _running(listed: Sequence[Mapping[str, str]]) -> str:

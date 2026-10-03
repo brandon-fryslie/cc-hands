@@ -976,6 +976,17 @@ telling is written to the audit log as `Recounted`, with whether the model was h
 A transcript that cannot be read is said as "cc-hands finished a turn, and I could not
 read it." without the model and out of the context, and logged as a `Failure` line.
 
+What hands says as written, in its own words and not the brain's, is written down once, at
+the speaker's door: `Ledger` (`hands.voice.ledger`) sits ahead of the TTS in the pipeline, and
+every `TTSSpeakFrame` passes it whoever queued it, the relay's announcements, the narrator's
+"session is gone", the stage handing on its lane, and the system channel's faults, which are
+queued at it rather than at the TTS. Each is an audit line, `HandsSpoke`, and the last `KEPT`
+of them ride the tail of every request the brain makes, beside the session list, with the
+instruction that what the user says next may answer one. The brain's own words are its
+history's and are not repeated to it. This is what makes the ticket's title true: the user
+answered "cc-hands has a question for you" on 2026-10-03 and the brain asked what they were
+talking about, because the line had been said past it.
+
 For the brain, a narration waits in a lane of `BrainStage`'s own, never in Pipecat's
 context, and the user's turn goes ahead of it: a narration that waited while the brain
 was answering is asked only once no words of the user's are waiting. What the narrator

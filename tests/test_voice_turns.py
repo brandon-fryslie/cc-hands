@@ -32,6 +32,7 @@ from conftest import running
 from hands.sessions.audit import Entry, Yielded
 from hands.voice import pipeline as built
 from hands.voice.floor import Floor
+from hands.voice.ledger import Ledger
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.speech import Aloud
 from hands.voice.turnstop import TurnOpened, TurnResolved
@@ -148,6 +149,7 @@ async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
         built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), whisper_model="unused", voice="unused"),
         tools=[],
         llm=FrameProcessor(),
+        ledger=Ledger(recorded.append),
         record=recorded.append,
     )
     out, clock = Recorded(), Clock()

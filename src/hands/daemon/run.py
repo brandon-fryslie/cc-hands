@@ -57,6 +57,7 @@ from hands.sessions.overlays import Overlays
 from hands.sessions.summaries import summaries
 from hands.voice.devices import follow_default_devices
 from hands.voice.cues import cues
+from hands.voice.ledger import Ledger
 from hands.voice.hold import Move
 from hands.voice.keys import drive_quit, drive_talk_key
 from hands.voice.pipeline import (
@@ -226,7 +227,7 @@ class Mind:
 
 @asynccontextmanager
 async def mind(
-    config: VoiceConfig, tools: Sequence[Tool], sessions: Sessions, proxy_url: str, wire: Wire, store: Store, fritter: Path, record: Record
+    config: VoiceConfig, tools: Sequence[Tool], sessions: Sessions, proxy_url: str, wire: Wire, store: Store, fritter: Path, ledger: Ledger, record: Record
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
     through, the stage that speaks for it from the wire, the keeper of its context, and what answers hands' side questions."""
@@ -248,7 +249,7 @@ async def mind(
                     # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
                     # its own: nothing but the user's turns and their stops is ever typed into the brain.
                     asides = Asides(station, record)
-                    stage = BrainStage(brain, tools, lambda: tail(standing(sessions)), record)
+                    stage = BrainStage(brain, tools, lambda: tail(standing(sessions), ledger.lately()), record)
                     keeper = Keeper(brain.session, asides.ask, store, EVERY, record)
                     with wire.joined(Kept(stage, keeper, brain, asides)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
@@ -308,16 +309,18 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     audit.record(TapListening(path=home.wire))
     voice: Voice | None = None
     store = SummaryStore(Sentences(home.sentences))
+    # The ledger of what hands said as written, built before the mind that reads it and the voice it sits in.
+    ledger = Ledger(audit.record)
     tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store, Overlays(home))]
     try:
         config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, sessions, proxy.url, wire, store, home.fritter, audit.record) as minded:
-                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, audit.record), "the voice load"), heart, sessions.live_count, quit_event)
+            async with mind(config, tools, sessions, proxy.url, wire, store, home.fritter, ledger, audit.record) as minded:
+                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, ledger, audit.record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences, names)
+                    await converse(voice, ledger, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences, names)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -341,6 +344,7 @@ async def configured(configure: Callable[[], VoiceConfig], survey: Callable[[], 
 
 async def converse(
     voice: Voice,
+    ledger: Ledger,
     home: Home,
     sessions: Sessions,
     heart: heartbeat.Heart,
@@ -356,7 +360,7 @@ async def converse(
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
     tails = Tails(sessions)
-    channel = SystemChannel(voice.tts, post_notification, record)
+    channel = SystemChannel(ledger, voice.tts, post_notification, record)
     listen(voice, channel, after_crash)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     failures: list[BaseException] = []

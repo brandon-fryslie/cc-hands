@@ -189,12 +189,15 @@ class SystemChannel:
 
     def __init__(
         self,
+        speaker: FrameProcessor,
         tts: FrameProcessor,
         notify: Notify,
         record: Record,
         clock: Callable[[], float] = time.monotonic,  # monotonic seconds
         burst: float = BURST_SECONDS,
     ) -> None:
+        # Queued at `speaker`, the processor at the speaker's door that writes down what hands says; `tts` says whether speech works.
+        self._speaker = speaker
         self._tts = tts
         self._notify = notify
         self._record = record
@@ -209,9 +212,9 @@ class SystemChannel:
             # Said and audited once already inside this window; the terminal is not where it is read again.
             return
         if self._tts.is_usable:
-            # [LAW:effects-at-boundaries] queued at the TTS, past the model, because this channel reports the model's own failures;
-            # kept out of the model's context too, where it would read as a reply the model gave.
-            await self._tts.queue_frame(TTSSpeakFrame(text, append_to_context=False))
+            # [LAW:effects-at-boundaries] queued at the speaker's door, past the model, because this channel reports the model's
+            # own failures; kept out of the model's context too, where it would read as a reply the model gave.
+            await self._speaker.queue_frame(TTSSpeakFrame(text, append_to_context=False))
             self._record(Announced(text, "speech"))
         elif await self._notify(f"hands cannot speak, so: {text}"):
             self._record(Announced(text, "screen"))

@@ -221,6 +221,14 @@ class Announced:
 
 
 @dataclass(frozen=True)
+class HandsSpoke:
+    """A line hands said as written, in its own words and not the brain's, as it reached the speaker: what the brain is
+    reminded of at the tail of its next request, so the user's answer to it is understood."""
+
+    text: str
+
+
+@dataclass(frozen=True)
 class Yielded:
     """What hands had to say unprompted while the user's turn was open, passed on as it closed: each frame's kind, in
     order, and how long the turn held the floor."""
@@ -386,6 +394,7 @@ Entry = (
     | Replied
     | Called
     | Announced
+    | HandsSpoke
     | Yielded
     | Routed
     | Recounted

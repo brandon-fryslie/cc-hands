@@ -60,6 +60,16 @@ def test_the_tail_with_nothing_running_says_so() -> None:
     assert tail([]) == "[hands] No Claude Code sessions are running now. Say nothing about this unless the user asks."
 
 
+def test_the_tail_reminds_the_model_of_what_the_user_heard_hands_say() -> None:
+    """A question hands read out as written was answered on 2026-10-03 and the brain asked what the user was talking about."""
+    told = tail([], ("cc-hands has a question for you.", "20 seconds left to answer cc-hands about running the tests."))
+    assert told == (
+        "[hands] No Claude Code sessions are running now. "
+        'Lately the user heard hands say, oldest first: "cc-hands has a question for you."; "20 seconds left to answer cc-hands about running the tests.". '
+        "What the user says may answer one of these. Say nothing about this unless the user asks."
+    )
+
+
 async def test_a_brain_read_from_the_tail_is_given_no_briefing() -> None:
     queued: list[object] = []
 

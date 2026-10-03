@@ -53,6 +53,8 @@ from hands.core.wire import (
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import BrainAnswered, BrainInterrupted, BrainSpoke, Entry
+from hands.voice.briefing import tail
+from hands.voice.ledger import Ledger
 from hands.voice.speech import Aloud, Narrated
 from hands.voice.tools import Result, Tool, tool
 
@@ -697,3 +699,34 @@ async def test_each_text_block_of_a_turn_is_its_own_paragraph_so_a_closing_fence
     rig.brain.end()
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
     assert "".join(rig.out.said()) == "Here is what I ran:\n```bash\nnpm test\n```\n\nAll 42 tests passed."
+
+
+async def test_a_line_hands_said_as_written_rides_the_tail_of_the_brains_next_request() -> None:
+    """The user answered "cc-hands has a question for you: ..." and the brain asked what they were talking about
+    (2026-10-03, hands-wire-6ic.b9j): a line said past the brain is written down at the speaker's door, and the brain
+    reads it as its next request leaves, so the answer is understood."""
+    brain, recorded = FakeBrain(), list[Entry]()
+    ledger = Ledger(recorded.append)
+    stage = BrainStage(brain, TOOLS, lambda: tail([], ledger.lately()), recorded.append)
+    out = Spoken()
+    async with running([stage, ledger, out]) as run:
+        asking = asyncio.create_task(stage.ask_each())
+        try:
+            await run.worker.queue_frame(Aloud(TTSSpeakFrame("cc-hands has a question for you.")))
+            async with asyncio.timeout(PATIENCE_SECS):
+                while "cc-hands has a question for you." not in out.said():
+                    await asyncio.sleep(0.01)
+            context = LLMContext()
+            context.add_message({"role": "user", "content": "huh, why would we do that?"})
+            await run.worker.queue_frame(LLMContextFrame(context))
+            async with asyncio.timeout(PATIENCE_SECS):
+                while not brain.asked:
+                    await asyncio.sleep(0.01)
+            sent = Sent("x1", BRAIN, MainTurn(None), {"messages": [{"role": "user", "content": "hi"}]})
+            stage.hear(sent)
+            route = stage.route(sent)
+            brain.end()
+        finally:
+            asking.cancel()
+    assert route == Send((Tail(tail([], ("cc-hands has a question for you.",))),), refusal="final")
+    assert 'heard hands say, oldest first: "cc-hands has a question for you."' in tail([], ledger.lately())
