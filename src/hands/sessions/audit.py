@@ -220,6 +220,15 @@ class Announced:
 
 
 @dataclass(frozen=True)
+class Yielded:
+    """What hands had to say unprompted while the user's turn was open, passed on as it closed: each frame's kind, in
+    order, and how long the turn held the floor."""
+
+    held: tuple[str, ...]
+    waited: float
+
+
+@dataclass(frozen=True)
 class Routed:
     """Something a session said to the user, the overlay that routed it, and whether it was passed on.
 
@@ -376,6 +385,7 @@ Entry = (
     | Replied
     | Called
     | Announced
+    | Yielded
     | Routed
     | Recounted
     | Summarised

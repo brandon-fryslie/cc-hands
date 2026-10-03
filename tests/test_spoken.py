@@ -331,6 +331,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         ),
         tools=[],
         llm=FrameProcessor(),
+        record=lambda _: None,
     )
     filters = given["text_filters"]
     assert isinstance(filters, list) and [type(one) for one in cast(list[object], filters)] == [SpokenForm]

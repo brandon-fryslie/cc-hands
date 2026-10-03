@@ -364,7 +364,10 @@ chosen by a table, not by code that looks at the event `[LAW:dataflow-not-contro
 
 Today no table chooses; two queues stand in for it. `Heard` carries permission
 announcements and the idle nudge as `Speak` and permission requests as `Narrate`,
-relayed as soon as the reducer emits them. The nudge is the `idle_prompt`
+relayed as soon as the reducer emits them. Relayed is not heard: everything hands says
+unprompted of the sessions, under either telling, passes the floor (`voice/floor.py`) ahead
+of the user aggregator, and from the press that opens the user's turn until that turn is
+sent, it waits there in order and follows the user's words (`Yielded` in the audit log). The nudge is the `idle_prompt`
 notification, the only one the `Notification` hook's matcher lets through; it is
 spoken once per idle period, because `Idle.nudged` turns true as it is said and an
 idle read after a run, or with a turn heard since `Idle.after`, builds a fresh one. Claude
