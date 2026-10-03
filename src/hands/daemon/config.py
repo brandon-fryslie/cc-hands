@@ -1,4 +1,5 @@
-"""The settings file, `<home>/config.toml`: read once, when the daemon starts, into a frozen Config.
+"""The settings file, `<home>/config.toml`: read once, when a run starts, into a frozen Config; an edit to it while the
+run runs starts the run again, on the file as edited.
 
     [llm]
     backend = "claude"           # "anthropic" (the default), "openai", or "claude", the brain
@@ -16,16 +17,22 @@ and it changes while the daemon runs (hands.voice.voices).
 would be a flag is a variant with a real alternative, or it does not exist.
 """
 
+import asyncio
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from pipecat.services.whisper.stt import MLXModel
-
+from hands.sessions.audit import Record, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+
+# Spelled here, not taken from Pipecat's Whisper service, whose import is most of the seconds the start spends off
+# the loop: the start watches this file before then, on it.
+WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
+# How late an edit to the file is heard.
+EDIT_SECONDS = 1.0
 
 # The SDK appends /v1/messages to this, so an Anthropic-compatible server's URL has no /v1 of its own.
 ANTHROPIC_URL = "https://api.anthropic.com"
@@ -64,7 +71,7 @@ type LLM = Anthropic | OpenAI | Claude
 @dataclass(frozen=True)
 class Config:
     llm: LLM = Anthropic()
-    whisper_model: str = MLXModel.LARGE_V3_TURBO
+    whisper_model: str = WHISPER_MODEL
 
 
 def load(home: Home) -> tuple[Config, Path | None]:
@@ -80,6 +87,36 @@ def load(home: Home) -> tuple[Config, Path | None]:
         return parse(text), home.config
     except Rejected as error:
         raise Rejected(f"{home.config}: {error}") from error
+
+
+async def edited(home: Home, record: Record, period: float = EDIT_SECONDS) -> None:
+    """Returns once the file holds settings other than it held when this began: written, rewritten, or removed.
+
+    [LAW:no-ambient-temporal-coupling] begun before the run reads the file, so an edit is never missed: one that lands
+    between the two starts a run already on it again, which is the same run once more. An edit that does not parse is
+    said and outlived, and the run keeps the settings it has; the next edit is weighed as any other.
+    """
+    held = _held(home)
+    while True:
+        await asyncio.sleep(period)
+        if (now := _held(home)) == held:
+            continue
+        held = now
+        try:
+            load(home)
+        except Rejected as error:
+            record(SettingsEdited(path=str(home.config), refused=str(error)))
+            continue
+        record(SettingsEdited(path=str(home.config), refused=None))
+        return
+
+
+def _held(home: Home) -> bytes | None:
+    # The bytes, not the mtime: a save that changes nothing, or a touch, is no edit.
+    try:
+        return home.config.read_bytes()
+    except FileNotFoundError:
+        return None
 
 
 def parse(text: str) -> Config:

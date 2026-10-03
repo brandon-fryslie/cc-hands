@@ -13,8 +13,8 @@ from hands.daemon import config, run
 from hands.daemon.config import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, Anthropic, Claude, Config, OpenAI
 from hands.daemon.starting import start
 from hands.daemon.run import backend
-from hands.sessions import heartbeat
-from hands.sessions.audit import Entry, LLMChosen, SettingsRead, VoiceChosen, encoded
+from hands.sessions import audit, heartbeat
+from hands.sessions.audit import Entry, LLMChosen, SettingsEdited, SettingsRead, VoiceChosen, encoded
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
@@ -233,3 +233,58 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     home.voice.mkdir()
     with pytest.raises(SystemExit, match=str(home.voice)):
         run.configured_from(home, keyed)
+
+
+async def _edited_within(home: Home, recorded: list[Entry], seconds: float = 0.5) -> bool:
+    try:
+        await asyncio.wait_for(config.edited(home, recorded.append, period=0.01), seconds)
+    except TimeoutError:
+        return False
+    return True
+
+
+async def test_an_edit_that_parses_is_heard_and_said(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    recorded: list[Entry] = []
+    watching = asyncio.create_task(_edited_within(home, recorded))
+    await asyncio.sleep(0.05)
+    home.config.write_text('[llm]\nbackend = "claude"\n')
+    assert await watching
+    assert recorded == [SettingsEdited(path=str(home.config), refused=None)]
+
+
+async def test_a_file_saved_unchanged_is_no_edit(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[llm]\nbackend = "claude"\n')
+    recorded: list[Entry] = []
+    watching = asyncio.create_task(_edited_within(home, recorded, seconds=0.2))
+    await asyncio.sleep(0.05)
+    home.config.write_text('[llm]\nbackend = "claude"\n')
+    assert not await watching
+    assert recorded == []
+
+
+async def test_an_edit_that_does_not_parse_is_said_and_outlived_until_one_that_does(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    recorded: list[Entry] = []
+    watching = asyncio.create_task(_edited_within(home, recorded, seconds=2.0))
+    await asyncio.sleep(0.05)
+    home.config.write_text('[llm]\nbackend = "local"\n')
+    while not recorded:
+        await asyncio.sleep(0.01)
+    assert not watching.done()
+    assert recorded == [SettingsEdited(path=str(home.config), refused=f"{home.config}: [llm] backend 'local' is not one of: anthropic, openai, claude")]
+    assert audit.level(recorded[0]) == "error"
+    home.config.write_text('[llm]\nbackend = "openai"\n')
+    assert await watching
+    assert recorded[1:] == [SettingsEdited(path=str(home.config), refused=None)]
+
+
+async def test_settings_removed_are_an_edit_back_to_the_defaults(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[llm]\nbackend = "claude"\n')
+    recorded: list[Entry] = []
+    watching = asyncio.create_task(_edited_within(home, recorded))
+    await asyncio.sleep(0.05)
+    home.config.unlink()
+    assert await watching

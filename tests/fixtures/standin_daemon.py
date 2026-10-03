@@ -3,7 +3,7 @@
     python standin_daemon.py <home>
 
 It stands in for `hands run`, which needs a microphone, the talk key's grant, and the speech models, so that a test
-can restart a running daemon through the plugin and see what the run after it knows.
+can restart a running daemon through the plugin, or by editing its settings, and see what the run after it knows.
 """
 
 import asyncio
@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from hands.daemon.cli import launch
+from hands.daemon.config import edited
 from hands.daemon.starting import Ended, again, keep_beating
 from hands.sessions import heartbeat
 from hands.sessions.audit import AuditLog
@@ -39,7 +40,7 @@ def main() -> None:
         beating.cancel()
         return Ended(None, sessions.live_count())
 
-    match asyncio.run(launch(lambda: run, heart)):
+    match asyncio.run(launch(lambda: run, heart, lambda: edited(home, audit.record, period=0.05))):
         case "quit":
             return
         case "restart":

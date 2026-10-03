@@ -11,7 +11,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from loguru import logger
 
+from conftest import unedited
 from hands.core.session import Membership, SessionId
 from hands.daemon.cli import launch, still_shown
 from hands.daemon.restart import RESTART_SIGNAL
@@ -82,6 +84,62 @@ def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sess
     assert stopped is not None and stopped.pipeline == "stopped"
 
 
+def test_an_edit_to_the_settings_brings_the_daemon_back_on_them_with_its_sessions(tmp_path: Path, session: Membership) -> None:
+    home = Home(tmp_path / "home")
+    write_membership(home, session)
+    daemon = subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
+    try:
+        before = running(home)
+        home.config.write_text('[llm]\nbackend = "claude"\n')
+        after = running(home)
+        until = time.monotonic() + 10
+        while after.started_at == before.started_at and time.monotonic() < until:
+            time.sleep(0.02)
+            after = running(home)
+        # Started again, in the same process, with nothing asked of it but the edit.
+        assert daemon.poll() is None
+        assert (after.pid, after.live_sessions) == (daemon.pid, 1) and after.started_at > before.started_at
+        said = [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line["type"] in ("SettingsEdited", "Restarting")]
+        assert [(line["type"], line.get("refused")) for line in said] == [("SettingsEdited", None), ("Restarting", None)]
+    finally:
+        daemon.terminate()
+        daemon.wait(timeout=10)
+
+
+async def test_settings_edited_end_a_run_as_a_restart(tmp_path: Path) -> None:
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    edit = asyncio.Event()
+
+    async def run(quit_event: asyncio.Event) -> Ended:
+        edit.set()
+        await quit_event.wait()
+        return Ended(None, 0)
+
+    async def edited() -> None:
+        await edit.wait()
+
+    assert await launch(lambda: run, heart, edited) == "restart"
+
+
+async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: Path) -> None:
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+
+    async def run(quit_event: asyncio.Event) -> Ended:
+        await quit_event.wait()
+        return Ended(None, 0)
+
+    async def edited() -> None:
+        raise PermissionError("config.toml")
+
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
+    try:
+        assert await launch(lambda: run, heart, edited) == "quit"
+    finally:
+        logger.remove(sink)
+    assert any("could not watch its settings file" in error and "PermissionError" in error for error in errors)
+
+
 def test_a_daemon_that_is_not_running_is_not_asked_and_the_skill_says_why(tmp_path: Path, python312: str) -> None:
     home = Home(tmp_path / "home")
     done = restart(home, tmp_path, python312)
@@ -108,7 +166,7 @@ async def test_the_restart_signal_ends_a_run_as_a_restart_whose_last_heartbeat_s
         await quit_event.wait()
         return Ended(NOW, 3)
 
-    launched = asyncio.create_task(launch(lambda: run, heart))
+    launched = asyncio.create_task(launch(lambda: run, heart, unedited))
     while not told:
         await asyncio.sleep(0.005)
     os.kill(os.getpid(), RESTART_SIGNAL)
@@ -129,7 +187,7 @@ async def test_a_restart_asked_while_a_quit_winds_the_run_down_does_not_start_it
         await asyncio.sleep(0.05)
         return Ended(None, 0)
 
-    launched = asyncio.create_task(launch(lambda: run, heart))
+    launched = asyncio.create_task(launch(lambda: run, heart, unedited))
     await winding_down.wait()
     os.kill(os.getpid(), RESTART_SIGNAL)
     assert await launched == "quit"

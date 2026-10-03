@@ -515,9 +515,18 @@ class BacklogUnread:
 
 
 @dataclass(frozen=True)
+class SettingsEdited:
+    """The home's config.toml changed while hands ran: the run restarts on it, or, where it was `refused`, says why
+    and runs on the settings it started with."""
+
+    path: str
+    refused: str | None
+
+
+@dataclass(frozen=True)
 class Restarting:
-    """The daemon was asked to restart: it has stopped, and starts again as pid `pid`, the same process, from the code
-    and configuration on disk now."""
+    """The daemon was asked to restart, or its settings were edited (SettingsEdited): it has stopped, and starts again
+    as pid `pid`, the same process, from the code and configuration on disk now."""
 
     pid: int
 
@@ -551,6 +560,7 @@ Entry = (
     | EffectFailed
     | LLMChosen
     | SettingsRead
+    | SettingsEdited
     | VoiceChosen
     | ProxyListening
     | TapListening
@@ -624,6 +634,8 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case Refocused(outcome=outcome):
             return "error" if outcome == "failed" else "info"
+        case SettingsEdited(refused=refused):
+            return "info" if refused is None else "error"
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
             | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | CopiesLost()

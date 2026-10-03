@@ -322,3 +322,8 @@ while True:
     monkeypatch.setenv("LOGGED_IN", "1")
     monkeypatch.setenv("TYPED", str(tmp_path / "typed.jsonl"))
     return script
+
+
+async def unedited() -> None:
+    """Settings a run's start watches that are never edited."""
+    await asyncio.Event().wait()
