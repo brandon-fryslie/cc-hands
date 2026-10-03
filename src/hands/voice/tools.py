@@ -23,7 +23,8 @@ from pipecat.services.llm_service import FunctionCallParams
 from hands.core.drafts import AmendDraft, DiscardDraft, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
-from hands.core.session import Blocker, Membership, CommandName, Dialog, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported
+from hands.core.progress import Doing
+from hands.core.session import Blocker, Membership, CommandName, Dialog, Opened, Turn, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
 from hands.core.attention import Delivery, Overlay
@@ -604,19 +605,23 @@ def describe_listing(listing: Listing[Session]) -> dict[str, str]:
     return {
         "id": listing.session.membership.id,
         "name": identifier(listing),
-        "state": _spoken_state(listing.session.state, listing.session.dialog),
+        "state": _spoken_state(listing.session.state, listing.session.dialog, listing.session.turn),
         "mode": "not reported yet" if listing.session.mode is None else spoken_mode(listing.session.mode),
     }
 
 
-def _spoken_state(state: SessionState, dialog: Dialog | None) -> str:
-    match (dialog, state):
-        case (Held(on=on), _):
+def _spoken_state(state: SessionState, dialog: Dialog | None, turn: Turn) -> str:
+    match (dialog, state, turn):
+        case (Held(on=on), _, _):
             # Said by what it asks, though the status saying it waits may not have been read yet.
             return _waiting_on(on)
-        case (LetGo(on=on), _):
+        case (LetGo(on=on), _, _):
             return f"{_waiting_on(on)} at the keyboard, too late to answer by voice"
-        case (None, _):
+        case (None, Running(status=Busy()), Opened(latest=Doing(alone=alone))):
+            # [LAW:one-source-of-truth] the progress a session that is not the focus is noted with, for the brain, whose
+            # notes are this listing at the tail of its every request.
+            return f"working; the last thing it set out to do: {alone}"
+        case (None, _, _):
             return _stated(state)
 
 
@@ -671,7 +676,7 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool:
         if live is None:
             return {"error": f"no running session has the id {id!r}; take one from list_sessions"}
         name = spoken_name(sessions, id)
-        now = _spoken_state(live.state, live.dialog)
+        now = _spoken_state(live.state, live.dialog, live.turn)
         match recounts.of(id):
             case None:
                 # [LAW:no-silent-failure] said as what it is, never as a turn that did nothing.

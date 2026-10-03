@@ -16,3 +16,20 @@ DEFAULT: Overlay = "normal"
 # because the session is watched; held until the user asks for it because neither is so, or because the session is
 # muted. One summary is made whichever it is; only who hears it when differs.
 Delivery = Literal["summaries", "watched", "on request", "muted"]
+
+
+# How a session's progress reaches the user: "play", said as it happens; "note", known to the model, which says nothing
+# of it until asked.
+Route = Literal["play", "note"]
+
+
+def progress_route(focused: bool, overlay: Overlay) -> Route:
+    """The focused session is heard working; any other is noted, and a muted one is noted even when focused."""
+    # [LAW:dataflow-not-control-flow] a table over the focus and the overlay, every pair a row the type checker holds to.
+    match overlay, focused:
+        case "muted", _:
+            return "note"
+        case "normal" | "watched", True:
+            return "play"
+        case "normal" | "watched", False:
+            return "note"

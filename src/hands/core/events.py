@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from hands.core.progress import Doing
 from hands.core.session import Blocker, Instant, Membership, FinishedCall, Mode, PromptId, RequestId, SessionId
 from hands.core.status import Report, Stamp
 
@@ -134,6 +135,17 @@ class Read:
 
 
 @dataclass(frozen=True)
+class Progressed:
+    """The turn made calls since its transcript was last read: what each sets out to do, read as its record landed."""
+
+    session: SessionId
+    # Every id the turn the calls were read into goes by, sorted, so calls read late, of a turn since over, move nothing.
+    turn: tuple[PromptId, ...]
+    doings: tuple[Doing, ...]
+    at: Instant  # when they were read
+
+
+@dataclass(frozen=True)
 class StatusReported:
     """Claude Code set the session's status: read from the file it keeps for the session each time its stamp moves, so a
     status set again to what it was is heard, and so is a busy that came and went between two reads."""
@@ -189,9 +201,9 @@ class Tick:
 # Events about a session the registry must already know; a join is how it comes to.
 # What moves a live session on its axes; its end is the one session event that moves none of them.
 Moving = Prompted | Stopped | Closed | Interrupted | Taken | Continued | Read | StatusReported | PermissionRequested | ToolFinished
-SessionEvent = Moving | Ended
+SessionEvent = Moving | Progressed | Ended
 # What a session's transcript says that none of its hooks do: of its turn, and how far it has been read.
-Transcribed = Taken | Interrupted | Continued | Read
+Transcribed = Taken | Interrupted | Continued | Progressed | Read
 # What the liveness sweep saw in one membership file.
 Observed = Attached | Died | MovedOn
 Event = Joined | Observed | SessionEvent | Abandoned | Tick

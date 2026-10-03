@@ -391,7 +391,9 @@ muted session's turn is held whatever the switch says, until the user asks for i
 `tell_turn`. The user sets the overlay by voice with `set_overlay`, and the summaries
 switch with `turn_summaries` or `/hands:summaries`. A muted session's permission requests,
 questions, and plans are still narrated: held unsaid, each would wait out its deadline and
-be refused. The player and the routing table over every event kind below are planned.
+be refused. Progress has its row of the table today, `attention.progress_route` over the
+focus and the overlay (see "Streaming"); the player and the table over every other event kind
+below are planned.
 
 The routing table is a value in `core`:
 
@@ -674,9 +676,8 @@ steps, and marks nothing until the narrator says it was spoken. A summary that f
 marked told, and the mark a slow summary makes lands on the turn it was made of, found by its
 number, never on one that opened while the model was answering.
 
-The reducer will receive steps as events and ask for their summaries as they arrive, so
-that by the time `Stop` fires most of the turn's summary is built; that is the progress
-ticket's, not this one's.
+What a turn sets out to do is heard while it runs (see "Streaming" below); what it came to is
+told at `Stop`.
 
 **Backfill.** When the daemon attaches to a session that has been running for an
 hour, `read_session(session)` and `read_turn(session, turn, since)` read the same file
@@ -976,9 +977,8 @@ the record — never telling the reply twice — because Claude Code only append
 puts that record first among the steps not yet told `[LAW:one-source-of-truth]`. What
 is *not* covered: a tool result written after a turn was told is never told, because its
 call was already told as having none. Every call was paired with its result at `Stop`
-in all twelve turns, so this is out of reach at a `Stop`. The tail can complete a call it
-has already told — the slot is still there — but a completed step told out of order only
-makes sense once steps are told as they arrive, so the progress ticket owns it.
+in all twelve turns, so this is out of reach at a `Stop`. Progress does not reach it either:
+it says what a call sets out to do, never what came back.
 
 The narrator hands a finished turn to the intermediary as a turn of its own, and the
 intermediary says it in its own words, so what the user heard is in its history and it can
@@ -1174,12 +1174,24 @@ segment in `settled`, there to be opened and never played. `tests/test_questions
 `open_questions` to no miss and no false alarm over real turns lifted whole out of real
 transcripts, under `tests/fixtures/turns`.
 
-**Streaming.** Steps from the tail are events like any other, so a session's progress
-can be played as it happens: "running the tests," "editing the auth middleware." Text
-streams line by line from `MessageDisplay`, so a long explanation is summarised while
-Claude is still writing it; the transcript record that lands when the block finishes
-supplies its record id. The routing table makes `progress` a note by default and the
-focus overlay makes it play; `coalesce` folds a burst of edits into one sentence.
+**Streaming.** Built for tool calls (`hands.core.progress`). Each call the tail reads into a
+running turn is said by what it sets out to do, read off its input and never its result:
+a command by the description Claude Code asks for ("run the test suite"), an edit or a read
+by its file's name, and never a command's code. `AskUserQuestion` and `ExitPlanMode` are not
+progress: their hook speaks them as they are asked. The tail hands the calls on as a
+`Progressed` event, and none of a turn it read from a file's start, which began before hands
+followed it. The reducer gathers them on the `Opened` turn, so a turn that ends lets go of
+what it gathered unsaid, its result being told instead; its tick lets a burst go as one
+`Progress` once no call has come for `SETTLE` seconds, or once its first has waited
+`LONGEST` `[LAW:no-ambient-temporal-coupling]`. The relay routes it by
+`attention.progress_route`, a table over the focus and the overlay, and records each choice
+as a `Routed` line: the focused session's is `Working`, played as written at `fyi`
+("cc-hands: edit ten files, then run the test suite."); any other's, and a muted one's even
+when focused, is `Noticed`, a note in a pushed context and, for the brain, the listing at the
+tail of its every request, which says what a working session last set out to do. `coalesce`
+folds a session's progress into one telling and drops what a later result of the same
+session says better. Text streamed line by line from `MessageDisplay`, summarised while
+Claude is still writing it, is planned (hands-narration-2mc.ww1).
 
 ## Playback: bookmarks and resume
 

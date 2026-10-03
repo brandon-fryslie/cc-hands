@@ -26,6 +26,8 @@ from hands.core.session import PromptId, SessionId
 from hands.core.turn import Said
 from hands.sessions.audit import Recounted, Record
 from hands.sessions.delta import Changes, NoChanges
+from hands.sessions.focus import focused
+from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
@@ -219,6 +221,13 @@ async def _overlay(overlays: Overlays, session: SessionId) -> Overlay:
     except (Rejected, OSError) as error:
         logger.error(f"cannot read the overlay of session {session}, so this turn is handled as a {DEFAULT_OVERLAY} session's: {error}")
         return DEFAULT_OVERLAY
+
+
+async def attending(home: Home, overlays: Overlays, session: SessionId) -> tuple[bool, Overlay]:
+    """Whether the session is the focus, and its overlay, each read as its progress is relayed: a focus that cannot be
+    read is no focus, and an overlay that cannot be read is the default, each logged as the error it is."""
+    focus = await asyncio.to_thread(focused, home)
+    return focus == session, await _overlay(overlays, session)
 
 
 def _unread(session: SessionId, error: Exception) -> None:

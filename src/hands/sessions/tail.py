@@ -14,7 +14,8 @@ from typing import Protocol
 
 from loguru import logger
 
-from hands.core.events import Continued, Interrupted, Read, Taken, Transcribed
+from hands.core.events import Continued, Interrupted, Progressed, Read, Taken, Transcribed
+from hands.core.progress import Doing, doing
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.status import Stamp
 from hands.core.turn import Answering, Continuing, Interruption, Opening, Said, Step, Turn
@@ -70,6 +71,16 @@ class Reading:
     # A turn goes by the id of the prompt that opened it, and by any it went on under after a flush (2.1.281): a Stop
     # or an interrupt may name either.
     ids: set[PromptId] = field(default_factory=set[PromptId])
+    # The calls of it already handed on as progress, by tool use id: only the turn's own calls, so it ends with the turn.
+    called: set[str] = field(default_factory=set[str])
+
+    def made(self) -> list[Doing]:
+        """What each call read into the turn since this was last asked sets out to do, in the order they were made."""
+        calls = self.turn.calls
+        made = [doing(call.tool, call.input) for id, call in calls.items() if id not in self.called]
+        # [LAW:carrying-cost] the calls the turn still holds, so a call let go of with its told steps is let go of here too.
+        self.called = set(calls)
+        return [each for each in made if each is not None]
 
 
 @dataclass
@@ -340,6 +351,11 @@ class Tails:
         # [LAW:single-enforcer] the one place a record is decided to be history: of a file read from its start, only the
         # turn it ends in may still be running, which Claude Code's status says; every turn before it was over before
         # hands followed the session, and says nothing to anyone.
+        # A turn's progress is heard while it runs, and a turn read from a file's start began before hands followed it:
+        # its calls so far are history, as backfill reads them, and only the calls it makes from here on are heard.
+        made = following.reading.made()
+        if made and not history:
+            heard.append((following.reading.number, Progressed(session, tuple(sorted(following.reading.ids)), tuple(made), self._known.now())))
         current = following.current()
         live = [event for number, event in heard if not history or number >= current]
         if history and heard:

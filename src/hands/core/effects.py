@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from hands.core.events import SessionEvent
+from hands.core.progress import Doing
 from hands.core.session import Blocker, CommandName, Keystroke, Mode, PromptId, PromptText, RequestId, SessionId
 
 
@@ -189,7 +190,16 @@ class Note:
     fact: ModeChanged
 
 
-Heard = Speak | Narrate | Note
+@dataclass(frozen=True)
+class Progress:
+    """A running turn's calls, gathered until they settled: how the user hears of them is decided where the focus and the
+    session's overlay are read, not here."""
+
+    session: SessionId
+    doings: tuple[Doing, ...]
+
+
+Heard = Speak | Narrate | Note | Progress
 
 
 @dataclass(frozen=True)

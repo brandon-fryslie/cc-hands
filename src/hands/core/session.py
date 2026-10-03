@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, NewType, Self
 
+from hands.core.progress import Doing, Gathering
 from hands.core.status import Going, Stamp
 
 SessionId = NewType("SessionId", str)
@@ -215,6 +216,11 @@ class Opened:
     # A message the user sent while it ran, waiting behind it: Claude Code runs it once the turn's Stop hook returns,
     # under an id no hook names (2.1.282).
     queued: bool = False
+    # [LAW:types-are-the-program] progress lives only on a turn that runs: whatever a turn gathered and did not tell
+    # is let go of with it as it ends, since its result is told instead.
+    gathering: Gathering | None = None
+    # The call the turn made last, for anyone asking what the session is doing; None before it has made one.
+    latest: Doing | None = None
 
 
 @dataclass(frozen=True)

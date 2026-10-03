@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     # Defined only in loguru's type stubs.
     from loguru import Message
 
-from hands.core.attention import Delivery
+from hands.core.attention import Delivery, Overlay, Route
 from hands.core.delta import Branched, PullRequested, Pushed
 from hands.core.effects import AfterEnd, AuditRecord, Effect, Heard, Holding, Input, Type, Unclosed, Unmatched, Unregistered, Unsettled
 from hands.core.events import Event
@@ -286,6 +286,17 @@ class Relayed:
 
 
 @dataclass(frozen=True)
+class Routed:
+    """Which way a session's progress went: played, for the focused session, or noted for the model; and the focus and
+    overlay that decided it, as they were read."""
+
+    session: SessionId
+    focused: bool
+    overlay: Overlay
+    route: Route
+
+
+@dataclass(frozen=True)
 class Recounted:
     """What hands told of a turn a session finished, and what the narration left the user able to ask for.
 
@@ -490,6 +501,7 @@ Entry = (
     | Announced
     | Yielded
     | Relayed
+    | Routed
     | Recounted
     | Summarised
     | TurnsSummarised
@@ -534,7 +546,7 @@ def level(entry: Entry) -> Level:
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
             | Applied() | Performed() | Typing() | LLMChosen() | VoiceChosen() | ProxyListening() | TapListening() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
-            | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Recounted() | Summarised()
+            | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Routed() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()
         ):
             return "info"
