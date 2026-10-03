@@ -22,7 +22,7 @@ from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
-from hands.sessions.summaries import Summaries, summaries
+from hands.sessions.summaries import Summaries, set_summaries, summaries
 from hands.sessions.tail import Tails
 from hands.voice.narrator import Recount, Recounts, Told, delivery, narrate, recount
 from hands.voice.speech import Pushed
@@ -177,8 +177,8 @@ async def test_spoken_summaries_are_turned_on_and_off_by_voice_and_hold_across_a
     ("overlay", "readback"),
     [
         ("watched", "I'll tell you each turn dropped finishes."),
-        ("normal", "I'll tell dropped's turns as I tell any session's: with spoken summaries on, or when you ask."),
-        ("muted", "dropped is muted: I'll tell its turns only when you ask. It still speaks when it needs your answer."),
+        ("normal", "I'll hold dropped's turns until you ask for one."),
+        ("muted", "dropped is muted: I'll hold its turns until you ask, even with spoken summaries on. It still speaks when it needs your answer."),
     ],
 )
 async def test_setting_a_session_s_overlay_says_what_is_told_of_it_and_holds(tmp_path: Path, overlay: Overlay, readback: str) -> None:
@@ -190,17 +190,33 @@ async def test_setting_a_session_s_overlay_says_what_is_told_of_it_and_holds(tmp
     assert Overlays(Home(tmp_path / "home")).of(member.id) == overlay
 
 
+async def test_a_normal_session_s_readback_with_summaries_on_says_its_turns_are_still_told(tmp_path: Path) -> None:
+    """The readback is the delivery: unwatching a session with summaries on does not stop its turns, and says so."""
+    member = membership(tmp_path, "dropped")
+    home = Home(tmp_path / "home")
+    set_summaries(home, "on")
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member, "startup"))
+    result = await set_overlay_tool(sessions, Overlays(home)).body(session=member.id, overlay="normal")
+    assert result == {"readback": "I'll tell you each turn dropped finishes, as I tell every session's with spoken summaries on."}
+
+
+def test_set_overlay_offers_the_model_only_the_overlays_there_are(tmp_path: Path) -> None:
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    assert set_overlay_tool(sessions, Overlays(Home(tmp_path))).properties["overlay"]["enum"] == ["normal", "watched", "muted"]
+
+
 async def test_an_overlay_the_model_names_that_is_none_is_refused_and_nothing_is_set(tmp_path: Path) -> None:
     member = membership(tmp_path, "one")
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member, "startup"))
     result = await set_overlay_tool(sessions, Overlays(Home(tmp_path / "home"))).body(session=member.id, overlay="quiet")
-    assert "error" in result and "'quiet' is no overlay" in str(result["error"])
+    assert result == {"error": "'quiet' is no overlay; it is one of normal, watched, muted"}
     assert not (tmp_path / "home" / "overlays").exists()
 
 
 async def test_a_muted_session_s_turn_is_held_with_summaries_on_and_told_when_asked(tmp_path: Path) -> None:
-    """Muting turns a session's Stops into notes: nothing is said as it finishes, and the model still answers what it did."""
+    """Muting holds a session's Stops: nothing is said as it finishes, and its turn is told when the user asks for it."""
     muted, other = membership(tmp_path, "muted"), membership(tmp_path, "other")
     home = Home(tmp_path / "home")
     entries: list[Entry] = []

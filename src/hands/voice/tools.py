@@ -26,7 +26,7 @@ from hands.core.keyboard import Interrupt, SendCommand
 from hands.core.session import Blocker, Membership, CommandName, Dialog, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
-from hands.core.attention import Overlay, overlay_named
+from hands.core.attention import Delivery, Overlay
 from hands.core.drilldown import drill
 from hands.core.sentences import Due, turn_digest
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
@@ -38,9 +38,9 @@ from hands.sessions.payload import Payload, Rejected
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
-from hands.sessions.summaries import described, set_summaries
+from hands.sessions.summaries import described, set_summaries, summaries
 from hands.core import playback
-from hands.voice.narrator import Recount, Recounts
+from hands.voice.narrator import Recount, Recounts, delivery
 from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
@@ -82,7 +82,20 @@ def tool(body: Body, *, then: Literal["reply", "silence"] = "reply", completes: 
     parameters = inspect.signature(body).parameters.values()
     properties = {parameter.name: {**_schema(hints[parameter.name]), "description": lines.get(parameter.name, "")} for parameter in parameters}
     required = tuple(parameter.name for parameter in parameters if parameter.default is inspect.Parameter.empty)
-    return Tool(body.__name__, (docstring.description or "").strip(), properties, required, body, then, completes)
+    return Tool(body.__name__, (docstring.description or "").strip(), properties, required, _closed(body, hints), then, completes)
+
+
+def _closed(body: Body, hints: Mapping[str, object]) -> Body:
+    """The body, refusing a call that names a value outside an argument's closed set, so the body's Literal holds."""
+    # [LAW:single-enforcer] every adapter calls the tool's body, so the set its schema advertises is held here, once.
+    closed = {name: get_args(hint) for name, hint in hints.items() if get_origin(hint) is Literal}
+
+    @functools.wraps(body)
+    async def call(**arguments: object) -> Result:
+        refused = [f"{arguments[name]!r} is no {name}; it is one of {', '.join(allowed)}" for name, allowed in closed.items() if name in arguments and arguments[name] not in allowed]
+        return {"error": "; ".join(refused)} if refused else await body(**arguments)
+
+    return call
 
 
 def _schema(hint: object) -> JsonSchema:
@@ -96,6 +109,8 @@ def _schema(hint: object) -> JsonSchema:
         case type() if is_typeddict(hint):
             fields = get_type_hints(hint)
             return {"type": "object", "properties": {name: _schema(field) for name, field in fields.items()}, "required": list(fields)}
+        case _ if get_origin(hint) is Literal:
+            return {"type": "string", "enum": list(get_args(hint))}
         case _ if get_origin(hint) is list:
             [item] = get_args(hint)
             return {"type": "array", "items": _schema(item)}
@@ -789,15 +804,16 @@ def voice_tools(voices: Voices) -> list[Tool]:
 
 
 def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
-    async def set_overlay(session: str, overlay: str) -> Result:
+    async def set_overlay(session: str, overlay: Overlay) -> Result:
         """Set how the user hears a session's finished turns: watched, normal, or muted.
 
         `watched` tells them each turn it finishes, as it finishes. `normal` tells its turns only with spoken summaries
         on (turn_summaries), and otherwise when they ask (tell_turn); every session is normal until they change it.
         `muted` tells its turns only when they ask, even with spoken summaries on. Whatever its overlay, a session's
-        permission requests, questions, and plans are said: they need an answer. Call this when the user asks to be
-        told when a session finishes or to stop hearing about it (watched or normal), or to mute or unmute one (muted or
-        normal). It lasts until they change it, across restarts. Say the returned readback to the user.
+        permission requests, questions, and plans are said: they need an answer. Call this with watched when the user
+        asks to be told when a session finishes, with muted when they ask to stop hearing about it or to mute it, and
+        with normal when they unmute or unwatch it. It lasts until they change it, across restarts. Say the returned
+        readback to the user: it says how the session's turns now reach them, spoken summaries considered.
 
         Args:
             session: The session's id, from list_sessions.
@@ -805,30 +821,31 @@ def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
         """
         try:
             id = _session_id(session)
-            # [LAW:parse-dont-validate] the id becomes a file name in the home, so only a session the registry holds is one.
+            # [LAW:single-enforcer] the registry is the one judge of which sessions are running.
             live = sessions.live_session(id)
             if live is None:
                 raise Rejected(f"no running session has the id {id!r}; take one from list_sessions")
-            to = overlay_named(overlay)
-            if to is None:
-                raise Rejected(f"{overlay!r} is no overlay; it is watched, normal, or muted")
-            await asyncio.to_thread(overlays.set, id, to)
+            await asyncio.to_thread(overlays.set, id, overlay)
+            # [LAW:one-source-of-truth] the readback is the delivery the narrator computes, so it says what will happen.
+            delivered = delivery(await asyncio.to_thread(summaries, overlays.home), overlay)
         except (Rejected, OSError) as error:
             logger.error(f"set_overlay could not set session {session!r} to {overlay!r}: {error}")
             return {"error": str(error)}
-        return {"readback": _overlay_readback(spoken_name(sessions, id), to)}
+        return {"readback": _overlay_readback(spoken_name(sessions, id), delivered)}
 
     return tool(set_overlay, completes=True)
 
 
-def _overlay_readback(name: str, overlay: Overlay) -> str:
-    match overlay:
+def _overlay_readback(name: str, delivered: Delivery) -> str:
+    match delivered:
         case "watched":
             return f"I'll tell you each turn {name} finishes."
-        case "normal":
-            return f"I'll tell {name}'s turns as I tell any session's: with spoken summaries on, or when you ask."
+        case "summaries":
+            return f"I'll tell you each turn {name} finishes, as I tell every session's with spoken summaries on."
+        case "on request":
+            return f"I'll hold {name}'s turns until you ask for one."
         case "muted":
-            return f"{name} is muted: I'll tell its turns only when you ask. It still speaks when it needs your answer."
+            return f"{name} is muted: I'll hold its turns until you ask, even with spoken summaries on. It still speaks when it needs your answer."
 
 
 class Resolved(TypedDict):

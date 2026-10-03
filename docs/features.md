@@ -215,8 +215,8 @@ Need 3. How several sessions share one ear.
 
 - **Routing table and overlays.** The per-session overlay `normal | watched | muted`,
   set by `set_overlay`, and `delivery`, the table over it and the summaries switch; a
-  muted session's `Stop`s are held as notes the model answers "what did it do" from
-  (`tell_turn`), and what it asks is still said. `focus_session`, and every tool's
+  muted session's `Stop`s are held unsaid until the user asks for one (`tell_turn`),
+  and what it asks is still said. `focus_session`, and every tool's
   `session` argument defaulting to the focus, are hands-attention-ssy.xfs. Built:
   tests/test_attention.py; not verified live.
 - **Priority queue with hold and coalesce.** Pending speech orders `blocking`

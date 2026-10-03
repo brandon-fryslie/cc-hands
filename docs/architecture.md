@@ -383,7 +383,7 @@ written past the model, and nothing is said of a session that sits at its prompt
 with `run_llm` off. Each session has an overlay, `normal`, `watched`, or `muted`, one file per
 session under `~/.hands/overlays` (`hands/core/attention.py`), which the narrator reads at
 every finished turn. `delivery` is the table over the summaries switch and the overlay: a
-muted session's turn is held whatever the switch says, as a note the model reaches through
+muted session's turn is held whatever the switch says, until the user asks for it through
 `tell_turn`. The user sets the overlay by voice with `set_overlay`, and the summaries
 switch with `turn_summaries` or `/hands:summaries`. A muted session's permission requests,
 questions, and plans are still narrated: held unsaid, each would wait out its deadline and
