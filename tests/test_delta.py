@@ -17,6 +17,7 @@ from hands.core.events import Closed, Ended, Joined, Prompted, StatusReported, S
 from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
+from hands.sessions.audit import DeltaRead, Entry
 from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Deltas
 from hands.sessions.registry import Sessions
 
@@ -60,9 +61,9 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-async def turn(root: Path, work: object = None) -> Delta:
-    """One turn: mark where the repository is, let `work` happen, then read what changed."""
-    deltas = Deltas()
+async def turn(root: Path, work: object = None, record: list[Entry] | None = None) -> Delta:
+    """One turn: mark where the repository is, let `work` happen, then read what changed, writing its audit line to `record`."""
+    deltas = Deltas(record=(record if record is not None else []).append)
     await deltas.snapshot(SID, root)
     if callable(work):
         work()
@@ -242,6 +243,170 @@ async def test_a_forge_that_answers_in_a_shape_hands_does_not_read_costs_the_pul
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
 
 
+def cloned(tmp_path: Path) -> Path:
+    """A clone of a published repository, which knows the branch its remote's HEAD follows."""
+    published(tmp_path)
+    return clone(tmp_path, "clone")
+
+
+def clone(tmp_path: Path, name: str) -> Path:
+    root = tmp_path / name
+    git(tmp_path, "clone", "-q", str(tmp_path / "remote.git"), str(root))
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "Test")
+    return root
+
+
+def slow_forge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seconds: float) -> None:
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    gh = bin / "gh"
+    gh.write_text(f"#!/bin/sh\nsleep {seconds}\necho '[]'\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin}{os.pathsep}{os.environ['PATH']}")
+
+
+async def test_a_branch_made_and_pushed_in_another_worktree_is_not_this_turns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Worktrees share every branch and remote-tracking ref; only the one checked out here is this session's."""
+    root = published(tmp_path)
+    asked = forge(tmp_path, monkeypatch, "[]")
+    beside = tmp_path / "beside"
+
+    def elsewhere() -> None:
+        git(root, "worktree", "add", "-q", "-b", "theirs", str(beside))
+        git(beside, "push", "-q", "-u", "origin", "theirs")
+
+    delta = await turn(root, elsewhere)
+    assert delta.changes == ()
+    assert not asked.exists()
+
+
+async def test_checking_out_a_branch_the_remote_already_had_is_not_making_one(tmp_path: Path) -> None:
+    root = cloned(tmp_path)
+    git(tmp_path / "work", "push", "-q", "origin", "HEAD:theirs")
+    git(root, "fetch", "-q")
+    delta = await turn(root, lambda: git(root, "checkout", "-q", "theirs"))
+    assert delta.changes == ()
+
+
+async def test_renaming_a_branch_is_not_making_one(tmp_path: Path) -> None:
+    """A rename carries the log of the branch it renamed, and that branch was made before the turn began."""
+    root = repo(tmp_path)
+    git(root, "checkout", "-q", "-b", "old")
+    time.sleep(1.1)  # git logs to the second
+    delta = await turn(root, lambda: git(root, "branch", "-m", "old", "new"))
+    assert delta.changes == ()
+
+
+async def test_a_push_the_turn_followed_with_a_pull_is_still_a_push(tmp_path: Path) -> None:
+    root = cloned(tmp_path)
+    other = clone(tmp_path, "other")
+    git(root, "checkout", "-q", "-b", "fix")
+
+    def push_then_pull() -> None:
+        git(root, "push", "-q", "-u", "origin", "fix")
+        git(other, "fetch", "-q")
+        git(other, "checkout", "-q", "fix")
+        git(other, "commit", "-q", "--allow-empty", "-m", "someone else")
+        git(other, "push", "-q")
+        git(root, "pull", "-q")
+
+    delta = await turn(root, push_then_pull)
+    assert Pushed("fix") in delta.changes
+
+
+async def test_one_branch_pushed_to_two_remotes_is_one_push_and_one_question(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = published(tmp_path)
+    git(tmp_path, "init", "-q", "--bare", str(tmp_path / "fork.git"))
+    git(root, "remote", "add", "fork", str(tmp_path / "fork.git"))
+    asked = forge(tmp_path, monkeypatch, "[]")
+
+    def push_twice() -> None:
+        git(root, "checkout", "-q", "-b", "fix")
+        git(root, "push", "-q", "origin", "fix")
+        git(root, "push", "-q", "fork", "fix")
+
+    delta = await turn(root, push_twice)
+    assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
+    assert len(asked.read_text().splitlines()) == 1
+
+
+async def test_the_forge_is_not_asked_about_a_push_to_the_default_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No pull request is opened from the branch the remote's HEAD follows, and it is where most pushes go."""
+    root = cloned(tmp_path)
+    asked = forge(tmp_path, monkeypatch, "[]")
+
+    def push() -> None:
+        git(root, "commit", "-q", "--allow-empty", "-m", "tidy")
+        git(root, "push", "-q")
+
+    record: list[Entry] = []
+    delta = await turn(root, push, record)
+    assert delta.changes == (Pushed(git(root, "branch", "--show-current")),)
+    assert not asked.exists()
+    assert [entry.forge for entry in record if isinstance(entry, DeltaRead)] == ["unasked"]
+
+
+async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The narrator waits for the whole reading at once, so the forge is asked beside the tree and inside that wait."""
+    root = published(tmp_path)
+    slow_forge(tmp_path, monkeypatch, 10)
+
+    def commit_and_push() -> None:
+        git(root, "checkout", "-q", "-b", "fix")
+        git(root, "commit", "-q", "--allow-empty", "-m", "tidy")
+        git(root, "push", "-q", "-u", "origin", "fix")
+
+    record: list[Entry] = []
+    delta = await turn(root, commit_and_push, record)
+    assert [commit.subject for commit in delta.commits] == ["tidy"]
+    assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
+    [read] = [entry for entry in record if isinstance(entry, DeltaRead)]
+    assert read.forge == "unanswered" and read.seconds < 3.0
+
+
+async def test_a_pull_request_stamped_with_no_zone_is_not_told_and_costs_nothing_else(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = published(tmp_path)
+    forge(tmp_path, monkeypatch, '[{"number": 7, "url": "https://x/7", "createdAt": "2099-01-01T00:00:00"}]')
+    delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")))
+    assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
+
+
+async def test_each_reading_is_one_audit_line_with_what_it_found_and_what_the_forge_cost(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = published(tmp_path)
+    forge(tmp_path, monkeypatch, f'[{{"number": 7, "url": "https://x/7", "createdAt": "{stamp(datetime.now(UTC))}"}}]')
+
+    def open_one() -> None:
+        git(root, "checkout", "-q", "-b", "fix")
+        git(root, "commit", "-q", "--allow-empty", "-m", "tidy")
+        git(root, "push", "-q", "-u", "origin", "fix")
+
+    record: list[Entry] = []
+    await turn(root, open_one, record)
+    [read] = record
+    assert isinstance(read, DeltaRead)
+    assert (read.session, read.outcome, read.commits, read.files, read.forge) == (SID, "read", 1, 0, "answered")
+    assert read.changes == (Branched("fix", "created branch"), Pushed("fix"), PullRequested(7, "https://x/7", "created"))
+
+
+async def test_a_turn_outside_a_repository_is_one_unmarked_audit_line(tmp_path: Path) -> None:
+    record: list[Entry] = []
+    await turn(tmp_path, None, record)
+    assert [(entry.outcome, entry.forge) for entry in record if isinstance(entry, DeltaRead)] == [("unmarked", "unasked")]
+
+
+async def test_a_session_whose_directory_is_gone_is_not_logged_as_git_failing_to_start(tmp_path: Path) -> None:
+    from loguru import logger
+
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
+    try:
+        await turn(tmp_path / "gone")
+    finally:
+        logger.remove(sink)
+    assert errors == []
+
+
 async def test_a_session_that_works_outside_a_repository_is_told_by_its_steps_alone(tmp_path: Path) -> None:
     """[LAW:no-silent-failure] not every session is in a repository, and that is not a failure to report."""
     plain = tmp_path / "plain"
@@ -255,7 +420,7 @@ async def test_a_directory_that_is_not_there_is_told_by_its_steps_alone(tmp_path
 
 async def test_a_turn_stopping_with_no_mark_before_it_reads_nothing(tmp_path: Path) -> None:
     """The daemon started in the middle of a turn: there is no beginning to compare against, so there is no delta."""
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     await deltas.compare(SID, again=False)
     assert not await deltas.taken(SID)
 
@@ -263,7 +428,7 @@ async def test_a_turn_stopping_with_no_mark_before_it_reads_nothing(tmp_path: Pa
 async def test_a_delta_is_told_once_and_never_twice(tmp_path: Path) -> None:
     """A delta told is a delta spent; the next turn's is the next turn's."""
     root = repo(tmp_path)
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("x = 3\n")
     await deltas.compare(SID, again=False)
@@ -281,7 +446,7 @@ async def test_an_edit_that_keeps_a_files_size_and_second_is_still_told(tmp_path
     os.utime(root / "a.py", (second, second))
     git(root, "update-index", "--refresh")
     os.utime(root / ".git" / "index", (second, second))
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("x = 3\n")
     os.utime(root / "a.py", (second, second))
@@ -291,7 +456,7 @@ async def test_an_edit_that_keeps_a_files_size_and_second_is_still_told(tmp_path
 
 async def test_a_new_turn_reads_against_its_own_beginning_and_not_the_one_before(tmp_path: Path) -> None:
     root = repo(tmp_path)
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("first turn\n")
     await deltas.compare(SID, again=False)
@@ -307,7 +472,7 @@ async def test_a_turn_that_stops_again_tells_only_what_it_changed_after_its_firs
     """Another Stop hook blocked the first Stop and Claude went on, with no prompt to mark from: the second part is read
     against where the first part's reading found the repository, so each change is told once."""
     root = repo(tmp_path)
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("first part\n")
     await deltas.compare(SID, again=False)
@@ -321,7 +486,7 @@ async def test_a_turn_that_stops_again_tells_only_what_it_changed_after_its_firs
 async def test_a_turn_no_prompt_marked_is_not_read_against_where_the_turn_before_ended(tmp_path: Path) -> None:
     """Between the two, the user may have edited by hand or pulled for hours: none of it is this turn's."""
     root = repo(tmp_path)
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("first turn\n")
     await deltas.compare(SID, again=False)
@@ -343,7 +508,7 @@ async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed
     from hands.sessions.registry import Sessions
 
     root = repo(tmp_path)
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
 
@@ -363,7 +528,7 @@ async def test_a_mark_that_would_cost_more_than_the_hook_can_afford_is_not_taken
     """A prompt's hook waits on this one, and the shim gives up after two seconds and says it cannot reach
     the daemon — on every prompt and every stop. A repository too slow to mark has its turn told without."""
     root = repo(tmp_path)
-    deltas = Deltas(marking=0.0)
+    deltas = Deltas(record=lambda _entry: None, marking=0.0)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("changed\n")
     await deltas.compare(SID, again=False)
@@ -374,7 +539,7 @@ async def test_a_stop_waits_for_none_of_the_reading_it_starts(tmp_path: Path) ->
     """The turn's telling is queued right after this, and a reading that is slow, that fails, or whose hook
     gives up must cost the turn its delta and never its telling."""
     root = repo(tmp_path)
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("changed by something\n")
     start = time.perf_counter()
@@ -395,7 +560,7 @@ from hands.sessions.delta import Deltas
 root = Path(sys.argv[1])
 
 async def ends(after: float) -> None:
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     await deltas.snapshot("s", root)
     (root / "a.py").write_text(f"x = {after}\\n")
     await deltas.compare("s", again=False)
@@ -434,7 +599,7 @@ async def test_two_turns_that_stop_before_either_is_told_keep_their_own_changes(
     """The narrator summarises one turn at a time and takes seconds over each, so a session can stop twice
     before the first is told. Told the newer delta, the first turn would be given results it never had."""
     root = repo(tmp_path)
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
 
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
@@ -453,7 +618,7 @@ async def test_a_turn_that_stops_with_nothing_to_read_still_takes_its_place_in_t
     step. A stop that reads nothing must still leave something to take, or every later turn is told the one
     before's changes."""
     root = repo(tmp_path)
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     await deltas.compare(SID, again=False)  # no mark: the daemon started in the middle of this turn
 
     await deltas.snapshot(SID, root)
@@ -551,7 +716,7 @@ async def test_a_mark_that_ran_out_of_time_reading_where_it_stands_is_no_mark_at
         git(root, "add", "-A")
         git(root, "commit", "-qm", f"made long before this turn {n}")
 
-    deltas = Slow()
+    deltas = Slow(record=lambda _entry: None)
     await deltas.snapshot(SID, root)
     (root / "during.py").write_text("the turn's own work\n")
     await deltas.compare(SID, again=False)
@@ -587,7 +752,7 @@ async def test_more_turns_than_can_be_held_lose_the_newest_deltas_and_never_the_
     handed one is handed its own.
     """
     root = repo(tmp_path)
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     for n in range(HELD + 2):
         await deltas.snapshot(SID, root)
         (root / f"turn{n}.py").write_text(f"turn {n}\n")
@@ -630,7 +795,7 @@ async def test_a_head_that_could_not_be_read_is_no_more_a_repository_with_no_com
         git(root, "commit", "-q", "--allow-empty", "-m", f"made long before this turn {n}")
     stood = (root / ".git" / "HEAD").read_text()
 
-    deltas = Torn()
+    deltas = Torn(record=lambda _entry: None)
     await deltas.snapshot(SID, root)
     (root / ".git" / "HEAD").write_text(stood)  # the checkout finished, and the repository reads again
     (root / "during.py").write_text("the turn's own work\n")
@@ -665,7 +830,7 @@ async def test_a_commit_is_still_told_when_the_tree_it_left_behind_cannot_be_rea
     reading's deadline on a large repository — so the commits are read first and kept whatever the tree does.
     """
     root = repo(tmp_path)
-    deltas = Blind()
+    deltas = Blind(record=lambda _entry: None)
     await deltas.snapshot(SID, root)
     (root / "b.py").write_text("y = 2\n")
     git(root, "add", "-A")
@@ -696,7 +861,7 @@ async def test_a_turn_whose_changes_could_not_be_counted_has_its_patch_left_unre
     much is still told.
     """
     root = repo(tmp_path)
-    deltas = Uncounted()
+    deltas = Uncounted(record=lambda _entry: None)
     await deltas.snapshot(SID, root)
     (root / "generated.csv").write_text("n,x\n" * (MOST_LINES + 10))
     git(root, "add", "-A")
@@ -712,7 +877,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
     """The next prompt's hook landed before the record of p1's interrupt was read. p1 is compared there, before p2 is
     marked, so p2 is told only what p2 changed."""
     root = repo(tmp_path)
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
@@ -732,7 +897,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
 async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_changed(tmp_path: Path) -> None:
     """hands-status-bpp.44l: no prompt of its own marks it, so p1's Stop does, while its hook holds Claude Code (2.1.282)."""
     root = repo(tmp_path)
-    deltas = Deltas()
+    deltas = Deltas(record=lambda _entry: None)
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(StatusReported(SID, Report(status.Idle(), Stamp(1)), at=0.5))

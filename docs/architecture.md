@@ -1091,12 +1091,15 @@ the others `[LAW:single-enforcer]`.
 A push, a branch, or a pull request changes no file and adds no local commit, and Claude Code
 writes no `gitOperation` for one inside a heredoc, a script, or a compound command it does not
 parse — two commands in five that push, and nearly every `checkout -b`. So the delta reads each
-where it does leave a mark: a remote-tracking ref whose log says `update by push` (a fetch moves
-the same ref and logs `fetch`), a local branch the mark did not hold, and, for a branch the turn
-pushed, a pull request the forge says was opened since the mark. The forge is asked only after a
-push, because asking every turn costs a request a turn for an answer that is nearly always no,
-and it is given `FORGING` of the reading so a slow forge costs the pull request and never the
-commit. Both sources speak in the same `GitChange` values, so a push both saw is said once.
+where it does leave a mark, and only for the branch the session's worktree is on, since every
+worktree and the terminal beside it share the repository's refs: that branch's own log saying it
+was created from something other than the remote branch of its name (a checkout or a rename is
+not a branch made), a remote-tracking ref of it whose log says `update by push` since the mark (a
+fetch moves the same ref and logs `fetch`), and, for a pushed branch that is not the one a
+remote's HEAD follows, a pull request the forge says was opened since the mark. The forge is asked
+beside the tree and given `FORGING`, inside the narrator's `PATIENCE`, so a slow forge costs the
+pull request and never the commit. Both sources speak in the same `GitChange` values, so a push
+both saw is said once. Each reading is one `DeltaRead` line in the audit log.
 
 What git says is *not* said of a turn told twice. `Compare` pops the mark and only
 `UserPromptSubmit` sets one, so the second telling of a turn whose first `Stop` was blocked
