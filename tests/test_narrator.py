@@ -5,6 +5,7 @@ import asyncio
 import json
 import shutil
 from dataclasses import dataclass
+from typing import cast
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.summaries import Summaries, summaries
 from hands.sessions.tail import Tails
-from hands.voice.narrator import REPLY_SHOWN, Recount, Recounts, narrate, recount
+from hands.voice.narrator import REPLY_SHOWN, Recount, Recounts, Told, narrate, recount
 from hands.voice.speech import Narrated, Pushed, Tailed
 from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
@@ -112,7 +113,7 @@ async def test_a_finished_turn_is_handed_to_the_model_with_its_reply_and_the_ses
         told = handed(await asyncio.wait_for(frames.get(), 5.0))
     finally:
         narrating.cancel()
-    assert told.startswith("[hands] The Claude Code session cc-hands finished a turn. The last thing it said was:\n\n")
+    assert told.startswith(f"[hands] The Claude Code session cc-hands (id {SID}) finished a turn. The last thing it said was:\n\n")
     # The fixture's closing text, whole: the session's own account of what it did.
     assert "API Error" in told
     assert told.endswith("in one or two spoken sentences, naming the session. It asks the user nothing.")
@@ -180,30 +181,31 @@ async def test_a_turn_held_until_asked_for_is_told_once(tmp_path: Path) -> None:
     assert await recount(tails, SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "on request", recounts, Tailed()) is None
     assert await recount(tails, SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "summaries", Recounts(), Tailed()) is None
     [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
-    assert recounted.delivered == "on request" and recounts.of(SID) == Recount(PromptId("p1"), (recounted.told,))
+    assert recounted.delivered == "on request" and [telling.news for telling in cast(Recount, recounts.of(SID)).tellings] == [recounted.told]
 
 
 async def test_a_turn_held_until_asked_for_whose_transcript_cannot_be_read_says_nothing_and_holds_the_failure(tmp_path: Path) -> None:
     recounts = Recounts()
     assert await recount(tailing(tmp_path / "gone.jsonl"), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "on request", recounts, Tailed()) is None
     assert recounts.of(SID) == Recount(PromptId("p1"), (), unread=True)
-    recounts.put(SID, PromptId("p1"), "read after all")
-    assert recounts.of(SID) == Recount(PromptId("p1"), ("read after all",))
+    recounts.put(SID, PromptId("p1"), Told("read after all", ()))
+    assert recounts.of(SID) == Recount(PromptId("p1"), (Told("read after all", ()),))
     recounts.unread(SID, PromptId("p1"))
-    assert recounts.of(SID) == Recount(PromptId("p1"), ("read after all",), unread=True)
+    assert recounts.of(SID) == Recount(PromptId("p1"), (Told("read after all", ()),), unread=True)
 
 
 def test_a_turn_told_again_is_held_whole_and_the_next_turn_replaces_it_even_with_nothing_to_tell() -> None:
     recounts = Recounts()
-    recounts.put(SID, PromptId("p1"), "first")
-    recounts.put(SID, PromptId("p1"), "then")
+    first, then, another = Told("first", ()), Told("then", ()), Told("another", ())
+    recounts.put(SID, PromptId("p1"), first)
+    recounts.put(SID, PromptId("p1"), then)
     recounts.put(SID, PromptId("p1"), None)
-    assert recounts.of(SID) == Recount(PromptId("p1"), ("first", "then"))
+    assert recounts.of(SID) == Recount(PromptId("p1"), (first, then))
     recounts.put(SID, PromptId("p2"), None)
     assert recounts.of(SID) == Recount(PromptId("p2"), ())
-    recounts.put(SID, None, "unnamed")
-    recounts.put(SID, None, "another")
-    assert recounts.of(SID) == Recount(None, ("another",))
+    recounts.put(SID, None, Told("unnamed", ()))
+    recounts.put(SID, None, another)
+    assert recounts.of(SID) == Recount(None, (another,))
 
 
 async def test_a_turn_a_slash_command_opened_is_logged_as_commanded_rather_than_asked(tmp_path: Path) -> None:

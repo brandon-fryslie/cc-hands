@@ -62,7 +62,7 @@ def _ran(call: Call) -> Step | None:
     # only where those counts are the whole story: a command that failed while nothing is counted failing, or one
     # that changed the repository on its way, did more than run a suite, and only its own output says what.
     if report is not None and operations is None and not (failed and report.failed == 0):
-        return Tested(call.ref, report.runner, report.passed, report.failed, report.failing)
+        return Tested(call.ref, report.runner, report.passed, report.failed, report.failing, report.why)
     return Ran(call.ref, command, _text(call.input.get("description")), failed, printed, _changes(operations))
 
 

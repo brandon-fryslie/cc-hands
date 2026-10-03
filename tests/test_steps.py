@@ -140,22 +140,60 @@ def test_a_call_that_failed_recorded_no_result_to_be_recognised_by_and_is_told_a
 
 
 @pytest.mark.parametrize(
-    ("output", "runner", "passed", "failed", "failing"),
+    ("output", "runner", "passed", "failed", "failing", "why"),
     [
-        ("pytest.txt", "pytest", 2, 2, ("test_sample.py::test_divides", "test_sample.py::test_names")),
-        ("gotest.txt", "go", None, 2, ("TestDivides", "TestNames")),
-        ("cargotest.txt", "cargo", 2, 2, ("tests::names", "tests::divides")),
-        ("vitest.txt", "vitest", 2, 2, ("src/sample.test.ts > divides", "src/sample.test.ts > names")),
+        (
+            "pytest.txt",
+            "pytest",
+            2,
+            2,
+            ("test_sample.py::test_divides", "test_sample.py::test_names"),
+            "test_divides\nassert (1 / 2) == 1\ntest_names\nAssertionError: assert 'A' == 'B'\n- B\n+ A",
+        ),
+        ("gotest.txt", "go", None, 2, ("TestDivides", "TestNames"), "sample_test.go:7: want 1, got 0\nsample_test.go:8: want B, got A"),
+        (
+            "cargotest.txt",
+            "cargo",
+            2,
+            2,
+            ("tests::names", "tests::divides"),
+            "thread 'tests::names' (1541058) panicked at src/lib.rs:9:26:\nwant B, got A\n"
+            "thread 'tests::divides' (1541057) panicked at src/lib.rs:8:28:\nassertion `left == right` failed",
+        ),
+        (
+            "vitest.txt",
+            "vitest",
+            2,
+            2,
+            ("src/sample.test.ts > divides", "src/sample.test.ts > names"),
+            "FAIL  src/sample.test.ts > divides\nAssertionError: expected 0.5 to be 1 // Object.is equality\n"
+            "FAIL  src/sample.test.ts > names\nAssertionError: expected 'A' to be 'B' // Object.is equality",
+        ),
     ],
 )
 def test_each_runner_is_read_from_the_output_it_really_writes(
-    output: str, runner: str, passed: int | None, failed: int, failing: tuple[str, ...]
+    output: str, runner: str, passed: int | None, failed: int, failing: tuple[str, ...], why: str
 ) -> None:
     report = report_of((FIXTURES / "testruns" / output).read_text())
     assert report is not None and report.runner == runner
     assert report.passed == passed and report.failed == failed
     # Each runner names a failure its own way, and the name is carried as the runner wrote it.
     assert report.failing == failing
+    # And says why in its own lines, which are what opening the tests tells.
+    assert report.why == why
+
+
+def test_what_a_passing_run_logged_is_no_reason_for_a_failure() -> None:
+    passing = report_of("=== RUN   TestSeeds\n    db_test.go:12: seeded db\n--- PASS: TestSeeds (0.00s)\nPASS\nok  \tsample\t0.004s\n")
+    assert passing is not None and passing.runner == "go" and passing.failed == 0 and passing.why == ""
+
+
+def test_what_a_passing_test_logged_in_a_failing_run_is_no_reason_for_the_failure() -> None:
+    run = report_of(
+        "=== RUN   TestOk\n    ok_test.go:5: setting up fixture\n--- PASS: TestOk (0.00s)\n"
+        "=== RUN   TestBad\n    bad_test.go:9: want 1, got 0\n--- FAIL: TestBad (0.00s)\nFAIL\nFAIL\tsample\t0.004s\n"
+    )
+    assert run is not None and run.failing == ("TestBad",) and run.why == "bad_test.go:9: want 1, got 0"
 
 
 def test_a_run_that_only_passed_is_still_a_test_run_and_output_that_is_not_one_is_not() -> None:
@@ -194,7 +232,7 @@ def test_a_command_that_did_more_than_run_a_suite_is_told_as_the_command_it_was(
     committed = recognise(Call(None, "Bash", {"command": "git commit -am x"}, committing))
     assert isinstance(committed, Ran) and committed.git == (Committed("f0f9776", "committed"),)
     # A suite that really did fail is still a run: what the command said and what the runner counted agree.
-    assert recognise(Call(None, "Bash", {"command": "pytest"}, Result("1 failed, 2 passed in 0.1s", None, True))) == Tested(None, "pytest", 2, 1, ())
+    assert recognise(Call(None, "Bash", {"command": "pytest"}, Result("1 failed, 2 passed in 0.1s", None, True))) == Tested(None, "pytest", 2, 1, (), "")
 
 
 def test_a_summary_a_runner_drew_around_is_still_the_summary_it_wrote() -> None:

@@ -12,7 +12,7 @@ until the user asks for it (tell_turn). Nothing of a turn is said as written pas
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
@@ -20,7 +20,7 @@ from pipecat.frames.frames import Frame, TTSSpeakFrame
 from hands.core.attention import DEFAULT as UNWATCHED, Delivery, Overlay
 from hands.core.delta import Delta
 from hands.core.effects import SessionGone, Summarise
-from hands.core.narration import Narration, narration
+from hands.core.narration import Narration, Segment, narration
 from hands.core.session import PromptId, SessionId
 from hands.core.turn import Said, Turn
 from hands.sessions.audit import Recounted, Record
@@ -42,13 +42,32 @@ _FAILURES = (Rejected, OSError)
 
 
 @dataclass(frozen=True)
+class Told:
+    """One telling of a turn: what the model was handed of it, and the parts of the narration tree it was cut from,
+    there to be opened when the user asks for more."""
+
+    news: str
+    parts: tuple[Segment, ...]
+
+
+@dataclass(frozen=True)
 class Recount:
-    """What was told of one turn, each telling of it in the order it was told, and whether the last reading of it failed:
-    a reading that fails marks nothing told, so the next that succeeds tells what it could not, and clears it."""
+    """What was told of one turn, each telling of it in the order it was told, whether the last reading of it failed,
+    and each part the user asked for more of, once per asking.
+
+    A reading that fails marks nothing told, so the next that succeeds tells what it could not, and clears it. How deep
+    a part has been opened is how many times it was asked for, read off `opened` rather than kept beside it
+    [LAW:one-source-of-truth], and a new telling starts it over, since there is more of the turn to open.
+    """
 
     turn: PromptId | None
-    tellings: tuple[str, ...]
+    tellings: tuple[Told, ...]
     unread: bool = False
+    opened: tuple[str, ...] = ()
+
+    @property
+    def parts(self) -> tuple[Segment, ...]:
+        return tuple(part for telling in self.tellings for part in telling.parts)
 
 
 class Recounts:
@@ -62,16 +81,24 @@ class Recounts:
     def __init__(self) -> None:
         self._last: dict[SessionId, Recount] = {}
 
-    def put(self, session: SessionId, turn: PromptId | None, told: str | None) -> None:
+    def put(self, session: SessionId, turn: PromptId | None, told: Told | None) -> None:
         """`told` is None when the telling found nothing new: the turn held stays as it is, and another replaces it."""
-        self._last[session] = Recount(turn, (*self._earlier(session, turn), *([] if told is None else [told])))
+        held = self._held(session, turn)
+        self._last[session] = replace(held, unread=False) if told is None else Recount(turn, (*held.tellings, told))
+
+    def open(self, session: SessionId, part: str) -> int:
+        """The user asked for more of `part` of the session's held turn: how many times they asked for it before."""
+        held = self._last[session]
+        self._last[session] = replace(held, opened=(*held.opened, part))
+        return held.opened.count(part)
 
     def unread(self, session: SessionId, turn: PromptId | None) -> None:
-        self._last[session] = Recount(turn, self._earlier(session, turn), unread=True)
+        self._last[session] = replace(self._held(session, turn), unread=True)
 
-    def _earlier(self, session: SessionId, turn: PromptId | None) -> tuple[str, ...]:
+    def _held(self, session: SessionId, turn: PromptId | None) -> Recount:
+        """The recount held for `turn`, or a fresh one where the turn held is another."""
         held = self._last.get(session)
-        return held.tellings if held is not None and turn is not None and held.turn == turn else ()
+        return held if held is not None and turn is not None and held.turn == turn else Recount(turn, ())
 
     def of(self, session: SessionId) -> Recount | None:
         return self._last.get(session)
@@ -152,7 +179,7 @@ async def recount(
         recounts.put(session, turn, None)
         return None
     tree = narration(told.turn, delta)
-    news = _news(name, told.turn, tree)
+    news = _news(session, name, told.turn, tree)
     record(
         Recounted(
             session,
@@ -163,9 +190,10 @@ async def recount(
             opened=type(told.turn.opening).__name__,
         )
     )
-    # Marked told however it is delivered: the summary holds what the user is told of it, so the steps are let go of.
+    # Marked told however it is delivered, so the tail lets the steps go: what is kept of them is the tree's parts, held
+    # with the telling until the session's next turn, for the user to open.
     await tails.spoken(told)
-    recounts.put(session, turn, news)
+    recounts.put(session, turn, Told(news, tree.parts))
     return _delivered(delivered, handed(news, f"{name} finished a turn, and I could not tell it.", telling))
 
 
@@ -178,7 +206,7 @@ def _delivered(delivered: Delivery, frame: Frame) -> Frame | None:
             return None
 
 
-def _news(name: str, turn: Turn, tree: Narration) -> str:
+def _news(session: SessionId, name: str, turn: Turn, tree: Narration) -> str:
     """The turn as the model is handed it: the last thing the session said, what hands read of it that those words may
     not say, and what it is waiting on, which the model ends by asking.
 
@@ -196,7 +224,7 @@ def _news(name: str, turn: Turn, tree: Narration) -> str:
         else "It asks the user nothing."
     )
     return (
-        f"[hands] The Claude Code session {name} finished a turn. {reply}{facts}"
+        f"[hands] The Claude Code session {name} (id {session}) finished a turn. {reply}{facts}"
         f"Tell the user what it concretely did, in your own words, in one or two spoken sentences, naming the session. {ending}"
     )
 

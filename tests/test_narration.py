@@ -244,7 +244,7 @@ def test_every_kind_of_step_lands_in_some_section_so_nothing_a_turn_did_is_dropp
         Said(None, "a"),
         Edited(None, "/a/b.py", False, "@@"),
         Ran(None, "ls", None, False, "", ()),
-        Tested(None, "pytest", 12, 0, ()),
+        Tested(None, "pytest", 12, 0, (), ""),
         Looked(None, "Read", "/a/b.py", "x"),
         Planned(None, "write it", "completed"),
         Delegated(None, "Explore", "find the thing", "found it"),

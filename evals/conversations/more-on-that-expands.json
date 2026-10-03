@@ -1,0 +1,33 @@
+{
+  "about": "Asked for more of a turn hands just told, it opens that turn rather than retelling it or reading the session again.",
+  "sessions": [
+    {
+      "id": "5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34",
+      "name": "cc-hands, parser fix",
+      "state": "idle",
+      "mode": "manual mode"
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": "[hands] The Claude Code session cc-hands, parser fix (id 5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34) finished a turn. The last thing it said was:\n\nThe comma test still fails: the parser splits before it strips quotes.\n\nTell the user what it concretely did, in your own words, in one or two spoken sentences, naming the session. It asks the user nothing."
+    },
+    {
+      "role": "assistant",
+      "content": "The parser fix session changed the splitting, but the comma test still fails."
+    },
+    {
+      "role": "user",
+      "content": "More on that."
+    }
+  ],
+  "expect": {
+    "call": {
+      "name": "expand",
+      "args": {
+        "session": "5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34"
+      }
+    }
+  }
+}
