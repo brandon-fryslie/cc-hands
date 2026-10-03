@@ -170,9 +170,18 @@ async def test_what_is_handed_of_a_long_reply_is_bounded(tmp_path: Path) -> None
     assert "x" * REPLY_SHOWN + "... (cut short)" in told and "x" * (REPLY_SHOWN + 1) not in told
 
 
+def test_a_turn_told_again_in_one_fold_is_one_turn_that_went_on() -> None:
+    """A turn that went on past its Stop is told twice; folded, it is still one turn, and the next one is another."""
+    first, more, next_turn = News(PromptId("p1"), "Fixed it.", "", "", ()), News(PromptId("p1"), "Pushed it.", "", "", ()), News(PromptId("p2"), "Done.", "", "", ())
+    shown = told(SID, "cc-hands", (first, more, next_turn))
+    assert "finished 2 turns." in shown and "\n\nThen it went on: The last thing it said was:\n\nPushed it." in shown
+    assert "Then, in the turn after that: The last thing it said was:\n\nDone." in shown
+    assert "finished a turn." in told(SID, "cc-hands", (News(None, "a", "", "", ()),)) and "finished 2 turns." in told(SID, "cc-hands", (News(None, "a", "", "", ()), News(None, "b", "", "", ())))
+
+
 def test_turns_folded_into_one_telling_share_its_bound() -> None:
     """Folding five long turns hands the model no more of their replies than one long turn told alone."""
-    news = tuple(News(str(each) * (REPLY_SHOWN * 3), "", "", ()) for each in range(5))
+    news = tuple(News(None, str(each) * (REPLY_SHOWN * 3), "", "", ()) for each in range(5))
     shown = told(SID, "cc-hands", news)
     assert all(str(each) * (REPLY_SHOWN // 5) + "... (cut short)" in shown for each in range(5)) and "0" * (REPLY_SHOWN // 5 + 1) not in shown
 
@@ -212,22 +221,22 @@ async def test_a_turn_held_until_asked_for_whose_transcript_cannot_be_read_says_
     recounts = Recounts()
     assert await recount(tailing(tmp_path / "gone.jsonl"), SID, PromptId("p1"), None, lambda _: None, Delta(), "on request", recounts) is None
     assert recounts.of(SID) == Recount(PromptId("p1"), (), unread=True)
-    recounts.put(SID, PromptId("p1"), News("read after all", "", "", ()))
-    assert recounts.of(SID) == Recount(PromptId("p1"), (News("read after all", "", "", ()),))
+    recounts.put(SID, PromptId("p1"), News(None, "read after all", "", "", ()))
+    assert recounts.of(SID) == Recount(PromptId("p1"), (News(None, "read after all", "", "", ()),))
     recounts.unread(SID, PromptId("p1"))
-    assert recounts.of(SID) == Recount(PromptId("p1"), (News("read after all", "", "", ()),), unread=True)
+    assert recounts.of(SID) == Recount(PromptId("p1"), (News(None, "read after all", "", "", ()),), unread=True)
 
 
 def test_a_turn_told_again_is_held_whole_and_the_next_turn_replaces_it_even_with_nothing_to_tell() -> None:
     recounts = Recounts()
-    first, then, another = News("first", "", "", ()), News("then", "", "", ()), News("another", "", "", ())
+    first, then, another = News(None, "first", "", "", ()), News(None, "then", "", "", ()), News(None, "another", "", "", ())
     recounts.put(SID, PromptId("p1"), first)
     recounts.put(SID, PromptId("p1"), then)
     recounts.put(SID, PromptId("p1"), None)
     assert recounts.of(SID) == Recount(PromptId("p1"), (first, then))
     recounts.put(SID, PromptId("p2"), None)
     assert recounts.of(SID) == Recount(PromptId("p2"), ())
-    recounts.put(SID, None, News("unnamed", "", "", ()))
+    recounts.put(SID, None, News(None, "unnamed", "", "", ()))
     recounts.put(SID, None, another)
     assert recounts.of(SID) == Recount(None, (another,))
 

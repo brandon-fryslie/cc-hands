@@ -7,7 +7,7 @@ import pytest
 from hands.core.effects import Asking, DeadlineNear, Expired, ModeChanged, Narrate, Note, SessionGone, Speak
 from hands.core.narration import THE_TESTS, Segment
 from hands.core.pending import Briefing, Finished, News, Pending, Unread, coalesce
-from hands.core.session import Held, Permission, RequestId, SessionId
+from hands.core.session import Held, Permission, PromptId, RequestId, SessionId
 
 API, WEB = SessionId("api"), SessionId("web")
 BASH = Permission("Bash", {"command": "ls"})
@@ -15,7 +15,7 @@ EDIT = Permission("Edit", {"file_path": "a.py"})
 
 
 def news(reply: str) -> News:
-    return News(reply, "", "", (Segment(THE_TESTS, "one test run"),))
+    return News(PromptId(reply), reply, "", "", (Segment(THE_TESTS, "one test run"),))
 
 
 def finished(session: SessionId, *replies: str) -> Finished:
@@ -129,6 +129,6 @@ def test_coalesce(pending: Sequence[Pending], waiting: Mapping[SessionId, Held],
 
 
 def test_a_folded_telling_keeps_every_turn_s_parts() -> None:
-    first, second = News("one", "", "", (Segment(THE_TESTS, "one test run"),)), News("two", "It committed.", "Push it?", ())
+    first, second = News(None, "one", "", "", (Segment(THE_TESTS, "one test run"),)), News(None, "two", "It committed.", "Push it?", ())
     [folded] = coalesce((Finished(API, (first,)), Finished(API, (second,))), {})
     assert folded == Finished(API, (first, second))

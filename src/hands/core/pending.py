@@ -11,18 +11,27 @@ from typing import Literal
 
 from hands.core.effects import DeadlineNear, Expired, Narrate, Note, SessionGone, Speak
 from hands.core.narration import Segment
-from hands.core.session import Held, SessionId
+from hands.core.session import Held, PromptId, SessionId
 
 
 @dataclass(frozen=True)
 class News:
-    """One telling of a finished turn: the last thing the session said, what hands adds from its record, what it is
-    waiting on the user to answer, and the parts of the narration tree it was cut from, each naming its records."""
+    """One telling of a finished turn: which turn, the last thing the session said, what hands adds from its record, what
+    it is waiting on the user to answer, and the parts of the narration tree it was cut from, each naming its records.
 
+    A turn that went on past its Stop is told again, as a second telling of the same turn; a turn with no id is never
+    taken for another."""
+
+    turn: PromptId | None
     reply: str | None
     facts: str
     asked: str
     parts: tuple[Segment, ...]
+
+
+def went_on(before: News, after: News) -> bool:
+    """Whether `after` tells more of the turn `before` told, rather than the turn after it."""
+    return after.turn is not None and after.turn == before.turn
 
 
 @dataclass(frozen=True)

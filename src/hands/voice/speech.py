@@ -1,13 +1,14 @@
 """What sessions say to the user unasked: announcements spoken as written, moments the intermediary explains."""
 
 import json
+from itertools import pairwise
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
 
 from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, SessionGone, Speak
-from hands.core.pending import Briefing, Finished, News, Pending, Unread
+from hands.core.pending import Briefing, Finished, News, Pending, Unread, went_on
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
 from hands.core.session import AskedQuestion, Blocker, Permission, Plan, Question, SessionId
 from hands.sessions.audit import Record, Relayed
@@ -139,7 +140,8 @@ def told(session: SessionId, name: str, news: Sequence[News]) -> str:
     by the turn that followed.
     """
     # [LAW:single-enforcer] one bound for the whole telling, shared among its turns, however many were folded into it.
-    accounts = "Then, in the turn after that: ".join(_account(each, REPLY_SHOWN // len(news)) for each in news)
+    shown = REPLY_SHOWN // len(news)
+    accounts = _account(news[0], shown) + "".join(f"{_then(before, each)}{_account(each, shown)}" for before, each in pairwise(news))
     asked = news[-1].asked
     ending = (
         f"It is waiting on the user's answer to this, so end by asking it, with what it refers to, so they can answer without looking at the screen: {asked}"
@@ -158,8 +160,14 @@ def _account(news: News, shown: int) -> str:
     return f"{reply}{facts}"
 
 
+def _then(before: News, after: News) -> str:
+    return "Then it went on: " if went_on(before, after) else "Then, in the turn after that: "
+
+
 def _turns(news: Sequence[News]) -> str:
-    return "a turn" if len(news) == 1 else f"{len(news)} turns"
+    # A telling that tells more of the turn before it is not another turn.
+    count = len(news) - sum(went_on(before, after) for before, after in pairwise(news))
+    return "a turn" if count == 1 else f"{count} turns"
 
 
 def noted(fact: ModeChanged, names: Names) -> str:

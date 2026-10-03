@@ -414,7 +414,8 @@ off each session's held dialog, by request id, as the floor lets go; it folds on
 finished turns into one `Finished` where the first stood, whose headline covers them all
 ("finished 3 turns") and whose tellings keep their narration parts and so their record ids,
 so three `Stop`s that arrived while you were talking start with one sentence, not three, and
-a turn that could not be read stays between the turns it came between; and it orders the
+a turn that could not be read stays between the turns it came between, and a turn told again as it
+went on past its `Stop` is still one turn; and it orders the
 rest `known` (notes and the briefing, never spoken) before `blocking` (what a session asks)
 before `result` (finished turns) before `fyi` (a session gone), arrival order within each.
 A session's own story keeps the order it happened in: what it told before something sooner
