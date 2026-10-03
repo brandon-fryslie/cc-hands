@@ -46,6 +46,9 @@ DISPLAY_HOST = "127.0.0.1"
 DISPLAY_PORT = 47615
 DISPLAY_PATH = "/hands/display"
 DISPLAY_URL = f"http://{DISPLAY_HOST}:{DISPLAY_PORT}{DISPLAY_PATH}"
+# How long Claude Code waits on each displayed batch: it waits in the agent's path, so a daemon that is slow, down, or
+# hung costs lines of narration and never the agent's speed (measured on 2.1.280).
+DISPLAY_TIMEOUT_SECONDS = 2
 
 SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd")
 
@@ -69,8 +72,7 @@ def plugin_hooks() -> dict[str, object]:
     # Exec form (`args` set): Claude Code spawns the launcher itself, with no shell between, and the launcher execs
     # Python, so the shim is the process Claude Code spawned and its parent is the claude process whose pid it records.
     command = {"type": "command", "command": f"${{CLAUDE_PLUGIN_ROOT}}/{LAUNCHER}", "args": ["-m", SHIM_MODULE]}
-    # A daemon that is slow, down, or hung costs lines of narration and never the agent's speed (measured on 2.1.280).
-    display = {"type": "http", "url": DISPLAY_URL, "timeout": int(POST_TIMEOUT_SECONDS)}
+    display = {"type": "http", "url": DISPLAY_URL, "timeout": DISPLAY_TIMEOUT_SECONDS}
     return {"hooks": {**{event: [{"hooks": [{**command, **_declared(event)}]}] for event in SUBSCRIBED}, "MessageDisplay": [{"hooks": [display]}]}}
 
 

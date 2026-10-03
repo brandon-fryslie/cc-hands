@@ -82,8 +82,8 @@ def test_an_entry_is_its_type_and_fields_nested_values_alike() -> None:
 
 
 def test_a_value_the_log_cannot_write_is_refused_rather_than_guessed_at() -> None:
-    with pytest.raises(TypeError, match="cannot encode a set"):
-        encoded(Called("t", {"odd": {1, 2}}, {}))
+    with pytest.raises(TypeError, match="cannot encode a bytes"):
+        encoded(Called("t", {"odd": b"\x00"}, {}))
 
 
 def test_the_log_is_the_user_s_alone_to_read_whether_it_is_new_or_was_there(tmp_path: Path) -> None:

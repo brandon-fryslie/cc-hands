@@ -35,8 +35,11 @@ RUNNING = Work("run {count} commands", "run a command")
 DELEGATING = Work("start {count} subagents", "start a subagent")
 PLANNING = Work("update its plan", "update its plan")
 USING = Work("use {count} tools", "use a tool")
-# Text Claude wrote, said by a summary of it; one that could not be summarised is said as written, and never read out.
-EXPLAINING = Work("explain {count} things", "write something")
+# Text Claude wrote, said by a summary of it, which every burst of it has: alone, it is never said as this work's.
+EXPLAINING = Work("explain {count} things", "explain something")
+# Text Claude wrote that could not be summarised: said to have been written, since what it says is not known, and never
+# read out.
+WRITING = Work("write {count} things", "write something")
 
 
 @dataclass(frozen=True)

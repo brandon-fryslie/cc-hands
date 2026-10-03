@@ -8,8 +8,9 @@ import pytest
 
 from hands.core.events import Displayed, Event
 from hands.core.session import PromptId, SessionId
-from hands.sessions.hookconfig import DISPLAY_URL, plugin_hooks
+from hands.sessions.hookconfig import DISPLAY_TIMEOUT_SECONDS, DISPLAY_URL, plugin_hooks
 from hands.sessions.hooks import parse_display
+from hands.sessions.audit import DisplayListening, Entry
 from hands.sessions.payload import Rejected
 from hands.sessions.server import serve_display
 
@@ -43,7 +44,7 @@ def test_the_display_route_takes_no_other_hook() -> None:
 def test_the_plugin_posts_message_display_to_the_route_and_runs_no_process_for_it() -> None:
     hooks = plugin_hooks()["hooks"]
     assert isinstance(hooks, dict)
-    assert hooks["MessageDisplay"] == [{"hooks": [{"type": "http", "url": DISPLAY_URL, "timeout": 2}]}]
+    assert hooks["MessageDisplay"] == [{"hooks": [{"type": "http", "url": DISPLAY_URL, "timeout": DISPLAY_TIMEOUT_SECONDS}]}]
 
 
 class Applying:
@@ -60,7 +61,8 @@ class Applying:
 async def test_the_route_applies_what_was_displayed_and_refuses_anything_else() -> None:
     sessions = Applying()
     port = _free_port()
-    runner = await serve_display(sessions, "127.0.0.1", port, "/hands/display")  # pyright: ignore[reportArgumentType]  (only now() and apply() are asked)
+    recorded: list[Entry] = []
+    runner = await serve_display(sessions, "127.0.0.1", port, "/hands/display", recorded.append)  # pyright: ignore[reportArgumentType]  (only now() and apply() are asked)
     try:
         async with aiohttp.ClientSession() as client:
             async with client.post(f"http://127.0.0.1:{port}/hands/display", json=DISPLAYED) as taken:
@@ -72,6 +74,8 @@ async def test_the_route_applies_what_was_displayed_and_refuses_anything_else() 
     finally:
         await runner.cleanup()
     assert sessions.applied == [parse_display(json.dumps(DISPLAYED).encode(), at=7.0)]
+    # [LAW:nothing-unseen] where the run took what Claude Code displays.
+    assert recorded == [DisplayListening(url=f"http://127.0.0.1:{port}/hands/display")]
 
 
 async def test_a_daemon_that_cannot_take_the_port_does_not_start() -> None:
@@ -80,7 +84,7 @@ async def test_a_daemon_that_cannot_take_the_port_does_not_start() -> None:
         held.listen()
         port = held.getsockname()[1]
         with pytest.raises(RuntimeError, match=f"127.0.0.1:{port}"):
-            await serve_display(Applying(), "127.0.0.1", port, "/hands/display")  # pyright: ignore[reportArgumentType]
+            await serve_display(Applying(), "127.0.0.1", port, "/hands/display", lambda _: None)  # pyright: ignore[reportArgumentType]
 
 
 def _free_port() -> int:

@@ -606,7 +606,7 @@ def _burst(session: SessionId, turn: Turn, at: Instant) -> tuple[Turn, list[Effe
     transcript is read moves when a burst is heard, never what it holds."""
     match turn:
         case Opened(gathering=Gathering() as gathering) if at >= gathering.due():
-            return replace(turn, gathering=None), [Progress(session, tuple(sorted(ids(turn))), gathering.doings, gathering.written)]
+            return replace(turn, gathering=None), [Progress(session, ids(turn), gathering.doings, gathering.written)]
         case _:
             return turn, []
 

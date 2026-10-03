@@ -718,6 +718,9 @@ def _json(value: object) -> object:
             return {str(key): _json(item) for key, item in cast(Mapping[object, object], value).items()}
         case list() | tuple():
             return [_json(item) for item in cast(list[object] | tuple[object, ...], value)]
+        case set() | frozenset():
+            # Sorted, so a set is written the same way on every line it is on.
+            return sorted((_json(item) for item in cast(set[object] | frozenset[object], value)), key=repr)
         case _ if is_dataclass(value) and not isinstance(value, type):
             return encoded(value)
         case _:

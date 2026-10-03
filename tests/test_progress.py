@@ -11,7 +11,7 @@ from hands.core.attention import Overlay, Route, progress_route
 from hands.core.effects import Progress
 from hands.core.events import Displayed, Progressed, StatusReported, Tick
 from hands.core.pending import Finished, News, Pending, Unread, Working, coalesce
-from hands.core.progress import EDITING, EXPLAINING, LONGEST, RUNNING, SETTLE, Doing, Gathering, doing, explained, said
+from hands.core.progress import EDITING, WRITING, LONGEST, RUNNING, SETTLE, Doing, Gathering, doing, explained, said
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Membership, Opened, PromptId, Registry, Running, Session, SessionId, Told, Turn, Untold
 from hands.core import status
@@ -164,7 +164,7 @@ def test_calls_are_gathered_on_the_turn_and_told_once_they_settle() -> None:
     waiting, early = reduce(gathered, Tick(11.0 + SETTLE - 0.5))
     assert early == [] and waiting == gathered
     told, effects = reduce(gathered, Tick(11.0 + SETTLE))
-    assert effects == [Progress(SID, (TURN,), (edit("a.py"), TESTS), "")]
+    assert effects == [Progress(SID, frozenset({TURN}), (edit("a.py"), TESTS), "")]
     # Told once: what the session last set out to do is kept for anyone who asks.
     assert turn_of(told) == Opened(TURN, latest=TESTS)
     assert reduce(told, Tick(30.0)) == (told, [])
@@ -273,13 +273,13 @@ async def test_the_relay_hands_the_focus_on_to_be_played_leaves_any_other_to_the
 
     sessions = Heard()
     for session in (SID, OTHER):
-        sessions.waiting.put_nowait(Progress(session, (TURN,), (TESTS,), ""))
+        sessions.waiting.put_nowait(Progress(session, frozenset({TURN}), (TESTS,), ""))
     relaying = asyncio.create_task(relay(sessions, queue_frame, recorded.append, attending, played.append))  # pyright: ignore[reportArgumentType]  (only heard() is asked)
     while len([entry for entry in recorded if isinstance(entry, Routed)]) < 2:
         await asyncio.sleep(0.01)
     relaying.cancel()
     assert queued == []
-    assert played == [Progress(SID, (TURN,), (TESTS,), "")]
+    assert played == [Progress(SID, frozenset({TURN}), (TESTS,), "")]
     assert [entry for entry in recorded if not isinstance(entry, Relayed)] == [Routed(SID, True, "normal", "play"), Routed(OTHER, False, "normal", "note")]
 
 
@@ -301,9 +301,10 @@ def test_calls_read_are_a_line_the_audit_log_can_write() -> None:
 
 
 def test_progress_relayed_and_told_is_a_line_the_audit_log_can_write() -> None:
-    # Found live: progress carried its turn as a set, and every burst's Relayed and Performed lines went unrecorded.
-    heard = encoded(Relayed(Progress(SID, (TURN,), (TESTS,), "a line\n")))["heard"]
-    assert isinstance(heard, dict) and heard["turn"] == ["p1"] and heard["written"] == "a line\n"
+    # Found live: the log could not write the set progress carries its turn as, and every burst's Relayed and Performed
+    # lines went unrecorded.
+    heard = encoded(Relayed(Progress(SID, frozenset({PromptId("p2"), TURN}), (TESTS,), "a line\n")))["heard"]
+    assert isinstance(heard, dict) and heard["turn"] == ["p1", "p2"] and heard["written"] == "a line\n"
     assert encoded(ProgressTold(SID, 7, "explain how DNS works", None, current=True))["explained"] == "explain how DNS works"
 
 
@@ -321,7 +322,7 @@ def test_text_is_gathered_with_the_calls_and_told_with_them_once_both_settle() -
     # A line displayed holds the burst open as a call does: a long explanation is told once it has settled or waited longest.
     assert reduce(registry, Tick(11.0 + SETTLE))[1] == []
     told, effects = reduce(registry, Tick(12.0 + SETTLE))
-    assert effects == [Progress(SID, (TURN,), (TESTS,), "First, how DNS works.\n1. The OS asks its resolver.\n2. The resolver asks the root.\n")]
+    assert effects == [Progress(SID, frozenset({TURN}), (TESTS,), "First, how DNS works.\n1. The OS asks its resolver.\n2. The resolver asks the root.\n")]
     # Text is not a call: what the session last set out to do is still the call it made.
     assert turn_of(told) == Opened(TURN, latest=TESTS)
 
@@ -336,7 +337,9 @@ def test_an_explanation_still_being_written_is_told_at_its_longest_wait() -> Non
 
 def test_text_is_said_by_its_summary_ahead_of_the_calls() -> None:
     assert said((explained("Explain how DNS resolution works."), TESTS)) == "explain how DNS resolution works, then run the test suite"
-    assert said((Doing(EXPLAINING, None), TESTS)) == "write something, then run the test suite"
+    assert said((Doing(WRITING, None), TESTS)) == "write something, then run the test suite"
+    # Two bursts whose text could not be summarised, folded before they are said: what either says is not known.
+    assert said((Doing(WRITING, None), Doing(WRITING, None))) == "write two things"
 
 
 async def played(progress: Progress, turn: Callable[[], Turn], explain: Callable[[str], Awaitable[str]]) -> tuple[list[Pending], list[ProgressTold]]:
@@ -365,7 +368,7 @@ async def unasked(text: str) -> str:
 
 
 async def test_a_burst_of_calls_alone_is_played_as_written() -> None:
-    queued, told = await played(Progress(SID, (TURN,), (TESTS,), ""), lambda: Opened(TURN), unasked)
+    queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), ""), lambda: Opened(TURN), unasked)
     assert queued == [Working(SID, IN_TURN, (TESTS,))]
     assert told == [ProgressTold(SID, 0, None, None, current=True)]
 
@@ -380,7 +383,7 @@ async def test_the_focus_is_heard_explaining_by_a_summary_of_what_it_wrote() -> 
         asked.append(text)
         return "Explain how DNS resolution works."
 
-    queued, told = await played(Progress(SID, (TURN,), (TESTS,), WRITTEN), lambda: Opened(TURN), explain)
+    queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), WRITTEN), lambda: Opened(TURN), explain)
     assert asked == [WRITTEN.strip()]
     assert queued == [Working(SID, IN_TURN, (explained("explain how DNS resolution works"), TESTS))]
     assert told == [ProgressTold(SID, len(WRITTEN), "explain how DNS resolution works", None, current=True)]
@@ -392,8 +395,8 @@ async def test_text_that_cannot_be_summarised_is_said_to_have_been_written_and_n
     async def explain(_text: str) -> str:
         raise SummaryFailed("nothing came back")
 
-    queued, told = await played(Progress(SID, (TURN,), (), WRITTEN), lambda: Opened(TURN), explain)
-    assert queued == [Working(SID, IN_TURN, (Doing(EXPLAINING, None),))]
+    queued, told = await played(Progress(SID, frozenset({TURN}), (), WRITTEN), lambda: Opened(TURN), explain)
+    assert queued == [Working(SID, IN_TURN, (Doing(WRITING, None),))]
     assert told == [ProgressTold(SID, len(WRITTEN), None, "SummaryFailed: nothing came back", current=True)]
 
 
@@ -405,6 +408,39 @@ async def test_progress_whose_turn_ended_while_it_was_summarised_is_not_played()
         turn[0] = Untold(TURN, frozenset(), Stamp(2000))
         return "explain how DNS resolution works"
 
-    queued, told = await played(Progress(SID, (TURN,), (TESTS,), WRITTEN), lambda: turn[0], explain)
+    queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), WRITTEN), lambda: turn[0], explain)
     assert queued == []
     assert told == [ProgressTold(SID, len(WRITTEN), "explain how DNS resolution works", None, current=False)]
+
+
+async def test_a_burst_is_not_kept_waiting_on_the_summary_of_the_one_ahead_of_it() -> None:
+    queued: list[Frame] = []
+    asked: list[str] = []
+    second_asked = asyncio.Event()
+
+    async def explain(text: str) -> str:
+        asked.append(text)
+        if text == "first":
+            # The first summary is still out when the second burst is routed; it comes back only once that one began.
+            await second_asked.wait()
+        else:
+            second_asked.set()
+        return f"explain the {text} thing"
+
+    async def queue_frame(frame: Frame) -> None:
+        queued.append(frame)
+
+    playing = Playing()
+    player = asyncio.create_task(keep_playing(playing, lambda _: Session(MEMBER, Running(Busy(), Stamp(1000), None), mode=None, turn=Opened(TURN)), queue_frame, lambda _: None, explain))
+    playing.put_nowait(Progress(SID, frozenset({TURN}), (), "first"))
+    playing.put_nowait(Progress(SID, frozenset({TURN}), (), "second"))
+    await asyncio.wait_for(second_asked.wait(), timeout=1.0)
+    while len(queued) < 2:
+        await asyncio.sleep(0.01)
+    player.cancel()
+    assert asked == ["first", "second"]
+    # Played in the order they settled, whichever summary came back first.
+    assert [frame.pending for frame in queued if isinstance(frame, Unprompted)] == [
+        Working(SID, IN_TURN, (explained("explain the first thing"),)),
+        Working(SID, IN_TURN, (explained("explain the second thing"),)),
+    ]

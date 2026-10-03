@@ -9,7 +9,7 @@ from pipecat.frames.frames import Frame
 
 from hands.core.effects import Progress
 from hands.core.pending import Working
-from hands.core.progress import EXPLAINING, Doing, explained
+from hands.core.progress import WRITING, Doing, explained
 from hands.core.session import Opened, PromptId, Session, SessionId, ids
 from hands.sessions.audit import ProgressTold, Record
 from hands.voice.speech import Unprompted
@@ -23,21 +23,31 @@ async def keep_playing(
     playing: Playing, live_session: Callable[[SessionId], Session | None], queue_frame: Callable[[Frame], Awaitable[None]], record: Record, explain: Summariser
 ) -> None:
     """Hand each progress routed to be played to the floor, in the order it settled, once its text is summarised, until
-    cancelled.
+    cancelled. Each summary is begun as its progress is routed, so a burst waits on its own summary and never on the
+    one ahead of it as well: a turn that keeps writing settles a burst faster than one summary may take.
 
     [LAW:no-ambient-temporal-coupling] a summary takes seconds, and the turn may end in them; the registry says whether
     it did as the summary is ready, and progress of a turn that has ended is not played, since that turn's result is
     told instead.
     """
-    while True:
-        progress = await playing.get()
-        explaining, failed = await _explained(progress, explain)
-        current = _running(live_session(progress.session), frozenset(progress.turn))
-        # [LAW:nothing-unseen] what the text came to, and whether it was played.
-        record(ProgressTold(progress.session, len(progress.written), None if explaining is None else explaining.alone, failed, current))
-        if current:
-            said = progress.doings if explaining is None else (explaining, *progress.doings)
-            await queue_frame(Unprompted(Working(progress.session, frozenset(progress.turn), said)))
+    summarising: asyncio.Queue[tuple[Progress, asyncio.Task[tuple[Doing | None, str | None]]]] = asyncio.Queue()
+
+    async def begin(group: asyncio.TaskGroup) -> None:
+        while True:
+            progress = await playing.get()
+            summarising.put_nowait((progress, group.create_task(_explained(progress, explain))))
+
+    async with asyncio.TaskGroup() as group:
+        group.create_task(begin(group))
+        while True:
+            progress, summary = await summarising.get()
+            explaining, failed = await summary
+            current = _running(live_session(progress.session), progress.turn)
+            # [LAW:nothing-unseen] what the text came to, and whether it was played.
+            record(ProgressTold(progress.session, len(progress.written), None if explaining is None else explaining.alone, failed, current))
+            if current:
+                said = progress.doings if explaining is None else (explaining, *progress.doings)
+                await queue_frame(Unprompted(Working(progress.session, progress.turn, said)))
 
 
 async def _explained(progress: Progress, explain: Summariser) -> tuple[Doing | None, str | None]:
@@ -53,7 +63,7 @@ async def _explained(progress: Progress, explain: Summariser) -> tuple[Doing | N
             except SUMMARY_FAILURES as error:
                 # [LAW:no-silent-failure] the burst is still said, its text as written and never as what it says.
                 logger.error(f"the text session {progress.session} wrote could not be summarised, so it is said to have been written: {type(error).__name__}: {error}")
-                return Doing(EXPLAINING, None), f"{type(error).__name__}: {error}"
+                return Doing(WRITING, None), f"{type(error).__name__}: {error}"
 
 
 def _running(session: Session | None, turn: frozenset[PromptId]) -> bool:
