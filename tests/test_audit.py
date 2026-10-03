@@ -15,6 +15,7 @@ from hands.core.effects import Holding, Reply, Unmatched, Withdraw
 from hands.core.events import Abandoned, Closed, Joined, Prompted, Read, StatusReported, Stopped, Tick
 from hands.core.session import Membership, PromptId, RequestId, SessionId, Told
 from hands.daemon import cli
+from hands.sessions import audit
 from hands.sessions.audit import (
     Applied,
     AuditLog,
@@ -33,6 +34,7 @@ from hands.sessions.audit import (
     encoded,
     failures_to,
     follow,
+    retired,
     tail,
 )
 from hands.sessions.home import Home
@@ -177,6 +179,87 @@ def test_a_log_moved_aside_is_followed_from_the_first_line_of_the_new_one_even_w
     # Longer than the old log, and the old offset falls inside a two-byte character.
     path.write_text("\u00e9t\u00e9\nsecond\n")
     assert [next(followed), next(followed)] == ["\u00e9t\u00e9", "second"]
+
+
+def test_the_log_and_the_one_retired_before_it_never_hold_more_than_twice_the_bound(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, clock=lambda: AT, limit=1000)
+    for number in range(200):
+        log.record(Transcribed(f"line {number}"))
+        assert path.stat().st_size <= 1000
+    assert retired(path).stat().st_size <= 1000
+    assert retired(path).stat().st_mode & 0o777 == 0o600
+    # The new log opens with where its predecessor went, at how many bytes.
+    first, second = lines(path)[:2]
+    assert first["type"] == "Retired" and first["path"] == str(retired(path)) and 900 < first["size"] <= 1000
+    assert second["type"] == "Transcribed"
+    assert lines(path)[-1]["text"] == "line 199"
+
+
+def test_a_reader_following_the_log_across_its_retirement_loses_no_line(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, clock=lambda: AT, limit=1000)
+    log.record(Transcribed("before"))
+    _, position = tail(path, 1)
+    followed = follow(path, position, lambda: None)
+    # Enough between two looks to retire the log once, with lines left unread in the one retired.
+    for number in range(15):
+        log.record(Transcribed(f"line {number}"))
+    assert retired(path).exists()
+    read = [json.loads(next(followed)) for _ in range(16)]
+    assert [line["text"] for line in read if line["type"] == "Transcribed"] == [f"line {number}" for number in range(15)]
+    assert [line["type"] for line in read].count("Retired") == 1
+
+
+def test_the_tail_reaches_into_the_retired_log_when_the_new_one_is_short(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    retired(path).write_text("one\ntwo\n")
+    path.write_text("three\n")
+    assert tail(path, 2)[0] == ["two", "three"]
+
+
+def moved_aside_once_read(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """The log is retired the moment after the reader first reads it: between its two looks at the two names."""
+    read = audit._read  # pyright: ignore[reportPrivateUsage]
+
+    def then_moved(at: Path, since: audit.Position) -> tuple[list[str], audit.Position]:
+        found = read(at, since)
+        if at == path and path.exists() and not retired(path).exists():
+            path.rename(retired(path))
+        return found
+
+    monkeypatch.setattr(audit, "_read", then_moved)
+
+
+def test_a_log_retired_while_it_is_followed_gives_each_line_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "audit.jsonl"
+    path.write_text("old\n")
+    _, position = tail(path, 1)
+    with path.open("a") as log:
+        log.write("new\n")
+    moved_aside_once_read(monkeypatch, path)
+    followed = follow(path, position, lambda: None)
+    assert next(followed) == "new"
+    path.write_text("after\n")
+    assert next(followed) == "after"
+
+
+def test_a_log_retired_while_its_tail_is_read_is_told_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "audit.jsonl"
+    path.write_text("one\n")
+    moved_aside_once_read(monkeypatch, path)
+    assert tail(path, 5)[0] == ["one"]
+
+
+def test_a_line_that_retires_the_log_is_stamped_with_the_retired_line_in_front_of_it(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    ticks = iter(range(1000))
+    log = AuditLog(path, clock=lambda: AT.replace(second=next(ticks) % 60), limit=200)
+    for number in range(5):
+        log.record(Transcribed(f"line {number}"))
+    stamps = [line["at"] for line in lines(retired(path)) + lines(path)]
+    assert stamps == sorted(stamps)
+    assert [line["type"] for line in lines(path)][:2] == ["Retired", "Transcribed"]
 
 
 def test_a_line_the_disk_will_not_take_is_lost_out_loud_and_the_daemon_carries_on(tmp_path: Path) -> None:

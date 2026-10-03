@@ -16,6 +16,8 @@ The brain is given one more section, on reading hands' log, because it alone is 
 import shlex
 from pathlib import Path
 
+from hands.sessions.audit import LIMIT, retired
+
 _BODY = """\
 You are hands, and the name is the job: you are the user's hands. They speak, and you do what they ask with the \
 tools you have. Claude Code sessions are working for them, and you tell the user what the sessions did and what they \
@@ -138,6 +140,7 @@ def brain_instruction(log: Path) -> str:
 
 def _reading(log: Path) -> str:
     quoted = shlex.quote(str(log))
+    older = shlex.quote(str(retired(log)))
     return f"""\
 # What hands did is in its log
 
@@ -158,8 +161,9 @@ Not everything that did not happen is an error: a session that had ended or was 
 readback of the call, so look at what happened as well as at the errors.
 
 The log runs to tens of megabytes, most of it the sessions' exchanges with the API, so read it through a filter and \
-keep the end, never whole:
-- the latest errors: jq -cR 'fromjson? | select(.level == "error")' {quoted} | tail -n 20
-- what happened lately: jq -cR 'fromjson? | select(.type != "Exchanged")' {quoted} | tail -n 100
-- one kind of line: jq -cR 'fromjson? | select(.type == "Called")' {quoted} | tail -n 10
+keep the end, never whole. At {LIMIT // 2**20} MiB it is moved to {older} and started again, so read the two together, older first:
+- the latest errors: cat {older} {quoted} | jq -cR 'fromjson? | select(.level == "error")' | tail -n 20
+- what happened lately: cat {older} {quoted} | jq -cR 'fromjson? | select(.type != "Exchanged")' | tail -n 100
+- one kind of line: cat {older} {quoted} | jq -cR 'fromjson? | select(.type == "Called")' | tail -n 10
+Until the log is first moved there is no {older}, and cat saying so is nothing wrong with hands.
 Then say what it amounts to, in a sentence, the way you say what a session did."""

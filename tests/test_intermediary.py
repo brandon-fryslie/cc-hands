@@ -19,7 +19,7 @@ import pytest
 
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, MainTurn, Unreached
-from hands.sessions.audit import AuditLog, BacklogUnread, Called, Transcribed
+from hands.sessions.audit import AuditLog, BacklogUnread, Called, Transcribed, retired
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.briefing import brief, briefing, tail
@@ -123,7 +123,7 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     log.record(Called("list_sessions", {}, {"sessions": []}))
     log.record(BacklogUnread(project="/code/p", error="lit exited 3", seconds=0.1))
     shown = [line[2:].partition(": ") for line in brain_instruction(path).splitlines() if line.startswith("- ")]
-    commands = {label: command for label, _, command in shown if command.startswith("jq ")}
+    commands = {label: command for label, _, command in shown if " | jq " in command}
     assert len(commands) == 3
 
     def found(label: str) -> list[str]:
@@ -133,6 +133,11 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     assert found("the latest errors") == ["Exchanged", "BacklogUnread"]
     assert found("what happened lately") == ["Transcribed", "Called", "BacklogUnread"]
     assert found("one kind of line") == ["Called"]
+    # Once the log has been retired, what it held is found too, before what came after.
+    path.rename(retired(path))
+    log.record(Called("list_sessions", {}, {"sessions": []}))
+    assert found("one kind of line") == ["Called", "Called"]
+    assert found("the latest errors") == ["Exchanged", "BacklogUnread"]
 
 
 def test_every_conversation_case_loads_with_exactly_one_expectation_and_names_only_tools_the_daemon_gives() -> None:

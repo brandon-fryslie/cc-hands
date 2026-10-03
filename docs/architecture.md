@@ -1570,8 +1570,10 @@ thing that failed `[LAW:no-silent-failure]`:
    later process took, after a crash or a reboot, reads as down rather than as not
    responding.
 3. **Log.** Every effect and every failure is one line in `~/.hands/audit.jsonl`,
-   written by the daemon alone (`hands.sessions.audit`). `hands log` prints the
-   newest lines and follows the file. Each line is a value encoded one way: its type
+   written by the daemon alone (`hands.sessions.audit`). A line that would take it past
+   32 MiB first moves it to `audit.jsonl.1`, replacing the one there, and the new log
+   opens with a `Retired` line; `hands log` prints the newest lines and follows the
+   file across that move without losing one. Each line is a value encoded one way: its type
    under `"type"`, its fields beside it, nested events and effects alike, and the
    wall-clock time under `"at"`. `Sessions` is the single writer for the session
    side: an `Applied` event (only one that changed the registry or called for an
