@@ -24,6 +24,9 @@ class Turning:
     calls: dict[str, Call] = field(default_factory=dict[str, Call])
     places: dict[str, int] = field(default_factory=dict[str, int])
     mid_tool: bool = False
+    # How many steps from the start of the turn were let go of: told, and kept no longer. A slot's place counts from
+    # there, so the steps held are always the turn's last ones.
+    forgotten: int = 0
 
     def consume(self, record: Payload) -> Opening | Interruption | None:
         """Read one record in, and say where it opened a turn or cut one off rather than continuing one.
@@ -84,7 +87,25 @@ class Turning:
         self.slots = []
         self.calls = {}
         self.places = {}
+        self.forgotten = 0
+
+    def forget(self, through: int) -> int:
+        """Let go of every step before `through`, counted from the start of the turn: nothing will be shown of them again.
+
+        A call let go of before its result came is let go of with it, and its result, when it lands, pairs with nothing.
+        Returns how many such calls there were.
+        """
+        count = through - self.forgotten
+        if not 0 <= count <= len(self.slots):
+            # [LAW:no-silent-failure] a mark behind what was let go of, or past what was read, is a telling of another turn.
+            raise ValueError(f"cannot let go of the steps through {through}: {self.forgotten} were let go of and {len(self.slots)} are held")
+        waiting = sum(isinstance(slot, str) for slot in self.slots[:count])
+        self.slots = self.slots[count:]
+        self.places = {id: place - count for id, place in self.places.items() if place >= count}
+        self.calls = {id: call for id, call in self.calls.items() if id in self.places}
+        self.forgotten = through
+        return waiting
 
     def steps(self) -> list[Step]:
-        """Every step read so far. A call whose result has not been written is told as having none."""
+        """Every step read and not let go of. A call whose result has not been written is told as having none."""
         return [slot if not isinstance(slot, str) else recognise(self.calls[slot]) for slot in self.slots]
