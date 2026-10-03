@@ -20,15 +20,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from loguru import logger
 
 from hands.core.delta import Branched, Changed, Commit, Delta, PullRequested, Pushed
 from hands.core.session import SessionId
-from hands.sessions.audit import DeltaRead, DeltaReadOutcome, Forge, Record
+from hands.sessions.audit import Record
 from hands.sessions.child import run
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
+from hands.sessions.wide import annotate, count, unit
 
 # What a mark may spend, all its git commands together. It is taken while a prompt's hook waits on the daemon,
 # and the shim gives up after POST_TIMEOUT_SECONDS and prints that it cannot reach the daemon — so a mark that
@@ -97,6 +98,16 @@ class Mark:
 Marking = asyncio.Future[Mark | None]
 
 
+# Whether the forge was asked about the pull requests of the branch a turn pushed, and what came of it: not asked
+# where the turn pushed nothing or pushed its remote's default branch, which no pull request is opened from; absent
+# where there is no gh to ask; unanswered where it was too slow, and refused where gh would not list or answered in
+# a shape hands does not read.
+Forge = Literal["unasked", "absent", "answered", "unanswered", "refused"]
+
+# The counts a reading's event always carries, 0 where it found none or never got as far as looking.
+_READ_COUNTS = ("commits", "files")
+
+
 @dataclass(frozen=True)
 class Asked:
     """Whether the forge was asked about a pushed branch's pull requests, and how long it took to answer or not."""
@@ -161,14 +172,15 @@ class Deltas:
         marking: Marking = asyncio.get_running_loop().create_future()
         self._marks[session] = marking
         mark = None
-        try:
-            mark = await self._mark(cwd, time.monotonic() + self._marking)
-        finally:
-            # [LAW:no-silent-failure] answered however this ends, a hook that gave up included, so no reading waits on it for ever.
-            marking.set_result(mark)
-        if mark is None:
-            # Not a repository, or one that cannot be read: the turn is told by its steps, which is most of it.
-            logger.debug(f"nothing to compare a turn of session {session} against in {cwd}")
+        with unit("delta.mark", self._record):
+            annotate(session=session)
+            try:
+                mark = await self._mark(cwd, time.monotonic() + self._marking)
+            finally:
+                # [LAW:no-silent-failure] answered however this ends, a hook that gave up included, so no reading waits on it for ever.
+                marking.set_result(mark)
+            # Not marked: not a repository, or one that cannot be read, so the turn is told by its steps, which is most of it.
+            annotate(marked=mark is not None)
 
     async def compare(self, session: SessionId, again: bool) -> None:
         """Take the turn's place in the order and start reading what it changed. Waits for none of it.
@@ -195,16 +207,17 @@ class Deltas:
             # they queue unbounded — so evicting the front would hand every telling after it the delta of
             # the turn after its own, which is the one thing `taken` exists to prevent. Dropped from the
             # back, every turn that has a delta has its own [LAW:no-ambient-temporal-coupling].
-            logger.warning(f"{HELD} deltas of session {session} are already waiting to be told, so this turn is told without one")
             end.set_result(None)
-            self._record(DeltaRead(session, "dropped", 0, 0, (), UNASKED.forge, UNASKED.seconds, 0.0))
+            with unit("delta.read", self._record, _READ_COUNTS):
+                annotate(session=session, reading="dropped")
             return
         pending: asyncio.Future[Delta] = asyncio.get_running_loop().create_future()
         held.append(pending)
         if start is None:
             pending.set_result(Delta())
             end.set_result(None)
-            self._record(DeltaRead(session, "unmarked", 0, 0, (), UNASKED.forge, UNASKED.seconds, 0.0))
+            with unit("delta.read", self._record, _READ_COUNTS):
+                annotate(session=session, reading="unmarked")
             return
         task = asyncio.create_task(self._read(session, pending, start, end), name=f"what a turn of session {session} changed")
         # Held, because the loop keeps only a weak reference and would collect a task nobody is awaiting.
@@ -234,27 +247,24 @@ class Deltas:
     async def _read(self, session: SessionId, pending: asyncio.Future[Delta], start: Marking, end: Marking) -> None:
         """[LAW:no-silent-failure] whatever happens here, whoever is waiting is answered rather than left."""
         began = time.monotonic()
-        delta, reached, asked = Delta(), None, UNASKED
-        outcome: DeltaReadOutcome = "unmarked"
+        delta, reached = Delta(), None
         try:
-            mark = await start
-            if mark is not None:
-                delta, reached, asked = await self._between(mark, time.monotonic() + self._reading, began + self._patience - SPARE)
-                outcome = "read"
-        except asyncio.CancelledError:
-            outcome = "cancelled"
-            raise
-        except Exception as error:
-            outcome = "failed"
-            logger.error(f"what a turn changed could not be read: {type(error).__name__}: {error}")
+            # [LAW:nothing-unseen] one event for every reading however it ended, so a turn told without its delta can be
+            # told apart from one that changed nothing, and a slow forge from a slow repository.
+            with unit("delta.read", self._record, _READ_COUNTS):
+                annotate(session=session)
+                mark = await start
+                annotate(reading="unmarked" if mark is None else "read")
+                if mark is not None:
+                    delta, reached, asked = await self._between(mark, time.monotonic() + self._reading, began + self._patience - SPARE)
+                    annotate(changes=delta.changes, forge=asked.forge, forge_seconds=asked.seconds)
+                    count(commits=len(delta.commits), files=len(delta.files))
+        except Exception:
+            # A reading that raised is a failed event, which says what it raised; the turn is told without its delta.
+            pass
         finally:
             # Answered however this ends, a cancelled reading included, so the part going on never waits on it for ever.
             end.set_result(reached)
-            # [LAW:nothing-unseen] one line for every reading however it ended, so a turn told without its delta can be
-            # told apart from one that changed nothing, and a slow forge from a slow repository.
-            self._record(
-                DeltaRead(session, outcome, len(delta.commits), len(delta.files), delta.changes, asked.forge, asked.seconds, round(time.monotonic() - began, 3))
-            )
         if not pending.done():
             pending.set_result(delta)
 
@@ -457,6 +467,7 @@ class Deltas:
         with tempfile.TemporaryDirectory(prefix="hands-index-") as scratch:
             index = Path(scratch) / "index"
             known = await self._git(root, "rev-parse", "--git-path", "index", deadline=deadline)
+            started = "empty"
             if known is not None:
                 try:
                     # With its mtime: git re-reads a file whose stat matches its entry only when the file is as new
@@ -467,9 +478,12 @@ class Deltas:
                         index.write_bytes(real.read())
                         written = os.fstat(real.fileno()).st_mtime_ns
                     os.utime(index, ns=(written, written))
+                    started = "copied"
                 except OSError as error:
                     # Missing before a first commit, or being rewritten as this read it: start from nothing.
-                    logger.debug(f"the index of {root} could not be copied, so the snapshot reads every file: {error}")
+                    annotate(index_error=str(error))
+            # [LAW:nothing-unseen] which index the snapshot started from: the repository's own, or none, which reads every file.
+            annotate(index=started)
             env = {"GIT_INDEX_FILE": str(index)}
             if await self._git(root, "add", "-A", env=env, deadline=deadline) is None:
                 return None

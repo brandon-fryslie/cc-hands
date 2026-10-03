@@ -1156,7 +1156,9 @@ fetch moves the same ref and logs `fetch`), and, for a pushed branch that is not
 remote's HEAD follows, a pull request the forge says was opened since the mark. The forge is asked
 beside the tree and must answer `SPARE` before the narrator's `PATIENCE` runs out, so a slow forge costs the
 pull request and never the commit. Both sources speak in the same `GitChange` values, so a push
-both saw is said once. Each reading is one `DeltaRead` line in the audit log.
+both saw is said once. Each mark is one `delta.mark` wide event and each reading one
+`delta.read`, and each says which index its snapshot started from: the repository's
+own, copied, or an empty one.
 
 A turn told twice has git read twice, each telling against where the one before it left off.
 No prompt marks where the part after a blocked `Stop` began, so every reading also keeps where
@@ -1757,6 +1759,21 @@ says `stopped`, and a stopped daemon reads as stopped even if its pid is later r
 A crash writes nothing more, so its last heartbeat names a pid that is gone, and it
 reads as down. A background task that failed or a pipeline that ended on its own
 counts as a crash: the run raises, exits nonzero, and reads as down until it is run again.
+
+## Wide events
+
+A unit of work runs inside `hands.sessions.wide.unit`, which leaves exactly one
+`WideEvent` however the run ends: ok, failed with what it raised, or cancelled
+`[LAW:nothing-unseen]`. Code inside the run calls `annotate` to add a fact and `count`
+to set a count the unit declared. It never emits anything itself. A declared count the
+run never set is written as 0, so a run that did nothing reads differently from a run
+that never happened. A unit opened inside another shares its `trace_id`.
+
+The event leaves through the `emit` the unit was opened with, which in the daemon is
+the audit log's `record`. The audit log is the one export edge, and an event is one
+more line in it. So a run's facts go on its event and never on a hand-built line beside
+it. When a unit of work that already writes such a line is moved onto the floor, that
+line type is deleted, as `DeltaRead` was.
 
 ## Endurance
 
