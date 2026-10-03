@@ -23,7 +23,10 @@ from pipecat.tests.utils import run_test
 from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_transcript
+from hands.sessions.home import Home
+from hands.sessions.registry import Sessions
 from hands.voice.floor import Floor
+from hands.voice.refocus import Refocus, Refocusing
 from hands.voice.player import Player
 from hands.voice.speech import Pushed
 from hands.voice.spoken import FenceAggregator, SpokenForm
@@ -314,7 +317,7 @@ async def test_an_ordinary_sentence_passes_through_the_filter_unremarked() -> No
     assert not said
 
 
-def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The conversion is worth nothing unless it is installed, and there is exactly one place it goes.
 
     The real service loads model weights, which is not a unit test's business; what is this repository's
@@ -356,12 +359,13 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         llm=FrameProcessor(),
         player=(player := Player(lambda _: None)),
         floor=Floor(lambda _: None, Pushed(), lambda id: id, dict),
+        refocus=Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), Home(tmp_path), lambda _: None),
     )
     filters = given["text_filters"]
     assert isinstance(filters, list) and [type(one) for one in cast(list[object], filters)] == [SpokenForm]
     # And the model's reply reaches the filter in pieces a fenced block is never split across, past only where the
-    # player's lines enter, which lets it through.
-    assert isinstance(voice.llm.next, Pieces) and voice.llm.next.next is player.lines and player.lines.next is voice.tts
+    # player's lines enter, which lets it through, and the focus's move, which lets everything but a Told through.
+    assert isinstance(voice.llm.next, Refocusing) and isinstance(voice.llm.next.next, Pieces) and voice.llm.next.next.next is player.lines and player.lines.next is voice.tts
     assert isinstance(pieced["text_aggregator"], FenceAggregator)
 
 

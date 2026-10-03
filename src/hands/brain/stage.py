@@ -16,7 +16,7 @@ import asyncio
 import json
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, cast
 
@@ -123,9 +123,13 @@ class _Turn:
 class BrainStage(FrameProcessor):
     """The LLM stage under the brain: a context in, the brain's words out as LLM text frames, and a barge-in passed on."""
 
-    def __init__(self, brain: Asking, tools: Sequence[Tool], tail: Callable[[], str], record: Record, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self, brain: Asking, tools: Sequence[Tool], tail: Callable[[], str], refocus: Callable[[SessionId], Awaitable[None]], record: Record, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._brain = brain
+        # Moves the focus to a session whose telling the brain takes.
+        self._refocus = refocus
         # What hands appends to each request of a turn, composed as that request leaves.
         self._tail = tail
         self._record = record
@@ -175,7 +179,10 @@ class BrainStage(FrameProcessor):
                     # A context frame is a call to answer, not a message: one whose messages an earlier turn already took asks nothing.
                     if text := self._news(context):
                         await self._ask(text, "user", (), arrived)
-                case Narrated(text=text, unsaid=unsaid):
+                case Narrated(text=text, unsaid=unsaid, session=session):
+                    # [LAW:no-ambient-temporal-coupling] moved as the telling is taken, with the user's last turn ended and
+                    # none waiting, since they go first, and before the brain is asked, so its request reads the new focus.
+                    await self._refocus(session)
                     await self._ask(text, "hands", (unsaid,), arrived)
                 case Aloud(spoken=spoken):
                     await self.push_frame(spoken)

@@ -7,6 +7,7 @@ than hoped for. Whisper, the user aggregator, and the stop strategy are the ones
 """
 
 import asyncio
+from pathlib import Path
 from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field
 
@@ -30,7 +31,10 @@ from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 from conftest import running
 from hands.sessions.audit import Entry, Yielded
 from hands.voice import pipeline as built
+from hands.sessions.home import Home
+from hands.sessions.registry import Sessions
 from hands.voice.floor import Floor
+from hands.voice.refocus import Refocus
 from hands.voice.player import Player
 from hands.voice.ptt import Key, KeyedAudio
 from hands.core.effects import Asking, Narrate, SessionGone
@@ -150,7 +154,7 @@ class Rig:
 
 
 @pytest.fixture
-async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
+async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator[Rig, None]:
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
     voice = built.build_voice(
@@ -159,6 +163,7 @@ async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
         llm=FrameProcessor(),
         player=Player(recorded.append),
         floor=Floor(lambda _: None, Pushed(), lambda id: id, dict),
+        refocus=Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append),
     )
     out, clock, held = Recorded(), Clock(), dict[SessionId, Held]()
     texts: asyncio.Queue[str] = asyncio.Queue()

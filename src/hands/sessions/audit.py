@@ -303,6 +303,20 @@ class Routed:
     route: Route
 
 
+RefocusOutcome = Literal["moved", "ended", "failed"]
+
+
+@dataclass(frozen=True)
+class Refocused:
+    """A session's turn or question was told, so the focus moved to it: what the user says next is taken first as said to
+    that session. `outcome` says what came of it: `moved` focused it; `ended` found it no longer running, so the focus
+    stayed; `failed` could not write the focus, which `failed` says why, and the focus stayed."""
+
+    session: SessionId
+    outcome: RefocusOutcome
+    failed: str | None
+
+
 @dataclass(frozen=True)
 class ProgressTold:
     """Progress routed to be played, as it went to the floor: how much text it held, the clause that text was summarised
@@ -527,6 +541,7 @@ Entry = (
     | Yielded
     | Relayed
     | Routed
+    | Refocused
     | ProgressTold
     | Recounted
     | Summarised
@@ -570,6 +585,8 @@ def level(entry: Entry) -> Level:
             return "error" if outcome in ("unread", "failed", "refused") else "info"
         case ProgressTold(failed=failed):
             return "info" if failed is None else "error"
+        case Refocused(outcome=outcome):
+            return "error" if outcome == "failed" else "info"
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
             | Applied() | Performed() | Typing() | LLMChosen() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | CopiesLost()

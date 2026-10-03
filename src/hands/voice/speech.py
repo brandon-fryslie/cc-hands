@@ -55,10 +55,23 @@ class Narrated(DataFrame, UninterruptibleFrame):
     Never put in Pipecat's context, where it would be one message with whatever the user said beside it: the brain keeps
     its own history. Kept through a barge-in, which stops what is said, not what is still to be told. `unsaid` is what
     hands says as written if the brain cannot take the turn: that it could not be told, never the turn's own words.
+    `session` is the one whose turn or question it tells, which is told to the user as the brain takes it.
     """
 
     text: str
     unsaid: str
+    session: SessionId
+
+
+@dataclass
+class Told(DataFrame):
+    """An API model has said hands' telling of a session's turn or its question: what the user says next is taken first
+    as said to that session. Passed on in order behind the telling, so words the user spoke before it reach the session
+    they were meant for, and dropped with it by a barge-in that comes before the model has said it, so a telling the
+    model never said moves nothing. Like the brain's stage, it moves the focus as the model says the telling, not as it
+    is played: a barge-in on the playing stops what is heard, not the move."""
+
+    session: SessionId
 
 
 @dataclass
@@ -77,13 +90,16 @@ class Aloud(DataFrame, UninterruptibleFrame):
     spoken: TTSSpeakFrame
 
 
-def handed(text: str, unsaid: str, telling: Telling) -> Frame:
-    """A message from hands for the model to say in its own words, as the model's telling takes one."""
+def handed(text: str, unsaid: str, session: SessionId, telling: Telling) -> Sequence[Frame]:
+    """A message from hands, telling of `session`, for the model to say in its own words, as the model's telling takes one."""
     match telling:
         case Pushed():
-            return LLMMessagesAppendFrame([{"role": "user", "content": text}], run_llm=True)
+            # An API model's stage answers the context it is handed before it takes the next frame, so Told follows the
+            # telling as said, and words the user speaks while it is said wait behind it.
+            return (LLMMessagesAppendFrame([{"role": "user", "content": text}], run_llm=True), Told(session))
         case Tailed():
-            return Narrated(text, unsaid)
+            # The brain's stage puts the user's words ahead of hands', so it moves the focus itself as it takes the telling.
+            return (Narrated(text, unsaid, session),)
 
 
 def as_written(spoken: TTSSpeakFrame, telling: Telling) -> Frame:
@@ -140,7 +156,7 @@ def frames(pending: Pending, telling: Telling, names: Names) -> Sequence[Frame]:
             # brain, so a deadline is heard after the question it counts down, never ahead of it.
             return (as_written(TTSSpeakFrame(announcement_text(announcement, names)), telling),)
         case Narrate(moment=moment), _:
-            return (handed(narration(moment, names), f"{names(moment.session)} is waiting on you about {_what(moment.on)}.", telling),)
+            return handed(narration(moment, names), f"{names(moment.session)} is waiting on you about {_what(moment.on)}.", moment.session, telling)
         case Note(fact=fact), Pushed():
             return (LLMMessagesAppendFrame([{"role": "user", "content": noted(fact, names)}], run_llm=False),)
         case Note(), Tailed():
@@ -148,7 +164,7 @@ def frames(pending: Pending, telling: Telling, names: Names) -> Sequence[Frame]:
             return ()
         case Finished(session=session, news=news), _:
             name = names(session)
-            return (handed(told(session, name, news), f"{name} finished {_turns(news)}, and I could not tell it.", telling),)
+            return handed(told(session, name, news), f"{name} finished {_turns(news)}, and I could not tell it.", session, telling)
         case Unread(session=session), _:
             return (as_written(TTSSpeakFrame(f"{names(session)} finished a turn, and I could not read it.", append_to_context=False), telling),)
         case SessionGone(session=session), _:

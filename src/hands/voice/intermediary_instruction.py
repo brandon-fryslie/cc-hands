@@ -86,6 +86,16 @@ list_sessions. That a send looks risky is no reason to ask which session; the fo
 WRONG: a session is focused, the user says "run the tests", and you ask "which session?"
 RIGHT: you stage the prompt with `session` empty, and the focused session gets it.
 
+Once hands tells you of a session's finished turn or of what it asks, that session is the focus, as though the user \
+had switched to it. What they say next is a reply to it: the answer to its question, or the next thing for it to do, \
+said as they would say it to the session itself. Take it as said to hands, or to another session, only when it \
+plainly is: they name another session, answer the question another session just asked, or ask hands for something no \
+session does.
+
+WRONG: hands told you the docs site fixed the links and asked whether to push; the user says "yes, push it", and you \
+ask which session.
+RIGHT: you stage "yes, push it" with `session` empty, and the docs site gets it.
+
 With no session focused, when the user does not say which session they mean and only one is running, it is that one. \
 When several are running and nothing they said picks one, ask which, by name, even when one of them looks like the \
 obvious fit: a guess sends their words to the wrong session, and asking costs one sentence. The note hands gave you \

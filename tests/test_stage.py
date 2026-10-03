@@ -147,6 +147,8 @@ class Rig:
     standing: list[str]
     # The stage's clock, which the test moves.
     now: list[float]
+    # Each session the stage moved the focus to, with how many turns the brain had been asked as it moved.
+    refocused: list[tuple[SessionId, int]]
     context: LLMContext = field(default_factory=LLMContext)
     exchanges: int = 0
 
@@ -192,13 +194,18 @@ async def rig() -> AsyncGenerator[Rig, None]:
     recorded: list[Entry] = []
     standing = [TAIL]
     now = [0.0]
-    stage = BrainStage(brain, TOOLS, lambda: standing[-1], recorded.append, clock=lambda: now[0])
+    refocused: list[tuple[SessionId, int]] = []
+
+    async def refocus(session: SessionId) -> None:
+        refocused.append((session, len(brain.asked)))
+
+    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, recorded.append, clock=lambda: now[0])
     out = Spoken()
     async with running([stage, out]) as run:
         # As the daemon runs it: a watch beside the pipeline.
         asking = asyncio.create_task(stage.ask_each())
         try:
-            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now)
+            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused)
         finally:
             asking.cancel()
 
@@ -218,7 +225,7 @@ def answering(name: str, result: object, call_id: str = "t1") -> dict[str, objec
 
 async def test_a_finished_turn_hands_narrates_reaches_the_brain_as_a_typed_turn_of_its_own(rig: Rig) -> None:
     """What hands says aloud of a session's turn is the brain's own turn, so it can answer about what the user heard."""
-    await rig.worker.queue_frame(Narrated("[hands] The Claude Code session api finished a turn.", "api finished a turn, and I could not tell it."))
+    await rig.worker.queue_frame(Narrated("[hands] The Claude Code session api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api")))
     await rig.until(lambda: rig.brain.asked == ["[hands] The Claude Code session api finished a turn."])
     exchange, _ = rig.request()
     rig.stream(exchange, "api opened pull request 68.")
@@ -230,9 +237,24 @@ async def test_a_finished_turn_hands_narrates_reaches_the_brain_as_a_typed_turn_
     assert rig.context.get_messages() == []
 
 
+async def test_a_narration_moves_the_focus_as_the_brain_takes_it_ahead_of_what_the_user_says_meanwhile(rig: Rig) -> None:
+    """The user's next words are taken as said to the session told of: so the focus moves before the brain is asked to
+    tell it, and words the user speaks while it is said are asked after it."""
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api")))
+    await rig.until(lambda: rig.brain.asked == ["[hands] api finished a turn."])
+    exchange, _ = rig.request()
+    rig.stream(exchange, "api opened pull request 68.")
+    rig.context.add_message({"role": "user", "content": "push it"})
+    await rig.worker.queue_frame(LLMContextFrame(rig.context))
+    await rig.until(lambda: "api opened pull request 68." in rig.out.said())
+    rig.brain.end()
+    await rig.until(lambda: rig.brain.asked[1:] == ["push it"])
+    assert rig.refocused == [(SessionId("api"), 0)]
+
+
 async def test_the_users_turn_goes_ahead_of_a_narration_waiting_for_the_brain(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "what is running?"})
-    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it."))
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api")))
     rig.context.add_message({"role": "user", "content": "and the backlog?"})
     await rig.worker.queue_frame(LLMContextFrame(rig.context))
     # Frames pass the stage in order, so once this is out, both before it are waiting in the stage.
@@ -240,14 +262,17 @@ async def test_the_users_turn_goes_ahead_of_a_narration_waiting_for_the_brain(ri
     await rig.until(lambda: "marker" in rig.out.said())
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
+    # Words the user spoke before the telling was taken are not taken as said to the session it tells of.
+    assert rig.refocused == []
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 3)
     assert rig.brain.asked == ["what is running?", "and the backlog?", "[hands] api finished a turn."]
+    assert rig.refocused == [(SessionId("api"), 2)]
 
 
 async def test_a_narration_records_how_long_it_waited_behind_the_users_turn(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "what is running?"})
-    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it."))
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api")))
     await rig.worker.queue_frame(TTSSpeakFrame("marker"))
     await rig.until(lambda: "marker" in rig.out.said())
     rig.now[0] = 2.5
@@ -263,7 +288,7 @@ async def test_a_narration_records_how_long_it_waited_behind_the_users_turn(rig:
 async def test_what_hands_says_as_written_is_heard_after_the_narration_ahead_of_it(rig: Rig) -> None:
     """A session's end is said after its last turn, though that turn waits for the brain and the end needs no model."""
     await rig.say({"role": "user", "content": "what is running?"})
-    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it."))
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api")))
     await rig.worker.queue_frame(Aloud(TTSSpeakFrame("The session api is gone.")))
     await rig.worker.queue_frame(TTSSpeakFrame("marker"))
     await rig.until(lambda: "marker" in rig.out.said())
@@ -280,7 +305,7 @@ async def test_what_hands_says_as_written_is_heard_after_the_narration_ahead_of_
 
 async def test_a_narration_the_brain_fails_is_said_as_written_with_its_question(rig: Rig) -> None:
     unsaid = "api finished a turn, and I could not tell it. Want me to push it?"
-    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", unsaid))
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", unsaid, SessionId("api")))
     await rig.until(lambda: len(rig.brain.asked) == 1)
     rig.brain.end(BrainAnswered("p1", "unknown: API Error: 500 overloaded"))
     await rig.until(lambda: len(rig.errors) == 1)
@@ -528,7 +553,7 @@ async def test_notes_that_came_in_one_ask_are_not_asked_again_empty(rig: Rig) ->
 
 async def test_a_turn_whose_replies_carried_nothing_is_said_as_the_models_empty_reply(rig: Rig) -> None:
     unsaid = "api finished a turn, and I could not tell it."
-    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", unsaid))
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", unsaid, SessionId("api")))
     await rig.until(lambda: len(rig.brain.asked) == 1)
     # Whitespace is not words.
     exchange, _ = rig.request()
