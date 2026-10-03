@@ -65,9 +65,9 @@ def read_transcript(transcript: Path) -> Reading:
         if record is None:
             continue
         match turning.consume(record):
-            case Printed(output=output) if openings:
-                # What the last command the user ran printed, which belongs to that opening, wherever in the order it lands.
-                openings[-1] = replace(openings[-1], opening=printed(openings[-1].opening, output))
+            case Printed(of=of, output=output) if openings:
+                # Claude Code writes a command's output straight after it, so the opening it names is the last one read.
+                openings[-1] = replace(openings[-1], opening=printed(openings[-1].opening, of, output))
             case Printed():
                 # Printed before any opening was read: the command it is of is before where this transcript starts.
                 pass

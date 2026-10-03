@@ -42,8 +42,9 @@ def session_name(transcript: Path) -> str | None:
     return name
 
 
-# Only these two record types carry a turn; the rest (attachments, modes, titles, snapshots) are skipped unparsed.
-_TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"')
+# Only these record types carry a turn; the rest (attachments, modes, titles, snapshots) are skipped unparsed. A
+# command the user ran, and what it printed, are written as either a user record or a system local_command one.
+_TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"', b'"subtype":"local_command"')
 
 
 def turn_record(line: bytes) -> Payload | None:
@@ -55,9 +56,18 @@ def turn_record(line: bytes) -> Payload | None:
         return None
     record = Payload.parse(line)
     fields = record.fields
-    if fields.get("type") not in ("user", "assistant") or fields.get("isSidechain") is True:
+    if fields.get("isSidechain") is True:
         # A subagent's own records are its transcript's, and are narrated there.
         return None
+    match fields.get("type"), fields.get("subtype"), fields.get("content"):
+        case "system", "local_command", str():
+            return record
+        case "system", "local_command", other:
+            raise Rejected(f"a local_command record's content should be a string, got {type(other).__name__}")
+        case ("user" | "assistant"), _, _:
+            pass
+        case _:
+            return None
     # [LAW:parse-dont-validate] the message is shaped here, at the one place a line becomes a record, so that
     # reading a turn out of it cannot raise halfway through a record its reader has already begun to consume.
     shaped = message(record)
@@ -80,9 +90,11 @@ _INTERRUPTED = ("[Request interrupted by user]", "[Request interrupted by user f
 class Printed:
     """What Claude Code printed for a command the user ran, written as a record of its own after the command's.
 
-    Neither a request nor a step: it is the command's, and joins the opening the command made (`printed`).
+    Neither a request nor a step: it is the command's, the record `of` names as its parent, and joins the opening that
+    record made (`printed`).
     """
 
+    of: Ref | None
     output: str
 
 
@@ -131,14 +143,17 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | None:
         # Sent while a tool ran: Claude Code folds it into the turn already under way, whose Stop has not come.
         return None
     fields = record.fields
+    ref = ref_of(record)
+    if fields.get("type") == "system":
+        # A local_command record holds nothing but what the user ran or what it printed (`turn_record`).
+        return _ran(ref, cast(str, fields["content"]), _parent_of(record))
     # Meta records (skill bodies, command caveats) and compaction's summary are Claude Code's own, not a new request.
     if fields.get("type") != "user" or fields.get("isMeta") is True or fields.get("isCompactSummary") is True:
         return None
     parts = blocks(record)
-    ref = ref_of(record)
     match message(record).get("content"):
         case str() as text:
-            ran = _ran(ref, text)
+            ran = _ran(ref, text, _parent_of(record))
             if ran is not None:
                 return ran
         case list() if parts and not any(block.get("type") == "tool_result" for block in parts):
@@ -160,10 +175,12 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | None:
 # a slash command (its name first when Claude Code carries it out, its message first when it hands Claude a skill),
 # a `!` command, and what either printed. Seen on 2.1.226 to 2.1.286.
 _RAN = re.compile(r"\s*<(command-name|command-message|bash-input|local-command-stdout|local-command-stderr|bash-stdout|bash-stderr)>")
-_OUTPUTS = ("local-command-stdout", "local-command-stderr", "bash-stdout", "bash-stderr")
+# Each output tag, and how what it holds is told: what went to stderr is marked, so a command that failed is not told as
+# one that printed its answer.
+_OUTPUTS = (("local-command-stdout", ""), ("bash-stdout", ""), ("local-command-stderr", "stderr: "), ("bash-stderr", "stderr: "))
 
 
-def _ran(ref: Ref | None, text: str) -> Commanded | Shelled | Printed | None:
+def _ran(ref: Ref | None, text: str, parent: Ref | None) -> Commanded | Shelled | Printed | None:
     """What the user ran, read off the markup Claude Code wrote around it; None for text that does not open with it.
 
     [LAW:types-are-the-program] each kind is read as itself, so neither a command's markup nor its output's
@@ -177,7 +194,7 @@ def _ran(ref: Ref | None, text: str) -> Commanded | Shelled | Printed | None:
         case found if found.group(1) == "bash-input":
             return Shelled(ref, _tagged(text, "bash-input"))
         case _:
-            return Printed("\n".join(output for tag in _OUTPUTS if (output := _tagged(text, tag))))
+            return Printed(parent, "\n".join(f"{mark}{output}" for tag, mark in _OUTPUTS if (output := _tagged(text, tag))))
 
 
 def _tagged(text: str, tag: str) -> str:
@@ -193,6 +210,11 @@ def holds_a_tool(record: Payload) -> bool:
 
 def ref_of(record: Payload) -> Ref | None:
     value = record.fields.get("uuid")
+    return Ref(value) if isinstance(value, str) else None
+
+
+def _parent_of(record: Payload) -> Ref | None:
+    value = record.fields.get("parentUuid")
     return Ref(value) if isinstance(value, str) else None
 
 

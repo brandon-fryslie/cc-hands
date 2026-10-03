@@ -321,9 +321,9 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
 
 
 def _opened(first: Happening) -> dict[str, object]:
-    """How a turn with no sentence is told: by its request, or, in a transcript that starts part way through one, by the
-    step it was first read at, which nobody asked for."""
-    return {"asked" if isinstance(first, Opening) else "began": describe(first, READBACK_BUDGET)}
+    """How a turn with no sentence is told: by what opened it, or, in a transcript that starts part way through one, by the
+    step it was first read at, which opened nothing."""
+    return {"opened" if isinstance(first, Opening) else "began": describe(first, READBACK_BUDGET)}
 
 
 async def _session_reading(sessions: Sessions, session: str) -> tuple[Membership, Reading] | str:

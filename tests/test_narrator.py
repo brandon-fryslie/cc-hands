@@ -221,6 +221,15 @@ async def test_with_summaries_off_a_turn_waiting_on_an_answer_still_asks_it_with
     assert isinstance(spoken, Aloud) and spoken.spoken.text == "cc-hands: It said: Want me to push it?"
 
 
+async def test_a_turn_a_slash_command_opened_is_logged_as_commanded_rather_than_asked(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    skill = json.dumps({"type": "user", "uuid": "c1", "promptId": "p1", "message": {"role": "user", "content": "<command-message>ship</command-message>\n<command-name>/ship</command-name>\n<command-args>it</command-args>"}}, separators=(",", ":"))
+    transcript.write_text(f"{skill}\n{_said('u2', 'Shipped.')}\n")
+    recorded: list[Entry] = []
+    await recount(tailing(transcript), SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "off", Tailed())
+    assert [entry.opened for entry in recorded if isinstance(entry, Recounted)] == ["Commanded"]
+
+
 async def test_a_switch_that_cannot_be_read_is_logged_and_the_turn_told_as_the_default(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.summaries.write_text("yes\n")

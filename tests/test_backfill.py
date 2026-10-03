@@ -150,6 +150,13 @@ def test_a_call_the_user_interrupted_is_read_as_over_and_the_interrupt_in_its_pl
 
 def test_what_a_command_the_user_ran_printed_is_read_with_the_command_and_opens_nothing(tmp_path: Path) -> None:
     shell = '{"uuid":"u5","type":"user","message":{"role":"user","content":"<bash-input>git status</bash-input>"}}'
-    output = '{"uuid":"u6","type":"user","message":{"role":"user","content":"<bash-stdout>clean</bash-stdout><bash-stderr></bash-stderr>"}}'
+    output = '{"uuid":"u6","parentUuid":"u5","type":"user","message":{"role":"user","content":"<bash-stdout>clean</bash-stdout><bash-stderr></bash-stderr>"}}'
     happenings = read_transcript(written(tmp_path / "t.jsonl", PROMPT, DONE, shell, output, DONE)).happenings
     assert happenings[2:] == [Shelled(Ref("u5"), "git status", "clean"), Said(Ref("u4"), "Done.")]
+
+
+def test_a_command_that_printed_nothing_is_read_as_having_no_output(tmp_path: Path) -> None:
+    shell = '{"uuid":"u5","type":"user","message":{"role":"user","content":"<bash-input>true</bash-input>"}}'
+    output = '{"uuid":"u6","parentUuid":"u5","type":"user","message":{"role":"user","content":"<bash-stdout></bash-stdout><bash-stderr></bash-stderr>"}}'
+    happenings = read_transcript(written(tmp_path / "t.jsonl", PROMPT, DONE, shell, output)).happenings
+    assert happenings[2:] == [Shelled(Ref("u5"), "true", None)]

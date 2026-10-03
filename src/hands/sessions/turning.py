@@ -39,10 +39,10 @@ class Turning:
         parts = blocks(record)
         self.mid_tool = holds_a_tool(record)
         match edge:
-            case Printed(output=output):
+            case Printed(of=of, output=output):
                 # The command's, not the answer's: it joins the opening this turning holds, and a reader holding
                 # its own copy of the opening joins it there.
-                self.opening = None if self.opening is None else printed(self.opening, output)
+                self.opening = None if self.opening is None else printed(self.opening, of, output)
                 return edge
             case Interruption():
                 # The last step of the turn it cuts off, told in its place like any other.

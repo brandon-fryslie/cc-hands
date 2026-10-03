@@ -169,16 +169,17 @@ class Shelled:
 Opening = Asked | Notified | Commanded | Shelled
 
 
-def printed(opening: Opening, output: str) -> Opening:
-    """The opening with what Claude Code printed for it, which arrives as a record of its own after the command's.
+def printed(opening: Opening, of: Ref | None, output: str) -> Opening:
+    """The opening with what Claude Code printed for it, which arrives as a record of its own naming the command's as `of`.
 
-    [LAW:one-source-of-truth] the one place output joins its command, for the tail and the backfill alike. Output
-    printed under any other opening is of a command run while that turn was under way, and the turn did none of it.
+    [LAW:one-source-of-truth] the one place output joins its command, for the tail and the backfill alike. Output that
+    names any other record is of a command that opened no turn, and this turn did none of it; output that is empty
+    printed nothing.
     """
     match opening:
-        case Commanded() | Shelled():
+        case Commanded(ref=ref) | Shelled(ref=ref) if of is not None and ref == of and output:
             return replace(opening, output=output if opening.output is None else f"{opening.output}\n{output}")
-        case Asked() | Notified():
+        case _:
             return opening
 
 # One thing that happened in a session: what opened a turn, or a step of the answer to it. A Turn holds the two
@@ -333,7 +334,7 @@ def describe(happening: Happening, budget: Budget) -> str:
         case Notified(text=text):
             return f"A background task reported:\n{_cut(text, budget.opening)}"
         case Commanded(name=name, args=args, output=output):
-            ran = f"The user ran the command {_cut(f'{name} {args}', budget.opening)}"
+            ran = f"The user ran the command {_cut(' '.join(part for part in (name, args) if part), budget.opening)}"
             return ran if output is None else f"{ran}\nClaude Code printed: {_cut(output, budget.result)}"
         case Shelled(command=command, output=output):
             ran = f"The user ran the shell command {_cut(command, budget.opening)}"
