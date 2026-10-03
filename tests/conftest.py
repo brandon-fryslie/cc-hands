@@ -194,7 +194,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import json, os, select, signal, sys, time, tty, urllib.request
+import itertools, json, os, select, signal, sys, time, tty, urllib.request
 if sys.argv[1] == "auth":
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
 if sys.argv[1:3] == ["auth", "login"]:
@@ -255,11 +255,21 @@ def submit(text):
         post("StopFailure", prompt_id=prompt, error="unknown", last_assistant_message="API Error: 400 refused")
     else:
         post("Stop", prompt_id=prompt, last_assistant_message="Two.")
-# As Claude Code reads its options: one that takes several values (--mcp-config, --tools) takes every word up to the
-# next option, so the only word sure to be its prompt is one after `--`.
-opening = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-if opening:
-    submit(opening[0])
+# As Claude Code reads its options: --mcp-config takes every word up to the next option or `--`, each a config or a
+# config's file, and one that is neither ends the program (a prompt read as a path: ENAMETOOLONG, exit 1).
+end = sys.argv.index("--") if "--" in sys.argv else len(sys.argv)
+if "--mcp-config" in sys.argv:
+    for value in itertools.takewhile(lambda word: not word.startswith("-"), sys.argv[sys.argv.index("--mcp-config") + 1:end]):
+        try:
+            json.loads(value)
+        except ValueError:
+            if not os.path.exists(value):
+                sys.stderr.write(f"Error: MCP config file not found: {{value}}\\n")
+                sys.exit(1)
+# The prompt it opens with is the one word after `--`.
+if end < len(sys.argv):
+    [opening] = sys.argv[end + 1:]
+    submit(opening)
 while True:
     data = os.read(0, 65536)
     if not data:

@@ -12,7 +12,7 @@ of the question in the brain's config directory (2.1.286, measured 2026-09-30 ov
 of history, no session directory).
 
 It is Claude Code as anyone runs it, interactive on a terminal, and the question is the prompt it is started with:
-`claude "/btw ..."`. Claude Code asks its opening prompt itself once its input is up, so nothing is typed into it and
+`claude ... -- "/btw ..."`. Claude Code asks its opening prompt itself once its input is up, so nothing is typed into it and
 nothing depends on when its input comes up (a `/btw` typed as the input came up was left in it unsent, 12 of 12; as the
 opening prompt it went out 0.4s after the start, 6 of 6). Its answer is read from the wire.
 """
@@ -43,7 +43,7 @@ ASIDE_SECONDS = 120.0
 def aside_command(claude: Path, model: str, session: SessionId, question: str) -> list[str]:
     """A side question's command line: the slim Claude Code, closed, opening with the question."""
     # The question as the characters it shows, behind the command, as the prompt its Claude Code opens with. `--` ends
-    # the options: --mcp-config takes every word up to the next option, and read the prompt as a second config file.
+    # the options: without it, --mcp-config takes every word up to the next option, the prompt as a second config file.
     return [*slim(claude, model, session), *CLOSED, "--", Command(ASIDE, pasted(question)).typed]
 
 
