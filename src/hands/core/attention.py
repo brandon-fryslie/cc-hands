@@ -1,34 +1,15 @@
-"""Which of what the sessions say reaches the ear: each session's overlay, and what it lets through."""
+"""Which sessions' finished turns reach the ear unasked: each session's overlay, and how a turn is delivered by it."""
 
 from typing import Literal
 
-from hands.core.effects import Heard, Narrate, Note, Speak, WaitingForYou
-from hands.core.session import SessionId
-
-# How a session's own news reaches the user. "watched": the user asked to be told when it stops and waits for them.
-# "normal": they did not, so its waiting is not said, though list_sessions still names it waiting. What a session asks
+# Whether the user asked to hear a session's finished turns. "watched": each turn it finishes is told as it finishes.
+# "normal": its turns are told only with spoken summaries on, or when the user asks for one. What a session asks
 # (a permission, a question, a plan) is spoken whatever its overlay: it needs an answer.
 Overlay = Literal["normal", "watched"]
 
 # Not told until asked for: with several sessions, every one that stopped said aloud was noise (hands-announce-5md).
 DEFAULT: Overlay = "normal"
 
-
-def routed(heard: Heard, overlay: Overlay) -> bool:
-    """Whether what a session said is passed on to the user, by that session's overlay."""
-    match heard, overlay:
-        case Speak(announcement=WaitingForYou()), "normal":
-            return False
-        case _:
-            return True
-
-
-def speaker(heard: Heard) -> SessionId:
-    """The session that said it, whose overlay routes it."""
-    match heard:
-        case Speak(announcement=announcement):
-            return announcement.session
-        case Narrate(moment=moment):
-            return moment.session
-        case Note(fact=fact):
-            return fact.session
+# How a finished turn's summary reached the user: told unasked because spoken summaries are on, or because the session
+# is watched, or held until the user asks for it. One summary is made whichever it is; only who hears it when differs.
+Delivery = Literal["summaries", "watched", "on request"]

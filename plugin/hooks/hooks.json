@@ -42,21 +42,6 @@
         ]
       }
     ],
-    "Notification": [
-      {
-        "matcher": "idle_prompt",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/python",
-            "args": [
-              "-m",
-              "hands.sessions.shim"
-            ]
-          }
-        ]
-      }
-    ],
     "PermissionRequest": [
       {
         "hooks": [

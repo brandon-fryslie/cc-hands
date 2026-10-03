@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.events import Attached, Ended, Event, Joined, PermissionRequested, Prompted, Stopped, ToolFinished, Waited
+from hands.core.events import Attached, Ended, Event, Joined, PermissionRequested, Prompted, Stopped, ToolFinished
 from hands.core.session import AskedQuestion, Membership, Mode, Option, Permission, Plan, PlanApproved, PromptId, Question, RequestId, SessionId, UnknownMode
 from hands.sessions.home import Home
 from hands.sessions.hooks import Hook, parse_hook
@@ -65,11 +65,10 @@ def test_a_hook_whose_session_has_no_file_joins_nothing_and_still_says_what_happ
     [
         {"hook_event_name": "UserPromptSubmit", "prompt": "hi", "prompt_id": "p"},
         {"hook_event_name": "Stop", "stop_hook_active": False, "last_assistant_message": "ok", "prompt_id": "p"},
-        {"hook_event_name": "Notification", "notification_type": "idle_prompt"},
         {"hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "ls"}},
         {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}},
     ],
-    ids=["prompt", "stop", "idle", "permission", "tool"],
+    ids=["prompt", "stop", "permission", "tool"],
 )
 def test_every_hook_of_a_running_session_brings_the_session_so_one_that_never_started_here_joins_on_it(home: Home, hook: dict[str, object]) -> None:
     """/reload-plugins in a session already running fires no start hook, so whatever it fires first is where it joins."""
@@ -250,11 +249,7 @@ def test_an_end_reason_this_version_does_not_know_is_an_end_nobody_chose(home: H
     assert parse(home, body(hook_event_name="SessionEnd", reason="solar_flare")) == Ended(SID, "other")
 
 
-def test_the_idle_notification_is_a_session_waiting(home: Home) -> None:
-    idle = body(hook_event_name="Notification", message="Claude is waiting for your input", notification_type="idle_prompt")
-    assert parse(home, idle) == Waited(SID)
-
-
-def test_a_notification_hands_did_not_ask_for_is_rejected(home: Home) -> None:
-    with pytest.raises(Rejected, match="permission_prompt"):
-        parse(home, body(hook_event_name="Notification", message="Claude needs your permission", notification_type="permission_prompt"))
+def test_a_notification_from_a_plugin_older_than_the_daemon_is_rejected(home: Home) -> None:
+    """hands subscribes to no notification: one heard is a hooks.json installed before it stopped, said as that."""
+    with pytest.raises(Rejected, match="Notification"):
+        parse(home, body(hook_event_name="Notification", message="Claude is waiting for your input", notification_type="idle_prompt"))

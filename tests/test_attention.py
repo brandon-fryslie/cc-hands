@@ -1,44 +1,156 @@
-"""A session's waiting is said only for a session the user asked to hear from; what a session asks is said for every one."""
+"""A finished turn is told through one summary: as it finishes, for every session with spoken summaries on or for a
+watched one with them off, and when the user asks for it otherwise. What a session asks is said for every one."""
 
 import asyncio
+import json
 import zlib
 from pathlib import Path
 
 import pytest
-from pipecat.frames.frames import Frame, TTSSpeakFrame
+from loguru import logger
+from pipecat.frames.frames import Frame, LLMMessagesAppendFrame
 
-from hands.core.attention import routed
-from hands.core.effects import Asking, Expired, Heard, Narrate, Speak, WaitingForYou
-from hands.core.events import Joined, StatusReported, Waited
-from hands.core.session import Membership, Permission, RequestId, SessionId
+from hands.core.attention import Delivery, Overlay
+from hands.core.delta import Delta
+from hands.core.events import Joined, Prompted, StatusReported, Stopped
+from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.status import Idle, Report, Stamp
-from hands.sessions.audit import Entry, Routed
+from hands.sessions.audit import Entry, Failure, Recounted, failures_to
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
-from hands.voice.speech import Pushed, relay
-from hands.voice.tools import watch_session_tool
+from hands.sessions.summaries import Summaries, summaries
+from hands.sessions.tail import Tails
+from hands.voice.narrator import Recounts, delivery, narrate, recount
+from hands.voice.speech import Pushed
+from hands.voice.tools import tell_turn_tool, turn_summaries_tool, watch_session_tool
 
 ONE = SessionId("one")
-ASKED = Permission("Bash", {})
+REPLY = "Pushed the fix. Want me to open a pull request?"
 
 
 def membership(tmp_path: Path, name: str) -> Membership:
     return Membership(SessionId(name), pid=zlib.crc32(name.encode()), cwd=Path("/code") / name, transcript=tmp_path / f"{name}.jsonl")
 
 
+def finished_turn(member: Membership) -> None:
+    """A transcript holding one finished turn, which ended on a question."""
+    asked = {"type": "user", "uuid": "p1-u", "promptId": "p1", "message": {"role": "user", "content": "fix it"}}
+    said = {"type": "assistant", "uuid": "u2", "message": {"content": [{"type": "text", "text": REPLY}]}}
+    member.transcript.write_text(f"{json.dumps(asked, separators=(",", ":"))}\n{json.dumps(said, separators=(",", ":"))}\n")
+
+
+def handed(frame: Frame | None) -> str:
+    assert isinstance(frame, LLMMessagesAppendFrame) and frame.run_llm
+    match frame.messages:
+        case [{"role": "user", "content": str() as content}]:
+            return content
+        case other:
+            raise AssertionError(f"not one message from hands: {other!r}")
+
+
 @pytest.mark.parametrize(
-    ("heard", "normal", "watched"),
-    [
-        (Speak(WaitingForYou(ONE, asking=False)), False, True),
-        (Speak(WaitingForYou(ONE, asking=True)), False, True),
-        (Speak(Expired(ONE, ASKED)), True, True),
-        (Narrate(Asking(ONE, RequestId("r"), ASKED)), True, True),
-    ],
+    ("switch", "overlay", "delivered"),
+    [("on", "normal", "summaries"), ("on", "watched", "summaries"), ("off", "watched", "watched"), ("off", "normal", "on request")],
 )
-def test_only_a_watched_session_s_waiting_is_passed_on_and_what_it_asks_always_is(heard: Heard, normal: bool, watched: bool) -> None:
-    assert (routed(heard, "normal"), routed(heard, "watched")) == (normal, watched)
+def test_a_turn_is_told_as_it_finishes_with_summaries_on_or_the_session_watched_and_otherwise_when_asked(
+    switch: Summaries, overlay: Overlay, delivered: Delivery
+) -> None:
+    assert delivery(switch, overlay) == delivered
+
+
+async def test_every_way_a_turn_is_told_tells_the_one_summary(tmp_path: Path) -> None:
+    """The summary is the thing to iterate on, so there is one: told unasked or asked for, the model is handed the same."""
+    member = membership(tmp_path, "one")
+    finished_turn(member)
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member, "startup"))
+    told: dict[Delivery, str] = {}
+    for delivered in ("summaries", "watched", "on request"):
+        recounts = Recounts()
+        frame = await recount(Tails(sessions), member.id, PromptId("p1"), None, "one", lambda _: None, Delta(), delivered, recounts, Pushed())
+        asked = await tell_turn_tool(sessions, recounts).body(session=member.id)
+        assert asked == {"turn": recounts.of(member.id)}
+        told[delivered] = handed(frame) if frame is not None else str(asked["turn"])
+        assert (frame is None) == (delivered == "on request")
+    assert len(set(told.values())) == 1
+    [summary] = set(told.values())
+    assert summary.endswith(f"so they can answer without looking at the screen: It said: {REPLY.split('. ')[1]}")
+
+
+async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatched_one_s_until_asked(tmp_path: Path) -> None:
+    watched, other = membership(tmp_path, "watched"), membership(tmp_path, "other")
+    home = Home(tmp_path / "home")
+    entries: list[Entry] = []
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=entries.append)
+    for each in (watched, other):
+        finished_turn(each)
+        await sessions.apply(Joined(each, "startup"))
+        await sessions.apply(StatusReported(each.id, Report(Idle(), Stamp(1)), at=1.0))
+    assert await watch_session_tool(sessions, Overlays(home)).body(session=watched.id, watch=True) == {"readback": "I'll tell you each turn watched finishes."}
+    frames: asyncio.Queue[Frame] = asyncio.Queue()
+    recounts = Recounts()
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, entries.append, lambda: "off", Overlays(home), recounts))
+    try:
+        for each in (other, watched):
+            await sessions.apply(Prompted(each.id, at=2.0, mode=None, prompt=PromptId("p1")))
+            await sessions.apply(Stopped(each.id, REPLY, mode=None, prompt=PromptId("p1"), again=False, heard=Stamp(1500), request=RequestId(f"stop-{each.id}")))
+        told = handed(await asyncio.wait_for(frames.get(), 5.0))
+    finally:
+        narrating.cancel()
+    assert frames.empty()
+    assert told == recounts.of(watched.id) and "session watched finished a turn" in told
+    assert "session other finished a turn" in str(recounts.of(other.id))
+    assert [(entry.session, entry.delivered) for entry in entries if isinstance(entry, Recounted)] == [(other.id, "on request"), (watched.id, "watched")]
+
+
+async def test_a_session_whose_overlay_cannot_be_read_is_told_as_unwatched_and_the_reason_is_logged(tmp_path: Path) -> None:
+    member = membership(tmp_path, "unreadable")
+    finished_turn(member)
+    home = Home(tmp_path / "home")
+    home.overlays.mkdir(parents=True)
+    home.overlay(member.id).write_text("loud\n")
+    entries: list[Entry] = []
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=entries.append)
+    await sessions.apply(Joined(member, "startup"))
+    sink = logger.add(failures_to(entries.append), level="ERROR", filter="hands")
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), asyncio.Queue[Frame]().put, entries.append, lambda: "off", Overlays(home), Recounts()))
+    try:
+        await sessions.apply(Prompted(member.id, at=2.0, mode=None, prompt=PromptId("p1")))
+        await sessions.apply(Stopped(member.id, REPLY, mode=None, prompt=PromptId("p1"), again=False, heard=Stamp(1500), request=RequestId("stop")))
+        async with asyncio.timeout(5):
+            while not any(isinstance(entry, Recounted) for entry in entries):
+                await asyncio.sleep(0.01)
+    finally:
+        narrating.cancel()
+        logger.remove(sink)
+    [recounted] = [entry for entry in entries if isinstance(entry, Recounted)]
+    assert recounted.delivered == "on request"
+    assert any(isinstance(entry, Failure) and "cannot read whether session unreadable is watched" in entry.message and "loud" in entry.message for entry in entries)
+
+
+async def test_a_turn_asked_for_before_any_has_finished_is_said_to_be_missing(tmp_path: Path) -> None:
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    result = await tell_turn_tool(sessions, Recounts()).body(session=ONE)
+    assert "error" in result and "has finished since hands started" in str(result["error"])
+
+
+async def test_spoken_summaries_are_turned_on_and_off_by_voice_and_hold_across_a_restart(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    switching = turn_summaries_tool(home).body
+    assert await switching(on=True) == {"readback": "Spoken turn summaries are on: every turn a session finishes is told aloud."}
+    assert summaries(Home(tmp_path)) == "on"
+    await switching(on=False)
+    assert summaries(Home(tmp_path)) == "off"
+
+
+async def test_unwatching_a_session_says_what_is_still_told(tmp_path: Path) -> None:
+    member = membership(tmp_path, "dropped")
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member, "startup"))
+    result = await watch_session_tool(sessions, Overlays(Home(tmp_path / "home"))).body(session=member.id, watch=False)
+    assert result == {"readback": "I won't tell you when dropped finishes a turn, only when it asks you something."}
 
 
 def test_an_overlay_holds_across_a_restart_and_a_session_never_set_is_normal(tmp_path: Path) -> None:
@@ -57,84 +169,8 @@ def test_an_overlay_file_holding_anything_else_is_refused(tmp_path: Path) -> Non
         Overlays(home).of(ONE)
 
 
-async def test_a_stop_is_announced_for_the_session_the_user_asked_about_and_not_for_the_other(tmp_path: Path) -> None:
-    watched, other, dropped = membership(tmp_path, "watched"), membership(tmp_path, "other"), membership(tmp_path, "dropped")
-    overlays = Overlays(Home(tmp_path / "home"))
-    entries: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=entries.append)
-    for each in (watched, other, dropped):
-        await sessions.apply(Joined(each, "startup"))
-        await sessions.apply(StatusReported(each.id, Report(Idle(), Stamp(1)), at=1.0))
-    watching = watch_session_tool(sessions, overlays).body
-    assert await watching(session=watched.id, watch=True) == {"readback": "I'll tell you when watched is waiting for you."}
-    await watching(session=dropped.id, watch=True)
-    assert await watching(session=dropped.id, watch=False) == {"readback": "I won't tell you when dropped stops, only when it asks you something."}
-
-    queued: list[Frame] = []
-
-    async def queue_frame(frame: Frame) -> None:
-        queued.append(frame)
-
-    relaying = asyncio.create_task(relay(sessions, overlays, Pushed(), queue_frame, entries.append))
-    try:
-        for each in (watched, other, dropped):
-            await sessions.apply(Waited(each.id))
-        await _routed(entries, 3)
-    finally:
-        relaying.cancel()
-
-    assert [frame.text for frame in queued if isinstance(frame, TTSSpeakFrame)] == ["watched is waiting for you."]
-    assert [(entry.heard, entry.overlay, entry.passed) for entry in entries if isinstance(entry, Routed)] == [
-        (Speak(WaitingForYou(watched.id, asking=False)), "watched", True),
-        (Speak(WaitingForYou(other.id, asking=False)), "normal", False),
-        (Speak(WaitingForYou(dropped.id, asking=False)), "normal", False),
-    ]
-
-
-async def test_watching_a_session_whose_nudge_already_went_unsaid_says_it_waits_now(tmp_path: Path) -> None:
-    waiting = membership(tmp_path, "waiting")
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
-    await sessions.apply(Joined(waiting, "startup"))
-    await sessions.apply(StatusReported(waiting.id, Report(Idle(), Stamp(1)), at=1.0))
-    await sessions.apply(Waited(waiting.id))
-    result = await watch_session_tool(sessions, Overlays(Home(tmp_path / "home"))).body(session=waiting.id, watch=True)
-    assert result == {"readback": "waiting is already waiting for you. I'll tell you the next time it stops."}
-
-
-async def test_a_session_whose_overlay_cannot_be_read_is_routed_by_default_and_the_route_says_why(tmp_path: Path) -> None:
-    unreadable = membership(tmp_path, "unreadable")
-    home = Home(tmp_path / "home")
-    home.overlays.mkdir(parents=True)
-    home.overlay(unreadable.id).write_text("loud\n")
-    entries: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=entries.append)
-    await sessions.apply(Joined(unreadable, "startup"))
-    await sessions.apply(StatusReported(unreadable.id, Report(Idle(), Stamp(1)), at=1.0))
-
-    async def queue_frame(frame: Frame) -> None:
-        raise AssertionError(f"nothing is said for a session routed as by default: {frame}")
-
-    relaying = asyncio.create_task(relay(sessions, Overlays(home), Pushed(), queue_frame, entries.append))
-    try:
-        await sessions.apply(Waited(unreadable.id))
-        await _routed(entries, 1)
-    finally:
-        relaying.cancel()
-
-    [route] = [entry for entry in entries if isinstance(entry, Routed)]
-    assert (route.overlay, route.passed) == ("normal", False)
-    assert route.unreadable is not None and "loud" in route.unreadable
-
-
 async def test_a_session_that_is_not_running_cannot_be_watched(tmp_path: Path) -> None:
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     result = await watch_session_tool(sessions, Overlays(Home(tmp_path))).body(session="../escape", watch=True)
     assert "error" in result
     assert not (tmp_path / "overlays").exists()
-
-
-async def _routed(entries: list[Entry], count: int) -> None:
-    """Until the relay has routed `count` things: it runs as its own task, as in the daemon."""
-    async with asyncio.timeout(2):
-        while sum(isinstance(entry, Routed) for entry in entries) < count:
-            await asyncio.sleep(0)

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     # Defined only in loguru's type stubs.
     from loguru import Message
 
-from hands.core.attention import Overlay
+from hands.core.attention import Delivery
 from hands.core.delta import Branched, PullRequested, Pushed
 from hands.core.effects import AuditRecord, Effect, Heard, Input, Type
 from hands.core.events import Event
@@ -231,23 +231,18 @@ class Yielded:
 
 
 @dataclass(frozen=True)
-class Routed:
-    """Something a session said to the user, the overlay that routed it, and whether it was passed on.
-
-    `unreadable` is why the session's own overlay could not be read, when it could not: the default routed it instead.
-    """
+class Relayed:
+    """Something a session said to the user, passed on to the pipeline."""
 
     heard: Heard
-    overlay: Overlay
-    passed: bool
-    unreadable: str | None
 
 
 @dataclass(frozen=True)
 class Recounted:
     """What hands told of a turn a session finished, and what the narration left the user able to ask for.
 
-    `told` is what went out: handed to the model to say in its own words when `by_model`, and said as written when not.
+    `told` is the summary the model is handed to say in its own words, and `delivered` how it reached the user: told
+    as the turn finished, or held for when they ask (tell_turn).
     `topics` is every part of the turn's narration that was built and not played — its sections, and what it
     asked through a dialog and is no longer waiting on — which makes this line the
     one place a developer who cannot see the screen can find out what "more on that" has to open. `questions`
@@ -260,7 +255,7 @@ class Recounted:
     told: str
     topics: tuple[str, ...]
     questions: tuple[str, ...]
-    by_model: bool
+    delivered: Delivery
     opened: str
 
 
@@ -419,7 +414,7 @@ Entry = (
     | Called
     | Announced
     | Yielded
-    | Routed
+    | Relayed
     | Recounted
     | Summarised
     | TurnsSummarised

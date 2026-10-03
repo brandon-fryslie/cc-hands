@@ -156,15 +156,7 @@ class Expired:
     on: Blocker
 
 
-@dataclass(frozen=True)
-class WaitingForYou:
-    """A session finished its turn a while ago and nobody has answered it."""
-
-    session: SessionId
-    asking: bool  # its turn ended on a question or an offer, which is what it is waiting to hear back about
-
-
-Announcement = DeadlineNear | Expired | WaitingForYou
+Announcement = DeadlineNear | Expired
 
 
 @dataclass(frozen=True)

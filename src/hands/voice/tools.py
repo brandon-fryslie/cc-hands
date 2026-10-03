@@ -23,7 +23,7 @@ from pipecat.services.llm_service import FunctionCallParams
 from hands.core.drafts import AmendDraft, DiscardDraft, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
-from hands.core.session import Blocker, Membership, CommandName, Dialog, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unanswered, Unreported
+from hands.core.session import Blocker, Membership, CommandName, Dialog, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
 from hands.core.sentences import Due, turn_digest
@@ -32,8 +32,11 @@ from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
 from hands.sessions.audit import Called, Record
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
+from hands.sessions.summaries import described, set_summaries
+from hands.voice.narrator import Recounts
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.speech import answer_readback
@@ -144,13 +147,25 @@ def audited(tool: Tool, record: Record) -> Tool:
     return replace(tool, body=call)
 
 
-def intermediary_tools(sessions: Sessions, store: SummaryStore, overlays: Overlays) -> list[Tool]:
+def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them.
 
     [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
     tool added here is one the eval's model is offered too.
     """
-    return [list_sessions_tool(sessions, overlays), *session_tools(sessions, store), *backlog_tools(sessions, store), *draft_tools(sessions), *keyboard_tools(sessions), *permission_tools(sessions), watch_session_tool(sessions, overlays), stay_silent_tool()]
+    overlays = Overlays(home)
+    return [
+        list_sessions_tool(sessions, overlays),
+        *session_tools(sessions, store),
+        tell_turn_tool(sessions, recounts),
+        *backlog_tools(sessions, store),
+        *draft_tools(sessions),
+        *keyboard_tools(sessions),
+        *permission_tools(sessions),
+        watch_session_tool(sessions, overlays),
+        turn_summaries_tool(home),
+        stay_silent_tool(),
+    ]
 
 
 def stay_silent_tool() -> Tool:
@@ -177,8 +192,8 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays) -> Tool:
         Claude is working on, or what mode a session is in. A session's mode is the
         one it reported when it last did something: a mode changed at its keyboard
         while it sits at its prompt is seen when it is next prompted, and one changed
-        in the middle of a turn at its next tool call. `watched` says whether the user is told when it stops and
-        waits for them (watch_session).
+        in the middle of a turn at its next tool call. `watched` says whether each turn it finishes is told to the
+        user as it finishes (watch_session).
         """
         return {"sessions": [{**entry, "watched": await _watched(overlays, SessionId(entry["id"]))} for entry in standing(sessions)]}
 
@@ -470,7 +485,7 @@ def _spoken_state(state: SessionState, dialog: Dialog | None) -> str:
             return _waiting_on(on)
         case (LetGo(on=on), _):
             return f"{_waiting_on(on)} at the keyboard, too late to answer by voice"
-        case (Unanswered() | None, _):
+        case (None, _):
             return _stated(state)
 
 
@@ -506,18 +521,65 @@ def _waiting_on(on: Blocker) -> str:
             return "waiting for the user to approve its plan"
 
 
-def watch_session_tool(sessions: Sessions, overlays: Overlays) -> Tool:
-    async def watch_session(session: str, watch: bool) -> Result:
-        """Tell the user whenever a session stops and is waiting for them, or stop telling them.
+def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool:
+    async def tell_turn(session: str) -> Result:
+        """What a session's last finished turn did, as hands tells a turn when it finishes.
 
-        A session is not watched until the user asks: a stop of one they did not ask about is not said. What a session
-        asks them, a permission, a question, or a plan, is said whether it is watched or not. Call this when the user
-        asks to be told when a session stops or finishes, or to stop hearing about it. It lasts until they change it,
-        across restarts. Say the returned readback to the user.
+        Call this when the user asks what a session just did, how its last turn went, or what it is waiting on. Tell
+        them as the returned turn says to.
 
         Args:
             session: The session's id, from list_sessions.
-            watch: true to tell the user when it stops, false to stop telling them.
+        """
+        try:
+            id = _session_id(session)
+        except Rejected as error:
+            return {"error": str(error)}
+        news = recounts.of(id)
+        if news is None:
+            # [LAW:no-silent-failure] said as what it is, never as a turn that did nothing.
+            return {"error": f"no turn of {spoken_name(sessions, id)} has finished since hands started; read_session reads what it did before"}
+        return {"turn": news}
+
+    return tool(tell_turn)
+
+
+def turn_summaries_tool(home: Home) -> Tool:
+    async def turn_summaries(on: bool) -> Result:
+        """Turn spoken turn summaries on or off.
+
+        On, every turn any session finishes is told to the user as it finishes. Off, only a watched session's turns
+        are (watch_session), and any session's last turn is told when the user asks for it (tell_turn). What a session
+        asks them, a permission, a question, or a plan, is said either way. Call this when the user asks to hear every
+        session's turns, or to stop hearing them. It lasts until they change it, across restarts. Say the returned
+        readback to the user.
+
+        Args:
+            on: true to tell every finished turn, false to tell only watched sessions' turns.
+        """
+        to = "on" if on else "off"
+        try:
+            await asyncio.to_thread(set_summaries, home, to)
+        except OSError as error:
+            logger.error(f"turn_summaries could not set the switch {to}: {error}")
+            return {"error": str(error)}
+        return {"readback": described(to)}
+
+    return tool(turn_summaries, completes=True)
+
+
+def watch_session_tool(sessions: Sessions, overlays: Overlays) -> Tool:
+    async def watch_session(session: str, watch: bool) -> Result:
+        """Tell the user each turn a session finishes, as it finishes, or stop telling them.
+
+        A session is not watched until the user asks: with spoken summaries off, a turn of one they did not ask about is
+        told only when they ask for it (tell_turn). What a session asks them, a permission, a question, or a plan, is
+        said whether it is watched or not. Call this when the user asks to be told when a session finishes, or to stop
+        hearing about it. It lasts until they change it, across restarts. Say the returned readback to the user.
+
+        Args:
+            session: The session's id, from list_sessions.
+            watch: true to tell the user each turn it finishes, false to stop telling them.
         """
         try:
             id = _session_id(session)
@@ -529,21 +591,17 @@ def watch_session_tool(sessions: Sessions, overlays: Overlays) -> Tool:
         except (Rejected, OSError) as error:
             logger.error(f"watch_session could not set session {session!r}: {error}")
             return {"error": str(error)}
-        return {"readback": _watch_readback(spoken_name(sessions, id), watch, live.state)}
+        return {"readback": _watch_readback(spoken_name(sessions, id), watch)}
 
     return tool(watch_session, completes=True)
 
 
-def _watch_readback(name: str, watch: bool, state: SessionState) -> str:
-    match watch, state:
-        case True, Idle(nudged=True):
-            # Its nudge for this idle period was already decided, and dropped while it was unwatched: none comes again
-            # until it next stops, so the readback says it waits now rather than promise to tell it.
-            return f"{name} is already waiting for you. I'll tell you the next time it stops."
-        case True, _:
-            return f"I'll tell you when {name} is waiting for you."
-        case False, _:
-            return f"I won't tell you when {name} stops, only when it asks you something."
+def _watch_readback(name: str, watch: bool) -> str:
+    match watch:
+        case True:
+            return f"I'll tell you each turn {name} finishes."
+        case False:
+            return f"I won't tell you when {name} finishes a turn, only when it asks you something."
 
 
 class Resolved(TypedDict):

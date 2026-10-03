@@ -38,14 +38,12 @@ PLUGIN_DIR = "plugin"
 # .claude-plugin/marketplace.json.
 PLUGIN_ID = "hands@cc-hands"
 
-SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "Notification", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd")
+SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd")
 
 # [LAW:dataflow-not-control-flow] what each hook declares beyond its command, as a table; the rest take Claude Code's defaults.
 _DECLARED_TIMEOUTS: Mapping[str, int] = {"PermissionRequest": PERMISSION_HOOK_TIMEOUT_SECONDS}
 # [LAW:dataflow-not-control-flow] how long the shim waits on the daemon for each hook that waits on it.
 _WAITS: Mapping[str, float] = {**_DECLARED_TIMEOUTS, "Stop": STOP_POST_TIMEOUT_SECONDS}
-# The notifications hands hears, by Claude Code's notification_type; the rest never spawn the shim.
-_MATCHERS: Mapping[str, str] = {"Notification": "idle_prompt"}
 # Fired for every tool call, so they run in the background and never hold the agent up. They are how the
 # daemon learns that a tool it was asked about ran after all: its dialog was answered at the keyboard.
 _IN_BACKGROUND = frozenset({"PostToolUse", "PostToolUseFailure"})
@@ -61,17 +59,12 @@ def plugin_hooks() -> dict[str, object]:
     # Exec form (`args` set): Claude Code spawns the launcher itself, with no shell between, and the launcher execs
     # Python, so the shim is the process Claude Code spawned and its parent is the claude process whose pid it records.
     command = {"type": "command", "command": f"${{CLAUDE_PLUGIN_ROOT}}/{LAUNCHER}", "args": ["-m", SHIM_MODULE]}
-    return {"hooks": {event: [{**_matched(event), "hooks": [{**command, **_declared(event)}]}] for event in SUBSCRIBED}}
+    return {"hooks": {event: [{"hooks": [{**command, **_declared(event)}]}] for event in SUBSCRIBED}}
 
 
 def rendered() -> str:
     """hooks.json's text, byte for byte as it is checked in."""
     return json.dumps(plugin_hooks(), indent=2) + "\n"
-
-
-def _matched(event: str) -> dict[str, object]:
-    matcher = _MATCHERS.get(event)
-    return {} if matcher is None else {"matcher": matcher}
 
 
 def _declared(event: str) -> dict[str, object]:

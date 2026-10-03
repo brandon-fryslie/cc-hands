@@ -123,7 +123,7 @@ Known = Session | Gone        # what the registry holds per session
 # word, never inferred from a hook or a record.
 SessionState = Unreported | Idle | Running
 @dataclass(frozen=True)
-class Idle:      stamp: Stamp; due: Instant | None; after: PromptId | None; nudged: bool  # one idle period
+class Idle:      stamp: Stamp; after: PromptId | None  # one idle period
 @dataclass(frozen=True)
 class Running:   status: Busy | Waiting | Shell | Unknown; stamp: Stamp; idled: Stamp
 
@@ -363,37 +363,27 @@ chosen by a table, not by code that looks at the event `[LAW:dataflow-not-contro
   change, a subagent finishing, a session going idle.
 
 Today no table chooses; two queues stand in for it. `Heard` carries permission
-announcements and the idle nudge as `Speak` and permission requests as `Narrate`,
+announcements as `Speak` and permission requests as `Narrate`,
 relayed as soon as the reducer emits them. Relayed is not heard: everything hands says
 unprompted of the sessions, under either telling, passes the floor (`voice/floor.py`) ahead
 of the user aggregator, and from the press that opens the user's turn until that turn is
-sent, it waits there in order and follows the user's words (`Yielded` in the audit log). The nudge is the `idle_prompt`
-notification, the only one the `Notification` hook's matcher lets through; it is
-spoken once per idle period, because `Idle.nudged` turns true as it is said and an
-idle read after a run, or with a turn heard since `Idle.after`, builds a fresh one. Claude
-Code sends no `idle_prompt` after an interrupted turn, so an idle period that ends a turn
-carries `Idle.due`, and the tick nudges it when the notification would have come, if it
-has not. A session first read at its prompt went idle before hands followed it: its
-`due` is None, and only `idle_prompt` nudges it. A session with a turn opened that the
-status is yet to say runs is not nudged. `asking` on the last turn (`Told` or `Untold`)
-makes the nudge "X has a question for you." rather than "X is waiting for you." It is true for the two things the telling
-counts as waiting: a reply the `Stop` carried that the narration's own `asked_in`
-reads as asking, and a turn that ended at an `AskUserQuestion` dialog with nothing run
-after it, the dialog still up or escaped. An Escape kills the dialog's hook, so the session's
-dialog becomes `Unanswered`, and a tool running, a message typed, or another permission
-clears it. The reducer cannot call `open_questions` itself, since the
-`Questioned` steps it reads live only in the transcript. The two still differ where a dialog
-was declined with a message and Claude answered in text alone before stopping: that is heard
-as the Escape it looks like, the common case. `Story` carries finished turns and sessions gone in one ordered
-queue, because an end spoken at once was heard before the last turn it ended. A finished
-turn reaches the intermediary as a turn of its own — an `LLMMessagesAppendFrame` with
-`run_llm` on for an API model, a `Narrated` frame for the brain — with no player and no
-segments. `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
+sent, it waits there in order and follows the user's words (`Yielded` in the audit log).
+`Story` carries finished turns and sessions gone in one ordered
+queue, because an end spoken at once was heard before the last turn it ended. Every
+finished turn is summarised once (`voice/narrator.py`, `_news`): the session's last words,
+what its record adds, and what it is waiting on, for the model to say in its own words. How
+that one summary reaches the user is its `Delivery`: as a turn of the intermediary's own
+— an `LLMMessagesAppendFrame` with `run_llm` on for an API model, a `Narrated` frame for
+the brain — when spoken summaries are on (`summaries`), or when they are off and the
+session is watched (`watched`); otherwise it is held (`on request`) and `tell_turn` hands it
+to the model when the user asks. Each session's last summary is held in `Recounts` either
+way, and each is a `Recounted` audit line naming its delivery. Nothing of a turn is said as
+written past the model, and nothing is said of a session that sits at its prompt.
+`Heard` also carries a mode change as a `Note`, which enters the intermediary's context
 with `run_llm` off. Each session has an overlay, `normal` or `watched`, one file per
-session under `~/.hands/overlays` that the relay reads for everything `Heard` carries
-(`hands/core/attention.py`): a `normal` session's nudge is dropped, a `watched` one's is
-spoken, and everything else passes whatever the overlay; the user sets it by voice with
-`watch_session`, and each routing is a `Routed` audit line. The player, the routing
+session under `~/.hands/overlays` (`hands/core/attention.py`), which the narrator reads at
+every finished turn; the user sets it by voice with `watch_session`, and the summaries
+switch with `turn_summaries` or `/hands:summaries`. The player, the routing
 table, the priority queue, and `coalesce` below are planned.
 
 The routing table is a value in `core`:
@@ -402,7 +392,7 @@ The routing table is a value in `core`:
 Route = Literal["speak", "play", "narrate", "note", "drop"]
 DEFAULT_POLICY: Mapping[EventKind, Route] = {
     "stop": "play", "progress": "note", "blocked": "narrate", "subagent_stop": "note",
-    "idle_prompt": "speak", "gone": "speak", "session_start": "note", ...
+    "gone": "speak", "session_start": "note", ...
 }
 ```
 
@@ -983,10 +973,10 @@ the turn said — the session's own account, whose author knows what PR 68 is �
 compaction; then what hands read of the turn that those words may not say, from the
 narration tree; then the question it is waiting on, which the intermediary is told to end
 on. If the brain cannot take the turn, hands says as written that it could not tell it,
-and the question. Each working session is told at `SessionStart`, by the plugin's shim, to end every
-turn with a concise, speakable overview. A turn the user stopped before it did anything is said as
-written with no model, and with summaries off a finished turn is not narrated. Each
-telling is written to the audit log as `Recounted`, with whether the model was handed it.
+and nothing more. Each working session is told at `SessionStart`, by the plugin's shim, to end every
+turn with a concise, speakable overview. A turn the user stopped before it did anything is handed
+on like any other, its record adding that the user interrupted it. Each summary is written to
+the audit log as `Recounted`, with how it was delivered.
 A transcript that cannot be read is said as "cc-hands finished a turn, and I could not
 read it." without the model and out of the context, and logged as a `Failure` line.
 
@@ -1127,7 +1117,7 @@ nothing but an interruption followed, and what the closing text asks — the tur
 since a question it worked past was answered or did not need one. A dialog Claude went on
 past was declined with a message or refused by a hook, as 5 of the 94 unanswered in this machine's
 transcripts were; the other 89 were escaped, and ended the turn on the question. `asked_in` is the one reading of a
-text for questions, used on Claude's closing text by the narration and the nudge
+text for questions, used on Claude's closing text by the narration
 `[LAW:one-source-of-truth]`. A question put to the listener outright counts wherever
 it stands ("want me to do it?" before two more sections). Where the text ends, an offer
 counts ("Say the word and I'll do it."), and so do a choice and any other question, unless
@@ -1228,8 +1218,7 @@ stopped with Escape, which fires no Stop, is never heard to end. The
   stopped, with no case for any one way of stopping it. A prompt whose turn is open and
   unread was cancelled by an Escape during its hooks, which sets `idle` ~70 ms later, or
   taken and stopped before the tail read its record: either way its turn ends here, and is
-  told as itself only if a record says it ran. The session is `Idle` at once, with its
-  nudge timed by hands (no `idle_prompt` follows a double Escape). Claude Code sets `idle`
+  told as itself only if a record says it ran. The session is `Idle` at once. Claude Code sets `idle`
   before the transcript says how the turn ended: an Escape's interrupt record is
   written 37 ms after (2.1.283), and an Escape'd turn's Stop can fire after it. So the turn is
   kept `Untold` and is told, once, at the first of five events: its Stop

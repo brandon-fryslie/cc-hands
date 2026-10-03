@@ -156,14 +156,8 @@ class LetGo:
     on: Blocker
 
 
-@dataclass(frozen=True)
-class Unanswered:
-    """Its question dialog was closed unanswered, by an Escape at it, which kills the hook and fires no post-tool hook
-    and no Stop, and it has run nothing since: what the turn is waiting on if it ends here. See `_asking` in the reducer."""
-
-
 # The dialog the session is at, or left behind it, as its hooks tell it: Claude Code's idle ends it.
-Dialog = Held | LetGo | Unanswered
+Dialog = Held | LetGo
 
 
 # [LAW:one-source-of-truth] whether a session runs, waits at a dialog, or sits at its prompt is Claude Code's status, and
@@ -179,16 +173,9 @@ class Idle:
     """Claude Code says the session is at its prompt."""
 
     stamp: Stamp
-    # When hands says the session waits, on its own clock: Claude Code sends no idle_prompt at all for some idle periods
-    # (none in 75 s after an interrupt, 2.1.282), and its own comes 61 s after a Stop (2.1.281). None for a session that
-    # sat at its prompt before hands followed it: no turn's end was heard to time one from, so only idle_prompt says it.
-    due: Instant | None
     # The turn last heard when the period began. An idle read with another turn heard since begins a new period, though
     # no busy was read between, as for a turn that ran between two reads.
     after: PromptId | None
-    # [LAW:no-ambient-temporal-coupling] one idle period is one Idle value: the nudge is spoken once because speaking
-    # it is this value changing, and an idle read after a run builds a fresh one, so the next period can be nudged again.
-    nudged: bool = False
 
 
 @dataclass(frozen=True)
@@ -241,9 +228,6 @@ class Untold:
     # On Claude Code's clock, from the idle it set: [LAW:no-ambient-temporal-coupling] how late hands reads the transcript
     # moves when the telling goes out, never what it holds.
     by: Stamp
-    # Whether it ended on a question or an offer, so the nudge can say it has one rather than only that it waits: see
-    # `_asking` in the reducer.
-    asking: bool
 
 
 @dataclass(frozen=True)
@@ -253,7 +237,6 @@ class Told:
 
     turn: PromptId | None = None
     others: frozenset[PromptId] = frozenset()
-    asking: bool = False
 
 
 Turn = Opened | Untold | Told

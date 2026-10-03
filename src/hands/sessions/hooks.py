@@ -7,7 +7,7 @@ from typing import get_args
 from loguru import logger
 
 from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
-from hands.core.events import Attached, Ended, EndReason, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished, Waited
+from hands.core.events import Attached, Ended, EndReason, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished
 from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.core.status import Stamp
 from hands.sessions.home import Home
@@ -52,8 +52,6 @@ def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, r
             return Prompted(session, at, _mode(payload), _prompt(payload))
         case "Stop":
             return Stopped(session, _closing(payload), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"), heard, request)
-        case "Notification":
-            return _notified(session, payload.text("notification_type"))
         case "PermissionRequest":
             return PermissionRequested(session, at, request, _call(payload), _mode(payload))
         case "PostToolUse" | "PostToolUseFailure":
@@ -103,15 +101,6 @@ def _option(option: object) -> Option:
     fields = Payload.of(option, "each option")
     # Claude Code sends an empty description as often as none, and both mean the option has nothing to add.
     return Option(fields.text("label"), fields.optional_text("description") or None)
-
-
-def _notified(session: SessionId, kind: str) -> Waited:
-    match kind:
-        case "idle_prompt":
-            return Waited(session)
-        case other:
-            # The hook's matcher lets only idle_prompt through, so another type is a settings file hands did not write.
-            raise Rejected(f"notification {other!r} is not one hands handles")
 
 
 def _closing(payload: Payload) -> str | None:
