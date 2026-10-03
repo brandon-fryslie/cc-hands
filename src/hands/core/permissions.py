@@ -1,5 +1,6 @@
 """What the user decides about a session waiting on them, what came of it, and the one function that decides."""
 
+import re
 from dataclasses import dataclass, replace
 
 from hands.core.effects import Allow, AllowWith, Answers, Approve, Decision, Deny, Effect, HookReply, KeepPlanning, Reply
@@ -78,3 +79,18 @@ def _waits_on(session: Known, request: RequestId) -> bool:
             return held == request
         case _:
             return False
+
+
+# [LAW:types-are-the-program] a yes is said only in these words, and at least one of them says it: anything else the user
+# says to a permission request, however it opens, is theirs to be read in full by what asked, and runs nothing.
+_ASSENT = frozenset({"yes", "yeah", "yep", "yup", "sure", "ok", "okay", "alright", "right", "fine", "good", "allow", "go", "ahead", "do"})
+_ASSENTING = _ASSENT | {"it", "please", "for", "that's", "all", "sounds"}
+
+
+def heard(words: str) -> Allow | Deny:
+    """What a spoken answer to a permission request decides: an Allow for a plain yes, and for anything else a Deny that
+    carries the user's words, so what asked hears what they said instead."""
+    said = re.findall(r"[a-z']+", words.lower())
+    if said and set(said) <= _ASSENTING and _ASSENT & set(said):
+        return Allow()
+    return Deny(f'The user was asked whether to allow this, and answered by voice, so it did not run. Do what they said, which was: "{words}"')

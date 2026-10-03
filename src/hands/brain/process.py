@@ -37,10 +37,12 @@ from aiohttp import web
 from loguru import logger
 
 from hands.brain.mcp import SERVER_NAME
-from hands.core.effects import Text
-from hands.core.session import ESCAPES, SessionId, pasted
+from hands.core.effects import Allow, Deny, Text
+from hands.core.session import ESCAPES, Permission, SessionId, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
-from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainRefused, Record
+from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainPermission, BrainRefused, Record
+from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS, PERMISSION_HOOK_TIMEOUT_SECONDS
+from hands.sessions.hooks import called, hook_output
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
@@ -68,28 +70,25 @@ SLIM = {
 # on another account or off the subscription without a word, so none is passed on.
 FOREIGN_CREDENTIALS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
 
-@dataclass(frozen=True)
-class Dialog:
-    """A dialog Claude Code would open for someone at its keyboard: the hook field that names what asked, and hands' answer."""
-
-    asker: str
-    answer: object
-
-
-# A dialog nobody can see would hold its turn open forever with no hook to say so (2.1.288), so each is answered no
-# at its hook, and the brain hears why: a permission its setup would ask about, and an MCP server asking for input.
-NOBODY = "Nobody is at this Claude Code's keyboard to answer a permission dialog, so what its settings would ask about is refused."
-DIALOGS = {
-    "PermissionRequest": Dialog("tool_name", {"hookSpecificOutput": {
-        "hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": NOBODY},
-    }}),
-    "Elicitation": Dialog("mcp_server_name", {"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}}),
-}
+# A dialog nobody can see would hold its turn open forever with no hook to say so (2.1.288). A permission its setup asks
+# about is held at its hook while the user is asked by voice, in a turn of theirs; anything else is answered no there,
+# and the brain hears why.
+NOBODY = "Nobody can be asked: no turn of the user's is in flight to ask in, so what this Claude Code's settings would ask about is refused."
+UNREAD = "hands could not read this permission request, so it is refused."
+UNVOICED = "Nobody sees this dialog: ask the user in your reply instead, and they will answer in their next turn."
+UNANSWERED = "The user was asked whether to allow this and did not answer in time, so it did not run."
+SPOKEN_OVER = "The user spoke over this turn before they could be asked, so it did not run."
+STOPPED = "The user stopped this turn, so it did not run."
+DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}}
+# What each hook is answered with when its body cannot be read: a dialog is kept shut, and the rest ask nothing.
+UNREADABLE: Mapping[str, Mapping[str, object]] = {"PermissionRequest": hook_output(Deny(UNREAD)), "Elicitation": DECLINED}
 
 # What the brain posts to hands, each to its own path: a typed turn taken, a turn ended, a turn the API failed, and a
 # dialog about to open. Escape ends a turn with none of them (measured on 2.1.285), so a turn told to stop is over when
 # it is told.
-HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", *DIALOGS)
+HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation")
+# [LAW:single-enforcer] a held permission's hook lives as long as a working session's, and is denied by the same deadline.
+HOOK_SECONDS = {"PermissionRequest": PERMISSION_HOOK_TIMEOUT_SECONDS}
 
 # The terminal the brain draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
@@ -160,8 +159,13 @@ def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
         "--append-system-prompt", launch.instruction,
         # hands' tools are how the brain reaches the sessions at all; a deny rule in its own setup still outranks this.
         "--allowedTools", f"mcp__{SERVER_NAME}",
-        "--settings", json.dumps({"hooks": {event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}"}]}] for event in HOOKS}}),
+        "--settings", json.dumps({"hooks": {event: [{"hooks": [_hook(f"{hooks}/{event}", HOOK_SECONDS.get(event))]}] for event in HOOKS}}),
     ]
+
+
+def _hook(url: str, seconds: int | None) -> dict[str, object]:
+    """One http hook: how long Claude Code waits on it when hands holds it, and Claude Code's own wait when hands does not."""
+    return {"type": "http", "url": url} if seconds is None else {"type": "http", "url": url, "timeout": seconds}
 
 
 def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> dict[str, str]:
@@ -399,10 +403,40 @@ def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:
     return ["/bin/sh", "-c", ': <>"$0"; exec "$@"', terminal, *argv]
 
 
+# Compared by identity: each is its own request, however alike two calls are.
+@dataclass(frozen=True, eq=False)
+class Asked:
+    """A permission the brain's own setup asks about, held at its hook while the user is asked: settled once, by what they
+    answer, by nobody answering in time, or by the turn's end, whichever comes first."""
+
+    permission: Permission
+    decision: "asyncio.Future[Allow | Deny]"
+
+    @property
+    def open(self) -> bool:
+        return not self.decision.done()
+
+    def settle(self, decision: Allow | Deny) -> None:
+        # The first to settle it answers its hook; any later one comes after that answer went.
+        if self.open:
+            self.decision.set_result(decision)
+
+
+@dataclass(frozen=True)
+class _Posted:
+    """A hook the brain posted, to the path of its event, and the body its post is answered with."""
+
+    event: str
+    said: Payload
+    reply: "asyncio.Future[Mapping[str, object]]"
+
+
 @dataclass
 class _Turn:
     answered: asyncio.Future[BrainAnswered]
     taken: asyncio.Future[str]  # the prompt id Claude Code gave the turn when it took it
+    # Told of each permission the turn holds at its hook, to put it to the user.
+    asks: Callable[[Asked], None]
 
     @property
     def prompt(self) -> str | None:
@@ -417,7 +451,7 @@ class Brain:
         claude: ClaudeCode,
         session: SessionId,
         typist: Typist,
-        hooks: "asyncio.Queue[Payload]",
+        hooks: "asyncio.Queue[_Posted]",
         listener: web.AppRunner,
         sockets: Path,
         config_dir: Path,
@@ -438,6 +472,11 @@ class Brain:
         # [LAW:no-ambient-temporal-coupling] the turn in flight is the brain's own state, not its asker's: it is over
         # when its hook says so, whether or not anyone still waits on it, and the next is typed only then.
         self._turn: _Turn | None = None
+        # The permissions held at their hooks now: one for each call of a reply that asks. Nothing is typed into the brain
+        # while one is held but the Escape that stops its turn: what is typed goes to the dialog Claude Code draws, whose
+        # Return says yes (2.1.288, spike hands-brain-d8g.aur). A turn is typed only once the last has ended, and the stage
+        # presses no Escape while the user is being asked.
+        self._held: set[Asked] = set()
         self._typing: set[asyncio.Task[None]] = set()
         # When the last stop pressed Ctrl-C, on the event loop's clock.
         self._cleared = float("-inf")
@@ -448,19 +487,20 @@ class Brain:
     def pid(self) -> int:
         return self._claude.pid
 
-    async def ask(self, text: str) -> BrainAnswered:
+    async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainAnswered:
+        """One turn of the brain's, from its typing to its end; `asks` is told of each permission the turn holds for the user."""
         while self._turn is not None:
             await asyncio.wait({self._turn.answered})
         if self._exit.done():
             raise BrainGone(f"the brain had exited ({self._exit.result()}) before it was asked")
         loop = asyncio.get_running_loop()
-        turn = self._turn = _Turn(loop.create_future(), loop.create_future())
+        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), asks)
         # An asker that stops waiting leaves the turn to be typed and to run to its end, which is still the brain's to hear.
         self._keep(self._send(text, turn))
         return await asyncio.shield(turn.answered)
 
     def _keep(self, typing: Coroutine[None, None, None]) -> None:
-        """Types on in a task of the brain's own, whoever asked for it."""
+        """Runs on in a task of the brain's own, whoever asked for it."""
         task = asyncio.create_task(typing)
         self._typing.add(task)
         task.add_done_callback(self._typing.discard)
@@ -503,6 +543,9 @@ class Brain:
                 if self._turn is not turn:
                     return
                 await self._type(lambda typist: typist.press("escape"))
+                # Escape refuses a permission held at its dialog and leaves its hook unanswered for good (2.1.288, spike
+                # hands-brain-d8g.aur): it is settled here, and nothing can answer it later.
+                self._settle(Deny(STOPPED))
                 # Escape puts a prompt stopped before any reply back in the input, which the next turn typed would join;
                 # Ctrl-C clears it. On an input left empty it arms Claude Code's exit instead, which a second Ctrl-C within
                 # 800ms takes, whatever was typed between (2.1.285, read from its source 2026-09-30); so no two are
@@ -554,24 +597,74 @@ class Brain:
 
     async def _run_out(self) -> int:
         code = await asyncio.shield(self._claude.exit)
+        self._settle(Deny(f"the brain exited ({code})"))
         # [LAW:no-silent-failure] a turn that can never end is said to have failed, not left waiting.
         if self._turn is not None:
             self._over(self._turn, BrainGone(f"the brain exited ({code}) before it answered"))
         self._record(BrainExited(code, self._claude.shown()))
         return code
 
-    async def _hear_hooks(self, hooks: "asyncio.Queue[Payload]") -> None:
+    async def _hear_hooks(self, hooks: "asyncio.Queue[_Posted]") -> None:
         while True:
-            self._hook(await hooks.get())
+            posted = await hooks.get()
+            match posted.event:
+                case "PermissionRequest":
+                    self._keep(self._permit(posted))
+                case "Elicitation":
+                    posted.reply.set_result(DECLINED)
+                    self._refused(posted.said)
+                case _:
+                    # Asks nothing of the turn, so it is answered at once, whatever it says.
+                    posted.reply.set_result({})
+                    self._hook(posted.said)
+
+    async def _permit(self, posted: _Posted) -> None:
+        """Answers a permission request: held while the user is asked, when a turn of theirs is in flight to ask in."""
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        try:
+            prompt, asked = posted.said.optional_text("prompt_id"), called(posted.said)
+        except Rejected as error:
+            logger.warning(f"the brain posted a permission request hands cannot read: {error}")
+            posted.reply.set_result(UNREADABLE["PermissionRequest"])
+            return
+        turn = self._turn
+        match asked:
+            case Permission(tool=tool) if turn is not None and not turn.answered.done():
+                held = Asked(asked, loop.create_future())
+                self._held.add(held)
+                turn.asks(held)
+                try:
+                    await asyncio.wait({held.decision}, timeout=PERMISSION_DEADLINE_SECONDS)
+                finally:
+                    self._held.discard(held)
+                held.settle(Deny(UNANSWERED))
+                decision = held.decision.result()
+            case Permission(tool=tool):
+                decision = Deny(NOBODY)
+            case _:
+                # A dialog of questions or a plan is never put to the user by voice: the brain's own words ask them.
+                decision, tool = Deny(UNVOICED), posted.said.text("tool_name")
+        # [LAW:nothing-unseen] one line for each, however it was settled.
+        self._record(BrainPermission(prompt, tool, decision, loop.time() - began))
+        posted.reply.set_result(hook_output(decision))
+
+    def _settle(self, decision: Allow | Deny) -> None:
+        """Settles every permission held now: its turn is over, so no answer of the user's can reach it."""
+        for held in self._held:
+            held.settle(decision)
+
+    def _refused(self, said: Payload) -> None:
+        """An MCP server's ask for input, answered no in a turn or between turns, where it has no prompt id; said here too,
+        so the refusal is not only the brain's to tell."""
+        try:
+            self._record(BrainRefused(said.optional_text("prompt_id"), "Elicitation", said.optional_text("mcp_server_name")))
+        except Rejected as error:
+            logger.warning(f"the brain posted an Elicitation hook that does not parse: {error}")
 
     def _hook(self, said: Payload) -> None:
         try:
             event, session = said.text("hook_event_name"), said.session_id()
-            if event in DIALOGS:
-                # Answered no at the listener, in a turn or between turns, where it has no prompt id; said here too, so
-                # the refusal is not only the brain's to tell.
-                self._record(BrainRefused(said.optional_text("prompt_id"), event, said.optional_text(DIALOGS[event].asker)))
-                return
             prompt = said.text("prompt_id")
             failed = f"{said.optional_text('error')}: {said.optional_text('last_assistant_message')}"
         except Rejected as error:
@@ -610,7 +703,7 @@ async def start(launch: Launch, record: Record) -> Brain:
     claude = brain_claude()
     if not launch.fritter.is_file():
         raise Unstartable(f"no fritter at {launch.fritter} to run the brain under: run `hands install-fritter`")
-    hooks: asyncio.Queue[Payload] = asyncio.Queue()
+    hooks: asyncio.Queue[_Posted] = asyncio.Queue()
     listener, url = await _listen(hooks)
     # A unix socket's path is capped near 104 bytes on macOS, so not under the brain's own directory.
     sockets = Path(tempfile.mkdtemp(prefix="hands-brain-"))
@@ -631,18 +724,21 @@ async def start(launch: Launch, record: Record) -> Brain:
     return Brain(running, launch.session, typist, hooks, listener, sockets, launch.station.config_dir, record)
 
 
-async def _listen(hooks: "asyncio.Queue[Payload]") -> tuple[web.AppRunner, str]:
-    """The listener the brain posts its hooks to, on loopback, each hook put on `hooks` as it comes."""
+async def _listen(hooks: "asyncio.Queue[_Posted]") -> tuple[web.AppRunner, str]:
+    """The listener the brain posts its hooks to, on loopback, each hook put on `hooks` as it comes and answered with what
+    the brain settles for it."""
 
     async def hook(request: web.Request) -> web.Response:
+        # The event read off the path, so a body hands cannot read is still answered as its hook asks.
+        event = request.match_info["event"]
         try:
-            hooks.put_nowait(Payload.parse(await request.read()))
+            said = Payload.parse(await request.read())
         except Rejected as error:
-            logger.warning(f"the brain posted a hook hands cannot read: {error}")
-        # A dialog's no, read off its path so a body hands cannot read still keeps the dialog shut; an empty answer for
-        # a hook that asks nothing of the turn.
-        dialog = DIALOGS.get(request.match_info["event"])
-        return web.json_response({} if dialog is None else dialog.answer)
+            logger.warning(f"the brain posted a {event} hook hands cannot read: {error}")
+            return web.json_response(UNREADABLE.get(event, {}))
+        reply: asyncio.Future[Mapping[str, object]] = asyncio.get_running_loop().create_future()
+        hooks.put_nowait(_Posted(event, said, reply))
+        return web.json_response(await reply)
 
     app = web.Application()
     app.router.add_post("/{event}", hook)

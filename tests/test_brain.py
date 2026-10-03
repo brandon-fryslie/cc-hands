@@ -20,9 +20,13 @@ from loguru import logger
 
 from hands.brain.mcp import McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Asides, aside_command
-from hands.brain.process import SLIM, Brain, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.core.effects import Allow, Deny
+from hands.core.permissions import heard
+from hands.core.session import Permission
+from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.payload import Payload
-from hands.sessions.audit import AsideAnswered, BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainRefused, Called, Entry, McpConnected
+from hands.sessions.audit import AsideAnswered, BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainPermission, BrainRefused, Called, Entry, McpConnected
 from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
@@ -123,6 +127,11 @@ def station(tmp: Path) -> Station:
     return Station(tmp / "brain", workdir(tmp / "brain"), "claude-sonnet-5", "http://127.0.0.1:1")
 
 
+def unasked(asked: Asked) -> None:
+    """A turn's teller of permissions, for a turn that asks none."""
+    pytest.fail(f"a turn that asks nothing held {asked.permission}")
+
+
 def launch(tmp: Path, fritter: Path = Path("/nonexistent/fritter")) -> Launch:
     return Launch(station(tmp), "You are hands.", '{"mcpServers": {}}', SessionId("b1"), fritter)
 
@@ -160,9 +169,12 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert argv[argv.index("--allowedTools") + 1] == "mcp__hands"
     assert argv[argv.index("--mcp-config") + 1] == launch(tmp_path).mcp_config
     assert [argv[argv.index(flag) + 1] for flag in ("--setting-sources", "--append-system-prompt", "--session-id")] == ["user", "You are hands.", "b1"]
-    assert json.loads(argv[argv.index("--settings") + 1]) == {"hooks": {
-        event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}"}]}] for event in ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation")
-    }}
+    hooks = json.loads(argv[argv.index("--settings") + 1])["hooks"]
+    assert {event: hooks.pop(event) for event in ("UserPromptSubmit", "Stop", "StopFailure", "Elicitation")} == {
+        event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}"}]}] for event in ("UserPromptSubmit", "Stop", "StopFailure", "Elicitation")
+    }
+    # A permission is held while the user is asked, as long as a working session's is.
+    assert hooks == {"PermissionRequest": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:7/PermissionRequest", "timeout": PERMISSION_HOOK_TIMEOUT_SECONDS}]}]}
     # A side question's Claude Code is the same slim one, closed whatever the brain's setup holds: no tools, no server.
     bare = aside_command(Path("/real/claude"), "claude-sonnet-5", SessionId("a1"), "what now?")
     assert bare[bare.index("--tools") + 1] == "" and bare[bare.index("--session-id") + 1] == "a1" and "--strict-mcp-config" in bare
@@ -192,8 +204,8 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_bot
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
     try:
-        assert await brain.ask("what is running?") == BrainAnswered("p1", None)
-        assert await brain.ask("/and now?") == BrainAnswered("p2", None)
+        assert await brain.ask("what is running?", unasked) == BrainAnswered("p1", None)
+        assert await brain.ask("/and now?", unasked) == BrainAnswered("p2", None)
     finally:
         await brain.stop()
     assert (tmp_path / "brain" / "cwd").is_dir()
@@ -211,40 +223,114 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_bot
     ]
 
 
-async def test_what_the_brains_setup_would_ask_about_is_refused_and_its_turn_still_ends(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+def permissions(recorded: list[Entry]) -> list[tuple[str | None, str, Allow | Deny]]:
+    """The permissions the brain's setup asked about, as the log says each was settled."""
+    return [(entry.prompt, entry.tool, entry.decision) for entry in recorded if isinstance(entry, BrainPermission)]
+
+
+async def test_a_permission_the_brains_setup_asks_about_holds_its_turn_until_answered_and_only_a_yes_runs_the_tool(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
+    held: list[Asked] = []
+    notes = tmp_path / "notes.txt"
+    no = heard("No, leave it.")
+    assert isinstance(no, Deny)
     brain = await start(launch(tmp_path, fritter), recorded.append)
     try:
-        assert await asyncio.wait_for(brain.ask("write"), 10) == BrainAnswered("p1", None)
+        turn = asyncio.create_task(brain.ask("write", held.append))
+        await until(lambda: len(held) == 1)
+        assert held[0].permission == Permission("Write", {"file_path": str(notes), "content": "hello"})
+        # Held: the turn waits on the user, and the tool has not run.
+        await asyncio.sleep(0.3)
+        assert not turn.done() and not notes.exists()
+        held[0].settle(Allow())
+        assert await asyncio.wait_for(turn, 10) == BrainAnswered("p1", None)
+        assert notes.read_text() == "hello"
+        notes.unlink()
+        turn = asyncio.create_task(brain.ask("write", held.append))
+        await until(lambda: len(held) == 2)
+        held[1].settle(no)
+        assert await asyncio.wait_for(turn, 10) == BrainAnswered("p2", None)
+        assert not notes.exists()
     finally:
         await brain.stop()
-    assert recorded[1:5] == [BrainAsked("write"), BrainRefused("p1", "PermissionRequest", "Write"), BrainRefused("p1", "Elicitation", "probe"), BrainAnswered("p1", None)]
+    # The brain heard each decision, the no with the user's words; nothing was typed into it while it held one.
+    assert typed(tmp_path) == [
+        ["prompt", " write"], ["permission", "allow", ""], ["elicitation", "decline"],
+        ["prompt", " write"], ["permission", "deny", no.message], ["elicitation", "decline"],
+    ]
+    assert permissions(recorded) == [("p1", "Write", Allow()), ("p2", "Write", no)]
+    assert BrainRefused("p2", "Elicitation", "probe") in recorded
 
 
-async def test_a_dialog_is_answered_no_and_said_between_turns_and_when_its_body_does_not_parse() -> None:
-    hooks: asyncio.Queue[Payload] = asyncio.Queue()
-    listener, url = await _listen(hooks)  # pyright: ignore[reportPrivateUsage]
+async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("hands.brain.process.PERMISSION_DEADLINE_SECONDS", 0.3)
+    recorded: list[Entry] = []
+    held: list[Asked] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
     try:
-        async with aiohttp.ClientSession() as client:
-            async with client.post(f"{url}/Elicitation", data=b"not json") as reply:
-                assert reply.status == 200 and (await reply.json())["hookSpecificOutput"]["action"] == "decline"
+        assert await asyncio.wait_for(brain.ask("write", held.append), 10) == BrainAnswered("p1", None)
     finally:
-        await listener.cleanup()
+        await brain.stop()
+    assert held[0].decision.result() == Deny(UNANSWERED)
+    assert permissions(recorded) == [("p1", "Write", Deny(UNANSWERED))]
+    assert not (tmp_path / "notes.txt").exists()
+
+
+async def test_a_turn_stopped_while_it_holds_a_permission_refuses_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    recorded: list[Entry] = []
+    held: list[Asked] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
+    try:
+        turn = asyncio.create_task(brain.ask("write", held.append))
+        await until(lambda: len(held) == 1)
+        brain.interrupt()
+        assert await asyncio.wait_for(turn, 10) == BrainAnswered("p1", None)
+    finally:
+        await brain.stop()
+    assert permissions(recorded) == [("p1", "Write", Deny(STOPPED))]
+    assert not (tmp_path / "notes.txt").exists()
+
+
+async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answered_no_and_said() -> None:
+    hooks: asyncio.Queue[_Posted] = asyncio.Queue()  # pyright: ignore[reportPrivateUsage]
+    listener, url = await _listen(hooks)  # pyright: ignore[reportPrivateUsage]
     recorded: list[Entry] = []
     brain = object.__new__(Brain)
     brain.session = SessionId("b1")
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
-    # An MCP server asking while it connects, with no turn in flight and so no prompt id.
-    brain._hook(Payload({"hook_event_name": "Elicitation", "session_id": "b1", "mcp_server_name": "probe", "message": "Which?"}))  # pyright: ignore[reportPrivateUsage]
-    assert recorded == [BrainRefused(None, "Elicitation", "probe")]
+    brain._held = set()  # pyright: ignore[reportPrivateUsage]
+    brain._typing = set()  # pyright: ignore[reportPrivateUsage]
+    hearing = asyncio.create_task(brain._hear_hooks(hooks))  # pyright: ignore[reportPrivateUsage]
+
+    async def answered(event: str, body: bytes) -> dict[str, object]:
+        async with aiohttp.ClientSession() as client, client.post(f"{url}/{event}", data=body) as reply:
+            assert reply.status == 200
+            return (await reply.json())["hookSpecificOutput"]
+
+    try:
+        assert await answered("Elicitation", b"not json") == {"hookEventName": "Elicitation", "action": "decline"}
+        assert await answered("PermissionRequest", b"not json") == {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": UNREAD}}
+        # An MCP server asking while it connects, and a permission with no turn in flight to ask the user in: no prompt id.
+        elicited = {"hook_event_name": "Elicitation", "session_id": "b1", "mcp_server_name": "probe", "message": "Which?"}
+        assert (await answered("Elicitation", json.dumps(elicited).encode()))["action"] == "decline"
+        permission = {"hook_event_name": "PermissionRequest", "session_id": "b1", "tool_name": "Write", "tool_input": {"file_path": "/tmp/x"}}
+        assert (await answered("PermissionRequest", json.dumps(permission).encode()))["decision"] == {"behavior": "deny", "message": NOBODY}
+        # A dialog of questions is never put to the user by voice, in a turn or not: the brain is told to ask in words.
+        questions: dict[str, object] = {**permission, "tool_name": "AskUserQuestion", "tool_input": {"questions": []}}
+        assert (await answered("PermissionRequest", json.dumps(questions).encode()))["decision"] == {"behavior": "deny", "message": UNVOICED}
+    finally:
+        hearing.cancel()
+        await listener.cleanup()
+    assert recorded[0] == BrainRefused(None, "Elicitation", "probe")
+    assert permissions(recorded) == [(None, "Write", Deny(NOBODY)), (None, "AskUserQuestion", Deny(UNVOICED))]
 
 
 async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_failed_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     brain = await start(launch(tmp_path, fritter), lambda _entry: None)
     try:
-        assert await brain.ask("fail") == BrainAnswered("p1", "unknown: API Error: 400 refused")
-        assert await brain.ask("and now?") == BrainAnswered("p2", None)
+        assert await brain.ask("fail", unasked) == BrainAnswered("p1", "unknown: API Error: 400 refused")
+        assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
     finally:
         await brain.stop()
 
@@ -255,13 +341,13 @@ async def test_an_interrupt_is_escape_and_ends_the_turn_in_flight_and_the_next_t
     try:
         # With no turn in flight there is nothing to stop, and no Escape is pressed.
         brain.interrupt()
-        waiting = asyncio.create_task(brain.ask("wait"))
+        waiting = asyncio.create_task(brain.ask("wait", unasked))
         # As soon as it is typed, before Claude Code has said it took it: the Escape waits for that.
         await until(lambda: [" wait"] == [line[1] for line in typed(tmp_path) if line[0] == "prompt"])
         brain.interrupt()
         # Pressed once the turn is taken, not once it ends: the turn waiting on the Escape never ends without it.
         assert await asyncio.wait_for(waiting, 5) == BrainAnswered("p1", None)
-        assert await brain.ask("and now?") == BrainAnswered("p2", None)
+        assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
     finally:
         await brain.stop()
     # The Escape puts the stopped prompt back in the input, and Ctrl-C clears it before the next is typed.
@@ -274,7 +360,7 @@ async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_las
     pressed: list[float] = []
     try:
         for stops in (1, 2):
-            waiting = asyncio.create_task(brain.ask("wait"))
+            waiting = asyncio.create_task(brain.ask("wait", unasked))
             await until(lambda: sum(line[0] == "prompt" for line in typed(tmp_path)) == stops)
             brain.interrupt()
             await until(lambda: sum(line[0] == "ctrl_c" for line in typed(tmp_path)) == stops)
@@ -404,7 +490,7 @@ async def test_a_turn_is_typed_into_the_brain_at_once_while_a_side_question_wait
     try:
         stuck = asyncio.create_task(asides.ask("hold"))
         await until(lambda: any(line[0] == "btw" for line in typed(tmp_path)))
-        assert await asyncio.wait_for(brain.ask("are you listening?"), 5) == BrainAnswered("p1", None)
+        assert await asyncio.wait_for(brain.ask("are you listening?", unasked), 5) == BrainAnswered("p1", None)
         assert not stuck.done()
         stuck.cancel()
         await asyncio.wait({stuck})
@@ -462,10 +548,10 @@ async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_en
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
     with pytest.raises(BrainGone, match="exited"):
-        await brain.ask("die")
+        await brain.ask("die", unasked)
     assert await brain.exited() == 3
     with pytest.raises(BrainGone, match="before it was asked"):
-        await brain.ask("anyone?")
+        await brain.ask("anyone?", unasked)
     # The watch that saw it die and the stop at teardown both wait on the one exit.
     await brain.stop()
     [exited] = [entry for entry in recorded if isinstance(entry, BrainExited)]
@@ -479,8 +565,8 @@ async def test_a_turn_never_taken_fails_naming_the_setup_command_and_the_next_tu
     brain = await start(launch(tmp_path, fritter), lambda _entry: None)
     try:
         with pytest.raises(Untaken, match=f"mkdir -p {tmp_path / 'brain' / 'cwd'} && cd {tmp_path / 'brain' / 'cwd'} && CLAUDE_CONFIG_DIR={tmp_path / 'brain'} claude"):
-            await brain.ask("deaf")
-        assert await brain.ask("and now?") == BrainAnswered("p2", None)
+            await brain.ask("deaf", unasked)
+        assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
     finally:
         await brain.stop()
 
@@ -489,10 +575,10 @@ async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_n
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
     try:
-        asked = asyncio.create_task(brain.ask("slow"))
+        asked = asyncio.create_task(brain.ask("slow", unasked))
         await asyncio.sleep(0.1)
         asked.cancel()
-        assert await brain.ask("and now?") == BrainAnswered("p2", None)
+        assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
     finally:
         await brain.stop()
     turns = [entry for entry in recorded if isinstance(entry, BrainAsked | BrainAnswered)]

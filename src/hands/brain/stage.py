@@ -35,6 +35,9 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
 from hands.brain.mcp import SERVER_NAME
+from hands.brain.process import SPOKEN_OVER, Asked
+from hands.core.effects import Deny
+from hands.core.permissions import heard
 from hands.core.session import SessionId
 from hands.core.wire import (
     Answering,
@@ -56,17 +59,18 @@ from hands.core.wire import (
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Asker, BrainAnswered, BrainInterrupted, BrainSpoke, Record
-from hands.voice.speech import Aloud, Narrated
+from hands.voice.speech import Aloud, Narrated, brain_asks
 from hands.voice.tools import Result, Tool, silent, whole
 
 
 class Asking(Protocol):
-    """What the stage needs of the brain: the session its requests carry, a turn asked, and a turn told to stop."""
+    """What the stage needs of the brain: the session its requests carry, a turn asked, told of each permission it holds
+    for the user, and a turn told to stop."""
 
     @property
     def session(self) -> SessionId: ...
 
-    async def ask(self, text: str) -> BrainAnswered: ...
+    async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainAnswered: ...
 
     def interrupt(self) -> None: ...
 
@@ -88,8 +92,9 @@ _UNNAMED = ModelFailed(ErrorCategory.UNKNOWN)
 class _Turn:
     """One question to the brain, from its write to stdin to its result line."""
 
-    # Words heard on the wire and not yet handed to the speaker; None once the brain has said the turn is over.
-    said: asyncio.Queue[str | None]
+    # Words heard on the wire, and permissions the turn asks the user for, not yet handed to the speaker; None once the
+    # brain has said the turn is over.
+    said: asyncio.Queue[str | Asked | None]
     # Hands the words on to TTS until the turn is over or the user barges in.
     speaking: asyncio.Task[None]
     spoken: list[str]
@@ -110,6 +115,8 @@ class _Turn:
     # What hands says for the calls of a held request once the turn's own words are said, since the model is not asked to.
     readbacks: list[str] = field(default_factory=list[str])
     interrupted: bool = False
+    # The permissions the turn has put to the user, oldest first: the user's next words answer the oldest still open.
+    asked: list[Asked] = field(default_factory=list[Asked])
     # Told to stop by hands, which Claude Code 2.1.285 ends with an error_during_execution result: asked for, not a failure.
     stopped: bool = False
     # What the turn failed of, if it fails, as its latest request's answer told it: nothing named until that answer says.
@@ -118,6 +125,10 @@ class _Turn:
     def empty(self) -> bool:
         """The model answered the turn, the user did not speak over it, and nothing it answered said or did anything."""
         return bool(self.exchanges) and not (self.interrupted or self.replied)
+
+    def asking(self) -> Asked | None:
+        """The permission the user's next words answer: the oldest the turn holds for them still open, if any is."""
+        return next((asked for asked in self.asked if asked.open), None)
 
 
 class BrainStage(FrameProcessor):
@@ -153,6 +164,11 @@ class BrainStage(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame:
+            case LLMContextFrame(context=context) if self._turn is not None and (asked := self._turn.asking()) is not None:
+                # What the user says while the brain asks them is their answer, not a turn of their own: the brain is held
+                # mid-turn, and hears it as its tool's run or refusal.
+                if words := self._news(context):
+                    asked.settle(heard(words))
             case LLMContextFrame(context=context):
                 self._contexts.append((context, self._now()))
                 self._waiting.set()
@@ -199,11 +215,11 @@ class BrainStage(FrameProcessor):
         waited = self._now() - arrived
         note, self._broken_off = self._broken_off, ""
         text = "\n\n".join(part for part in (note, text) if part)
-        said: asyncio.Queue[str | None] = asyncio.Queue()
+        said: asyncio.Queue[str | Asked | None] = asyncio.Queue()
         spoken: list[str] = []
         turn = self._turn = _Turn(said, asyncio.create_task(self._speak(said, spoken), name="the brain's words"), spoken)
         try:
-            asked = asyncio.ensure_future(self._brain.ask(text))
+            asked = asyncio.ensure_future(self._brain.ask(text, lambda permission: self._put(turn, permission)))
             await asyncio.wait({asked})
         finally:
             self._turn = None
@@ -235,11 +251,28 @@ class BrainStage(FrameProcessor):
         for line in unsaid:
             await self.push_frame(TTSSpeakFrame(line, append_to_context=False))
 
-    async def _speak(self, said: asyncio.Queue[str | None], spoken: list[str]) -> None:
+    def _put(self, turn: _Turn, asked: Asked) -> None:
+        """Puts a permission the brain holds to the user, after what the turn has said so far."""
+        if turn.interrupted:
+            # Nothing more of the turn is said, so they would never hear it asked.
+            asked.settle(Deny(SPOKEN_OVER))
+            return
+        turn.asked.append(asked)
+        turn.said.put_nowait(asked)
+
+    async def _speak(self, said: asyncio.Queue[str | Asked | None], spoken: list[str]) -> None:
         await self.push_frame(LLMFullResponseStartFrame())
         while (words := await said.get()) is not None:
-            spoken.append(words)
-            await self.push_frame(LLMTextFrame(words))
+            match words:
+                case str():
+                    spoken.append(words)
+                    await self.push_frame(LLMTextFrame(words))
+                case Asked(permission=permission):
+                    # Said by hands, as its own sentence once the brain's words before it are: the response so far ends
+                    # first, so what TTS holds of it is said ahead of the question.
+                    await self.push_frame(LLMFullResponseEndFrame())
+                    await self.push_frame(TTSSpeakFrame(brain_asks(permission)))
+                    await self.push_frame(LLMFullResponseStartFrame())
         # Not on a barge-in, which cancels this: an end would have TTS say the sentence the user spoke over.
         await self.push_frame(LLMFullResponseEndFrame())
 
@@ -256,7 +289,8 @@ class BrainStage(FrameProcessor):
         """Stops the turn in flight being spoken; True when the brain is to be told to stop it too."""
         turn = self._turn
         # A turn none of whose requests has left is not being answered yet: the user's new words follow it as the next turn.
-        if turn is None or turn.interrupted or not turn.exchanges:
+        # One that asks the user a permission is waiting on what they say: their words answer it, and stop nothing.
+        if turn is None or turn.interrupted or not turn.exchanges or turn.asking() is not None:
             return False
         turn.interrupted = True
         # Cancelled before anything else runs, so no word of the turn follows the barge-in down the pipeline.

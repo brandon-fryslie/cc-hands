@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 from hands.core.attention import Delivery, Overlay, Route
 from hands.core.delta import Branched, PullRequested, Pushed
-from hands.core.effects import AfterEnd, AuditRecord, Effect, Heard, Holding, Input, Type, Unclosed, Unmatched, Unregistered, Unsettled
+from hands.core.effects import AfterEnd, Allow, AuditRecord, Deny, Effect, Heard, Holding, Input, Type, Unclosed, Unmatched, Unregistered, Unsettled
 from hands.core.events import Event
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
@@ -146,11 +146,23 @@ class BrainOffered:
 
 @dataclass(frozen=True)
 class BrainRefused:
-    """A dialog the brain's Claude Code would have opened, answered no by hands at its hook: nobody is at its keyboard."""
+    """A dialog the brain's Claude Code would have opened, answered no by hands at its hook: nobody is at its keyboard.
+    A permission is a BrainPermission, held while the user is asked."""
 
     prompt: str | None  # the prompt id of the turn that asked; none for what asked between turns
-    dialog: str  # its hook: PermissionRequest, or Elicitation from an MCP server
-    asker: str | None  # what asked, as the hook names it: the tool, or the MCP server
+    dialog: str  # its hook: Elicitation, from an MCP server
+    asker: str | None  # what asked, as the hook names it: the MCP server
+
+
+@dataclass(frozen=True)
+class BrainPermission:
+    """A permission the brain's own setup asked about, held at its hook while the user was asked, and how it was settled:
+    by their plain yes, by their other words, by nobody answering in time, or by the turn's end. `seconds` is how long it was held."""
+
+    prompt: str | None  # the prompt id of the turn that asked
+    tool: str
+    decision: Allow | Deny
+    seconds: float
 
 
 @dataclass(frozen=True)
@@ -526,6 +538,7 @@ Entry = (
     | BrainLaunched
     | BrainOffered
     | BrainRefused
+    | BrainPermission
     | BrainAsked
     | BrainAnswered
     | AsideAnswered
@@ -590,7 +603,7 @@ def level(entry: Entry) -> Level:
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
             | Applied() | Performed() | Typing() | LLMChosen() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | CopiesLost()
-            | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
+            | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Routed() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()
         ):

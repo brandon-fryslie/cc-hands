@@ -4,6 +4,7 @@ import json
 from itertools import pairwise
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import PurePath
 
 from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
 
@@ -245,6 +246,17 @@ def _asks(on: Blocker) -> str:
         case Plan(text=text):
             # Shown whole, however long: the model can only summarise what it was given.
             return f"has a plan for the user to approve:\n{text}\n"
+
+
+def brain_asks(on: Permission) -> str:
+    """What hands says for a permission the brain's own setup asks about: the tool, the file it would touch by name and
+    never by path, and that a yes allows it."""
+    match on.input:
+        case {"file_path": str() as path} | {"notebook_path": str() as path}:
+            what = f"{on.tool} on {PurePath(path).name}"
+        case _:
+            what = on.tool
+    return f"May I use {what}? Say yes to allow it."
 
 
 def _question(question: AskedQuestion) -> str:
