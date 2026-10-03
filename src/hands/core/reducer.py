@@ -291,6 +291,9 @@ def _dialog(event: Moving, dialog: Dialog | None, deadline: float) -> Dialog | N
         case (StatusReported(report=Report(status=status.Idle())), _):
             # At its prompt: no dialog is up, whether it was answered at the keyboard or escaped.
             return None
+        case (PermissionRequested(request=request), Held(request=held)) if held == request:
+            # The request it already waits on, heard again: its deadline and whether it was warned are its own, by request id.
+            return dialog
         case (PermissionRequested(at=at, request=request, on=on), _):
             return Held(on=on, request=request, deadline=at + deadline, warned=False)
         case (ToolFinished(call=call), Held(on=asked) | LetGo(on=asked)) if _same_call(asked, call):
