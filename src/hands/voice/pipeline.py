@@ -46,6 +46,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from hands.sessions.model_facts import ModelFault, ModelReplyEmpty
 from hands.voice.floor import Floor
+from hands.voice.refocus import Refocus
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.player import Player
@@ -218,7 +219,7 @@ class Voice:
     assistant_turns: LLMAssistantAggregator
 
 
-def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, player: Player, floor: Floor) -> Voice:
+def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, player: Player, floor: Floor, refocus: Refocus) -> Voice:
     """Wire mic, push-to-talk, Whisper on MLX, the model's stage, pocket-tts, speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and Whisper reads it off each
@@ -255,9 +256,10 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
 
     # Ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
     # context or the model's stage takes it, and follows the user's words when given back.
+    # Right behind the model's stage, so the focus moves to a session told of in order with the user's words to the model.
     # What the player says again enters just ahead of the speaker, and it reads what is played off the speaker's pushes.
     output = transport.output()
-    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, pieces, player.lines, tts, output, assistant_aggregator])
+    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, refocus, pieces, player.lines, tts, output, assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True),

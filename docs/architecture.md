@@ -1368,7 +1368,11 @@ in the daemon as typed state and the tools default to them.
 **Focus** is `SessionId | None`, or `Unreadable` when its file cannot be read, kept in the home's `focus` file (`hands.sessions.focus`)
 and read at each use. Every tool that acts on a session accepts the omission of its
 `session` argument as "the focus" (`defaulting_to_focus`), and a session it names wins
-over the focus. "Switch to cc-hands" is `focus_session`, with no confirmation. The
+over the focus. "Switch to cc-hands" is `focus_session`, with no confirmation. A
+session whose turn or question hands tells becomes the focus too, so the reply that
+follows reaches it (`hands.voice.refocus`). The move rides the pipeline as a `Told`
+frame behind the telling, in order with the user's words, so anything said before
+the telling was taken still goes to the session it was meant for. The
 brain is told the focus at the tail of every request, a Pipecat model in its startup
 note, and `list_sessions` gives it to either, so hands, not the prompt, answers
 "which one did you mean".

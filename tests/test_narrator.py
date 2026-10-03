@@ -22,9 +22,9 @@ from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.summaries import Summaries, summaries
 from hands.sessions.tail import Tails
-from hands.core.pending import News, Pending
+from hands.core.pending import Finished, News, Pending
 from hands.voice.narrator import Recount, Recounts, narrate, recount
-from hands.voice.speech import REPLY_SHOWN, Narrated, Pushed, Tailed, Telling, Unprompted, frames as render, told
+from hands.voice.speech import REPLY_SHOWN, Narrated, Pushed, Tailed, Telling, Told, Unprompted, frames as render, told
 from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
 
@@ -81,9 +81,12 @@ def unprompted(frame: Frame) -> Pending:
 
 
 def said(told: Pending | None, telling: Telling = Pushed()) -> Frame:
-    """The one frame the floor makes of what the narrator told, as it lets it go."""
+    """The frame the floor makes of what the narrator told, as it lets it go, and that it says the session was told of
+    behind it to an API model."""
     assert told is not None
-    [frame] = render(told, telling, lambda _: "cc-hands")
+    [frame, *after] = render(told, telling, lambda _: "cc-hands")
+    assert [each.session for each in after if isinstance(each, Told)] == ([SID] if isinstance(told, Finished) and isinstance(telling, Pushed) else [])
+    assert all(isinstance(each, Told) for each in after)
     return frame
 
 

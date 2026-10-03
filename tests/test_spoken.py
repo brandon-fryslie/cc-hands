@@ -23,7 +23,9 @@ from pipecat.tests.utils import run_test
 from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_transcript
+from hands.sessions.home import Home
 from hands.voice.floor import Floor
+from hands.voice.refocus import Refocus
 from hands.voice.player import Player
 from hands.voice.speech import Pushed
 from hands.voice.spoken import FenceAggregator, SpokenForm
@@ -356,12 +358,13 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         llm=FrameProcessor(),
         player=(player := Player(lambda _: None)),
         floor=Floor(lambda _: None, Pushed(), lambda id: id, dict),
+        refocus=Refocus(Home(Path("/nonexistent")), lambda _: None),
     )
     filters = given["text_filters"]
     assert isinstance(filters, list) and [type(one) for one in cast(list[object], filters)] == [SpokenForm]
     # And the model's reply reaches the filter in pieces a fenced block is never split across, past only where the
-    # player's lines enter, which lets it through.
-    assert isinstance(voice.llm.next, Pieces) and voice.llm.next.next is player.lines and player.lines.next is voice.tts
+    # player's lines enter, which lets it through, and the focus's move, which lets everything but a Told through.
+    assert isinstance(voice.llm.next, Refocus) and isinstance(voice.llm.next.next, Pieces) and voice.llm.next.next.next is player.lines and player.lines.next is voice.tts
     assert isinstance(pieced["text_aggregator"], FenceAggregator)
 
 

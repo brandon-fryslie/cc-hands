@@ -18,6 +18,7 @@ from hands.core.events import Joined, Prompted, StatusReported, Stopped
 from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.status import Idle, Report, Stamp
 from hands.sessions.audit import Entry, Failure, Recounted, failures_to
+from hands.sessions.focus import focused, set_focus
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.payload import Rejected
@@ -27,7 +28,7 @@ from hands.sessions.tail import Tails
 from hands.voice.narrator import Recount, Recounts, delivery, narrate, recount
 from hands.core.pending import News, Pending
 from hands.voice import speech
-from hands.voice.speech import Pushed, Unprompted, frames
+from hands.voice.speech import Pushed, Told, Unprompted, frames
 from hands.voice.tools import tell_turn_tool, turn_summaries_tool, set_overlay_tool
 
 ONE = SessionId("one")
@@ -49,8 +50,8 @@ def handed(told: Frame | Pending | None) -> str:
     """What the floor hands the model of what the narrator told, as it lets it go: one message, and the model asked to answer it."""
     pending = told.pending if isinstance(told, Unprompted) else told
     assert pending is not None and not isinstance(pending, Frame)
-    [frame] = frames(pending, Pushed(), names=lambda id: id)
-    assert isinstance(frame, LLMMessagesAppendFrame) and frame.run_llm
+    [frame, told] = frames(pending, Pushed(), names=lambda id: id)
+    assert isinstance(frame, LLMMessagesAppendFrame) and frame.run_llm and isinstance(told, Told)
     match frame.messages:
         case [{"role": "user", "content": str() as content}]:
             return content
@@ -85,8 +86,8 @@ async def test_every_way_a_turn_is_told_tells_the_one_summary(tmp_path: Path) ->
     for delivered in ("summaries", "watched", "on request", "muted"):
         recounts = Recounts()
         frame = await recount(Tails(sessions), member.id, PromptId("p1"), None, lambda _: None, Delta(), delivered, recounts)
-        asked = await tell_turn_tool(sessions, recounts).body(session=member.id)
-        assert asked == {"turn": "\n\n".join(speech.told(member.id, "one", (telling,)) for telling in cast(Recount, recounts.of(member.id)).tellings), "now": "not reported yet"}
+        asked = await tell_turn_tool(sessions, recounts, Home(tmp_path)).body(session=member.id)
+        assert asked == {"turn": "\n\n".join(speech.told(member.id, "one", (telling,)) for telling in cast(Recount, recounts.of(member.id)).tellings), "now": "not reported yet", "focused_session": member.id}
         told[delivered] = handed(frame) if frame is not None else str(asked["turn"])
         assert (frame is None) == (delivered in ("on request", "muted"))
     assert len(set(told.values())) == 1
@@ -98,13 +99,14 @@ async def test_a_turn_is_asked_for_only_of_a_running_session_and_one_with_nothin
     member = membership(tmp_path, "one")
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     recounts = Recounts()
-    asked = tell_turn_tool(sessions, recounts)
+    asked = tell_turn_tool(sessions, recounts, Home(tmp_path))
     assert await asked.body(session=member.id) == {"error": "no running session has the id 'one'; take one from list_sessions"}
     await sessions.apply(Joined(member, "startup"))
     recounts.put(member.id, PromptId("p1"), None)
     assert await asked.body(session=member.id) == {
         "turn": "[hands] The Claude Code session one finished a turn with nothing in it hands could tell. Tell the user so.",
         "now": "not reported yet",
+        "focused_session": member.id,
     }
     recounts.put(member.id, PromptId("p1"), News(None, "Told.", "", "", ()))
     recounts.unread(member.id, PromptId("p1"))
@@ -162,11 +164,23 @@ async def test_a_session_whose_overlay_cannot_be_read_is_told_as_a_normal_one_an
     assert any(isinstance(entry, Failure) and "cannot read the overlay of session unreadable" in entry.message and "loud" in entry.message for entry in entries)
 
 
+async def test_a_turn_asked_for_moves_the_focus_to_its_session_as_a_turn_told_as_it_finishes_does(tmp_path: Path) -> None:
+    member = membership(tmp_path, "one")
+    home = Home(tmp_path)
+    set_focus(home, SessionId("other"))
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member, "startup"))
+    recounts = Recounts()
+    recounts.put(member.id, PromptId("p1"), News(None, "Told.", "", "", ()))
+    assert (await tell_turn_tool(sessions, recounts, home).body(session=member.id))["focused_session"] == member.id
+    assert focused(home) == member.id
+
+
 async def test_a_turn_asked_for_before_any_has_finished_is_said_to_be_missing(tmp_path: Path) -> None:
     member = membership(tmp_path, "one")
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member, "startup"))
-    result = await tell_turn_tool(sessions, Recounts()).body(session=member.id)
+    result = await tell_turn_tool(sessions, Recounts(), Home(tmp_path)).body(session=member.id)
     assert "error" in result and "has finished since hands started" in str(result["error"])
 
 
@@ -256,7 +270,7 @@ async def test_a_muted_session_s_turn_is_held_with_summaries_on_and_told_when_as
         narrating.cancel()
     assert queued.empty() and "session other (id other) finished a turn" in told
     assert [(entry.session, entry.delivered) for entry in entries if isinstance(entry, Recounted)] == [(muted.id, "muted"), (other.id, "summaries")]
-    asked = await tell_turn_tool(sessions, recounts).body(session=muted.id)
+    asked = await tell_turn_tool(sessions, recounts, Home(tmp_path)).body(session=muted.id)
     assert "session muted (id muted) finished a turn" in str(asked["turn"]) and REPLY.split(". ")[0] in str(asked["turn"])
 
 
