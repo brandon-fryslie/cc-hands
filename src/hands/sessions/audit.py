@@ -4,11 +4,13 @@
 
 Each line is a value from this module or from the core, encoded the same way: its type's name under
 "type" and its fields beside it, nested values alike, with the wall-clock time the line was written
-under "at". Nothing here decides what happened; it records what the rest of the daemon already decided.
+under "at", and whether it tells of something that went wrong under "level", between the two. Nothing here
+decides what happened; it records what the rest of the daemon already decided.
 """
 
 import json
 import os
+import traceback
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
@@ -27,7 +29,7 @@ from hands.core.delta import Branched, PullRequested, Pushed
 from hands.core.effects import AuditRecord, Effect, Heard, Input, Type
 from hands.core.events import Event
 from hands.core.session import SessionId
-from hands.core.wire import Exchanged
+from hands.core.wire import Exchanged, Garbled, Reached, Unreached
 from hands.sessions.model_facts import ModelFact
 
 
@@ -383,10 +385,13 @@ class BacklogUnread:
 
 @dataclass(frozen=True)
 class Failure:
-    """An error the daemon logged: where it was raised and what it said."""
+    """An error the daemon logged: the module and function that logged it, what it said, the file and line it was logged
+    at, and, when it was logged with an exception, each frame the exception came up through, the raising one last."""
 
     source: str
     message: str
+    where: str
+    trace: tuple[str, ...]
 
 
 Entry = (
@@ -426,6 +431,21 @@ Entry = (
     | Failure
 )
 Record = Callable[[Entry], None]
+Level = Literal["error", "info"]
+
+
+def level(entry: Entry) -> Level:
+    """Whether a line tells of something that went wrong: a Failure, an exchange the API refused or never answered or
+    whose stream hands could not read, or an entry whose `error` says what did."""
+    # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field:
+    # not by a list of types that the next record leaves out, nor by an "error" deep in a body the API sent.
+    match entry:
+        case Failure() | Exchanged(reply=Unreached() | Reached(body=Garbled())):
+            return "error"
+        case Exchanged(reply=Reached(status=status)):
+            return "error" if status >= 400 else "info"
+        case _:
+            return "error" if getattr(entry, "error", None) is not None else "info"
 
 
 class AuditLog:
@@ -441,7 +461,7 @@ class AuditLog:
         # [LAW:single-enforcer] the log watches what the daemon does and never changes it: a line it cannot encode or
         # write is lost here, not a send's answer, a tool's result, a permission's question, or a background task.
         try:
-            line = json.dumps({"at": self._clock().isoformat(timespec="milliseconds"), **encoded(entry)}, ensure_ascii=False)
+            line = json.dumps({"at": self._clock().isoformat(timespec="milliseconds"), "level": level(entry), **encoded(entry)}, ensure_ascii=False)
         except TypeError as error:
             # [LAW:no-silent-failure] a bug in what was recorded: logged as an error, it is a Failure line, whose fields always encode.
             logger.error(f"the audit log cannot encode a {type(entry).__name__} line: {error}")
@@ -494,7 +514,15 @@ def failures_to(record: Record) -> "Callable[[Message], None]":
         logged = message.record
         exception = logged["exception"]
         detail = "" if exception is None or exception.value is None else f": {type(exception.value).__name__}: {exception.value}"
-        record(Failure(source=f"{logged['name']}:{logged['function']}", message=f"{logged['message']}{detail}"))
+        frames = () if exception is None or exception.traceback is None else traceback.extract_tb(exception.traceback)
+        record(
+            Failure(
+                source=f"{logged['name']}:{logged['function']}",
+                message=f"{logged['message']}{detail}",
+                where=f"{logged['file'].path}:{logged['line']}",
+                trace=tuple(f"{frame.filename}:{frame.lineno} in {frame.name}" for frame in frames),
+            )
+        )
 
     return sink
 
