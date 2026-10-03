@@ -14,7 +14,7 @@ from typing import Any, cast
 import pytest
 
 from hands.sessions.audit import AuditLog, Entry, Exported, segment, segments
-from hands.sessions.otlp import BATCH_SPANS, Exporter, exporting, rejected, spans
+from hands.sessions.otlp import BATCH_SPANS, STOPPED, Exporter, exporting, rejected, spans
 from hands.sessions.wide import WideEvent, annotate, count, unit
 
 STARTED = datetime(2026, 10, 3, 12, 0, 0, 250_000, tzinfo=UTC)
@@ -213,10 +213,48 @@ def test_a_stop_waits_on_a_collector_that_never_answers_for_one_timeout_and_says
     assert stopped < 1.0
     assert sorted(span for exported in recorded for span in exported.spans) == sorted(event.span_id for event in events)
     assert all(exported.error is not None for exported in recorded)
-    assert any(exported.error == "hands stopped before the batch could be sent" for exported in recorded)
+    assert any(exported.error == STOPPED for exported in recorded)
 
 
 def test_with_no_collector_the_log_alone_records_each_event(tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit", clock=datetime.now)
     with exporting(None, log.record) as record:
         assert record == log.record
+
+
+def test_an_event_sent_once_the_exporter_is_closed_is_recorded_unsent(collector: Collector) -> None:
+    recorded: list[Exported] = []
+    exporter = Exporter(collector.url, recorded.append)
+    exporter.close()
+    late = _event()
+    exporter.send(late)
+    assert [(exported.spans, exported.error) for exported in recorded] == [((late.span_id,), STOPPED)]
+
+
+def test_an_error_answer_cut_short_is_said_and_the_batches_after_it_are_still_sent() -> None:
+    # A collector, or a proxy before it, that answers an error status and drops the connection inside its body.
+    with socket.socket() as cut:
+        cut.bind(("127.0.0.1", 0))
+        cut.listen(16)
+
+        def answer() -> None:
+            while True:
+                try:
+                    connection, _ = cut.accept()
+                except OSError:
+                    return
+                with connection:
+                    connection.recv(1 << 20)
+                    connection.sendall(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 100\r\n\r\ncut")
+
+        threading.Thread(target=answer, daemon=True).start()
+        recorded: list[Exported] = []
+        exporter = Exporter(f"http://127.0.0.1:{cut.getsockname()[1]}", recorded.append, linger=0.01)
+        first, second = _event(span_id="0000000000000001"), _event(span_id="0000000000000002")
+        exporter.send(first)
+        while not recorded:
+            time.sleep(0.01)
+        exporter.send(second)
+        exporter.close()
+    assert [exported.spans for exported in recorded] == [(first.span_id,), (second.span_id,)]
+    assert recorded[0].error is not None and "IncompleteRead" in recorded[0].error

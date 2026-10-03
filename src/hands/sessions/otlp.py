@@ -38,6 +38,8 @@ LINGER_SECONDS = 1.0
 BATCH_SPANS = 512
 # How long one batch's request may take before the collector is counted unreachable.
 TIMEOUT_SECONDS = 5.0
+# Why a batch a stop left no time for, or one sent once the exporter was closed, was not sent.
+STOPPED = "hands stopped before the batch could be sent"
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 # OTLP's Status codes: UNSET, OK, ERROR. A cancelled run neither succeeded nor failed.
@@ -81,15 +83,24 @@ class Exporter:
         self._record = record
         self._linger = linger
         self._timeout = timeout
-        # [LAW:no-shared-mutable-globals] close alone writes it, once; the thread reads it as it sends each batch.
+        # [LAW:no-shared-mutable-globals] close alone writes it, once, finite from then on; the thread reads it as it
+        # sends each batch, and send to know the queue's end is marked.
         self._deadline = math.inf
         # [LAW:no-shared-mutable-globals] send puts, the thread alone takes; nothing else reads it.
         self._queue: queue.SimpleQueue[WideEvent | _Closed] = queue.SimpleQueue()
+        # [LAW:no-ambient-temporal-coupling] held by send and close alike, so no event is put behind the end's mark.
+        self._marking = threading.Lock()
         self._thread = threading.Thread(target=self._run, name="otlp export", daemon=True)
         self._thread.start()
 
     def send(self, event: WideEvent) -> None:
-        self._queue.put(event)
+        """Queue `event`; one sent once this is closed, as work a stop did not wait for ends, is recorded unsent."""
+        with self._marking:
+            closed = math.isfinite(self._deadline)
+            if not closed:
+                self._queue.put(event)
+        if closed:
+            self._record(Exported(self._collector, (event.span_id,), 0.0, STOPPED))
 
     def close(self) -> None:
         """Send what is queued and stop: every event sent before this is in an Exported line when it returns. The batches
@@ -97,8 +108,9 @@ class Exporter:
         that is gone holds up a stop by the timeout, however much is queued."""
         # [LAW:no-ambient-temporal-coupling] set before the end of the queue is marked, so every batch sent from here on
         # reads it, whether or not the thread has reached the mark yet.
-        self._deadline = time.monotonic() + self._timeout
-        self._queue.put(_CLOSED)
+        with self._marking:
+            self._deadline = time.monotonic() + self._timeout
+            self._queue.put(_CLOSED)
         self._thread.join(self._timeout + 1)
         if self._thread.is_alive():
             # [LAW:no-silent-failure] the last batch is still in flight and dies with the process.
@@ -131,7 +143,7 @@ class Exporter:
     def _deliver(self, batch: Sequence[WideEvent]) -> None:
         began = time.monotonic()
         left = min(self._timeout, self._deadline - began)
-        refused = self._sent(batch, left) if left > 0 else "hands stopped before the batch could be sent"
+        refused = self._sent(batch, left) if left > 0 else STOPPED
         self._record(Exported(self._collector, tuple(event.span_id for event in batch), (time.monotonic() - began) * 1000, refused))
 
     def _sent(self, batch: Sequence[WideEvent], timeout: float) -> str | None:
@@ -153,8 +165,10 @@ def _why(error: Exception) -> str:
     # The collector's reason for an error status is the body it answered with, an OTLP Status.
     try:
         return f"{said}: {error.read().decode(errors='replace')}"
-    except OSError as unread:
-        return f"{said}, its body unread: {unread}"
+    # [LAW:no-silent-failure] said in the reason: a body cut short (IncompleteRead) or a dropped connection must not end
+    # the thread, and every batch after this one with it.
+    except Exception as unread:
+        return f"{said}, its body unread: {type(unread).__name__}: {unread}"
 
 
 def rejected(body: bytes, sent: int) -> str | None:
