@@ -250,9 +250,11 @@ relied on, because the parent often says only "the review found three issues."
 
 **Rule:** the parent's narration reads the parent transcript, where a subagent is one
 `Agent` call and its report. A subagent's own transcript, at
-`<session>/subagents/agent-<id>.jsonl` with its type and description in the `.meta.json`
-beside it, is summarised as its own narration and linked to the parent call by
-`toolUseId`.
+`<session>/subagents/agent-<id>.jsonl`, is read where the subagent reports back and told
+as its own part of that turn, linked by the `agentId` the parent's call and the
+notification both name. The `.meta.json` beside it is not read: a foreground fork's has
+no description, and hundreds of transcripts here have none at all, while the parent's
+call and the notification's `<summary>` always name the job.
 
 ### 22. TTS output leaks into the mic
 

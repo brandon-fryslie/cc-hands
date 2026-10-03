@@ -116,6 +116,8 @@ def test_a_subagent_still_running_has_no_report_to_give(steps: tuple[Step, ...])
     delegated = steps[10]
     assert isinstance(delegated, Delegated) and delegated.agent == "Explore"
     assert delegated.description == "Find claude-code JSONL parser" and delegated.report is None
+    # Its own transcript is named by the id its launch recorded, which is how its work is read when it reports back.
+    assert delegated.id == "a34628175d7de2545"
 
 
 def test_a_question_carries_the_options_offered_and_the_one_the_user_chose(steps: tuple[Step, ...]) -> None:

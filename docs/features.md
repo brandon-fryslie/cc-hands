@@ -65,7 +65,7 @@ what each has and what remains.
   runners write; the tail that follows every live transcript from its watermark ten
   times a second, measured live at 96 to 305 ms from a record being written to its
   step, median 160 ms; and at `Stop`, the turn told from the tail rather than reread,
-  skipping subagent records, with a turn that stops twice told only the steps the
+  with a turn that stops twice told only the steps the
   first stop did not tell. Remaining: steps reaching the reducer as events, which is
   what progress while working is built on.
 - **The turn's git delta.** Built: at `UserPromptSubmit` the daemon records where the
@@ -129,10 +129,11 @@ what each has and what remains.
   session's are notes. Done live: a focused session running tests is heard doing so
   before it stops, and a long explanation is summarised before it finishes.
 - **Subagent narration.** After the first working version. A subagent's transcript
-  under the session's `subagents/` directory is tailed like the parent's, its type
-  and description come from the `.meta.json` beside it, and its report is
-  summarised as its own narration linked to the parent's `Agent` call. Done when
-  "what did the reviewer find" is answered from the subagent's own steps.
+  under the session's `subagents/` directory is read with the parent's own fold
+  where the subagent reports back, named by the job its parent gave it, and its
+  steps are a part of that turn to open, linked by the `agentId` the parent's call
+  and the notification name. Done when "what did the
+  reviewer find" is answered from the subagent's own steps.
 
 ## Loud daemon (`hands-liveness-x20`)
 

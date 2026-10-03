@@ -11,6 +11,17 @@ from hands.core.delta import Branched, Changed, Committed, Delta, GitChange, Pul
 # the closing reply a Stop hook hands over in the milliseconds before Claude Code writes its record.
 Ref = NewType("Ref", str)
 
+# The id Claude Code gives a subagent, which names its own transcript, `<session>/subagents/agent-<id>.jsonl`.
+AgentId = NewType("AgentId", str)
+
+
+@dataclass(frozen=True)
+class AgentTask:
+    """A subagent, and the job it was given as its parent described it."""
+
+    id: AgentId
+    description: str
+
 
 @dataclass(frozen=True)
 class Said:
@@ -80,12 +91,16 @@ class Planned:
 
 @dataclass(frozen=True)
 class Delegated:
-    """A subagent Claude dispatched. `report` is None while it is still running: an async agent reports back as a notification, which opens a turn of its own."""
+    """A subagent Claude dispatched. `report` is None while it is still running: an async agent reports back as a notification, which opens a turn of its own.
+
+    `id` names its own transcript; None for a call whose result names no subagent, as a failed one does.
+    """
 
     ref: Ref | None
     agent: str | None
     description: str
     report: str | None
+    id: AgentId | None
 
 
 @dataclass(frozen=True)
@@ -136,10 +151,14 @@ class Asked:
 
 @dataclass(frozen=True)
 class Notified:
-    """A background task's notification, which Claude Code hands the session as its next prompt."""
+    """A background task's notification, which Claude Code hands the session as its next prompt.
+
+    `agent` is the subagent reporting back; None for a notification from a background command or a monitor.
+    """
 
     ref: Ref | None
     text: str
+    agent: AgentTask | None
 
 
 @dataclass(frozen=True)

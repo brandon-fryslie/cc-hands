@@ -328,7 +328,9 @@ class Recounted:
     one place a developer who cannot see the screen can find out what "more on that" has to open. `questions`
     is what the session is waiting on an answer to. `opened`
     is the kind of thing that opened the turn — Asked, Notified, Commanded, or Shelled — so a turn the user's own
-    command opened is told apart from one they asked for.
+    command opened is told apart from one they asked for. `subagents` names each subagent that reported back in the
+    turn and whose own transcript was read for it, and `unread` each one whose transcript could not be read, so a turn
+    told without a subagent's work is told apart from one no subagent reported back to.
     """
 
     session: str
@@ -338,6 +340,8 @@ class Recounted:
     questions: tuple[str, ...]
     delivered: Delivery
     opened: str
+    subagents: tuple[str, ...]
+    unread: tuple[str, ...]
 
 
 @dataclass(frozen=True)

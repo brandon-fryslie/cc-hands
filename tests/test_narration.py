@@ -25,7 +25,7 @@ ROOMY = Budget(opening=10_000, said=10_000, input=10_000, result=10_000, steps=1
 
 
 def told(*steps: object, delta: Delta = Delta()) -> Narration:
-    return narration(Turn(Asked(None, "fix the test"), tuple(steps)), delta)  # pyright: ignore[reportArgumentType]
+    return narration(Turn(Asked(None, "fix the test"), tuple(steps)), delta, ())  # pyright: ignore[reportArgumentType]
 
 
 def topics(narrated: Narration) -> list[str]:
@@ -247,7 +247,7 @@ def test_every_kind_of_step_lands_in_some_section_so_nothing_a_turn_did_is_dropp
         Tested(None, "pytest", 12, 0, (), ""),
         Looked(None, "Read", "/a/b.py", "x"),
         Planned(None, "write it", "completed"),
-        Delegated(None, "Explore", "find the thing", "found it"),
+        Delegated(None, "Explore", "find the thing", "found it", None),
         Other(None, "Skill", "{}", "loaded", False),
     )
     narrated = told(*steps)

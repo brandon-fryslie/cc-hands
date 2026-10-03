@@ -822,11 +822,19 @@ narrated only the text, which is the least of what happened (failure mode 2). He
 recognisers cover the rest, and the length budget applies to what is spoken, after
 summarising.
 
-**Subagents.** On the parent's tail, where `isSidechain` is false, a subagent is one
-`Agent` call and its report, which becomes `Delegated`. Its own records are in
-`<session>/subagents/agent-<id>.jsonl`, with `agentType`, `description`, and the
-parent's `toolUseId` in the `.meta.json` beside it. Tailing those is later work
-(failure mode 21).
+**Subagents.** On the parent's transcript a subagent is one call and its report, which
+becomes `Delegated`: an `Agent` call, or a `Skill` call whose result says `forked`, as
+/code-review's does. Either result carries the subagent's `agentId`. Its own records are
+in `<session>/subagents/agent-<id>.jsonl`, every one with `isSidechain` true; the
+parent's transcript holds none of them. Where the subagent reports back, in a task
+notification whose `<task-id>` is its `agentId` and whose `<summary>` reads `Agent
+"<job>" ...`, or in the result of a call that ran it in the foreground, its transcript is
+folded by the backfill's own fold and told as a part of that turn of its own, named by the
+job the parent gave it, "the subagent's work on <job>" (failure mode 21). The record the transcript
+starts from is that job, not work: a subagent's prompt, or for a fork, the parent's
+launching call copied in. A notification whose summary names no agent is a background
+command or a monitor. The notification is read with the telling that answers it, never
+again with a later telling of the same turn.
 
 **Results outside the transcript.** A formatter, a code generator, or a `sed` in a
 shell command changes files that no `Edited` step names. So at `UserPromptSubmit` the
@@ -946,9 +954,9 @@ written as the words typed — `/compact` ahead of its compaction, a skill run i
 a slash and a name, in a record with no `promptSource`, which Claude Code writes on every prompt it sends Claude, one
 that opens with a slash included. The record `/compact` writes once it has run, under the same prompt id, is that
 same command (`hands.core.turn.recorded`), not a second turn. The steps are assistant text (`Said`) and tool
-calls matched to their results by id, each handed to `recognise`; subagent records and
-thinking blocks are skipped, thinking because it is how Claude reached a result rather
-than a result.
+calls matched to their results by id, each handed to `recognise`; thinking blocks are
+skipped, because thinking is how Claude reached a result rather than a result. A
+subagent's records are in its own file, and are folded only from there.
 
 **A turn can stop twice.** Another hook may block a `Stop`, and the same turn then runs
 on to a later one. So the tail keeps, per session, how many of the open turn's steps were

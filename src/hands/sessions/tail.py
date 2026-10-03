@@ -50,6 +50,8 @@ class Telling:
     through: int
     # What the turn's told part ends on once this is: compared with the reply a later Stop of the same turn carries.
     ends_on: Ending
+    # The file the turn was read from, beside which the subagents it ran keep transcripts of their own.
+    transcript: Path
 
 
 # How many turns that ended are kept for their tellings: a narrator that many turns behind on one session is not behind,
@@ -269,7 +271,7 @@ class Tails:
             # report than a fresh one, and saying which it is here is what keeps the opening from being asked twice.
             standing = Answering() if heard == 0 else Continuing(heard)
             through = reading.turn.forgotten + len(untold)
-            return Telling(session, Turn(reading.turn.opening, tuple(shown), standing), reading.number, through, ending if stand_in is None else StoodIn(stand_in))
+            return Telling(session, Turn(reading.turn.opening, tuple(shown), standing), reading.number, through, ending if stand_in is None else StoodIn(stand_in), following.path)
 
     async def spoken(self, telling: Telling) -> None:
         """Mark what a telling held as told, on the turn it was made of, whatever has opened since, and let go of it.
