@@ -141,7 +141,7 @@ class BrainOffered:
 class BrainRefused:
     """A dialog the brain's Claude Code would have opened, answered no by hands at its hook: nobody is at its keyboard."""
 
-    prompt: str  # the prompt id of the turn that asked
+    prompt: str | None  # the prompt id of the turn that asked; none for what asked between turns
     dialog: str  # its hook: PermissionRequest, or Elicitation from an MCP server
     asker: str | None  # what asked, as the hook names it: the tool, or the MCP server
 

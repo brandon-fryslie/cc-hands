@@ -37,13 +37,28 @@ def test_anthropic_url_and_model_come_from_the_environment(monkeypatch: pytest.M
     assert backend_from_env(HOME) == AnthropicBackend(base_url="https://api-chicago.codexapi.pro", api_key="k", model="claude-other")
 
 
-def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
+def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(monkeypatch: pytest.MonkeyPatch, fake_claude: Path, tmp_path: Path) -> None:
     for var in ("HANDS_LLM_URL", "HANDS_LLM_MODEL", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HANDS_LLM", "claude")
-    assert backend_from_env(HOME) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=Path("/Users/someone/.hands/brain"), account="brain@example.com")
+    home = Home(tmp_path / ".hands")
+    home.brain.mkdir(parents=True)
+    (home.brain / "settings.json").write_text('{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false}')
+    assert backend_from_env(home) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account="brain@example.com")
     monkeypatch.setenv("HANDS_LLM_MODEL", "claude-other")
-    assert backend_from_env(HOME).model == "claude-other"
+    assert backend_from_env(home).model == "claude-other"
+
+
+def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_switches(monkeypatch: pytest.MonkeyPatch, fake_claude: Path, tmp_path: Path) -> None:
+    monkeypatch.delenv("HANDS_LLM_URL", raising=False)
+    monkeypatch.setenv("HANDS_LLM", "claude")
+    home = Home(tmp_path / ".hands")
+    home.brain.mkdir(parents=True)
+    with pytest.raises(SystemExit, match="settings could not be read"):
+        backend_from_env(home)
+    (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}')
+    with pytest.raises(SystemExit, match='its account\'s syncClaudeAiSkills: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'):
+        backend_from_env(home)
 
 
 def test_the_brain_is_logged_as_reaching_anthropics_api_through_the_proxy_on_its_account() -> None:

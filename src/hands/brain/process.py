@@ -221,6 +221,22 @@ def login(config_dir: Path, base_url: str) -> str:
     return logged_in(config_dir, base_url)
 
 
+def account_kept_out(config_dir: Path) -> None:
+    """Raises Unstartable unless the brain's settings.json keeps out the skills and plugins its login's account syncs.
+
+    They are Brandon's, never the brain's, and settings.json is the only place Claude Code reads either switch from
+    (2.1.288): not --settings, and not the environment. Left out, each is on."""
+    settings = config_dir / "settings.json"
+    fix = f'set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in {settings}'
+    try:
+        said = Payload.parse(settings.read_bytes())
+        synced = [switch for switch in ("syncClaudeAiSkills", "syncClaudeAiPlugins") if said.fields.get(switch) is not False]
+    except (OSError, Rejected) as error:
+        raise Unstartable(f"the brain's settings could not be read ({error}): {fix}") from None
+    if synced:
+        raise Unstartable(f"the brain would load its account's {' and '.join(synced)}: {fix}")
+
+
 def logged_in(config_dir: Path, base_url: str) -> str:
     """The subscription account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has none."""
     try:
@@ -551,9 +567,13 @@ class Brain:
     def _hook(self, said: Payload) -> None:
         try:
             event, session = said.text("hook_event_name"), said.session_id()
+            if event in DIALOGS:
+                # Answered no at the listener, in a turn or between turns, where it has no prompt id; said here too, so
+                # the refusal is not only the brain's to tell.
+                self._record(BrainRefused(said.optional_text("prompt_id"), event, said.optional_text(DIALOGS[event].asker)))
+                return
             prompt = said.text("prompt_id")
             failed = f"{said.optional_text('error')}: {said.optional_text('last_assistant_message')}"
-            asker = said.optional_text(DIALOGS[event].asker) if event in DIALOGS else None
         except Rejected as error:
             logger.warning(f"the brain posted a hook that does not parse: {error}")
             return
@@ -570,9 +590,6 @@ class Brain:
                 answered = BrainAnswered(prompt, error)
                 self._record(answered)
                 self._over(turn, answered)
-            case _ if event in DIALOGS and turn.prompt == prompt:
-                # Answered no at the listener; said here too, so the refusal is not only the brain's to tell.
-                self._record(BrainRefused(prompt, event, asker))
             case _:
                 logger.warning(f"the brain's {event} hook for prompt {prompt} does not fit the turn in flight (prompt {turn.prompt})")
 
@@ -622,8 +639,8 @@ async def _listen(hooks: "asyncio.Queue[Payload]") -> tuple[web.AppRunner, str]:
             hooks.put_nowait(Payload.parse(await request.read()))
         except Rejected as error:
             logger.warning(f"the brain posted a hook hands cannot read: {error}")
-            return web.Response(status=400, text=str(error))
-        # A dialog's no, or an empty answer for a hook that asks nothing of the turn.
+        # A dialog's no, read off its path so a body hands cannot read still keeps the dialog shut; an empty answer for
+        # a hook that asks nothing of the turn.
         dialog = DIALOGS.get(request.match_info["event"])
         return web.json_response({} if dialog is None else dialog.answer)
 

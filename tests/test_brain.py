@@ -20,7 +20,7 @@ from loguru import logger
 
 from hands.brain.mcp import McpServer, serve_mcp
 from hands.brain.asides import CLOSED, AsideFailed, Asides
-from hands.brain.process import SLIM, Brain, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, command, environment, logged_in, slim, start, workdir
+from hands.brain.process import SLIM, Brain, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, command, environment, logged_in, slim, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.sessions.payload import Payload
 from hands.sessions.audit import AsideAnswered, BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainRefused, Called, Entry, McpConnected
 from pipecat.services.anthropic.llm import AnthropicLLMService
@@ -215,6 +215,25 @@ async def test_what_the_brains_setup_would_ask_about_is_refused_and_its_turn_sti
     finally:
         await brain.stop()
     assert recorded[1:5] == [BrainAsked("write"), BrainRefused("p1", "PermissionRequest", "Write"), BrainRefused("p1", "Elicitation", "probe"), BrainAnswered("p1", None)]
+
+
+async def test_a_dialog_is_answered_no_and_said_between_turns_and_when_its_body_does_not_parse() -> None:
+    hooks: asyncio.Queue[Payload] = asyncio.Queue()
+    listener, url = await _listen(hooks)  # pyright: ignore[reportPrivateUsage]
+    try:
+        async with aiohttp.ClientSession() as client:
+            async with client.post(f"{url}/Elicitation", data=b"not json") as reply:
+                assert reply.status == 200 and (await reply.json())["hookSpecificOutput"]["action"] == "decline"
+    finally:
+        await listener.cleanup()
+    recorded: list[Entry] = []
+    brain = object.__new__(Brain)
+    brain.session = SessionId("b1")
+    brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
+    brain._turn = None  # pyright: ignore[reportPrivateUsage]
+    # An MCP server asking while it connects, with no turn in flight and so no prompt id.
+    brain._hook(Payload({"hook_event_name": "Elicitation", "session_id": "b1", "mcp_server_name": "probe", "message": "Which?"}))  # pyright: ignore[reportPrivateUsage]
+    assert recorded == [BrainRefused(None, "Elicitation", "probe")]
 
 
 async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_failed_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
