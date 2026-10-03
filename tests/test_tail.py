@@ -18,7 +18,7 @@ from hands.core.status import Report, Stamp
 from hands.core.session import Idle, Opened, Told, Untold
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
-from hands.sessions.tail import KEPT, Tails, Telling, keep_tailing
+from hands.sessions.tail import KEPT, StoodIn, Tails, Telling, keep_tailing
 from hands.sessions.turning import Turning
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
@@ -265,9 +265,9 @@ async def test_a_reading_picks_up_after_the_steps_already_told(tmp_path: Path) -
     transcript.write_text(lines(PROMPT, DONE))
     tails = await following(transcript)
     first = await tails.tell(SID, None, None)
-    assert first is not None and first == Telling(SID, Turn(Asked(None, "first"), (Said(None, "Done."),)), number=1, through=1, stood_in=None, ends_on="Done.")
+    assert first is not None and first == Telling(SID, Turn(Asked(None, "first"), (Said(None, "Done."),)), number=1, through=1, ends_on="Done.")
     await tails.spoken(first)
-    assert (await tails.tell(SID, None, None)) == Telling(SID, Turn(Asked(None, "first"), (), Continuing(1)), number=1, through=1, stood_in=None, ends_on="Done.")
+    assert (await tails.tell(SID, None, None)) == Telling(SID, Turn(Asked(None, "first"), (), Continuing(1)), number=1, through=1, ends_on="Done.")
 
 
 async def test_a_turn_told_but_never_spoken_is_told_again(tmp_path: Path) -> None:
@@ -299,7 +299,7 @@ async def test_a_closing_reply_is_matched_to_its_record_however_the_whitespace_a
     transcript.write_text(lines(PROMPT))
     tails = await following(transcript)
     first = await tails.tell(SID, None, "Done.")
-    assert first is not None and first.stood_in == "Done."
+    assert first is not None and first.ends_on == StoodIn("Done.")
     await tails.spoken(first)
     with transcript.open("a") as more:
         more.write(lines(padded))
@@ -413,7 +413,7 @@ async def test_what_a_turn_was_told_is_marked_only_while_nothing_else_is_reading
         await asyncio.sleep(0)
         assert not marking.done()
     await marking
-    assert (await tails.tell(SID, None, None)) == Telling(SID, Turn(Asked(None, "first"), (), Continuing(1)), number=1, through=1, stood_in=None, ends_on="Done.")
+    assert (await tails.tell(SID, None, None)) == Telling(SID, Turn(Asked(None, "first"), (), Continuing(1)), number=1, through=1, ends_on="Done.")
 
 
 def call(id: str, output: str) -> tuple[str, str]:
@@ -421,6 +421,17 @@ def call(id: str, output: str) -> tuple[str, str]:
     used = f'{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"Bash","input":{{"command":"cat big"}}}}]}}}}'
     answered = f'{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"{id}","content":"{output}"}}]}}}}'
     return used, answered
+
+
+async def marked(tails: Tails, telling: Telling) -> list[str]:
+    """What marking the telling spoken says of it."""
+    said: list[str] = []
+    sink = logger.add(lambda message: said.append(message.record["message"]), level="DEBUG", filter="hands.sessions.tail")
+    try:
+        await tails.spoken(telling)
+    finally:
+        logger.remove(sink)
+    return said
 
 
 async def test_a_long_turn_told_and_spoken_keeps_none_of_its_output_while_the_session_is_quiet(tmp_path: Path) -> None:
@@ -431,13 +442,7 @@ async def test_a_long_turn_told_and_spoken_keeps_none_of_its_output_while_the_se
     tails = await following(transcript)
     told = await tails.tell(SID, None, None)
     assert told is not None and len(told.turn.steps) == 200
-    said: list[str] = []
-    sink = logger.add(lambda message: said.append(message.record["message"]), level="DEBUG", filter="hands.sessions.tail")
-    try:
-        await tails.spoken(told)
-    finally:
-        logger.remove(sink)
-    assert said == [f"session {SID} turn 1 was told through step 200: let go of 200 steps, 0 untold are held"]
+    assert await marked(tails, told) == [f"session {SID} turn 1 was told through step 200: let go of 200 steps, 0 of them calls with no result yet, 0 untold are held"]
     held = tails._following[SID].reading.turn  # pyright: ignore[reportPrivateUsage]
     assert (held.slots, held.calls, held.places) == ([], {}, {})
     with transcript.open("a") as more:
@@ -452,7 +457,7 @@ async def test_a_call_told_before_its_result_came_is_not_told_again_when_the_res
     tails = await following(transcript)
     told = await tails.tell(SID, None, None)
     assert told is not None and told.turn.steps == (Ran(None, "sleep 60", None, failed=False, output="(no result)", git=()),)
-    await tails.spoken(told)
+    assert await marked(tails, told) == [f"session {SID} turn 1 was told through step 1: let go of 1 steps, 1 of them calls with no result yet, 0 untold are held"]
     with transcript.open("a") as more:
         more.write(lines(RESULT, DONE))
     after = await tails.tell(SID, None, None)
@@ -466,9 +471,14 @@ async def test_a_second_stop_before_the_told_replys_record_lands_tells_nothing_a
     tails = await following(transcript)
     first = await tails.tell(SID, None, "Done.")
     assert first is not None
-    await tails.spoken(first)
+    assert await marked(tails, first) == [f"session {SID} turn 1 was told through step 1 on the hook's copy of its reply: let go of 1 steps, 0 of them calls with no result yet, 0 untold are held"]
     again = await tails.tell(SID, None, "Done.")
     assert again is not None and again.turn == Turn(Asked(None, "first"), (), Continuing(1))
+    await tails.spoken(again)
+    with transcript.open("a") as more:
+        more.write(lines(DONE))
+    landed = await tails.tell(SID, None, "Done.")
+    assert landed is not None and landed.turn == Turn(Asked(None, "first"), (), Continuing(2))
 
 
 def test_a_mark_behind_what_was_let_go_of_is_refused_rather_than_letting_go_of_untold_steps() -> None:

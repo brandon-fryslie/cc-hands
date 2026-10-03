@@ -89,19 +89,22 @@ class Turning:
         self.places = {}
         self.forgotten = 0
 
-    def forget(self, through: int) -> None:
+    def forget(self, through: int) -> int:
         """Let go of every step before `through`, counted from the start of the turn: nothing will be shown of them again.
 
         A call let go of before its result came is let go of with it, and its result, when it lands, pairs with nothing.
+        Returns how many such calls there were.
         """
         count = through - self.forgotten
         if not 0 <= count <= len(self.slots):
             # [LAW:no-silent-failure] a mark behind what was let go of, or past what was read, is a telling of another turn.
             raise ValueError(f"cannot let go of the steps through {through}: {self.forgotten} were let go of and {len(self.slots)} are held")
+        waiting = sum(isinstance(slot, str) for slot in self.slots[:count])
         self.slots = self.slots[count:]
         self.places = {id: place - count for id, place in self.places.items() if place >= count}
         self.calls = {id: call for id, call in self.calls.items() if id in self.places}
         self.forgotten = through
+        return waiting
 
     def steps(self) -> list[Step]:
         """Every step read and not let go of. A call whose result has not been written is told as having none."""
