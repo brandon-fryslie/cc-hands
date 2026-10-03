@@ -16,7 +16,9 @@ from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
     LLMContextFrame,
+    TextFrame,
     TranscriptionFrame,
+    TTSSpeakFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
@@ -27,8 +29,10 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 from pipecat.workers.runner import WorkerRunner
 
+from hands.sessions.audit import Entry, Yielded
 from hands.voice import pipeline as built
 from hands.voice.ptt import Key, KeyedAudio
+from hands.voice.speech import Aloud
 from hands.voice.turnstop import TurnOpened, TurnResolved
 from hands.voice.whisper import Whisper
 
@@ -39,7 +43,7 @@ PATIENCE_SECS = 2.0
 
 
 class Recorded(FrameProcessor):
-    """What leaves the user aggregator for the model, the turns it ended, and the holds Whisper opened."""
+    """What leaves the floor for the model, the turns the user aggregator ended, and the holds Whisper opened."""
 
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
@@ -48,6 +52,8 @@ class Recorded(FrameProcessor):
         self.stopped = 0
         self.holds: list[int] = []
         self.resolved: list[int] = []
+        # The user's turn and what hands said around it, in the order the model's stage would take them.
+        self.order: list[str] = []
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -57,10 +63,17 @@ class Recorded(FrameProcessor):
                 # The aggregator writes the user's turn as a plain message, never a provider's own.
                 assert not isinstance(said, LLMSpecificMessage)
                 self.sent.append(str(said.get("content")))
+                self.order.append(f"sent: {said.get('content')}")
             case UserStartedSpeakingFrame():
                 self.started += 1
+                self.order.append("started")
             case UserStoppedSpeakingFrame():
                 self.stopped += 1
+                self.order.append("stopped")
+            case Aloud(spoken=spoken):
+                self.order.append(f"said: {spoken.text}")
+            case TextFrame(text=text):
+                self.order.append(text)
             case TurnResolved(hold=hold):
                 self.resolved.append(hold)
             case TurnOpened(hold=hold):
@@ -84,6 +97,7 @@ class Rig:
     worker: PipelineWorker
     stt: Whisper
     out: Recorded
+    recorded: list[Entry]
     # What each transcription, oldest first, will find; it waits for the test to say.
     texts: asyncio.Queue[str] = field(default_factory=asyncio.Queue[str])
     # The audio each transcription was given.
@@ -117,14 +131,16 @@ class Rig:
 @pytest.fixture
 async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
+    recorded: list[Entry] = []
     voice = built.build_voice(
         built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), whisper_model="unused", voice="unused"),
         tools=[],
         llm=FrameProcessor(),
+        record=recorded.append,
     )
     out = Recorded()
-    worker = PipelineWorker(Pipeline([voice.stt, voice.user_turns, out]), idle_timeout_secs=None)
-    made = Rig(worker, voice.stt, out)
+    worker = PipelineWorker(Pipeline([voice.stt, voice.user_turns, voice.floor, out]), idle_timeout_secs=None)
+    made = Rig(worker, voice.stt, out, recorded)
 
     async def transcribe(_self: WhisperSTTServiceMLX, audio: bytes) -> AsyncGenerator[Frame, None]:
         made.heard.append(audio)
@@ -234,6 +250,37 @@ async def test_a_hold_that_heard_nothing_does_not_end_the_hold_pressed_after_it(
     await rig.hold(["up"])
     await rig.texts.put("how many sessions are running")
     assert await rig.everything_sent(holds=2) == ["how many sessions are running"]
+
+
+WAITING = Aloud(TTSSpeakFrame("api is waiting for you."))
+
+
+async def test_a_session_waiting_while_the_key_is_held_is_said_once_the_users_turn_is_sent_and_not_before(rig: Rig) -> None:
+    await rig.hold(["down", "down"])
+    await rig.until(lambda: rig.out.started == 1)
+    await rig.worker.queue_frames([WAITING, TextFrame("marker")])
+    # Frames keep their order, so the marker past the floor with the announcement not is the announcement held.
+    await rig.until(lambda: "marker" in rig.out.order)
+    await rig.hold(["up"])
+    await rig.texts.put("what time is it")
+    await rig.until(lambda: "sent: what time is it" in rig.out.order)
+    assert rig.out.order == ["started", "marker", "stopped", "said: api is waiting for you.", "sent: what time is it"]
+    assert [entry.held for entry in rig.recorded if isinstance(entry, Yielded)] == [("Aloud",)]
+
+
+async def test_a_hold_that_was_shift_after_all_gives_back_what_waited_for_it(rig: Rig) -> None:
+    await rig.hold(["down"])
+    await rig.until(lambda: rig.out.started == 1)
+    await rig.worker.queue_frame(WAITING)
+    await rig.hold(["dropped"])
+    await rig.until(lambda: "said: api is waiting for you." in rig.out.order)
+    assert rig.out.order == ["started", "stopped", "said: api is waiting for you."]
+
+
+async def test_what_hands_says_with_no_turn_open_passes_at_once_and_records_no_wait(rig: Rig) -> None:
+    await rig.worker.queue_frame(WAITING)
+    await rig.until(lambda: rig.out.order == ["said: api is waiting for you."])
+    assert not any(isinstance(entry, Yielded) for entry in rig.recorded)
 
 
 async def test_whisper_has_loaded_the_model_its_turns_transcribe_with_once_built(monkeypatch: pytest.MonkeyPatch) -> None:

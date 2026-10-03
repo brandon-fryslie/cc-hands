@@ -32,6 +32,8 @@ from pipecat.transports.local.audio import LocalAudioTransportParams
 from pipecat.turns.user_start import VADUserTurnStartStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
+from hands.sessions.audit import Record
+from hands.voice.floor import Floor
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.ptt import PushToTalk
@@ -131,7 +133,7 @@ def build_llm(
 
 @dataclass(frozen=True)
 class Voice:
-    """The assembled pipeline plus the handles its edges need: the key, the audio devices, the three services that report failures, and the two sides of the conversation."""
+    """The assembled pipeline plus the handles its edges need: the key, the audio devices, the three services that report failures, the two sides of the conversation, and the floor between them."""
 
     worker: PipelineWorker
     key: PushToTalk
@@ -141,9 +143,10 @@ class Voice:
     tts: PocketTTSService
     user_turns: LLMUserAggregator
     assistant_turns: LLMAssistantAggregator
+    floor: Floor
 
 
-def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor) -> Voice:
+def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, record: Record) -> Voice:
     """Wire mic, push-to-talk, Whisper on MLX, the model's stage, pocket-tts, speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and Whisper reads it off each
@@ -175,7 +178,10 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor)
     )
     user_aggregator, assistant_aggregator = pair.user(), pair.assistant()
 
-    pipeline = Pipeline([transport.input(), stt, user_aggregator, llm, tts, transport.output(), assistant_aggregator])
+    # Ahead of the model's stage, so what hands says unprompted waits out the user's turn before any model takes it.
+    floor = Floor(record)
+
+    pipeline = Pipeline([transport.input(), stt, user_aggregator, floor, llm, tts, transport.output(), assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True),
@@ -183,5 +189,5 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor)
         idle_timeout_secs=None,
     )
     return Voice(
-        worker=worker, key=key, audio=transport, stt=stt, llm=llm, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator
+        worker=worker, key=key, audio=transport, stt=stt, llm=llm, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator, floor=floor
     )
