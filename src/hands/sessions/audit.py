@@ -21,7 +21,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, assert_never, cast
+from typing import TYPE_CHECKING, BinaryIO, Literal, assert_never, cast
 
 from loguru import logger
 
@@ -531,17 +531,21 @@ class AuditLog:
         # [LAW:single-enforcer] the log watches what the daemon does and never changes it: a line it cannot encode or
         # write is lost here, not a send's answer, a tool's result, a permission's question, or a background task.
         try:
-            line = self._line(entry)
+            body = _body(entry)
         except TypeError as error:
             # [LAW:no-silent-failure] a bug in what was recorded: logged as an error, it is a Failure line, whose fields always encode.
             logger.error(f"the audit log cannot encode a {type(entry).__name__} line: {error}")
             return
         try:
             with self._writing:
-                size = self._path.stat().st_size if self._path.exists() else 0
+                # [LAW:no-ambient-temporal-coupling] read under the lock that orders the writes, and once for a line and the
+                # Retired line in front of it, so "at" never runs backwards down the log.
+                at = json.dumps(self._clock().isoformat(timespec="milliseconds"))
+                line = _stamped(body, at)
+                size = _size(self._path)
                 if size > 0 and size + len(line) > self._limit:
                     os.replace(self._path, retired(self._path))
-                    line = self._line(Retired(retired(self._path), size)) + line
+                    line = _stamped(_body(Retired(retired(self._path), size)), at) + line
                 # Opened for each line, so a line is on disk when record returns and a log moved aside is started again.
                 with open(self._path, "ab", opener=_private) as log:
                     log.write(line)
@@ -549,10 +553,22 @@ class AuditLog:
             # [LAW:no-silent-failure] said on stderr, as a warning: an error would be sent back to the log that just failed.
             logger.warning(f"the audit log {self._path} lost a {type(entry).__name__} line: {error}")
 
-    def _line(self, entry: Entry) -> bytes:
-        text = json.dumps({"at": self._clock().isoformat(timespec="milliseconds"), "level": level(entry), **encoded(entry)}, ensure_ascii=False)
-        # Half of a character cut in two is no UTF-8: it is written as its JSON escape, which reads back as itself.
-        return (text + "\n").encode("utf-8", errors="backslashreplace")
+
+def _stamped(body: str, at: str) -> bytes:
+    # Half of a character cut in two is no UTF-8: it is written as its JSON escape, which reads back as itself.
+    return f'{{"at": {at}, {body[1:]}\n'.encode("utf-8", errors="backslashreplace")
+
+
+def _body(entry: Entry) -> str:
+    """The line for entry without its time, which is written in front of it as it goes onto the log."""
+    return json.dumps({"level": level(entry), **encoded(entry)}, ensure_ascii=False)
+
+
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return 0
 
 
 def _private(path: str, flags: int) -> int:
@@ -635,17 +651,21 @@ def tail(path: Path, count: int) -> tuple[list[str], Position]:
     """The last count whole lines of the log and the one retired before it, and the position just past them, where
     following it begins."""
     lines, position = _read(path, START)
-    older, _ = _read(retired(path), START)
-    return ((older + lines)[-count:] if count > 0 else []), position
+    if len(lines) < count:
+        older, was = _read(retired(path), START)
+        # The file under the retired name may be the log just read, moved aside since: its lines are already here.
+        lines = (older if was.inode != position.inode else []) + lines
+    return (lines[-count:] if count > 0 else []), position
 
 
 def follow(path: Path, position: Position, poll: Callable[[], None]) -> Iterator[str]:
     """Each whole line written to the log past position, calling poll between looks, for as long as the caller asks."""
     while True:
         lines, now = _read(path, position)
-        # The log as it is now is read first: a log moved aside by then takes no more lines, so what it gained since the
-        # last look is all there under its retired name. One retired twice between looks is gone, with its last lines.
-        yield from _rest(retired(path), position)
+        # A log that moved since the last look left its last lines under its retired name, and takes no more once the
+        # new one has been opened. One that did not move has them all in lines. One retired twice between looks is gone,
+        # with its last lines.
+        yield from _rest(retired(path), position) if now.inode != position.inode else []
         yield from lines
         position = now
         poll()
@@ -657,11 +677,9 @@ def _rest(path: Path, since: Position) -> list[str]:
         with path.open("rb") as log:
             if os.fstat(log.fileno()).st_ino != since.inode:
                 return []
-            log.seek(since.offset)
-            data = log.read()
+            return _whole_lines(log, since.offset)[0]
     except FileNotFoundError:
         return []
-    return data[: data.rfind(b"\n") + 1].decode("utf-8").splitlines()
 
 
 def _read(path: Path, since: Position) -> tuple[list[str], Position]:
@@ -676,11 +694,15 @@ def _read(path: Path, since: Position) -> tuple[list[str], Position]:
             if same and since.offset > 0:
                 log.seek(since.offset - 1)
                 same = log.read(1) == b"\n"
-            offset = since.offset if same else 0
-            log.seek(offset)
-            data = log.read()
+            lines, end = _whole_lines(log, since.offset if same else 0)
     except FileNotFoundError:
         return [], START
-    # A line still being written is left for the next look.
+    return lines, Position(status.st_ino, end)
+
+
+def _whole_lines(log: BinaryIO, offset: int) -> tuple[list[str], int]:
+    """The whole lines from offset on, and the offset just past them: a line still being written is left for the next look."""
+    log.seek(offset)
+    data = log.read()
     end = data.rfind(b"\n") + 1
-    return data[:end].decode("utf-8").splitlines(), Position(status.st_ino, offset + end)
+    return data[:end].decode("utf-8").splitlines(), offset + end
