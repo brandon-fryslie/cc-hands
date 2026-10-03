@@ -10,7 +10,7 @@ from pathlib import Path
 from hands.core.session import Membership, SessionId
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.processes import parse_pid
+from hands.sessions.processes import parse_pid, process_starts, still_running
 
 
 def write_membership(home: Home, membership: Membership) -> None:
@@ -51,10 +51,12 @@ def remove_ended_membership(home: Home, ended: Membership) -> None:
 
 
 def held(home: Home, pid: int) -> bool:
-    """Whether any membership file names this process."""
+    """Whether any membership file names this process: one naming its pid, written while it was running."""
+    starts = process_starts({pid})
     for path in home.memberships.glob("*.json"):
         try:
-            if Payload.parse(path.read_bytes()).integer("pid") == pid:
+            # A file written before the process under its pid started names a dead process whose pid it took.
+            if Payload.parse(path.read_bytes()).integer("pid") == pid and still_running(pid, path.stat().st_mtime, starts):
                 return True
         # Ended since the listing, or unreadable, which the daemon's sweep reports and removes: either way it names
         # no process.
