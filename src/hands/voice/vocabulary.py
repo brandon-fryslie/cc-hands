@@ -84,7 +84,8 @@ async def _repository(cwd: Path, environment: Mapping[str, str], deadline: float
     none, and why, where git could not say. A directory in no repository has none, and that is no failure."""
     try:
         logged, changed, branch = await asyncio.gather(
-            _git(cwd, environment, deadline, "log", "--name-only", "--format=", "-z", f"-n{COMMITS}"),
+            # A branch with no commits yet has no history to read, where git log would refuse its unborn HEAD.
+            _git(cwd, environment, deadline, "log", "--ignore-missing", "HEAD", "--name-only", "--format=", "-z", f"-n{COMMITS}"),
             _git(cwd, environment, deadline, "status", "--porcelain=v1", "-z"),
             _git(cwd, environment, deadline, "branch", "--show-current"),
         )

@@ -83,6 +83,15 @@ async def test_a_session_outside_any_repository_is_primed_with_the_sessions_alon
     assert (primed.words, primed.failed) == (("notes", "planning"), None)
 
 
+async def test_a_repository_with_no_commits_yet_is_primed_with_what_is_waiting_to_be_committed(repository: Path) -> None:
+    (repository / "authMiddleware.ts").write_text("new")
+    focus = session(repository)
+
+    primed = await vocabulary([Listing(focus, None)], focus, ENVIRONMENT)
+
+    assert (primed.words, primed.failed) == (("authMiddleware", "auth-rework", "shop"), None)
+
+
 async def test_a_repository_git_cannot_read_primes_nothing_of_its_own_and_says_why(repository: Path) -> None:
     focus = session(repository)
 
