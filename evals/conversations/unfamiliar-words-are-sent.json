@@ -36,11 +36,7 @@
     {
       "role": "tool",
       "tool_call_id": "call_1",
-      "content": "{\"readback\": \"Draft for cc-hands, auth refactor: Fire a bottle and have the next session pick up the code reviews.\"}"
-    },
-    {
-      "role": "assistant",
-      "content": "Draft for cc-hands, auth refactor: Fire a bottle and have the next session pick up the code reviews."
+      "content": "{\"said\": \"Draft for cc-hands, auth refactor: Fire a bottle and have the next session pick up the code reviews.\"}"
     },
     {
       "role": "user",

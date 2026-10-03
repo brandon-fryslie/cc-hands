@@ -155,7 +155,7 @@ async def test_the_session_the_focus_stood_in_for_is_on_the_calls_audit_line(tmp
     called = [line for line in map(json.loads, audit_tail(path, 1000)[0]) if line["type"] == "Called"]
     assert [(line["tool"], line["arguments"], line["result"]) for line in called] == [
         ("focus_session", {"session": LAWS}, {"readback": "Now on laws."}),
-        ("stage_draft", {"text": "run the tests", "resolutions": []}, {"readback": "Draft for laws: run the tests", "focused_session": LAWS}),
+        ("stage_draft", {"text": "run the tests", "resolutions": []}, {"says": "Draft for laws: run the tests", "focused_session": LAWS}),
     ]
 
 

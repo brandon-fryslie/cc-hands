@@ -36,11 +36,7 @@
     {
       "role": "tool",
       "tool_call_id": "call_1",
-      "content": "{\"readback\": \"Draft for cc-hands, auth refactor: Run the whole test suite.\"}"
-    },
-    {
-      "role": "assistant",
-      "content": "Draft for cc-hands, auth refactor: Run the whole test suite."
+      "content": "{\"said\": \"Draft for cc-hands, auth refactor: Run the whole test suite.\"}"
     },
     {
       "role": "user",

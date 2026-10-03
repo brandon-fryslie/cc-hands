@@ -67,6 +67,11 @@ async def stage_draft(session: str, text: str) -> Result:
     return {"readback": f"staged for {session}: {text}"}
 
 
+async def amend_draft(session: str, text: str) -> Result:
+    """Amend a draft, which hands reads back itself."""
+    return {"says": f"amended for {session}: {text}"}
+
+
 async def stay_silent() -> Result:
     """Say nothing."""
     return {"silent": True}
@@ -77,7 +82,12 @@ async def read_session(session: str) -> Result:
     return {"steps": []}
 
 
-TOOLS: Sequence[Tool] = (tool(stage_draft, completes=True), tool(stay_silent, then="silence"), tool(read_session))
+TOOLS: Sequence[Tool] = (
+    tool(stage_draft, completes=True),
+    tool(amend_draft, then="silence", completes=True),
+    tool(stay_silent, then="silence"),
+    tool(read_session),
+)
 
 
 @dataclass
@@ -413,6 +423,59 @@ async def test_a_barge_in_while_a_draft_lands_lets_it_finish_and_speaks_its_read
     await rig.until(lambda: rig.out.said()[-1:] == ["staged for api: add tests"])
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
     assert BrainSpoke((exchange,), "Staging it.", ("staged for api: add tests",), True, "user", 0.0, None) in rig.recorded
+
+
+async def test_a_readback_a_call_hands_hands_ends_the_turn_and_is_said_by_hands_as_written(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "make it add tests too"})
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "mcp__hands__amend_draft"))
+    _, route = rig.request(answering("mcp__hands__amend_draft", {"says": "amended for api: add tests too"}))
+    assert route == Hold(SILENT)
+    rig.brain.end()
+    await rig.until(lambda: rig.out.said() == ["amended for api: add tests too"])
+
+
+async def test_a_barge_in_while_a_draft_hands_reads_back_lands_lets_it_finish_and_its_readback_is_said(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "make it add tests too"})
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "mcp__hands__amend_draft"))
+    await rig.interrupt()
+    assert rig.brain.interrupts == 0
+    _, route = rig.request(answering("mcp__hands__amend_draft", {"says": "amended for api: add tests too"}))
+    assert route == Hold(INTERRUPTED)
+    rig.brain.end()
+    await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
+    # Said after the barge-in, never cut off by it: the draft changed, so the user hears how.
+    assert BrainSpoke((exchange,), "", ("amended for api: add tests too",), True, "user", 0.0, None) in rig.recorded
+
+
+async def test_a_refused_call_to_a_silence_tool_is_the_models_to_answer(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "make it add tests too"})
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "mcp__hands__amend_draft"))
+    refused, route = rig.request(answering("mcp__hands__amend_draft", {"error": "the draft text is empty"}))
+    # Nothing was said and nothing changed: the model is asked to go on, to retry or to say what went wrong.
+    assert route == Send((Tail(TAIL),), refusal="final")
+    rig.stream(refused, "I couldn't change it.")
+    await rig.until(lambda: rig.out.said() == ["I couldn't change it."])
+    rig.brain.end()
+
+
+async def test_a_reply_with_one_draft_said_and_one_refused_is_the_models_to_answer(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "make both add tests too"})
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "mcp__hands__amend_draft"), ("t2", "mcp__hands__amend_draft"))
+    results: tuple[tuple[str, dict[str, str]], ...] = (("t1", {"says": "amended for api: add tests too"}), ("t2", {"error": "There is no session web."}))
+    body: dict[str, object] = {
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": call, "name": "mcp__hands__amend_draft", "input": {}} for call, _ in results]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call, "content": [{"type": "text", "text": json.dumps(result)}]} for call, result in results]},
+        ]
+    }
+    _, route = rig.request(body)
+    assert route == Send((Tail(TAIL),), refusal="final")
+    rig.brain.end()
 
 
 async def test_a_barge_in_while_a_reading_tool_runs_stops_the_brain_at_once(rig: Rig) -> None:

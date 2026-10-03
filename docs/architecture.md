@@ -1245,6 +1245,14 @@ memory. Those lines enter just ahead of the TTS service, not through the model's
 barge-in drops them like any sentence not yet played; their reading holds all of them from
 the start, so none is lost to going back.
 
+A staged or amended draft is read back the same way, by hands as written: the tool hands
+back `{"says": ...}`, and the API path says it as the call returns while the brain's stage
+says it once the brain's own words are done, so a barge-in before then does not lose it.
+A reply is the whole of what is said only when every call in it was silent: one refused
+(`error`) or one that asks a reply puts the model back on. Pipecat lets each result decide
+and the last to finish wins, so `Replies` is told each reply's calls as the service starts
+them (`RunsReplies.run_function_calls`) and has only the last answer for them all.
+
 ## Push pointers, pull content
 
 The intermediary's context window holds the conversation with you, not session
@@ -1656,8 +1664,8 @@ thing that failed `[LAW:no-silent-failure]`:
    the system channel writes `Announced` with whether it spoke or posted; the narrator
    writes each turn summary it speaks as `Recounted`; and a
    loguru sink turns every error a `hands` module logs into a `Failure`. A dictation is
-   traced from the words to the readback: `Transcribed`, `Called stage_draft`,
-   `Replied`. The log watches
+   traced from the words to the readback: `Transcribed`, then `Called stage_draft`
+   with what hands said back, which no model rewords. The log watches
    and never steers: a line the disk will not take is lost with a warning on stderr,
    a value it cannot encode is a `Failure` line instead, and the draft, the question, or the tick it described goes on. `hands log` follows
    the file by inode and offset, so a log moved aside is read from its first line.

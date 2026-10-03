@@ -14,6 +14,7 @@ from typing import cast
 
 from collections.abc import Awaitable, Callable
 from pipecat.frames.frames import FunctionCallResultProperties
+from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.services.llm_service import FunctionCallParams
 import pytest
 
@@ -29,7 +30,7 @@ from hands.sessions.sentences import Sentences
 from hands.voice.sentences import SummaryStore
 from hands.voice.narrator import Recounts
 from hands.voice.player import Player
-from hands.voice.tools import intermediary_tools, pipecat_function, stay_silent_tool
+from hands.voice.tools import Replies, intermediary_tools, pipecat_function, stay_silent_tool
 
 _SPEC = importlib.util.spec_from_file_location("intermediary_eval", Path(__file__).parents[1] / "evals" / "intermediary.py")
 assert _SPEC is not None and _SPEC.loader is not None
@@ -85,8 +86,10 @@ async def test_stay_silent_ends_the_turn_without_running_the_model_again() -> No
     async def capture(result: object, *, properties: FunctionCallResultProperties | None = None) -> None:
         answered.append((result, properties))
 
-    handler = cast(Callable[[FunctionCallParams], Awaitable[None]], pipecat_function(stay_silent_tool())._handler)  # pyright: ignore[reportPrivateUsage]
-    await handler(cast(FunctionCallParams, SimpleNamespace(result_callback=capture, arguments={})))
+    replies = Replies()
+    replies.started(["c1"])
+    handler = cast(Callable[[FunctionCallParams], Awaitable[None]], pipecat_function(stay_silent_tool(), IdentityFilter(), replies)._handler)  # pyright: ignore[reportPrivateUsage]
+    await handler(cast(FunctionCallParams, SimpleNamespace(tool_call_id="c1", result_callback=capture, arguments={})))
     [(result, properties)] = answered
     assert result == {"silent": True}
     assert properties is not None and properties.run_llm is False

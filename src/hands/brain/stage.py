@@ -18,7 +18,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
 
 from loguru import logger
 from pipecat.frames.frames import (
@@ -57,7 +57,7 @@ from hands.core.wire import (
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Asker, BrainAnswered, BrainInterrupted, BrainSpoke, Record
 from hands.voice.speech import Aloud, Narrated
-from hands.voice.tools import Tool
+from hands.voice.tools import Result, Tool, silent, whole
 
 
 class Asking(Protocol):
@@ -130,8 +130,7 @@ class BrainStage(FrameProcessor):
         self._tail = tail
         self._record = record
         self._now = clock
-        self._completes = frozenset(wire_name(tool) for tool in tools if tool.completes)
-        self._silences = frozenset(wire_name(tool) for tool in tools if tool.then == "silence")
+        self._tools = {wire_name(tool): tool for tool in tools}
         # How many of the context's messages the brain has been handed: the rest are new to it.
         self._told = 0
         # [LAW:no-ambient-temporal-coupling] the turn is the brain's, from its write to its result line, not the pipeline's:
@@ -258,7 +257,7 @@ class BrainStage(FrameProcessor):
         # A tool whose effect must land runs to its end; stopped by the harness, it would land and be written in
         # history as refused. Its turn's next request is held instead, so the model is not asked to go on either way.
         running = tuple(turn.calls.values())
-        turn.stopped = not any(name in self._completes for name in running)
+        turn.stopped = not any(self._completes(name) for name in running)
         self._record(BrainInterrupted(running, turn.stopped))
         return turn.stopped
 
@@ -278,14 +277,21 @@ class BrainStage(FrameProcessor):
             logger.warning(f"the brain sent a main turn (exchange {sent.exchange}) with no turn asked of it; nothing it says will be spoken")
             return Send(refusal="final")
         # Only the calls this turn's last reply opened: a request carries every result of the brain's history.
-        answers = [(turn.calls[answer.call], answer) for answer in tool_answers(sent.body) if answer.call in turn.calls]
-        if not (turn.interrupted or any(name in self._silences for name, _ in answers)):
+        answers = [(self._tools.get(turn.calls[answer.call]), answer.text, _result(answer)) for answer in tool_answers(sent.body) if answer.call in turn.calls]
+        # Said by hands once the brain's own words are, whatever the model does next: what a call hands hands to say.
+        turn.readbacks.extend(says for _, _, result in answers if result is not None and isinstance(says := result.get("says"), str))
+        if not (turn.interrupted or whole([tool is not None and result is not None and silent(tool, result) for tool, _, result in answers])):
             turn.exchanges.append(sent.exchange)
             turn.opening, turn.calls, turn.failure = {}, {}, _UNNAMED
             # Refused once is the turn's failure, said at once as the API variants say theirs, who ask once.
             return Send((Tail(self._tail()),), refusal="final")
-        turn.readbacks.extend(_said(answer) for name, answer in answers if name in self._completes)
+        turn.readbacks.extend(said for tool, text, result in answers if tool is not None and tool.completes and (said := _owed(text, result)) is not None)
         return Hold(INTERRUPTED if turn.interrupted else SILENT)
+
+    def _completes(self, name: str) -> bool:
+        """Whether a barge-in lets the call finish, as hands' tools say: a call to a tool not hands' never does."""
+        tool = self._tools.get(name)
+        return tool is not None and tool.completes
 
     def hear(self, observed: Observed) -> None:
         turn = self._turn
@@ -355,15 +361,22 @@ def _broken_off(spoken: str) -> str:
     return f'[hands] The API broke off your last turn. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.' if spoken else ""
 
 
-def _said(answer: ToolAnswer) -> str:
-    """What a call that must land handed back for the user: its readback, or why it failed, which the model would have said."""
+def _result(answer: ToolAnswer) -> Result | None:
+    """What the tool handed back, or None for the MCP server's own failure: a line of text naming the tool and what went wrong."""
     try:
         result: object = json.loads(answer.text)
     except ValueError:
-        # The MCP server's own failure: a line of text naming the tool and what went wrong.
-        return answer.text
+        return None
+    return cast(Result, result) if isinstance(result, dict) else None
+
+
+def _owed(text: str, result: Result | None) -> str | None:
+    """What a call that must land handed back for the user that the model, not asked to go on, would have said: its
+    readback, or why it failed. None when hands says it already, and the MCP server's own failure as it wrote it."""
     match result:
+        case {"says": str()}:
+            return None
         case {"readback": str() as said} | {"error": str() as said}:
             return said
         case _:
-            return answer.text
+            return text

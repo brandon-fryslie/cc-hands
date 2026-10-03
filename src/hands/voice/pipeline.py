@@ -37,7 +37,6 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.services.anthropic.llm import AnthropicLLMService
-from pipecat.services.llm_service import LLMService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.pocket_tts.tts import PocketTTSService
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
@@ -52,7 +51,7 @@ from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.player import Player
 from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
-from hands.voice.tools import Tool, pipecat_function
+from hands.voice.tools import RunsReplies, Tool, context_tools
 from hands.voice.turnstop import KeyTurnStop
 from hands.voice import voices
 from hands.voice.whisper import Whisper
@@ -104,7 +103,7 @@ class VoiceConfig:
     max_reply_tokens: int = 300
 
 
-class EmptyReplyFails(LLMService[Any]):
+class EmptyReplyFails(RunsReplies):
     """An LLM service whose reply that carries no words, no call, and no error of its own is reported as the model's
     failure: in a voice turn, a reply with nothing in it is heard as hands not having heard the user at all."""
 
@@ -247,7 +246,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
         start=[VADUserTurnStartStrategy()],
         stop=[KeyTurnStop()],
     )
-    context = LLMContext(tools=[pipecat_function(tool) for tool in tools])
+    context = LLMContext(tools=context_tools(tools, player.lines, llm))
     pair = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(user_turn_strategies=turns),
