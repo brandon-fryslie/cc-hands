@@ -3,6 +3,7 @@
 import asyncio
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -279,6 +280,55 @@ async def test_a_stop_waits_for_none_of_the_reading_it_starts(tmp_path: Path) ->
     assert time.perf_counter() - start < 0.01, "the stop path waited for git"
     # And the reading still arrives, for whoever comes to take it.
     assert [file.path for file in (await deltas.taken(SID)).files] == ["a.py"]
+
+
+# A loop that ends while a reading runs: asyncio.run cancels every task at once, the reading's included, wherever its
+# git happens to be, from being spawned to being read. Run in a process of its own, since a loop that never closes
+# would take the test run down with it.
+SHUT_DOWN = """
+import asyncio, os, sys, time
+from pathlib import Path
+from hands.sessions.delta import Deltas
+
+root = Path(sys.argv[1])
+
+async def ends(after: float) -> None:
+    deltas = Deltas()
+    await deltas.snapshot("s", root)
+    (root / "a.py").write_text(f"x = {after}\\n")
+    await deltas.compare("s", again=False)
+    await asyncio.sleep(after)
+    raise RuntimeError("the loop ends")
+
+slowest = 0.0
+for step in range(30):
+    start = time.monotonic()
+    try:
+        asyncio.run(ends(step * 0.002))
+    except RuntimeError:
+        pass
+    slowest = max(slowest, time.monotonic() - start)
+    try:
+        os.waitpid(-1, os.WNOHANG)
+        sys.exit(f"a git was left unreaped when the loop ended {step * 2}ms into a reading")
+    except ChildProcessError:
+        pass
+print(slowest)
+"""
+
+
+def test_a_loop_ended_mid_reading_kills_and_reaps_its_git_and_closes(tmp_path: Path) -> None:
+    """The daemon's shutdown cancels a reading wherever it is, and must not then wait for ever on a git it spawned.
+
+    Python 3.12's asyncio did: cancelled while connecting a new child's pipes, it waited on pipes that would never
+    connect. 3.13 fixed it, which is why hands needs 3.13."""
+    root = repo(tmp_path)
+    try:
+        ran = subprocess.run((sys.executable, "-c", SHUT_DOWN, str(root)), capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        raise AssertionError("a loop ended mid-reading never finished closing") from None
+    assert ran.returncode == 0, ran.stderr[-2000:]
+    assert float(ran.stdout) < 1.0, f"the slowest loop took {ran.stdout.strip()}s to close"
 
 
 async def test_two_turns_that_stop_before_either_is_told_keep_their_own_changes(tmp_path: Path) -> None:
