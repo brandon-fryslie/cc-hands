@@ -150,7 +150,7 @@ class Narration:
         return " ".join(part.text for part in (*self.interrupted, *self.repository, *self.questions))
 
     def asked(self) -> str:
-        """What plays when the turn stops and its summary is not wanted: only what it is waiting on the listener to answer."""
+        """What the turn is waiting on the listener to answer."""
         return " ".join(question.text for question in self.questions)
 
 

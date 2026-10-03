@@ -140,12 +140,12 @@ async def _switch(aloud: Callable[[], Summaries]) -> Summaries:
     """Where the summaries switch stands, read off the loop the speaker runs on; the default where it cannot be read.
 
     [LAW:no-silent-failure] a switch that cannot be read is logged as the error it is, which is an audit line, and the
-    turn is still told, as the default tells it: its question is never lost to a file edited by hand.
+    turn is handled as the default handles it.
     """
     try:
         return await asyncio.to_thread(aloud)
     except (Rejected, OSError) as error:
-        logger.error(f"cannot read whether spoken summaries are on, so this turn is told as they are by default, {DEFAULT}: {error}")
+        logger.error(f"cannot read whether spoken summaries are on, so this turn is handled as they are by default, {DEFAULT}: {error}")
         return DEFAULT
 
 

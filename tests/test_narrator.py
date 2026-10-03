@@ -170,6 +170,14 @@ async def test_a_session_that_ends_after_its_turn_is_heard_ending_after_that_tur
     assert isinstance(second, TTSSpeakFrame) and second.text == "The session cc-hands is gone."
 
 
+async def test_with_summaries_off_a_finished_turn_is_not_narrated_and_is_not_told_once_they_are_on(tmp_path: Path) -> None:
+    tails = tailing(said_turn(tmp_path, "Fixed it. Want me to push it?"))
+    recorded: list[Entry] = []
+    assert await recount(tails, SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "off", Tailed()) is None
+    assert await recount(tails, SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "on", Tailed()) is None
+    assert recorded == []
+
+
 async def test_a_turn_a_slash_command_opened_is_logged_as_commanded_rather_than_asked(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     skill = json.dumps({"type": "user", "uuid": "c1", "promptId": "p1", "message": {"role": "user", "content": "<command-message>ship</command-message>\n<command-name>/ship</command-name>\n<command-args>it</command-args>"}}, separators=(",", ":"))
