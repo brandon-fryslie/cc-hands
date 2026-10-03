@@ -31,9 +31,11 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent / PLUGIN_DIR
 
 def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_and_tool_hooks_run_in_the_background() -> None:
     hooks = cast(dict[str, object], plugin_hooks()["hooks"])
-    assert list(hooks) == list(SUBSCRIBED)
+    # MessageDisplay is posted to the daemon with no shim: tests/test_display.py.
+    assert list(hooks) == [*SUBSCRIBED, "MessageDisplay"]
     command = {"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/python", "args": ["-m", "hands.sessions.shim"]}
-    for event, entries in hooks.items():
+    for event in SUBSCRIBED:
+        entries = hooks[event]
         declared = {
             "PermissionRequest": {"timeout": PERMISSION_HOOK_TIMEOUT_SECONDS},
             "PostToolUse": {"async": True},
@@ -51,7 +53,7 @@ def test_the_checked_in_hooks_json_is_what_hookconfig_declares() -> None:
 def test_the_module_prints_the_hooks_json() -> None:
     printed = subprocess.run([sys.executable, "-m", "hands.sessions.hookconfig"], capture_output=True, text=True, check=True)
     assert printed.stdout == rendered()
-    assert set(json.loads(printed.stdout)["hooks"]) == set(SUBSCRIBED)
+    assert set(json.loads(printed.stdout)["hooks"]) == {*SUBSCRIBED, "MessageDisplay"}
 
 
 def test_the_launcher_every_hook_names_is_in_the_plugin_and_runnable() -> None:

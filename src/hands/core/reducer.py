@@ -50,6 +50,7 @@ from hands.core.events import (
     Taken,
     Joined,
     Read,
+    Displayed,
     PermissionRequested,
     Prompted,
     Progressed,
@@ -61,7 +62,7 @@ from hands.core.events import (
     ToolFinished,
 )
 from hands.core.progress import Gathering
-from hands.core.session import Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, UnknownMode, Unnamed, Unreported, Untold, status_stamp
+from hands.core.session import ids, Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, UnknownMode, Unnamed, Unreported, Untold, status_stamp
 from hands.core import status
 from hands.core.status import Report, Stamp
 
@@ -126,7 +127,7 @@ def _started(membership: Membership, source: StartSource, previous: Known | None
             return Session(membership, Unreported(), mode=None, turn=untold, earlier=earlier)
         case (_, Session(turn=Told() as last, earlier=earlier)):
             # Told before the restart, so a late Stop of it ends nothing after it.
-            return Session(membership, Unreported(), mode=None, earlier=earlier | _ids(last))
+            return Session(membership, Unreported(), mode=None, earlier=earlier | ids(last))
         case (_, Session(earlier=earlier)):
             # A turn open when its process went is not told, so a Stop of it can still tell it.
             return Session(membership, Unreported(), mode=None, earlier=earlier)
@@ -189,7 +190,7 @@ def _enter(registry: Registry, event: SessionEvent) -> tuple[Registry, list[Effe
             match event:
                 case Ended(reason=reason):
                     return _end(registry, was, was.membership, _said_at_end(was.membership.id, reason))
-                case Progressed():
+                case Progressed() | Displayed():
                     return registry.put(replace(was, turn=_gathered(was.turn, event))), []
                 case _:
                     return _moved(registry, was, event)
@@ -216,7 +217,7 @@ def _moved(registry: Registry, was: Session, event: Moving) -> tuple[Registry, l
     moved, stopped = _stopped(moved, event)
     after, settled = _settled(moved, event)
     # [LAW:single-enforcer] a turn another replaces was told as it was replaced, so its ids are earlier from here on.
-    after = replace(after, earlier=was.earlier | (_ids(was.turn) - _ids(after.turn)))
+    after = replace(after, earlier=was.earlier | (ids(was.turn) - ids(after.turn)))
     # The mode is noted before the transition's effects, so a request it narrates is explained knowing the mode
     # it was asked in; a turn left untold is told before what the event calls for, so before a prompt marks the next.
     return registry.put(after), [*_remoded(membership.id, held, mode), *_transition(was, after), *told, *stopped, *settled]
@@ -452,17 +453,12 @@ def _over(session: SessionId, opened: Opened) -> tuple[Turn, list[Effect]]:
 
 def _names(turn: Turn, prompt: PromptId) -> bool:
     """Whether the id is one the turn goes by."""
-    return prompt in _ids(turn)
+    return prompt in ids(turn)
 
 
 def _heard(session: Session, prompt: PromptId) -> bool:
     """Whether the id is one the session's turn, or a turn before it, went by."""
     return _names(session.turn, prompt) or prompt in session.earlier
-
-
-def _ids(turn: Turn) -> frozenset[PromptId]:
-    """Every id the turn goes by: none for the Told a session starts in, before any turn is."""
-    return turn.others if turn.turn is None else turn.others | {turn.turn}
 
 
 def _opens(state: SessionState, turn: Turn, prompt: PromptId, written: Stamp | None) -> bool:
@@ -510,8 +506,9 @@ def _remoded(session: SessionId, before: Mode | None, after: Mode | None) -> lis
 def _unheard(event: SessionEvent, record: AuditRecord) -> list[Effect]:
     """What an event for a session the registry does not hold live calls for."""
     match event:
-        case Taken() | Interrupted() | Continued() | Progressed() | Read():
-            # Read from a transcript the tail goes on reading a moment after its session ends: behind, not wrong.
+        case Taken() | Interrupted() | Continued() | Progressed() | Read() | Displayed():
+            # Read from a transcript the tail goes on reading a moment after its session ends, or displayed after it:
+            # behind, not wrong.
             return []
         case _:
             return [Audit(record), *_unwaited(event)]
@@ -578,13 +575,21 @@ def _expiry(on: Blocker) -> tuple[Dialog | None, HookReply]:
             return LetGo(on), Withdraw()
 
 
-def _gathered(turn: Turn, progressed: Progressed) -> Turn:
-    """The turn with the calls it made gathered, until they settle; calls of a turn since over move nothing, since that
-    turn's result is told instead."""
-    match turn:
-        case Opened(gathering=gathering) if not _ids(turn).isdisjoint(progressed.turn):
-            began = Gathering((), progressed.at, progressed.at) if gathering is None else gathering
-            return replace(turn, gathering=began.joined(progressed.doings, progressed.at), latest=progressed.doings[-1])
+def _gathered(turn: Turn, event: Progressed | Displayed) -> Turn:
+    """The turn with the calls it made and the text it wrote gathered, until they settle; either of a turn since over
+    moves nothing, since that turn's result is told instead. Text is displayed for seconds after its turn's Stop (2.1.280)."""
+    match turn, event:
+        case Opened(gathering=None), Displayed(text=text) if not text.strip():
+            # Blank lines alone are nothing said, so they begin no burst: one would be told as the session's name and
+            # nothing after it. Within a burst they part its paragraphs.
+            return turn
+        case Opened(gathering=gathering), _ if not ids(turn).isdisjoint(event.turn):
+            began = Gathering((), "", event.at, event.at) if gathering is None else gathering
+            match event:
+                case Progressed(doings=doings):
+                    return replace(turn, gathering=began.joined(doings, event.at), latest=doings[-1])
+                case Displayed(text=text):
+                    return replace(turn, gathering=began.wrote(text, event.at))
         case _:
             return turn
 
@@ -605,7 +610,7 @@ def _burst(session: SessionId, turn: Turn, at: Instant) -> tuple[Turn, list[Effe
     transcript is read moves when a burst is heard, never what it holds."""
     match turn:
         case Opened(gathering=Gathering() as gathering) if at >= gathering.due():
-            return replace(turn, gathering=None), [Progress(session, _ids(turn), gathering.doings)]
+            return replace(turn, gathering=None), [Progress(session, ids(turn), gathering.doings, gathering.written)]
         case _:
             return turn, []
 

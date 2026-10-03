@@ -1,7 +1,7 @@
 """Progress while a session works: its calls read as they are made, gathered until they settle, and heard by the focus."""
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
 import pytest
@@ -9,16 +9,18 @@ from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core.attention import Overlay, Route, progress_route
 from hands.core.effects import Progress
-from hands.core.events import Progressed, StatusReported, Tick
+from hands.core.events import Displayed, Progressed, StatusReported, Tick
 from hands.core.pending import Finished, News, Pending, Unread, Working, coalesce
-from hands.core.progress import EDITING, LONGEST, RUNNING, SETTLE, Doing, Gathering, doing, said
+from hands.core.progress import EDITING, WRITING, LONGEST, RUNNING, SETTLE, Doing, Gathering, doing, explained, said
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Membership, Opened, PromptId, Registry, Running, Session, SessionId, Told, Turn, Untold
 from hands.core import status
 from hands.core.status import Busy, Report, Stamp
-from hands.sessions.audit import Applied, Entry, Relayed, Routed, encoded
+from hands.sessions.audit import Applied, Entry, ProgressTold, Relayed, Routed, encoded
 from hands.sessions.tail import Tails
 from hands.voice.speech import Aloud, Pushed, Tailed, Unprompted, frames, relay
+from hands.voice.summary import SummaryFailed
+from hands.voice.working import Playing, keep_playing
 from hands.voice.tools import describe_listing
 from hands.sessions.registry import Listing
 
@@ -78,8 +80,8 @@ def test_a_burst_is_one_clause(doings: tuple[Doing, ...], sentence: str) -> None
 
 
 def test_a_burst_is_due_once_it_settles_and_no_later_than_its_longest_wait() -> None:
-    assert Gathering((TESTS,), 10.0, 11.0).due() == 11.0 + SETTLE
-    assert Gathering((TESTS,), 10.0, 10.0 + LONGEST).due() == 10.0 + LONGEST
+    assert Gathering((TESTS,), "", 10.0, 11.0).due() == 11.0 + SETTLE
+    assert Gathering((TESTS,), "", 10.0, 10.0 + LONGEST).due() == 10.0 + LONGEST
 
 
 @pytest.mark.parametrize(
@@ -158,11 +160,11 @@ def test_calls_are_gathered_on_the_turn_and_told_once_they_settle() -> None:
     gathered, effects = reduce(running(Opened(TURN)), Progressed(SID, (TURN,), (edit("a.py"),), at=10.0))
     gathered, more = reduce(gathered, Progressed(SID, (TURN,), (TESTS,), at=11.0))
     assert effects == more == []
-    assert turn_of(gathered) == Opened(TURN, gathering=Gathering((edit("a.py"), TESTS), 10.0, 11.0), latest=TESTS)
+    assert turn_of(gathered) == Opened(TURN, gathering=Gathering((edit("a.py"), TESTS), "", 10.0, 11.0), latest=TESTS)
     waiting, early = reduce(gathered, Tick(11.0 + SETTLE - 0.5))
     assert early == [] and waiting == gathered
     told, effects = reduce(gathered, Tick(11.0 + SETTLE))
-    assert effects == [Progress(SID, IN_TURN, (edit("a.py"), TESTS))]
+    assert effects == [Progress(SID, frozenset({TURN}), (edit("a.py"), TESTS), "")]
     # Told once: what the session last set out to do is kept for anyone who asks.
     assert turn_of(told) == Opened(TURN, latest=TESTS)
     assert reduce(told, Tick(30.0)) == (told, [])
@@ -184,9 +186,11 @@ def test_a_session_that_never_pauses_is_heard_at_its_longest_wait() -> None:
         pytest.param(Told(TURN), id="a turn told"),
     ],
 )
-def test_calls_read_late_move_nothing(turn: Turn) -> None:
+def test_calls_read_and_text_displayed_late_move_nothing(turn: Turn) -> None:
     before = running(turn)
     assert reduce(before, Progressed(SID, (TURN,), (TESTS,), at=10.0)) == (before, [])
+    # Claude Code goes on displaying a reply for seconds after its turn's Stop (2.1.280).
+    assert reduce(before, Displayed(SID, (TURN,), "1. A line of it.\n", at=10.0)) == (before, [])
 
 
 def test_what_a_turn_gathered_and_did_not_tell_goes_with_it_as_it_ends() -> None:
@@ -249,8 +253,9 @@ async def test_the_calls_a_turn_made_before_hands_followed_it_are_history(tmp_pa
     assert [event for event in await Tails(Known(transcript)).catch_up() if isinstance(event, Progressed)] == []
 
 
-async def test_the_relay_plays_the_focus_working_leaves_any_other_to_the_listing_and_says_why() -> None:
+async def test_the_relay_hands_the_focus_on_to_be_played_leaves_any_other_to_the_listing_and_says_why() -> None:
     queued: list[Frame] = []
+    played: list[Progress] = []
     recorded: list[Entry] = []
 
     class Heard:
@@ -268,12 +273,13 @@ async def test_the_relay_plays_the_focus_working_leaves_any_other_to_the_listing
 
     sessions = Heard()
     for session in (SID, OTHER):
-        sessions.waiting.put_nowait(Progress(session, IN_TURN, (TESTS,)))
-    relaying = asyncio.create_task(relay(sessions, queue_frame, recorded.append, attending))  # pyright: ignore[reportArgumentType]  (only heard() is asked)
+        sessions.waiting.put_nowait(Progress(session, frozenset({TURN}), (TESTS,), ""))
+    relaying = asyncio.create_task(relay(sessions, queue_frame, recorded.append, attending, played.append))  # pyright: ignore[reportArgumentType]  (only heard() is asked)
     while len([entry for entry in recorded if isinstance(entry, Routed)]) < 2:
         await asyncio.sleep(0.01)
     relaying.cancel()
-    assert [frame.pending for frame in queued if isinstance(frame, Unprompted)] == [Working(SID, IN_TURN, (TESTS,))]
+    assert queued == []
+    assert played == [Progress(SID, frozenset({TURN}), (TESTS,), "")]
     assert [entry for entry in recorded if not isinstance(entry, Relayed)] == [Routed(SID, True, "normal", "play"), Routed(OTHER, False, "normal", "note")]
 
 
@@ -294,7 +300,158 @@ def test_calls_read_are_a_line_the_audit_log_can_write() -> None:
     }
 
 
+def test_progress_relayed_and_told_is_a_line_the_audit_log_can_write() -> None:
+    # Found live: the log could not write the set progress carries its turn as, and every burst's Relayed and Performed
+    # lines went unrecorded.
+    heard = encoded(Relayed(Progress(SID, frozenset({PromptId("p2"), TURN}), (TESTS,), "a line\n")))["heard"]
+    assert isinstance(heard, dict) and heard["turn"] == ["p1", "p2"] and heard["written"] == "a line\n"
+    assert encoded(ProgressTold(SID, 7, "explain how DNS works", None, current=True))["explained"] == "explain how DNS works"
+
+
 def test_calls_read_after_their_session_ended_are_behind_not_wrong() -> None:
     # The tail reads a transcript a moment past its session's end: no audit line says a hook came late.
     gone = Registry(permission_deadline=60.0, sessions={SID: Gone(MEMBER)}, drafts={})
     assert reduce(gone, Progressed(SID, (TURN,), (TESTS,), at=10.0)) == (gone, [])
+    assert reduce(gone, Displayed(SID, (TURN,), "a line\n", at=10.0)) == (gone, [])
+
+
+def test_text_is_gathered_with_the_calls_and_told_with_them_once_both_settle() -> None:
+    registry, _ = reduce(running(Opened(TURN)), Displayed(SID, (TURN,), "First, how DNS works.\n", at=10.0))
+    registry, _ = reduce(registry, Displayed(SID, (TURN,), "1. The OS asks its resolver.\n2. The resolver asks the root.\n", at=11.0))
+    registry, _ = reduce(registry, Progressed(SID, (TURN,), (TESTS,), at=12.0))
+    # A line displayed holds the burst open as a call does: a long explanation is told once it has settled or waited longest.
+    assert reduce(registry, Tick(11.0 + SETTLE))[1] == []
+    told, effects = reduce(registry, Tick(12.0 + SETTLE))
+    assert effects == [Progress(SID, frozenset({TURN}), (TESTS,), "First, how DNS works.\n1. The OS asks its resolver.\n2. The resolver asks the root.\n")]
+    # Text is not a call: what the session last set out to do is still the call it made.
+    assert turn_of(told) == Opened(TURN, latest=TESTS)
+
+
+def test_blank_lines_alone_begin_no_burst_but_part_the_paragraphs_of_one() -> None:
+    # A burst of nothing would be told as the session's name and nothing after it.
+    idle = running(Opened(TURN))
+    assert reduce(idle, Displayed(SID, (TURN,), "\n", at=10.0)) == (idle, [])
+    registry, _ = reduce(idle, Displayed(SID, (TURN,), "First.\n", at=10.0))
+    registry, _ = reduce(registry, Displayed(SID, (TURN,), "\n", at=10.5))
+    registry, _ = reduce(registry, Displayed(SID, (TURN,), "Then.\n", at=11.0))
+    _, effects = reduce(registry, Tick(11.0 + SETTLE))
+    assert effects == [Progress(SID, frozenset({TURN}), (), "First.\n\nThen.\n")]
+
+
+def test_an_explanation_still_being_written_is_told_at_its_longest_wait() -> None:
+    registry = running(Opened(TURN))
+    for at in range(0, int(LONGEST) * 4):
+        registry, _ = reduce(registry, Displayed(SID, (TURN,), f"{at}. A line.\n", at=at / 4))
+    _, effects = reduce(registry, Tick(LONGEST))
+    assert [(type(effect), effect.doings) for effect in effects if isinstance(effect, Progress)] == [(Progress, ())]
+
+
+def test_text_is_said_by_its_summary_ahead_of_the_calls() -> None:
+    assert said((explained("Explain how DNS resolution works."), TESTS)) == "explain how DNS resolution works, then run the test suite"
+    assert said((Doing(WRITING, None), TESTS)) == "write something, then run the test suite"
+    # Two bursts whose text could not be summarised, folded before they are said: what either says is not known.
+    assert said((Doing(WRITING, None), Doing(WRITING, None))) == "write two things"
+
+
+async def played(progress: Progress, turn: Callable[[], Turn], explain: Callable[[str], Awaitable[str]]) -> tuple[list[Pending], list[ProgressTold]]:
+    """What the player hands the floor of one progress, and its line in the audit log, with the session's turn as `turn`
+    says when it is asked."""
+    queued: list[Frame] = []
+    recorded: list[Entry] = []
+
+    async def queue_frame(frame: Frame) -> None:
+        queued.append(frame)
+
+    def live_session(_session: SessionId) -> Session:
+        return Session(MEMBER, Running(Busy(), Stamp(1000), None), mode=None, turn=turn())
+
+    playing = Playing()
+    playing.put_nowait(progress)
+    player = asyncio.create_task(keep_playing(playing, live_session, queue_frame, recorded.append, explain))
+    while not any(isinstance(entry, ProgressTold) for entry in recorded):
+        await asyncio.sleep(0.01)
+    player.cancel()
+    return [frame.pending for frame in queued if isinstance(frame, Unprompted)], [entry for entry in recorded if isinstance(entry, ProgressTold)]
+
+
+async def unasked(text: str) -> str:
+    raise AssertionError(f"a burst of calls alone is said as written, not summarised: {text!r}")
+
+
+async def test_a_burst_of_calls_alone_is_played_as_written() -> None:
+    queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), ""), lambda: Opened(TURN), unasked)
+    assert queued == [Working(SID, IN_TURN, (TESTS,))]
+    assert told == [ProgressTold(SID, 0, None, None, current=True)]
+
+
+WRITTEN = "First, how DNS works.\n1. The OS asks its resolver.\n"
+
+
+async def test_the_focus_is_heard_explaining_by_a_summary_of_what_it_wrote() -> None:
+    asked: list[str] = []
+
+    async def explain(text: str) -> str:
+        asked.append(text)
+        return "Explain how DNS resolution works."
+
+    queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), WRITTEN), lambda: Opened(TURN), explain)
+    assert asked == [WRITTEN.strip()]
+    assert queued == [Working(SID, IN_TURN, (explained("explain how DNS resolution works"), TESTS))]
+    assert told == [ProgressTold(SID, len(WRITTEN), "explain how DNS resolution works", None, current=True)]
+    [spoken] = frames(queued[0], Pushed(), names=lambda _: "cc-hands")
+    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: explain how DNS resolution works, then run the test suite."
+
+
+async def test_text_that_cannot_be_summarised_is_said_to_have_been_written_and_never_read_out() -> None:
+    async def explain(_text: str) -> str:
+        raise SummaryFailed("nothing came back")
+
+    queued, told = await played(Progress(SID, frozenset({TURN}), (), WRITTEN), lambda: Opened(TURN), explain)
+    assert queued == [Working(SID, IN_TURN, (Doing(WRITING, None),))]
+    assert told == [ProgressTold(SID, len(WRITTEN), None, "SummaryFailed: nothing came back", current=True)]
+
+
+async def test_progress_whose_turn_ended_while_it_was_summarised_is_not_played() -> None:
+    turn: list[Turn] = [Opened(TURN)]
+
+    async def explain(_text: str) -> str:
+        # The turn ends in the seconds the summary takes; its result is told instead.
+        turn[0] = Untold(TURN, frozenset(), Stamp(2000))
+        return "explain how DNS resolution works"
+
+    queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), WRITTEN), lambda: turn[0], explain)
+    assert queued == []
+    assert told == [ProgressTold(SID, len(WRITTEN), "explain how DNS resolution works", None, current=False)]
+
+
+async def test_a_burst_is_not_kept_waiting_on_the_summary_of_the_one_ahead_of_it() -> None:
+    queued: list[Frame] = []
+    asked: list[str] = []
+    second_asked = asyncio.Event()
+
+    async def explain(text: str) -> str:
+        asked.append(text)
+        if text == "first":
+            # The first summary is still out when the second burst is routed; it comes back only once that one began.
+            await second_asked.wait()
+        else:
+            second_asked.set()
+        return f"explain the {text} thing"
+
+    async def queue_frame(frame: Frame) -> None:
+        queued.append(frame)
+
+    playing = Playing()
+    player = asyncio.create_task(keep_playing(playing, lambda _: Session(MEMBER, Running(Busy(), Stamp(1000), None), mode=None, turn=Opened(TURN)), queue_frame, lambda _: None, explain))
+    playing.put_nowait(Progress(SID, frozenset({TURN}), (), "first"))
+    playing.put_nowait(Progress(SID, frozenset({TURN}), (), "second"))
+    await asyncio.wait_for(second_asked.wait(), timeout=1.0)
+    while len(queued) < 2:
+        await asyncio.sleep(0.01)
+    player.cancel()
+    assert asked == ["first", "second"]
+    # Played in the order they settled, whichever summary came back first.
+    assert [frame.pending for frame in queued if isinstance(frame, Unprompted)] == [
+        Working(SID, IN_TURN, (explained("explain the first thing"),)),
+        Working(SID, IN_TURN, (explained("explain the second thing"),)),
+    ]

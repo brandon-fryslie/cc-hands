@@ -100,6 +100,17 @@
           }
         ]
       }
+    ],
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47615/hands/display",
+            "timeout": 2
+          }
+        ]
+      }
     ]
   }
 }

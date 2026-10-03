@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -43,7 +43,7 @@ from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
 from hands.sessions.audit import AuditLog, LLMChosen, ProxyListening, Record, TapListening, VoiceChosen, failures_to
-from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
+from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT, PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.statusfile import keep_reading_statuses
 from hands.sessions.tail import Tails, keep_tailing
@@ -52,7 +52,7 @@ from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.names import Names
-from hands.sessions.server import serve_hooks
+from hands.sessions.server import serve_display, serve_hooks
 from hands.sessions.tap import moves, serve_tap
 from hands.sessions.overlays import Overlays
 from hands.sessions.summaries import summaries
@@ -75,7 +75,9 @@ from hands.voice.pipeline import (
 from hands.voice.naming import NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS, keep_naming
 from hands.voice.narrator import Recounts, attending, narrate
 from hands.voice.speech import Pushed, Tailed, Telling, relay
+from hands.voice.working import Playing, keep_playing
 from hands.voice.summary import Summariser, aside, summariser
+from hands.voice.progress_instruction import EXPLAIN_INSTRUCTION, EXPLAIN_MAX_TOKENS, EXPLAIN_TIMEOUT_SECONDS
 from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
 from hands.voice.summarising import SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS, keep_summarising
 from hands.voice.sentences import SummaryStore
@@ -301,34 +303,42 @@ async def outlived(brain: Brain) -> None:
 async def run(
     configure: Callable[[], VoiceConfig], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, audit: AuditLog, quit_event: asyncio.Event, after_crash: bool
 ) -> Ended:
-    # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
-    failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
-    # What each turn changed in the repository it ran in, which no transcript record need name.
-    deltas = Deltas(audit.record)
-    sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record, changes=deltas)
-    # Before the hooks are served: a turn that finishes while the models load is named once they have.
-    names = Names()
-    hooks = await serve_hooks(home, sessions, names, audit.record)
-    wire = Wire(wire_to(audit.record))
-    proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=time.time)
-    audit.record(ProxyListening(url=proxy.url, upstream=UPSTREAM))
-    # [LAW:one-source-of-truth] the working sessions' exchanges reach the same observer as the brain's, so the log and
-    # whatever listens hear one wire; and what they say of a turn reaches the registry as it is heard, as a hook does.
-    def tapped(observed: Observed) -> None:
-        wire.observe(observed)
-        for move in moves(observed):
-            sessions.hear(move)
-
-    tap = await serve_tap(home.wire, tapped, audit.record, clock=time.time)
-    audit.record(TapListening(path=home.wire))
     voice: Voice | None = None
-    store = SummaryStore(Sentences(home.sentences))
-    # [LAW:one-source-of-truth] one holder of each session's last turn: the narrator fills it, tell_turn reads it.
-    recounts = Recounts()
-    # [LAW:one-source-of-truth] one holder of where playback is: the pipeline's taps move it, the playback tools read it.
-    player = Player(audit.record)
-    tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store, home, recounts, player)]
-    try:
+    # [LAW:single-enforcer] one owner lets go of all the run took, in reverse, whichever step of taking it raised: a run
+    # that raised still lets go of the socket and of every permission hook waiting on it.
+    async with AsyncExitStack() as held:
+        # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
+        failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
+        held.callback(logger.remove, failures)
+        # What each turn changed in the repository it ran in, which no transcript record need name.
+        deltas = Deltas(audit.record)
+        sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record, changes=deltas)
+        # Before the hooks are served: a turn that finishes while the models load is named once they have.
+        names = Names()
+        hooks = await serve_hooks(home, sessions, names, audit.record)
+        held.push_async_callback(hooks.cleanup)
+        wire = Wire(wire_to(audit.record))
+        proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=time.time)
+        held.push_async_callback(proxy.close)
+        audit.record(ProxyListening(url=proxy.url, upstream=UPSTREAM))
+        # [LAW:one-source-of-truth] the working sessions' exchanges reach the same observer as the brain's, so the log and
+        # whatever listens hear one wire; and what they say of a turn reaches the registry as it is heard, as a hook does.
+        def tapped(observed: Observed) -> None:
+            wire.observe(observed)
+            for move in moves(observed):
+                sessions.hear(move)
+
+        tap = await serve_tap(home.wire, tapped, audit.record, clock=time.time)
+        held.callback(tap.close)
+        audit.record(TapListening(path=home.wire))
+        display = await serve_display(sessions, DISPLAY_HOST, DISPLAY_PORT, DISPLAY_PATH, audit.record)
+        held.push_async_callback(display.cleanup)
+        store = SummaryStore(Sentences(home.sentences))
+        # [LAW:one-source-of-truth] one holder of each session's last turn: the narrator fills it, tell_turn reads it.
+        recounts = Recounts()
+        # [LAW:one-source-of-truth] one holder of where playback is: the pipeline's taps move it, the playback tools read it.
+        player = Player(audit.record)
+        tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store, home, recounts, player)]
         config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
@@ -338,12 +348,6 @@ async def run(
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences, names, recounts)
-    finally:
-        # A run that raised still lets go of the socket and of every permission hook waiting on it.
-        await hooks.cleanup()
-        await proxy.close()
-        tap.close()
-        logger.remove(failures)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
@@ -388,7 +392,7 @@ async def converse(
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
         # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
-        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
+        # nothing is asked aloud, without the progress player the focus is not heard working, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
         # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
@@ -400,12 +404,17 @@ async def converse(
     for listing in sessions.live():
         store.want(listing.session.membership.cwd)
     overlays = Overlays(home)
+    playing = Playing()
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
-        asyncio.create_task(relay(sessions, voice.worker.queue_frame, record, partial(attending, home, overlays)), name="the session speech relay"),
+        asyncio.create_task(relay(sessions, voice.worker.queue_frame, record, partial(attending, home, overlays), playing.put_nowait), name="the session speech relay"),
+        asyncio.create_task(
+            keep_playing(playing, sessions.live_session, voice.worker.queue_frame, record, minded.summariser(EXPLAIN_INSTRUCTION, EXPLAIN_MAX_TOKENS, EXPLAIN_TIMEOUT_SECONDS)),
+            name="the progress player",
+        ),
         asyncio.create_task(narrate(sessions, tails, voice.worker.queue_frame, record, lambda: summaries(home), overlays, recounts, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
         asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),

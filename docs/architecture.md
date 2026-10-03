@@ -575,7 +575,9 @@ a directory of its own so that an install copies those and not the repository's 
 Installing the plugin installs the hooks; disabling or uninstalling it removes them,
 and no settings file is edited by hands. `hooks.json` is generated from `hookconfig`
 (`python -m hands.sessions.hookconfig > plugin/hooks/hooks.json`), and a test fails
-when the checked-in file differs from what `hookconfig` declares. Every hook is exec
+when the checked-in file differs from what `hookconfig` declares. `MessageDisplay` is an HTTP
+hook to `hookconfig.DISPLAY_URL`, a fixed loopback port, since Claude Code puts no variable in a hook's URL
+(2.1.288); the daemon serves that route alone there, and does not start when the port is taken. Every other hook is exec
 form: `${CLAUDE_PLUGIN_ROOT}/hooks/python -m hands.sessions.shim`, spawned by Claude
 Code with no shell between. The plugin has no venv, so the launcher takes the first of
 `python3.14`, `python3.13`, `python3.12` on `PATH` (the name says the version, so none
@@ -1193,8 +1195,17 @@ left to the session listing, which says what a working session last set out to d
 `list_sessions` tool for an API model, and the tail of the brain's every request. `coalesce`
 folds a session's progress into one telling and drops what a result of the same turn says
 better; progress carries its turn's ids for this, since a result reaches the floor only once
-it is summarised, after the next turn's calls may have. Text streamed line by line from `MessageDisplay`, summarised while
-Claude is still writing it, is planned (hands-narration-2mc.ww1).
+it is summarised, after the next turn's calls may have.
+
+Text is gathered the same way, from `MessageDisplay`: each batch of lines Claude Code displays is a `Displayed` event in
+the turn its `prompt_id` names, joined to the burst on the `Opened` turn, so a line holds the burst open as a call does
+and a long explanation is let go at `LONGEST`, while Claude is still writing it. Lines displayed after the turn's `Stop`
+move nothing. Progress the relay routes to be played goes by a lane of its own (`hands.voice.working`), because its text
+waits on a summary and a permission request must not wait behind that: the summariser's model says the text as an
+imperative phrase, which goes ahead of the burst's calls ("cc-hands: explain how DNS resolution works, then run the test
+suite."). Text that cannot be summarised is said as "write something", never read out. A turn that ended while its
+progress was being summarised is not played, its result being told instead; the registry says so as the summary is
+ready, and a `ProgressTold` line records the text's length, its phrase or its failure, and whether it played.
 
 ## Playback: bookmarks and resume
 

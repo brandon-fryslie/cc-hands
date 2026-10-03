@@ -1,4 +1,4 @@
-"""The unix socket the shims post to."""
+"""The unix socket the shims post to, and the loopback route Claude Code posts the text it displays to."""
 
 import asyncio
 import socket
@@ -11,8 +11,8 @@ from loguru import logger
 from hands.core.events import Attached, PermissionRequested, Prompted, Stopped
 from hands.core.session import Membership, RequestId
 from hands.sessions.home import Home
-from hands.sessions.audit import NameGiven, NameWithheld, Record
-from hands.sessions.hooks import hook_output, name_output, parse_hook
+from hands.sessions.audit import DisplayListening, NameGiven, NameWithheld, Record
+from hands.sessions.hooks import hook_output, name_output, parse_display, parse_hook
 from hands.sessions.names import Due, Finished, Names
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
@@ -96,6 +96,36 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
     await runner.setup()
     claim_socket(home.socket)
     await web.UnixSite(runner, str(home.socket)).start()
+    return runner
+
+
+async def serve_display(sessions: Sessions, host: str, port: int, path: str, record: Record) -> web.AppRunner:
+    """Listen on `host`:`port` for MessageDisplay alone, until the returned runner is cleaned up.
+
+    Raises RuntimeError when the port is taken: a daemon that cannot hear what Claude writes does not start as though it
+    could, and the plugin's hooks name this port alone.
+    """
+
+    async def displayed(request: web.Request) -> web.Response:
+        try:
+            said = parse_display(await request.read(), at=sessions.now())
+        except Rejected as error:
+            # Claude Code logs a hook's failure in its debug log; the daemon's log says what was refused, and why.
+            logger.error(f"rejected display: {error}")
+            return web.Response(status=400, text=str(error))
+        await sessions.apply(said)
+        return web.Response(status=204)
+
+    app = web.Application()
+    app.router.add_post(path, displayed)
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    try:
+        await web.TCPSite(runner, host, port).start()
+    except OSError as error:
+        await runner.cleanup()
+        raise RuntimeError(f"cannot listen for the text Claude Code displays on {host}:{port}: {error}") from error
+    record(DisplayListening(url=f"http://{host}:{port}{path}"))
     return runner
 
 
