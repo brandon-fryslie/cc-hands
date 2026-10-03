@@ -168,6 +168,9 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert not {"--tools", "--disallowedTools", "--permission-mode", "--strict-mcp-config", "--system-prompt", "--bare"} & set(argv)
     assert argv[argv.index("--allowedTools") + 1] == "mcp__hands"
     assert argv[argv.index("--mcp-config") + 1] == launch(tmp_path).mcp_config
+    # Beside its setup's skills, hands gives it its own: the one it writes a session's prompt with among them.
+    skill = Path(argv[argv.index("--plugin-dir") + 1]) / "skills" / "prompt" / "SKILL.md"
+    assert "\nname: prompt\n" in skill.read_text() and "stage_draft" in skill.read_text()
     assert [argv[argv.index(flag) + 1] for flag in ("--setting-sources", "--append-system-prompt", "--session-id")] == ["user", "You are hands.", "b1"]
     hooks = json.loads(argv[argv.index("--settings") + 1])["hooks"]
     assert {event: hooks.pop(event) for event in ("UserPromptSubmit", "Stop", "StopFailure", "Elicitation")} == {
