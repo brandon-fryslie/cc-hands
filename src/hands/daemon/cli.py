@@ -163,13 +163,15 @@ async def launch(load: Callable[[], Run], heart: heartbeat.Heart) -> Ending:
         # No session has joined before the hooks are served, which is after the import.
         run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, quit_event)
         last = Ended(None, 0) if run is None else await run(quit_event)
+        # Written only by a run told to stop: one that raised leaves its last heartbeat naming a pid that is gone, or,
+        # as it restarts, one that stops beating, and neither reads as stopped. [LAW:no-ambient-temporal-coupling] it
+        # goes out while the handlers are in, so a restart is never asked once they are out: the heartbeat no longer
+        # says running, and one asked before it reads that is heard by stop, where the first stop already decided.
+        heart.beat(LAST_BEAT[ending], last.last_audio_out, last.live_sessions, False)
     finally:
         # From here a signal has its default effect again: nothing is left to stop gracefully.
         for signal_number in STOP_SIGNALS:
             loop.remove_signal_handler(signal_number)
-    # Written only by a run told to stop: one that raised leaves its last heartbeat naming a pid that is gone, or, as it
-    # restarts, one that stops beating, and neither reads as stopped.
-    heart.beat(LAST_BEAT[ending], last.last_audio_out, last.live_sessions, False)
     return ending
 
 
