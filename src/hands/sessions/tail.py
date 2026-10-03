@@ -36,6 +36,8 @@ class Telling:
     number: int
     through: int
     stood_in: str | None
+    # What the turn's told part ends on, said, once this is: compared with the reply a later Stop of the same turn carries.
+    ends_on: str | None
 
 
 # How many turns that ended are kept for their tellings: a narrator that many turns behind on one session is not behind,
@@ -45,14 +47,16 @@ KEPT = 8
 
 @dataclass
 class Reading:
-    """One turn as far as it has been read, how much of it was told, and every prompt id its records carry."""
+    """One turn as far as it has been read and not yet told, and every prompt id its records carry."""
 
     # Which turn of the session this is, counted across the whole following, so a mark made before a slow summary can
     # only ever land on the turn it was made for.
     number: int
+    # [LAW:one-source-of-truth] how much of it was told is how much of it the turning let go of.
     turn: Turning = field(default_factory=Turning)
-    told: int = 0
     stood_in: str | None = None
+    # What the told part of the turn ended on, said: the turn's last words while nothing untold follows them.
+    ended_on: str | None = None
     # A turn goes by the id of the prompt that opened it, and by any it went on under after a flush (2.1.281): a Stop
     # or an interrupt may name either.
     ids: set[PromptId] = field(default_factory=set[PromptId])
@@ -225,23 +229,30 @@ class Tails:
                 # Tellings are made in the order their turns ended, so the turns before the one named have had theirs.
                 # A telling that names no turn says nothing of which one ended, so it lets go of none.
                 following.ended = [held for held in following.ended if held.number >= reading.number]
-            steps = reading.turn.steps()
+            untold = reading.turn.steps()
             # Claude Code only ever appends, so the record of a stand-in that has since been written is the first step
             # after what was heard; counting it heard too is how the stand-in gives way without the reply being told twice.
-            heard = reading.told + (1 if reading.stood_in is not None and _said_at(steps, reading.told) == reading.stood_in else 0)
+            skipped = 1 if reading.stood_in is not None and _said_at(untold, 0) == reading.stood_in else 0
+            heard = reading.turn.forgotten + skipped
             # [LAW:one-source-of-truth] the transcript is the record of what Claude said; the hook's copy stands in only
             # while the turn does not yet end on it. Both are read the same way, so a record padded with whitespace
             # neither misses its stand-in nor hides behind one.
             reply = _spoken(closing)
-            stand_in = None if reply == _said_at(steps, len(steps) - 1) else reply
-            shown = steps[heard:] if stand_in is None else [*steps[heard:], Said(None, stand_in)]
+            ends_on = _said_at(untold, len(untold) - 1) if untold else reading.ended_on
+            stand_in = None if reply == ends_on else reply
+            shown = untold[skipped:] if stand_in is None else [*untold[skipped:], Said(None, stand_in)]
             # [LAW:types-are-the-program] a turn whose earlier steps went out already is a different thing to
             # report than a fresh one, and saying which it is here is what keeps the opening from being asked twice.
             standing = Answering() if heard == 0 else Continuing(heard)
-            return Telling(session, Turn(reading.turn.opening, tuple(shown), standing), reading.number, len(steps), stand_in)
+            through = reading.turn.forgotten + len(untold)
+            told_ends_on = ends_on if stand_in is None else stand_in
+            return Telling(session, Turn(reading.turn.opening, tuple(shown), standing), reading.number, through, stand_in, told_ends_on)
 
     async def spoken(self, telling: Telling) -> None:
-        """Mark what a telling held as told, on the turn it was made of, whatever has opened since.
+        """Mark what a telling held as told, on the turn it was made of, whatever has opened since, and let go of it.
+
+        [LAW:carrying-cost] a turn's steps hold its whole output, and a session that goes quiet after a long turn would
+        keep all of it until its next prompt; what is told is never shown again, so only what is untold is kept.
 
         Under the same lock as the reading: a summary takes seconds, and the turn it was asked about can open its
         successor in a worker thread while it comes back. Finding the turn by its number and writing what it was
@@ -253,8 +264,12 @@ class Tails:
             if following is None or reading is None:
                 # Its transcript was read again from the start since, or the session is gone: there is nothing left to mark.
                 return
-            reading.told = telling.through
+            let_go = telling.through - reading.turn.forgotten
+            reading.turn.forget(telling.through)
+            # [LAW:nothing-unseen] what a told turn still holds, so a session that keeps output resident is seen to.
+            logger.debug(f"session {telling.session} turn {telling.number} was told through step {telling.through}: let go of {let_go} steps, {len(reading.turn.slots)} untold are held")
             reading.stood_in = telling.stood_in
+            reading.ended_on = telling.ends_on
             # A turn that ended has no more records coming, so told is all of it.
             following.ended = [held for held in following.ended if held is not reading]
 
