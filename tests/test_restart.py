@@ -16,7 +16,7 @@ from hands.core.session import Membership, SessionId
 from hands.daemon.cli import launch, still_shown
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.starting import Ended
-from hands.sessions import heartbeat
+from hands.sessions import audit, heartbeat
 from hands.sessions.hookconfig import LAUNCHER, PLUGIN_DIR
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
@@ -73,7 +73,7 @@ def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sess
         assert after.started_at > before.started_at
         assert done.stdout.startswith(f"hands restarted: pid {daemon.pid} is running again after ")
         assert done.stdout.endswith(", with 1 live session.\n")
-        restarts = [line for line in map(json.loads, home.audit.read_text().splitlines()) if line["type"] == "Restarting"]
+        restarts = [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line["type"] == "Restarting"]
         assert restarts == [{"at": restarts[0]["at"], "level": "info", "type": "Restarting", "pid": daemon.pid}]
     finally:
         daemon.terminate()
