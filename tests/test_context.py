@@ -254,3 +254,16 @@ async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> No
 
     keeper = Keeper(BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
     assert Kept(Holding(), keeper).route(sent(history(6))) == Hold("(stayed silent)")
+
+
+async def test_the_stages_send_goes_on_whole_with_the_keepers_changes_first() -> None:
+    class Final(Stage):
+        def route(self, sent: Sent) -> Route:
+            return Send((Tail("standing"),), refusal="final")
+
+    store = Store()
+    store.said.update({key(result): "said" for result in aged(history(6), 3)})
+    keeper = Keeper(BRAIN, Asked().ask, store, 3, lambda _entry: None)
+    routed = Kept(Final(), keeper).route(sent(history(6)))
+    assert isinstance(routed, Send) and routed.refusal == "final"
+    assert routed.changes[-1] == Tail("standing") and len(routed.changes) > 1

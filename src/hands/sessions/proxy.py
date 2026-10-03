@@ -238,10 +238,19 @@ def _held(body: object, said: str) -> tuple[str, bytes]:
 
 
 def _asked_again(status: int, headers: Mapping[str, str]) -> bool:
-    """Whether a client asks again after this answer, as Anthropic's SDK does: by its header when the API sent one, else
-    by its status. A 401 is left out: asking again after it is how the client refreshes its login, and that stays its own."""
+    """Whether Claude Code asks again after this answer (`lMo`, 2.1.286). A 401 is left out: asking again after it is how
+    the client refreshes its login, and that stays its own."""
     told = headers.get("x-should-retry")
-    return told == "true" if told is not None else status in (408, 409, 429) or status >= 500
+    match status, told:
+        case (int() as answered, _) if answered < 400:
+            return False
+        # Overloaded: asked again whatever the header says.
+        case (529, _):
+            return True
+        case (_, "true" | "false"):
+            return told == "true"
+        case _:
+            return status in (408, 409, 429) or status >= 500
 
 
 def _told(final: bool) -> dict[str, str]:

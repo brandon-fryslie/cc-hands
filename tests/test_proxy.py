@@ -282,6 +282,7 @@ OVERLOADED = b'{"type":"error","error":{"type":"overloaded_error","message":"Ove
     [
         # Asked again by its status: 529 and an overloaded_error Claude Code asks again after whatever the header says.
         ("final", 529, None, True),
+        ("final", 529, "false", True),
         ("final", 500, None, True),
         ("final", 429, None, True),
         ("final", 408, None, True),
@@ -293,6 +294,7 @@ OVERLOADED = b'{"type":"error","error":{"type":"overloaded_error","message":"Ove
         ("final", 400, None, False),
         ("final", 401, None, False),
         ("final", 200, None, False),
+        ("final", 200, "true", False),
         ("retried", 529, None, False),
     ],
 )
