@@ -109,7 +109,7 @@ class Asides:
         try:
             claude = await spawn(self._station, [*slim(brain_claude(), self._station.model, asked.session, (), NO_SERVERS), opening])
         except (Unstartable, OSError) as error:
-            # No claude to run, or a question longer than a command line can be.
+            # No claude to run, or a question longer than a command line can be; a claude that cannot be run exits, and says why.
             raise AsideFailed(f"no Claude Code to ask: {error}") from error
         try:
             return await self._answered(claude, asked)

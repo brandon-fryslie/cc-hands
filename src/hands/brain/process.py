@@ -323,7 +323,7 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
         process = await asyncio.create_subprocess_exec(
-            *argv,
+            *_holding_terminal(os.ttyname(slave), argv),
             cwd=station.cwd,
             env={**environment(station.config_dir, station.proxy_url, os.environ), "TERM": "xterm-256color"},
             stdin=slave,
@@ -336,7 +336,34 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
         raise
     finally:
         os.close(slave)
+    try:
+        await _held(master, process)
+    except BaseException:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        os.close(master)
+        raise
     return ClaudeCode(process, _Terminal(master))
+
+
+async def _held(terminal: int, process: asyncio.subprocess.Process) -> None:
+    """Until `process` holds `terminal` as its session's, or has ended without taking it.
+
+    [LAW:no-ambient-temporal-coupling] what is spawned is ended by hands' end only once it holds its terminal: a hands
+    that died before then would hang up nothing, and leave the child opening a terminal with no other end, for good."""
+    while process.returncode is None and os.tcgetpgrp(terminal) != process.pid:
+        await asyncio.sleep(0.002)
+
+
+def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:
+    """argv, run so that its terminal is its session's controlling terminal: hands' end, however it comes, hangs the
+    terminal up and ends what runs on it, as closing a window does. Without it, a hands that dies without stopping it
+    leaves it running for good.
+
+    A session leader with no controlling terminal takes the first terminal it opens, so the shell opens it and execs
+    argv in its place, keeping its pid. [LAW:no-ambient-temporal-coupling] no Python runs between fork and exec, where
+    a lock another of hands' threads held at the fork would hang the child, and hands with it."""
+    return ["/bin/sh", "-c", ': <>"$0"; exec "$@"', terminal, *argv]
 
 
 @dataclass
@@ -552,7 +579,7 @@ async def start(launch: Launch, record: Record) -> Brain:
         await asyncio.sleep(SETTLE_SECONDS)
     except BaseException:
         # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
-        # its own, so nothing else would end it when hands does.
+        # its own, which nothing but hands' own end would hang up.
         if running is not None:
             await running.stop()
         await listener.cleanup()
@@ -592,7 +619,10 @@ async def _typist(running: ClaudeCode, sockets: Path, session: SessionId) -> Typ
         if found and child is not None:
             return Typist(session, found[0], child)
         await asyncio.sleep(0.05)
-    raise Unstartable(f"fritter did not start the brain and open its socket in {START_SECONDS:.0f}s (exit {running.exit.result() if running.exit.done() else None})")
+    # What fritter's terminal showed says why: a fritter that could not be run at all fails there, in the shell it was run by.
+    if running.exit.done():
+        raise Unstartable(f"fritter exited ({running.exit.result()}) before it started the brain and opened its socket; it showed:\n{running.shown()}")
+    raise Unstartable(f"fritter did not start the brain and open its socket in {START_SECONDS:.0f}s; it showed:\n{running.shown()}")
 
 
 def _child_of(pid: int) -> int | None:
