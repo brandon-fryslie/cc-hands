@@ -188,6 +188,14 @@ def test_what_a_passing_run_logged_is_no_reason_for_a_failure() -> None:
     assert passing is not None and passing.runner == "go" and passing.failed == 0 and passing.why == ""
 
 
+def test_what_a_passing_test_logged_in_a_failing_run_is_no_reason_for_the_failure() -> None:
+    run = report_of(
+        "=== RUN   TestOk\n    ok_test.go:5: setting up fixture\n--- PASS: TestOk (0.00s)\n"
+        "=== RUN   TestBad\n    bad_test.go:9: want 1, got 0\n--- FAIL: TestBad (0.00s)\nFAIL\nFAIL\tsample\t0.004s\n"
+    )
+    assert run is not None and run.failing == ("TestBad",) and run.why == "bad_test.go:9: want 1, got 0"
+
+
 def test_a_run_that_only_passed_is_still_a_test_run_and_output_that_is_not_one_is_not() -> None:
     passing = report_of("305 passed, 2 warnings in 15.00s\n")
     assert passing is not None and passing.passed == 305 and passing.failed == 0 and passing.failing == ()

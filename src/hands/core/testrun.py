@@ -65,8 +65,10 @@ RUNNERS: tuple[Runner, ...] = (
         # A case of a table-driven test prints this indented under the test it belongs to. `go test` counts
         # nothing, so these names are the count, and counting a test's cases counts one failure several times.
         failing=re.compile(r"(?m)^--- FAIL: (\S+)"),
-        # `    sample_test.go:7: want 1, got 0`, indented under the test that logged it.
-        why=re.compile(r"(?m)^\s+(\S+\.go:\d+: .*)$"),
+        # `    sample_test.go:7: want 1, got 0`, indented under the test that logged it. A line is a reason only where its
+        # indented block ends in a failure: under -v a test's lines come before its `--- FAIL:` or `--- PASS:`, and
+        # without it only a failed test's lines are printed, after its `--- FAIL:`, up to the next or the package's `FAIL`.
+        why=re.compile(r"(?m)^[ \t]+(\S+\.go:\d+: .*)$(?=(?:\n[ \t]+.*)*\n(?:--- FAIL: |FAIL\b))"),
     ),
     Runner(
         name="vitest",
