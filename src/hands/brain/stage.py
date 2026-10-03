@@ -56,7 +56,7 @@ from hands.core.wire import (
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Asker, BrainAnswered, BrainInterrupted, BrainSpoke, Record
-from hands.voice.speech import Aloud, Narrated
+from hands.voice.speech import Aloud, Narrated, Told
 from hands.voice.tools import Result, Tool, silent, whole
 
 
@@ -175,7 +175,10 @@ class BrainStage(FrameProcessor):
                     # A context frame is a call to answer, not a message: one whose messages an earlier turn already took asks nothing.
                     if text := self._news(context):
                         await self._ask(text, "user", (), arrived)
-                case Narrated(text=text, unsaid=unsaid):
+                case Narrated(text=text, unsaid=unsaid, session=session):
+                    # [LAW:no-ambient-temporal-coupling] said as the telling is taken, with no user's words waiting, since
+                    # they go first: whatever the user says from here on comes after what they are being told.
+                    await self.push_frame(Told(session))
                     await self._ask(text, "hands", (unsaid,), arrived)
                 case Aloud(spoken=spoken):
                     await self.push_frame(spoken)

@@ -26,7 +26,7 @@ from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.names import Names
 from hands.sessions.server import serve_hooks
-from hands.voice.speech import Aloud, Narrated, Pushed, Tailed, Unprompted, frames, relay
+from hands.voice.speech import Aloud, Narrated, Pushed, Told, Tailed, Unprompted, frames, relay
 
 from test_shim import STARTED
 from hands.voice.tools import DENIED_BY_VOICE, SENT_BACK_BY_VOICE, Tool, permission_tools
@@ -226,6 +226,8 @@ def test_the_brain_takes_what_a_session_asks_as_a_turn_of_its_own_after_the_user
     assert isinstance(narrated, Narrated) and "is waiting for permission to use Bash" in narrated.text
     # Said as written if the brain cannot take it, so a session waiting on the user is still heard waiting.
     assert narrated.unsaid == f"{SID} is waiting on you about Bash."
+    # Told the user once the brain takes it, so what they say next is taken as their answer to it.
+    assert narrated.session == SID
 
 
 def test_under_the_brain_an_announcement_waits_in_hands_lane_behind_the_question_it_counts_down() -> None:
@@ -240,8 +242,8 @@ def test_a_question_reaches_the_model_whole_with_its_options_and_request_id() ->
         AskedQuestion("Which fruits?", (Option("pear", long), Option("plum", long)), several=True),
         AskedQuestion("Name it?", (), several=False),
     )
-    [narrated] = frames(Narrate(Asking(SID, RequestId("q-7"), Question(asked, {}))), Pushed(), names=lambda id: id)
-    assert isinstance(narrated, LLMMessagesAppendFrame)
+    [narrated, told] = frames(Narrate(Asking(SID, RequestId("q-7"), Question(asked, {}))), Pushed(), names=lambda id: id)
+    assert isinstance(narrated, LLMMessagesAppendFrame) and isinstance(told, Told) and told.session == SID
     [message] = narrated.messages
     content = str(cast(dict[str, object], message)["content"])
     assert f"1. Which color? Options: red ({long}); green." in content
@@ -461,7 +463,7 @@ async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the
 
 def test_a_request_reaches_the_model_with_its_tool_input_and_request_id() -> None:
     moment = Asking(SID, RequestId("r-42"), Permission("Bash", {"command": "rm -r build"}))
-    [narrated] = frames(Narrate(moment), Pushed(), names=lambda id: id)
+    [narrated, _] = frames(Narrate(moment), Pushed(), names=lambda id: id)
     assert isinstance(narrated, LLMMessagesAppendFrame) and narrated.run_llm is True
     [message] = narrated.messages
     content = str(cast(dict[str, object], message)["content"])
@@ -549,7 +551,7 @@ async def test_plan_answers_that_do_not_parse_are_refused_out_loud(sessions: Ses
 
 def test_a_plan_reaches_the_model_whole_with_its_request_id() -> None:
     long = "\n".join(f"{step}. A step described at length so the plan runs past what a tool input is shown." for step in range(1, 30))
-    [narrated] = frames(Narrate(Asking(SID, RequestId("p-3"), Plan(long))), Pushed(), names=lambda id: id)
+    [narrated, _] = frames(Narrate(Asking(SID, RequestId("p-3"), Plan(long))), Pushed(), names=lambda id: id)
     assert isinstance(narrated, LLMMessagesAppendFrame)
     [message] = narrated.messages
     content = str(cast(dict[str, object], message)["content"])

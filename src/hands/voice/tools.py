@@ -47,6 +47,7 @@ from hands.voice.narrator import Recount, Recounts, delivery, switch
 from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
+from hands.voice.refocus import refocus
 from hands.voice.speech import answer_readback, told
 from hands.voice.voices import VOICES, Voices, fetched, parse_voice, spoken
 
@@ -260,7 +261,7 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
     # Every tool that acts on one session, each taking the focus for the session the user did not name.
     on_a_session = [
         *session_tools(sessions, store),
-        tell_turn_tool(sessions, recounts),
+        tell_turn_tool(sessions, recounts, home),
         expand_tool(sessions, recounts),
         *backlog_tools(sessions, store),
         *draft_tools(sessions),
@@ -738,13 +739,14 @@ def _waiting_on(on: Blocker) -> str:
             return "waiting for the user to approve its plan"
 
 
-def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool:
+def tell_turn_tool(sessions: Sessions, recounts: Recounts, home: Home) -> Tool:
     async def tell_turn(session: str) -> Result:
         """What a session's last finished turn did, as hands tells a turn when it finishes, and how it stands now.
 
         Call this when the user asks what a session just did or how its last turn went. Tell them as the returned turn
         says to. `now` is how the session stands at this moment, as list_sessions says it: a question the turn ended
         on may have been answered at the keyboard since, and a session working again is no longer waiting on it.
+        The session told becomes the focus, as a session whose turn hands tells as it finishes does.
 
         Args:
             session: The session's id, from list_sessions.
@@ -763,10 +765,17 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool:
                 # [LAW:no-silent-failure] said as what it is, never as a turn that did nothing.
                 return {"error": f"no turn of {name} has finished since hands started; read_session reads what it did before"}
             case Recount(tellings=(), unread=False):
-                return {"turn": f"[hands] The Claude Code session {name} finished a turn with nothing in it hands could tell. Tell the user so.", "now": now}
+                turn = f"[hands] The Claude Code session {name} finished a turn with nothing in it hands could tell. Tell the user so."
             case Recount(tellings=tellings, unread=unread):
                 failed = (f"[hands] hands could not read {'the rest of ' if tellings else ''}the turn the Claude Code session {name} finished. Tell the user so.",)
-                return {"turn": "\n\n".join((*(told(id, name, (telling,)) for telling in tellings), *(failed if unread else ()))), "now": now}
+                turn = "\n\n".join((*(told(id, name, (telling,)) for telling in tellings), *(failed if unread else ())))
+        # Told as a turn that finishes is told, so the focus moves to it as it does then.
+        match await refocus(home, id):
+            case None:
+                # [LAW:nothing-unseen] the move rides on the result, so its Called line says the focus went there.
+                return {"turn": turn, "now": now, "focused_session": id}
+            case failed_to:
+                return {"turn": turn, "now": now, "focus_unmoved": failed_to}
 
     return tool(tell_turn)
 
