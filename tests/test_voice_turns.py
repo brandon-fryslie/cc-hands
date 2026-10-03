@@ -16,6 +16,7 @@ from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
     LLMContextFrame,
+    LLMMessagesAppendFrame,
     TextFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
@@ -31,6 +32,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from hands.sessions.audit import Entry, Yielded
 from hands.voice import pipeline as built
+from hands.voice.floor import Floor
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.speech import Aloud
 from hands.voice.turnstop import TurnOpened, TurnResolved
@@ -43,7 +45,7 @@ PATIENCE_SECS = 2.0
 
 
 class Recorded(FrameProcessor):
-    """What leaves the floor for the model, the turns the user aggregator ended, and the holds Whisper opened."""
+    """What leaves the user aggregator for the model, the turns it ended, and the holds Whisper opened."""
 
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
@@ -93,11 +95,22 @@ class NoSpeech(FrameProcessor):
 
 
 @dataclass
+class Clock:
+    """The floor's clock, read where the test sets it."""
+
+    now: float = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@dataclass
 class Rig:
     worker: PipelineWorker
     stt: Whisper
     out: Recorded
     recorded: list[Entry]
+    clock: Clock
     # What each transcription, oldest first, will find; it waits for the test to say.
     texts: asyncio.Queue[str] = field(default_factory=asyncio.Queue[str])
     # The audio each transcription was given.
@@ -138,9 +151,10 @@ async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
         llm=FrameProcessor(),
         record=recorded.append,
     )
-    out = Recorded()
-    worker = PipelineWorker(Pipeline([voice.stt, voice.user_turns, voice.floor, out]), idle_timeout_secs=None)
-    made = Rig(worker, voice.stt, out, recorded)
+    out, clock = Recorded(), Clock()
+    # The floor sits where build_voice puts it, between Whisper and the user aggregator.
+    worker = PipelineWorker(Pipeline([voice.stt, Floor(recorded.append, clock), voice.user_turns, out]), idle_timeout_secs=None)
+    made = Rig(worker, voice.stt, out, recorded, clock)
 
     async def transcribe(_self: WhisperSTTServiceMLX, audio: bytes) -> AsyncGenerator[Frame, None]:
         made.heard.append(audio)
@@ -255,17 +269,31 @@ async def test_a_hold_that_heard_nothing_does_not_end_the_hold_pressed_after_it(
 WAITING = Aloud(TTSSpeakFrame("api is waiting for you."))
 
 
-async def test_a_session_waiting_while_the_key_is_held_is_said_once_the_users_turn_is_sent_and_not_before(rig: Rig) -> None:
+async def test_a_session_waiting_while_the_key_is_held_is_said_after_the_users_turn_is_sent_and_not_before(rig: Rig) -> None:
+    rig.clock.now = 10.0
     await rig.hold(["down", "down"])
     await rig.until(lambda: rig.out.started == 1)
     await rig.worker.queue_frames([WAITING, TextFrame("marker")])
     # Frames keep their order, so the marker past the floor with the announcement not is the announcement held.
     await rig.until(lambda: "marker" in rig.out.order)
+    rig.clock.now = 13.5
     await rig.hold(["up"])
     await rig.texts.put("what time is it")
-    await rig.until(lambda: "sent: what time is it" in rig.out.order)
-    assert rig.out.order == ["started", "marker", "stopped", "said: api is waiting for you.", "sent: what time is it"]
-    assert [entry.held for entry in rig.recorded if isinstance(entry, Yielded)] == [("Aloud",)]
+    await rig.until(lambda: "said: api is waiting for you." in rig.out.order)
+    assert rig.out.order == ["started", "marker", "stopped", "sent: what time is it", "said: api is waiting for you."]
+    assert [(entry.held, entry.waited) for entry in rig.recorded if isinstance(entry, Yielded)] == [(("Aloud",), 3.5)]
+
+
+async def test_a_note_for_an_api_model_while_the_key_is_held_joins_the_context_after_the_users_turn(rig: Rig) -> None:
+    await rig.hold(["down", "down"])
+    await rig.until(lambda: rig.out.started == 1)
+    note = LLMMessagesAppendFrame([{"role": "user", "content": "api asks to run ls"}], run_llm=True)
+    await rig.worker.queue_frames([note, TextFrame("marker")])
+    await rig.until(lambda: "marker" in rig.out.order)
+    await rig.hold(["up"])
+    await rig.texts.put("what time is it")
+    await rig.until(lambda: "sent: api asks to run ls" in rig.out.order)
+    assert rig.out.order == ["started", "marker", "stopped", "sent: what time is it", "sent: api asks to run ls"]
 
 
 async def test_a_hold_that_was_shift_after_all_gives_back_what_waited_for_it(rig: Rig) -> None:

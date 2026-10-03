@@ -133,7 +133,7 @@ def build_llm(
 
 @dataclass(frozen=True)
 class Voice:
-    """The assembled pipeline plus the handles its edges need: the key, the audio devices, the three services that report failures, the two sides of the conversation, and the floor between them."""
+    """The assembled pipeline plus the handles its edges need: the key, the audio devices, the three services that report failures, and the two sides of the conversation."""
 
     worker: PipelineWorker
     key: PushToTalk
@@ -143,7 +143,6 @@ class Voice:
     tts: PocketTTSService
     user_turns: LLMUserAggregator
     assistant_turns: LLMAssistantAggregator
-    floor: Floor
 
 
 def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, record: Record) -> Voice:
@@ -178,10 +177,9 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
     )
     user_aggregator, assistant_aggregator = pair.user(), pair.assistant()
 
-    # Ahead of the model's stage, so what hands says unprompted waits out the user's turn before any model takes it.
-    floor = Floor(record)
-
-    pipeline = Pipeline([transport.input(), stt, user_aggregator, floor, llm, tts, transport.output(), assistant_aggregator])
+    # Ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
+    # context or the model's stage takes it, and follows the user's words when given back.
+    pipeline = Pipeline([transport.input(), stt, Floor(record), user_aggregator, llm, tts, transport.output(), assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True),
@@ -189,5 +187,5 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
         idle_timeout_secs=None,
     )
     return Voice(
-        worker=worker, key=key, audio=transport, stt=stt, llm=llm, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator, floor=floor
+        worker=worker, key=key, audio=transport, stt=stt, llm=llm, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator
     )
