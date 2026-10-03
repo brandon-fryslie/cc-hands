@@ -12,7 +12,7 @@ from hands.voice.narrator import Recounts, Told
 from hands.voice.tools import Body, Result, expand_tool
 
 SID = SessionId("s1")
-WHY = "_____ test_splits_on_commas _____\nE   AssertionError: assert ['a,b'] == ['a', 'b']"
+WHY = "test_splits_on_commas\nAssertionError: assert ['a,b'] == ['a', 'b']"
 STEPS: tuple[Step, ...] = (
     Edited(None, "/code/parser.py", False, "@@ -1 +1 @@\n-split(';')\n+split(',')"),
     Tested(None, "pytest", 11, 1, ("tests/test_parser.py::test_splits_on_commas",), WHY),
@@ -55,11 +55,22 @@ async def test_asked_past_the_bottom_it_tells_the_longest_again_and_says_there_i
     assert bottom["depth"] == len(LADDER) + 1 and not bottom["deeper"] and "parser.py" in parts(bottom)[0][1]
 
 
-async def test_the_turn_as_a_whole_opens_every_part_a_rung_deeper_the_next_time() -> None:
+async def test_the_turn_as_a_whole_is_its_parts_lines_however_often_asked_and_moves_no_part() -> None:
     call = expand(held())
-    first, second = await call(session=SID), await call(session=SID)
-    assert [part for part, _ in parts(first)] == [part for part, _ in parts(second)]
-    assert "The parser splits" not in str(first) and "the parser splits before it strips quotes" in str(second)
+    first = await call(session=SID)
+    tests = await call(session=SID, part="the tests")
+    again = await call(session=SID)
+    deeper = await call(session=SID, part="the tests")
+    assert again == first and "The parser splits" not in str(again)
+    assert (tests["depth"], deeper["depth"]) == (1, 2)
+
+
+async def test_a_telling_that_found_nothing_new_keeps_how_far_a_part_was_opened() -> None:
+    recounts = held()
+    call = expand(recounts)
+    await call(session=SID, part="the tests")
+    recounts.put(SID, PromptId("p1"), None)
+    assert (await call(session=SID, part="the tests"))["depth"] == 2
 
 
 async def test_a_part_asked_for_by_another_name_is_said_to_be_missing_with_the_parts_there_are() -> None:

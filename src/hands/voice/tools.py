@@ -593,16 +593,16 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool:
 
 def expand_tool(sessions: Sessions, recounts: Recounts) -> Tool:
     async def expand(session: str, part: str = "") -> Result:
-        """More of the last turn a session finished, a step deeper each time the user asks: first the parts it can be
-        opened into, such as the change, the tests, or the commit, then a part's records at more length every time.
+        """More of the last turn a session finished: with no part, the parts it opens into, such as the change, the
+        tests, or the commit, each in a line; with a part, that part's records, at more length each time it is asked for.
 
         Tell it in your own words, in spoken form. There is no word-for-word reading: say what code does and what a
         command found, and never read out code, output, paths, or hashes as written, however much the user asks for.
-        When `deeper` comes back false, asking again tells no more.
+        When `deeper` comes back false, asking for that part again tells no more.
 
         Args:
             session: The id of the session whose turn you just told, from the [hands] message that told it or from list_sessions.
-            part: The part the user wants more of, by the name a call with it empty gave, such as "the tests". Empty for the turn as a whole.
+            part: The part the user wants more of, by the name a call with it empty gave, such as "the tests". Empty for the list of parts.
         """
         try:
             id = _session_id(session)
@@ -618,9 +618,11 @@ def expand_tool(sessions: Sessions, recounts: Recounts) -> Tool:
         if not chosen:
             named = ", ".join(dict.fromkeys(segment.topic.name for segment in held.parts))
             return {"error": f"the last turn of {name} has no part {part!r}; its parts are {named}"}
-        # A part's own line is the first rung, and the user heard it when the turn was opened as a whole, so a part
-        # asked for opens at the rung below it.
-        depth = recounts.open(id, topic) + (1 if topic else 0)
+        # The turn as a whole is told only as its parts' lines, the first rung, however often it is asked for: told
+        # deeper, every part at once would be more than one answer can carry. A part asked for by name opens at the
+        # rung below its line, and a rung further each time it is asked for: [LAW:one-source-of-truth] its depth is
+        # counted by the part, so the list asked for between two askings neither moves nor repeats it.
+        depth = recounts.open(id, topic) + 1 if topic else 0
         drilled = drill(chosen, depth)
         # [LAW:nothing-unseen] the depth rides on the result, so the Called line says how far down this asking went.
         return {"parts": [{"part": topic, "told": told} for topic, told in drilled.told], "deeper": drilled.deeper, "depth": depth}

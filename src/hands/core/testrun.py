@@ -25,7 +25,7 @@ class Report:
 @dataclass(frozen=True)
 class Runner:
     """One runner as five patterns: what proves it ran, how it counts, how it names a test that failed, and the lines
-    that say why.
+    that say why. `failing` and `why` each capture what is carried in their first group.
 
     [LAW:composability] the variability is values, not a function per runner, so a runner nobody here uses
     is added by writing patterns rather than code. `passed` and `failed` may be None where the runner's
@@ -52,7 +52,7 @@ RUNNERS: tuple[Runner, ...] = (
         # Each failing test prints its own captured output under this heading, and again under `failures:`.
         failing=re.compile(r"(?m)^---- (\S+) stdout ----"),
         # `thread 'tests::names' (1541058) panicked at src/lib.rs:9:26:` and the message on the line under it.
-        why=re.compile(r"(?m)^thread '.*panicked at .*\n.+$"),
+        why=re.compile(r"(?m)^(thread '.*panicked at .*\n.+)$"),
     ),
     Runner(
         name="go",
@@ -66,7 +66,7 @@ RUNNERS: tuple[Runner, ...] = (
         # nothing, so these names are the count, and counting a test's cases counts one failure several times.
         failing=re.compile(r"(?m)^--- FAIL: (\S+)"),
         # `    sample_test.go:7: want 1, got 0`, indented under the test that logged it.
-        why=re.compile(r"(?m)^\s+\S+\.go:\d+: .*$"),
+        why=re.compile(r"(?m)^\s+(\S+\.go:\d+: .*)$"),
     ),
     Runner(
         name="vitest",
@@ -76,7 +76,7 @@ RUNNERS: tuple[Runner, ...] = (
         failed=re.compile(r"(\d+) failed"),
         failing=re.compile(r"(?m)^\s*FAIL\s+(\S.*?)\s*$"),
         # ` FAIL  src/sample.test.ts > names` and the error on the line under it.
-        why=re.compile(r"(?m)^ FAIL  .+\n.+$"),
+        why=re.compile(r"(?m)^ (FAIL  .+\n.+)$"),
     ),
     Runner(
         name="pytest",
@@ -86,8 +86,9 @@ RUNNERS: tuple[Runner, ...] = (
         failed=re.compile(r"(\d+) (?:failed|errors?)"),
         failing=re.compile(r"(?m)^(?:FAILED|ERROR) (\S+)"),
         # Each failure's heading, `____ test_names ____`, and the `E` lines under it: the summary line's own reason is
-        # cut to the terminal's width, `- Asser...`, in a run whose output is not a terminal.
-        why=re.compile(r"(?m)^(?:_{3,} \S+ _{3,}|E +\S.*)$"),
+        # cut to the terminal's width, `- Asser...`, in a run whose output is not a terminal. The heading is carried as
+        # the test's name alone, since its rule of underscores would take most of a short budget.
+        why=re.compile(r"(?m)^(?:_{3,} (?=.* _{3,}$)|E +(?=\S))(.+?)(?: _{3,})?$"),
     ),
 )
 
@@ -107,8 +108,11 @@ def report_of(output: str) -> Report | None:
             continue
         failing = tuple(match.group(1) for match in runner.failing.finditer(text))
         counted = _count(runner.failed, summaries)
-        why = "\n".join(match.group(0).strip() for match in runner.why.finditer(text))
-        return Report(runner.name, _count(runner.passed, summaries), len(failing) if counted is None else counted, failing, why)
+        failed = len(failing) if counted is None else counted
+        # A run with nothing failed has no why: what its tests logged on passing, as `go test -v` prints, says nothing
+        # about a failure.
+        why = "\n".join(match.group(1).strip() for match in runner.why.finditer(text)) if failed else ""
+        return Report(runner.name, _count(runner.passed, summaries), failed, failing, why)
     return None
 
 

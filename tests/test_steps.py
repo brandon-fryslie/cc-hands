@@ -148,8 +148,7 @@ def test_a_call_that_failed_recorded_no_result_to_be_recognised_by_and_is_told_a
             2,
             2,
             ("test_sample.py::test_divides", "test_sample.py::test_names"),
-            "_" * 33 + " test_divides " + "_" * 33 + "\nE   assert (1 / 2) == 1\n" + "_" * 34 + " test_names " + "_" * 34
-            + "\nE   AssertionError: assert 'A' == 'B'\nE     - B\nE     + A",
+            "test_divides\nassert (1 / 2) == 1\ntest_names\nAssertionError: assert 'A' == 'B'\n- B\n+ A",
         ),
         ("gotest.txt", "go", None, 2, ("TestDivides", "TestNames"), "sample_test.go:7: want 1, got 0\nsample_test.go:8: want B, got A"),
         (
@@ -182,6 +181,11 @@ def test_each_runner_is_read_from_the_output_it_really_writes(
     assert report.failing == failing
     # And says why in its own lines, which are what opening the tests tells.
     assert report.why == why
+
+
+def test_what_a_passing_run_logged_is_no_reason_for_a_failure() -> None:
+    passing = report_of("=== RUN   TestSeeds\n    db_test.go:12: seeded db\n--- PASS: TestSeeds (0.00s)\nPASS\nok  \tsample\t0.004s\n")
+    assert passing is not None and passing.runner == "go" and passing.failed == 0 and passing.why == ""
 
 
 def test_a_run_that_only_passed_is_still_a_test_run_and_output_that_is_not_one_is_not() -> None:

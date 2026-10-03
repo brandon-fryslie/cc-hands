@@ -83,7 +83,8 @@ class Recounts:
 
     def put(self, session: SessionId, turn: PromptId | None, told: Told | None) -> None:
         """`told` is None when the telling found nothing new: the turn held stays as it is, and another replaces it."""
-        self._last[session] = Recount(turn, (*self._earlier(session, turn), *([] if told is None else [told])))
+        held = self._held(session, turn)
+        self._last[session] = replace(held, unread=False) if told is None else Recount(turn, (*held.tellings, told))
 
     def open(self, session: SessionId, part: str) -> int:
         """The user asked for more of `part` of the session's held turn: how many times they asked for it before."""
@@ -92,11 +93,12 @@ class Recounts:
         return held.opened.count(part)
 
     def unread(self, session: SessionId, turn: PromptId | None) -> None:
-        self._last[session] = Recount(turn, self._earlier(session, turn), unread=True)
+        self._last[session] = replace(self._held(session, turn), unread=True)
 
-    def _earlier(self, session: SessionId, turn: PromptId | None) -> tuple[Told, ...]:
+    def _held(self, session: SessionId, turn: PromptId | None) -> Recount:
+        """The recount held for `turn`, or a fresh one where the turn held is another."""
         held = self._last.get(session)
-        return held.tellings if held is not None and turn is not None and held.turn == turn else ()
+        return held if held is not None and turn is not None and held.turn == turn else Recount(turn, ())
 
     def of(self, session: SessionId) -> Recount | None:
         return self._last.get(session)
@@ -188,7 +190,8 @@ async def recount(
             opened=type(told.turn.opening).__name__,
         )
     )
-    # Marked told however it is delivered: the summary holds what the user is told of it, so the steps are let go of.
+    # Marked told however it is delivered, so the tail lets the steps go: what is kept of them is the tree's parts, held
+    # with the telling until the session's next turn, for the user to open.
     await tails.spoken(told)
     recounts.put(session, turn, Told(news, tree.parts))
     return _delivered(delivered, handed(news, f"{name} finished a turn, and I could not tell it.", telling))

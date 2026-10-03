@@ -1070,10 +1070,12 @@ segment names are the records it holds, and the two cannot come apart
 
 **More on that.** Each telling of a turn is held in `Recounts` with the tree's parts beside the
 words the intermediary was handed, and the handed words carry the session's id, so `expand(session,
-part?)` needs no listing first. Asked with no part, it gives each part's line: "The tests: one test
-run." Asked again, or asked for one part, it opens a rung down a ladder of budgets
-(`hands.core.drilldown`), each rung `opened` at a longer one, and the depth is how many times that
-part was asked for, counted in the daemon rather than remembered by the model. Whether there is more
+part?)` needs no listing first. Asked with no part, it gives each part's line, "The tests: one test
+run.", however often it is asked: every part told deeper at once is more than one tool result can
+carry. Asked for one part, it opens a rung down a ladder of budgets (`hands.core.drilldown`), each
+rung `opened` at a longer one, and the depth is how many times that part was asked for, counted in
+the daemon rather than remembered by the model. A Stop that finds nothing new keeps the depth; a
+new telling of the turn starts it over. Whether there is more
 is measured, by whether the next rung tells any part differently, so a part told whole at a short
 rung says so. The deepest rung is still a rendering cut to its budget, for the intermediary to put
 in its own words: there is no verbatim rung, so asking for more never gets code or output read out.

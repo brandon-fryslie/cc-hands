@@ -117,8 +117,9 @@ what each has and what remains.
   that again" move the same cursor. Done by reducer table tests, and live: barge
   in mid-summary, ask something unrelated, and resume at the segment that was cut
   off.
-- **Drill-down.** "More on that" expands the segment playing, or the last one
-  played, into its children, built from its records on demand. There is no
+- **Drill-down.** "More on that" opens the turn hands last told of a session into
+  its parts, each in a line, and a part asked for by name into its records, at
+  more length each time it is asked, built on demand. There is no
   verbatim mode: the deepest level is a longer summary, and code is still
   described, not recited. Done live: a failing test named in a headline opens into
   what failed and why.
