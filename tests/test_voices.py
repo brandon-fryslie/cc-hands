@@ -77,7 +77,7 @@ def test_a_chosen_voice_is_read_back_by_a_daemon_started_after_it(tmp_path: Path
 def test_a_hand_edited_choice_hands_has_no_voice_for_is_refused_by_name(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.voice.write_text("zed\n")
-    with pytest.raises(Rejected, match=f"{home.voice} says b'zed'"):
+    with pytest.raises(Rejected, match=f"{home.voice} says 'zed'"):
         chosen(home)
 
 

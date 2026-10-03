@@ -245,5 +245,10 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     assert run.config_from_env(home).voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
     home.voice.write_text("zed\n")
-    with pytest.raises(SystemExit, match=f"{home.voice} says b'zed'"):
+    with pytest.raises(SystemExit, match=f"{home.voice} says 'zed'"):
+        run.config_from_env(home)
+    # One it cannot read stops it the same way, naming the file.
+    home.voice.unlink()
+    home.voice.mkdir()
+    with pytest.raises(SystemExit, match=str(home.voice)):
         run.config_from_env(home)

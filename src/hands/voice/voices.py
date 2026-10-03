@@ -61,7 +61,7 @@ def chosen(home: Home) -> Voice:
     try:
         return parse_voice(written.decode())
     except (UnicodeDecodeError, Rejected) as error:
-        raise Rejected(f"{home.voice} says {written!r}, which names no voice hands has; choose another, or remove the file to speak in {spoken(DEFAULT)}") from error
+        raise Rejected(f"{home.voice} says {written.decode(errors='replace')!r}, which names no voice hands has; choose another, or remove the file to speak in {spoken(DEFAULT)}") from error
 
 
 def keep(home: Home, voice: Voice) -> None:
@@ -105,8 +105,7 @@ class Voices:
         A voice that cannot be fetched is refused before any is heard."""
         async with self._changing:
             now = await self.speaking_in()
-            for voice in voices:
-                await asyncio.to_thread(self._fetch, voice)
+            await asyncio.gather(*(asyncio.to_thread(self._fetch, voice) for voice in voices))
             try:
                 for voice in voices:
                     await self._speak_in(voice)

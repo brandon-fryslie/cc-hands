@@ -208,10 +208,10 @@ def config_from_env(home: Home) -> VoiceConfig:
 
 
 def _voice(home: Home) -> voices.Voice:
-    """The voice the user kept; a kept name hands has no voice for stops the process, naming the file to fix."""
+    """The voice the user kept; a kept name hands has no voice for, or a file it cannot read, stops the process naming it."""
     try:
         return voices.chosen(home)
-    except Rejected as error:
+    except (Rejected, OSError) as error:
         sys.exit(str(error))
 
 

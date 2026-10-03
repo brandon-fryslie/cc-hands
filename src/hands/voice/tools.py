@@ -681,7 +681,8 @@ def voice_tools(voices: Voices) -> list[Tool]:
         Call this when the user wants to hear what voices sound like: a few at a time, at most five unless they ask for
         more, since each takes a few seconds. Say nothing before calling it. What you say after it is heard after the
         last voice, so keep it to a few words asking which they would like. Hearing a voice does not choose it;
-        use_voice does.
+        use_voice does. To hear voices again, after a barge-in too, call this again: going back or repeating says the
+        words again in the voice you speak in, not in theirs.
 
         Args:
             names: the voices to hear, as voices_on_offer lists them.
