@@ -189,7 +189,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A `claude` first on PATH that reports its login from LOGGED_IN, or from an `auth login` it recorded, made by AUTH_METHOD (claude.ai unless named), and as the brain is Claude Code at a keyboard: it
     reads its terminal raw, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
-    question it is started with is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
+    question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
     is never taken, "write" asks permission and an MCP server's input, and waits unless their hooks answer no, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
@@ -255,8 +255,11 @@ def submit(text):
         post("StopFailure", prompt_id=prompt, error="unknown", last_assistant_message="API Error: 400 refused")
     else:
         post("Stop", prompt_id=prompt, last_assistant_message="Two.")
-if sys.argv[-1].startswith("/btw "):
-    submit(sys.argv[-1])
+# As Claude Code reads its options: one that takes several values (--mcp-config, --tools) takes every word up to the
+# next option, so the only word sure to be its prompt is one after `--`.
+opening = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+if opening:
+    submit(opening[0])
 while True:
     data = os.read(0, 65536)
     if not data:

@@ -19,8 +19,8 @@ import pytest
 from loguru import logger
 
 from hands.brain.mcp import McpServer, serve_mcp
-from hands.brain.asides import CLOSED, AsideFailed, Asides
-from hands.brain.process import SLIM, Brain, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, command, environment, logged_in, slim, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.asides import AsideFailed, Asides, aside_command
+from hands.brain.process import SLIM, Brain, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.sessions.payload import Payload
 from hands.sessions.audit import AsideAnswered, BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainRefused, Called, Entry, McpConnected
 from pipecat.services.anthropic.llm import AnthropicLLMService
@@ -161,8 +161,10 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
         event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}"}]}] for event in ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation")
     }}
     # A side question's Claude Code is the same slim one, closed whatever the brain's setup holds: no tools, no server.
-    bare = [*slim(Path("/real/claude"), "claude-sonnet-5", SessionId("a1")), *CLOSED]
+    bare = aside_command(Path("/real/claude"), "claude-sonnet-5", SessionId("a1"), "what now?")
     assert bare[bare.index("--tools") + 1] == "" and bare[bare.index("--session-id") + 1] == "a1" and "--strict-mcp-config" in bare
+    # Its options end before its prompt: --mcp-config takes every word up to the next option.
+    assert bare[-2:] == ["--", "/btw what now?"]
     assert json.loads(bare[bare.index("--mcp-config") + 1]) == {"mcpServers": {}}
     assert not {"-p", "--print", "--settings", "--allowedTools", "--append-system-prompt"} & set(bare)
     env = environment(tmp_path / "brain", "http://127.0.0.1:1", {

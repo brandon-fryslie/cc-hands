@@ -20,6 +20,7 @@ opening prompt it went out 0.4s after the start, 6 of 6). Its answer is read fro
 import asyncio
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from uuid import uuid4
 
 from loguru import logger
@@ -37,6 +38,13 @@ ASIDE = CommandName("btw")
 CLOSED = ("--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers": {}}')
 # How long a side question's answer is waited on, from when its Claude Code is started: one reply, with thinking.
 ASIDE_SECONDS = 120.0
+
+
+def aside_command(claude: Path, model: str, session: SessionId, question: str) -> list[str]:
+    """A side question's command line: the slim Claude Code, closed, opening with the question."""
+    # The question as the characters it shows, behind the command, as the prompt its Claude Code opens with. `--` ends
+    # the options: --mcp-config takes every word up to the next option, and read the prompt as a second config file.
+    return [*slim(claude, model, session), *CLOSED, "--", Command(ASIDE, pasted(question)).typed]
 
 
 class AsideFailed(Exception):
@@ -104,10 +112,8 @@ class Asides:
         return reply
 
     async def _answer(self, asked: _Asked, question: str) -> str:
-        # The question as the characters it shows, behind the command, as the prompt its Claude Code opens with.
-        opening = Command(ASIDE, pasted(question)).typed
         try:
-            claude = await spawn(self._station, [*slim(brain_claude(), self._station.model, asked.session), *CLOSED, opening])
+            claude = await spawn(self._station, aside_command(brain_claude(), self._station.model, asked.session, question))
         except (Unstartable, OSError) as error:
             # No claude to run, or a question longer than a command line can be; a claude that cannot be run exits, and says why.
             raise AsideFailed(f"no Claude Code to ask: {error}") from error
