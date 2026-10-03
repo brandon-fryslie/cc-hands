@@ -1245,6 +1245,14 @@ memory. Those lines enter just ahead of the TTS service, not through the model's
 barge-in drops them like any sentence not yet played; their reading holds all of them from
 the start, so none is lost to going back.
 
+A staged or amended draft is read back the same way, by hands as written: the tool hands
+back `{"says": ...}`, and the API path says it as the call returns while the brain's stage
+says it once the brain's own words are done, so a barge-in before then does not lose it.
+A reply is the whole of what is said only when every call in it was silent: one refused
+(`error`) or one that asks a reply puts the model back on. Pipecat lets each result decide
+and the last to finish wins, so `Replies` follows each reply's calls from the service's
+`on_function_calls_started` and has only the last answer for them all.
+
 ## Push pointers, pull content
 
 The intermediary's context window holds the conversation with you, not session

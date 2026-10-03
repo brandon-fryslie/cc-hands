@@ -57,7 +57,7 @@ from hands.core.wire import (
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Asker, BrainAnswered, BrainInterrupted, BrainSpoke, Record
 from hands.voice.speech import Aloud, Narrated
-from hands.voice.tools import Result, Tool, silent
+from hands.voice.tools import Result, Tool, silent, whole
 
 
 class Asking(Protocol):
@@ -277,25 +277,21 @@ class BrainStage(FrameProcessor):
             logger.warning(f"the brain sent a main turn (exchange {sent.exchange}) with no turn asked of it; nothing it says will be spoken")
             return Send(refusal="final")
         # Only the calls this turn's last reply opened: a request carries every result of the brain's history.
-        answers = [(turn.calls[answer.call], answer) for answer in tool_answers(sent.body) if answer.call in turn.calls]
-        # A reply is the whole of what is said only when every call in it was: a refused one is the model's to answer.
-        if not (turn.interrupted or (answers and all(self._silent(name, answer) for name, answer in answers))):
+        answers = [(self._tools.get(turn.calls[answer.call]), answer.text, _result(answer)) for answer in tool_answers(sent.body) if answer.call in turn.calls]
+        # Said by hands once the brain's own words are, whatever the model does next: what a call hands hands to say.
+        turn.readbacks.extend(says for _, _, result in answers if result is not None and isinstance(says := result.get("says"), str))
+        if not (turn.interrupted or whole([tool is not None and result is not None and silent(tool, result) for tool, _, result in answers])):
             turn.exchanges.append(sent.exchange)
             turn.opening, turn.calls, turn.failure = {}, {}, _UNNAMED
             # Refused once is the turn's failure, said at once as the API variants say theirs, who ask once.
             return Send((Tail(self._tail()),), refusal="final")
-        turn.readbacks.extend(said for name, answer in answers if self._completes(name) and (said := _owed(answer)) is not None)
+        turn.readbacks.extend(said for tool, text, result in answers if tool is not None and tool.completes and (said := _owed(text, result)) is not None)
         return Hold(INTERRUPTED if turn.interrupted else SILENT)
 
     def _completes(self, name: str) -> bool:
         """Whether a barge-in lets the call finish, as hands' tools say: a call to a tool not hands' never does."""
         tool = self._tools.get(name)
         return tool is not None and tool.completes
-
-    def _silent(self, name: str, answer: ToolAnswer) -> bool:
-        """Whether the call was the whole reply, as hands' tools say: a call to a tool not hands' never is."""
-        tool, result = self._tools.get(name), _result(answer)
-        return tool is not None and result is not None and silent(tool, result)
 
     def hear(self, observed: Observed) -> None:
         turn = self._turn
@@ -374,13 +370,13 @@ def _result(answer: ToolAnswer) -> Result | None:
     return cast(Result, result) if isinstance(result, dict) else None
 
 
-def _owed(answer: ToolAnswer) -> str | None:
-    """What a call that must land handed back for the user and nobody has said: its readback, or why it failed, which
-    the model would have said. None when hands said it as the call ran."""
-    match _result(answer):
-        case {"said": str()}:
+def _owed(text: str, result: Result | None) -> str | None:
+    """What a call that must land handed back for the user that the model, not asked to go on, would have said: its
+    readback, or why it failed. None when hands says it already, and the MCP server's own failure as it wrote it."""
+    match result:
+        case {"says": str()}:
             return None
         case {"readback": str() as said} | {"error": str() as said}:
             return said
         case _:
-            return answer.text
+            return text

@@ -52,7 +52,7 @@ from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.player import Player
 from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
-from hands.voice.tools import Tool, pipecat_function
+from hands.voice.tools import Tool, pipecat_functions
 from hands.voice.turnstop import KeyTurnStop
 from hands.voice import voices
 from hands.voice.whisper import Whisper
@@ -247,7 +247,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
         start=[VADUserTurnStartStrategy()],
         stop=[KeyTurnStop()],
     )
-    context = LLMContext(tools=[pipecat_function(tool) for tool in tools])
+    context = LLMContext(tools=pipecat_functions(tools, player.lines, llm))
     pair = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(user_turn_strategies=turns),

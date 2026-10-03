@@ -11,7 +11,6 @@ from typing import Any
 
 import pytest
 from loguru import logger
-from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.utils.errors import ErrorCategory
 
 from hands.core.effects import Holding, Reply, Unmatched, Withdraw
@@ -504,7 +503,7 @@ async def test_a_stop_heard_as_the_daemon_shuts_down_is_still_applied() -> None:
 async def test_an_audited_tool_keeps_its_schema_and_writes_its_call_beside_its_result() -> None:
     recorded: list[Entry] = []
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
-    [stage, *_] = draft_tools(sessions, IdentityFilter())
+    [stage, *_] = draft_tools(sessions)
     wrapped = audited(stage, recorded.append)
     assert (wrapped.name, wrapped.description, wrapped.input_schema, wrapped.completes) == (stage.name, stage.description, stage.input_schema, stage.completes)
     result = await invoke(wrapped, session="nobody", text="hi", resolutions=[])

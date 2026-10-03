@@ -12,6 +12,7 @@ from anthropic import AsyncAnthropic
 from openai.types.chat import ChatCompletionMessageFunctionToolCallParam, ChatCompletionUserMessageParam
 from pipecat.frames.frames import Frame, InterruptionFrame, LLMContextFrame, LLMFullResponseEndFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.openai.llm import OpenAILLMService
@@ -20,7 +21,7 @@ from conftest import Api, ServeApi, ServeChat, running
 from hands.sessions.model_facts import ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.voice.pipeline import AnthropicBackend, AnthropicService, OpenAICompatibleBackend, build_llm
 from hands.voice.system import model_fact
-from hands.voice.tools import pipecat_function, stay_silent_tool
+from hands.voice.tools import pipecat_functions, stay_silent_tool
 
 PATIENCE_SECS = 5.0
 
@@ -156,15 +157,15 @@ class Ends(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-def asked() -> LLMContextFrame:
-    return LLMContextFrame(LLMContext(messages=[{"role": "user", "content": "What is running?"}], tools=[pipecat_function(stay_silent_tool())]))  # pyright: ignore[reportArgumentType]
+def asked(llm: FrameProcessor) -> LLMContextFrame:
+    return LLMContextFrame(LLMContext(messages=[{"role": "user", "content": "What is running?"}], tools=pipecat_functions([stay_silent_tool()], IdentityFilter(), llm)))
 
 
 @pytest.mark.parametrize("shape", ["openai", "anthropic"])
 async def test_an_empty_reply_is_reported_as_the_models_empty_reply(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Shape) -> None:
     llm = service(shape, await streaming("empty", False))
     async with running([llm, Ends(ended := asyncio.Event())]) as run:
-        await run.worker.queue_frame(asked())
+        await run.worker.queue_frame(asked(llm))
         await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
         [error] = run.errors
         assert error.processor is llm
@@ -176,7 +177,7 @@ async def test_an_empty_reply_is_reported_as_the_models_empty_reply(streaming: C
 async def test_a_reply_with_words_or_a_call_to_stay_silent_is_no_failure(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Shape, reply: Reply) -> None:
     llm = service(shape, await streaming(reply, False))
     async with running([llm, Ends(ended := asyncio.Event())]) as run:
-        await run.worker.queue_frame(asked())
+        await run.worker.queue_frame(asked(llm))
         await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
         await asyncio.sleep(0.1)
         assert run.errors == []
@@ -187,7 +188,7 @@ async def test_a_reply_the_user_spoke_over_is_no_empty_reply(streaming: Callable
     server = await streaming("empty", True)
     llm = service(shape, server)
     async with running([llm, Ends(ended := asyncio.Event())]) as run:
-        await run.worker.queue_frame(asked())
+        await run.worker.queue_frame(asked(llm))
         await asyncio.wait_for(server.received.wait(), PATIENCE_SECS)
         # Pipecat closes the reply it cancels with the same end frame a finished reply has.
         await run.worker.queue_frame(InterruptionFrame())
@@ -201,7 +202,7 @@ async def test_a_reply_cut_off_by_the_pipeline_stopping_is_no_empty_reply(stream
     server = await streaming("empty", True)
     llm = service(shape, server)
     async with running([llm, Ends(asyncio.Event())]) as run:
-        await run.worker.queue_frame(asked())
+        await run.worker.queue_frame(asked(llm))
         await asyncio.wait_for(server.received.wait(), PATIENCE_SECS)
     # Stopped mid-request, as the daemon stops: its errors are all in by the time the pipeline has.
     assert run.errors == []
@@ -215,13 +216,13 @@ async def test_an_anthropic_request_that_times_out_is_said_as_the_model_out_of_r
         settings=AnthropicService.Settings(model="m", system_instruction="Speak.", max_tokens=50),
     )
     async with running([llm, Ends(ended := asyncio.Event())]) as run:
-        await run.worker.queue_frame(asked())
+        await run.worker.queue_frame(asked(llm))
         await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
         [error] = run.errors
         assert model_fact(error) == ModelUnreachable()
 
 
-def answered(*after: ChatCompletionUserMessageParam) -> LLMContextFrame:
+def answered(llm: FrameProcessor, *after: ChatCompletionUserMessageParam) -> LLMContextFrame:
     """The context Pipecat asks the model again with once a call's result is in, with any note added while the call ran."""
     call: ChatCompletionMessageFunctionToolCallParam = {"id": "call_1", "type": "function", "function": {"name": "read_session", "arguments": "{}"}}
     return LLMContextFrame(
@@ -232,7 +233,7 @@ def answered(*after: ChatCompletionUserMessageParam) -> LLMContextFrame:
                 {"role": "tool", "tool_call_id": "call_1", "content": '{"steps": []}'},
                 *after,
             ],
-            tools=[pipecat_function(stay_silent_tool())],  # pyright: ignore[reportArgumentType]
+            tools=pipecat_functions([stay_silent_tool()], IdentityFilter(), llm),
         )
     )
 
@@ -243,7 +244,7 @@ async def test_an_empty_reply_to_a_calls_result_is_no_failure(streaming: Callabl
     """Claude often ends a turn with nothing once a call has done what it was for, as under the brain."""
     llm = service(shape, await streaming("empty", False))
     async with running([llm, Ends(ended := asyncio.Event())]) as run:
-        await run.worker.queue_frame(answered(*after))
+        await run.worker.queue_frame(answered(llm, *after))
         await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
         await asyncio.sleep(0.1)
         assert run.errors == []

@@ -9,17 +9,18 @@ import asyncio
 import functools
 import inspect
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Literal, TypedDict, cast, get_args, get_origin, get_type_hints, is_typeddict
+from typing import Any, Literal, TypedDict, cast, get_args, get_origin, get_type_hints, is_typeddict
 
 import docstring_parser
 from loguru import logger
 from pipecat.adapters.schemas import direct_function
 from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.frames.frames import FunctionCallResultProperties, TTSSpeakFrame
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.frames.frames import FunctionCallFromLLM, FunctionCallResultProperties, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameProcessor
-from pipecat.services.llm_service import FunctionCallParams
+from pipecat.services.llm_service import FunctionCallParams, FunctionCallRunnerItem, LLMService
 
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
@@ -67,6 +68,7 @@ class Tool:
     body: Body
     # "reply": the model is asked to go on once it has the result. "silence": the call is the whole reply, unless it
     # hands back an error, which the model is asked to answer: a refused call did nothing, and only the model can retry it.
+    # A result {"says": text} is said by hands, as written, whichever the model does.
     then: Literal["reply", "silence"]
     # True when a barge-in must not stop a call part way: its effect would land without its readback heard.
     completes: bool
@@ -121,13 +123,43 @@ def _schema(hint: object) -> JsonSchema:
             raise TypeError(f"a tool argument typed {hint!r} has no schema here")
 
 
-def pipecat_function(tool: Tool) -> FunctionSchema:
+def pipecat_functions(tools: Sequence[Tool], lines: FrameProcessor, llm: FrameProcessor) -> ToolsSchema:
+    """The tools as Pipecat's LLM stage calls them, their replies followed on `llm` as one.
+
+    `lines` stands ahead of the TTS service: what a call hands hands to say is said through it, as written.
+    """
+    replies = Replies()
+    if isinstance(llm, LLMService):
+        _follow(cast(LLMService[Any], llm), replies)
+    return ToolsSchema(standard_tools=[pipecat_function(tool, lines, replies) for tool in tools])
+
+
+def _follow(llm: LLMService[Any], replies: "Replies") -> None:
+    """The calls of each reply an API service runs, told to `replies` as Pipecat starts and cancels them. The brain's
+    calls are not Pipecat's: its MCP server answers them, and its stage decides for each reply itself."""
+
+    async def started(_: LLMService[Any], calls: Sequence[FunctionCallFromLLM]) -> None:
+        replies.started([call.tool_call_id for call in calls])
+
+    async def cancelled(_: LLMService[Any], items: Sequence[FunctionCallRunnerItem]) -> None:
+        replies.cancelled([item.tool_call_id for item in items])
+
+    llm.add_event_handler("on_function_calls_started", started)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+    llm.add_event_handler("on_function_calls_cancelled", cancelled)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+
+
+def pipecat_function(tool: Tool, lines: FrameProcessor, replies: "Replies") -> FunctionSchema:
     """The tool as Pipecat's LLM stage calls it: the schema it advertises, and a handler that hands back the body's reply."""
     # [LAW:single-enforcer] the one place a tool meets Pipecat, so what "silence" and "completes" mean there is said once.
     async def handler(params: FunctionCallParams) -> None:
         result = await tool.body(**params.arguments)
-        properties = _then(tool, result)
-        await params.result_callback(result, properties=properties)
+        match result:
+            case {"says": str() as says}:
+                # Kept out of the context: the result the model is handed holds it once.
+                await lines.push_frame(TTSSpeakFrame(says, append_to_context=False))
+            case _:
+                pass
+        await params.result_callback(result, properties=replies.answered(params.tool_call_id, silent(tool, result)))
 
     # Pipecat's decorator is untyped; it only marks the handler with its call options.
     options = cast(Callable[[Handler], Handler], direct_function.tool_options(cancel_on_interruption=not tool.completes))  # pyright: ignore[reportUnknownMemberType]
@@ -135,13 +167,38 @@ def pipecat_function(tool: Tool) -> FunctionSchema:
     return FunctionSchema(tool.name, tool.description, {name: dict(schema) for name, schema in tool.properties.items()}, list(tool.required), handler=options(handler))
 
 
-def _then(tool: Tool, result: Result) -> FunctionCallResultProperties | None:
-    """Whether Pipecat runs the model on the result. Pipecat decides per result, and the last of a reply's calls to
-    finish decides for them all, so a refusal asks for the model outright: a silent sibling finishing after it would
-    otherwise hold its error unanswered. Any other result leaves it to Pipecat, which runs the model once all are in."""
-    if "error" in result:
-        return FunctionCallResultProperties(run_llm=True)
-    return FunctionCallResultProperties(run_llm=False) if silent(tool, result) else None
+class Replies:
+    """The calls of each reply Pipecat runs, so that whether the model goes on is decided once for the reply, not per call.
+
+    Pipecat takes each result's own word on whether to run the model, and the last of a reply's calls to finish has the
+    final one: a silent call finishing after a refused one would leave its error unanswered. So every call but the last
+    holds the model, and the last says what `whole` says of them all.
+    """
+
+    def __init__(self) -> None:
+        # [LAW:no-shared-mutable-globals] owned here, written only through `started`, `cancelled`, and `answered`.
+        self._open: dict[str, dict[str, bool | None]] = {}
+
+    def started(self, calls: Sequence[str]) -> None:
+        reply: dict[str, bool | None] = dict.fromkeys(calls)
+        self._open.update(dict.fromkeys(calls, reply))
+
+    def cancelled(self, calls: Sequence[str]) -> None:
+        # A call a barge-in stopped never answers; the model is not run after a barge-in, so its reply is done with.
+        for call in calls:
+            self._open.pop(call, None)
+
+    def answered(self, call: str, silent: bool) -> FunctionCallResultProperties:
+        reply = self._open.pop(call)
+        reply[call] = silent
+        verdicts = [verdict for verdict in reply.values() if verdict is not None]
+        last = len(verdicts) == len(reply)
+        return FunctionCallResultProperties(run_llm=last and not whole(verdicts))
+
+
+def whole(silences: Sequence[bool]) -> bool:
+    """Whether a reply's calls were the whole of it: every one of them silent. One that replied or was refused is the model's to answer."""
+    return bool(silences) and all(silences)
 
 
 def silent(tool: Tool, result: Result) -> bool:
@@ -198,7 +255,7 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
         tell_turn_tool(sessions, recounts),
         expand_tool(sessions, recounts),
         *backlog_tools(sessions, store),
-        *draft_tools(sessions, player.lines),
+        *draft_tools(sessions),
         *keyboard_tools(sessions),
         set_overlay_tool(sessions, overlays),
     ]
@@ -875,22 +932,16 @@ class Resolved(TypedDict):
     meant: str
 
 
-def draft_tools(sessions: Sessions, lines: FrameProcessor) -> list[Tool]:
-    """stage_draft, amend_draft, discard_draft, send_draft: a prompt dictated for a session, read back until it is right, then sent.
+def draft_tools(sessions: Sessions) -> list[Tool]:
+    """stage_draft, amend_draft, discard_draft, send_draft: a prompt dictated for a session, read back until it is right, then sent."""
 
-    `lines` stands ahead of the TTS service: a draft's readback is said through it by hands, as written.
-    """
-
-    async def aloud(outcome: DraftOutcome, name: str) -> Result:
-        """A staged or amended draft read back by hands, as written: what the user checks it by is spelled for the ear,
-        and a model asked to say it would say it in its own words. Any other outcome changed nothing, so it is the
+    def aloud(outcome: DraftOutcome, name: str) -> Result:
+        """A staged or amended draft is read back by hands, as written: what the user checks it by is spelled for the
+        ear, and a model asked to say it would say it in its own words. Any other outcome changed nothing, so it is the
         model's to answer, as a refusal: to retry, as with the session's id, or to say what went wrong."""
         match outcome:
             case DraftStaged() | DraftAmended():
-                said = readback(outcome, name)
-                # Kept out of the context: the result the model is handed holds it once.
-                await lines.push_frame(TTSSpeakFrame(said, append_to_context=False))
-                return {"said": said}
+                return {"says": readback(outcome, name)}
             case _:
                 return {"error": readback(outcome, name)}
 
@@ -945,13 +996,9 @@ def draft_tools(sessions: Sessions, lines: FrameProcessor) -> list[Tool]:
     ]
 
 
-def _for_the_model[O](say: Callable[[O, str], str]) -> Callable[[O, str], Awaitable[Result]]:
+def _for_the_model[O](say: Callable[[O, str], str]) -> Callable[[O, str], Result]:
     """An outcome's readback handed to the model, which says it."""
-
-    async def answer(outcome: O, name: str) -> Result:
-        return {"readback": say(outcome, name)}
-
-    return answer
+    return lambda outcome, name: {"readback": say(outcome, name)}
 
 
 async def _answer[R, O](
@@ -960,7 +1007,7 @@ async def _answer[R, O](
     session: object,
     request: Callable[[SessionId], R],
     apply: Callable[[R], Awaitable[O]],
-    say: Callable[[O, str], Awaitable[Result]],
+    say: Callable[[O, str], Result],
 ) -> Result:
     # [LAW:no-silent-failure] the model hears each failure and says it; the log keeps it.
     try:
@@ -969,7 +1016,7 @@ async def _answer[R, O](
     except Rejected as error:
         logger.error(f"{name} refused its arguments: {error}")
         return {"error": str(error)}
-    return await say(outcome, spoken_name(sessions, id))
+    return say(outcome, spoken_name(sessions, id))
 
 
 def keyboard_tools(sessions: Sessions) -> list[Tool]:
