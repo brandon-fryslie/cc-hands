@@ -9,6 +9,7 @@ from typing import Literal
 import pytest
 from aiohttp import web
 from anthropic import AsyncAnthropic
+from openai.types.chat import ChatCompletionMessageFunctionToolCallParam
 from pipecat.frames.frames import Frame, InterruptionFrame, LLMContextFrame, LLMFullResponseEndFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -218,3 +219,29 @@ async def test_an_anthropic_request_that_times_out_is_said_as_the_model_out_of_r
         await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
         [error] = run.errors
         assert model_fact(error) == ModelUnreachable()
+
+
+def answered() -> LLMContextFrame:
+    """The context Pipecat asks the model again with once a call's result is in."""
+    call: ChatCompletionMessageFunctionToolCallParam = {"id": "call_1", "type": "function", "function": {"name": "read_session", "arguments": "{}"}}
+    return LLMContextFrame(
+        LLMContext(
+            messages=[
+                {"role": "user", "content": "What is api doing?"},
+                {"role": "assistant", "tool_calls": [call]},
+                {"role": "tool", "tool_call_id": "call_1", "content": '{"steps": []}'},
+            ],
+            tools=[pipecat_function(stay_silent_tool())],  # pyright: ignore[reportArgumentType]
+        )
+    )
+
+
+@pytest.mark.parametrize("shape", ["openai", "anthropic"])
+async def test_an_empty_reply_to_a_calls_result_is_no_failure(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Shape) -> None:
+    """Claude often ends a turn with nothing once a call has done what it was for, as under the brain."""
+    llm = service(shape, await streaming("empty", False))
+    async with running([llm, Ends(ended := asyncio.Event())]) as run:
+        await run.worker.queue_frame(answered())
+        await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
+        await asyncio.sleep(0.1)
+        assert run.errors == []

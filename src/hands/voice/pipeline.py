@@ -20,6 +20,7 @@ from pipecat.frames.frames import (
     Frame,
     FunctionCallsStartedFrame,
     LLMFullResponseEndFrame,
+    LLMContextFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
 )
@@ -112,12 +113,20 @@ class EmptyReplyFails(LLMService[Any]):
 
     # The reply streaming now has been opened and nothing in it has been heard yet.
     _empty = False
+    # The context being answered ends on a call's result: its call already did what the turn was for.
+    _answers_call = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        if isinstance(frame, LLMContextFrame):
+            self._answers_call = _answers_call(frame.context)
+        await super().process_frame(frame, direction)
 
     async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
         # [LAW:single-enforcer] the reply is read off the frames the service itself pushes, which both services push alike.
         match frame:
+            # Claude often answers a call's result with nothing, as the brain's does: a turn that called a tool is no empty reply.
             case LLMFullResponseStartFrame():
-                self._empty = True
+                self._empty = not self._answers_call
             # A call is the model choosing what happens, stay_silent included; an error of the service's own is already said.
             case LLMTextFrame(text=text) if text.strip():
                 self._empty = False
@@ -135,6 +144,11 @@ class EmptyReplyFails(LLMService[Any]):
             case _:
                 pass
         await super().push_frame(frame, direction)
+
+
+def _answers_call(context: LLMContext) -> bool:
+    messages = context.get_messages()
+    return bool(messages) and isinstance(last := messages[-1], dict) and last.get("role") == "tool"
 
 
 def _cancelling() -> bool:
