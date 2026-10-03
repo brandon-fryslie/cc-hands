@@ -30,7 +30,7 @@ facts, and what it said is now what was heard.
 One path that crosses this seam wants every character heard: a draft readback (`voice/readback.py`), read
 out so the user can check what will be typed. It does not get a mode here [LAW:no-mode-explosion]. The
 readback says its text and resolutions with `spelled`, whose output carries no tell for this filter to act
-on, so it reaches the speaker as the readback wrote it.
+on, and its line breaks as words, so no rule here that reads the shape of a line reaches inside a draft.
 
 The filter is stateless, so a barge-in in the middle of a sentence leaves nothing in it to reset.
 """

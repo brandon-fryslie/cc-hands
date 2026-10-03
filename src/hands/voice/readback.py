@@ -24,9 +24,9 @@ def readback(outcome: DraftOutcome, name: str) -> str:
     """One spoken reply for the outcome; `name` is how the user knows the session."""
     match outcome:
         case DraftStaged(draft=draft, replaced=None):
-            return f"Draft for {name}{_reading(draft.resolutions)}: {spelled(draft.text)}"
+            return f"Draft for {name}{_reading(draft.resolutions)}: {_said(draft.text)}"
         case DraftStaged(draft=draft):
-            return f"New draft for {name}, replacing the last one{_reading(draft.resolutions)}: {spelled(draft.text)}"
+            return f"New draft for {name}, replacing the last one{_reading(draft.resolutions)}: {_said(draft.text)}"
         case DraftAmended(before=before, after=after):
             # Speak what changed, not the whole draft again.
             added = [resolution for resolution in after.resolutions if resolution not in before.resolutions]
@@ -42,7 +42,7 @@ def readback(outcome: DraftOutcome, name: str) -> str:
         case Typed():
             return f"Sent the draft to {name}."
         case NotTyped(input=Text(prompt=text), reason=reason):
-            return f"The draft for {name} was not sent, and is no longer staged: {reason}. It said: {spelled(text)}"
+            return f"The draft for {name} was not sent, and is no longer staged: {reason}. It said: {_said(text)}"
         case Unwrapped():
             return f"{name} was not started under fritter, so hands cannot type into it. The draft is still staged."
         case AtItsDialog():
@@ -130,6 +130,12 @@ def _changes(before: str, after: str) -> list[str]:
         for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=old, b=new, autojunk=False).get_opcodes()
         if tag != "equal"
     ]
+
+
+def _said(text: str) -> str:
+    """A draft as it is read back: its words `spelled`, its line breaks as words, so the speaker's filter finds no
+    list, quote or heading in it to say instead of what will be typed."""
+    return _spoken(_WORDS.findall(text))
 
 
 def _spoken(words: list[str]) -> str:

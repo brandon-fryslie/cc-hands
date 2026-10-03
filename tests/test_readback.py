@@ -55,13 +55,19 @@ def heard(text: str, *resolutions: Resolution) -> str:
         ("rename user_id to userId", "rename user underscore id to user Id"),
         ("run with --force", "run with dash dash force"),
         ("revert a1b2c3d", "revert a 1 b 2 c 3 d"),
-        ("(see notes.md)", "open paren see notes dot md close paren"),
+        ("check session abcDEF123456xyz", "check session abc DEF 123456 xyz"),
+        ("(see notes.md)", "(see notes dot md)"),
         ("call foo.bar() then cd ..", "call foo dot bar open paren close paren then cd dot dot"),
         ("fix `src/auth.py`", "fix backtick src slash auth dot py backtick"),
-        ("fix it\n```\nsrc/a.py\n```", "fix it\nbacktick backtick backtick\nsrc slash a dot py\nbacktick backtick backtick"),
-        ("rm *.py; echo $HOME/x", "rm star dot py; echo dollar HOME slash x"),
-        ("open C:\\x\\y.py and a|b", "open C colon backslash x backslash y dot py and a pipe b"),
-        ("fix the login flow", "fix the login flow"),
+        ("rm *.py", "rm star dot py"),
+        ("echo $HOME/x a|b", "echo dollar HOME slash x a pipe b"),
+        ("open parseXMLFile.ts", "open parse XML File dot ts"),
+        # Prose the filter leaves alone is left alone: spelling it would only be noise.
+        ("the 2nd well-known test, e.g. at 3:30 for 1,000 users", "the 2nd well-known test, e.g. at 3:30 for 1,000 users"),
+        # Line breaks are words, so a list, a fence or a quote in a draft is heard as typed, not as its shape.
+        ("steps:\n1. fix src/a.py\n2. run it", "steps: a line break 1. fix src slash a dot py a line break 2. run it"),
+        ("fix it\n```\nx\n```", "fix it a line break backtick backtick backtick a line break x a line break backtick backtick backtick"),
+        ("run x\n\n> quoted", "run x a line break a line break greater than quoted"),
     ],
 )
 def test_a_draft_is_heard_as_what_will_be_typed(draft: str, said: str) -> None:
