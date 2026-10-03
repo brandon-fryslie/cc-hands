@@ -75,11 +75,11 @@ three speech channels below. It never imports from `daemon`.
 
 **`daemon`** is the composition root: it parses the config file into a frozen
 `Config`, builds the sessions package and the voice package from it, runs both under
-one supervisor, publishes the heartbeat, and provides the `hands` CLI. Nothing below
-`daemon` reads the environment or the config file `[LAW:one-source-of-truth]`: the
-environment is read only where a process starts (the daemon, the hook shim, and the
-attention tool), and what lies below is handed what it needs from it
-(`tests/test_environment.py`).
+one supervisor, publishes the heartbeat, and provides the `hands` CLI. Only `daemon`
+reads the config file `[LAW:one-source-of-truth]`, and the environment is read only
+where a process starts: the daemon, and the two modules of `sessions` that Claude Code
+runs as processes of their own, the hook shim and the attention tool. Every other module
+is handed what it needs from it (`tests/test_environment.py`).
 
 The arrows point one way and never loop `[LAW:one-way-deps]`. When a lower package
 seems to need something from a higher one, the missing thing is a type that belongs in

@@ -187,6 +187,10 @@ class Configured:
 
 def configured_from(home: Home, environment: Mapping[str, str]) -> Configured:
     """The process boundary: the settings file and the environment's secrets in, typed configuration out."""
+    # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
+    # config.toml, and HANDS_HOME, where that is, is the one variable of hands' own it reads.
+    if stray := sorted(name for name in environment if name.startswith("HANDS_") and name != "HANDS_HOME"):
+        sys.exit(f"hands: {', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
     try:
         settings, read = load(home)
     except Rejected as error:
@@ -283,7 +287,7 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[], Configured], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, audit: AuditLog, quit_event: asyncio.Event, after_crash: bool,
+    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, audit: AuditLog, quit_event: asyncio.Event, after_crash: bool,
     environment: Mapping[str, str],
 ) -> Ended:
     voice: Voice | None = None
@@ -324,7 +328,8 @@ async def run(
         # [LAW:single-enforcer] one mover of the focus to a session just told of, for the model's stage and tell_turn alike.
         refocus = Refocus(sessions, home, audit.record)
         tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus)]
-        config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions.live_count, quit_event)
+        # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
+        config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, audit.record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
             async with mind(config, tools, lambda: as_sent(sessions, home), refocus, proxy.url, wire, store, home.fritter, home.audit, audit.record, environment) as minded:

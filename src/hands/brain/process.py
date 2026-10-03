@@ -120,8 +120,9 @@ class Station:
     cwd: Path
     model: str
     proxy_url: str
-    # hands' own environment, which each is started in less what environment() keeps out; kept out of the repr, as it holds keys.
-    inherited: Mapping[str, str] = field(repr=False)
+    # hands' own environment, which each is started in less what environment() keeps out; kept out of the repr, as it
+    # holds keys, and out of the station's identity, which it is not part of.
+    inherited: Mapping[str, str] = field(repr=False, compare=False)
 
 
 @dataclass(frozen=True)

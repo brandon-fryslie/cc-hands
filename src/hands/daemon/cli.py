@@ -181,7 +181,7 @@ def loaded(home: Home, heart: heartbeat.Heart, audit_log: audit.AuditLog, after_
     from hands.daemon.run import configured_from, run
 
     path = os.environ.get("PATH", "")
-    return lambda quit_event: run(lambda: configured_from(home, os.environ), lambda: survey(readiness.check(home, path, granted)), home, heart, audit_log, quit_event, after_crash, os.environ)
+    return lambda quit_event: run(lambda environment: configured_from(home, environment), lambda: survey(readiness.check(home, path, granted)), home, heart, audit_log, quit_event, after_crash, os.environ)
 
 
 def start_indicator(home: Home) -> int:

@@ -303,5 +303,5 @@ Cross-cutting; pulled when the first variant beyond the LLM backend arrives.
 
 - **One file, parsed once.** `config.toml` in the home parsed into a frozen
   `Config` in `daemon`; the spike's environment variables are deleted; the settings
-  cap in `architecture.md` lists every field. Done when no module below `daemon`
-  reads `os.environ` and a test proves it.
+  cap in `architecture.md` lists every field. Done when only the modules a process
+  starts in read `os.environ` and a test proves it.

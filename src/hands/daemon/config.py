@@ -98,8 +98,9 @@ def _llm(table: Mapping[str, object]) -> LLM:
     match backend := _text(table, "[llm]", "backend", "anthropic"):
         case "anthropic":
             _known(table, "[llm] for anthropic", ("backend", "model", "url"))
-            url = _text(table, "[llm]", "url", ANTHROPIC_URL)
-            if url.rstrip("/").endswith("/v1"):
+            # [LAW:parse-dont-validate] spelled one way from here on, so Anthropic's own server is known by equality.
+            url = _text(table, "[llm]", "url", ANTHROPIC_URL).rstrip("/")
+            if url.endswith("/v1"):
                 raise Rejected(f"[llm] url {url!r} ends in /v1, and the Anthropic client appends /v1/messages itself; drop the /v1")
             return Anthropic(url=url, model=_text(table, "[llm]", "model", ANTHROPIC_MODEL))
         case "openai":

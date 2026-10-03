@@ -70,6 +70,17 @@ def test_a_refused_file_stops_the_start_naming_itself(tmp_path: Path) -> None:
         run.configured_from(home, {"ANTHROPIC_API_KEY": "k"})
 
 
+def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
+    # The variables settings used to be: one still exported would run hands on the default backend, silently.
+    home = Home(tmp_path)
+    with pytest.raises(SystemExit, match=f"HANDS_LLM, HANDS_WHISPER_MODEL set, .* settings go in {home.config}"):
+        run.configured_from(home, {"ANTHROPIC_API_KEY": "k", "HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"})
+
+
+def test_anthropic_on_its_own_url_spelled_with_a_slash_is_its_own_api() -> None:
+    assert config.parse('[llm]\nurl = "https://api.anthropic.com/"\n').llm == config.Anthropic()
+
+
 def test_anthropic_on_its_own_api_is_keyed_by_the_environment_else_the_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
     kept: dict[str, str] = {}
     monkeypatch.setattr(run, "keychain_password", kept.get)
