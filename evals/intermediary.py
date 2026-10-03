@@ -64,7 +64,7 @@ from hands.sessions.home import Home, default_home
 from hands.daemon.run import backend_from_env
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
-from hands.voice.briefing import UNFOCUSED, briefing
+from hands.voice.briefing import briefing
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, LLMBackend, OpenAICompatibleBackend, VoiceConfig, build_llm
 from hands.voice.sentences import SummaryStore
@@ -114,7 +114,7 @@ def _case(path: Path) -> Case:
     written = json.loads(path.read_text())
     sessions = cast(list[dict[str, str]], written["sessions"])
     # The note the daemon hands over at start, rendered by the daemon, so a case cannot hold a stale copy of it.
-    messages = [{"role": "user", "content": briefing(sessions, UNFOCUSED)}, *written["messages"]]
+    messages = [{"role": "user", "content": briefing(sessions, None)}, *written["messages"]]
     expect = cast(dict[str, Any], written["expect"])
     kinds = {"call", "reply", "silent"} & expect.keys()
     if len(kinds) != 1:

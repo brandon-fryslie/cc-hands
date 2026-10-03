@@ -80,7 +80,7 @@ async def test_a_session_that_joins_on_its_permission_request_is_listed_as_waiti
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     for event in (Joined(lagging, "startup"), PermissionRequested(lagging.id, at=1.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default")):
         await sessions.apply(event)
-    assert await call(sessions, tmp_path) == {"sessions": [{"id": "lagging", "name": "lagging", "state": "waiting for permission to use Bash", "mode": "manual mode", "watched": "no"}], "focus": "none"}
+    assert await call(sessions, tmp_path) == {"sessions": [{"id": "lagging", "name": "lagging", "state": "waiting for permission to use Bash", "mode": "manual mode", "watched": "no"}], "focus": None}
 
 
 def test_a_name_record_still_being_written_is_not_read(tmp_path: Path) -> None:
@@ -97,7 +97,7 @@ async def test_a_transcript_whose_name_cannot_be_read_lists_the_session_by_its_p
     broken.transcript.write_text('{"type":"custom-title","sessionId":"broken"}\n')
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(broken, "startup"))
-    assert await call(sessions, tmp_path) == {"sessions": [{"id": "broken", "name": "broken", "state": "not reported yet", "mode": "not reported yet", "watched": "no"}], "focus": "none"}
+    assert await call(sessions, tmp_path) == {"sessions": [{"id": "broken", "name": "broken", "state": "not reported yet", "mode": "not reported yet", "watched": "no"}], "focus": None}
 
 
 def test_the_tool_is_named_and_described_from_its_body() -> None:

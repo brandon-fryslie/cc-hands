@@ -1307,12 +1307,13 @@ Models are unreliable at holding "which session we are talking about" and "I am
 mid-draft" across a long conversation, and both failures are expensive. So both live
 in the daemon as typed state and the tools default to them.
 
-**Focus** is `SessionId | None`, kept in the home's `focus` file (`hands.sessions.focus`)
+**Focus** is `SessionId | None`, or `Unreadable` when its file cannot be read, kept in the home's `focus` file (`hands.sessions.focus`)
 and read at each use. Every tool that acts on a session accepts the omission of its
 `session` argument as "the focus" (`defaulting_to_focus`), and a session it names wins
 over the focus. "Switch to cc-hands" is `focus_session`, with no confirmation. The
-model is told the focus at the tail of every request, so hands, not the prompt,
-answers "which one did you mean".
+brain is told the focus at the tail of every request, a Pipecat model in its startup
+note, and `list_sessions` gives it to either, so hands, not the prompt, answers
+"which one did you mean".
 
 **Drafts** are per target: `NoDraft | Staged(text, resolutions)`. The readback is
 generated from the stored resolutions, never from the model repeating itself:

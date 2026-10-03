@@ -4,15 +4,16 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import aiohttp
 import pytest
 
+from hands.brain.mcp import serve_mcp
 from hands.core.effects import Input, Text, Type
 from hands.core.events import Joined
 from hands.core.session import Membership, PromptText, SessionId
 from hands.sessions.audit import AuditLog, tail as audit_tail
-from hands.sessions.focus import focused, set_focus
+from hands.sessions.focus import Unreadable, focused, set_focus
 from hands.sessions.home import Home
-from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
 from hands.voice.briefing import as_sent
@@ -117,9 +118,9 @@ async def test_a_focus_file_holding_no_session_id_is_refused_and_the_brain_is_to
     home = Home(tmp_path / "home")
     home.root.mkdir()
     home.focus.write_text("../escape\n")
-    with pytest.raises(Rejected, match="no session id"):
-        focused(home)
+    assert isinstance(unreadable := focused(home), Unreadable) and "which is no session id" in unreadable.reason
     assert "Which session is focused cannot be read:" in as_sent(sessions, home)
+    assert (await tools(sessions, home)["list_sessions"].body())["focus"] == {"cannot_read": unreadable.reason}
     result = await tools(sessions, home)["read_backlog"].body()
     assert "which one is focused cannot be read" in str(result["error"])
 
@@ -153,3 +154,19 @@ async def test_the_session_the_focus_stood_in_for_is_on_the_calls_audit_line(tmp
         ("focus_session", {"session": LAWS}, {"readback": "Now on laws."}),
         ("stage_draft", {"text": "run the tests", "resolutions": []}, {"readback": "Draft for laws: run the tests", "focused_session": LAWS}),
     ]
+
+
+async def test_a_call_with_arguments_the_tool_does_not_take_is_refused_as_the_tool_would_refuse_it(tmp_path: Path) -> None:
+    home = Home(tmp_path / "home")
+    sessions = await two_sessions(tmp_path, [])
+    await tools(sessions, home)["focus_session"].body(session=LAWS)
+    server = await serve_mcp([audited(tool, lambda _: None) for tool in tools(sessions, home).values()], lambda _: None)
+    try:
+        call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "stage_draft", "arguments": {"prompt": "run the tests"}}}
+        async with aiohttp.ClientSession() as client, client.post(server.url, json=call, headers={"Authorization": f"Bearer {server.token}"}) as reply:
+            refused = await reply.json()
+        assert refused["result"]["isError"] is True
+        assert refused["result"]["content"][0]["text"].startswith("stage_draft was called with the wrong arguments: ")
+    finally:
+        await server.close()
+

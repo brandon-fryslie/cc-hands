@@ -32,7 +32,7 @@ from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
 from hands.sessions.audit import Called, Record
-from hands.sessions.focus import focused, set_focus
+from hands.sessions.focus import Unreadable, focused, set_focus
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
@@ -237,16 +237,23 @@ def defaulting_to_focus(tool: Tool, home: Home) -> Tool:
     async def call(session: object = "", **arguments: object) -> Result:
         if session not in ("", None):
             return await tool.body(session=session, **arguments)
-        try:
-            focus = await asyncio.to_thread(focused, home)
-        except (Rejected, OSError) as error:
-            logger.error(f"{tool.name} named no session, and the focus cannot be read: {error}")
-            return {"error": f"no session was named, and which one is focused cannot be read: {error}"}
-        if focus is None:
-            return {"error": "no session was named and none is focused: ask the user which session they mean"}
-        # [LAW:nothing-unseen] the session the focus stood in for rides on the result, so its Called line says where the call went.
-        return {**await tool.body(session=focus, **arguments), "focused_session": focus}
+        match await asyncio.to_thread(focused, home):
+            case None:
+                return {"error": "no session was named and none is focused: ask the user which session they mean"}
+            case Unreadable(reason):
+                return {"error": f"no session was named, and which one is focused cannot be read: {reason}"}
+            case focus:
+                # [LAW:nothing-unseen] the session the focus stood in for rides on the result, so its Called line says where the call went.
+                return {**await tool.body(session=focus, **arguments), "focused_session": focus}
 
+    # The body's own signature with session optional, so a call whose other arguments do not fit is refused as the body would refuse it.
+    signature = inspect.signature(tool.body)
+    call.__signature__ = signature.replace(  # type: ignore[attr-defined]
+        parameters=[
+            parameter.replace(kind=inspect.Parameter.KEYWORD_ONLY, default="" if parameter.name == "session" else parameter.default)
+            for parameter in signature.parameters.values()
+        ]
+    )
     return replace(
         tool,
         properties={**tool.properties, "session": {**line, "description": f"{line['description']} Empty for the focused session."}},
@@ -294,20 +301,19 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home) -> To
         while it sits at its prompt is seen when it is next prompted, and one changed
         in the middle of a turn at its next tool call. `watched` says whether each turn it finishes is told to the
         user as it finishes (watch_session). `focus` is the id of the session the user is talking to when they name
-        none (focus_session), or "none".
+        none (focus_session), null when none is focused, or says why it cannot be read.
         """
         return {"sessions": [{**entry, "watched": await _watched(overlays, SessionId(entry["id"]))} for entry in standing(sessions)], "focus": await _focus(home)}
 
     return tool(list_sessions)
 
 
-async def _focus(home: Home) -> str:
-    try:
-        focus = await asyncio.to_thread(focused, home)
-    except (Rejected, OSError) as error:
-        logger.error(f"cannot read the focus to list it: {error}")
-        return f"unknown, it cannot be read: {error}"
-    return "none" if focus is None else focus
+async def _focus(home: Home) -> SessionId | None | Mapping[str, str]:
+    match await asyncio.to_thread(focused, home):
+        case Unreadable(reason):
+            return {"cannot_read": reason}
+        case focus:
+            return focus
 
 
 async def _watched(overlays: Overlays, session: SessionId) -> str:

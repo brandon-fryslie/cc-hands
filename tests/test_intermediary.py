@@ -22,7 +22,7 @@ from hands.core.wire import Exchanged, MainTurn, Unreached
 from hands.sessions.audit import SEGMENT_GLOB, AuditLog, BacklogUnread, Called, Transcribed, segment
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
-from hands.voice.briefing import UNFOCUSED, brief, briefing, tail
+from hands.voice.briefing import brief, briefing, tail
 from hands.voice.speech import Tailed
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain_instruction
 from hands.sessions.sentences import Sentences
@@ -47,7 +47,7 @@ def names(sessions: Sessions) -> list[str]:
 
 
 def test_the_briefing_names_each_session_by_name_state_and_mode_with_the_id_for_the_tools() -> None:
-    note = briefing([AUTH, FRESH], UNFOCUSED)
+    note = briefing([AUTH, FRESH], None)
     assert note.startswith("[hands] ")
     assert f'"cc-hands, auth refactor" (id {AUTH["id"]}), idle, permission mode: manual mode' in note
     assert f'"cc-hands" (id {FRESH["id"]}), working, permission mode: not reported yet' in note
@@ -55,18 +55,18 @@ def test_the_briefing_names_each_session_by_name_state_and_mode_with_the_id_for_
 
 
 def test_the_briefing_with_nothing_running_says_so() -> None:
-    assert briefing([], UNFOCUSED) == "[hands] hands has just started, and no Claude Code sessions are running. No session is focused. Say nothing about this unless the user asks."
+    assert briefing([], None) == "[hands] hands has just started, and no Claude Code sessions are running. No session is focused. Say nothing about this unless the user asks."
 
 
 def test_the_tail_names_each_session_as_the_briefing_does_and_says_it_is_current() -> None:
-    told = tail([AUTH], UNFOCUSED)
+    told = tail([AUTH], None)
     assert told.startswith("[hands] ")
     assert f'"cc-hands, auth refactor" (id {AUTH["id"]}), idle, permission mode: manual mode' in told
     assert "as this message is sent" in told and "Say nothing about this unless the user asks." in told
 
 
 def test_the_tail_with_nothing_running_says_so() -> None:
-    assert tail([], UNFOCUSED) == "[hands] No Claude Code sessions are running now. No session is focused. Say nothing about this unless the user asks."
+    assert tail([], None) == "[hands] No Claude Code sessions are running now. No session is focused. Say nothing about this unless the user asks."
 
 
 async def test_a_brain_read_from_the_tail_is_given_no_briefing(tmp_path: Path) -> None:
