@@ -7,16 +7,22 @@ Each line is a value from this module or from the core, encoded the same way: it
 under "at", and whether it tells of something that went wrong under "level", between the two. Nothing here
 decides what happened; it records what the rest of the daemon already decided.
 
-Log rotation keeps it bounded: a line that would take the log past LIMIT bytes first moves it to its retired name,
-replacing the one retired before, and starts a new log with a Retired line. The two never hold more than twice LIMIT,
-unless one line alone is longer than LIMIT.
+[LAW:domain-language] it is a segmented log, in the terms Kafka gave the shape: a directory of segments, each named by
+its base offset, the log offset of its first byte. Lines are appended to the active segment; a line that would take it
+past SEGMENT_BYTES rolls the log to a new segment, which opens with a Rolled line, and retention deletes every segment
+older than the one just closed. Two segments are kept, so the log never holds more than twice SEGMENT_BYTES, unless
+one line alone is longer. A segment is never renamed, and once a later one exists it is closed: nothing is appended
+to it again.
 """
 
+import fcntl
 import json
 import os
-import threading
+import re
 import traceback
-from collections.abc import Callable, Iterator, Mapping
+from bisect import bisect_right
+from collections.abc import Callable, Generator, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
 from enum import Enum
@@ -406,11 +412,12 @@ class Restarting:
 
 
 @dataclass(frozen=True)
-class Retired:
-    """The first line of a new log: the one before it reached the bound and was moved to `path` at `size` bytes."""
+class Rolled:
+    """The first line of a segment: the log rolled to it at log offset `base`, and retention deleted the segments whose
+    base offsets are `deleted`."""
 
-    path: Path
-    size: int
+    base: int
+    deleted: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -461,7 +468,7 @@ Entry = (
     | NameWithheld
     | BacklogUnread
     | Restarting
-    | Retired
+    | Rolled
     | Failure
 )
 Record = Callable[[Entry], None]
@@ -497,7 +504,7 @@ def level(entry: Entry) -> Level:
             | Applied() | Performed() | Typing() | LLMChosen() | ProxyListening() | TapListening() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Recounted() | Summarised()
-            | TurnsSummarised() | NameGiven() | Restarting() | Retired()
+            | TurnsSummarised() | NameGiven() | Restarting() | Rolled()
         ):
             return "info"
         case _:
@@ -514,27 +521,36 @@ def _reply_level(reply: Reached | Unreached | Held | Uncopied) -> Level:
             return "info"
 
 
-# How large the log grows before it is retired: two of these on disk at most, a few days of every session's exchanges.
-LIMIT = 32 * 1024 * 1024
+# How large a segment grows before the log rolls: two on disk at most, a few days of every session's exchanges.
+SEGMENT_BYTES = 32 * 1024 * 1024
+
+_SEGMENT = re.compile(r"(\d{20})\.jsonl")
+# The segments as a shell glob matches them, and no other file in the directory.
+SEGMENT_GLOB = f"{'[0-9]' * 20}.jsonl"
 
 
-def retired(log: Path) -> Path:
-    """Where the log is moved when it reaches the bound: the lines just older than its own."""
-    return log.with_name(f"{log.name}.1")
+def segment(directory: Path, base: int) -> Path:
+    """The segment whose first byte is at log offset base."""
+    return directory / f"{base:020d}.jsonl"
+
+
+def segments(directory: Path) -> list[int]:
+    """The base offsets of the log's segments, oldest first: none while there is no log."""
+    try:
+        names = os.listdir(directory)
+    except FileNotFoundError:
+        return []
+    return sorted(int(found[1]) for name in names if (found := _SEGMENT.fullmatch(name)))
 
 
 class AuditLog:
-    def __init__(self, path: Path, clock: Callable[[], datetime], limit: int = LIMIT) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._path = path
-        self._clock = clock
-        self._limit = limit
-        # [LAW:no-ambient-temporal-coupling] errors are recorded from whichever thread logged them; one writer at a time
-        # means no line lands in a log after it was retired, where a reader that has moved on would never see it.
-        self._writing = threading.Lock()
+    def __init__(self, directory: Path, clock: Callable[[], datetime], segment_bytes: int = SEGMENT_BYTES) -> None:
         # The log holds what every tapped session said, as the tap's socket does: the user's alone to read.
-        if path.exists():
-            path.chmod(0o600)
+        directory.mkdir(parents=True, exist_ok=True)
+        directory.chmod(0o700)
+        self._directory = directory
+        self._clock = clock
+        self._segment_bytes = segment_bytes
 
     def record(self, entry: Entry) -> None:
         # [LAW:single-enforcer] the log watches what the daemon does and never changes it: a line it cannot encode or
@@ -546,21 +562,52 @@ class AuditLog:
             logger.error(f"the audit log cannot encode a {type(entry).__name__} line: {error}")
             return
         try:
-            with self._writing:
+            # Made again for each line, as a segment's file is: a log deleted under a running daemon begins again.
+            self._directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with _exclusive(self._directory):
                 # [LAW:no-ambient-temporal-coupling] read under the lock that orders the writes, and once for a line and the
-                # Retired line in front of it, so "at" never runs backwards down the log.
+                # Rolled line in front of it, so "at" never runs backwards down the log.
                 at = json.dumps(self._clock().isoformat(timespec="milliseconds"))
                 line = _stamped(body, at)
-                size = _size(self._path)
-                if size > 0 and size + len(line) > self._limit:
-                    os.replace(self._path, retired(self._path))
-                    line = _stamped(_body(Retired(retired(self._path), size)), at) + line
-                # Opened for each line, so a line is on disk when record returns and a log moved aside is started again.
-                with open(self._path, "ab", opener=_private) as log:
-                    log.write(line)
+                # [LAW:one-source-of-truth] the active segment is the newest on disk, listed for each line: no writer holds
+                # a copy of it that another writer's roll, or a roll that failed partway, could leave behind.
+                bases = segments(self._directory)
+                active = max(bases, default=0)
+                size = _size(segment(self._directory, active))
+                rolled = Rolled(active + size, tuple(bases[:-1])) if size > 0 and size + len(line) > self._segment_bytes else None
+                if rolled is not None:
+                    active, line = rolled.base, _stamped(_body(rolled), at) + line
+                # Opened for each line, so a line is on disk when record returns.
+                with open(segment(self._directory, active), "a+b", opener=_private) as log:
+                    log.write(_ending(log) + line)
+                # Retention deletes after the Rolled line naming what it deletes is on disk: a roll that failed deleted nothing.
+                for base in () if rolled is None else rolled.deleted:
+                    segment(self._directory, base).unlink(missing_ok=True)
         except OSError as error:
             # [LAW:no-silent-failure] said on stderr, as a warning: an error would be sent back to the log that just failed.
-            logger.warning(f"the audit log {self._path} lost a {type(entry).__name__} line: {error}")
+            logger.warning(f"the audit log {self._directory} failed at a {type(entry).__name__} line: {error}")
+
+
+@contextmanager
+def _exclusive(directory: Path) -> Generator[None]:
+    """One writer at a time, across threads and processes: every line is on disk before the roll that closes its segment,
+    which is what lets a reader trust a closed one. An flock on the directory, let go as it is closed."""
+    # [LAW:single-enforcer] the one lock on the log's writes, for a second daemon as for a second thread.
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _ending(log: BinaryIO) -> bytes:
+    """A newline to end a line that a write which failed partway left torn at the end of log, so the next line is whole."""
+    end = log.seek(0, os.SEEK_END)
+    if end == 0:
+        return b""
+    log.seek(end - 1)
+    return b"" if log.read(1) == b"\n" else b"\n"
 
 
 def _stamped(body: str, at: str) -> bytes:
@@ -645,73 +692,65 @@ def _frames(error: BaseException) -> tuple[str, ...]:
     return tuple(f"{frame.filename}:{frame.lineno} in {frame.name}" for frame in frames)
 
 
-@dataclass(frozen=True)
-class Position:
-    """How far into which file the log has been read. A file with another inode is another log, whatever its size."""
-
-    inode: int  # 0 while there is no log
-    offset: int
-
-
-START = Position(inode=0, offset=0)
-
-
-def tail(path: Path, count: int) -> tuple[list[str], Position]:
-    """The last count whole lines of the log and the one retired before it, and the position just past them, where
-    following it begins."""
-    lines, position = _read(path, START)
-    if len(lines) < count:
-        older, was = _read(retired(path), START)
-        # The file under the retired name may be the log just read, moved aside since: its lines are already here.
-        lines = (older if was.inode != position.inode else []) + lines
-    return (lines[-count:] if count > 0 else []), position
+def tail(directory: Path, count: int) -> tuple[list[str], int]:
+    """The last count complete lines of the log, and the log offset just past them, where following it begins."""
+    bases = segments(directory)
+    if not bases:
+        return [], 0
+    lines, end = _lines(segment(directory, bases[-1]), 0)
+    for base in reversed(bases[:-1]):
+        if len(lines) >= count:
+            break
+        lines = _lines(segment(directory, base), 0)[0] + lines
+    return (lines[-count:] if count > 0 else []), bases[-1] + end
 
 
-def follow(path: Path, position: Position, poll: Callable[[], None]) -> Iterator[str]:
-    """Each whole line written to the log past position, calling poll between looks, for as long as the caller asks."""
+def follow(directory: Path, offset: int, poll: Callable[[], None]) -> Iterator[str]:
+    """Each complete line written to the log past offset, calling poll between reads, for as long as the caller asks."""
     while True:
-        lines, now = _read(path, position)
-        # A log that moved since the last look left its last lines under its retired name, and takes no more once the
-        # new one has been opened. One that did not move has them all in lines. One retired twice between looks is gone,
-        # with its last lines.
-        yield from _rest(retired(path), position) if now.inode != position.inode else []
+        lines, offset = _past(directory, offset)
         yield from lines
-        position = now
         poll()
 
 
-def _rest(path: Path, since: Position) -> list[str]:
-    """The whole lines past since when path is the file since was read in; none when it is another, or there is none."""
+def _past(directory: Path, offset: int) -> tuple[list[str], int]:
+    """The complete lines past offset in the segment that holds it, and the log offset to read from next."""
+    # [LAW:no-ambient-temporal-coupling] listed before the segment is read: a segment with a later one in this listing was
+    # closed before it, so the read has every line the segment will ever hold, and reading goes on at the later one.
+    bases = segments(directory)
+    if not bases:
+        return [], offset
+    # An offset this log never handed out - behind retention, or past the end of or mid-line in a log begun again from
+    # zero - goes on at the oldest segment kept. Behind retention, the Rolled line naming the segment missed is ahead. A
+    # log begun again that has a line ending just before the offset is read on from there, its start unseen.
+    held = bisect_right(bases, offset)
+    if held == 0 or not _starts_a_line(segment(directory, bases[held - 1]), offset - bases[held - 1]):
+        offset, held = bases[0], 1
+    base = bases[held - 1]
+    lines, end = _lines(segment(directory, base), offset - base)
+    return lines, (bases[held] if held < len(bases) else base + end)
+
+
+def _starts_a_line(path: Path, at: int) -> bool:
+    """Whether a line of path begins at byte at: every offset a reader is given is a segment's base or follows a newline."""
+    if at == 0:
+        return True
     try:
         with path.open("rb") as log:
-            if os.fstat(log.fileno()).st_ino != since.inode:
-                return []
-            return _whole_lines(log, since.offset)[0]
+            log.seek(at - 1)
+            return log.read(1) == b"\n"
     except FileNotFoundError:
-        return []
+        return False
 
 
-def _read(path: Path, since: Position) -> tuple[list[str], Position]:
+def _lines(path: Path, start: int) -> tuple[list[str], int]:
+    """The complete lines in path from start on, and the offset just past them: a line still being written is left for
+    the next read. A segment retention has deleted holds none."""
     try:
         with path.open("rb") as log:
-            status = os.fstat(log.fileno())
-            # [LAW:one-source-of-truth] the offset means something only in the file it was read from, just past a newline.
-            # A log moved aside, or cut short in place, is read again from its first line, never from the middle of one.
-            # One cut short and regrown past the offset between looks, with a newline where the old one was, is not
-            # told apart: lines are skipped, but none is split.
-            same = status.st_ino == since.inode and status.st_size >= since.offset
-            if same and since.offset > 0:
-                log.seek(since.offset - 1)
-                same = log.read(1) == b"\n"
-            lines, end = _whole_lines(log, since.offset if same else 0)
+            log.seek(start)
+            data = log.read()
     except FileNotFoundError:
-        return [], START
-    return lines, Position(status.st_ino, end)
-
-
-def _whole_lines(log: BinaryIO, offset: int) -> tuple[list[str], int]:
-    """The whole lines from offset on, and the offset just past them: a line still being written is left for the next look."""
-    log.seek(offset)
-    data = log.read()
+        return [], start
     end = data.rfind(b"\n") + 1
-    return data[:end].decode("utf-8").splitlines(), offset + end
+    return data[:end].decode("utf-8").splitlines(), start + end

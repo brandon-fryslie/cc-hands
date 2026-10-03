@@ -18,7 +18,7 @@ from hands.core.events import Ended, Joined, StatusReported
 from hands.core.session import CommandName, Membership, PromptText, SessionId
 from hands.core.status import Busy, Idle, Report, Stamp, Waiting
 from hands.sessions.typing import Untyped
-from hands.sessions.audit import AuditLog, Record
+from hands.sessions.audit import AuditLog, Record, tail
 from hands.sessions.registry import Sessions
 from hands.voice.conversation import record_turns
 from hands.voice.tools import Tool, audited, draft_tools, keyboard_tools, pipecat_function
@@ -108,7 +108,7 @@ async def fire(aggregator: object, event: str, message: object) -> None:
 
 
 async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to_the_readback(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
+    path = tmp_path / "audit"
     record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
     sessions, id = await joined(tmp_path, record)
     tools = [audited(tool, record) for tool in draft_tools(sessions)]
@@ -121,7 +121,7 @@ async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to
     await fire(assistant, "on_assistant_turn_stopped", AssistantTurnStoppedMessage("", False, "t2"))
     await fire(assistant, "on_assistant_turn_stopped", AssistantTurnStoppedMessage("Draft for cc-hands: run the tests", False, "t2"))
 
-    written = [json.loads(line) for line in path.read_text().splitlines()]
+    written = [json.loads(line) for line in tail(path, 1000)[0]]
     trace = [(line["type"], line.get("text") or line.get("tool")) for line in written]
     assert trace == [
         ("Applied", None),
@@ -221,13 +221,13 @@ async def test_a_session_waiting_at_a_permission_dialog_is_sent_nothing(tmp_path
 
 
 async def test_what_is_typed_is_in_the_audit_log_before_the_readback(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
+    path = tmp_path / "audit"
     record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
     sessions, id = await wrapped(tmp_path, lambda _: None, record)
     tools = [audited(tool, record) for tool in draft_tools(sessions)]
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     await call(tools, "send_draft", session=id)
-    written = [json.loads(line) for line in path.read_text().splitlines()]
+    written = [json.loads(line) for line in tail(path, 1000)[0]]
     assert [line["type"] for line in written][-2:] == ["Typing", "Called"]
     assert written[-2]["effect"]["input"] == {"type": "Text", "prompt": "run the tests"}
 
@@ -307,10 +307,10 @@ async def test_the_keyboard_tools_say_their_arguments_and_complete_through_a_bar
 
 
 async def test_a_command_is_in_the_audit_log_before_the_readback(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
+    path = tmp_path / "audit"
     record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
     sessions, id = await wrapped(tmp_path, lambda _: None, record)
     await call([audited(tool, record) for tool in keyboard_tools(sessions)], "send_command", session=id, command="compact")
-    written = [json.loads(line) for line in path.read_text().splitlines()]
+    written = [json.loads(line) for line in tail(path, 1000)[0]]
     assert [line["type"] for line in written][-2:] == ["Typing", "Called"]
     assert written[-2]["effect"]["input"] == {"type": "Command", "name": "compact", "args": None}

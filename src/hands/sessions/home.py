@@ -28,8 +28,9 @@ class Home:
 
     @property
     def audit(self) -> Path:
-        """Everything the daemon did, heard, said, and failed at, one JSON line each, written by the daemon alone."""
-        return self.root / "audit.jsonl"
+        """Everything the daemon did, heard, said, and failed at, one JSON line each, written by the daemon alone: a
+        segmented log, the directory of its segments."""
+        return self.root / "audit"
 
     @property
     def summaries(self) -> Path:

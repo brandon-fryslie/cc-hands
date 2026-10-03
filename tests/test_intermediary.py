@@ -19,7 +19,7 @@ import pytest
 
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, MainTurn, Unreached
-from hands.sessions.audit import AuditLog, BacklogUnread, Called, Transcribed, retired
+from hands.sessions.audit import SEGMENT_GLOB, AuditLog, BacklogUnread, Called, Transcribed, segment
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.briefing import brief, briefing, tail
@@ -97,31 +97,33 @@ def test_the_prompt_names_no_tool_the_daemon_does_not_give() -> None:
     # Every tool is snake_case, so every snake_case name in the prompt is a tool, bar the code names it quotes as ones never to say.
     quoted_code_names = {"parse_date", "test_invoice_total"}
     given = set(names(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)))
-    for prompt in (INTERMEDIARY_INSTRUCTION, brain_instruction(Path("/home/hands/audit.jsonl"))):
+    for prompt in (INTERMEDIARY_INSTRUCTION, brain_instruction(Path("/home/hands/audit"))):
         named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", prompt)) - quoted_code_names
         assert named, "the prompt names no tool at all"
         assert named <= given, f"the prompt names {sorted(named - given)}, which the daemon does not give"
 
 
 def test_only_the_brain_which_has_bash_is_told_of_the_log_and_it_keeps_the_closing_words_last() -> None:
-    told = brain_instruction(Path("/my home/audit.jsonl"))
-    assert "audit.jsonl" not in INTERMEDIARY_INSTRUCTION and "Bash" not in INTERMEDIARY_INSTRUCTION
+    told = brain_instruction(Path("/my home/audit"))
+    assert ".jsonl" not in INTERMEDIARY_INSTRUCTION and "Bash" not in INTERMEDIARY_INSTRUCTION
     assert told.startswith(INTERMEDIARY_INSTRUCTION.split("\n\n# Above all")[0]) and told.endswith(INTERMEDIARY_INSTRUCTION.split("\n\n")[-1])
     # A home with a space in it is one argument to every command the brain is shown.
-    assert "'/my home/audit.jsonl'" in told
+    assert f"'/my home/audit'/{SEGMENT_GLOB}" in told
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="the brain's commands read the log with jq")
 def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say_they_find(tmp_path: Path) -> None:
-    path = tmp_path / "a home" / "audit.jsonl"
+    path = tmp_path / "a home" / "audit"
     log = AuditLog(path, clock=lambda: datetime(2026, 10, 3, tzinfo=UTC))
     log.record(Transcribed("send it"))
     # A line cut short, as a write that failed part way leaves it: the lines after it are still read.
-    with path.open("a", encoding="utf-8") as torn:
+    with segment(path, 0).open("a", encoding="utf-8") as torn:
         torn.write('{"at": "2026-10-03T00:00:00.000+00:00", "level": "err\n')
     log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("no route", 0.0), True))
     log.record(Called("list_sessions", {}, {"sessions": []}))
     log.record(BacklogUnread(project="/code/p", error="lit exited 3", seconds=0.1))
+    # A file that is no segment is no part of the log.
+    (path / "audit.jsonl").write_text(json.dumps({"level": "error", "type": "Stray"}) + "\n")
     shown = [line[2:].partition(": ") for line in brain_instruction(path).splitlines() if line.startswith("- ")]
     commands = {label: command for label, _, command in shown if " | jq " in command}
     assert len(commands) == 3
@@ -133,9 +135,8 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     assert found("the latest errors") == ["Exchanged", "BacklogUnread"]
     assert found("what happened lately") == ["Transcribed", "Called", "BacklogUnread"]
     assert found("one kind of line") == ["Called"]
-    # Once the log has been retired, what it held is found too, before what came after.
-    path.rename(retired(path))
-    log.record(Called("list_sessions", {}, {"sessions": []}))
+    # Once the log has rolled, what the closed segment holds is found too, before what came after.
+    AuditLog(path, clock=lambda: datetime(2026, 10, 3, tzinfo=UTC), segment_bytes=1).record(Called("list_sessions", {}, {"sessions": []}))
     assert found("one kind of line") == ["Called", "Called"]
     assert found("the latest errors") == ["Exchanged", "BacklogUnread"]
 

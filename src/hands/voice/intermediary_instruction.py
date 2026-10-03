@@ -16,7 +16,8 @@ The brain is given one more section, on reading hands' log, because it alone is 
 import shlex
 from pathlib import Path
 
-from hands.sessions.audit import LIMIT, retired
+from hands.sessions.audit import SEGMENT_GLOB
+
 
 _BODY = """\
 You are hands, and the name is the job: you are the user's hands. They speak, and you do what they ask with the \
@@ -141,12 +142,11 @@ def brain_instruction(log: Path) -> str:
 
 
 def _reading(log: Path) -> str:
-    quoted = shlex.quote(str(log))
-    older = shlex.quote(str(retired(log)))
+    segments = f"{shlex.quote(str(log))}/{SEGMENT_GLOB}"
     return f"""\
 # What hands did is in its log
 
-Everything hands does is written to its log, {log}, one JSON object a line, oldest first: what the user said, what \
+Everything hands does is written to its log, the segments in {log}, one JSON object a line, oldest first: what the user said, what \
 you replied, each tool you called with its arguments and what it handed back, what was typed into the sessions, what \
 the sessions did as hands saw it, and every error. Each line has "at", the time it was written in UTC; "level", which \
 is "error" for anything that went wrong and "info" for the rest; and "type", the kind of line, with its fields after \
@@ -163,9 +163,10 @@ Not everything that did not happen is an error: a session that had ended or was 
 readback of the call, so look at what happened as well as at the errors.
 
 The log runs to tens of megabytes, most of it the sessions' exchanges with the API, so read it through a filter and \
-keep the end, never whole. At {LIMIT // 2**20} MiB it is moved to {older} and started again, so read the two together, older first:
-- the latest errors: cat {older} {quoted} | jq -cR 'fromjson? | select(.level == "error")' | tail -n 20
-- what happened lately: cat {older} {quoted} | jq -cR 'fromjson? | select(.type != "Exchanged")' | tail -n 100
-- one kind of line: cat {older} {quoted} | jq -cR 'fromjson? | select(.type == "Called")' | tail -n 10
-Until the log is first moved there is no {older}, and cat saying so is nothing wrong with hands.
+keep the end, never whole. Its segments are named so that they list oldest first:
+- the latest errors: cat {segments} | jq -cR 'fromjson? | select(.level == "error")' | tail -n 20
+- what happened lately: cat {segments} | jq -cR 'fromjson? | select(.type != "Exchanged")' | tail -n 100
+- one kind of line: cat {segments} | jq -cR 'fromjson? | select(.type == "Called")' | tail -n 10
+When the log rolls between the shell listing the segments and cat reading them, cat says the oldest is gone, and that is \
+nothing wrong with hands.
 Then say what it amounts to, in a sentence, the way you say what a session did."""
