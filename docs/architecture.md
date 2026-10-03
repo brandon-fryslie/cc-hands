@@ -1373,8 +1373,9 @@ session whose turn or question hands tells becomes the focus too, so the reply t
 follows reaches it (`hands.voice.refocus`). It moves as the model takes the telling,
 after the user's words that came before it, so those still go to the session they
 were meant for: the brain's stage moves it before it asks, and behind an API model a
-`Told` frame follows the telling and is dropped with it by a barge-in. A session that
-has ended is never focused. The
+`Told` frame follows the telling and is dropped with it by a barge-in that comes before
+the model has said it. A barge-in while it plays stops what is heard, not the move. A
+session that has ended is never focused. The
 brain is told the focus at the tail of every request, a Pipecat model in its startup
 note, and `list_sessions` gives it to either, so hands, not the prompt, answers
 "which one did you mean".

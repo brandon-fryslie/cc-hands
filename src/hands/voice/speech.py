@@ -67,8 +67,9 @@ class Narrated(DataFrame, UninterruptibleFrame):
 class Told(DataFrame):
     """An API model has said hands' telling of a session's turn or its question: what the user says next is taken first
     as said to that session. Passed on in order behind the telling, so words the user spoke before it reach the session
-    they were meant for, and dropped with it by a barge-in that cuts it off before it is said, so the focus never moves
-    to a session the user did not hear of."""
+    they were meant for, and dropped with it by a barge-in that comes before the model has said it, so a telling the
+    model never said moves nothing. Like the brain's stage, it moves the focus as the model says the telling, not as it
+    is played: a barge-in on the playing stops what is heard, not the move."""
 
     session: SessionId
 
