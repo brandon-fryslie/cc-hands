@@ -6,15 +6,17 @@ after none.
 
 A model hands reaches only through Pipecat is told by notes in its context: one when hands starts, and one at each
 change. The brain is told at the tail of every request its turn makes, composed fresh each time, so it reads how the
-sessions stand as the request leaves and no stale note piles up in its history.
+sessions stand, and what hands itself said to the user lately, as the request leaves and no stale note piles up in its
+history.
 """
 
+import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame
 
 from hands.sessions.registry import Sessions
-from hands.voice.speech import Pushed, Tailed, Telling
+from hands.voice.speech import Pushed, Tailed, Telling, bounded
 from hands.voice.tools import standing
 
 
@@ -30,6 +32,11 @@ def briefing(listed: Sequence[Mapping[str, str]]) -> str:
     )
 
 
+# How much of one line the brain is reminded of: a session's question is read out whole, however long, and the brain
+# can read the rest with read_session.
+HEARD_CHARS = 400
+
+
 def tail(listed: Sequence[Mapping[str, str]], heard: Sequence[str] = ()) -> str:
     """How the sessions stand as a request leaves, in list_sessions' words, and the last lines hands said to the user
     in its own words: what hands appends to its newest message."""
@@ -40,8 +47,11 @@ def tail(listed: Sequence[Mapping[str, str]], heard: Sequence[str] = ()) -> str:
     )
     # [LAW:one-source-of-truth] what the user heard hands say is the speaker's ledger, read as the request leaves; the
     # brain's own words are its history's and are not repeated to it.
-    said = f" Lately the user heard hands say, oldest first: {'; '.join(f'"{line}"' for line in heard)}. What the user says may answer one of these." if heard else ""
-    return f"{sessions}{said} Say nothing about this unless the user asks."
+    # Each line quoted as JSON, so a question with quotes in it reads as one line; and cut, since every request carries it.
+    lines = "; ".join(json.dumps(bounded(line, HEARD_CHARS), ensure_ascii=False) for line in heard)
+    said = f" Lately hands said to the user, oldest first: {lines}. What the user says may answer one of these; when it does, act on it." if heard else ""
+    # The sessions are said nothing of unless asked; what hands said is there to be answered, so it comes after.
+    return f"{sessions} Say nothing about this unless the user asks.{said}"
 
 
 def _running(listed: Sequence[Mapping[str, str]]) -> str:

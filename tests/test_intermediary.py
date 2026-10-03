@@ -62,12 +62,18 @@ def test_the_tail_with_nothing_running_says_so() -> None:
 
 def test_the_tail_reminds_the_model_of_what_the_user_heard_hands_say() -> None:
     """A question hands read out as written was answered on 2026-10-03 and the brain asked what the user was talking about."""
-    told = tail([], ("cc-hands has a question for you.", "20 seconds left to answer cc-hands about running the tests."))
+    told = tail([], ("cc-hands has a question for you.", 'cc-hands: Which flag? --force ("overwrite"); --dry-run.'))
+    # Each line is quoted whole, so the quotes and semicolons a session's question carries read as one line.
     assert told == (
-        "[hands] No Claude Code sessions are running now. "
-        'Lately the user heard hands say, oldest first: "cc-hands has a question for you."; "20 seconds left to answer cc-hands about running the tests.". '
-        "What the user says may answer one of these. Say nothing about this unless the user asks."
+        "[hands] No Claude Code sessions are running now. Say nothing about this unless the user asks. "
+        'Lately hands said to the user, oldest first: "cc-hands has a question for you."; "cc-hands: Which flag? --force (\\"overwrite\\"); --dry-run.". '
+        "What the user says may answer one of these; when it does, act on it."
     )
+
+
+def test_a_long_line_hands_said_is_cut_in_the_tail() -> None:
+    told = tail([], ("x" * 1000,))
+    assert "x" * 400 + "... (cut short)" in told and "x" * 401 not in told
 
 
 async def test_a_brain_read_from_the_tail_is_given_no_briefing() -> None:

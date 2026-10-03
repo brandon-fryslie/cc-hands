@@ -9,7 +9,8 @@ over them; nothing waiting is dropped as the turn closes, since none of it had s
 
 This is the one queue what hands tells of the sessions waits in before the model's stage, under either telling: the
 brain's stage keeps its own lanes behind it, and an API model's notes join the context here, behind the user's turn. The
-system voice is not in it: it reports the model's own failures, so it is queued past the model, at the TTS.
+system voice is not in it: it reports the model's own failures, so it is queued past the model, at the ledger ahead
+of the TTS.
 """
 
 import time

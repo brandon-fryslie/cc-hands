@@ -981,8 +981,8 @@ the speaker's door: `Ledger` (`hands.voice.ledger`) sits ahead of the TTS in the
 every `TTSSpeakFrame` passes it whoever queued it, the relay's announcements, the narrator's
 "session is gone", the stage handing on its lane, and the system channel's faults, which are
 queued at it rather than at the TTS. Each is an audit line, `HandsSpoke`, and the last `KEPT`
-of them ride the tail of every request the brain makes, beside the session list, with the
-instruction that what the user says next may answer one. The brain's own words are its
+of them said in the last ten minutes ride the tail of every request the brain makes, after
+the session list, with the instruction that what the user says next may answer one. The brain's own words are its
 history's and are not repeated to it. This is what makes the ticket's title true: the user
 answered "cc-hands has a question for you" on 2026-10-03 and the brain asked what they were
 talking about, because the line had been said past it.
@@ -1489,7 +1489,7 @@ thing that failed `[LAW:no-silent-failure]`:
 1. **Speech.** The system channel says "the language model is unreachable", "speech
    recognition failed for that turn", "the session cc-hands is gone". These are
    `Speak` effects and need no model. `hands.voice.system` renders each fact from a
-   template and queues it at the TTS processor, past the LLM and out of its context,
+   template and queues it at the ledger ahead of the TTS, past the LLM and out of its context,
    so the model never reads a system line as a reply it gave. The worker's
    `on_pipeline_error` routes every error by the processor that raised it: the LLM's
    become "unreachable", "usage limit reached, until <when it lifts>" (read from the

@@ -729,4 +729,4 @@ async def test_a_line_hands_said_as_written_rides_the_tail_of_the_brains_next_re
         finally:
             asking.cancel()
     assert route == Send((Tail(tail([], ("cc-hands has a question for you.",))),), refusal="final")
-    assert 'heard hands say, oldest first: "cc-hands has a question for you."' in tail([], ledger.lately())
+    assert 'hands said to the user, oldest first: "cc-hands has a question for you."' in tail([], ledger.lately())
