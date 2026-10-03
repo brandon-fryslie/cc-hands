@@ -313,7 +313,8 @@ async def test_each_request_of_a_turn_carries_how_the_sessions_stand_as_it_leave
 async def test_only_the_brains_own_main_turns_are_spoken(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "hello"})
     others = [rig.request(kind=Fork()), rig.request(kind=Unknown("a messages request with no tools")), rig.request(session=SessionId("a summary"))]
-    assert [route for _, route in others] == [Send()] * 3
+    # Every request of the brain's is final, said or not; another session's goes as it came (hands-wire-zi2).
+    assert [route for _, route in others] == [Send(refusal="final"), Send(refusal="final"), Send()]
     for exchange, _ in others:
         rig.stream(exchange, "not for the user")
     exchange, _ = rig.request()
@@ -322,6 +323,12 @@ async def test_only_the_brains_own_main_turns_are_spoken(rig: Rig) -> None:
     rig.brain.end()
     await rig.until(lambda: "LLMFullResponseEndFrame" in rig.out.shape())
     assert rig.out.said() == ["Hello."]
+
+
+async def test_a_main_turn_no_turn_asked_of_is_final_so_a_spent_limit_is_never_continued(rig: Rig) -> None:
+    # Asked again at the reset, it would run the brain's tools with nobody there (hands-wire-zi2).
+    _, route = rig.request()
+    assert route == Send(refusal="final")
 
 
 async def test_the_brain_hears_what_the_context_gained_and_never_its_own_words_again(rig: Rig) -> None:

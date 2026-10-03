@@ -38,7 +38,6 @@ from hands.core.wire import (
     Send,
     Sent,
     Unreached,
-    UsageLimitReached,
     edited,
 )
 from hands.sessions.replies import reply_reader, sent_of, shielded, spent
@@ -184,15 +183,15 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                 else:
                     # A refusal is read whole before it is answered: whether it is held final turns on what it says.
                     # Held final, it reaches the client as the proxy's own, which Claude Code ends on, since it asks
-                    # again after an overload whatever the header says, and waits out a spent limit to ask again
-                    # (2.1.286); whoever speaks the turn's failure reads it off the wire.
+                    # again after an overload whatever the header says, and waits out a spent limit to continue the task
+                    # at its reset (autoContinueAtUsageLimit, 2.1.286); whoever speaks the turn's failure reads it off the wire.
                     parts: list[bytes] = []
 
                     async def keep(chunk: bytes) -> None:
                         parts.append(chunk)
 
                     await read(keep)
-                    final = refusal == "final" and _goes_on(reached.status, reached.headers, reply, limit)
+                    final = refusal == "final" and (limit is not None or _asked_again(reached.status, reached.headers, reply))
                     response = _refused(reached) if final else web.Response(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers), body=b"".join(parts))
             except (aiohttp.ClientError, OSError) as error:
                 # Upstream dropped the reply, or the client hung up on it: either way the rest is not coming, and the
@@ -257,8 +256,8 @@ def _held(body: object, said: str) -> tuple[str, bytes]:
     return "text/event-stream", b"".join(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode() for name, data in events)
 
 
-def _goes_on(status: int, headers: Mapping[str, str], reply: Body, limit: UsageLimitReached | None) -> bool:
-    """Whether Claude Code asks again on its own after this answer, at once (`lMo`, 2.1.286) or once its limit resets."""
+def _asked_again(status: int, headers: Mapping[str, str], reply: Body) -> bool:
+    """Whether Claude Code asks again after this answer (`lMo`, 2.1.286)."""
     told = headers.get("x-should-retry")
     match status, told, reply:
         case (int() as answered, _, _) if answered < 400:
@@ -266,10 +265,6 @@ def _goes_on(status: int, headers: Mapping[str, str], reply: Body, limit: UsageL
         # Asking again after a 401 is how the client refreshes its login, and that stays its own.
         case (401, _, _):
             return False
-        # A spent limit: Claude Code continues the task when it resets, hours on (autoContinueAtUsageLimit), whatever
-        # the header says.
-        case _ if limit is not None:
-            return True
         # Overloaded: asked again whatever the header says.
         case (529, _, _) | (_, _, Answered(body={"error": {"type": "overloaded_error"}})):
             return True
