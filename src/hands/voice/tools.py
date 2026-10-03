@@ -36,7 +36,9 @@ from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
 from hands.sessions.summaries import described, set_summaries
+from hands.core import playback
 from hands.voice.narrator import Recount, Recounts
+from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.speech import answer_readback
@@ -147,7 +149,7 @@ def audited(tool: Tool, record: Record) -> Tool:
     return replace(tool, body=call)
 
 
-def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts) -> list[Tool]:
+def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them.
 
     [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
@@ -164,8 +166,40 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
         *permission_tools(sessions),
         watch_session_tool(sessions, overlays),
         turn_summaries_tool(home),
+        *playback_tools(player),
         stay_silent_tool(),
     ]
+
+
+def playback_tools(player: Player) -> list[Tool]:
+    """Going back over what was said: hands says it again from where the speaker was, never the model from memory.
+
+    [LAW:nothing-unseen] each call's result is what hands said for it, so its Called line holds what was heard.
+    """
+
+    async def resume() -> Result:
+        """Go back to what you were saying when the user cut in, and say it from where it stopped.
+
+        Hands says it, exactly as it was said, from the start of the sentence that was cut off. Calling it is the whole
+        reply: add no words of your own, and never retell what you remember saying.
+        """
+        return {"said": player.act(playback.resume)}
+
+    async def skip() -> Result:
+        """Skip the sentence the user cut in on, and go on with what you were saying from the one after it.
+
+        Hands says the rest. Calling it is the whole reply: add no words of your own.
+        """
+        return {"said": player.act(playback.skip)}
+
+    async def repeat() -> Result:
+        """Say again the last thing you said, whole, exactly as it was said.
+
+        Hands says it. Calling it is the whole reply: add no words of your own, and never say it again yourself.
+        """
+        return {"said": player.act(playback.repeat)}
+
+    return [tool(resume, then="silence"), tool(skip, then="silence"), tool(repeat, then="silence")]
 
 
 def stay_silent_tool() -> Tool:

@@ -23,6 +23,7 @@ from pipecat.tests.utils import run_test
 from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_transcript
+from hands.voice.player import Player
 from hands.voice.spoken import FenceAggregator, SpokenForm
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
@@ -350,6 +351,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         ),
         tools=[],
         llm=FrameProcessor(),
+        player=Player(lambda _: None),
         record=lambda _: None,
     )
     filters = given["text_filters"]

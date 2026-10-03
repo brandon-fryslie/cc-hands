@@ -69,6 +69,7 @@ from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, LLMBackend, OpenAICompatibleBackend, VoiceConfig, build_llm
 from hands.voice.sentences import SummaryStore
 from hands.voice.narrator import Recounts
+from hands.voice.player import Player
 from hands.voice.tools import intermediary_tools, pipecat_function
 
 CONVERSATIONS = Path(__file__).parent / "conversations"
@@ -129,7 +130,7 @@ Ask = Callable[[list[LLMContextMessage]], Awaitable[tuple[str, tuple[Call, ...]]
 def asker(backend: LLMBackend) -> Ask:
     """The one place the backend variant is inspected: each asks the way its daemon service would."""
     scratch = Path(tempfile.mkdtemp())
-    tools = intermediary_tools(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None), SummaryStore(Sentences(scratch / "sentences.db")), Home(scratch), Recounts())
+    tools = intermediary_tools(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None), SummaryStore(Sentences(scratch / "sentences.db")), Home(scratch), Recounts(), Player(lambda _entry: None))
     match backend:
         case OpenAICompatibleBackend(base_url=base_url, api_key=api_key):
             service = build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=MAX_REPLY_TOKENS)

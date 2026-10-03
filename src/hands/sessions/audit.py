@@ -205,6 +205,15 @@ class Replied:
 
 
 @dataclass(frozen=True)
+class CutOff:
+    """The user barged in: the sentence that was playing, None when the speaker was quiet, and how many cut-off readings
+    are now waiting to be gone back to."""
+
+    sentence: str | None
+    waiting: int
+
+
+@dataclass(frozen=True)
 class Called:
     """A tool the intermediary called, with the arguments it gave and the result it was handed back."""
 
@@ -411,6 +420,7 @@ Entry = (
     | BrainExited
     | Transcribed
     | Replied
+    | CutOff
     | Called
     | Announced
     | Yielded

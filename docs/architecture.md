@@ -1158,8 +1158,16 @@ the segment playing, or the last one played, and "more on that" is `expand()` on
 
 Pipecat's output transport reports text as its audio plays, and on an interruption only
 the text that played reaches the context. pocket-tts reports no word timings, so the
-finest position is a sentence, and a segment is one to a few sentences. The playback
-ticket confirms when a sentence's text frame arrives relative to its audio.
+finest position is a sentence. As built (`hands.core.playback`, `hands.voice.player`), a
+reading is the run of sentences handed to the speaker since it last fell quiet, whether
+the model's reply or lines said as written; two taps stand either side of the output
+transport, one seeing each sentence as TTS makes it and one seeing each sentence's
+`TTSTextFrame` once its audio is written. Measured live on 2026-10-03 with pocket-tts into
+BlackHole: all three sentences of a reply were made by 2.6 s, the first one's text frame
+left the transport at 4.2 s as its audio ended, and a barge-in one second into the second
+sentence bookmarked the second. `resume`, `skip`, and `repeat` are tools whose call is the
+whole reply: hands says the sentences again as written, so a model never retells them from
+memory.
 
 ## Push pointers, pull content
 
