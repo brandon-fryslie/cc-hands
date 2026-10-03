@@ -336,7 +336,7 @@ async def test_a_file_that_cannot_be_read_is_a_refused_edit_and_outlived(tmp_pat
 async def test_a_save_written_in_two_steps_is_weighed_once_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
     # What each poll reads, as an editor that truncates and then writes leaves it: one poll lands between the two.
-    reads = iter([None, b'[llm]\nbackend = "cla', b'[llm]\nbackend = "claude"\n', b'[llm]\nbackend = "claude"\n'])
+    reads = iter([None, b'[llm]\nbackend = "cla', b'[llm]\nbackend = "claude"\n', b'[llm]\nbackend = "claude"\n', b'[llm]\nbackend = "claude"\n'])
 
     def held(_home: Home) -> bytes | None:
         return next(reads)
@@ -361,6 +361,34 @@ async def test_an_edit_naming_a_model_hands_cannot_reach_is_said_and_outlived(tm
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     home.config.write_text('[llm]\nbackend = "openai"\nmodel = "gpt-other"\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
+
+
+async def test_a_comment_added_is_no_edit(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[llm]\nbackend = "claude"\n')
+    recorded: list[Entry] = []
+    watching = asyncio.create_task(_edited_within(home, recorded, seconds=0.2))
+    await asyncio.sleep(0.05)
+    home.config.write_text('# openai later\n[llm]\nbackend = "claude"\n')
+    assert await watching is None
+    assert recorded == []
+
+
+async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    recorded: list[Entry] = []
+
+    def overwritten(settings: Config) -> None:
+        # The first edit is saved over with a typo while its backend is checked.
+        if settings.llm == Claude():
+            home.config.write_text('[llm]\nbackend = "claud"\n')
+
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, overwritten, period=0.01), 0.5))
+    await asyncio.sleep(0.05)
+    home.config.write_text('[llm]\nbackend = "claude"\n')
+    with pytest.raises(TimeoutError):
+        await watching
+    assert [type(entry) for entry in recorded] == [SettingsEdited] and "'claud'" in str(recorded[0])
 
 
 def test_the_default_whisper_model_is_pipecats_large_v3_turbo() -> None:

@@ -152,6 +152,7 @@ async def launch(
     """
     quit_event = asyncio.Event()
     ending: Ending = "quit"
+    failed: list[BaseException] = []
 
     def stop(how: Ending) -> None:
         # The first stop says how the run ends, the q key's and a failed task's included, which set the event alone:
@@ -164,8 +165,9 @@ async def launch(
         if watch.cancelled():
             return
         if (error := watch.exception()) is not None:
-            # [LAW:no-silent-failure] a run that cannot see its settings change would run on settings that are not the file's.
-            logger.opt(exception=error).error("hands could not watch its settings file, so it stops")
+            # [LAW:no-silent-failure] a run that cannot weigh its settings would run on settings that are not the
+            # file's: it ends raising, as a run whose background task failed does.
+            failed.append(error)
             stop("quit")
             return
         # A run already ending says nothing of an edit it does not restart on; the next start reads the file as edited.
@@ -184,6 +186,8 @@ async def launch(
         # No session has joined before the hooks are served, which is after the import.
         run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, quit_event)
         last = Ended(None, 0) if run is None else await run(quit_event)
+        if failed:
+            raise failed[0]
         # Written only by a run told to stop: one that raised leaves its last heartbeat naming a pid that is gone, or,
         # as it restarts, one that stops beating, and neither reads as stopped. [LAW:no-ambient-temporal-coupling] it
         # goes out while the handlers are in, so a restart is never asked once they are out: the heartbeat no longer
@@ -200,7 +204,8 @@ async def launch(
 def reachable(home: Home, settings: Config) -> None:
     """Raises Rejected where a start on `settings` could not reach its model: the start's own check, made before the
     restart an edit asks for, so an edit naming a key or a login hands lacks is refused and outlived, not restarted on."""
-    # Imported here, as in loaded: an edit is weighed off the loop, after the import the start makes.
+    # Imported here, as in loaded, so that `hands status` answers without loading Pipecat; an edit weighed while the
+    # start imports it waits on that import.
     from hands.daemon.run import backend
 
     backend(settings.llm, home, os.environ)

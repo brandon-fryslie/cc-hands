@@ -11,7 +11,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from loguru import logger
 
 from conftest import unedited
 from hands.core.session import Membership, SessionId
@@ -155,13 +154,11 @@ async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: 
     async def edited() -> audit.SettingsEdited:
         raise PermissionError("config.toml")
 
-    errors: list[str] = []
-    sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
-    try:
-        assert await launch(lambda: run, heart, edited, lambda _entry: None) == "quit"
-    finally:
-        logger.remove(sink)
-    assert any("could not watch its settings file" in error and "PermissionError" in error for error in errors)
+    with pytest.raises(PermissionError, match="config.toml"):
+        await launch(lambda: run, heart, edited, lambda _entry: None)
+    # As a run whose background task failed: its last heartbeat does not read as stopped.
+    status = heartbeat.read(heart.path)
+    assert status is None or status.pipeline != "stopped"
 
 
 def test_a_daemon_that_is_not_running_is_not_asked_and_the_skill_says_why(tmp_path: Path, python312: str) -> None:

@@ -21,12 +21,14 @@ import asyncio
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import cast
 
 from hands.sessions.audit import Record, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+from hands.threads import off_loop
 
 # Spelled here, not taken from Pipecat's Whisper service, whose import is most of the seconds the start spends off
 # the loop: the start watches this file before then, on it.
@@ -82,30 +84,40 @@ def load(home: Home) -> tuple[Config, Path | None]:
 
 
 async def edited(home: Home, record: Record, reachable: Callable[[Config], object], period: float = EDIT_SECONDS) -> SettingsEdited:
-    """The edit, once the file holds settings other than it held when this began: written, rewritten, or removed.
+    """The edit, once the file holds settings other than the run is on: written, rewritten, or removed.
 
     [LAW:no-ambient-temporal-coupling] begun before the run reads the file, so an edit is never missed: one that lands
     between the two starts a run already on it again, which is the same run once more. An edit is weighed once its
-    bytes read the same on two polls, so a save an editor writes in two steps is weighed whole. One that does not
-    parse, or names a model `reachable` (blocking, so run off the loop) refuses, is said and outlived, and the run keeps the settings it has; the next edit is weighed as any other, and one
-    back to the file the run is on is no edit.
+    bytes read the same on two polls, so a save an editor writes in two steps is weighed whole, and it is taken only
+    while the file still holds it once weighed. One that does not parse, or names a model `reachable` refuses, is
+    said and outlived, and the run keeps the settings it has; the next edit is weighed as any other. One whose
+    settings are the run's, a comment or a revert, is no edit.
     """
-    on = seen = weighed = _held(home)
+    seen = weighed = _held(home)
+    try:
+        running = _settings(home, seen)
+    except Rejected:
+        # A run on a file it cannot read stops at its start; until it does, every edit is weighed.
+        running = None
     while True:
         await asyncio.sleep(period)
         if (now := _held(home)) != seen:
             seen = now
             continue
-        if now in (weighed, on):
-            weighed = now
+        if now == weighed:
             continue
         weighed = now
         try:
-            await asyncio.to_thread(reachable, _settings(home, now))
+            settings = _settings(home, now)
+            if settings == running:
+                continue
+            # reachable blocks, on a keychain prompt or a login check, on a thread a stop does not wait for.
+            await off_loop(partial(reachable, settings), "weighing a settings edit")
         except Rejected as error:
             record(SettingsEdited(path=str(home.config), refused=str(error)))
             continue
-        return SettingsEdited(path=str(home.config), refused=None)
+        if _held(home) == now:
+            return SettingsEdited(path=str(home.config), refused=None)
 
 
 @dataclass(frozen=True)
