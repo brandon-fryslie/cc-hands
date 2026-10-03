@@ -129,7 +129,7 @@ def test_a_plan_is_approved_for_the_mode_chosen_or_sent_back_to_planning(decisio
     )
 
 
-@pytest.mark.parametrize("words", ["Yes.", "yeah", "Yep!", "Okay, go ahead.", "Sure, do it.", "Go for it.", "All right.", "Yes please", "Sounds good."])
+@pytest.mark.parametrize("words", ["Yes.", "yeah", "Yep!", "Okay, go ahead.", "Sure, do it.", "Go for it.", "All right.", "Yes please", "Sounds good.", "That’s fine."])
 def test_a_plain_yes_spoken_to_a_permission_allows_it(words: str) -> None:
     assert heard(words) == Allow()
 

@@ -276,6 +276,18 @@ async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: 
     assert not (tmp_path / "notes.txt").exists()
 
 
+async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_never_asked(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    recorded: list[Entry] = []
+    held: list[Asked] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
+    try:
+        assert await asyncio.wait_for(brain.ask("stray", held.append), 10) == BrainAnswered("p1", None)
+    finally:
+        await brain.stop()
+    assert held == []
+    assert permissions(recorded) == [("p0", "Write", Deny(NOBODY))]
+
+
 async def test_a_turn_stopped_while_it_holds_a_permission_refuses_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
     held: list[Asked] = []

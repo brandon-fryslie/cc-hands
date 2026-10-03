@@ -894,6 +894,19 @@ async def test_a_permission_to_run_a_command_is_asked_with_the_command_it_would_
     rig.brain.end()
 
 
+async def test_a_command_is_asked_whole_however_long_and_a_fetch_with_its_address(rig: Rig) -> None:
+    command = "make build && " * 40 + "rm -rf ~/x"
+    await rig.say({"role": "user", "content": "build it"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "On it.")
+    run = rig.brain.permit("Bash", {"command": command})
+    await rig.until(lambda: f"May I use Bash to run {command}? Say yes to allow it." in rig.out.said())
+    run.settle(Deny("no"))
+    rig.brain.permit("WebFetch", {"url": "https://example.com/x", "prompt": "read it"})
+    await rig.until(lambda: "May I use WebFetch on https://example.com/x? Say yes to allow it." in rig.out.said())
+    rig.brain.end()
+
+
 async def test_a_yes_said_before_the_question_has_played_allows_nothing_and_stops_the_turn(rig: Rig) -> None:
     rig.out.holding = True
     await rig.say({"role": "user", "content": "clear out the build directory"})

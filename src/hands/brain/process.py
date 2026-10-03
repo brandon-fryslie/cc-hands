@@ -76,7 +76,7 @@ FOREIGN_CREDENTIALS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE
 NOBODY = "Nobody can be asked: no turn of the user's is in flight to ask in, so what this Claude Code's settings would ask about is refused."
 UNREAD = "hands could not read this permission request, so it is refused."
 UNVOICED = "Nobody sees this dialog: ask the user in your reply instead, and they will answer in their next turn."
-UNANSWERED = "The user was asked whether to allow this and did not answer in time, so it did not run."
+UNANSWERED = "No answer came from the user in time, so it did not run."
 SPOKEN_OVER = "The user spoke over this turn before they could be asked, so it did not run."
 STOPPED = "The user stopped this turn, so it did not run."
 DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}}
@@ -625,11 +625,12 @@ class Brain:
             return
         turn = self._turn
         match asked:
-            case Permission(tool=tool) if turn is not None and not turn.answered.done():
+            # [LAW:single-enforcer] the turn's own, as its Stop is: one a turn before it left behind is nobody's to answer.
+            case Permission(tool=tool) if turn is not None and not turn.answered.done() and turn.prompt == prompt:
                 held = Asked(asked, loop.create_future())
                 self._held.add(held)
-                turn.asks(held)
                 try:
+                    turn.asks(held)
                     await asyncio.wait({held.decision}, timeout=PERMISSION_DEADLINE_SECONDS)
                 finally:
                     self._held.discard(held)

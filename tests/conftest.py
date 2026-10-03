@@ -190,7 +190,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     reads its terminal raw, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
-    is never taken, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
+    is never taken, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
@@ -254,6 +254,10 @@ def submit(text):
         typed(["permission", decision["behavior"], decision.get("message", "")])
         declined = post("Elicitation", prompt_id=prompt, mcp_server_name="probe", message="Which?")
         typed(["elicitation", declined["hookSpecificOutput"]["action"]])
+    if said == "stray":
+        # A permission an earlier turn left behind, posted under that turn's prompt id.
+        stray = post("PermissionRequest", prompt_id="p0", tool_name="Write", tool_input={{"file_path": "notes.txt", "content": "hello"}})["hookSpecificOutput"]["decision"]
+        typed(["permission", stray["behavior"], stray.get("message", "")])
     if said == "fail":
         post("StopFailure", prompt_id=prompt, error="unknown", last_assistant_message="API Error: 400 refused")
     else:

@@ -26,8 +26,6 @@ REPLY_SHOWN = 1500
 
 # A tool input is shown to the model whole up to this many characters; a longer one is cut and says so.
 _INPUT_SHOWN = 800
-# How much of a command the brain would run is said before a yes is asked for it.
-_COMMAND_SPOKEN = 300
 
 Names = Callable[[SessionId], str]
 
@@ -251,12 +249,14 @@ def _asks(on: Blocker) -> str:
 
 
 def brain_asks(on: Permission) -> str:
-    """What hands says for a permission the brain's own setup asks about: the command it would run, or the tool and the file
-    it would touch by name and never by path, and that a yes allows it."""
+    """What hands says for a permission the brain's own setup asks about: the command it would run or the address it would
+    fetch, or the tool and the file it would touch by name and never by path, and that a yes allows it."""
     match on.input:
+        # Said whole, however long: a yes allows exactly this, so the user hears all of it.
         case {"command": str() as command}:
-            # Said whole up to the bound: a yes allows exactly this, so the user hears what it is.
-            what = f"{on.tool} to run {bounded(command, _COMMAND_SPOKEN)}"
+            what = f"{on.tool} to run {command}"
+        case {"url": str() as url}:
+            what = f"{on.tool} on {url}"
         case {"file_path": str() as path} | {"notebook_path": str() as path}:
             what = f"{on.tool} on {PurePath(path).name}"
         case _:

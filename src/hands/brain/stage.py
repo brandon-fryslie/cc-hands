@@ -98,7 +98,7 @@ class _Turn:
     # brain has said the turn is over.
     said: asyncio.Queue[str | Asked | None]
     # Hands the words on to TTS until the turn is over or the user barges in.
-    speaking: asyncio.Task[None]
+    speaking: asyncio.Task[None] = field(init=False)
     spoken: list[str]
     # The requests on the wire that are this turn's own, in the order they left.
     exchanges: list[str] = field(default_factory=list[str])
@@ -233,7 +233,8 @@ class BrainStage(FrameProcessor):
         text = "\n\n".join(part for part in (note, text) if part)
         said: asyncio.Queue[str | Asked | None] = asyncio.Queue()
         spoken: list[str] = []
-        turn = self._turn = _Turn(said, asyncio.create_task(self._speak(said, spoken, lambda asked: turn.hear(asked)), name="the brain's words"), spoken)
+        turn = self._turn = _Turn(said, spoken)
+        turn.speaking = asyncio.create_task(self._speak(turn), name="the brain's words")
         try:
             asked = asyncio.ensure_future(self._brain.ask(text, lambda permission: self._put(turn, permission)))
             await asyncio.wait({asked})
@@ -280,12 +281,12 @@ class BrainStage(FrameProcessor):
         turn.asked.append(asked)
         turn.said.put_nowait(asked)
 
-    async def _speak(self, said: asyncio.Queue[str | Asked | None], spoken: list[str], heard: Callable[[Asked], None]) -> None:
+    async def _speak(self, turn: _Turn) -> None:
         await self.push_frame(LLMFullResponseStartFrame())
-        while (words := await said.get()) is not None:
+        while (words := await turn.said.get()) is not None:
             match words:
                 case str():
-                    spoken.append(words)
+                    turn.spoken.append(words)
                     await self.push_frame(LLMTextFrame(words))
                 case Asked(permission=permission) as asked if asked.open:
                     # Said by hands, as its own sentence once the brain's words before it are: the response so far ends
@@ -294,7 +295,7 @@ class BrainStage(FrameProcessor):
                     await self.push_frame(TTSSpeakFrame(brain_asks(permission)))
                     # [LAW:no-ambient-temporal-coupling] answerable once the speaker has played it to its end, which the
                     # mark is told of, and never if a barge-in cut it off.
-                    await self.push_frame(Mark(partial(heard, asked)))
+                    await self.push_frame(Mark(partial(turn.hear, asked)))
                     # One question at a time, so what the user answers is the question they heard last.
                     await asyncio.wait({asked.decision})
                     await self.push_frame(LLMFullResponseStartFrame())
