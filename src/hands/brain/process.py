@@ -13,7 +13,8 @@ Its login, settings, and skills live in a directory hands owns, set up once, as 
 
 and it runs in that empty directory of hands' own, never in a project. What it may use, what it may do without asking,
 and which MCP servers it has are that directory's to say, as they are for any Claude Code: its settings.json and its
-.claude.json. hands adds only its own server and hooks, and keeps out what the login brings from the account.
+.claude.json. hands adds only its own server, its hooks, and the skills it ships for the brain's own jobs, and keeps out
+what the login brings from the account.
 """
 
 import asyncio
@@ -49,7 +50,7 @@ from hands.sessions.untap import untapped
 from hands.sessions.wrapper import real_claude
 
 # What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu, 2.1.284).
-# LSP needs no switch: it comes only from plugins, and the brain's own setup installs none.
+# LSP needs no switch: it comes only from plugins, the brain's own setup installs none, and hands' own declares none.
 SLIM = {
     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
     "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
@@ -65,6 +66,14 @@ SLIM = {
     # are turned off in the brain's settings.json, the only place Claude Code reads that switch from (2.1.288).
     "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
 }
+
+# The skills hands gives the brain, as a plugin of its own: shipped with the code that runs the jobs they are for, beside
+# the skills of the brain's own setup and never in it.
+PLUGIN = Path(__file__).parent / "plugin"
+# Each named as the brain calls it, plugin:skill, so it may use them without asking, as it may hands' tools.
+PLUGIN_SKILLS = tuple(
+    f"Skill({json.loads((PLUGIN / '.claude-plugin' / 'plugin.json').read_text())['name']}:{skill.parent.name})" for skill in sorted((PLUGIN / "skills").glob("*/SKILL.md"))
+)
 
 # Credentials Claude Code prefers to its own login. Inherited from hands' environment, any of them would put the brain
 # on another account or off the subscription without a word, so none is passed on.
@@ -151,15 +160,17 @@ def slim(claude: Path, model: str, session: SessionId) -> list[str]:
 
 
 def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
-    """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, and hooks posted to the listener at `hooks`."""
+    """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, skills, and hooks posted to the listener at `hooks`."""
     return [
         *slim(claude, launch.station.model, launch.session),
         # Beside the MCP servers its own setup names, never in place of them.
         "--mcp-config", launch.mcp_config,
         # After Claude Code's own system prompt, never in place of it: the API checks that it opens as Claude Code's does.
         "--append-system-prompt", launch.instruction,
-        # hands' tools are how the brain reaches the sessions at all; a deny rule in its own setup still outranks this.
-        "--allowedTools", f"mcp__{SERVER_NAME}",
+        # hands' tools are how the brain reaches the sessions at all, and its skills how it does its jobs there; a deny rule
+        # in its own setup still outranks this.
+        "--allowedTools", f"mcp__{SERVER_NAME}", *PLUGIN_SKILLS,
+        "--plugin-dir", str(PLUGIN),
         # [LAW:single-enforcer] each hook declared as the plugin declares it: a held permission's lives as long as a working
         # session's, and is denied by the same deadline.
         "--settings", json.dumps({"hooks": {event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}", **declared(event)}]}] for event in HOOKS}}),
