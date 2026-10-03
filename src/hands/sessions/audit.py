@@ -262,6 +262,37 @@ class Transcribed:
 
 
 @dataclass(frozen=True)
+class Unsaid:
+    """A segment Whisper transcribed and hands dropped as not said, with the scores it was dropped for."""
+
+    text: str
+    no_speech_prob: float
+    compression_ratio: float
+    avg_logprob: float
+
+
+@dataclass(frozen=True)
+class HoldHeard:
+    """What Whisper made of one hold: what it took as said, None where nothing was, and each segment it dropped."""
+
+    hold: int
+    said: str | None
+    dropped: tuple[Unsaid, ...]
+
+
+@dataclass(frozen=True)
+class Primed:
+    """The words Whisper was primed with for one hold, oldest first, and how long reading them took. `focus` is the
+    session whose repository was read, None where no running session is focused; `failed` says why the focus or its
+    repository gave no words where either could not be read."""
+
+    focus: SessionId | None
+    words: tuple[str, ...]
+    failed: str | None
+    seconds: float
+
+
+@dataclass(frozen=True)
 class Replied:
     """What the intermediary said in one turn."""
 
@@ -580,6 +611,8 @@ Entry = (
     | BrainSpoke
     | BrainExited
     | Transcribed
+    | HoldHeard
+    | Primed
     | Replied
     | CutOff
     | Called
@@ -634,13 +667,13 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case Refocused(outcome=outcome):
             return "error" if outcome == "failed" else "info"
-        case SettingsEdited(refused=refused):
-            return "info" if refused is None else "error"
+        case Primed(failed=failed) | SettingsEdited(refused=failed):
+            return "info" if failed is None else "error"
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
             | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
-            | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
+            | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()
         ):
             return "info"

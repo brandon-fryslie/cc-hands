@@ -252,11 +252,17 @@ hands can type into is one the session-input epic (`hands-harness-5nb`) can reac
 
 Need 2.
 
-- **Vocabulary bias.** Whisper's `initial_prompt` is built from the focus
-  session's identifiers: file basenames from `git ls-files`, branch names, and
-  recent session titles. If the Pipecat MLX service does not expose the prompt, a
-  subclass passes it. Done when "auth middleware" transcribes as `authMiddleware`
-  in a repo that has that file, measured over ten utterances.
+- **Vocabulary bias.** Each hold is transcribed with Whisper's `initial_prompt`,
+  read as it is transcribed (`hands.voice.vocabulary`): the names of the files
+  changed in the focused session's last 30 commits and its uncommitted work, its
+  branch, then every running session's project and name, newest last and at most
+  40 of them. Each hold's words are a `Primed` line in the audit log,
+  and what Whisper made of it, with each segment dropped as not said, a `HoldHeard`
+  line: primed, Whisper turns silence into "." or "The End", which are dropped. Measured
+  2026-10-03 through that code, ten sentences said by `say` in a repository with
+  `authMiddleware.ts` among thirty files: `authMiddleware` 8/10 primed, 0/10
+  unprimed; both misses were a voice saying "middle way". Built:
+  tests/test_vocabulary.py; not verified live.
 - **Path grounding.** `find_path(session, query)` returns matching paths from
   `git ls-files` in the target's `cwd`, names only; the draft records the
   resolution and the readback speaks it. Done when a spoken file reference lands

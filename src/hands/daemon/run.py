@@ -60,6 +60,7 @@ from hands.voice.hold import Move
 from hands.voice.keys import drive_quit, drive_talk_key
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus
+from hands.voice.vocabulary import Lexicon
 from hands.voice.readback import spoken_name
 from hands.voice.pipeline import (
     AnthropicBackend,
@@ -334,8 +335,10 @@ async def run(
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
             async with mind(config, tools, lambda: as_sent(sessions, home), refocus, proxy.url, wire, store, home.fritter, home.audit, audit.record, environment) as minded:
+                # What Whisper is primed with, read as each hold is transcribed.
+                lexicon = Lexicon(sessions, home, environment, audit.record)
                 floor = Floor(audit.record, minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)
-                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, player, floor, refocus), "the voice load"), heart, sessions.live_count, quit_event)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, player, floor, refocus, lexicon, audit.record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences, names, recounts)

@@ -8,7 +8,7 @@ the whole variability of the pipeline as data.
 
 import asyncio
 from itertools import takewhile
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -44,6 +44,7 @@ from pipecat.transports.local.audio import LocalAudioTransportParams
 from pipecat.turns.user_start import VADUserTurnStartStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
+from hands.sessions.audit import Record
 from hands.sessions.model_facts import ModelFault, ModelReplyEmpty
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus, Refocusing
@@ -219,7 +220,9 @@ class Voice:
     assistant_turns: LLMAssistantAggregator
 
 
-def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, player: Player, floor: Floor, refocus: Refocus) -> Voice:
+def build_voice(
+    config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, player: Player, floor: Floor, refocus: Refocus, prompt: Callable[[], Awaitable[str | None]], record: Record
+) -> Voice:
     """Wire mic, push-to-talk, Whisper on MLX, the model's stage, pocket-tts, speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and Whisper reads it off each
@@ -229,7 +232,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
     # "say more".
     key = PushToTalk()
     transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key)
-    stt = Whisper(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model))
+    stt = Whisper(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model), prompt=prompt, record=record)
     # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
     # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
     # own reply alike, so this is the one place all of them meet before they are heard.

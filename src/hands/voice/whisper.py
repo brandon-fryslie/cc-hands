@@ -1,28 +1,45 @@
 """Whisper on MLX, cutting holds where the key cut them: it says where the user started and stopped speaking, numbering
 each hold, transcribes a hold the key sent, throws away one the key dropped, and says when it is done with each."""
 
+import asyncio
 import time
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from typing import Any, cast
 
 import mlx_whisper
 import numpy as np
 from loguru import logger
 from pipecat.frames.frames import (
+    ErrorFrame,
     Frame,
     InputAudioRawFrame,
+    TranscriptionFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
+from pipecat.transcriptions.language import Language
+from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.types import assert_given, require_given
 
+from hands.sessions.audit import HoldHeard, Record, Unsaid
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved
 
 # What the model is loaded by: a second of silence at the 16 kHz Whisper hears at.
 _SILENCE = np.zeros(16_000, dtype=np.float32)
+
+# The compression ratio Pipecat drops a segment for, as a hallucination.
+_HALLUCINATED = 0.5555555555555556
+
+# The average log probability below which a segment is Whisper guessing. Primed, the silence of a hold with nothing said
+# comes back as "." (no word, dropped for that) or as "The End" and "and" at -2.1 and -2.7, which no other filter drops.
+# Fourteen short commands said by `say`, clean and quiet under noise, primed and not, came back no lower than -0.97
+# where heard right and -1.38 where misheard; Whisper's own logprob_threshold, -1.0, would drop "okay" said
+# quietly (2026-10-03).
+_GUESSED = -1.5
 
 
 class Whisper(WhisperSTTServiceMLX):
@@ -33,8 +50,11 @@ class Whisper(WhisperSTTServiceMLX):
     never disagree about where a hold is.
     """
 
-    def __init__(self, *, settings: WhisperSTTServiceMLX.Settings) -> None:
+    def __init__(self, *, settings: WhisperSTTServiceMLX.Settings, prompt: Callable[[], Awaitable[str | None]], record: Record) -> None:
         super().__init__(settings=settings)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
+        # The initial prompt each hold is transcribed with, read as it is: see hands.voice.vocabulary.
+        self._prompt = prompt
+        self._record = record
         self._warm()
         # The key the last frame of microphone audio was captured under.
         self._captured: Key = "up"
@@ -51,18 +71,23 @@ class Whisper(WhisperSTTServiceMLX):
         never fetched: the first turn of the first run waited 28 s on a 1.6 GB download (2026-09-26). Once fetched,
         loading takes 0.5 s and the first run after it 1.3 s against 0.3 s for every later one, so loading alone
         would leave the first turn a second slower than the rest. The model is kept for the process, keyed on the
-        name it was asked for, so silence transcribed here with the arguments Pipecat's `run_stt` passes leaves every
-        turn finding it loaded and run [LAW:no-ambient-temporal-coupling].
+        name it was asked for, so silence transcribed here through the call every hold makes leaves every turn finding it
+        loaded and run [LAW:no-ambient-temporal-coupling].
         """
-        model = require_given(self._settings.model, "Whisper model")
         began = time.monotonic()
-        mlx_whisper.transcribe(  # pyright: ignore[reportUnknownMemberType]  (untyped in mlx_whisper)
-            _SILENCE,
-            path_or_hf_repo=model,
+        self._transcribe(_SILENCE, None)
+        logger.info(f"Whisper loaded {self._settings.model} in {time.monotonic() - began:.1f} s")
+
+    def _transcribe(self, audio: np.ndarray, prompt: str | None) -> list[dict[str, Any]]:
+        """The segments MLX Whisper heard in `audio`, primed with `prompt`; what both the load and every hold run."""
+        transcribed: dict[str, Any] = mlx_whisper.transcribe(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (untyped in mlx_whisper)
+            audio,
+            path_or_hf_repo=require_given(self._settings.model, "Whisper model"),
             temperature=assert_given(self._settings.temperature),
             language=assert_given(self._settings.language),
+            initial_prompt=prompt,
         )
-        logger.info(f"Whisper loaded {model} in {time.monotonic() - began:.1f} s")
+        return cast("list[dict[str, Any]]", transcribed.get("segments", []))
 
     # Only the key cuts holds: a VAD frame from anywhere else, which Pipecat's segmenting would act on, moves nothing.
     async def _handle_user_started_speaking(self, frame: VADUserStartedSpeakingFrame) -> None:
@@ -114,13 +139,48 @@ class Whisper(WhisperSTTServiceMLX):
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         hold = self._transcribing.popleft()
-        heard = False
-        async for frame in super().run_stt(audio):
-            heard = True
-            yield frame
-        if not heard:
-            # Not said: Brandon does not need to hear it (2026-09-27). Logged, so "I spoke and nothing happened" can
-            # still be looked into; a failed transcription yields an ErrorFrame and is heard.
-            logger.info(f"Whisper heard nothing in hold {hold}")
+        try:
+            heard = await self._heard(hold, audio)
+        except Exception as error:
+            # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from Whisper aloud.
+            yield ErrorFrame(error=f"Whisper could not transcribe hold {hold}: {type(error).__name__}: {error}", exception=error)
+        else:
+            # Recorded, so "I spoke and nothing happened" can be looked into.
+            self._record(heard)
+            match heard.said:
+                case None:
+                    # Not said: Brandon does not need to hear it (2026-09-27).
+                    pass
+                case said:
+                    language = cast("Language | None", assert_given(self._settings.language))
+                    # Pipecat's span for a transcription, which its own run_stt opens.
+                    await self._handle_transcription(said, True, language)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's tracing decorator is untyped)
+                    yield TranscriptionFrame(said, self._user_id, time_now_iso8601(), language)
         # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
         yield TurnResolved(hold=hold)
+
+    async def _heard(self, hold: int, audio: bytes) -> HoldHeard:
+        """What was said in a hold's 16-bit samples, primed with the vocabulary as it is now.
+
+        Pipecat's own run_stt takes no prompt, so this is its transcription with one, its filters kept: a segment
+        that is likely no speech is dropped, and so is one with the compression ratio Pipecat found Whisper's
+        hallucinations to have. A segment with no word in it, or one Whisper only guessed at, is dropped too: that is
+        what a primed Whisper makes of silence.
+        """
+        prompt = await self._prompt()
+        await self.start_processing_metrics()
+        try:
+            segments = await asyncio.to_thread(self._transcribe, np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0, prompt)
+        finally:
+            await self.stop_processing_metrics()
+        threshold = assert_given(self._settings.no_speech_prob)
+        said: list[str] = []
+        dropped: list[Unsaid] = []
+        for segment in segments:
+            scored = Unsaid(segment["text"].strip(), segment["no_speech_prob"], segment["compression_ratio"], segment["avg_logprob"])
+            worded = any(character.isalnum() for character in scored.text)
+            if worded and scored.no_speech_prob < threshold and scored.compression_ratio != _HALLUCINATED and scored.avg_logprob >= _GUESSED:
+                said.append(scored.text)
+            else:
+                dropped.append(scored)
+        return HoldHeard(hold, " ".join(said).strip() or None, tuple(dropped))
