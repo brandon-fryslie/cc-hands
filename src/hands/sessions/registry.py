@@ -318,7 +318,8 @@ class Sessions:
 
     def _reply(self, session: SessionId, request: RequestId, reply: HookReply) -> None:
         waiting = self._waiting.get(request)
-        if waiting is None:
+        # Done is gone too: a closed connection cancels the future at once, but the handler forgets the request only when it next runs.
+        if waiting is None or waiting.done():
             # [LAW:no-silent-failure] the hook's connection is gone, most often because Claude Code's own timeout killed it.
             logger.warning(f"reply {reply} for session {session} request {request}, which no hook is waiting on")
             return

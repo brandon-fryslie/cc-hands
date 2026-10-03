@@ -1,6 +1,7 @@
 """A permission hook against the real shim and socket: it waits, and the voice answer or the deadline decides it."""
 
 import asyncio
+import inspect
 import json
 import os
 import shutil
@@ -8,6 +9,7 @@ import sys
 import tempfile
 from collections.abc import AsyncIterator, Iterator, Mapping
 from pathlib import Path
+from types import CoroutineType
 from typing import cast
 
 import pytest
@@ -313,6 +315,34 @@ async def test_a_reply_decided_as_the_hook_closes_is_logged_as_never_delivered(h
     finally:
         logger.remove(sink)
     assert f"the hook for session {SID} request r1 closed; its reply Allow() was never delivered" in logged
+
+
+async def waits_on_its_reply(handler: asyncio.Task[object]) -> None:
+    """Return once the started handler is past applying its request: it awaits the future itself, not the apply coroutine."""
+    coroutine = handler.get_coro()
+    assert isinstance(coroutine, CoroutineType)
+    while inspect.iscoroutine(coroutine.cr_await):
+        await asyncio.sleep(0)
+
+
+async def test_a_reply_decided_while_a_closed_hooks_cancellation_is_in_flight_is_dropped(home: Home, sessions: Sessions) -> None:
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
+    try:
+        assert await (await Shim.run(home, START)).finished() == (0, STARTED, "")
+        await sessions.apply(StatusReported(SID, BUSY, at=0.0))
+        request = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
+        waiting = asyncio.create_task(sessions.ask(request))
+        await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
+        await asyncio.wait_for(waits_on_its_reply(waiting), WAIT_SECONDS)
+        waiting.cancel()  # cancels the request's future at once; the handler forgets the request only when it next runs
+        # A voice answer is decided, and its reply performed, before the handler has run.
+        await sessions.answer(request.request, Allow())
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+    finally:
+        logger.remove(sink)
+    assert f"reply Allow() for session {SID} request r1, which no hook is waiting on" in logged
 
 
 async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_out_its_deadline(home: Home, clock: Clock) -> None:
