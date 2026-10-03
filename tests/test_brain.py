@@ -184,6 +184,9 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert not {"-p", "--print", "--settings", "--allowedTools", "--append-system-prompt"} & set(bare)
     env = environment(tmp_path / "brain", "http://127.0.0.1:1", {
         "PATH": "/bin",
+        # A command its setup's skill runs, firecrawl among them, is logged in by its own key or by what it stored under HOME.
+        "HOME": "/home/u",
+        "FIRECRAWL_API_KEY": "fc",
         "ANTHROPIC_API_KEY": "sk",
         "CLAUDE_CODE_OAUTH_TOKEN": "t",
         "ANTHROPIC_BASE_URL": "http://elsewhere",
@@ -193,7 +196,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
         "NODE_EXTRA_CA_CERTS": "/tmp/fritter-1/trusted.pem",
         "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128",
     })
-    assert env == {"PATH": "/bin", "HTTPS_PROXY": "http://corp:3128", **SLIM, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
+    assert env == {"PATH": "/bin", "HOME": "/home/u", "FIRECRAWL_API_KEY": "fc", "HTTPS_PROXY": "http://corp:3128", **SLIM, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
     # The account's claude.ai connectors stay out of every request, whatever the brain's own setup names.
     assert env["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
     # No turn opens but the ones hands types: no background task and no scheduled prompt opens one of its own.
@@ -221,27 +224,6 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_bot
         BrainAnswered("p2", None),
         exited,
     ]
-
-
-async def test_a_brain_whose_setup_searches_with_firecrawl_runs_it_with_its_login(
-    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The firecrawl hands' own shell finds, logged in by its key or by what it stored under HOME.
-    firecrawl = fake_claude.parent / "firecrawl"
-    firecrawl.write_text(f"""#!{sys.executable}
-import json, os, sys
-print(json.dumps({{"argv": sys.argv[1:], "cwd": os.getcwd(), "key": os.environ.get("FIRECRAWL_API_KEY"), "home": os.environ.get("HOME")}}))
-""")
-    firecrawl.chmod(0o755)
-    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
-    brain = await start(launch(tmp_path, fritter), lambda _: None)
-    try:
-        assert await brain.ask("search", unasked) == BrainAnswered("p1", None)
-    finally:
-        await brain.stop()
-    [[_, code, out]] = [line for line in typed(tmp_path) if line[0] == "ran"]
-    assert code == 0
-    assert json.loads(out) == {"argv": ["search", "newest python"], "cwd": str(tmp_path / "brain" / "cwd"), "key": "fc-test", "home": os.environ["HOME"]}
 
 
 def permissions(recorded: list[Entry]) -> list[tuple[str | None, str, Allow | Deny]]:
