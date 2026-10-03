@@ -9,7 +9,7 @@ from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSS
 
 from hands.core.attention import Overlay, Route, progress_route
 from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Progress, SessionGone, Speak
-from hands.core.pending import Briefing, Finished, News, Noticed, Pending, Unread, Working, went_on
+from hands.core.pending import Briefing, Finished, News, Pending, Unread, Working, went_on
 from hands.core.progress import Doing, said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
 from hands.core.session import AskedQuestion, Blocker, Permission, Plan, PromptId, Question, SessionId
@@ -110,10 +110,11 @@ async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[Non
     while True:
         heard = await sessions.heard()
         record(Relayed(heard))
-        await queue_frame(Unprompted(await _pending(heard, record, attending)))
+        for pending in await _pending(heard, record, attending):
+            await queue_frame(Unprompted(pending))
 
 
-async def _pending(heard: Heard, record: Record, attending: Attending) -> Pending:
+async def _pending(heard: Heard, record: Record, attending: Attending) -> tuple[Pending, ...]:
     """What the floor is handed of what was heard: progress as the focus and the overlay route it, the rest as it is."""
     match heard:
         case Progress(session=session, turn=turn, doings=doings):
@@ -123,15 +124,17 @@ async def _pending(heard: Heard, record: Record, attending: Attending) -> Pendin
             record(Routed(session, focused, overlay, route))
             return _routed(route, session, turn, doings)
         case Speak() | Narrate() | Note():
-            return heard
+            return (heard,)
 
 
-def _routed(route: Route, session: SessionId, turn: frozenset[PromptId], doings: tuple[Doing, ...]) -> Pending:
+def _routed(route: Route, session: SessionId, turn: frozenset[PromptId], doings: tuple[Doing, ...]) -> tuple[Pending, ...]:
     match route:
         case "play":
-            return Working(session, turn, doings)
+            return (Working(session, turn, doings),)
         case "note":
-            return Noticed(session, turn, doings)
+            # [LAW:one-source-of-truth] the session listing says what a working session last set out to do, for either
+            # model to read when asked, so nothing is added to a context that keeps every message it is given.
+            return ()
 
 
 def frames(pending: Pending, telling: Telling, names: Names) -> Sequence[Frame]:
@@ -158,13 +161,10 @@ def frames(pending: Pending, telling: Telling, names: Names) -> Sequence[Frame]:
         case Briefing(note=note), _:
             return (LLMMessagesAppendFrame([{"role": "user", "content": note}], run_llm=False),)
         case Working(session=session, doings=doings), _:
-            # Said as written: what it is doing is arithmetic over its calls, with nothing for a model to add.
-            return (as_written(TTSSpeakFrame(f"{names(session)}: {said(doings)}."), telling),)
-        case Noticed(session=session, doings=doings), Pushed():
-            return (LLMMessagesAppendFrame([{"role": "user", "content": f"[hands] The Claude Code session {names(session)} is working; it set out to {said(doings)}. Say nothing about it unless the user asks."}], run_llm=False),)
-        case Noticed(), Tailed():
-            # [LAW:one-source-of-truth] the tail of the brain's next request says what each session is doing now.
-            return ()
+            # Said as written: what it is doing is arithmetic over its calls, with nothing for a model to add. Kept out of
+            # a pushed context, which keeps every message it is given and would take one every few seconds a session
+            # works: the session listing says what it last set out to do [LAW:one-source-of-truth].
+            return (as_written(TTSSpeakFrame(f"{names(session)}: {said(doings)}.", append_to_context=False), telling),)
 
 
 def told(session: SessionId, name: str, news: Sequence[News]) -> str:

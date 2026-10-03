@@ -5,12 +5,12 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
-from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
+from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core.attention import Overlay, Route, progress_route
 from hands.core.effects import Progress
 from hands.core.events import Progressed, StatusReported, Tick
-from hands.core.pending import Finished, News, Noticed, Pending, Unread, Working, coalesce
+from hands.core.pending import Finished, News, Pending, Unread, Working, coalesce
 from hands.core.progress import EDITING, LONGEST, RUNNING, SETTLE, Doing, Gathering, doing, said
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Membership, Opened, PromptId, Registry, Running, Session, SessionId, Told, Turn, Untold
@@ -129,11 +129,6 @@ def finished(session: SessionId) -> Finished:
             (Unread(SID),),
             id="a turn that could not be read goes by no id, so the progress it follows is said by it",
         ),
-        pytest.param(
-            (Working(SID, IN_TURN, (TESTS,)), Noticed(OTHER, IN_TURN, (edit("a.py"),)), Noticed(OTHER, IN_TURN, (edit("b.py"),))),
-            (Noticed(OTHER, IN_TURN, (edit("a.py"), edit("b.py"))), Working(SID, IN_TURN, (TESTS,))),
-            id="what is noticed is known first, folded per session",
-        ),
     ],
 )
 def test_progress_folds_and_gives_way_to_the_result(pending: tuple[Pending, ...], told: tuple[Pending, ...]) -> None:
@@ -142,16 +137,10 @@ def test_progress_folds_and_gives_way_to_the_result(pending: tuple[Pending, ...]
 
 def test_progress_heard_is_said_as_written_in_the_lane_its_telling_keeps() -> None:
     [pushed] = frames(Working(SID, IN_TURN, (TESTS,)), Pushed(), names=lambda _: "cc-hands")
-    assert isinstance(pushed, TTSSpeakFrame) and pushed.text == "cc-hands: run the test suite."
+    # Never in a pushed context, which keeps every message: the listing says what a session last set out to do.
+    assert isinstance(pushed, TTSSpeakFrame) and pushed.text == "cc-hands: run the test suite." and not pushed.append_to_context
     [tailed] = frames(Working(SID, IN_TURN, (TESTS,)), Tailed(), names=lambda _: "cc-hands")
     assert isinstance(tailed, Aloud) and tailed.spoken.text == "cc-hands: run the test suite."
-
-
-def test_progress_noticed_is_put_unsaid_in_a_pushed_context_and_left_to_the_brains_tail() -> None:
-    [note] = frames(Noticed(SID, IN_TURN, (TESTS,)), Pushed(), names=lambda _: "cc-hands")
-    assert isinstance(note, LLMMessagesAppendFrame) and not note.run_llm
-    assert "The Claude Code session cc-hands is working; it set out to run the test suite." in str(note.messages)
-    assert frames(Noticed(SID, IN_TURN, (TESTS,)), Tailed(), names=lambda _: "cc-hands") == ()
 
 
 def running(turn: Turn) -> Registry:
@@ -260,7 +249,7 @@ async def test_the_calls_a_turn_made_before_hands_followed_it_are_history(tmp_pa
     assert [event for event in await Tails(Known(transcript)).catch_up() if isinstance(event, Progressed)] == []
 
 
-async def test_the_relay_plays_the_focus_working_notes_any_other_and_says_why() -> None:
+async def test_the_relay_plays_the_focus_working_leaves_any_other_to_the_listing_and_says_why() -> None:
     queued: list[Frame] = []
     recorded: list[Entry] = []
 
@@ -281,10 +270,10 @@ async def test_the_relay_plays_the_focus_working_notes_any_other_and_says_why() 
     for session in (SID, OTHER):
         sessions.waiting.put_nowait(Progress(session, IN_TURN, (TESTS,)))
     relaying = asyncio.create_task(relay(sessions, queue_frame, recorded.append, attending))  # pyright: ignore[reportArgumentType]  (only heard() is asked)
-    while len(queued) < 2:
+    while len([entry for entry in recorded if isinstance(entry, Routed)]) < 2:
         await asyncio.sleep(0.01)
     relaying.cancel()
-    assert [frame.pending for frame in queued if isinstance(frame, Unprompted)] == [Working(SID, IN_TURN, (TESTS,)), Noticed(OTHER, IN_TURN, (TESTS,))]
+    assert [frame.pending for frame in queued if isinstance(frame, Unprompted)] == [Working(SID, IN_TURN, (TESTS,))]
     assert [entry for entry in recorded if not isinstance(entry, Relayed)] == [Routed(SID, True, "normal", "play"), Routed(OTHER, False, "normal", "note")]
 
 

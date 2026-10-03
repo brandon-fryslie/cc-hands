@@ -1187,9 +1187,10 @@ what it gathered unsaid, its result being told instead; its tick lets a burst go
 `LONGEST` `[LAW:no-ambient-temporal-coupling]`. The relay routes it by
 `attention.progress_route`, a table over the focus and the overlay, and records each choice
 as a `Routed` line: the focused session's is `Working`, played as written at `fyi`
-("cc-hands: edit ten files, then run the test suite."); any other's, and a muted one's even
-when focused, is `Noticed`, a note in a pushed context and, for the brain, the listing at the
-tail of its every request, which says what a working session last set out to do. `coalesce`
+("cc-hands: edit ten files, then run the test suite."), and kept out of a pushed context,
+which keeps every message it is given. Any other's, and a muted one's even when focused, is
+left to the session listing, which says what a working session last set out to do: the
+`list_sessions` tool for an API model, and the tail of the brain's every request. `coalesce`
 folds a session's progress into one telling and drops what a result of the same turn says
 better; progress carries its turn's ids for this, since a result reaches the floor only once
 it is summarised, after the next turn's calls may have. Text streamed line by line from `MessageDisplay`, summarised while

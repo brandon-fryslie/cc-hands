@@ -18,8 +18,8 @@ DEFAULT: Overlay = "normal"
 Delivery = Literal["summaries", "watched", "on request", "muted"]
 
 
-# How a session's progress reaches the user: "play", said as it happens; "note", known to the model, which says nothing
-# of it until asked.
+# How a session's progress reaches the user: "play", said as it happens; "note", left to the session listing, which
+# the model reads when asked and says nothing of until then.
 Route = Literal["play", "note"]
 
 
