@@ -190,7 +190,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     reads its terminal raw, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
-    is never taken, "write" asks permission and waits unless its hook refuses it, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
+    is never taken, "write" asks permission and an MCP server's input, and waits unless their hooks answer no, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
@@ -244,9 +244,11 @@ def submit(text):
     if said == "slow":
         time.sleep(0.5)
     if said == "write":
-        # Its setup asks before a write: refused by the hook's answer, the turn goes on; with no answer, the dialog waits.
-        decision = post("PermissionRequest", prompt_id=prompt, tool_name="Write", tool_input={{"file_path": "/tmp/x"}})
-        if decision.get("hookSpecificOutput", {{}}).get("decision", {{}}).get("behavior") != "deny":
+        # Its setup asks before a write, and an MCP server asks for input: each answered no at its hook, the turn goes on;
+        # left unanswered, the dialog waits.
+        denied = post("PermissionRequest", prompt_id=prompt, tool_name="Write", tool_input={{"file_path": "/tmp/x"}})
+        declined = post("Elicitation", prompt_id=prompt, mcp_server_name="probe", message="Which?")
+        if (denied.get("hookSpecificOutput", {{}}).get("decision", {{}}).get("behavior"), declined.get("hookSpecificOutput", {{}}).get("action")) != ("deny", "decline"):
             turn, turn_text = prompt, text
             return
     if said == "fail":

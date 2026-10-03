@@ -159,7 +159,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert argv[argv.index("--mcp-config") + 1] == launch(tmp_path).mcp_config
     assert [argv[argv.index(flag) + 1] for flag in ("--setting-sources", "--append-system-prompt", "--session-id")] == ["user", "You are hands.", "b1"]
     assert json.loads(argv[argv.index("--settings") + 1]) == {"hooks": {
-        event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}"}]}] for event in ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest")
+        event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}"}]}] for event in ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation")
     }}
     # A side question's Claude Code is the same slim one, closed whatever the brain's setup holds: no tools, no server.
     bare = [*slim(Path("/real/claude"), "claude-sonnet-5", SessionId("a1")), *CLOSED]
@@ -214,7 +214,7 @@ async def test_what_the_brains_setup_would_ask_about_is_refused_and_its_turn_sti
         assert await asyncio.wait_for(brain.ask("write"), 10) == BrainAnswered("p1", None)
     finally:
         await brain.stop()
-    assert recorded[1:4] == [BrainAsked("write"), BrainRefused("p1", "Write"), BrainAnswered("p1", None)]
+    assert recorded[1:5] == [BrainAsked("write"), BrainRefused("p1", "PermissionRequest", "Write"), BrainRefused("p1", "Elicitation", "probe"), BrainAnswered("p1", None)]
 
 
 async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_failed_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:

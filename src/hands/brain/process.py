@@ -68,18 +68,28 @@ SLIM = {
 # on another account or off the subscription without a word, so none is passed on.
 FOREIGN_CREDENTIALS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
 
-# What the brain posts to hands, each to its own path: a typed turn taken, a turn ended, a turn the API failed, and a
-# permission dialog about to open. Escape ends a turn with none of them (measured on 2.1.285), so a turn told to stop is
-# over when it is told.
-HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest")
-# What hands answers each hook. A permission dialog nobody can see would hold its turn open forever with no hook to say
-# so (2.1.288), so what the brain's setup would ask about is refused, and the brain hears why.
-ANSWERS: dict[str, object] = {
-    "PermissionRequest": {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {
-        "behavior": "deny",
-        "message": "Nobody is at this Claude Code's keyboard to answer a permission dialog, so what its settings would ask about is refused.",
-    }}},
+@dataclass(frozen=True)
+class Dialog:
+    """A dialog Claude Code would open for someone at its keyboard: the hook field that names what asked, and hands' answer."""
+
+    asker: str
+    answer: object
+
+
+# A dialog nobody can see would hold its turn open forever with no hook to say so (2.1.288), so each is answered no
+# at its hook, and the brain hears why: a permission its setup would ask about, and an MCP server asking for input.
+NOBODY = "Nobody is at this Claude Code's keyboard to answer a permission dialog, so what its settings would ask about is refused."
+DIALOGS = {
+    "PermissionRequest": Dialog("tool_name", {"hookSpecificOutput": {
+        "hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": NOBODY},
+    }}),
+    "Elicitation": Dialog("mcp_server_name", {"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}}),
 }
+
+# What the brain posts to hands, each to its own path: a typed turn taken, a turn ended, a turn the API failed, and a
+# dialog about to open. Escape ends a turn with none of them (measured on 2.1.285), so a turn told to stop is over when
+# it is told.
+HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", *DIALOGS)
 
 # The terminal the brain draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
@@ -543,7 +553,7 @@ class Brain:
             event, session = said.text("hook_event_name"), said.session_id()
             prompt = said.text("prompt_id")
             failed = f"{said.optional_text('error')}: {said.optional_text('last_assistant_message')}"
-            tool = said.optional_text("tool_name")
+            asker = said.optional_text(DIALOGS[event].asker) if event in DIALOGS else None
         except Rejected as error:
             logger.warning(f"the brain posted a hook that does not parse: {error}")
             return
@@ -560,9 +570,9 @@ class Brain:
                 answered = BrainAnswered(prompt, error)
                 self._record(answered)
                 self._over(turn, answered)
-            case "PermissionRequest" if turn.prompt == prompt:
-                # Refused at the listener; said here too, so the refusal is not only the brain's to tell.
-                self._record(BrainRefused(prompt, tool))
+            case _ if event in DIALOGS and turn.prompt == prompt:
+                # Answered no at the listener; said here too, so the refusal is not only the brain's to tell.
+                self._record(BrainRefused(prompt, event, asker))
             case _:
                 logger.warning(f"the brain's {event} hook for prompt {prompt} does not fit the turn in flight (prompt {turn.prompt})")
 
@@ -613,8 +623,9 @@ async def _listen(hooks: "asyncio.Queue[Payload]") -> tuple[web.AppRunner, str]:
         except Rejected as error:
             logger.warning(f"the brain posted a hook hands cannot read: {error}")
             return web.Response(status=400, text=str(error))
-        # An empty answer, for a hook that asks nothing of the turn.
-        return web.json_response(ANSWERS.get(request.match_info["event"], {}))
+        # A dialog's no, or an empty answer for a hook that asks nothing of the turn.
+        dialog = DIALOGS.get(request.match_info["event"])
+        return web.json_response({} if dialog is None else dialog.answer)
 
     app = web.Application()
     app.router.add_post("/{event}", hook)
