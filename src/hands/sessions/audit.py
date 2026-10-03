@@ -15,17 +15,19 @@ one line alone is longer. A segment is never renamed, and once a later one exist
 to it again.
 """
 
+import fcntl
 import json
 import os
 import re
-import threading
 import traceback
-from collections.abc import Callable, Iterator, Mapping
+from bisect import bisect_right
+from collections.abc import Callable, Generator, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, assert_never, cast
+from typing import TYPE_CHECKING, BinaryIO, Literal, assert_never, cast
 
 from loguru import logger
 
@@ -549,9 +551,6 @@ class AuditLog:
         self._directory = directory
         self._clock = clock
         self._segment_bytes = segment_bytes
-        # [LAW:no-ambient-temporal-coupling] errors are recorded from whichever thread logged them; one writer at a time
-        # means every line is on disk before the roll that closes its segment, which is what lets a reader trust a closed one.
-        self._writing = threading.Lock()
 
     def record(self, entry: Entry) -> None:
         # [LAW:single-enforcer] the log watches what the daemon does and never changes it: a line it cannot encode or
@@ -563,37 +562,52 @@ class AuditLog:
             logger.error(f"the audit log cannot encode a {type(entry).__name__} line: {error}")
             return
         try:
-            with self._writing:
+            # Made again for each line, as a segment's file is: a log deleted under a running daemon begins again.
+            self._directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with _exclusive(self._directory):
                 # [LAW:no-ambient-temporal-coupling] read under the lock that orders the writes, and once for a line and the
                 # Rolled line in front of it, so "at" never runs backwards down the log.
                 at = json.dumps(self._clock().isoformat(timespec="milliseconds"))
                 line = _stamped(body, at)
-                # Made again for each line, as a segment's file is: a log deleted under a running daemon begins again.
-                self._directory.mkdir(mode=0o700, parents=True, exist_ok=True)
                 # [LAW:one-source-of-truth] the active segment is the newest on disk, listed for each line: no writer holds
                 # a copy of it that another writer's roll, or a roll that failed partway, could leave behind.
                 bases = segments(self._directory)
                 active = max(bases, default=0)
                 size = _size(segment(self._directory, active))
-                if size > 0 and size + len(line) > self._segment_bytes:
-                    rolled = _roll(self._directory, bases, active + size)
-                    active = rolled.base
-                    line = _stamped(_body(rolled), at) + line
+                rolled = Rolled(active + size, tuple(bases[:-1])) if size > 0 and size + len(line) > self._segment_bytes else None
+                if rolled is not None:
+                    active, line = rolled.base, _stamped(_body(rolled), at) + line
                 # Opened for each line, so a line is on disk when record returns.
-                with open(segment(self._directory, active), "ab", opener=_private) as log:
-                    log.write(line)
+                with open(segment(self._directory, active), "a+b", opener=_private) as log:
+                    log.write(_ending(log) + line)
+                # Retention deletes after the Rolled line naming what it deletes is on disk: a roll that failed deleted nothing.
+                for base in () if rolled is None else rolled.deleted:
+                    segment(self._directory, base).unlink(missing_ok=True)
         except OSError as error:
             # [LAW:no-silent-failure] said on stderr, as a warning: an error would be sent back to the log that just failed.
-            logger.warning(f"the audit log {self._directory} lost a {type(entry).__name__} line: {error}")
+            logger.warning(f"the audit log {self._directory} failed at a {type(entry).__name__} line: {error}")
 
 
-def _roll(directory: Path, bases: list[int], base: int) -> Rolled:
-    """Rolls the log to a new active segment at base: retention keeps the segment it closes and deletes those before it.
-    The new segment exists once its first line is written, so a roll that fails here is tried again by the next line."""
-    deleted = tuple(bases[:-1])
-    for held in deleted:
-        segment(directory, held).unlink(missing_ok=True)
-    return Rolled(base, deleted)
+@contextmanager
+def _exclusive(directory: Path) -> Generator[None]:
+    """One writer at a time, across threads and processes: every line is on disk before the roll that closes its segment,
+    which is what lets a reader trust a closed one. An flock on the directory, let go as it is closed."""
+    # [LAW:single-enforcer] the one lock on the log's writes, for a second daemon as for a second thread.
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _ending(log: BinaryIO) -> bytes:
+    """A newline to end a line that a write which failed partway left torn at the end of log, so the next line is whole."""
+    end = log.seek(0, os.SEEK_END)
+    if end == 0:
+        return b""
+    log.seek(end - 1)
+    return b"" if log.read(1) == b"\n" else b"\n"
 
 
 def _stamped(body: str, at: str) -> bytes:
@@ -707,14 +721,14 @@ def _past(directory: Path, offset: int) -> tuple[list[str], int]:
     if not bases:
         return [], offset
     # An offset this log never handed out - behind retention, or past the end of or mid-line in a log begun again from
-    # zero - goes on at the oldest segment kept. Behind retention, the Rolled line naming the segment missed is ahead.
-    held = [base for base in bases if base <= offset]
-    if not held or not _starts_a_line(segment(directory, held[-1]), offset - held[-1]):
-        offset = bases[0]
-    base = max(held for held in bases if held <= offset)
+    # zero - goes on at the oldest segment kept. Behind retention, the Rolled line naming the segment missed is ahead. A
+    # log begun again that has a line ending just before the offset is read on from there, its start unseen.
+    held = bisect_right(bases, offset)
+    if held == 0 or not _starts_a_line(segment(directory, bases[held - 1]), offset - bases[held - 1]):
+        offset, held = bases[0], 1
+    base = bases[held - 1]
     lines, end = _lines(segment(directory, base), offset - base)
-    later = [held for held in bases if held > base]
-    return lines, (later[0] if later else base + end)
+    return lines, (bases[held] if held < len(bases) else base + end)
 
 
 def _starts_a_line(path: Path, at: int) -> bool:

@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import shutil
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -266,27 +267,60 @@ def test_a_writer_appends_to_the_segment_another_writer_rolled_to(tmp_path: Path
     assert newest[0]["type"] == "Rolled" and newest[-1]["text"] == "first"
 
 
-def test_a_roll_retention_could_not_finish_is_rolled_again_by_the_next_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_roll_whose_line_is_not_written_deletes_nothing_and_the_next_line_rolls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     log = tmp_path / "audit"
     writer = AuditLog(log, clock=lambda: AT, segment_bytes=1000)
     while len(segments(log)) < 2:
         writer.record(Transcribed("filling"))
-    refusals: list[Path] = []
+    before = segments(log)
+    opened = audit._private  # pyright: ignore[reportPrivateUsage]
+    refused: list[str] = []
 
-    def refused(path: Path, missing_ok: bool = False) -> None:
-        refusals.append(path)
-        raise PermissionError(f"refused {path}")
+    def full(path: str, flags: int) -> int:
+        if Path(path) != segment(log, before[-1]):
+            refused.append(path)
+            raise OSError(28, "No space left on device")
+        return opened(path, flags)
 
     with monkeypatch.context() as patched:
-        patched.setattr(Path, "unlink", refused)
-        before = segments(log)
-        while not refusals:
+        patched.setattr(audit, "_private", full)
+        while not refused:
             writer.record(Transcribed("filling"))
-        assert segments(log) == before
+    assert segments(log) == before
     writer.record(Transcribed("kept"))
     assert segments(log) == [before[-1], before[-1] + segment(log, before[-1]).stat().st_size]
     newest = [json.loads(line) for line in segment(log, segments(log)[-1]).read_text().splitlines()]
+    assert newest[0] == {**newest[0], "type": "Rolled", "deleted": [before[0]]}
     assert [line["type"] for line in newest] == ["Rolled", "Transcribed"] and newest[1]["text"] == "kept"
+
+
+def test_a_line_torn_at_the_end_of_the_log_is_ended_before_the_next(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    writer = AuditLog(log, clock=lambda: AT)
+    writer.record(Transcribed("before"))
+    with segment(log, 0).open("a") as torn:
+        torn.write('{"at": "2026-09-14T12:00:00.123+00:00", "lev')
+    writer.record(Transcribed("after"))
+    *_, cut, after = segment(log, 0).read_text().splitlines()
+    assert cut.endswith('"lev') and json.loads(after)["text"] == "after"
+
+
+def test_writers_in_many_threads_roll_one_log_with_no_segment_overlapping_another(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    writers = [AuditLog(log, clock=lambda: AT, segment_bytes=2000) for _ in range(4)]
+
+    def write(writer: AuditLog) -> None:
+        for number in range(100):
+            writer.record(Transcribed(f"line {number}"))
+
+    threads = [threading.Thread(target=write, args=(writer,)) for writer in writers]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    closed, active = segments(log)
+    assert active == closed + segment(log, closed).stat().st_size
+    assert all(isinstance(line, dict) for line in lines(log))
 
 
 def test_the_tail_reaches_into_the_older_segment_when_the_active_one_is_short(tmp_path: Path) -> None:
@@ -320,7 +354,7 @@ def test_a_line_the_disk_will_not_take_is_lost_out_loud_and_the_daemon_carries_o
     finally:
         logger.remove(sink)
     [warning] = warnings
-    assert warning.startswith(f"the audit log {path} lost a Transcribed line: ")
+    assert warning.startswith(f"the audit log {path} failed at a Transcribed line: ")
 
 
 def test_following_stops_at_ctrl_c_after_printing_the_newest_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
