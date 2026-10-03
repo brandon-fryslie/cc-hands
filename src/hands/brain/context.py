@@ -8,8 +8,8 @@ brain's and its compaction too, so each of them shares the main turn's cached pr
 """
 
 import asyncio
-from dataclasses import replace
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import Protocol
 
 from loguru import logger
