@@ -20,14 +20,14 @@ from hands.sessions.clock import stamp_now
 from hands.sessions.hookconfig import STOP_HOLD_SECONDS
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.payload import Rejected
-from hands.sessions.transcript import ai_title
+from hands.sessions.transcript import session_name
 from hands.sessions.typing import Untyped, type_into
 
 
 @dataclass(frozen=True)
 class Listing[S: Known]:
     session: S
-    title: str | None  # Claude Code's ai-title, absent until it has named the session
+    name: str | None  # the session's name as Claude Code holds it, absent until it has one
 
 
 class Sessions:
@@ -346,13 +346,13 @@ def _ordered_by(effect: Effect) -> SessionId | None:
 
 def _listing[S: Known](session: S) -> Listing[S]:
     try:
-        title = ai_title(session.membership.transcript)
+        name = session_name(session.membership.transcript)
     except (Rejected, OSError) as error:
         # [LAW:no-silent-failure] a transcript hands cannot read names no session; the session is still
-        # listed, spoken, and answered under its directory, and the log says why it has no title.
-        logger.error(f"cannot read the title of session {session.membership.id} from {session.membership.transcript}: {error}")
-        title = None
-    return Listing(session, title)
+        # listed, spoken, and answered under its project, and the log says why it has no name.
+        logger.error(f"cannot read the name of session {session.membership.id} from {session.membership.transcript}: {error}")
+        name = None
+    return Listing(session, name)
 
 
 def _audited(record: AuditRecord) -> tuple[str, str]:

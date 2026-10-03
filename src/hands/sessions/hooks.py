@@ -189,6 +189,11 @@ _MODE_AFTER_PLAN: Mapping[ModeAfterPlan, list[object]] = {
 }
 
 
+def name_output(name: str) -> Mapping[str, object]:
+    """What a UserPromptSubmit hook prints to set its session's name, the title Claude Code shows on its terminal (2.1.286)."""
+    return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "sessionTitle": name}}
+
+
 def hook_output(reply: HookReply) -> Mapping[str, object] | None:
     """What a waiting PermissionRequest hook prints for Claude Code; None leaves the question to its dialog."""
     # The reply shape Claude Code parses from a PermissionRequest hook's stdout (2.1.270; the plan's, 2.1.281).

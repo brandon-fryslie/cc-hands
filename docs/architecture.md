@@ -95,8 +95,8 @@ NarrationId = NewType("NarrationId", str)
 SegmentId   = NewType("SegmentId", str)
 Instant   = float                           # monotonic seconds
 
-# What the shim records at SessionStart. The title is not here: it is the newest
-# ai-title record in the transcript, read when a listing needs it.
+# What the shim records at SessionStart. The name is not here: it is the newest
+# custom-title record in the transcript, read when a listing needs it.
 @dataclass(frozen=True)
 class Membership:
     id: SessionId
@@ -430,8 +430,18 @@ and an `agent_id`, and sets nothing. Shift-tab fires no hook, and the transcript
 prompt is heard at the session's next prompt, and one changed mid-turn at its next
 tool call. The
 event-specific fields below were read out of the 2.1.263 bundle. Payloads captured from
-2.1.270 on 2026-09-14 carry no session title, so a session's title is the newest
-`ai-title` record in its transcript.
+2.1.270 on 2026-09-14 carry no session title, so a session's name is the newest
+`custom-title` record in its transcript. Hands sets that name itself: a `UserPromptSubmit`
+hook's reply may carry `hookSpecificOutput.sessionTitle` (2.1.286), which Claude Code writes
+as a `custom-title` record and shows on the terminal's tab, exactly as `/rename` does
+(verified live on 2.1.286). The latest name wins, whoever set it.
+
+After each turn a session finishes, hands asks the summariser's model whether the
+session's name still fits, showing it the name and the turn's closing reply
+(`hands.voice.naming`). A new name, three words at most, waits in `Names` for that
+session's next prompt. A hook can set a title only at a start or a prompt, so a session
+shows its new name from its next prompt on. Spoken, a session is its project and then its
+name, as one identifier: "cc-hands, naming fix".
 
 | Event | Payload fields |
 |---|---|
@@ -769,8 +779,10 @@ turn's closing text when it is narrated.
 
 Record shapes worth knowing, observed in transcripts on 2026-09-14:
 
-- `ai-title` → `aiTitle`. Live session name, free, no model call. Use it for
-  `list_sessions` labels.
+- `ai-title` → `aiTitle`. Claude Code's own title, often twenty-five words long, and shown
+  nowhere the user looks. Hands never speaks it.
+- `custom-title` → `customTitle`. The session's name, set by `/rename` or by a hook's
+  `sessionTitle`. Use it for `list_sessions` labels.
 - `assistant` → `.message.content[]`, blocks typed `text` | `thinking` | `tool_use`.
   `text` and `tool_use` are both content. A Bash `tool_use` carries a `description` of
   its purpose.
@@ -1237,8 +1249,8 @@ stopped with Escape, which fires no Stop, is never heard to end. The
   chose at the keyboard is not spoken; `other`, and any reason hands does not know, is
   spoken as gone, the same sentence a dead process gets.
 
-`list_sessions` offers a session while its pid is alive, labelled with its `aiTitle`,
-its state, and whether it is the focus.
+`list_sessions` offers a session while its pid is alive, labelled with its project and
+name, its state, and whether it is the focus.
 
 ## Focus, drafts, and other state that stays out of the model's head
 

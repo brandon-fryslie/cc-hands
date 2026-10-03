@@ -46,13 +46,13 @@ async def test_a_draft_staged_amended_and_discarded_is_read_back_at_each_step(tm
 
     staged = await call(tools, "stage_draft", session=id, text="refactor authMiddleware.ts to use the old helper", resolutions=resolved)
     assert staged == {
-        "readback": "Draft for untitled in cc-hands, reading 'auth middleware' as authMiddleware.ts: "
+        "readback": "Draft for cc-hands, reading 'auth middleware' as authMiddleware.ts: "
         "refactor authMiddleware.ts to use the old helper"
     }
     amended = await call(tools, "amend_draft", session=id, text="refactor authMiddleware.ts to use the new token helper", resolutions=resolved)
-    assert amended == {"readback": "In the draft for untitled in cc-hands: 'old' is now 'new token'"}
-    assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for untitled in cc-hands."}
-    assert await call(tools, "discard_draft", session=id) == {"readback": "There is no draft for untitled in cc-hands."}
+    assert amended == {"readback": "In the draft for cc-hands: 'old' is now 'new token'"}
+    assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for cc-hands."}
+    assert await call(tools, "discard_draft", session=id) == {"readback": "There is no draft for cc-hands."}
 
 
 async def test_an_ended_session_is_told_its_draft_cannot_change_and_the_draft_can_still_be_discarded(tmp_path: Path) -> None:
@@ -61,9 +61,9 @@ async def test_an_ended_session_is_told_its_draft_cannot_change_and_the_draft_ca
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     await sessions.apply(Ended(id, "other"))
     assert await call(tools, "amend_draft", session=id, text="run the linter", resolutions=[]) == {
-        "readback": "untitled in cc-hands has ended, so its draft cannot be staged, changed, or sent."
+        "readback": "cc-hands has ended, so its draft cannot be staged, changed, or sent."
     }
-    assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for untitled in cc-hands."}
+    assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for cc-hands."}
 
 
 @pytest.mark.parametrize(
@@ -128,7 +128,7 @@ async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to
         ("Called", "stage_draft"),
         ("Replied", "Draft for cc-hands: run the tests"),
     ]
-    assert written[2]["result"] == {"readback": "Draft for untitled in cc-hands: run the tests"}
+    assert written[2]["result"] == {"readback": "Draft for cc-hands: run the tests"}
     assert [datetime.fromisoformat(line["at"]) for line in written] == sorted(datetime.fromisoformat(line["at"]) for line in written)
 
 
@@ -159,8 +159,8 @@ async def test_a_sent_draft_is_typed_into_its_session_once_and_is_gone(tmp_path:
     sessions, id = await wrapped(tmp_path, typed.append)
     tools = draft_tools(sessions)
     await call(tools, "stage_draft", session=id, text="/compact the tests", resolutions=[])
-    assert await call(tools, "send_draft", session=id) == {"readback": "Sent the draft to untitled in cc-hands."}
-    assert await call(tools, "send_draft", session=id) == {"readback": "There is no draft for untitled in cc-hands."}
+    assert await call(tools, "send_draft", session=id) == {"readback": "Sent the draft to cc-hands."}
+    assert await call(tools, "send_draft", session=id) == {"readback": "There is no draft for cc-hands."}
     [effect] = typed
     assert (effect.socket, effect.pid, effect.input) == (tmp_path / "f.sock", 4242, Text(PromptText("/compact the tests")))
 
@@ -173,7 +173,7 @@ async def test_a_send_fritter_could_not_type_is_said_with_the_draft_it_was(tmp_p
     tools = draft_tools(sessions)
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     assert await call(tools, "send_draft", session=id) == {
-        "readback": "The draft for untitled in cc-hands was not sent, and is no longer staged: "
+        "readback": "The draft for cc-hands was not sent, and is no longer staged: "
         "fritter did not type into session s1: cannot write to the session. It said: run the tests"
     }
 
@@ -183,9 +183,9 @@ async def test_a_session_nobody_wrapped_is_refused_by_name_and_its_draft_survive
     tools = draft_tools(sessions)
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     assert await call(tools, "send_draft", session=id) == {
-        "readback": "untitled in cc-hands was not started under fritter, so hands cannot type into it. The draft is still staged."
+        "readback": "cc-hands was not started under fritter, so hands cannot type into it. The draft is still staged."
     }
-    assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for untitled in cc-hands."}
+    assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for cc-hands."}
 
 
 async def test_a_session_waiting_at_a_permission_dialog_is_sent_nothing(tmp_path: Path) -> None:
@@ -196,7 +196,7 @@ async def test_a_session_waiting_at_a_permission_dialog_is_sent_nothing(tmp_path
     # Claude Code says it waits at a dialog, whether or not hands holds the dialog's hook.
     await sessions.apply(StatusReported(id, Report(Waiting("permission prompt"), Stamp(1)), 0.0))
     assert await call(tools, "send_draft", session=id) == {
-        "readback": "untitled in cc-hands is waiting at a dialog, which would take the draft as its answer. The draft is still staged."
+        "readback": "cc-hands is waiting at a dialog, which would take the draft as its answer. The draft is still staged."
     }
     assert typed == []
 
@@ -224,7 +224,7 @@ async def test_a_command_is_typed_with_its_slash_and_read_back(tmp_path: Path) -
     typed: list[Type[Input]] = []
     sessions, id = await wrapped(tmp_path, typed.append)
     result = await call(keyboard_tools(sessions), "send_command", session=id, command="/model", args="opus")
-    assert result == {"readback": "Typed /model opus into untitled in cc-hands."}
+    assert result == {"readback": "Typed /model opus into cc-hands."}
     assert typed == [Type(id, tmp_path / "f.sock", 4242, Command(CommandName("model"), PromptText("opus")))]
 
 
@@ -233,9 +233,9 @@ async def test_stop_presses_escape_in_a_working_session_and_nothing_in_one_at_it
     sessions, id = await wrapped(tmp_path, typed.append)
     tools = keyboard_tools(sessions)
     await sessions.apply(StatusReported(id, Report(Idle(), Stamp(1)), 0.0))
-    assert await call(tools, "interrupt_session", session=id) == {"readback": "untitled in cc-hands is at its prompt, so there is nothing to interrupt."}
+    assert await call(tools, "interrupt_session", session=id) == {"readback": "cc-hands is at its prompt, so there is nothing to interrupt."}
     await sessions.apply(StatusReported(id, Report(Busy(), Stamp(2)), 1.0))
-    assert await call(tools, "interrupt_session", session=id) == {"readback": "Typed Escape into untitled in cc-hands."}
+    assert await call(tools, "interrupt_session", session=id) == {"readback": "Typed Escape into cc-hands."}
     assert typed == [Type(id, tmp_path / "f.sock", 4242, Key("escape"))]
 
 
@@ -245,7 +245,7 @@ async def test_a_command_fritter_could_not_type_is_said_with_why(tmp_path: Path)
 
     sessions, id = await wrapped(tmp_path, refused)
     assert await call(keyboard_tools(sessions), "send_command", session=id, command="compact") == {
-        "readback": "/compact was not typed into untitled in cc-hands: fritter did not type into session s1: cannot write to the session."
+        "readback": "/compact was not typed into cc-hands: fritter did not type into session s1: cannot write to the session."
     }
 
 
@@ -254,7 +254,7 @@ async def test_a_session_at_a_permission_dialog_is_sent_no_command(tmp_path: Pat
     sessions, id = await wrapped(tmp_path, typed.append)
     await sessions.apply(StatusReported(id, Report(Waiting("permission prompt"), Stamp(1)), 0.0))
     assert await call(keyboard_tools(sessions), "send_command", session=id, command="compact") == {
-        "readback": "untitled in cc-hands is waiting at a dialog, which would take the command as its answer. Nothing was sent."
+        "readback": "cc-hands is waiting at a dialog, which would take the command as its answer. Nothing was sent."
     }
     assert typed == []
 

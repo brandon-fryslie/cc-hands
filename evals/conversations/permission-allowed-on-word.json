@@ -3,13 +3,13 @@
   "sessions": [
     {
       "id": "5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34",
-      "title": "auth refactor in cc-hands",
+      "name": "cc-hands, auth refactor",
       "state": "idle",
       "mode": "manual mode"
     },
     {
       "id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68",
-      "title": "hands daemon in cc-hands",
+      "name": "cc-hands, hands daemon",
       "state": "working",
       "mode": "auto mode"
     }
@@ -20,7 +20,7 @@
   "messages": [
     {
       "role": "user",
-      "content": "[hands] The Claude Code session hands daemon in cc-hands is waiting for permission to use Bash with this input: {\"command\": \"rm -rf build dist\", \"description\": \"Remove the old build output\"}. Request id: perm-81f3c2a0d4. Tell the user in one short sentence what it wants to do, and ask whether to allow it. When they decide, call answer_permission with that request id."
+      "content": "[hands] The Claude Code session cc-hands, hands daemon is waiting for permission to use Bash with this input: {\"command\": \"rm -rf build dist\", \"description\": \"Remove the old build output\"}. Request id: perm-81f3c2a0d4. Tell the user in one short sentence what it wants to do, and ask whether to allow it. When they decide, call answer_permission with that request id."
     },
     {
       "role": "assistant",

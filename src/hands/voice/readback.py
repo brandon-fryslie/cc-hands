@@ -70,8 +70,10 @@ def _spoken_input(input: Command | Key) -> str:
             return key.replace("_", " ").capitalize()
 
 
-def spoken_title(listing: Listing[Known]) -> str:
-    return f"{listing.title or 'untitled'} in {listing.session.membership.cwd.name}"
+def identifier(listing: Listing[Known]) -> str:
+    """A session as it is spoken and addressed: its project, then its name, as one identifier; its project alone before it has a name."""
+    project = listing.session.membership.cwd.name
+    return project if listing.name is None else f"{project}, {listing.name}"
 
 
 # Each mode as the footer of a session's own screen names it, so what is heard is what the user would read there:
@@ -95,9 +97,9 @@ def spoken_mode(mode: Mode) -> str:
 
 
 def spoken_name(sessions: Sessions, session: SessionId) -> str:
-    """How the user knows a session: its title and project, or its id when the registry has never heard of it."""
+    """How the user knows a session: its identifier, or its id when the registry has never heard of it."""
     listing = sessions.listing(session)
-    return session if listing is None else spoken_title(listing)
+    return session if listing is None else identifier(listing)
 
 
 def _reading(resolutions: Iterable[Resolution]) -> str:

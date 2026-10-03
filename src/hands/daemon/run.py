@@ -51,6 +51,7 @@ from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
 from hands.sessions.proxy import Wire, serve_proxy
+from hands.sessions.names import Names
 from hands.sessions.server import serve_hooks
 from hands.sessions.tap import moves, serve_tap
 from hands.sessions.summaries import summaries
@@ -69,6 +70,7 @@ from hands.voice.pipeline import (
     build_llm,
     build_voice,
 )
+from hands.voice.naming import NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS, keep_naming
 from hands.voice.narrator import narrate
 from hands.voice.speech import Pushed, Tailed, Telling, relay
 from hands.voice.summary import Summariser, aside, summariser
@@ -292,7 +294,9 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     # What each turn changed in the repository it ran in, which no transcript record need name.
     deltas = Deltas()
     sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record, changes=deltas)
-    hooks = await serve_hooks(home, sessions)
+    # Before the hooks are served: a turn that finishes while the models load is named once they have.
+    names = Names()
+    hooks = await serve_hooks(home, sessions, names, audit.record)
     wire = Wire(wire_to(audit.record))
     proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=time.time)
     audit.record(ProxyListening(url=proxy.url, upstream=UPSTREAM))
@@ -322,7 +326,7 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm), "the voice load"), heart, sessions, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences)
+                    await converse(voice, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences, names)
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
@@ -381,6 +385,7 @@ async def converse(
     minded: Mind,
     store: SummaryStore,
     sentences: Summariser,
+    names: Names,
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
@@ -396,7 +401,7 @@ async def converse(
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
         # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
-        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
+        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
         # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
@@ -415,6 +420,7 @@ async def converse(
         asyncio.create_task(relay(sessions, minded.telling, voice.worker.queue_frame), name="the session speech relay"),
         asyncio.create_task(narrate(sessions, tails, minded.telling, voice.worker.queue_frame, record, lambda: summaries(home), changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
+        asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),
     ]

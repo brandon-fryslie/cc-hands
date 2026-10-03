@@ -280,6 +280,47 @@ class TurnsSummarised:
     seconds: float
 
 
+NamingOutcome = Literal["renamed", "kept", "unread", "failed", "refused"]
+
+
+@dataclass(frozen=True)
+class Named:
+    """One judging of a session's name after a turn it finished.
+
+    `outcome` says what came of it: `renamed` decided a new name, given at the session's next prompt; `kept` found the
+    name it has still fits; `unread` could not read the name it has; `failed` had no answer from the model; `refused`
+    had an answer that is not a name of three words at most, which `reply` holds.
+    """
+
+    session: str
+    outcome: NamingOutcome
+    before: str | None
+    name: str | None
+    reply: str | None
+    error: str | None
+    seconds: float
+
+
+@dataclass(frozen=True)
+class NameGiven:
+    """A name handed to Claude Code in the reply to a session's prompt, which sets the session's title."""
+
+    session: str
+    name: str
+
+
+@dataclass(frozen=True)
+class NameWithheld:
+    """A name hands decided and did not give at the session's prompt: its title is no longer the one the name was decided
+    against, `held` (set since, by the user's /rename), or it could not be read, which `error` says."""
+
+    session: str
+    name: str
+    against: str | None
+    held: str | None
+    error: str | None
+
+
 @dataclass(frozen=True)
 class BacklogUnread:
     """A pass of the summary store that could not start: lit would not hand over the project's backlog, and why."""
@@ -324,6 +365,9 @@ Entry = (
     | Recounted
     | Summarised
     | TurnsSummarised
+    | Named
+    | NameGiven
+    | NameWithheld
     | BacklogUnread
     | Failure
 )
