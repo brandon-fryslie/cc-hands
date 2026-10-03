@@ -13,16 +13,15 @@ from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 
 from hands.core import delta as repository
 from hands.core.delta import Changed, Delta
-from hands.core.events import Ended, Joined, PermissionRequested, Prompted, Stopped
-from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId
+from hands.core.events import Ended, Joined, Prompted, Stopped
+from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.sessions.audit import Entry, Failure, Recounted, failures_to
 from hands.sessions.registry import Sessions
 from hands.sessions.home import Home
-from hands.sessions.overlays import Overlays
-from hands.sessions.summaries import Summaries, set_summaries, summaries
+from hands.sessions.summaries import Summaries, summaries
 from hands.sessions.tail import Tails
 from hands.voice.narrator import REPLY_SHOWN, narrate, recount
-from hands.voice.speech import Aloud, Narrated, Pushed, Tailed, relay
+from hands.voice.speech import Narrated, Pushed, Tailed
 from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
 
@@ -171,84 +170,31 @@ async def test_a_session_that_ends_after_its_turn_is_heard_ending_after_that_tur
     assert isinstance(second, TTSSpeakFrame) and second.text == "The session cc-hands is gone."
 
 
-async def test_with_summaries_off_a_finished_turn_is_not_told_and_turning_them_on_brings_the_next_one_back(tmp_path: Path) -> None:
-    """The switch is read at each finished turn, so it takes effect from the next one with no restart, while a
-    permission request, which the relay speaks and the switch never reaches, is heard throughout."""
-    home = Home(tmp_path / "home")
-    transcript = tmp_path / "s1.jsonl"
-    transcript.write_text(f"{_prompt('p1', 'fix it')}\n{_said('u2', 'Fixed.')}\n")
-    recorded: list[Entry] = []
-    quiet = asyncio.Event()
-
-    def record(entry: Entry) -> None:
-        recorded.append(entry)
-        if isinstance(entry, Recounted):
-            quiet.set()
-
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record)
-    frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, record, lambda: summaries(home)))
-    relaying = asyncio.create_task(relay(sessions, Overlays(home), Pushed(), frames.put, record))
-    try:
-        await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
-        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
-        await sessions.apply(Stopped(SID, "Fixed.", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
-        # Told, and nothing said of it: the switch is flipped only after the quiet turn was read against it.
-        await asyncio.wait_for(quiet.wait(), 5.0)
-        assert frames.empty()
-        asking = asyncio.create_task(sessions.ask(PermissionRequested(SID, 2.0, RequestId("r1"), Permission("Bash", {"command": "ls"}), None)))
-        heard = await asyncio.wait_for(frames.get(), 5.0)
-        asking.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asking
-        set_summaries(home, "on")
-        with transcript.open("a") as more:
-            more.write(f"{_prompt('p2', 'and push it')}\n{_said('u4', 'Pushed.')}\n")
-        await sessions.apply(Prompted(SID, at=3.0, mode=None, prompt=PromptId("p2")))
-        await sessions.apply(Stopped(SID, "Pushed.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
-        told = handed(await asyncio.wait_for(frames.get(), 5.0))
-    finally:
-        narrating.cancel()
-        relaying.cancel()
-    assert "is waiting for permission to use Bash" in handed(heard)
-    assert "Pushed." in told and "Fixed." not in told
-    assert Recounted(SID, "", ("what it said",), (), by_model=False, opened="Asked") in recorded
-
-
-async def test_with_summaries_off_a_turn_waiting_on_an_answer_still_asks_it_without_the_model(tmp_path: Path) -> None:
-    spoken = await recount(tailing(said_turn(tmp_path, "Fixed it. Want me to push it?")), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "off", Tailed())
-    # Held in the brain's lane with what hands handed it, so it is heard in the order it happened.
-    assert isinstance(spoken, Aloud) and spoken.spoken.text == "cc-hands: It said: Want me to push it?"
-
-
 async def test_a_turn_a_slash_command_opened_is_logged_as_commanded_rather_than_asked(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     skill = json.dumps({"type": "user", "uuid": "c1", "promptId": "p1", "message": {"role": "user", "content": "<command-message>ship</command-message>\n<command-name>/ship</command-name>\n<command-args>it</command-args>"}}, separators=(",", ":"))
     transcript.write_text(f"{skill}\n{_said('u2', 'Shipped.')}\n")
     recorded: list[Entry] = []
-    await recount(tailing(transcript), SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "off", Tailed())
+    await recount(tailing(transcript), SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "on", Tailed())
     assert [entry.opened for entry in recorded if isinstance(entry, Recounted)] == ["Commanded"]
 
 
-async def test_a_switch_that_cannot_be_read_is_logged_and_the_turn_told_as_the_default(tmp_path: Path) -> None:
+async def test_a_switch_that_cannot_be_read_is_logged(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.summaries.write_text("yes\n")
     transcript = said_turn(tmp_path, "Fixed it. Want me to push it?")
-    recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
-    frames: asyncio.Queue[Frame] = asyncio.Queue()
-    sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, recorded.append, lambda: summaries(home)))
+    failed: asyncio.Queue[Failure] = asyncio.Queue()
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sink = logger.add(failures_to(lambda entry: failed.put_nowait(entry) if isinstance(entry, Failure) else None), level="ERROR", filter="hands")
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), asyncio.Queue[Frame]().put, lambda _: None, lambda: summaries(home)))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
         await sessions.apply(Stopped(SID, "Fixed it. Want me to push it?", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
-        spoken = await asyncio.wait_for(frames.get(), 5.0)
+        failure = await asyncio.wait_for(failed.get(), 5.0)
     finally:
         narrating.cancel()
         logger.remove(sink)
-    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: It said: Want me to push it?"
-    [failure] = [entry for entry in recorded if isinstance(entry, Failure)]
     assert "cannot read whether spoken summaries are on" in failure.message and "neither on nor off" in failure.message
 
 

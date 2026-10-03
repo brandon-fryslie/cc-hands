@@ -78,8 +78,7 @@ async def recount(
     but a repository that moved is still worth telling: that is a formatter or a code generator, and naming
     what it changed is the whole point of reading git at all.
 
-    With summaries off, what the turn is waiting on the user to answer is all that plays, said as written: the switch
-    quiets the report, never a question.
+    With summaries off, the turn is not narrated.
     """
     try:
         told = await tails.tell(session, turn, closing)
@@ -88,33 +87,32 @@ async def recount(
     if told is None or not (told.turn.steps or delta):
         logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")
         return None
+    if switch == "off":
+        logger.info(f"session {session} finished a turn, and spoken summaries are off, so it is not narrated")
+        # Marked told: a turn finished while they were off is not narrated when they are turned on.
+        await tails.spoken(told)
+        return None
     tree = narration(told.turn, delta)
     # A turn stopped before it did anything has nothing for the model to tell: what the types say of it is all there is.
     did = bool(delta) or any(not isinstance(step, Interruption) for step in told.turn.steps)
-    match switch:
-        case "on" if did:
-            text = _news(name, told.turn, tree)
-            # Said as written if the model cannot take it: what the turn is waiting on is the daemon's, and still heard.
-            unsaid = " ".join(part for part in (f"{name} finished a turn, and I could not tell it.", tree.asked()) if part)
-            frame: Frame | None = handed(text, unsaid, telling)
-        case "on":
-            text = tree.said()
-            frame = as_written(TTSSpeakFrame(f"{name}: {text}"), telling)
-        case "off":
-            text = tree.asked()
-            frame = as_written(TTSSpeakFrame(f"{name}: {text}"), telling) if text else None
-            logger.info(f"session {session} finished a turn, and spoken summaries are off, so {'only its question is' if text else 'nothing is'} said")
+    if did:
+        text = _news(name, told.turn, tree)
+        # Said as written if the model cannot take it: what the turn is waiting on is the daemon's, and still heard.
+        unsaid = " ".join(part for part in (f"{name} finished a turn, and I could not tell it.", tree.asked()) if part)
+        frame: Frame = handed(text, unsaid, telling)
+    else:
+        text = tree.said()
+        frame = as_written(TTSSpeakFrame(f"{name}: {text}"), telling)
     record(
         Recounted(
             session,
             text,
             tuple(dict.fromkeys(segment.topic.name for segment in (*tree.sections, *tree.settled))),
             tuple(question.text for question in tree.questions),
-            by_model=switch == "on" and did,
+            by_model=did,
             opened=type(told.turn.opening).__name__,
         )
     )
-    # Marked told either way: a turn the switch kept quiet was heard as much as it will be, and is not told later.
     await tails.spoken(told)
     return frame
 

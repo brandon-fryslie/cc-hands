@@ -1,5 +1,5 @@
 ---
-description: Turn hands' spoken turn summaries on or off, or say where they stand. Off, a finished turn is said aloud only when it asks something; permission requests, questions, and plans are always spoken. Takes effect from the next finished turn, with no restart, and lasts across restarts.
+description: Turn hands' spoken turn summaries on or off, or say where they stand. Off, a finished turn is not narrated; permission requests, questions, and plans are always spoken. Takes effect from the next finished turn, with no restart, and lasts across restarts.
 argument-hint: "[on|off]"
 allowed-tools: Bash(*hands.sessions.summaries*)
 ---
