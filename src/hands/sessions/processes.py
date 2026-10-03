@@ -73,6 +73,8 @@ class Terminal:
     """A process of this user's with a controlling terminal: what it runs, and where."""
 
     pid: int
+    # The program it was started as, with links resolved as they are now: a file deleted since, as an updater prunes
+    # old versions, is still named.
     executable: Path
     cwd: Path
 
@@ -89,7 +91,8 @@ _PROC_UID_ONLY = 4
 _PROC_PIDTBSDINFO, _BSDINFO_SIZE = 3, 136
 _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE, _CWD_PATH_AT, _MAXPATHLEN = 9, 2352, 152, 1024
 _PROC_FLAG_CONTROLT = 0x80
-_PATH_ROOM = 4096  # PROC_PIDPATHINFO_MAXSIZE
+# kern.procargs2.<pid>: the process's argc, then the path it was exec'd by, as execve was given it.
+_KERN_PROCARGS2 = (1, 49)  # CTL_KERN, KERN_PROCARGS2
 
 
 def _own_pids() -> list[int]:
@@ -115,17 +118,40 @@ def _terminal(pid: int) -> Terminal | None:
         bsd = _pidinfo(pid, _PROC_PIDTBSDINFO, _BSDINFO_SIZE)
         if not ctypes.c_uint32.from_buffer(bsd, 0).value & _PROC_FLAG_CONTROLT:
             return None
-        cwd = _pidinfo(pid, _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE).raw[_CWD_PATH_AT : _CWD_PATH_AT + _MAXPATHLEN]
-        executable = ctypes.create_string_buffer(_PATH_ROOM)
-        if _libproc.proc_pidpath(pid, executable, _PATH_ROOM) <= 0:
-            _raise_unless_exited(pid, "proc_pidpath")
+        cwd = Path(os.fsdecode(_pidinfo(pid, _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE).raw[_CWD_PATH_AT : _CWD_PATH_AT + _MAXPATHLEN].split(b"\0", 1)[0]))
+        executable = _exec_path(pid)
     except _Exited:
         return None
-    return Terminal(
-        pid,
-        Path(os.fsdecode(executable.value)),
-        Path(os.fsdecode(cwd.split(b"\0", 1)[0])),
-    )
+    # A path exec'd relative to the directory the process was started in; a session keeps that directory.
+    return Terminal(pid, (cwd / executable).resolve(), cwd)
+
+
+def _exec_path(pid: int) -> Path:
+    mib = (ctypes.c_int * 3)(*_KERN_PROCARGS2, pid)
+    size = ctypes.c_size_t(0)
+    if _libc.sysctl(mib, len(mib), None, ctypes.byref(size), None, 0) != 0:
+        _raise_unless_gone(pid)
+    record = ctypes.create_string_buffer(size.value)
+    if _libc.sysctl(mib, len(mib), record, ctypes.byref(size), None, 0) != 0:
+        _raise_unless_gone(pid)
+    return Path(os.fsdecode(record.raw[ctypes.sizeof(ctypes.c_int) : size.value].split(b"\0", 1)[0]))
+
+
+def _raise_unless_gone(pid: int) -> None:
+    failure = ctypes.get_errno()
+    # kern.procargs2 answers EINVAL for a pid no process of this user's has; the same answer for a running one is a
+    # refusal, never taken for an exit.
+    if failure == errno.EINVAL and not _running(pid):
+        raise _Exited
+    raise OSError(failure, f"sysctl could not say what pid {pid} was started as: {os.strerror(failure)}")
+
+
+def _running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 class _Exited(Exception):

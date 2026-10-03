@@ -268,6 +268,17 @@ def test_a_reused_pid_of_an_ended_session_hides_no_session_hands_has_no_record_o
     assert isinstance(found, Missing) and f"(pid {pid}) is a session hands has no record of" in found.said
 
 
+def test_a_session_on_a_version_pruned_since_it_started_is_still_found(root: Path) -> None:
+    home = Home(root / "home")
+    path = installed(root)
+    pruned = root / "install" / "9.9.8"
+    shutil.copy("/bin/sleep", pruned)
+    with at_a_terminal(pruned, root) as pid:
+        pruned.unlink()
+        found = readiness.sessions(home, path)
+    assert isinstance(found, Missing) and f"(pid {pid}) is a session hands has no record of" in found.said
+
+
 def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
@@ -304,6 +315,12 @@ def test_a_cask_keeps_each_version_in_a_directory_named_for_it() -> None:
     claude = Path("/opt/homebrew/Caskroom/claude-code/2.1.288/claude")
     old = terminal(1, "/opt/homebrew/Caskroom/claude-code/2.1.286/claude", "/code")
     assert readiness.unjoined(Home(Path("/nowhere")), claude, [old], set()) == [old]
+
+
+def test_a_pre_release_is_a_version_of_the_same_install() -> None:
+    claude = Path("/v/2.1.299")
+    beta = terminal(1, "/v/2.1.300-beta.1", "/code")
+    assert readiness.unjoined(Home(Path("/nowhere")), claude, [beta], set()) == [beta]
 
 
 def test_a_plain_claude_is_itself_and_not_its_directorys_other_programs() -> None:

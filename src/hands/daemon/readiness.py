@@ -183,8 +183,8 @@ def unjoined(home: Home, claude: Path, terminals: Sequence[Terminal], members: C
 
 
 # Claude Code keeps each version under a name that is the version: a file in the native installer's versions
-# directory, a directory in a Homebrew cask's.
-_VERSION = re.compile(r"\d+(\.\d+)+")
+# directory, a directory in a Homebrew cask's. A semantic version, with any pre-release and build.
+_VERSION = re.compile(r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?")
 
 
 def _unversioned(executable: Path) -> tuple[str | None, ...]:
