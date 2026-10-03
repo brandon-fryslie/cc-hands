@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from hands.core.delta import Branched, Committed, Delta, GitChange, PullRequested, Pushed
 from hands.core.spoken import spoken, spoken_count, spoken_ref
+from hands.core.subagents import Subagent
 from hands.core.turn import (
     Budget,
     Delegated,
@@ -60,6 +61,7 @@ THE_SUBAGENTS = Topic("the subagents", "subagent")
 THE_OTHER_TOOLS = Topic("the other tools", "tool call")
 THE_REPOSITORY = Topic("the repository", "file")
 THE_INTERRUPTION = Topic("the interruption", "interruption")
+THEIR_OWN_WORK = Topic("the subagents' own work", "step")
 
 # The steps a section is cut from. A question and an interruption are not among them: each has a segment of its own
 # at the top level, and an open question and an interruption play at every length, so the type that says which steps
@@ -136,6 +138,9 @@ class Narration:
     # opened, and never played, since it is news to nobody.
     settled: tuple[Segment, ...]
     sections: tuple[Segment, ...]
+    # What each subagent that reported back in this turn did, read from its own transcript: there to be opened, so
+    # "what did the reviewer find" is answered from the reviewer's steps and not from the line its parent made of them.
+    subagents: tuple[Segment, ...]
 
     def facts(self) -> str:
         """What hands adds of the turn from its types: that it was stopped, and what git says.
@@ -155,10 +160,10 @@ class Narration:
     @property
     def parts(self) -> tuple[Segment, ...]:
         """Every segment there is to open, in the order the top level plays: "more on that" can reach anything the turn did."""
-        return (*self.interrupted, *self.repository, *self.questions, *self.settled, *self.sections)
+        return (*self.interrupted, *self.repository, *self.questions, *self.settled, *self.sections, *self.subagents)
 
 
-def narration(turn: Turn, delta: Delta) -> Narration:
+def narration(turn: Turn, delta: Delta, subagents: tuple[Subagent, ...]) -> Narration:
     """The tree for one turn, all of it arithmetic over the turn's steps and what git says it came to.
 
     Whether the turn asked anything, and what, is the daemon's to find, from the turn's own closing text and its
@@ -184,7 +189,13 @@ def narration(turn: Turn, delta: Delta) -> Narration:
             if InDialog(step, question) not in waiting
         ),
         sections=_sections(sectioned),
+        subagents=tuple(_own_work(subagent) for subagent in subagents),
     )
+
+
+def _own_work(subagent: Subagent) -> Segment:
+    """One subagent's work, named by the job it was given, which is how the listener knows which of them they asked about."""
+    return Segment(THEIR_OWN_WORK, f"A subagent's own work on {subagent.description}: {_counted(len(subagent.steps), 'step')}.", subagent.steps)
 
 
 @dataclass(frozen=True)

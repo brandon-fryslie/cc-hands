@@ -23,6 +23,7 @@ from hands.core.effects import SessionGone, Summarise
 from hands.core.narration import Segment, narration
 from hands.core.pending import Finished, News, Unread
 from hands.core.session import PromptId, SessionId
+from hands.core.subagents import Subagent, reporting
 from hands.core.turn import Said
 from hands.sessions.audit import Recounted, Record
 from hands.sessions.delta import Changes, NoChanges
@@ -32,7 +33,8 @@ from hands.sessions.overlays import Overlays
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.summaries import DEFAULT, Summaries
-from hands.sessions.tail import Tails
+from hands.sessions.subagents import read_subagent
+from hands.sessions.tail import Tails, Telling
 from hands.voice.speech import Unprompted
 
 # Everything reading a turn is expected to fail with; each is said, and the next turn is still heard.
@@ -166,7 +168,8 @@ async def recount(
         logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")
         recounts.put(session, turn, None)
         return None
-    tree = narration(told.turn, delta)
+    subagents = await _subagents(session, told)
+    tree = narration(told.turn, delta, subagents)
     # The last words wherever they fall: a turn interrupted mid-work, or one ending on a dialog, said what it had done
     # before the step that ended it.
     replied = [step.text for step in told.turn.steps if isinstance(step, Said)][-1:]
@@ -176,10 +179,11 @@ async def recount(
             session,
             news.reply,
             news.facts,
-            tuple(dict.fromkeys(segment.topic.name for segment in (*tree.sections, *tree.settled))),
+            tuple(dict.fromkeys(segment.topic.name for segment in (*tree.sections, *tree.settled, *tree.subagents))),
             tuple(question.text for question in tree.questions),
             delivered,
             opened=type(told.turn.opening).__name__,
+            subagents=tuple(subagent.id for subagent in subagents),
         )
     )
     # Marked told however it is delivered, so the tail lets the steps go: what is kept of them is the tree's parts, held
@@ -187,6 +191,24 @@ async def recount(
     await tails.spoken(told)
     recounts.put(session, turn, news)
     return _delivered(delivered, Finished(session, (news,)))
+
+
+async def _subagents(session: SessionId, told: Telling) -> tuple[Subagent, ...]:
+    """The subagents that reported back in the turn, each read from its own transcript.
+
+    A subagent whose transcript cannot be read is said in the log and left out, and the turn is told without it: the
+    parent's own record of it, the call and the report, is still the turn's [LAW:no-silent-failure].
+    """
+    read: list[Subagent] = []
+    for task in reporting(told.turn):
+        try:
+            subagent = await asyncio.to_thread(read_subagent, told.transcript, task)
+        except _FAILURES as error:
+            logger.error(f"cannot read the work of subagent {task} of session {session}, so its turn is told without it: {type(error).__name__}: {error}")
+            continue
+        if subagent is not None:
+            read.append(subagent)
+    return tuple(read)
 
 
 def _delivered[T](delivered: Delivery, told: T) -> T | None:

@@ -133,7 +133,7 @@ async def test_a_finished_turn_is_handed_to_the_model_with_its_reply_and_the_ses
     assert "API Error" in told
     assert told.endswith("in one or two spoken sentences, naming the session. It asks the user nothing.")
     [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
-    assert recounted == Recounted(SID, recounted.reply, "", ("what it said", "the commands"), (), "summaries", opened="Asked")
+    assert recounted == Recounted(SID, recounted.reply, "", ("what it said", "the commands"), (), "summaries", opened="Asked", subagents=())
     assert recounted.reply is not None and recounted.reply in told
 
 

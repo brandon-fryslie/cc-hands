@@ -56,9 +56,6 @@ def turn_record(line: bytes) -> Payload | None:
         return None
     record = Payload.parse(line)
     fields = record.fields
-    if fields.get("isSidechain") is True:
-        # A subagent's own records are its transcript's, and are narrated there.
-        return None
     match fields.get("type"), fields.get("subtype"), fields.get("content"):
         case "system", "local_command", str():
             return record
@@ -175,10 +172,14 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | Typed | 
             return None
     match fields.get("origin"):
         case {"kind": "task-notification"}:
-            return Notified(ref, text)
+            task = _TASK.search(text)
+            return Notified(ref, text, None if task is None else task.group(1))
         case _:
             return Asked(ref, text)
 
+
+# The task a notification is about, which Claude Code names only inside the notification's own markup.
+_TASK = re.compile(r"<task-id>([^<\s]+)</task-id>")
 
 # The markup Claude Code writes, at the start of a record of the user's side, for what the user ran rather than wrote:
 # a slash command (its name first when Claude Code carries it out, its message first when it hands Claude a skill),
