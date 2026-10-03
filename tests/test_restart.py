@@ -26,6 +26,7 @@ from hands.sessions.membership import write_membership
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent / PLUGIN_DIR
 STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
 NOW = datetime(2026, 10, 3, 12, 0, 0, tzinfo=UTC)
+EDITED = audit.SettingsEdited(path="/home/config.toml", refused=None)
 
 
 def restart(home: Home, cwd: Path, path: str) -> subprocess.CompletedProcess[str]:
@@ -115,10 +116,33 @@ async def test_settings_edited_end_a_run_as_a_restart(tmp_path: Path) -> None:
         await quit_event.wait()
         return Ended(None, 0)
 
-    async def edited() -> None:
+    async def edited() -> audit.SettingsEdited:
         await edit.wait()
+        return EDITED
 
-    assert await launch(lambda: run, heart, edited) == "restart"
+    recorded: list[audit.Entry] = []
+    assert await launch(lambda: run, heart, edited, recorded.append) == "restart"
+    assert recorded == [EDITED]
+
+
+async def test_settings_edited_as_a_run_ends_are_taken_up_by_the_next_start_and_not_said(tmp_path: Path) -> None:
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    edit = asyncio.Event()
+
+    async def run(quit_event: asyncio.Event) -> Ended:
+        # As the q key does: the event set alone, then the run winds down while the file is saved.
+        quit_event.set()
+        edit.set()
+        await asyncio.sleep(0.05)
+        return Ended(None, 0)
+
+    async def edited() -> audit.SettingsEdited:
+        await edit.wait()
+        return EDITED
+
+    recorded: list[audit.Entry] = []
+    assert await launch(lambda: run, heart, edited, recorded.append) == "quit"
+    assert recorded == []
 
 
 async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: Path) -> None:
@@ -128,13 +152,13 @@ async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: 
         await quit_event.wait()
         return Ended(None, 0)
 
-    async def edited() -> None:
+    async def edited() -> audit.SettingsEdited:
         raise PermissionError("config.toml")
 
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
     try:
-        assert await launch(lambda: run, heart, edited) == "quit"
+        assert await launch(lambda: run, heart, edited, lambda _entry: None) == "quit"
     finally:
         logger.remove(sink)
     assert any("could not watch its settings file" in error and "PermissionError" in error for error in errors)
@@ -166,7 +190,7 @@ async def test_the_restart_signal_ends_a_run_as_a_restart_whose_last_heartbeat_s
         await quit_event.wait()
         return Ended(NOW, 3)
 
-    launched = asyncio.create_task(launch(lambda: run, heart, unedited))
+    launched = asyncio.create_task(launch(lambda: run, heart, unedited, lambda _entry: None))
     while not told:
         await asyncio.sleep(0.005)
     os.kill(os.getpid(), RESTART_SIGNAL)
@@ -187,7 +211,7 @@ async def test_a_restart_asked_while_a_quit_winds_the_run_down_does_not_start_it
         await asyncio.sleep(0.05)
         return Ended(None, 0)
 
-    launched = asyncio.create_task(launch(lambda: run, heart, unedited))
+    launched = asyncio.create_task(launch(lambda: run, heart, unedited, lambda _entry: None))
     await winding_down.wait()
     os.kill(os.getpid(), RESTART_SIGNAL)
     assert await launched == "quit"

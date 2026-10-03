@@ -21,6 +21,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
+from hands.sessions.audit import SettingsEdited
 from hands.sessions.wrapper import FRITTER_SOURCE
 
 # How long a pipeline may take to start before a test fails on it.
@@ -324,6 +325,7 @@ while True:
     return script
 
 
-async def unedited() -> None:
+async def unedited() -> SettingsEdited:
     """Settings a run's start watches that are never edited."""
     await asyncio.Event().wait()
+    raise AssertionError("an event nothing sets was set")

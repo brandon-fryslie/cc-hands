@@ -77,46 +77,66 @@ class Config:
 def load(home: Home) -> tuple[Config, Path | None]:
     """The settings `home` holds and the file they were read from, or the defaults and None where it holds no file;
     raises Rejected naming the file and what is wrong in it."""
-    try:
-        text = home.config.read_text()
-    except FileNotFoundError:
-        return Config(), None
-    except (OSError, UnicodeDecodeError) as error:
-        raise Rejected(f"{home.config} could not be read: {error}") from error
-    try:
-        return parse(text), home.config
-    except Rejected as error:
-        raise Rejected(f"{home.config}: {error}") from error
+    held = _held(home)
+    return _settings(home, held), None if held is None else home.config
 
 
-async def edited(home: Home, record: Record, period: float = EDIT_SECONDS) -> None:
-    """Returns once the file holds settings other than it held when this began: written, rewritten, or removed.
+async def edited(home: Home, record: Record, period: float = EDIT_SECONDS) -> SettingsEdited:
+    """The edit, once the file holds settings other than it held when this began: written, rewritten, or removed.
 
     [LAW:no-ambient-temporal-coupling] begun before the run reads the file, so an edit is never missed: one that lands
-    between the two starts a run already on it again, which is the same run once more. An edit that does not parse is
-    said and outlived, and the run keeps the settings it has; the next edit is weighed as any other.
+    between the two starts a run already on it again, which is the same run once more. An edit is weighed once its
+    bytes read the same on two polls, so a save an editor writes in two steps is weighed whole. One that does not
+    parse is said and outlived, and the run keeps the settings it has; the next edit is weighed as any other, and one
+    back to the file the run is on is no edit.
     """
-    held = _held(home)
+    on = seen = weighed = _held(home)
     while True:
         await asyncio.sleep(period)
-        if (now := _held(home)) == held:
+        if (now := _held(home)) != seen:
+            seen = now
             continue
-        held = now
+        if now in (weighed, on):
+            weighed = now
+            continue
+        weighed = now
         try:
-            load(home)
+            _settings(home, now)
         except Rejected as error:
             record(SettingsEdited(path=str(home.config), refused=str(error)))
             continue
-        record(SettingsEdited(path=str(home.config), refused=None))
-        return
+        return SettingsEdited(path=str(home.config), refused=None)
 
 
-def _held(home: Home) -> bytes | None:
+@dataclass(frozen=True)
+class _Unreadable:
+    reason: str
+
+
+def _held(home: Home) -> bytes | _Unreadable | None:
     # The bytes, not the mtime: a save that changes nothing, or a touch, is no edit.
     try:
         return home.config.read_bytes()
     except FileNotFoundError:
         return None
+    except OSError as error:
+        return _Unreadable(str(error))
+
+
+def _settings(home: Home, held: bytes | _Unreadable | None) -> Config:
+    # [LAW:single-enforcer] the start and the watch weigh the file's bytes here, the same bytes each compared.
+    match held:
+        case None:
+            return Config()
+        case _Unreadable(reason=reason):
+            raise Rejected(f"{home.config} could not be read: {reason}")
+        case bytes():
+            try:
+                return parse(held.decode())
+            except UnicodeDecodeError as error:
+                raise Rejected(f"{home.config} could not be read: {error}") from error
+            except Rejected as error:
+                raise Rejected(f"{home.config}: {error}") from error
 
 
 def parse(text: str) -> Config:

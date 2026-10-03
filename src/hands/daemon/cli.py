@@ -102,7 +102,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             shown = start_indicator(home) if kept is None else kept
             threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
             audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
-            match asyncio.run(launch(lambda: loaded(home, heart, audit_log, after_crash, granted), heart, lambda: edited(home, audit_log.record))):
+            match asyncio.run(launch(lambda: loaded(home, heart, audit_log, after_crash, granted), heart, lambda: edited(home, audit_log.record), audit_log.record)):
                 case "quit":
                     return 0
                 case "restart":
@@ -140,11 +140,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 type Run = Callable[[asyncio.Event], Coroutine[object, object, Ended]]
 
 
-async def launch(load: Callable[[], Run], heart: heartbeat.Heart, edited: Callable[[], Coroutine[object, object, None]]) -> Ending:
+async def launch(
+    load: Callable[[], Run], heart: heartbeat.Heart, edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record
+) -> Ending:
     """The run `load` makes, with that load, which imports Pipecat, as the first step of its start; then how it was told to end.
 
     [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the restart signal, the q key,
-    a failed background task, and an edit to the settings (`edited` returning) all set this one event, and it is
+    a failed background task, and an edit to the settings (`edited` returning one that parses) all set this one event, and it is
     installed before the import, so a stop is heard in every phase. The last heartbeat is written here, by the one place that knows whether a restart follows it.
     """
     quit_event = asyncio.Event()
@@ -157,7 +159,7 @@ async def launch(load: Callable[[], Run], heart: heartbeat.Heart, edited: Callab
         ending = ending if quit_event.is_set() else how
         quit_event.set()
 
-    def heard(watch: asyncio.Task[None]) -> None:
+    def heard(watch: asyncio.Task[audit.SettingsEdited]) -> None:
         if watch.cancelled():
             return
         if (error := watch.exception()) is not None:
@@ -165,14 +167,18 @@ async def launch(load: Callable[[], Run], heart: heartbeat.Heart, edited: Callab
             logger.opt(exception=error).error("hands could not watch its settings file, so it stops")
             stop("quit")
             return
+        # A run already ending says nothing of an edit it does not restart on; the next start reads the file as edited.
+        if quit_event.is_set():
+            return
         # The settings take effect as everything else on disk does: in a run started again on them.
+        record(watch.result())
         stop("restart")
 
+    watching = asyncio.create_task(edited())
+    watching.add_done_callback(heard)
     loop = asyncio.get_running_loop()
     for signal_number, how in STOP_SIGNALS.items():
         loop.add_signal_handler(signal_number, stop, how)
-    watching = asyncio.create_task(edited())
-    watching.add_done_callback(heard)
     try:
         # No session has joined before the hooks are served, which is after the import.
         run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, quit_event)
