@@ -7,6 +7,8 @@ Claude Code writes to the subagent's file rather than this one.
 
 from pathlib import Path
 
+from loguru import logger
+
 from hands.core.turn import Asked, Commanded, Delegated, Edited, Happening, Interruption, Ran, Ref, Said, Shelled
 from hands.sessions.backfill import read_transcript
 
@@ -162,11 +164,36 @@ def test_a_command_that_printed_nothing_is_read_as_having_no_output(tmp_path: Pa
     assert happenings[2:] == [Shelled(Ref("u5"), "true", None)]
 
 
-def test_compact_typed_as_words_ahead_of_its_compaction_is_read_as_the_command_it_is(tmp_path: Path) -> None:
-    """As 2.1.286 writes it, live: the words `/compact`, the compaction, then its command record and what it printed."""
-    typed = '{"uuid":"u5","type":"user","promptId":"p2","message":{"role":"user","content":"/compact"}}'
-    summary = '{"uuid":"u6","type":"user","isCompactSummary":true,"promptId":"p2","message":{"role":"user","content":"This session is being continued"}}'
-    command = '{"uuid":"u7","type":"user","promptId":"p2","message":{"role":"user","content":"<command-name>/compact</command-name>\\n<command-message>compact</command-message>\\n<command-args></command-args>"}}'
-    output = '{"uuid":"u8","parentUuid":"u7","type":"user","promptId":"p2","message":{"role":"user","content":"<local-command-stdout>\\u001b[2mCompacted\\u001b[22m</local-command-stdout>"}}'
-    happenings = read_transcript(written(tmp_path / "t.jsonl", PROMPT, DONE, typed, summary, command, output)).happenings
+COMPACT_TYPED = '{"uuid":"u5","type":"user","promptId":"p2","message":{"role":"user","content":"/compact"}}'
+COMPACT_SUMMARY = '{"uuid":"u6","type":"user","isCompactSummary":true,"promptId":"p3","message":{"role":"user","content":"This session is being continued"}}'
+COMPACT_RECORD = '{"uuid":"u7","type":"user","promptId":"p3","message":{"role":"user","content":"<command-name>/compact</command-name>\\n<command-message>compact</command-message>\\n<command-args></command-args>"}}'
+COMPACTED = '{"uuid":"u8","parentUuid":"u7","type":"user","promptId":"p3","message":{"role":"user","content":"<local-command-stdout>\\u001b[2mCompacted\\u001b[22m</local-command-stdout>"}}'
+
+
+def test_compact_typed_as_words_ahead_of_its_compaction_is_one_command_with_what_it_printed(tmp_path: Path) -> None:
+    """As 2.1.286 writes it, live: the words `/compact`, the compaction, then its command record and what it printed, under
+    a prompt id of their own and naming nothing of the words."""
+    said: list[str] = []
+    sink = logger.add(lambda message: said.append(message.record["message"]), level="DEBUG", filter="hands.sessions.turning")
+    try:
+        happenings = read_transcript(written(tmp_path / "t.jsonl", PROMPT, DONE, COMPACT_TYPED, COMPACT_SUMMARY, COMPACT_RECORD, COMPACTED)).happenings
+    finally:
+        logger.remove(sink)
+    assert happenings[2:] == [Commanded(Ref("u7"), "/compact", "", "Compacted")]
+    # [LAW:nothing-unseen] the join is said, with both records.
+    assert said == ["/compact's record u7 is the command its words u5 opened a turn for, not a turn of its own"]
+
+
+def test_a_compact_typed_and_never_run_is_a_command_of_its_own_beside_the_next_one(tmp_path: Path) -> None:
+    """The first was stopped before it compacted anything: the record that follows is the second's, and joins only it."""
+    again = '{"uuid":"u9","type":"user","promptId":"p4","message":{"role":"user","content":"/compact"}}'
+    happenings = read_transcript(written(tmp_path / "t.jsonl", PROMPT, DONE, COMPACT_TYPED, again, COMPACT_SUMMARY, COMPACT_RECORD, COMPACTED)).happenings
     assert happenings[2:] == [Commanded(Ref("u5"), "/compact", ""), Commanded(Ref("u7"), "/compact", "", "Compacted")]
+
+
+def test_a_prompt_claude_was_sent_is_asked_though_it_opens_with_a_slash_and_a_name(tmp_path: Path) -> None:
+    """Both as Claude Code wrote them on 2.1.283: Claude answered the first, and the second names a directory, not a command."""
+    help = '{"uuid":"u5","type":"user","promptId":"p2","promptSource":"typed","message":{"role":"user","content":" /help reply with only the word pong"}}'
+    path = '{"uuid":"u6","type":"user","promptId":"p3","promptSource":"queued","message":{"role":"user","content":"/tmp is full, clean it up"}}'
+    happenings = read_transcript(written(tmp_path / "t.jsonl", PROMPT, DONE, help, DONE, path)).happenings
+    assert [happenings[2], happenings[4]] == [Asked(Ref("u5"), " /help reply with only the word pong"), Asked(Ref("u6"), "/tmp is full, clean it up")]

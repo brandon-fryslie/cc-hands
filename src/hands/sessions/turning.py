@@ -11,9 +11,9 @@ from typing import cast
 from loguru import logger
 
 from hands.core.steps import Call, Result, recognise
-from hands.core.turn import Interruption, Opening, Said, Step, printed
+from hands.core.turn import Commanded, Interruption, Opening, Said, Step, printed, recorded
 from hands.sessions.payload import Payload
-from hands.sessions.transcript import Printed, blocks, edge_of, holds_a_tool, ref_of, result_text, structured_result
+from hands.sessions.transcript import Printed, Typed, blocks, edge_of, holds_a_tool, ref_of, result_text, structured_result
 
 
 @dataclass
@@ -26,6 +26,8 @@ class Turning:
     calls: dict[str, Call] = field(default_factory=dict[str, Call])
     places: dict[str, int] = field(default_factory=dict[str, int])
     mid_tool: bool = False
+    # Whether the turn was opened by the words a command was typed as, whose record Claude Code has yet to write.
+    typed: bool = False
     # How many steps from the start of the turn were let go of: told, and kept no longer. A slot's place counts from
     # there, so the steps held are always the turn's last ones.
     forgotten: int = 0
@@ -41,6 +43,15 @@ class Turning:
         parts = blocks(record)
         self.mid_tool = holds_a_tool(record)
         match edge:
+            case Commanded() if self.typed and self.opening is not None and (known := recorded(self.opening, edge)) is not None:
+                # The record of the command whose words opened the turn: one command, not two turns.
+                logger.debug(f"{known.name}'s record {known.ref} is the command its words {self.opening.ref} opened a turn for, not a turn of its own")
+                self.opening, self.typed = known, False
+                return None
+            case Typed(command=command):
+                # The record that opens a turn is what was asked or run, not a step of the answer.
+                self.typed = True
+                return command
             case Printed(of=of, output=output):
                 # The command's, not the answer's: it joins the opening the command made.
                 joined = None if self.opening is None else printed(self.opening, of, output)
@@ -58,6 +69,7 @@ class Turning:
                 pass
             case _:
                 # The record that opens a turn is what was asked or run, not a step of the answer.
+                self.typed = False
                 return edge
         ref = ref_of(record)
         # `toolUseResult` describes one call, so a record carrying results for several says which of them it

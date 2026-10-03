@@ -105,7 +105,7 @@ class Following:
         if self.reading.turn.opening is not None:
             # Bounded: a transcript is read from its start, and every turn before the daemon attached ends here untold.
             self.ended = [*self.ended, self.reading][-KEPT:]
-        self.reading = Reading(self.reading.number + 1, Turning(mid_tool=self.reading.turn.mid_tool))
+        self.reading = Reading(self.reading.number + 1, Turning(mid_tool=self.reading.turn.mid_tool, typed=self.reading.turn.typed))
         self.reading.turn.begin(opening)
 
     def find(self, turn: PromptId | None) -> Reading | None:
