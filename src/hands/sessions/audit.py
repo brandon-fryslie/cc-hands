@@ -850,4 +850,6 @@ def _lines(path: Path, start: int) -> tuple[list[str], int]:
     except FileNotFoundError:
         return [], start
     end = data.rfind(b"\n") + 1
-    return data[:end].decode("utf-8").splitlines(), start + end
+    # A write that failed partway can cut a character in two; its torn line reads with U+FFFD in place of the half, and
+    # is then no JSON, as every torn line is, rather than taking every other line of the segment down with it.
+    return data[:end].decode("utf-8", errors="replace").splitlines(), start + end

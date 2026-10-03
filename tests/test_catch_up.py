@@ -61,7 +61,7 @@ async def test_what_did_i_miss_after_ten_minutes_lists_every_session_that_finish
             (LEFT + timedelta(minutes=1), told("docs", "d1", "Fixed the links.")),
             (LEFT + timedelta(minutes=2), told("parser", "p1", "Parser fixed, tests pass.")),
             (LEFT + timedelta(minutes=3), Announced("hands could not reach the model.", "speech")),
-            # A turn whose telling failed still finished.
+            # A turn whose telling could not be begun still finished.
             (LEFT + timedelta(minutes=4), EffectFailed(Summarise(SessionId("docs"), PromptId("d2"), None), "the model is down")),
             (LEFT + timedelta(minutes=5), Announced("hands could not reach the model.", "speech")),
             (LEFT + timedelta(minutes=6), told("deploy", "x1", "Deployed.")),
@@ -116,7 +116,8 @@ async def test_a_line_a_failed_write_left_torn_is_counted_and_the_rest_read(tmp_
     home = Home(tmp_path)
     written(home, [(LEFT, Transcribed("back soon"))])
     with (home.audit / "00000000000000000000.jsonl").open("ab") as log:
-        log.write(b'{"at": "2026-10-03T1')
+        # Cut inside the em dash's three bytes.
+        log.write('{"at": "2026-10-03T14:00:00+00:00", "type": "Announced", "text": "Fixed \u2014'.encode()[:-1])
     written(home, [(LEFT, told("docs", "d1", "Done.")), (BACK, Transcribed("what did I miss"))])
 
     assert await catch_up(await sessions_of("docs"), home) == {
