@@ -1743,7 +1743,13 @@ transcripts governs the intermediary's own past.
 ## Configuration: one file, parsed once
 
 `config.toml` in the home (`~/.hands`, or `HANDS_HOME`) is read by `daemon` at startup
-and parsed into a frozen `Config` (`hands.daemon.config`). It is in the home, beside
+and parsed into a frozen `Config` (`hands.daemon.config`). An edit is taken up the way
+everything else on disk is, by the run starting again on it: the start watches the
+file's bytes from before it reads them, and an edit that parses ends the run as the
+restart signal does `[LAW:single-enforcer]`, said as `SettingsEdited` before
+`Restarting`. One that does not parse, or names a backend whose key or login the
+start's own `backend` check refuses, is said as a `SettingsEdited` that was refused,
+and the run keeps what it has. It is in the home, beside
 everything else one hands keeps, so a second home is a second hands with settings of
 its own. A file left out, or a key, is the default; a key misspelled, or one its
 variant has no use for, stops the start naming it. Secrets come from the environment

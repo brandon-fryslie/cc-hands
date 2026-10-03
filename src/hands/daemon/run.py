@@ -113,7 +113,7 @@ STATUS_SECONDS = 0.1
 
 
 def backend(llm: LLM, home: Home, environment: Mapping[str, str]) -> LLMBackend:
-    """The backend the settings name, given the key or the login it reaches its model with; one it cannot have stops the process."""
+    """The backend the settings name, given the key or the login it reaches its model with; raises Rejected naming what it cannot have."""
     # [LAW:single-enforcer] where a setting meets its secret: the key from the environment, or the keychain, or the
     # brain's login, is checked here, once, before the voice loads, rather than once every turn has failed.
     match llm:
@@ -130,15 +130,15 @@ def backend(llm: LLM, home: Home, environment: Mapping[str, str]) -> LLMBackend:
                 account = logged_in(home.brain, UPSTREAM, environment)
                 account_kept_out(home.brain)
             except (NotLoggedIn, Unstartable) as error:
-                sys.exit(f"hands: {error}")
+                raise Rejected(str(error)) from error
             return ClaudeCodeBackend(model=model, config_dir=home.brain, account=account)
 
 
 def _key(environment: Mapping[str, str], var: str) -> str:
-    """The API key a keyed backend cannot run without, or the process stops naming the variable."""
+    """The API key a keyed backend cannot run without; raises Rejected naming the variable."""
     key = _environment_key(environment, var)
     if not key:
-        sys.exit(f"{var} is not set; the [llm] backend hands is set to run on needs it to reach its model.")
+        raise Rejected(f"{var} is not set; the [llm] backend hands is set to run on needs it to reach its model.")
     return key
 
 
@@ -148,10 +148,10 @@ def _environment_key(environment: Mapping[str, str], var: str) -> str:
 
 
 def _keychain_key(service: str, var: str) -> str:
-    """The key the keychain holds under `service`; when it holds none, the process stops naming both places a key can be."""
+    """The key the keychain holds under `service`; when it holds none, raises Rejected naming both places a key can be."""
     key = keychain_password(service)
     if not key:
-        sys.exit(f"{var} is not set and the keychain holds no {service}; the [llm] backend hands is set to run on needs one to reach its model.")
+        raise Rejected(f"{var} is not set and the keychain holds no {service}; the [llm] backend hands is set to run on needs one to reach its model.")
     return key
 
 
@@ -166,14 +166,14 @@ def keychain_password(service: str) -> str | None:
             out, err = found.communicate(timeout=KEYCHAIN_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             found.kill()
-            sys.exit(f"reading {service} from the keychain waited {KEYCHAIN_TIMEOUT_SECONDS:.0f}s, likely on a prompt to allow access; {bypass}.")
+            raise Rejected(f"reading {service} from the keychain waited {KEYCHAIN_TIMEOUT_SECONDS:.0f}s, likely on a prompt to allow access; {bypass}.")
         finally:
             atexit.unregister(found.kill)
     # [LAW:no-silent-failure] 44 is `security`'s "not found"; any other failure, a locked keychain or a denied prompt, is not an absence.
     if found.returncode == 44:
         return None
     if found.returncode != 0:
-        sys.exit(f"reading {service} from the keychain failed: {err.strip()}; {bypass}.")
+        raise Rejected(f"reading {service} from the keychain failed: {err.strip()}; {bypass}.")
     return out.strip() or None
 
 
@@ -193,9 +193,10 @@ def configured_from(home: Home, environment: Mapping[str, str]) -> Configured:
         sys.exit(f"hands: {', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
     try:
         settings, read = load(home)
+        llm = backend(settings.llm, home, environment)
     except Rejected as error:
         sys.exit(f"hands: {error}")
-    return Configured(VoiceConfig(llm=backend(settings.llm, home, environment), whisper_model=settings.whisper_model, voice=_voice(home)), read)
+    return Configured(VoiceConfig(llm=llm, whisper_model=settings.whisper_model, voice=_voice(home)), read)
 
 
 def _voice(home: Home) -> voices.Voice:

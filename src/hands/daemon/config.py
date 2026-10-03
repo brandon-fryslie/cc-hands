@@ -1,4 +1,5 @@
-"""The settings file, `<home>/config.toml`: read once, when the daemon starts, into a frozen Config.
+"""The settings file, `<home>/config.toml`: read once, when a run starts, into a frozen Config; an edit to it while the
+run runs starts the run again, on the file as edited.
 
     [llm]
     backend = "claude"           # "anthropic" (the default), "openai", or "claude", the brain
@@ -16,16 +17,24 @@ and it changes while the daemon runs (hands.voice.voices).
 would be a flag is a variant with a real alternative, or it does not exist.
 """
 
+import asyncio
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import cast
 
-from pipecat.services.whisper.stt import MLXModel
-
+from hands.sessions.audit import Record, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+from hands.threads import off_loop
+
+# Spelled here, not taken from Pipecat's Whisper service, whose import is most of the seconds the start spends off
+# the loop: the start watches this file before then, on it.
+WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
+# How late an edit to the file is heard.
+EDIT_SECONDS = 1.0
 
 # The SDK appends /v1/messages to this, so an Anthropic-compatible server's URL has no /v1 of its own.
 ANTHROPIC_URL = "https://api.anthropic.com"
@@ -64,22 +73,82 @@ type LLM = Anthropic | OpenAI | Claude
 @dataclass(frozen=True)
 class Config:
     llm: LLM = Anthropic()
-    whisper_model: str = MLXModel.LARGE_V3_TURBO
+    whisper_model: str = WHISPER_MODEL
 
 
 def load(home: Home) -> tuple[Config, Path | None]:
     """The settings `home` holds and the file they were read from, or the defaults and None where it holds no file;
     raises Rejected naming the file and what is wrong in it."""
+    held = _held(home)
+    return _settings(home, held), None if held is None else home.config
+
+
+async def edited(home: Home, record: Record, reachable: Callable[[Config], object], period: float = EDIT_SECONDS) -> SettingsEdited:
+    """The edit, once the file holds settings other than the run is on: written, rewritten, or removed.
+
+    [LAW:no-ambient-temporal-coupling] begun before the run reads the file, so an edit is never missed: one that lands
+    between the two starts a run already on it again, which is the same run once more. An edit is weighed once its
+    bytes read the same on two polls, so a save an editor writes in two steps is weighed whole, and it is taken only
+    while the file still holds it once weighed. One that does not parse, or names a model `reachable` refuses, is
+    said and outlived, and the run keeps the settings it has; the next edit is weighed as any other. One whose
+    settings are the run's, a comment or a revert, is no edit.
+    """
+    seen = weighed = _held(home)
     try:
-        text = home.config.read_text()
+        running = _settings(home, seen)
+    except Rejected:
+        # A run on a file it cannot read stops at its start; until it does, every edit is weighed.
+        running = None
+    while True:
+        await asyncio.sleep(period)
+        if (now := _held(home)) != seen:
+            seen = now
+            continue
+        if now == weighed:
+            continue
+        try:
+            settings = _settings(home, now)
+            if settings != running:
+                # reachable blocks, on a keychain prompt or a login check, on a thread a stop does not wait for.
+                await off_loop(partial(reachable, settings), "weighing a settings edit")
+                if _held(home) == now:
+                    return SettingsEdited(path=str(home.config), refused=None)
+                # Saved over while weighed: no verdict, so these bytes are weighed again should they come back.
+                continue
+        except Rejected as error:
+            record(SettingsEdited(path=str(home.config), refused=str(error)))
+        weighed = now
+
+
+@dataclass(frozen=True)
+class _Unreadable:
+    reason: str
+
+
+def _held(home: Home) -> bytes | _Unreadable | None:
+    # The bytes, not the mtime: a save that changes nothing, or a touch, is no edit.
+    try:
+        return home.config.read_bytes()
     except FileNotFoundError:
-        return Config(), None
-    except (OSError, UnicodeDecodeError) as error:
-        raise Rejected(f"{home.config} could not be read: {error}") from error
-    try:
-        return parse(text), home.config
-    except Rejected as error:
-        raise Rejected(f"{home.config}: {error}") from error
+        return None
+    except OSError as error:
+        return _Unreadable(str(error))
+
+
+def _settings(home: Home, held: bytes | _Unreadable | None) -> Config:
+    # [LAW:single-enforcer] the start and the watch weigh the file's bytes here, the same bytes each compared.
+    match held:
+        case None:
+            return Config()
+        case _Unreadable(reason=reason):
+            raise Rejected(f"{home.config} could not be read: {reason}")
+        case bytes():
+            try:
+                return parse(held.decode())
+            except UnicodeDecodeError as error:
+                raise Rejected(f"{home.config} could not be read: {error}") from error
+            except Rejected as error:
+                raise Rejected(f"{home.config}: {error}") from error
 
 
 def parse(text: str) -> Config:

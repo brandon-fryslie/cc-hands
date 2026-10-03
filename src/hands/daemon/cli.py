@@ -8,12 +8,14 @@ import threading
 import time
 from collections.abc import Callable, Coroutine, Sequence
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 
 from loguru import logger
 
 from hands.daemon import readiness
+from hands.daemon.config import Config, edited
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, Ended, Ending, again, start
 from hands.sessions import audit, heartbeat, wrapper
 from hands.sessions.home import Home, default_home
@@ -101,7 +103,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             shown = start_indicator(home) if kept is None else kept
             threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
             audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
-            match asyncio.run(launch(lambda: loaded(home, heart, audit_log, after_crash, granted), heart)):
+            match asyncio.run(launch(lambda: loaded(home, heart, audit_log, after_crash, granted), heart, lambda: edited(home, audit_log.record, partial(reachable, home)), audit_log.record)):
                 case "quit":
                     return 0
                 case "restart":
@@ -139,15 +141,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 type Run = Callable[[asyncio.Event], Coroutine[object, object, Ended]]
 
 
-async def launch(load: Callable[[], Run], heart: heartbeat.Heart) -> Ending:
+async def launch(
+    load: Callable[[], Run], heart: heartbeat.Heart, edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record
+) -> Ending:
     """The run `load` makes, with that load, which imports Pipecat, as the first step of its start; then how it was told to end.
 
     [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the restart signal, the q key,
-    and a failed background task all set this one event, and it is installed before the import, so a stop is heard in
-    every phase. The last heartbeat is written here, by the one place that knows whether a restart follows it.
+    a failed background task, and an edit to the settings (`edited` returning one that parses) all set this one event, and it is
+    installed before the import, so a stop is heard in every phase. The last heartbeat is written here, by the one place that knows whether a restart follows it.
     """
     quit_event = asyncio.Event()
     ending: Ending = "quit"
+    failed: list[BaseException] = []
 
     def stop(how: Ending) -> None:
         # The first stop says how the run ends, the q key's and a failed task's included, which set the event alone:
@@ -156,6 +161,24 @@ async def launch(load: Callable[[], Run], heart: heartbeat.Heart) -> Ending:
         ending = ending if quit_event.is_set() else how
         quit_event.set()
 
+    def heard(watch: asyncio.Task[audit.SettingsEdited]) -> None:
+        if watch.cancelled():
+            return
+        if (error := watch.exception()) is not None:
+            # [LAW:no-silent-failure] a run that cannot weigh its settings would run on settings that are not the
+            # file's: it ends raising, as a run whose background task failed does.
+            failed.append(error)
+            stop("quit")
+            return
+        # A run already ending says nothing of an edit it does not restart on; the next start reads the file as edited.
+        if quit_event.is_set():
+            return
+        # The settings take effect as everything else on disk does: in a run started again on them.
+        record(watch.result())
+        stop("restart")
+
+    watching = asyncio.create_task(edited())
+    watching.add_done_callback(heard)
     loop = asyncio.get_running_loop()
     for signal_number, how in STOP_SIGNALS.items():
         loop.add_signal_handler(signal_number, stop, how)
@@ -163,16 +186,29 @@ async def launch(load: Callable[[], Run], heart: heartbeat.Heart) -> Ending:
         # No session has joined before the hooks are served, which is after the import.
         run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, quit_event)
         last = Ended(None, 0) if run is None else await run(quit_event)
+        if failed:
+            raise failed[0]
         # Written only by a run told to stop: one that raised leaves its last heartbeat naming a pid that is gone, or,
         # as it restarts, one that stops beating, and neither reads as stopped. [LAW:no-ambient-temporal-coupling] it
         # goes out while the handlers are in, so a restart is never asked once they are out: the heartbeat no longer
         # says running, and one asked before it reads that is heard by stop, where the first stop already decided.
         heart.beat(LAST_BEAT[ending], last.last_audio_out, last.live_sessions, listening=False, deaf=False)
     finally:
+        watching.cancel()
         # From here a signal has its default effect again: nothing is left to stop gracefully.
         for signal_number in STOP_SIGNALS:
             loop.remove_signal_handler(signal_number)
     return ending
+
+
+def reachable(home: Home, settings: Config) -> None:
+    """Raises Rejected where a start on `settings` could not reach its model: the start's own check, made before the
+    restart an edit asks for, so an edit naming a key or a login hands lacks is refused and outlived, not restarted on."""
+    # Imported here, as in loaded, so that `hands status` answers without loading Pipecat; an edit weighed while the
+    # start imports it waits on that import.
+    from hands.daemon.run import backend
+
+    backend(settings.llm, home, os.environ)
 
 
 def loaded(home: Home, heart: heartbeat.Heart, audit_log: audit.AuditLog, after_crash: bool, granted: bool) -> Run:
