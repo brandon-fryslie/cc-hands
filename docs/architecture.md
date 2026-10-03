@@ -380,11 +380,15 @@ to the model when the user asks. Each session's last summary is held in `Recount
 way, and each is a `Recounted` audit line naming its delivery. Nothing of a turn is said as
 written past the model, and nothing is said of a session that sits at its prompt.
 `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
-with `run_llm` off. Each session has an overlay, `normal` or `watched`, one file per
+with `run_llm` off. Each session has an overlay, `normal`, `watched`, or `muted`, one file per
 session under `~/.hands/overlays` (`hands/core/attention.py`), which the narrator reads at
-every finished turn; the user sets it by voice with `watch_session`, and the summaries
-switch with `turn_summaries` or `/hands:summaries`. The player, the routing
-table, the priority queue, and `coalesce` below are planned.
+every finished turn. `delivery` is the table over the summaries switch and the overlay: a
+muted session's turn is held whatever the switch says, until the user asks for it through
+`tell_turn`. The user sets the overlay by voice with `set_overlay`, and the summaries
+switch with `turn_summaries` or `/hands:summaries`. A muted session's permission requests,
+questions, and plans are still narrated: held unsaid, each would wait out its deadline and
+be refused. The player, the routing table over every event kind, the priority queue, and
+`coalesce` below are planned.
 
 The routing table is a value in `core`:
 
@@ -396,9 +400,8 @@ DEFAULT_POLICY: Mapping[EventKind, Route] = {
 }
 ```
 
-A per-session overlay of `focused | normal | muted` is a second table over the first:
-a muted session's `play` and `narrate` become `note`, and a focused session's
-`progress` becomes `play`. Adding a new event kind is a new row, and adding an overlay
+The per-session overlay is a second table over the first: a muted session's `play`
+becomes `note`, and its `narrate` stays, since a session that asks needs an answer. Adding a new event kind is a new row, and adding an overlay
 value is a new column `[LAW:one-type-per-behavior]`.
 
 Pending speech is a priority queue in `voice`: `blocking` before `result` before

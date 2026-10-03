@@ -6,12 +6,17 @@ so a change is heard from the next thing the session says.
 
 import os
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import get_args
 
 from hands.core.attention import DEFAULT, Overlay
 from hands.core.session import SessionId
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+
+# [LAW:parse-dont-validate] an overlay's name as its file holds it, read to the Overlay it names.
+_OVERLAYS: Mapping[str, Overlay] = {overlay: overlay for overlay in get_args(Overlay)}
 
 
 @dataclass(frozen=True)
@@ -26,13 +31,11 @@ class Overlays:
             written = path.read_bytes().strip()
         except FileNotFoundError:
             return DEFAULT
-        match written:
-            case b"normal":
-                return "normal"
-            case b"watched":
-                return "watched"
-            case _:
+        match _OVERLAYS.get(written.decode(errors="replace")):
+            case None:
                 raise Rejected(f"{path} says {written!r}, which is no overlay")
+            case overlay:
+                return overlay
 
     def set(self, session: SessionId, to: Overlay) -> None:
         path = self.home.overlay(session)

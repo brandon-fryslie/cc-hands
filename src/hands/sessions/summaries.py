@@ -48,7 +48,7 @@ def set_summaries(home: Home, to: Summaries) -> None:
 def described(to: Summaries) -> str:
     match to:
         case "on":
-            return "Spoken turn summaries are on: every turn a session finishes is told aloud."
+            return "Spoken turn summaries are on: every turn a session finishes is told aloud, except a muted session's."
         case "off":
             return "Spoken turn summaries are off: only a watched session's turns are told as they finish, and any session's last turn when you ask for it."
 

@@ -198,8 +198,9 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
   shift-tab in a session is reflected in the next `list_sessions`.
 - **One turn summary.** Every finished turn is summarised once, and that summary is
   what the user hears of it: as the turn finishes for every session with spoken
-  summaries on, or for a watched session (`watch_session`) with them off, and when the
-  user asks for it (`tell_turn`) otherwise. Both settings are set by voice and hold
+  summaries on, or for a watched session with them off, and when the user asks for it
+  (`tell_turn`) otherwise; a muted session's only when asked. A session is watched,
+  normal, or muted by `set_overlay`. Both settings are set by voice and hold
   across restarts. Nothing is said of a session that sits at its prompt
   (hands-narration-2mc.d52).
 - **An interrupted turn.** Escape or Ctrl-C mid-turn fires no `Stop` and no later
@@ -212,10 +213,12 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
 
 Need 3. How several sessions share one ear.
 
-- **Routing table and overlays.** The `DEFAULT_POLICY` table and the per-session
-  overlay `focused | normal | muted`; `focus_session` and `mute_session` tools; every
-  tool's `session` argument defaults to the focus. Done when muting a session turns
-  its `Stop`s into notes and the model can still answer "what did it do" from them.
+- **Routing table and overlays.** The per-session overlay `normal | watched | muted`,
+  set by `set_overlay`, and `delivery`, the table over it and the summaries switch; a
+  muted session's `Stop`s are held unsaid until the user asks for one (`tell_turn`),
+  and what it asks is still said. `focus_session`, and every tool's
+  `session` argument defaulting to the focus, are hands-attention-ssy.xfs. Built:
+  tests/test_attention.py; not verified live.
 - **Priority queue with hold and coalesce.** Pending speech orders `blocking`
   before `result` before `fyi`, waits while the key is down, and a pure `coalesce`
   folds one session's pending items into one narration carrying all their record
