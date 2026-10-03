@@ -9,14 +9,23 @@ the whole variability of the pipeline as data.
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
+from pipecat.frames.frames import (
+    ErrorFrame,
+    Frame,
+    FunctionCallsStartedFrame,
+    InterruptionFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
-from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregator,
@@ -25,6 +34,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.services.anthropic.llm import AnthropicLLMService
+from pipecat.services.llm_service import LLMService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.pocket_tts.tts import PocketTTSService
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
@@ -33,6 +43,7 @@ from pipecat.turns.user_start import VADUserTurnStartStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from hands.sessions.audit import Record
+from hands.sessions.model_facts import ModelFault, ModelReplyEmpty
 from hands.voice.floor import Floor
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
@@ -95,7 +106,47 @@ class VoiceConfig:
     max_reply_tokens: int = 300
 
 
-class FailFastOpenAILLMService(OpenAILLMService):
+class EmptyReplyFails(LLMService[Any]):
+    """An LLM service whose reply that carries no words, no call, and no error of its own is reported as the model's
+    failure: in a voice turn, a reply with nothing in it is heard as hands not having heard the user at all."""
+
+    # Where the reply streaming now stands: none open, open with nothing in it yet, or open with something in it.
+    _reply: Literal["none", "empty", "heard"] = "none"
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        if isinstance(frame, InterruptionFrame):
+            # A reply the user spoke over is abandoned, not empty: Pipecat closes it with the same end frame as a finished one.
+            self._reply = "none"
+        await super().process_frame(frame, direction)
+
+    async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+        # [LAW:single-enforcer] the reply is read off the frames the service itself pushes, which both services push alike.
+        match frame:
+            case LLMFullResponseStartFrame():
+                self._reply = "empty"
+            case LLMTextFrame(text=text) if text.strip():
+                self._reply = "heard"
+            # A call is the model choosing what happens, stay_silent included; an error of the service's own is already said.
+            case FunctionCallsStartedFrame():
+                self._reply = "heard"
+            case ErrorFrame(processor=processor) if processor is self:
+                self._reply = "heard"
+            case LLMFullResponseEndFrame() if self._reply == "empty":
+                # [LAW:no-silent-failure] said by the system channel as the model's failure, ahead of the reply's end.
+                await self.push_error("the language model's reply was empty", exception=ModelFault(ModelReplyEmpty()))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+                self._reply = "none"
+            case LLMFullResponseEndFrame():
+                self._reply = "none"
+            case _:
+                pass
+        await super().push_frame(frame, direction)
+
+
+class AnthropicService(EmptyReplyFails, AnthropicLLMService):
+    """Claude through Pipecat's Anthropic service."""
+
+
+class FailFastOpenAILLMService(EmptyReplyFails, OpenAILLMService):
     """An OpenAI-compatible model whose failed request is reported at once, not retried with backoff."""
 
     def create_client(self, *args: Any, **kwargs: Any) -> AsyncOpenAI:
@@ -113,11 +164,11 @@ def build_llm(
     # to the rest of the pipeline; only their construction differs.
     match backend:
         case AnthropicBackend(base_url=base_url, api_key=api_key, model=model):
-            return AnthropicLLMService(
+            return AnthropicService(
                 api_key=api_key,
                 # Reported at once, as for the OpenAI-compatible model: a retry with backoff is silence in a voice turn.
                 client=AsyncAnthropic(base_url=base_url, api_key=api_key, max_retries=0),
-                settings=AnthropicLLMService.Settings(
+                settings=AnthropicService.Settings(
                     model=model, system_instruction=instruction, max_tokens=max_tokens
                 ),
             )

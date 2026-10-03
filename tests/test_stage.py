@@ -52,7 +52,7 @@ from hands.core.wire import (
     Unreached,
     UsageLimitReached,
 )
-from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelUnreachable
+from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import BrainAnswered, BrainInterrupted, BrainSpoke, Entry
 from hands.voice.speech import Aloud, Narrated
 from hands.voice.tools import Result, Tool, tool
@@ -260,9 +260,10 @@ async def test_a_narration_records_how_long_it_waited_behind_the_users_turn(rig:
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
     exchange, _ = rig.request()
+    rig.stream(exchange, "api finished.")
     rig.brain.end()
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) and entry.asker == "hands" for entry in rig.recorded))
-    assert BrainSpoke((exchange,), "", (), False, "hands", 2.5, None) in rig.recorded
+    assert BrainSpoke((exchange,), "api finished.", (), False, "hands", 2.5, None) in rig.recorded
 
 
 async def test_what_hands_says_as_written_is_heard_after_the_narration_ahead_of_it(rig: Rig) -> None:
@@ -369,6 +370,9 @@ async def test_stay_silent_holds_the_next_request_so_nothing_follows_it(rig: Rig
     rig.brain.end()
     await rig.until(lambda: "LLMFullResponseEndFrame" in rig.out.shape())
     assert rig.out.said() == []
+    # The model chose to say nothing: not a failure, so nothing is reported either.
+    await asyncio.sleep(0.1)
+    assert rig.errors == []
     # The held reply closed the call in the brain's history, so the silence does not carry into the next turn.
     await rig.say({"role": "user", "content": "are you there?"})
     closed = answering("mcp__hands__stay_silent", {"silent": True})
@@ -466,6 +470,36 @@ async def test_notes_that_came_in_one_ask_are_not_asked_again_empty(rig: Rig) ->
     rig.brain.end()
     await asyncio.sleep(0.1)
     assert rig.brain.asked == ["first", "[hands] api finished.\n\n[hands] web finished."]
+
+
+async def test_a_turn_whose_last_reply_carried_nothing_is_said_as_the_models_empty_reply(rig: Rig) -> None:
+    unsaid = "api finished a turn, and I could not tell it."
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", unsaid))
+    await rig.until(lambda: len(rig.brain.asked) == 1)
+    # A call answered, then a reply with nothing in it: whitespace is not words.
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "mcp__hands__read_session"))
+    last, _ = rig.request(answering("mcp__hands__read_session", {"steps": []}))
+    rig.stream(last, " ")
+    rig.brain.end()
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == ModelReplyEmpty()
+    assert rig.errors[0].processor is rig.stage
+    # What hands had for the brain to tell is said as written, as for any turn the brain failed.
+    await rig.until(lambda: unsaid in rig.out.said())
+    # [LAW:nothing-unseen] the empty reply is on the turn's line in the audit log.
+    [spoke] = [entry for entry in rig.recorded if isinstance(entry, BrainSpoke)]
+    assert spoke.failed == ModelReplyEmpty()
+
+
+async def test_a_turn_ending_on_a_call_that_lands_is_no_empty_reply(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "tell the api session to add tests"})
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "mcp__hands__stage_draft"))
+    rig.brain.end()
+    await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
+    await asyncio.sleep(0.1)
+    assert rig.errors == []
 
 
 async def test_a_turn_the_brain_ended_in_error_is_reported_as_the_model_stages_error(rig: Rig) -> None:
