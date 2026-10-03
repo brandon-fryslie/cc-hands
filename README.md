@@ -97,7 +97,7 @@ other dialog is refused: the brain asks its questions in its reply, and an MCP s
 account's skills and plugins out, which Claude Code reads from no other place. A `BrainOffered` audit line names the tools
 its requests offer, at its first request and whenever they change.
 It works a project's backlog itself, with `lit` from its shell in the project's repository, as `lit quickstart` there
-says; `read_backlog` names that repository.
+says; `read_backlog` names where in it to run `lit`.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
 and stops a turn with Escape, and types nothing else into it; its hooks say when a turn was taken and when it ended.
 What hands asks in the background, the Claude Code backend's summaries and the sentence an old tool result goes as,

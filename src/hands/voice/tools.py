@@ -602,7 +602,7 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
 
         Call this when the user asks what is in the backlog, what is left to do, or what comes next. Answer from the
         sentences; call read_ticket to hear more of one. A ticket with no summary yet has only its title, and its
-        sentence is being written. `repository` is the directory whose tracker this backlog is.
+        sentence is being written. `directory` is where this backlog was read; lit run there works its tracker.
 
         Args:
             session: The id, from list_sessions, of a session working in the project.
@@ -613,7 +613,7 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
             case (project, backlog, said):
                 roots = backlog.roots()
                 return {
-                    "repository": str(project),
+                    "directory": str(project),
                     **({"summary": said[BACKLOG]} if BACKLOG in said else {}),
                     "items": [_ticket_line(backlog, said, id) for id in roots],
                     "unsummarised": sum(id not in said for id in roots),

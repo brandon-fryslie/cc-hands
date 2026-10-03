@@ -315,7 +315,7 @@ async def test_read_backlog_serves_titles_until_the_sentences_are_made_and_asks_
     before = dict(await read_backlog(session="s1"))
     assert "summary" not in before and before["unsummarised"] == 2
     # Where the tracker is, so the brain works it there with lit.
-    assert before["repository"] == str(project)
+    assert before["directory"] == str(project)
     assert before["items"] == [
         {"id": "e1", "title": "The wire", "children_open": 2, "children_done": 1},
         {"id": "t1", "title": "Fix the flaky test", "status": "open"},
@@ -364,8 +364,8 @@ async def test_what_the_brain_files_ranks_comments_on_and_closes_from_its_own_di
     assert empty["items"] == []
 
     def lit(*arguments: str) -> str:
-        """lit as the brain's shell runs it: from the brain's own directory, in the repository read_backlog named; the id it printed."""
-        command = f"cd {shlex.quote(str(empty['repository']))} && lit {shlex.join(arguments)}"
+        """lit as the brain's shell runs it: from the brain's own directory, in the directory read_backlog named; the id it printed."""
+        command = f"cd {shlex.quote(str(empty['directory']))} && lit {shlex.join(arguments)}"
         return subprocess.run(["/bin/sh", "-c", command], cwd=brain, check=True, capture_output=True, text=True).stdout.split()[0]
 
     mic, parser, docs = (lit("new", "--title", title, "--topic", "voice") for title in ("Fix the flaky mic test", "Fix the parser", "Write the docs"))

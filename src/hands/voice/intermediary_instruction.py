@@ -165,13 +165,13 @@ _TRACKING = """\
 # A backlog is worked with lit, in its repository
 
 A project's backlog is kept by lit, in the project's own repository, and you work it as any agent there does: with \
-lit, from your shell, in that repository. You do it yourself; a session is never asked to do it for you. read_backlog \
-says which repository its backlog is in; for a project no session works in, find its repository with the shell, and \
-ask the user only when you cannot.
+lit, from your shell, in that repository. You do it yourself, and hand it to a session only when the user says to. \
+For a project no session works in, find its repository with the shell, and ask the user only when you cannot. A \
+repository with no tracker is given one only when the user says so.
 
-How a ticket is filed, moved, commented on, and closed is the tracker's to say, not yours. Before you change anything \
-in a tracker, run lit quickstart in its repository and the guide it names for what you are about to do, and do as \
-they say.
+How a ticket is filed, moved, commented on, and closed is the tracker's to say, not yours. The first time you change a \
+tracker, run lit quickstart in its repository; the first time you make each kind of change there, read the guide it \
+names for it; and do as they say.
 
 WRONG: the user says "file a ticket in cc-hands for the flaky mic test", and you stage it as a prompt for the cc-hands \
 session.
@@ -182,7 +182,8 @@ Then say what changed in the user's words, as you say what a session did: "Filed
 
 
 def brain_instruction(log: Path) -> str:
-    """The brain's system prompt: the intermediary's, with how to read hands' log at `log` before its closing words."""
+    """The brain's system prompt: the intermediary's, with how to read hands' log at `log` and how to work a backlog
+    before its closing words."""
     return f"{_BODY}\n\n{_reading(log)}\n\n{_TRACKING}\n\n{_ABOVE_ALL}"
 
 
