@@ -84,6 +84,13 @@ whose requests go through hands' proxy and which reaches the sessions through ha
 (`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, set up once as any
 Claude Code is, by running `mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude` and answering its first screens, and it does not start without one. `hands login` logs it in again, or onto
 another account, and says which account it holds after.
+Its tools, its permission rules and mode, and its MCP servers are that directory's, as for any Claude Code:
+`~/.hands/brain/settings.json`, and `CLAUDE_CONFIG_DIR=~/.hands/brain claude mcp add -s user ...`; hands adds only its
+own MCP server, which it may use without asking, and its hooks, and it keeps the account's claude.ai connectors out.
+Nobody sits at its keyboard to answer a permission dialog, so its settings say `"defaultMode": "dontAsk"` with the
+tools it may use in `permissions.allow`, and `"syncClaudeAiSkills": false` and `"syncClaudeAiPlugins": false` keep the
+account's skills and plugins out, which Claude Code reads from no other place. A `BrainOffered` audit line names the tools
+its requests offer, at its first request and whenever they change.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
 and stops a turn with Escape, and types nothing else into it; its hooks say when a turn was taken and when it ended.
 What hands asks in the background, the Claude Code backend's summaries and the sentence an old tool result goes as,

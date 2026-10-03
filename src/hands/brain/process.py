@@ -11,7 +11,9 @@ Its login, settings, and skills live in a directory hands owns, set up once, as 
 
     mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude
 
-and it runs in that empty directory of hands' own, never in a project.
+and it runs in that empty directory of hands' own, never in a project. What it may use, what it may do without asking,
+and which MCP servers it has are that directory's to say, as they are for any Claude Code: its settings.json and its
+.claude.json. hands adds only its own server and hooks, and keeps out what the login brings from the account.
 """
 
 import asyncio
@@ -38,15 +40,11 @@ from hands.brain.mcp import SERVER_NAME
 from hands.core.effects import Text
 from hands.core.session import ESCAPES, SessionId, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
-from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, Record
+from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
 from hands.sessions.wrapper import real_claude
-
-# The built-in tools the brain is given: it reads, searches, runs commands, and uses skills. It edits nothing itself,
-# and it reaches the working sessions only through hands' tools over MCP.
-BUILTIN_TOOLS = ("Read", "Glob", "Grep", "Bash", "Skill")
 
 # What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu, 2.1.284).
 # LSP and plugin sync need no switch: they come only from plugins, and the brain's config directory has none.
@@ -58,6 +56,10 @@ SLIM = {
     # A background command's notification opens a turn of its own, under a prompt id no turn hands typed carries, which
     # would take a typed turn's place or leave it never ending (hands-wire-6ic.99l review).
     "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+    # The account's claude.ai connectors are Brandon's, never the brain's: loaded, they joined every request after the
+    # first (turn 2 grew from 8.7 KB to 112 KB; hands-wire-6ic.eph, 2.1.284). The skills and plugins the account syncs
+    # are turned off in the brain's settings.json, the only place Claude Code reads that switch from (2.1.288).
+    "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
 }
 
 # Credentials Claude Code prefers to its own login. Inherited from hands' environment, any of them would put the brain
@@ -116,33 +118,27 @@ class Launch:
     fritter: Path
 
 
-def slim(claude: Path, model: str, session: SessionId, tools: Sequence[str], mcp_config: str) -> list[str]:
-    """A slim Claude Code's command line: the real claude, interactive, with these built-in tools and the MCP servers
-    `mcp_config` names, and no others."""
+def slim(claude: Path, model: str, session: SessionId) -> list[str]:
+    """A slim Claude Code's command line: the real claude, interactive, reading no settings but its config directory's."""
     return [
         str(claude),
         "--model", model,
         "--session-id", session,
-        "--tools", ",".join(tools),
-        # Nobody sits at its keyboard to be asked, so what it is not allowed is denied rather than left waiting.
-        "--permission-mode", "dontAsk",
-        # Without it the claude.ai connectors on the account load after the first turn and join every request after it
-        # (turn 2 grew from 8.7 KB to 112 KB; hands-wire-6ic.eph, 2.1.284).
-        "--strict-mcp-config",
-        "--mcp-config", mcp_config,
         # The config directory's settings.json is the only settings file read: none from the working directory.
         "--setting-sources", "user",
     ]
 
 
 def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
-    """The brain's command line: a slim Claude Code with its instruction and its tools, posting its hooks to the listener at `hooks`."""
+    """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, and hooks posted to the listener at `hooks`."""
     return [
-        *slim(claude, launch.station.model, launch.session, BUILTIN_TOOLS, launch.mcp_config),
+        *slim(claude, launch.station.model, launch.session),
+        # Beside the MCP servers its own setup names, never in place of them.
+        "--mcp-config", launch.mcp_config,
         # After Claude Code's own system prompt, never in place of it: the API checks that it opens as Claude Code's does.
         "--append-system-prompt", launch.instruction,
-        # [LAW:single-enforcer] what the brain may do without asking is said here, and nothing else is allowed.
-        "--allowedTools", ",".join((*BUILTIN_TOOLS, f"mcp__{SERVER_NAME}")),
+        # hands' tools are how the brain reaches the sessions at all; a deny rule in its own setup still outranks this.
+        "--allowedTools", f"mcp__{SERVER_NAME}",
         "--settings", json.dumps({"hooks": {event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}"}]}] for event in HOOKS}}),
     ]
 
@@ -397,6 +393,8 @@ class Brain:
         self._listener = listener
         self._sockets = sockets
         self._record = record
+        # The tools its requests last offered, so the audit says them once and again only when they change.
+        self._offered: tuple[str, ...] | None = None
         # [LAW:single-enforcer] the input is the user's, and only two things are ever typed into it: a turn, and the
         # keys that stop one. A turn keeps it until its hook says Claude Code took the turn, and a stop's keys go in alone.
         self._input = asyncio.Lock()
@@ -487,13 +485,16 @@ class Brain:
         self._over(turn, stopped)
 
     def hear(self, observed: Observed) -> None:
-        """The brain's own requests, read from the wire: whether a turn reached hands' tools."""
+        """The brain's own requests, read from the wire: the tools its setup gave it, and whether a turn reached hands' tools."""
         match observed:
-            case Sent(session=session, kind=MainTurn(), body=body) if session == self.session and not any(
-                name.startswith(f"mcp__{SERVER_NAME}__") for name in tool_names(body)
-            ):
-                # [LAW:no-silent-failure] a brain without hands' tools answers every question about the sessions from nothing.
-                logger.error(f"the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server ({tool_names(body)})")
+            case Sent(session=session, kind=MainTurn(), body=body) if session == self.session:
+                tools = tool_names(body)
+                if tools != self._offered:
+                    self._offered = tools
+                    self._record(BrainOffered(tools))
+                if not any(name.startswith(f"mcp__{SERVER_NAME}__") for name in tools):
+                    # [LAW:no-silent-failure] a brain without hands' tools answers every question about the sessions from nothing.
+                    logger.error(f"the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server ({tools})")
             case _:
                 pass
 

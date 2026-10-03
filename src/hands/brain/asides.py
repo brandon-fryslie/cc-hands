@@ -33,8 +33,8 @@ from hands.sessions.audit import AsideAnswered, Record
 
 # The side question Claude Code asks of a fork of its session, which here holds nothing but the question.
 ASIDE = CommandName("btw")
-# No MCP server: with no built-in tools either, the question is all its request carries.
-NO_SERVERS = '{"mcpServers": {}}'
+# No built-in tool and no MCP server, whatever the brain's own setup gives it: the question is all its request carries.
+CLOSED = ("--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers": {}}')
 # How long a side question's answer is waited on, from when its Claude Code is started: one reply, with thinking.
 ASIDE_SECONDS = 120.0
 
@@ -107,7 +107,7 @@ class Asides:
         # The question as the characters it shows, behind the command, as the prompt its Claude Code opens with.
         opening = Command(ASIDE, pasted(question)).typed
         try:
-            claude = await spawn(self._station, [*slim(brain_claude(), self._station.model, asked.session, (), NO_SERVERS), opening])
+            claude = await spawn(self._station, [*slim(brain_claude(), self._station.model, asked.session), *CLOSED, opening])
         except (Unstartable, OSError) as error:
             # No claude to run, or a question longer than a command line can be; a claude that cannot be run exits, and says why.
             raise AsideFailed(f"no Claude Code to ask: {error}") from error

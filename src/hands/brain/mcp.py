@@ -1,6 +1,6 @@
 """hands' MCP server: the intermediary's tools, served over MCP's streamable HTTP transport to the brain.
 
-    claude --strict-mcp-config --mcp-config '{"mcpServers": {"hands": {"type": "http", "url": "<the server's url>"}}}'
+    claude --mcp-config '{"mcpServers": {"hands": {"type": "http", "url": "<the server's url>"}}}'
 
 The second adapter over the tool bodies in hands.voice.tools, beside Pipecat's. It speaks the part of MCP a tools-only
 server needs: initialize, ping, tools/list, and tools/call, each POSTed as JSON-RPC and answered as JSON. It opens no
