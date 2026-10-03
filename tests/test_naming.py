@@ -8,7 +8,7 @@ import pytest
 
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import Entry, Named
-from hands.sessions.names import Finished, Names
+from hands.sessions.names import Due, Finished, Names
 from hands.voice.naming import NotAName, asked, judge, parsed
 from hands.voice.summary import SummaryFailed
 
@@ -51,7 +51,7 @@ async def test_a_session_whose_work_moved_on_is_given_a_new_name_at_its_next_pro
     heard: list[str] = []
     line = await judged(transcript(tmp_path, "auth refactor"), '"Naming fix."', names, heard)
     assert (line.outcome, line.before, line.name) == ("renamed", "auth refactor", "Naming fix")
-    assert names.due(SID) == "Naming fix"
+    assert names.due(SID) == Due("Naming fix", "auth refactor")
     # The model is shown the name the session has now, and the last thing it said.
     assert heard == [asked("auth refactor", [], "I fixed how sessions are named.")]
     assert "Its name now: auth refactor" in heard[0] and "I fixed how sessions are named." in heard[0]
@@ -61,7 +61,7 @@ async def test_a_session_with_no_name_yet_is_given_its_first(tmp_path: Path) -> 
     names = Names()
     line = await judged(transcript(tmp_path), "naming fix", names)
     assert (line.outcome, line.before, line.name) == ("renamed", None, "naming fix")
-    assert names.due(SID) == "naming fix"
+    assert names.due(SID) == Due("naming fix", None)
 
 
 async def test_a_name_that_still_fits_is_kept_and_nothing_is_given(tmp_path: Path) -> None:
@@ -104,7 +104,7 @@ async def test_a_later_name_replaces_one_not_yet_given(tmp_path: Path) -> None:
     names = Names()
     await judged(transcript(tmp_path), "first idea", names)
     await judged(transcript(tmp_path), "second idea", names)
-    assert (names.due(SID), names.due(SID)) == ("second idea", None)
+    assert (names.due(SID), names.due(SID)) == (Due("second idea", None), None)
 
 
 async def test_a_name_decided_and_not_yet_given_is_the_one_judged_and_kept(tmp_path: Path) -> None:
@@ -116,7 +116,8 @@ async def test_a_name_decided_and_not_yet_given_is_the_one_judged_and_kept(tmp_p
     line = await judged(path, "naming fix", names, heard)
     assert (line.outcome, line.before) == ("kept", "naming fix")
     assert "Its name now: naming fix" in heard[0]
-    assert names.due(SID) == "naming fix"
+    # Still decided against the name Claude Code holds, which is what the prompt checks before giving it.
+    assert names.due(SID) == Due("naming fix", "auth refactor")
 
 
 async def test_a_name_longer_than_three_words_the_session_already_has_is_kept(tmp_path: Path) -> None:
@@ -128,7 +129,7 @@ async def test_a_name_longer_than_three_words_the_session_already_has_is_kept(tm
 
 async def test_the_model_is_shown_the_names_of_the_other_sessions_in_the_project_only(tmp_path: Path) -> None:
     names = Names()
-    names.rename(SessionId("s3"), "hook tests")
+    names.rename(SessionId("s3"), "hook tests", None)
     beside = (
         member(transcript(tmp_path, "naming fix", file="s2.jsonl"), "s2"),
         member(transcript(tmp_path, file="s3.jsonl"), "s3"),

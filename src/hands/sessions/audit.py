@@ -310,6 +310,18 @@ class NameGiven:
 
 
 @dataclass(frozen=True)
+class NameWithheld:
+    """A name hands decided and did not give at the session's prompt: its title is no longer the one the name was decided
+    against, `held` (set since, by the user's /rename), or it could not be read, which `error` says."""
+
+    session: str
+    name: str
+    against: str | None
+    held: str | None
+    error: str | None
+
+
+@dataclass(frozen=True)
 class BacklogUnread:
     """A pass of the summary store that could not start: lit would not hand over the project's backlog, and why."""
 
@@ -355,6 +367,7 @@ Entry = (
     | TurnsSummarised
     | Named
     | NameGiven
+    | NameWithheld
     | BacklogUnread
     | Failure
 )

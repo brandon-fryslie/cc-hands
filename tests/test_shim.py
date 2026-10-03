@@ -24,7 +24,7 @@ from hands.sessions.home import Home
 from hands.sessions.liveness import sweep
 from hands.sessions.membership import read_membership, write_membership
 from hands.sessions.registry import Sessions
-from hands.sessions.audit import NameGiven
+from hands.sessions.audit import NameGiven, NameWithheld
 from hands.sessions.names import Names
 from hands.sessions.server import serve_hooks
 from hands.sessions.untap import untapped
@@ -328,13 +328,32 @@ async def test_a_finished_turn_has_its_session_named_and_the_name_is_handed_to_c
         # The closing reply is what the name is judged from, with the transcript that holds the name it has now.
         finished = await asyncio.wait_for(names.next_finished(), 1.0)
         assert (finished.membership.id, finished.membership.transcript, finished.closing) == (SID, Path("/nowhere/t.jsonl"), "done")
-        names.rename(SID, "naming fix")
+        names.rename(SID, "naming fix", None)
         named = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "sessionTitle": "naming fix"}}
         code, stdout, stderr = await shim(home, {**PROMPT, "prompt_id": "p2"})
         assert (code, json.loads(stdout), stderr) == (0, named, "")
         assert given == [NameGiven(SID, "naming fix")]
         # Given once: the next prompt sets nothing, and Claude Code keeps the name it holds.
         assert await shim(home, {**PROMPT, "prompt_id": "p3"}) == (0, "", "")
+    finally:
+        await runner.cleanup()
+
+
+async def test_a_name_set_since_hands_decided_one_is_not_overwritten_by_it(home: Home, tmp_path: Path) -> None:
+    names = Names()
+    given: list[object] = []
+    transcript = tmp_path / "t.jsonl"
+    # The user gave the session a name with /rename after hands decided its own against the session having none.
+    transcript.write_text('{"type":"custom-title","customTitle":"my thing","sessionId":"s"}\n')
+    at = {"transcript_path": str(transcript)}
+    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None)
+    runner = await serve_hooks(home, registry, names, given.append)
+    try:
+        await shim(home, {**START, **at})
+        names.rename(SID, "naming fix", None)
+        assert await shim(home, {**PROMPT, **at}) == (0, "", "")
+        assert given == [NameWithheld(SID, "naming fix", None, "my thing", None)]
+        assert names.due(SID) is None
     finally:
         await runner.cleanup()
 

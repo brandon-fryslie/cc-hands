@@ -96,7 +96,7 @@ async def judge(turn: Finished, names: Names, live: Sequence[Membership], name: 
     if decided == before:
         judged("kept", before, decided, reply, None)
         return
-    names.rename(session, decided)
+    names.rename(session, decided, held[0])
     judged("renamed", before, decided, reply, None)
 
 

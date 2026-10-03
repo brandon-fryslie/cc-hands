@@ -1,5 +1,6 @@
 """The unix socket the shims post to."""
 
+import asyncio
 import socket
 from pathlib import Path
 from uuid import uuid4
@@ -10,11 +11,12 @@ from loguru import logger
 from hands.core.events import Attached, PermissionRequested, Prompted, Stopped
 from hands.core.session import Membership, RequestId
 from hands.sessions.home import Home
-from hands.sessions.audit import NameGiven, Record
+from hands.sessions.audit import NameGiven, NameWithheld, Record
 from hands.sessions.hooks import hook_output, name_output, parse_hook
-from hands.sessions.names import Finished, Names
+from hands.sessions.names import Due, Finished, Names
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
+from hands.sessions.transcript import session_name
 
 
 async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Record) -> web.AppRunner:
@@ -55,12 +57,27 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
                 await sessions.apply(prompted)
                 # [LAW:no-ambient-temporal-coupling] a hook is the only way to hand Claude Code a title, and a prompt
                 # the soonest one after a name is decided: the name waits here for it.
-                match names.due(prompted.session):
-                    case None:
+                match (names.due(prompted.session), sessions.membership(prompted.session)):
+                    case (None, _):
                         return web.Response(status=204)
-                    case name:
-                        record(NameGiven(prompted.session, name))
-                        return web.json_response(name_output(name))
+                    case (Due() as due, Membership(transcript=transcript)):
+                        try:
+                            held = await asyncio.to_thread(session_name, transcript)
+                        except (Rejected, OSError) as error:
+                            # [LAW:no-silent-failure] a title hands cannot read may be one the user set: the name is
+                            # not given over it, and the log says why.
+                            logger.error(f"cannot read the name of session {prompted.session} from {transcript}, so {due.name!r} is not given: {error}")
+                            record(NameWithheld(prompted.session, due.name, due.against, None, str(error)))
+                            return web.Response(status=204)
+                        if held != due.against:
+                            # The latest name set wins: one set since this was decided is newer than the decision.
+                            record(NameWithheld(prompted.session, due.name, due.against, held, None))
+                            return web.Response(status=204)
+                        record(NameGiven(prompted.session, due.name))
+                        return web.json_response(name_output(due.name))
+                    case (Due(), None):
+                        # Unreachable while a name is only decided for a session whose Stop found it joined.
+                        raise AssertionError(f"a name is due for session {prompted.session}, which never joined")
             case happened:
                 await sessions.apply(happened)
                 return web.Response(status=204)
