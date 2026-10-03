@@ -13,6 +13,9 @@ dependencies = [
     "brotli>=1.2.0",
     "zstandard>=0.25.0",
     "docstring-parser>=0.18.0",
+    "aiortc>=1.14,<2",
+    "ifaddr>=0.2",
+    "segno>=1.6",
 ]
 
 [project.scripts]

@@ -12,6 +12,10 @@ content and their key follow the key. The stock VAD turn strategies open and
 close the user turn on those frames and broadcast the interruption that flushes
 queued speech on barge-in. While the key is up, whatever the microphone hears,
 including the pipeline's own speech, is silence to the pipeline.
+
+The key is pressed at a place: the desk, by the talk key, or the phone, by its page's button. The gate holds where the
+last turn was opened, and that place is where hands is: the pipeline hears that place's microphone and answers on its
+speaker, and the other place's moves cannot touch a turn that is not theirs.
 """
 
 from dataclasses import dataclass
@@ -19,6 +23,8 @@ from typing import Literal
 
 from pipecat.frames.frames import InputAudioRawFrame
 
+from hands.core.place import Place
+from hands.sessions.audit import Moved, Record
 from hands.voice.hold import Move
 
 # [LAW:types-are-the-program] the key is up; arming, pressed but not yet meaning talk, which hears so the words said
@@ -40,23 +46,36 @@ class KeyedAudio(InputAudioRawFrame):
 
 @dataclass(frozen=True)
 class Gate:
-    """The pure push-to-talk state: which position the key is in."""
+    """The pure push-to-talk state: which position the key is in, and the place hands is at."""
 
     key: Key = "up"
+    place: Place = "desk"
 
-    def after(self, move: Move) -> "Gate":
-        """The gate once the hold has moved the turn."""
-        match move:
-            case "arm":
-                return Gate("arming")
-            case "disarm":
-                return Gate("up")
-            case "start":
-                return Gate("down")
-            case "stop":
-                return Gate("up")
-            case "drop" | "expire":
-                return Gate("dropped")
+    def after(self, move: Move, at: Place) -> "Gate":
+        """The gate once a hold at `at` has moved the turn."""
+        # [LAW:one-source-of-truth] the place is moved only by a turn opening there, or by the phone coming and going:
+        # a Shift typed at the desk while the user talks on the phone arms nothing and ends nothing of theirs.
+        match at == self.place, move:
+            case True, _:
+                return Gate(_key_after(move), self.place)
+            case False, "start":
+                return Gate("down", at)
+            case False, _:
+                return self
+
+    def moved(self, to: Place) -> "Gate":
+        """The gate once hands is at `to`: a hold open at the place it leaves is thrown away, not sent."""
+        match to == self.place, self.key:
+            case True, _:
+                return self
+            case False, "arming" | "down":
+                return Gate("dropped", to)
+            case False, "up" | "dropped":
+                return Gate(self.key, to)
+
+    def hears(self, place: Place) -> bool:
+        """Whether the pipeline hears the microphone at `place`: only hands' own, so one stream of frames reaches Whisper."""
+        return place == self.place
 
     @property
     def turn_open(self) -> bool:
@@ -71,17 +90,40 @@ class Gate:
         return audio if self.key in ("arming", "down") else bytes(len(audio))
 
 
+def _key_after(move: Move) -> Key:
+    match move:
+        case "arm":
+            return "arming"
+        case "disarm" | "stop":
+            return "up"
+        case "start":
+            return "down"
+        case "drop" | "expire":
+            return "dropped"
+
+
 class PushToTalk:
     """The one owner of the key position; the talk key's edge writes, the microphone reads and tags every frame with it."""
 
     # [LAW:no-shared-mutable-globals] the event loop writes the key and the capture thread reads it,
     # so it lives here once with one writer.
-    def __init__(self) -> None:
+    def __init__(self, record: Record) -> None:
         self._gate = Gate()
+        self._record = record
 
-    def move(self, move: Move) -> None:
-        """Report what the hold did to the turn; the edge that reads the keyboard calls this."""
-        self._gate = self._gate.after(move)
+    def move(self, move: Move, at: Place) -> None:
+        """Report what the hold at `at` did to the turn; the edge that reads the talk key or the phone's button calls this."""
+        self._become(self._gate.after(move, at), "turn")
+
+    def go(self, to: Place) -> None:
+        """Report that hands is at `to` now: the phone came, or went."""
+        self._become(self._gate.moved(to), "call")
+
+    def _become(self, gate: Gate, by: Literal["turn", "call"]) -> None:
+        before, self._gate = self._gate, gate
+        # [LAW:nothing-unseen] the one writer of the gate says each move of the place, whichever edge made it.
+        if gate.place != before.place:
+            self._record(Moved(to=gate.place, by=by, dropped=gate.key == "dropped" and before.key != "dropped"))
 
     @property
     def gate(self) -> Gate:

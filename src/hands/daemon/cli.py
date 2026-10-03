@@ -55,6 +55,28 @@ def to_terminal(stream: TextIO) -> int:
     return logger.add(stream, filter=TERMINAL_LEVELS, format=terminal_line)
 
 
+def show_phone(home: Home) -> int:
+    """Print every address the phone's page opens at, and the first as a QR code a phone's camera opens."""
+    import segno
+
+    from hands.voice.phonepage import Untailed, lan_addresses, page_urls, phone_key, tailnet
+
+    net = asyncio.run(tailnet(home))
+    match net:
+        case Untailed(reason=reason):
+            print(f"hands: no tailnet address, since {reason}; the LAN's alone:", file=sys.stderr)
+        case _:
+            pass
+    urls = page_urls(net, lan_addresses(), phone_key(home))
+    if not urls:
+        print("hands: this machine has no address a phone can reach.", file=sys.stderr)
+        return 1
+    segno.make(urls[0]).terminal(compact=True)
+    print("\n".join(urls))
+    print("The page is served while `hands run` is up. Anyone with one of these addresses can talk to hands: keep them to yourself.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hands")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
@@ -67,6 +89,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
     commands.add_parser("login", help="log the brain (the claude backend of the home's config.toml) in again, or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
     commands.add_parser("install-fritter", help="build fritter and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
+    commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
     arguments = parser.parse_args(argv)
@@ -117,6 +140,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return check(home, talkkey.granted())
         case "log":
             return tail_log(home, arguments.lines)
+        case "phone":
+            return show_phone(home)
         case "login":
             return login(home)
         case "install-fritter":

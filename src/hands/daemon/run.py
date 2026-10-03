@@ -58,6 +58,7 @@ from hands.voice.devices import follow_default_devices
 from hands.voice.cues import cues
 from hands.voice.hold import Move
 from hands.voice.keys import drive_quit, drive_talk_key
+from hands.voice.phonepage import serve_phone
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus
 from hands.voice.vocabulary import Lexicon
@@ -423,13 +424,17 @@ async def converse(
     for task in background:
         task.add_done_callback(stop_if_failed)
 
-    async def on_move(move: Move) -> None:
-        voice.key.move(move)
+    def after_move(move: Move) -> None:
+        # The move has been made on the gate, so the tone plays where the turn is.
         for cue in cues(move):
             logger.info(cue.line)
             voice.audio.output().cue(cue)
         # The indicator reads the key from the heartbeat, so the edge is written now rather than at the next beat.
         beat()
+
+    async def at_desk(move: Move) -> None:
+        voice.key.move(move, "desk")
+        after_move(move)
         for fact in told(move, voice.audio.devices):
             await channel.say(fact)
 
@@ -437,11 +442,26 @@ async def converse(
         # [LAW:no-ambient-temporal-coupling] a move reads the devices, which are known once the pipeline has opened
         # its streams; the key is watched from then on.
         await pipeline.started.wait()
-        await drive_talk_key(on_move)
+        await drive_talk_key(at_desk)
+
+    async def answer_the_phone_once_started() -> None:
+        # As for the talk key: a call is taken once the pipeline is up to hear it.
+        await pipeline.started.wait()
+        page = await serve_phone(voice.phone, home, record)
+        try:
+            while True:
+                # The phone made the move on the gate as it arrived, in order with its audio.
+                after_move(await voice.phone.moves.get())
+        finally:
+            await voice.phone.hang_up("stopped")
+            await page.cleanup()
 
     talk_key = asyncio.create_task(drive_talk_key_once_started(), name="the talk key")
     talk_key.add_done_callback(stop_if_failed)
     background.append(talk_key)
+    phone = asyncio.create_task(answer_the_phone_once_started(), name="the phone")
+    phone.add_done_callback(stop_if_failed)
+    background.append(phone)
     logger.info("hold Right Shift to talk, release to send; a key pressed while it is held drops the turn.")
     if sys.stdin.isatty():
         quit_key = asyncio.create_task(drive_quit(quit_event), name="the terminal quit key")
@@ -456,6 +476,8 @@ async def converse(
         await asyncio.wait({pipeline_run, quitting}, return_when=asyncio.FIRST_COMPLETED)
         # A run told to stop takes no more turns: the key stops being watched before the pipeline tears down, not after.
         talk_key.cancel()
+        phone.cancel()
+        await asyncio.wait({phone})
         # [LAW:no-ambient-temporal-coupling] the follower holds the streams while it reopens them, and Pipecat's
         # cleanup closes them; the follower is done before the cleanup starts, so the two never hold them at once.
         following.cancel()

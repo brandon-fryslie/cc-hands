@@ -17,6 +17,10 @@ headset unplugged, PortAudio says nothing: measured 2026-09-24 against an aggreg
 device destroyed mid-stream, the microphone's callbacks simply stop and a write to
 the speaker blocks for good. So the transport is reopened whole when the defaults
 change, which macOS does the moment the default device disappears.
+
+The phone is the other place hands can be (`hands.voice.phone`). The gate says which: the pipeline hears only that
+place's microphone, so Whisper is handed one stream of frames, and the speaker plays to that place, so a reply goes
+where the user is.
 """
 
 import asyncio
@@ -28,7 +32,7 @@ from typing import Protocol, cast
 
 import pyaudio
 from loguru import logger
-from pipecat.frames.frames import OutputAudioRawFrame
+from pipecat.frames.frames import OutputAudioRawFrame, StartFrame
 from pipecat.processors.frame_processor import FrameProcessorSetup
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
@@ -42,6 +46,7 @@ from pipecat.transports.local.audio import (
 
 from hands.voice.coreaudio import DefaultDevices, default_devices
 from hands.voice.cues import Cue, sound
+from hands.voice.phone import Phone
 from hands.voice.ptt import Gate, KeyedAudio, PushToTalk
 from hands.threads import SerialThread, off_loop
 
@@ -129,10 +134,13 @@ def heard(audio: bytes, gate: Gate, captured: Instant, speaker_quiet_at: Instant
 
 
 class Speaker(LocalAudioOutputTransport):
-    """The local speaker, which records when the sound it has been given will have died away at the microphone."""
+    """The local speaker, which records when the sound it has been given will have died away at the microphone, and
+    which hands the sound to the phone instead while hands is there."""
 
-    def __init__(self, py_audio: pyaudio.PyAudio, params: LocalAudioTransportParams, clock: Callable[[], Instant]) -> None:
+    def __init__(self, py_audio: pyaudio.PyAudio, params: LocalAudioTransportParams, key: PushToTalk, phone: Phone, clock: Callable[[], Instant]) -> None:
         super().__init__(py_audio, params)
+        self._key = key
+        self._phone = phone
         self._clock = clock
         self._fade = ECHO_PATH_SECS
         # Written by the output task, read by the microphone's capture thread: one float, whole either way.
@@ -202,6 +210,18 @@ class Speaker(LocalAudioOutputTransport):
         await _let_go_at_cleanup(self._out_stream, self.let_go, self._attached.clear)
 
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
+        # [LAW:one-source-of-truth] the gate says where hands is, read as each frame is written: a reply carries on at
+        # the place the user has moved to. The phone's earbuds keep its microphone clear, so it moves no `quiet_at`.
+        match self._key.gate.place:
+            case "phone":
+                if frame.audio.count(0) != len(frame.audio):
+                    self.sounded_at = self._clock()
+                await self._phone.play(frame.audio)
+                return True
+            case "desk":
+                return await self._write_here(frame)
+
+    async def _write_here(self, frame: OutputAudioRawFrame) -> bool:
         # [LAW:dataflow-not-control-flow] every frame is written; one that comes while the transport reopens waits for
         # the new stream, so a reply carries on over the move instead of losing its middle.
         await self._attached.wait()
@@ -230,10 +250,14 @@ class Speaker(LocalAudioOutputTransport):
         It moves `sounded_at`, since it is sound given to the speaker, and never `quiet_at`: a cue is not the
         pipeline's speech, and holding the microphone shut behind the one that opens a turn would cut the turn's first word.
         """
-        match self._attached.is_set():
-            case False:
+        match self._key.gate.place, self._attached.is_set():
+            case "phone", _:
+                self.sounded_at = self._clock()
+                # Not waited for, as a cue given to the desk's writer thread is not.
+                self._phone.play(sound(cue, self.sample_rate, 1))
+            case "desk", False:
                 logger.warning(f"no speaker is attached; the tone for {cue.line!r} is not played")
-            case True:
+            case "desk", True:
                 stream = cast(Playback, self._out_stream)
                 audio = sound(cue, self.sample_rate, self._params.audio_out_channels)
 
@@ -251,13 +275,16 @@ def _duration(frame: OutputAudioRawFrame) -> float:
 
 
 class KeyedMicrophone(LocalAudioInputTransport):
-    """The local microphone, silent while the key is up and while the speaker's sound is still in the room."""
+    """The local microphone, silent while the key is up and while the speaker's sound is still in the room; and the
+    phone's, which the pipeline hears in its place while hands is at the phone."""
 
-    def __init__(self, py_audio: pyaudio.PyAudio, params: LocalAudioTransportParams, key: PushToTalk, speaker: Speaker, clock: Callable[[], Instant]) -> None:
+    def __init__(self, py_audio: pyaudio.PyAudio, params: LocalAudioTransportParams, key: PushToTalk, speaker: Speaker, phone: Phone, clock: Callable[[], Instant]) -> None:
         super().__init__(py_audio, params)
         self._key = key
         self._speaker = speaker
+        self._phone = phone
         self._clock = clock
+        self._listening: asyncio.Task[None] | None = None
         # What the attached stream was opened on; None until setup opens the first.
         self.opened: Input | None = None
 
@@ -306,7 +333,18 @@ class KeyedMicrophone(LocalAudioInputTransport):
 
         await off_loop(stop_and_close, "closing the microphone")
 
+    async def start(self, frame: StartFrame) -> None:
+        await super().start(frame)
+        self._listening = self.create_task(self._hear_the_phone(), "the phone's microphone")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+
+    async def _hear_the_phone(self) -> None:
+        while True:
+            # Keyed by the phone as each arrived, in order with its button.
+            await self.push_audio_frame(await self._phone.heard.get())
+
     async def cleanup(self) -> None:
+        if self._listening is not None:
+            await self.cancel_task(self._listening)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         # As for the speaker: off the loop, where closing a microphone whose device is gone takes seconds.
         await BaseInputTransport.cleanup(self)
         await _let_go_at_cleanup(self._in_stream, self.let_go, lambda: None)
@@ -318,6 +356,10 @@ class KeyedMicrophone(LocalAudioInputTransport):
         captured = self._clock() - buffer_age(time_info)
         # One read of the gate: what the frame holds and the key it says it was captured under always agree.
         gate = self._key.gate
+        # [LAW:single-enforcer] the gate alone says which place's microphone reaches Whisper; while hands is at the
+        # phone, the desk's frames are not the pipeline's at all, so its stream is the phone's unbroken.
+        if not gate.hears("desk"):
+            return None, pyaudio.paContinue
         frame = KeyedAudio(
             audio=heard(in_data, gate, captured=captured, speaker_quiet_at=self._speaker.quiet_at),
             sample_rate=self._sample_rate,
@@ -354,6 +396,7 @@ class KeyedAudioTransport(LocalAudioTransport):
         self,
         params: LocalAudioTransportParams,
         key: PushToTalk,
+        phone: Phone,
         clock: Callable[[], Instant] = time.monotonic,
         portaudio: Callable[[], PortAudio] = lambda: cast(PortAudio, pyaudio.PyAudio()),
         defaults: Callable[[], DefaultDevices] = default_devices,
@@ -368,8 +411,8 @@ class KeyedAudioTransport(LocalAudioTransport):
         self._params = params
         self._pyaudio = cast(pyaudio.PyAudio, portaudio())
         # [LAW:effects-at-boundaries] the speaker's writes and the microphone's captures are stamped from one clock.
-        self._speaker = Speaker(self._pyaudio, params, clock)
-        self._microphone = KeyedMicrophone(self._pyaudio, params, key, self._speaker, clock)
+        self._speaker = Speaker(self._pyaudio, params, key, phone, clock)
+        self._microphone = KeyedMicrophone(self._pyaudio, params, key, self._speaker, phone, clock)
         self._portaudio = portaudio
         self._defaults = defaults
 

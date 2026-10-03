@@ -50,6 +50,8 @@ from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus, Refocusing
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
+from hands.voice.phone import Phone
+from hands.sessions.audit import Record
 from hands.voice.player import Marks, Player
 from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
@@ -208,11 +210,12 @@ def build_llm(
 
 @dataclass(frozen=True)
 class Voice:
-    """The assembled pipeline plus the handles its edges need: the key, the audio devices, the three services that report failures, and the two sides of the conversation."""
+    """The assembled pipeline plus the handles its edges need: the key, the audio devices, the phone, the three services that report failures, and the two sides of the conversation."""
 
     worker: PipelineWorker
     key: PushToTalk
     audio: KeyedAudioTransport
+    phone: Phone
     stt: Whisper
     llm: FrameProcessor
     tts: PocketTTSService
@@ -223,15 +226,18 @@ class Voice:
 def build_voice(
     config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, player: Player, floor: Floor, refocus: Refocus, prompt: Callable[[], Awaitable[str | None]], record: Record
 ) -> Voice:
-    """Wire mic, push-to-talk, Whisper on MLX, the model's stage, pocket-tts, speakers."""
+    """Wire mic, push-to-talk, Whisper on MLX, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and Whisper reads it off each
     # frame to push the VAD frames the turn strategies act on, so the user
     # aggregator runs no VAD of its own. The turn opens on the press and closes
     # on the release; the release is final, so there is no wait for the user to
     # "say more".
-    key = PushToTalk()
-    transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key)
+    key = PushToTalk(record)
+    params = PipelineParams(enable_metrics=True)
+    # [LAW:one-source-of-truth] the phone's audio is at the pipeline's own rates, as the desk's devices are opened at.
+    phone = Phone(key, heard_rate=params.audio_in_sample_rate, played_rate=params.audio_out_sample_rate, record=record)
+    transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key, phone)
     stt = Whisper(settings=WhisperSTTServiceMLX.Settings(model=config.whisper_model), prompt=prompt, record=record)
     # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
     # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
@@ -266,10 +272,10 @@ def build_voice(
     pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, Refocusing(refocus), pieces, player.lines, tts, output, Marks(), assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
-        params=PipelineParams(enable_metrics=True),
+        params=params,
         observers=[LatencyObserver(), player.watching(tts, output)],
         idle_timeout_secs=None,
     )
     return Voice(
-        worker=worker, key=key, audio=transport, stt=stt, llm=llm, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator
+        worker=worker, key=key, audio=transport, phone=phone, stt=stt, llm=llm, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator
     )
