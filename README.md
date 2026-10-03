@@ -221,7 +221,7 @@ and goes away too.
 
 Every heartbeat rewrites `~/.hands/status.json`, every effect and failure is a line
 in `~/.hands/audit.jsonl`, and the daemon's output goes to its terminal. Each line's
-`level` is `error` for anything that went wrong, so `jq -c 'select(.level == "error")'`
+`level` is `error` for anything that went wrong, so `jq -cR 'fromjson? | select(.level == "error")'`
 finds them all; the brain is told the same and reads the log itself when asked what happened.
 
 ## Prior art
