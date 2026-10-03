@@ -10,19 +10,23 @@ the new file a code generator wrote is exactly what a turn must be able to name 
 """
 
 import asyncio
+import json
 import os
+import shutil
 import tempfile
 import time
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from loguru import logger
 
-from hands.core.delta import Changed, Commit, Delta
+from hands.core.delta import Branched, Changed, Commit, Delta, PullRequested, Pushed
 from hands.core.session import SessionId
+from hands.sessions.audit import DeltaRead, DeltaReadOutcome, Forge, Record
 from hands.sessions.child import run
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 
@@ -51,9 +55,26 @@ MOST = 40_000
 # one line a file, before the diff itself is ever asked for: see _between.
 MOST_LINES = 20_000
 
+# How long before the narrator stops waiting the forge must have answered: what is left of the reading once it
+# has is parsing its answer. The narrator waits PATIENCE from no earlier than the reading began, and the forge is
+# a network away where git is a disk away, so a slow forge costs the turn its pull request and never its commit.
+SPARE = 0.5
+
+# What git writes in a remote-tracking ref's log when a push moved it, where a fetch writes `fetch` or `pull`.
+_PUSHED = "update by push"
+
 # The most commits kept from one turn. A turn that makes them one at a time makes a handful; past this it
 # pulled or rebased a history, and how many there were is the story where which ones they were is not.
 MOST_COMMITS = 500
+
+
+@dataclass(frozen=True)
+class Refs:
+    """Each local branch and remote-tracking ref and the commit it names, and the branch each remote's HEAD follows."""
+
+    named: Mapping[str, str]
+    # Where git knows it: a clone does, a repository that added its remote may not.
+    defaults: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -65,10 +86,26 @@ class Mark:
     # tell those two apart has every commit in the repository read as the work of one turn: see _mark.
     head: str | None
     tree: str
+    # Every local branch and remote-tracking ref, and the commit each names. None where git would not list them,
+    # never empty for it: read as a repository with no branches, every branch it has is one the turn made.
+    refs: Refs | None
+    # When the mark was taken, on the wall clock a forge stamps a pull request with.
+    at: datetime
 
 
 # A mark being taken, or taken: None where it could not be.
 Marking = asyncio.Future[Mark | None]
+
+
+@dataclass(frozen=True)
+class Asked:
+    """Whether the forge was asked about a pushed branch's pull requests, and how long it took to answer or not."""
+
+    forge: Forge
+    seconds: float
+
+
+UNASKED = Asked("unasked", 0.0)
 
 
 class Changes(Protocol):
@@ -95,7 +132,8 @@ class NoChanges:
 class Deltas:
     """Where each session's repository stood when its turn began, so what the turn changed can be read at its end."""
 
-    def __init__(self, marking: float = MARKING, reading: float = READING, patience: float = PATIENCE) -> None:
+    def __init__(self, record: Record, marking: float = MARKING, reading: float = READING, patience: float = PATIENCE) -> None:
+        self._record = record
         self._marking = marking
         self._reading = reading
         self._patience = patience
@@ -157,14 +195,16 @@ class Deltas:
             # back, every turn that has a delta has its own [LAW:no-ambient-temporal-coupling].
             logger.warning(f"{HELD} deltas of session {session} are already waiting to be told, so this turn is told without one")
             end.set_result(None)
+            self._record(DeltaRead(session, "dropped", 0, 0, (), UNASKED.forge, UNASKED.seconds, 0.0))
             return
         pending: asyncio.Future[Delta] = asyncio.get_running_loop().create_future()
         held.append(pending)
         if start is None:
             pending.set_result(Delta())
             end.set_result(None)
+            self._record(DeltaRead(session, "unmarked", 0, 0, (), UNASKED.forge, UNASKED.seconds, 0.0))
             return
-        task = asyncio.create_task(self._read(pending, start, end), name=f"what a turn of session {session} changed")
+        task = asyncio.create_task(self._read(session, pending, start, end), name=f"what a turn of session {session} changed")
         # Held, because the loop keeps only a weak reference and would collect a task nobody is awaiting.
         self._running.add(task)
         task.add_done_callback(self._running.discard)
@@ -189,22 +229,35 @@ class Deltas:
             logger.info(f"what a turn of session {session} changed is still being read, so the turn is told without it")
             return Delta()
 
-    async def _read(self, pending: asyncio.Future[Delta], start: Marking, end: Marking) -> None:
+    async def _read(self, session: SessionId, pending: asyncio.Future[Delta], start: Marking, end: Marking) -> None:
         """[LAW:no-silent-failure] whatever happens here, whoever is waiting is answered rather than left."""
-        delta, reached = Delta(), None
+        began = time.monotonic()
+        delta, reached, asked = Delta(), None, UNASKED
+        outcome: DeltaReadOutcome = "unmarked"
         try:
             mark = await start
             if mark is not None:
-                delta, reached = await self._between(mark, time.monotonic() + self._reading)
+                delta, reached, asked = await self._between(mark, time.monotonic() + self._reading, began + self._patience - SPARE)
+                outcome = "read"
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
         except Exception as error:
+            outcome = "failed"
             logger.error(f"what a turn changed could not be read: {type(error).__name__}: {error}")
         finally:
             # Answered however this ends, a cancelled reading included, so the part going on never waits on it for ever.
             end.set_result(reached)
+            # [LAW:nothing-unseen] one line for every reading however it ended, so a turn told without its delta can be
+            # told apart from one that changed nothing, and a slow forge from a slow repository.
+            self._record(
+                DeltaRead(session, outcome, len(delta.commits), len(delta.files), delta.changes, asked.forge, asked.seconds, round(time.monotonic() - began, 3))
+            )
         if not pending.done():
             pending.set_result(delta)
 
     async def _mark(self, cwd: Path, deadline: float) -> Mark | None:
+        at = datetime.now(UTC)
         root = await self._git(cwd, "rev-parse", "--show-toplevel", deadline=deadline)
         if not root:
             return None
@@ -220,7 +273,7 @@ class Deltas:
             # downstream can be handed one that does not know where it stands.
             logger.warning(f"where {root} stands could not be read, so the turn is told without its delta")
             return None
-        return Mark(Path(root), head, tree)
+        return Mark(Path(root), head, tree, await self._refs(Path(root), deadline), at)
 
     async def _unborn(self, root: Path, deadline: float) -> bool:
         """Whether a repository that would not say where it stands has nowhere to stand yet.
@@ -232,20 +285,29 @@ class Deltas:
         """
         return await self._git(root, "symbolic-ref", "--quiet", "HEAD", deadline=deadline) is not None
 
-    async def _between(self, mark: Mark, deadline: float) -> tuple[Delta, Mark | None]:
-        """What changed from the mark to where the repository stands now, and that place as a mark, when it was read."""
+    async def _between(self, mark: Mark, deadline: float, forging: float) -> tuple[Delta, Mark | None, Asked]:
+        """What changed from the mark to where the repository stands now, that place as a mark, and what the forge was asked."""
+        at = datetime.now(UTC)
         # Read before the tree, because they are two fast commands where the tree is the slow one: a turn
         # whose commit is the one thing worth saying about it should not lose that because `git add -A` took
         # longer than a reading is given, or failed for a reason that has nothing to do with the commit.
         head = await self._git(mark.root, "rev-parse", "HEAD", deadline=deadline)
         commits = await self._commits(mark, head, deadline)
-        tree = await self._tree(mark.root, deadline)
+        refs = await self._refs(mark.root, deadline)
+        # Beside the tree and not before it: the forge is a network away where git is a disk away, and the narrator
+        # gives up on the whole reading at once, so a forge read first spends the commit's time on a pull request.
+        (files, patch, tree), (changes, asked) = await asyncio.gather(self._worked(mark, deadline), self._moved(mark, refs, deadline, forging))
         # [LAW:parse-dont-validate] as in _mark: where the repository stands is known only if both were read, and a HEAD
         # that would not answer is no commit only where git says there is none yet.
-        reached = None if tree is None or (head is None and not await self._unborn(mark.root, deadline)) else Mark(mark.root, head, tree)
+        reached = None if tree is None or (head is None and not await self._unborn(mark.root, deadline)) else Mark(mark.root, head, tree, refs, at)
+        return Delta(files, commits, changes, patch), reached, asked
+
+    async def _worked(self, mark: Mark, deadline: float) -> tuple[tuple[Changed, ...], str, str | None]:
+        """The files the turn left different, the patch between, and the tree it left them in: None where unreadable."""
+        tree = await self._tree(mark.root, deadline)
         if tree is None or tree == mark.tree:
             # Unreadable, or the working tree came back to where it started — which a commit and nothing else does.
-            return Delta(commits=commits), reached
+            return (), "", tree
         numstat = await self._git(mark.root, "diff", "--numstat", mark.tree, tree, deadline=deadline)
         if numstat is None:
             # [LAW:no-silent-failure] git not answering is not git saying nothing changed. Counted as the
@@ -253,7 +315,7 @@ class Deltas:
             # are here to enforce is not enforced at all — on the diff most likely to have been what stopped
             # the counting. What the turn committed is known either way, so that much is still told.
             logger.info(f"what a turn changed in {mark.root} could not be counted, so its patch is not read")
-            return Delta(commits=commits), reached
+            return (), "", tree
         files = _files(numstat)
         counted = sum((file.added or 0) + (file.removed or 0) for file in files)
         if counted > MOST_LINES:
@@ -262,9 +324,9 @@ class Deltas:
             # are already in hand, so they are what says no — and what is left, the files and their counts, is
             # all of a diff that size that would have survived the summariser's budget anyway.
             logger.info(f"a turn changed {counted} lines in {mark.root}, too many to keep the patch of, so its files are told instead")
-            return Delta(files, commits), reached
+            return files, "", tree
         patch = await self._git(mark.root, "diff", mark.tree, tree, deadline=deadline)
-        return Delta(files, commits, "" if patch is None else patch[:MOST]), reached
+        return files, "" if patch is None else patch[:MOST], tree
 
     async def _commits(self, mark: Mark, head: str | None, deadline: float) -> tuple[Commit, ...]:
         if head is None or head == mark.head:
@@ -275,6 +337,111 @@ class Deltas:
             mark.root, "log", f"--max-count={MOST_COMMITS}", "--format=%h%x1f%s", f"{mark.head}..{head}" if mark.head else head, deadline=deadline
         )
         return () if not listed else tuple(Commit(*line.split("\x1f", 1)) for line in listed.splitlines() if "\x1f" in line)
+
+    async def _refs(self, root: Path, deadline: float) -> Refs | None:
+        """Each local branch and remote-tracking ref and the commit it names. A symbolic ref names a ref, not a
+        commit — `origin/HEAD` follows the remote's default branch — so none of them is one: it names a default."""
+        listed = await self._git(root, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", "refs/heads", "refs/remotes", deadline=deadline)
+        if listed is None:
+            return None
+        lines = [line.split("\0") for line in listed.splitlines()]
+        return Refs(
+            {name: sha for name, sha, symbolic in lines if not symbolic},
+            frozenset(symbolic.split("/", 3)[3] for _, _, symbolic in lines if symbolic.startswith("refs/remotes/")),
+        )
+
+    async def _moved(self, mark: Mark, refs: Refs | None, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
+        """Whether the turn made the branch this worktree is on, whether it pushed it, and the pull requests opened from it.
+
+        That branch alone. Every worktree of a repository, and the terminal beside it, share refs/heads and refs/remotes
+        and their logs, so a branch made or pushed anywhere else is another session's work — and the branch checked
+        out here is checked out nowhere else. Each is read from git's own log of how the ref moved and when, so a
+        branch checked out or renamed is not one the turn made, and a push the turn followed with a pull is still a push.
+        """
+        if mark.refs is None or refs is None:
+            return (), UNASKED
+        branch = await self._git(mark.root, "symbolic-ref", "--quiet", "--short", "HEAD", deadline=deadline)
+        if branch is None:
+            # A detached HEAD is on no branch for the turn to have made or pushed.
+            return (), UNASKED
+        since = int(mark.at.timestamp())
+        # `refs/remotes/<remote>/<branch>`, and a branch may hold slashes where a remote does not.
+        tracking = [name for name in refs.named if name.startswith("refs/remotes/") and name.split("/", 3)[3:] == [branch]]
+        # A ref the turn left where it found it was pushed nothing, whatever its log says.
+        moved = [name for name in tracking if mark.refs.named.get(name) != refs.named[name]]
+        made, pushes = await asyncio.gather(
+            self._made(mark.root, mark.refs.named, branch, tracking, since, deadline), asyncio.gather(*(self._pushed(mark.root, name, mark.refs.named.get(name), deadline) for name in moved))
+        )
+        pushed = any(pushes)
+        # [LAW:carrying-cost] no pull request is opened from a remote's default branch, and most pushes are to it: asking
+        # the forge after each would spend a request a turn on an answer that is always no.
+        opened, asked = await self._opened(mark, branch, min(deadline, forging)) if pushed and branch not in refs.defaults else ((), UNASKED)
+        return (*([Branched(branch, "created branch")] if made else []), *([Pushed(branch)] if pushed else []), *opened), asked
+
+    async def _made(self, root: Path, known: Mapping[str, str], branch: str, tracking: list[str], since: int, deadline: float) -> bool:
+        """Whether git logged `branch` created since the mark, and from anything but the remote branch of its own name,
+        which is a checkout of a branch that already was. A rename carries the log of the branch it renamed with it."""
+        if f"refs/heads/{branch}" in known:
+            return False
+        logged = await self._git(root, "reflog", "show", "--date=unix", "--format=%gd%x1f%gs", f"refs/heads/{branch}", deadline=deadline)
+        if not logged:
+            return False
+        when, said = _entry(logged.splitlines()[-1])
+        source = said.removeprefix("branch: Created from ")
+        return when >= since and source != said and source.removeprefix("refs/remotes/") not in {name.removeprefix("refs/remotes/") for name in tracking}
+
+    async def _pushed(self, root: Path, name: str, was: str | None, deadline: float) -> bool:
+        """Whether git logged a push to the remote-tracking ref `name` after it named `was`, where the mark found it.
+
+        Walked back from the newest entry to the one that left the ref where the mark found it, and not by time: git
+        logs to the second, and a push in the second before the mark is not the turn's. A fetch moves the same ref and
+        logs `fetch`, and a push the turn followed with a pull is still in the walk.
+        """
+        logged = await self._git(root, "reflog", "show", "--format=%H%x1f%gs", name, deadline=deadline)
+        if logged is None:
+            return False
+        for line in logged.splitlines():
+            sha, _, said = line.partition("\x1f")
+            if sha == was:
+                return False
+            if said == _PUSHED:
+                return True
+        return False
+
+    async def _opened(self, mark: Mark, branch: str, deadline: float) -> tuple[tuple[PullRequested, ...], Asked]:
+        """The pull requests the forge says this user opened from `branch` since the mark. Nothing on this machine records one.
+
+        This user's alone: a fork's pull request from a branch of the same name is someone else's. A forge that is slow
+        or refuses is what a forge a network away is some days, so neither is a failure here: the reading's audit line
+        says which it was, and the turn is told without its pull request.
+        """
+        gh = shutil.which("gh")
+        if gh is None:
+            # A machine with no gh has no forge to ask, which is how it is set up and not something that went wrong.
+            return (), Asked("absent", 0.0)
+        began = time.monotonic()
+        if deadline <= began:
+            return (), Asked("unanswered", 0.0)
+        try:
+            ran = await run(
+                gh, "pr", "list", "--head", branch, "--author", "@me", "--state", "all", "--json", "number,url,createdAt", timeout=deadline - began, cwd=mark.root
+            )
+        except TimeoutError:
+            return (), Asked("unanswered", round(time.monotonic() - began, 3))
+        took = round(time.monotonic() - began, 3)
+        if ran.returncode != 0:
+            # Not a GitHub remote, not signed in, no default repository: gh says which.
+            logger.info(f"gh would not list the pull requests of {branch} in {mark.root}: {ran.err.decode(errors='replace').strip()}")
+            return (), Asked("refused", took)
+        # The forge stamps to the second, so a pull request opened in the second the mark was taken is still since it.
+        since = mark.at.replace(microsecond=0)
+        try:
+            listed: object = json.loads(ran.out)
+        except ValueError as error:
+            logger.warning(f"gh said something about the pull requests of {branch} that is not JSON, so none is told: {error}")
+            return (), Asked("refused", took)
+        entries = cast(list[object], listed) if isinstance(listed, list) else [listed]
+        return tuple(request for entry in entries if (request := _request(entry, since)) is not None), Asked("answered", took)
 
     async def _tree(self, root: Path, deadline: float) -> str | None:
         """Everything git would keep, as one tree object, through an index of this daemon's own.
@@ -331,6 +498,32 @@ class Deltas:
             logger.debug(f"git {args[0]} in {cwd}: {ran.err.decode(errors='replace').strip()}")
             return None
         return ran.out.decode(errors="replace").strip()
+
+
+def _request(entry: object, since: datetime) -> PullRequested | None:
+    """One pull request as `gh pr list --json number,url,createdAt` writes it, where it was opened since `since`."""
+    match entry:
+        case {"number": int() as number, "url": str() as url, "createdAt": str() as created} if (opened := _instant(created)) is not None:
+            return PullRequested(number, url, "created") if opened >= since else None
+        case _:
+            pass
+    logger.warning(f"gh named a pull request in a shape hands does not read, so it is not told: {entry!r}")
+    return None
+
+
+def _instant(stamp: str) -> datetime | None:
+    """A time the forge wrote, where it says which zone it is in: one that does not cannot be set against the mark."""
+    try:
+        instant = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    return instant if instant.tzinfo is not None else None
+
+
+def _entry(line: str) -> tuple[int, str]:
+    """One line of `git reflog show --date=unix --format=%gd%x1f%gs`: when the ref moved, and what git said moved it."""
+    selector, _, said = line.partition("\x1f")
+    return int(selector[selector.rindex("@{") + 2 : -1]), said
 
 
 def _files(numstat: str) -> tuple[Changed, ...]:

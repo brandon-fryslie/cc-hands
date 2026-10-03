@@ -289,7 +289,7 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
     failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
     # What each turn changed in the repository it ran in, which no transcript record need name.
-    deltas = Deltas()
+    deltas = Deltas(audit.record)
     sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record, changes=deltas)
     # Before the hooks are served: a turn that finishes while the models load is named once they have.
     names = Names()

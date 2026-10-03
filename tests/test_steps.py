@@ -15,7 +15,8 @@ from hands.core.session import Membership, SessionId
 from hands.core.status import Stamp
 from hands.core.steps import Call, Result, recognise
 from hands.core.testrun import report_of
-from hands.core.turn import Asked, Committed, Delegated, Edited, Looked, Other, Planned, Questioned, Ran, Ref, Step, Tested
+from hands.core.delta import Committed
+from hands.core.turn import Asked, Delegated, Edited, Looked, Other, Planned, Questioned, Ran, Ref, Step, Tested
 from hands.sessions.tail import Tails
 
 FIXTURES = Path(__file__).parent / "fixtures"

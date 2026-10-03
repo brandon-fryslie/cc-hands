@@ -1,21 +1,17 @@
 """A turn's narration tree: what plays when it stops, what is left to open, and what each part was cut from."""
 
-from hands.core.delta import Changed, Commit, Delta
+from hands.core.delta import Branched, Changed, Commit, Committed, Delta, PullRequested, Pushed
 from hands.core.narration import Narration, narration, opened
 from hands.core.spoken import spoken
 from hands.core.turn import (
     Asked,
-    Branched,
     Budget,
-    Committed,
     Delegated,
     Edited,
     Interruption,
     Looked,
     Other,
     Planned,
-    PullRequested,
-    Pushed,
     Question,
     Questioned,
     Ran,
@@ -178,6 +174,34 @@ def test_a_commit_no_step_recorded_is_still_said_because_the_delta_read_it() -> 
     heredoc = Ran(None, "python3 - <<'EOF'\n...\nEOF", None, False, "db9618c sessions: medium review", ())
     [repository] = told(heredoc, delta=Delta(commits=(Commit("db9618c", "sessions"),))).repository
     assert repository.text == "It committed."
+
+
+def test_a_push_no_step_recorded_is_said_as_a_push_and_not_only_as_a_commit() -> None:
+    """`git commit -m x && git push` carries no operation; the delta read the push off the remote-tracking ref."""
+    chained = Ran(None, "git commit -qm x && git push -q", None, False, "", ())
+    delta = Delta(commits=(Commit("f0f9776", "x"),), changes=(Pushed("main"),))
+    [repository] = told(chained, delta=delta).repository
+    assert repository.text == "It committed and pushed main."
+
+
+def test_a_branch_no_step_recorded_is_said() -> None:
+    chained = Ran(None, "git checkout -b feature/narration && pytest", None, False, "", ())
+    [repository] = told(chained, delta=Delta(changes=(Branched("feature/narration", "created branch"),))).repository
+    assert repository.text == "It created branch feature narration."
+
+
+def test_a_pull_request_no_step_recorded_is_said_without_its_number() -> None:
+    script = Ran(None, "./ship.sh", None, False, "", ())
+    delta = Delta(changes=(Pushed("fix"), PullRequested(7, "https://x/7", "created")))
+    [repository] = told(script, delta=delta).repository
+    assert repository.text == "It pushed fix and created a pull request."
+
+
+def test_a_push_and_a_pull_request_both_sources_saw_are_said_once() -> None:
+    recorded = Ran(None, "git push && gh pr create", None, False, "", (Pushed("fix"), PullRequested(7, "https://x/7", "created")))
+    delta = Delta(changes=(Pushed("fix"), PullRequested(7, "https://x/7", "created")))
+    [repository] = told(recorded, delta=delta).repository
+    assert repository.text == "It pushed fix and created a pull request."
 
 
 def test_a_pull_request_is_named_without_its_number() -> None:

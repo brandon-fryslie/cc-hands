@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from loguru import Message
 
 from hands.core.attention import Overlay
+from hands.core.delta import Branched, PullRequested, Pushed
 from hands.core.effects import AuditRecord, Effect, Heard, Input, Type
 from hands.core.events import Event
 from hands.core.session import SessionId
@@ -304,6 +305,34 @@ class TurnsSummarised:
     seconds: float
 
 
+# Whether the forge was asked about the pull requests of the branch a turn pushed, and what came of it: not asked
+# where the turn pushed nothing or pushed its remote's default branch, which no pull request is opened from; absent
+# where there is no gh to ask; unanswered where it was too slow, and refused where gh would not list or answered in
+# a shape hands does not read.
+Forge = Literal["unasked", "absent", "answered", "unanswered", "refused"]
+
+DeltaReadOutcome = Literal["unmarked", "dropped", "read", "failed", "cancelled"]
+
+
+@dataclass(frozen=True)
+class DeltaRead:
+    """One reading of what a turn changed in its repository, one per turn that stopped.
+
+    `outcome` is "unmarked" where nothing marked where the turn began (no repository, or one that could not be read),
+    "dropped" where too many readings were already waiting to be told, "read" where git answered, and "failed" or
+    "cancelled" where the reading did not finish. `seconds` is what the narrator may have waited through for it.
+    """
+
+    session: str
+    outcome: DeltaReadOutcome
+    commits: int
+    files: int
+    changes: tuple[Pushed | Branched | PullRequested, ...]
+    forge: Forge
+    forge_seconds: float
+    seconds: float
+
+
 NamingOutcome = Literal["renamed", "kept", "unread", "failed", "refused"]
 
 
@@ -391,6 +420,7 @@ Entry = (
     | Recounted
     | Summarised
     | TurnsSummarised
+    | DeltaRead
     | Named
     | NameGiven
     | NameWithheld

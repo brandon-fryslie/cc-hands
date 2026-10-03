@@ -4,41 +4,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import NewType
 
-from hands.core.delta import Changed, Delta
+from hands.core.delta import Branched, Changed, Committed, Delta, GitChange, PullRequested, Pushed
 
 # The uuid of the transcript record a step came from, so a spoken segment can name what it summarised.
 # A step names no record in the two cases where there is none to name: a record that carries no uuid, and
 # the closing reply a Stop hook hands over in the milliseconds before Claude Code writes its record.
 Ref = NewType("Ref", str)
-
-
-@dataclass(frozen=True)
-class Committed:
-    sha: str
-    kind: str  # what Claude Code calls the commit it saw: `committed`, and whatever else it writes
-
-
-@dataclass(frozen=True)
-class Pushed:
-    branch: str
-
-
-@dataclass(frozen=True)
-class Branched:
-    ref: str
-    action: str
-
-
-@dataclass(frozen=True)
-class PullRequested:
-    number: int
-    url: str
-    action: str
-
-
-# What a command did to the repository, as the result's `gitOperation` records it. One command can do several:
-# 70 records in a 900-transcript sample commit and push, and 30 open a pull request and push [LAW:types-are-the-program].
-GitChange = Committed | Pushed | Branched | PullRequested
 
 
 @dataclass(frozen=True)
@@ -304,6 +275,7 @@ def _changed(delta: Delta, budget: Budget) -> list[str]:
         if len(delta.commits) > budget.commits:
             made.append(f"  (and {len(delta.commits) - budget.commits} more commits)")
         told.append(f"It made {len(delta.commits)} commit{'' if len(delta.commits) == 1 else 's'}:\n" + "\n".join(made))
+    told.extend(_git(change) for change in delta.changes)
     if delta.patch:
         told.append(f"What changed:\n{_cut(delta.patch, budget.changes)}")
     return told
