@@ -21,6 +21,7 @@ from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
 from pipecat.transports.local.audio import LocalAudioTransportParams
 
 from hands.sessions.audit import Entry, PhoneArrived, PhoneLeft, PhoneRefused, PhoneUnreached
+from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
 from hands.voice.phone import Offer, Phone
@@ -251,9 +252,10 @@ class Desk:
 
 def a_transport(call: Call) -> tuple[KeyedAudioTransport, Desk, list[bytes]]:
     """The keyed transport on the call's gate and phone, its desk stream kept and its pushed audio kept."""
-    transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), call.key, call.phone)
+    echo = EchoCanceller()
+    transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), call.key, call.phone, lambda _: None, echo=lambda: echo)
     desk, pushed = Desk(), list[bytes]()
-    transport.output().attach(cast(PortAudio, SimpleNamespace()), Output(desk, "MacBook Pro Speakers"))
+    transport.output().attach(cast(PortAudio, SimpleNamespace()), Output(desk, "MacBook Pro Speakers", echo))
     microphone = transport.input()
     microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]  # as setup sets it
 
@@ -267,11 +269,12 @@ def a_transport(call: Call) -> tuple[KeyedAudioTransport, Desk, list[bytes]]:
 
 async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_to(call: Call) -> None:
     transport, desk, pushed = a_transport(call)
+    echo = cast(Output, transport.output().opened).echo  # the canceller the desk streams were attached with
     call.key.move("start", "desk")  # a turn opened at the desk takes hands there...
     assert call.key.gate.place == "desk"
     call.page.send("press")  # ...and one opened at the phone takes it back
     await call.until(lambda: call.key.gate.place == "phone")
-    transport.input()._audio_in_callback(b"\x7f\x7f" * 320, 320, None, 0)  # pyright: ignore[reportPrivateUsage]
+    transport.input()._captured(echo, b"\x7f\x7f" * 320, 320, None, 0)  # pyright: ignore[reportPrivateUsage]
     await asyncio.sleep(0.05)
     assert pushed == []
     speech = (np.full(24000 // 25, 6000, dtype=np.int16)).tobytes()

@@ -287,9 +287,9 @@ Need 8. Where the microphone is.
   the wake word and closes it when Silero reports the configured silence; the
   detector is deaf while the output transport plays. Done when a turn completes
   with no button and no own-voice words in the transcript, speakers on.
-- **Acoustic echo cancellation.** The macOS voice-processing audio unit replaces
-  PyAudio input, lifting half-duplex and closing the own-voice bleed bug. Done when
-  barge-in with speakers on yields a clean transcript.
+- **Acoustic echo cancellation.** WebRTC's AEC3 takes the speaker's echo out of
+  every desk microphone buffer, lifting the half-duplex mute and closing the own-voice
+  bleed bug. Done when barge-in with speakers on yields a clean transcript.
 
 ## Endurance (`hands-memory-5qk`)
 
