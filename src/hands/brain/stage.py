@@ -297,7 +297,8 @@ class BrainStage(FrameProcessor):
                 turn.calls[call] = name
             # [LAW:one-source-of-truth] why a turn failed is the wire's, as the API variants read it off their own calls: the
             # head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
-            # told before its 502. Claude Code asks again after most failures (ten times, 2.1.285): the latest request's is the turn's.
+            # told before its 502. Its own main turns are held final, so Claude Code asks once; a 401 it asks again after
+            # refreshing its login: the latest request's is the turn's.
             case Answering(exchange=exchange, status=status, limit=limit) if exchange in turn.exchanges:
                 turn.failure = limit or ModelFailed(classify_http_status_code(status))
             case Exchanged(exchange=exchange, reply=Unreached()) if exchange in turn.exchanges:

@@ -10,7 +10,7 @@ asked at all.
 """
 
 import json
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Awaitable, Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -43,6 +43,9 @@ from hands.sessions.replies import reply_reader, sent_of, shielded, spent
 
 # Headers that describe one hop's connection rather than the request or reply, so each hop sets its own.
 HOP_BY_HOP = frozenset({"connection", "content-length", "host", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"})
+
+# What the proxy answers a request it refuses on the API's behalf: one it could not reach, or one held final.
+REFUSED = 502
 
 Observe = Callable[[Observed], None]
 Router = Callable[[Sent], Route]
@@ -143,15 +146,16 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
         try:
             reached = await client.request(request.method, upstream + request.path_qs, headers=_end_to_end(request.headers), data=onward)
         except (aiohttp.ClientError, OSError) as error:
-            final = refusal == "final"
+            final = refusal == "final" and _asked_again(REFUSED, {})
             tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock()), final))
-            return web.Response(status=502, text=f"hands' proxy could not reach {upstream}: {error}", headers=_finality(CIMultiDict(), final))
+            return web.Response(status=REFUSED, text=f"hands' proxy could not reach {upstream}: {error}", headers=_told(final))
         async with reached:
             tell(Answering(exchange, reached.status, spent(reached.status, reached.headers)))
-            final = refusal == "final" and _retried(reached.status)
-            response = web.StreamResponse(status=reached.status, reason=reached.reason, headers=_finality(_end_to_end(reached.headers), final))
-            if "Content-Length" in reached.headers:
-                response.content_length = int(reached.headers["Content-Length"])
+            final = refusal == "final" and _asked_again(reached.status, reached.headers)
+            # [LAW:dataflow-not-control-flow] the API's bytes are read into the record either way; a final refusal goes
+            # on to the client as the proxy's own, which it ends on, since Claude Code asks again after a 529 or an
+            # overloaded_error whatever the header says (2.1.286). Whoever speaks the turn's failure reads it off the wire.
+            response, relay, closing = _refusal(reached, final)
             reader = reply_reader(kind, reached.headers, lambda event: tell(Heard(exchange, event)))
             first: Seconds | None = None
             ended: Seconds | None = None
@@ -166,10 +170,10 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                     # [LAW:no-ambient-temporal-coupling] read before it is written on: whatever the client does once it
                     # has these bytes, its result line on stdout included, comes after hands has heard them.
                     reader.feed(chunk)
-                    await response.write(chunk)
+                    await relay(chunk)
                 ended = clock()
                 reply = reader.finish()
-                await response.write_eof()
+                await response.write_eof(closing)
             except (aiohttp.ClientError, OSError) as error:
                 # Upstream dropped the reply, or the client hung up on it: either way the rest is not coming, and the
                 # client's connection ends as the upstream one did.
@@ -233,17 +237,32 @@ def _held(body: object, said: str) -> tuple[str, bytes]:
     return "text/event-stream", b"".join(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode() for name, data in events)
 
 
-def _retried(status: int) -> bool:
-    """Whether a client asks again after an answer with this status, as Anthropic's SDK does unless told otherwise."""
-    return status in (408, 409, 429) or status >= 500
+def _asked_again(status: int, headers: Mapping[str, str]) -> bool:
+    """Whether a client asks again after this answer, as Anthropic's SDK does: by its header when the API sent one, else
+    by its status. A 401 is left out: asking again after it is how the client refreshes its login, and that stays its own."""
+    told = headers.get("x-should-retry")
+    return told == "true" if told is not None else status in (408, 409, 429) or status >= 500
 
 
-def _finality(headers: CIMultiDict[str], final: bool) -> CIMultiDict[str]:
-    """`headers`, telling the client the refusal is final when it is, in place of whatever the API said: the SDK's own
-    header, read ahead of the status."""
+def _told(final: bool) -> dict[str, str]:
+    """The header that tells the client a refusal is final, the SDK's own, read ahead of the status."""
+    return {"x-should-retry": "false"} if final else {}
+
+
+async def _dropped(_chunk: bytes) -> None:
+    pass
+
+
+def _refusal(reached: aiohttp.ClientResponse, final: bool) -> tuple[web.StreamResponse, Callable[[bytes], Awaitable[None]], bytes]:
+    """The answer the client gets, how each of the API's bytes goes on to it, and what closes it: the API's own answer as
+    it came, or, when the refusal is final, the proxy's, saying what the API answered."""
     if final:
-        headers["x-should-retry"] = "false"
-    return headers
+        said = f"hands' proxy: the API answered {reached.status} {reached.reason}, and hands holds that final"
+        return web.StreamResponse(status=REFUSED, headers={"Content-Type": "text/plain; charset=utf-8", **_told(final)}), _dropped, said.encode()
+    response = web.StreamResponse(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers))
+    if "Content-Length" in reached.headers:
+        response.content_length = int(reached.headers["Content-Length"])
+    return response, response.write, b""
 
 
 def _end_to_end(headers: Mapping[str, str]) -> CIMultiDict[str]:

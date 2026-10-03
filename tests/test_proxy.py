@@ -274,35 +274,47 @@ async def test_an_api_that_cannot_be_reached_is_a_502_and_an_unreached_exchange(
     assert isinstance(exchange.reply, Unreached) and exchange.reply.failed_at == 7.0
 
 
+OVERLOADED = b'{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'
+
+
 @pytest.mark.parametrize(
-    ("refusal", "status", "final"),
+    ("refusal", "status", "retry", "final"),
     [
-        ("final", 500, True),
-        ("final", 502, True),
-        ("final", 529, True),
-        ("final", 429, True),
-        ("final", 408, True),
-        ("final", 409, True),
-        # Not asked again anyway; a 401 is how the client learns to refresh its login, and that stays its own to do.
-        ("final", 400, False),
-        ("final", 401, False),
-        ("final", 200, False),
-        ("retried", 529, False),
+        # Asked again by its status: 529 and an overloaded_error Claude Code asks again after whatever the header says.
+        ("final", 529, None, True),
+        ("final", 500, None, True),
+        ("final", 429, None, True),
+        ("final", 408, None, True),
+        ("final", 409, None, True),
+        # Asked again because the API said so, or not because it said not.
+        ("final", 400, "true", True),
+        ("final", 503, "false", False),
+        # Not asked again anyway; asking again after a 401 is how the client refreshes its login, and that stays its own.
+        ("final", 400, None, False),
+        ("final", 401, None, False),
+        ("final", 200, None, False),
+        ("retried", 529, None, False),
     ],
 )
-async def test_a_refusal_routed_final_tells_the_client_not_to_ask_again(
-    serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], refusal: Literal["retried", "final"], status: int, final: bool
+async def test_a_refusal_routed_final_is_the_proxys_own_502_the_client_does_not_ask_again_after(
+    serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], refusal: Literal["retried", "final"], status: int, retry: str | None, final: bool
 ) -> None:
     async def answered(_request: web.Request) -> web.Response:
-        return web.Response(status=status, body=b"{}", headers={"Content-Type": "application/json", "X-Should-Retry": "true"})
+        told = {} if retry is None else {"X-Should-Retry": retry}
+        return web.Response(status=status, body=OVERLOADED, headers={"Content-Type": "application/json", **told})
 
     _, wire = await serve(answered)
     wire.route = lambda _sent: Send(refusal=refusal)
     got, headers, body = await post(wire.proxy.url)
-    # The API's answer, with the one header told in place of what the API said, and only for an answer the client would ask again after.
-    retry = {name.lower(): value for name, value in headers.items()}["x-should-retry"]
-    assert (got, body, retry) == (status, b"{}", "false" if final else "true")
-    assert only_exchange(wire).final is final
+    told = {name.lower(): value for name, value in headers.items()}.get("x-should-retry")
+    if final:
+        # Nothing of the API's answer that Claude Code would ask again after reaches it.
+        assert (got, told, b"overloaded_error" in body, str(status).encode() in body) == (502, "false", False, True)
+    else:
+        assert (got, told, body) == (status, retry, OVERLOADED)
+    # The record is the API's answer, whatever the client was told.
+    exchange = only_exchange(wire)
+    assert isinstance(exchange.reply, Reached) and (exchange.reply.status, exchange.reply.reply_bytes, exchange.final) == (status, len(OVERLOADED), final)
 
 
 @pytest.mark.parametrize(("refusal", "final"), [("final", True), ("retried", False)])

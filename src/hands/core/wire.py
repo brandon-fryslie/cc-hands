@@ -895,7 +895,7 @@ class Exchanged:
     requested_at: Seconds
     sent_at: Seconds
     reply: Reached | Unreached | Held | Uncopied
-    # hands told the client this reply refuses it for good (x-should-retry: false), so it does not ask again.
+    # The client was answered the proxy's own refusal, told final (x-should-retry: false), in place of the API's answer.
     final: bool
 
 
