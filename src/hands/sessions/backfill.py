@@ -5,14 +5,14 @@ rather than from memory. [LAW:one-source-of-truth] the same fold the tail runs l
 what a session is told of a turn it lived through and what it is told of one it missed cannot differ in kind.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from loguru import logger
 
-from hands.core.turn import Asked, Happening, Interruption, Notified, Opening, Said, Step
+from hands.core.turn import Happening, Interruption, Opening, Said, Step, printed
 from hands.sessions.payload import Rejected
-from hands.sessions.transcript import turn_record
+from hands.sessions.transcript import Printed, turn_record
 from hands.sessions.turning import Turning
 
 
@@ -65,13 +65,19 @@ def read_transcript(transcript: Path) -> Reading:
         if record is None:
             continue
         match turning.consume(record):
-            case Asked() | Notified() as opening:
-                # The tail lets go of the turn before this one; a reading keeps every one of them, each in its place.
-                # What was asked is most of what a session's morning means: the steps alone say how, never what for.
-                openings.append(_Opened(len(turning.slots), opening))
+            case Printed(output=output) if openings:
+                # What the last command the user ran printed, which belongs to that opening, wherever in the order it lands.
+                openings[-1] = replace(openings[-1], opening=printed(openings[-1].opening, output))
+            case Printed():
+                # Printed before any opening was read: the command it is of is before where this transcript starts.
+                pass
             case Interruption() | None:
                 # An interruption is a step, and the turning has already put it in its place.
                 pass
+            case opening:
+                # The tail lets go of the turn before this one; a reading keeps every one of them, each in its place.
+                # What was asked is most of what a session's morning means: the steps alone say how, never what for.
+                openings.append(_Opened(len(turning.slots), opening))
     happenings, places = _in_order(turning.steps(), openings)
     return Reading(happenings, _settled(happenings, _waiting(turning, places)))
 
@@ -84,7 +90,7 @@ def _waiting(turning: Turning, places: list[int]) -> set[int]:
 # What proves a session moved on from a call it never answered: Claude writes no word and is asked nothing
 # new until every outstanding result is in, and a turn the user stopped runs nothing more, so any of these after an
 # open call means nothing is coming.
-_MOVED_ON = (Said, Asked, Notified, Interruption)
+_MOVED_ON = Said | Interruption | Opening
 
 
 def _settled(happenings: list[Happening], waiting: set[int]) -> int:

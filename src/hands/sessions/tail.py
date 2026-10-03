@@ -17,7 +17,7 @@ from loguru import logger
 from hands.core.events import Continued, Interrupted, Read, Taken, Transcribed
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.status import Stamp
-from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
+from hands.core.turn import Answering, Continuing, Interruption, Opening, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.transcript import prompt_of, turn_record, written_of
 from hands.sessions.turning import Turning
@@ -92,7 +92,7 @@ class Following:
         """Read one record into the turn, setting the turn before it aside where this record opens a new one, and
         saying where it cut the turn off."""
         edge = self.reading.turn.consume(record)
-        if isinstance(edge, Asked | Notified):
+        if isinstance(edge, Opening):
             self.open(edge)
         prompt = prompt_of(record)
         if prompt is not None:
@@ -100,7 +100,7 @@ class Following:
             self.reading.ids.add(prompt)
         return edge if isinstance(edge, Interruption) else None
 
-    def open(self, opening: Asked | Notified) -> None:
+    def open(self, opening: Opening) -> None:
         """A turn opened: the one before it is set aside until it is told, and nothing read of it counts for this one."""
         if self.reading.turn.opening is not None:
             # Bounded: a transcript is read from its start, and every turn before the daemon attached ends here untold.

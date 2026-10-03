@@ -111,6 +111,7 @@ async def recount(
             tuple(dict.fromkeys(segment.topic.name for segment in (*tree.sections, *tree.settled))),
             tuple(question.text for question in tree.questions),
             by_model=switch == "on" and did,
+            opened=type(told.turn.opening).__name__,
         )
     )
     # Marked told either way: a turn the switch kept quiet was heard as much as it will be, and is not told later.

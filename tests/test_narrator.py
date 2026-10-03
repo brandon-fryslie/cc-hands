@@ -117,7 +117,7 @@ async def test_a_finished_turn_is_handed_to_the_model_with_its_reply_and_the_ses
     assert "API Error" in told
     assert told.endswith("in one or two spoken sentences, naming the session. It asks the user nothing.")
     [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
-    assert recounted == Recounted(SID, told, ("what it said", "the commands"), (), by_model=True)
+    assert recounted == Recounted(SID, told, ("what it said", "the commands"), (), by_model=True, opened="Asked")
 
 
 async def test_the_brain_takes_a_finished_turn_as_a_narration_and_never_through_the_pipelines_context(tmp_path: Path) -> None:
@@ -212,7 +212,7 @@ async def test_with_summaries_off_a_finished_turn_is_not_told_and_turning_them_o
         relaying.cancel()
     assert "is waiting for permission to use Bash" in handed(heard)
     assert "Pushed." in told and "Fixed." not in told
-    assert Recounted(SID, "", ("what it said",), (), by_model=False) in recorded
+    assert Recounted(SID, "", ("what it said",), (), by_model=False, opened="Asked") in recorded
 
 
 async def test_with_summaries_off_a_turn_waiting_on_an_answer_still_asks_it_without_the_model(tmp_path: Path) -> None:

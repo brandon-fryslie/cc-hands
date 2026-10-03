@@ -10,7 +10,8 @@ from loguru import logger
 
 from hands.core.events import Continued, Interrupted, Read, Taken, Transcribed
 from hands.core.session import Membership, PromptId, RequestId, SessionId
-from hands.core.turn import Asked, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Turn
+from hands.core.turn import Asked, Commanded, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Shelled, Turn, describe
+from hands.voice.tools import TURN_SENTENCE_BUDGET
 from hands.core.effects import Summarise
 from hands.core.events import Attached, Joined, Prompted, StatusReported, Stopped
 from hands.core import status
@@ -1007,3 +1008,54 @@ async def test_a_first_record_still_being_written_explains_no_reading(tmp_path: 
     finally:
         logger.remove(sink)
     assert said == []
+
+
+# Claude Code's own records for what the user ran rather than wrote, in the shapes 2.1.285 writes them: the caveat
+# ahead of a command it carries out itself, the command, and what it printed; a skill command, whose skill body is a
+# meta record; and a `!` command with its output.
+CAVEAT = '{"type":"user","isMeta":true,"promptId":"p2","message":{"role":"user","content":"<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request.</local-command-caveat>"}}'
+MODEL = '{"type":"user","promptId":"p2","message":{"role":"user","content":"<command-name>/model</command-name>\\n            <command-message>model</command-message>\\n            <command-args></command-args>"}}'
+MODEL_SET = '{"type":"user","promptId":"p2","message":{"role":"user","content":"<local-command-stdout>Set model to `Sonnet 5.5` for this session only</local-command-stdout>"}}'
+COMPACT = '{"type":"user","promptId":"p2","message":{"role":"user","content":"<command-name>/compact</command-name>\\n            <command-message>compact</command-message>\\n            <command-args></command-args>"}}'
+COMPACTED = '{"type":"user","promptId":"p2","message":{"role":"user","content":"<local-command-stdout>\\u001b[2mCompacted (ctrl+o to see full summary)\\u001b[22m</local-command-stdout>"}}'
+SKILL = '{"type":"user","origin":{"kind":"human"},"promptId":"p2","message":{"role":"user","content":"<command-message>delegate-some-shit</command-message>\\n<command-name>/delegate-some-shit</command-name>\\n<command-args>lh86 to a subagent now</command-args>"}}'
+SKILL_BODY = '{"type":"user","isMeta":true,"promptId":"p2","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /skills/delegate"}]}}'
+SHELL = '{"type":"user","promptId":"p2","message":{"role":"user","content":"<bash-input>lit next</bash-input>"}}'
+SHELL_OUT = '{"type":"user","promptId":"p2","message":{"role":"user","content":"<bash-stdout>hands-narration-8ip  open</bash-stdout><bash-stderr>sync: 1 local change</bash-stderr>"}}'
+
+
+async def test_a_command_claude_code_carries_out_opens_one_turn_of_its_own_with_what_it_printed(tmp_path: Path) -> None:
+    """The bug this closes: /model's command and its output were each read as a prompt, so the tail opened two turns."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, CAVEAT, MODEL, MODEL_SET))
+    tails = await following(transcript)
+    assert await turn_of(transcript) == Turn(Commanded(None, "/model", "", "Set model to `Sonnet 5.5` for this session only"), ())
+    # The prompt's turn and the command's: its output opened no third.
+    assert tails._following[SID].reading.number == 2  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_what_compact_printed_reaches_the_turn_without_the_terminals_colours(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, COMPACT, COMPACTED))
+    assert await turn_of(transcript) == Turn(Commanded(None, "/compact", "", "Compacted (ctrl+o to see full summary)"), ())
+
+
+async def test_a_skill_command_opens_the_turn_claude_answers_with_its_arguments(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, SKILL, SKILL_BODY, DONE))
+    assert await turn_of(transcript) == Turn(Commanded(None, "/delegate-some-shit", "lh86 to a subagent now"), (Said(None, "Done."),))
+
+
+async def test_a_shell_command_opens_one_turn_with_its_output_and_no_markup(tmp_path: Path) -> None:
+    """The bug this closes: a `!` answer opened on its bash records, and the narrator was handed XML as what the user asked."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, SHELL, SHELL_OUT, DONE))
+    shelled = Shelled(None, "lit next", "hands-narration-8ip  open\nsync: 1 local change")
+    assert await turn_of(transcript) == Turn(shelled, (Said(None, "Done."),))
+    assert "<" not in describe(shelled, TURN_SENTENCE_BUDGET)
+
+
+async def test_what_a_command_run_while_a_turn_was_under_way_printed_is_no_part_of_that_turn(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, CALL, RESULT, MODEL_SET, DONE))
+    assert await turn_of(transcript) == Turn(Asked(None, "first"), (RAN, Said(None, "Done.")))

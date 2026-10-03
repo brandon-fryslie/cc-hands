@@ -27,7 +27,7 @@ from hands.core.session import Blocker, Membership, CommandName, Dialog, Held, I
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
 from hands.core.sentences import Due, turn_digest
-from hands.core.turn import Asked, Budget, Happening, Notified, body, describe, turns
+from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
 from hands.sessions.audit import Called, Record
@@ -323,11 +323,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
 def _opened(first: Happening) -> dict[str, object]:
     """How a turn with no sentence is told: by its request, or, in a transcript that starts part way through one, by the
     step it was first read at, which nobody asked for."""
-    match first:
-        case Asked() | Notified():
-            return {"asked": describe(first, READBACK_BUDGET)}
-        case _:
-            return {"began": describe(first, READBACK_BUDGET)}
+    return {"asked" if isinstance(first, Opening) else "began": describe(first, READBACK_BUDGET)}
 
 
 async def _session_reading(sessions: Sessions, session: str) -> tuple[Membership, Reading] | str:
