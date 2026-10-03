@@ -38,30 +38,40 @@ async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[
     started here, its output goes to files, and a daemon thread of its own blocks on its exit and reads what it
     wrote — no task for the shutdown to cancel, no executor for the exit to join, and the loop never blocks.
     """
-    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+    out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+    try:
         # A session of its own, so its process group is everything it starts: a git's filters, a lit's helpers.
         process = subprocess.Popen(
             argv, cwd=cwd, env=None if env is None else dict(env), stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True
         )
-        ended = settles_off_loop(lambda: _ended(process, out, err), name=f"child {argv[0]} {process.pid}")
-        try:
-            return await asyncio.wait_for(asyncio.shield(ended), timeout)
-        except BaseException as error:
-            # The group outlives a leader that has already exited; one already gone has nothing left to kill.
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
-            why = f"it ran past {timeout:.1f}s" if isinstance(error, TimeoutError) else "its caller stopped waiting"
-            logger.info(f"killed {argv[0]} ({process.pid}) and everything it started, because {why}")
-            # Reaped by its own thread, which the kill releases; the loop stays live while a child the kill cannot
-            # end at once, one in uninterruptible I/O, finishes dying.
-            await asyncio.shield(ended)
-            if isinstance(error, TimeoutError):
-                raise TimeoutError(f"{argv[0]} ran past {timeout:.1f}s") from None
-            raise
+    except BaseException:
+        out.close()
+        err.close()
+        raise
+    # The files are the thread's from here, and it closes them: a caller that leaves early cannot pull them from
+    # under the read.
+    ended = settles_off_loop(lambda: _ended(process, out, err), name=f"child {argv[0]} {process.pid}")
+    try:
+        return await asyncio.wait_for(asyncio.shield(ended), timeout)
+    except BaseException as error:
+        # The group outlives a leader that has already exited. One whose processes have all exited has nothing
+        # left to kill: gone, ProcessLookupError; exited but not yet reaped, macOS says PermissionError.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)
+        why = f"it ran past {timeout:.1f}s" if isinstance(error, TimeoutError) else "its caller stopped waiting"
+        logger.info(f"killed {argv[0]} ({process.pid}) and everything it started, because {why}")
+        # Reaped by its own thread, which the kill releases; the loop stays live while a child the kill cannot
+        # end at once, one in uninterruptible I/O, finishes dying. A caller told twice to stop leaves without
+        # waiting, and the thread reaps it all the same.
+        await asyncio.shield(ended)
+        if isinstance(error, TimeoutError):
+            raise TimeoutError(f"{argv[0]} ran past {timeout:.1f}s") from None
+        raise
 
 
 def _ended(process: subprocess.Popen[bytes], out: IO[bytes], err: IO[bytes]) -> Ran:
-    returncode = process.wait()
-    out.seek(0)
-    err.seek(0)
-    return Ran(returncode, out.read(), err.read())
+    with out, err:
+        returncode = process.wait()
+        out.seek(0)
+        err.seek(0)
+        return Ran(returncode, out.read(), err.read())

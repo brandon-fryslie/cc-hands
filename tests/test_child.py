@@ -78,6 +78,18 @@ async def test_a_child_whose_caller_stops_waiting_is_killed_and_reaped(started: 
     assert any(f"killed sleep ({started[0].pid})" in line and "its caller stopped waiting" in line for line in logged)
 
 
+async def test_a_child_that_ended_as_it_was_killed_still_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    # What macOS says to a kill of a group whose processes have all exited but are not yet reaped.
+    def exited(_pgid: int, _signal: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(child.os, "killpg", exited)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await run("sleep", "0.4", timeout=0.1)
+    assert time.monotonic() - started >= 0.3, "it left before the child it could not kill was reaped"
+
+
 async def test_a_child_that_cannot_start_says_so() -> None:
     with pytest.raises(OSError):
         await run("/nonexistent/hands-no-such-program", timeout=5)
