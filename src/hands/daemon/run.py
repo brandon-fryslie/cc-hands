@@ -260,7 +260,7 @@ async def mind(
             server = await serve_mcp(tools, record)
             try:
                 station = Station(config_dir, workdir(config_dir), model, proxy_url)
-                brain = await start_brain(Launch(station, brain_instruction(log), server.config(), SessionId(str(uuid4())), fritter), record)
+                brain = await start_brain(Launch(station, brain_instruction(log, config_dir), server.config(), SessionId(str(uuid4())), fritter), record)
                 try:
                     # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
                     # its own: nothing but the user's turns and their stops is ever typed into the brain.
