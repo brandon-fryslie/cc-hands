@@ -16,19 +16,20 @@ import shutil
 import tempfile
 import time
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast, overload
 
 from loguru import logger
 
 from hands.core.delta import Branched, Changed, Commit, Delta, PullRequested, Pushed
 from hands.core.session import SessionId
-from hands.sessions.audit import DeltaRead, DeltaReadOutcome, Forge, Record
+from hands.sessions.audit import Record
 from hands.sessions.child import run
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
+from hands.sessions.wide import annotate, count, unit
 
 # What a mark may spend, all its git commands together. It is taken while a prompt's hook waits on the daemon,
 # and the shim gives up after POST_TIMEOUT_SECONDS and prints that it cannot reach the daemon — so a mark that
@@ -97,6 +98,27 @@ class Mark:
 Marking = asyncio.Future[Mark | None]
 
 
+# Whether the forge was asked about the pull requests of the branch a turn pushed, and what came of it: not asked
+# where the turn pushed nothing or pushed its remote's default branch, which no pull request is opened from; absent
+# where there is no gh to ask; unanswered where it was too slow, and refused where gh would not list or answered in
+# a shape hands does not read.
+Forge = Literal["unasked", "absent", "answered", "unanswered", "refused"]
+
+# How a turn's reading went: no mark to read against (no repository, or one that could not be read), too many readings
+# already waiting to be told, or read.
+Reading = Literal["unmarked", "dropped", "read"]
+
+# Which index a snapshot started from: the repository's own; none, because the copy failed, as it does before a first
+# commit; or none, because git would not say where the index is.
+Index = Literal["copied", "empty", "unlocated"]
+
+# [LAW:nothing-unseen] the git commands that did not answer, on the mark's event and the reading's alike: a git that timed
+# out or would not start leaves the same empty answer as a repository with nothing in it, and this tells them apart.
+_MARK_COUNTS = ("git_unanswered",)
+# The counts a reading's event always carries, 0 where it found none or never got as far as looking.
+_READ_COUNTS = ("commits", "files", *_MARK_COUNTS)
+
+
 @dataclass(frozen=True)
 class Asked:
     """Whether the forge was asked about a pushed branch's pull requests, and how long it took to answer or not."""
@@ -161,14 +183,15 @@ class Deltas:
         marking: Marking = asyncio.get_running_loop().create_future()
         self._marks[session] = marking
         mark = None
-        try:
-            mark = await self._mark(cwd, time.monotonic() + self._marking)
-        finally:
-            # [LAW:no-silent-failure] answered however this ends, a hook that gave up included, so no reading waits on it for ever.
-            marking.set_result(mark)
-        if mark is None:
-            # Not a repository, or one that cannot be read: the turn is told by its steps, which is most of it.
-            logger.debug(f"nothing to compare a turn of session {session} against in {cwd}")
+        with unit("delta.mark", self._record, _MARK_COUNTS):
+            annotate(session=session)
+            try:
+                mark = await self._mark(cwd, time.monotonic() + self._marking)
+            finally:
+                # [LAW:no-silent-failure] answered however this ends, a hook that gave up included, so no reading waits on it for ever.
+                marking.set_result(mark)
+            # Not marked: not a repository, or one that cannot be read, so the turn is told by its steps, which is most of it.
+            annotate(marked=mark is not None)
 
     async def compare(self, session: SessionId, again: bool) -> None:
         """Take the turn's place in the order and start reading what it changed. Waits for none of it.
@@ -183,7 +206,8 @@ class Deltas:
         its telling [LAW:no-silent-failure].
         """
         held = self._readings.setdefault(session, deque())
-        start = (self._reached if again else self._marks).pop(session, None)
+        # A turn nothing marked, which a daemon started mid-turn has, is read as one marked outside a repository.
+        start = (self._reached if again else self._marks).pop(session, None) or _unmarked()
         # [LAW:no-ambient-temporal-coupling] where this reading finds the repository is where the turn goes on from if
         # another Stop hook blocked its Stop: the part going on is read against it, so a file changed after the first
         # Stop is told with the second, however the reading and the work interleave.
@@ -195,17 +219,12 @@ class Deltas:
             # they queue unbounded — so evicting the front would hand every telling after it the delta of
             # the turn after its own, which is the one thing `taken` exists to prevent. Dropped from the
             # back, every turn that has a delta has its own [LAW:no-ambient-temporal-coupling].
-            logger.warning(f"{HELD} deltas of session {session} are already waiting to be told, so this turn is told without one")
             end.set_result(None)
-            self._record(DeltaRead(session, "dropped", 0, 0, (), UNASKED.forge, UNASKED.seconds, 0.0))
+            with unit("delta.read", self._record, _READ_COUNTS):
+                self._told(session, "dropped")
             return
         pending: asyncio.Future[Delta] = asyncio.get_running_loop().create_future()
         held.append(pending)
-        if start is None:
-            pending.set_result(Delta())
-            end.set_result(None)
-            self._record(DeltaRead(session, "unmarked", 0, 0, (), UNASKED.forge, UNASKED.seconds, 0.0))
-            return
         task = asyncio.create_task(self._read(session, pending, start, end), name=f"what a turn of session {session} changed")
         # Held, because the loop keeps only a weak reference and would collect a task nobody is awaiting.
         self._running.add(task)
@@ -234,29 +253,30 @@ class Deltas:
     async def _read(self, session: SessionId, pending: asyncio.Future[Delta], start: Marking, end: Marking) -> None:
         """[LAW:no-silent-failure] whatever happens here, whoever is waiting is answered rather than left."""
         began = time.monotonic()
-        delta, reached, asked = Delta(), None, UNASKED
-        outcome: DeltaReadOutcome = "unmarked"
+        delta, reached = Delta(), None
         try:
-            mark = await start
-            if mark is not None:
-                delta, reached, asked = await self._between(mark, time.monotonic() + self._reading, began + self._patience - SPARE)
-                outcome = "read"
-        except asyncio.CancelledError:
-            outcome = "cancelled"
-            raise
-        except Exception as error:
-            outcome = "failed"
-            logger.error(f"what a turn changed could not be read: {type(error).__name__}: {error}")
+            # [LAW:nothing-unseen] one event for every reading however it ended, so a turn told without its delta can be
+            # told apart from one that changed nothing, and a slow forge from a slow repository.
+            with unit("delta.read", self._record, _READ_COUNTS):
+                mark = await start
+                self._told(session, "unmarked" if mark is None else "read")
+                if mark is not None:
+                    delta, reached, asked = await self._between(mark, time.monotonic() + self._reading, began + self._patience - SPARE)
+                    annotate(changes=delta.changes, forge=asked.forge, forge_seconds=asked.seconds)
+                    count(commits=len(delta.commits), files=len(delta.files))
+        except Exception:
+            # A reading that raised is a failed event, which says what it raised; the turn is told without its delta.
+            pass
         finally:
             # Answered however this ends, a cancelled reading included, so the part going on never waits on it for ever.
             end.set_result(reached)
-            # [LAW:nothing-unseen] one line for every reading however it ended, so a turn told without its delta can be
-            # told apart from one that changed nothing, and a slow forge from a slow repository.
-            self._record(
-                DeltaRead(session, outcome, len(delta.commits), len(delta.files), delta.changes, asked.forge, asked.seconds, round(time.monotonic() - began, 3))
-            )
         if not pending.done():
             pending.set_result(delta)
+
+    @staticmethod
+    def _told(session: SessionId, reading: Reading) -> None:
+        """[LAW:types-are-the-program] what every reading's event says of itself, in one place, whichever way it went."""
+        annotate(session=session, reading=reading)
 
     async def _mark(self, cwd: Path, deadline: float) -> Mark | None:
         at = datetime.now(UTC)
@@ -298,7 +318,7 @@ class Deltas:
         refs = await self._refs(mark.root, deadline)
         # Beside the tree and not before it: the forge is a network away where git is a disk away, and the narrator
         # gives up on the whole reading at once, so a forge read first spends the commit's time on a pull request.
-        (files, patch, tree), (changes, asked) = await asyncio.gather(self._worked(mark, deadline), self._moved(mark, refs, deadline, forging))
+        (files, patch, tree), (changes, asked) = await _settled(self._worked(mark, deadline), self._moved(mark, refs, deadline, forging))
         # [LAW:parse-dont-validate] as in _mark: where the repository stands is known only if both were read, and a HEAD
         # that would not answer is no commit only where git says there is none yet.
         reached = None if tree is None or (head is None and not await self._unborn(mark.root, deadline)) else Mark(mark.root, head, tree, refs, at)
@@ -371,8 +391,8 @@ class Deltas:
         tracking = [name for name in refs.named if name.startswith("refs/remotes/") and name.split("/", 3)[3:] == [branch]]
         # A ref the turn left where it found it was pushed nothing, whatever its log says.
         moved = [name for name in tracking if mark.refs.named.get(name) != refs.named[name]]
-        made, pushes = await asyncio.gather(
-            self._made(mark.root, mark.refs.named, branch, tracking, since, deadline), asyncio.gather(*(self._pushed(mark.root, name, mark.refs.named.get(name), deadline) for name in moved))
+        made, *pushes = await _settled(
+            self._made(mark.root, mark.refs.named, branch, tracking, since, deadline), *(self._pushed(mark.root, name, mark.refs.named.get(name), deadline) for name in moved)
         )
         pushed = any(pushes)
         # [LAW:carrying-cost] no pull request is opened from a remote's default branch, and most pushes are to it: asking
@@ -457,6 +477,7 @@ class Deltas:
         with tempfile.TemporaryDirectory(prefix="hands-index-") as scratch:
             index = Path(scratch) / "index"
             known = await self._git(root, "rev-parse", "--git-path", "index", deadline=deadline)
+            started: Index = "unlocated"
             if known is not None:
                 try:
                     # With its mtime: git re-reads a file whose stat matches its entry only when the file is as new
@@ -467,9 +488,13 @@ class Deltas:
                         index.write_bytes(real.read())
                         written = os.fstat(real.fileno()).st_mtime_ns
                     os.utime(index, ns=(written, written))
+                    started = "copied"
                 except OSError as error:
                     # Missing before a first commit, or being rewritten as this read it: start from nothing.
-                    logger.debug(f"the index of {root} could not be copied, so the snapshot reads every file: {error}")
+                    started = "empty"
+                    annotate(index_error=str(error))
+            # [LAW:nothing-unseen] which index the snapshot started from: the repository's own, or none, which reads every file.
+            annotate(index=started)
             env = {"GIT_INDEX_FILE": str(index)}
             if await self._git(root, "add", "-A", env=env, deadline=deadline) is None:
                 return None
@@ -485,6 +510,7 @@ class Deltas:
         """
         left = deadline - time.monotonic()
         if left <= 0:
+            count(git_unanswered=1)
             logger.warning(f"there was no time left to run git {args[0]} in {cwd}, so the turn is told without it")
             return None
         try:
@@ -492,15 +518,46 @@ class Deltas:
                 "git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**self._inherited, "GIT_OPTIONAL_LOCKS": "0", **(env or {})}
             )
         except TimeoutError:
+            count(git_unanswered=1)
             logger.error(f"git {args[0]} in {cwd} did not answer in {left:.1f}s, so the turn is told without it")
             return None
         except OSError as error:
+            count(git_unanswered=1)
             logger.error(f"cannot run git in {cwd}: {error}")
             return None
         if ran.returncode != 0:
             logger.debug(f"git {args[0]} in {cwd}: {ran.err.decode(errors='replace').strip()}")
             return None
         return ran.out.decode(errors="replace").strip()
+
+
+@overload
+async def _settled[A, B](first: Awaitable[A], second: Awaitable[B], /) -> tuple[A, B]: ...
+@overload
+async def _settled[T](*sides: Awaitable[T]) -> tuple[T, ...]: ...
+async def _settled(*sides: Awaitable[object]) -> tuple[object, ...]:
+    """Every side of a reading run together and waited out, then what each gave; where any raised, all they raised.
+
+    [LAW:single-enforcer] the one way a reading runs its sides at once. Waited out, so a side that raises does not end the
+    reading while another runs on and writes to its event after it has ended [LAW:no-ambient-temporal-coupling]. Not a
+    TaskGroup: on shutdown it cancels its children a second time, and a child told twice to stop leaves its git unreaped.
+    """
+    gave = await asyncio.gather(*sides, return_exceptions=True)
+    raised = [side for side in gave if isinstance(side, BaseException)]
+    # A side cancelled on its own, as the loop's shutdown cancels every task at once, is the reading cancelled: raised
+    # as a cancellation, it is told as one and goes on up, where in a group it would be told as a failure.
+    if any(isinstance(side, asyncio.CancelledError) for side in raised):
+        raise asyncio.CancelledError
+    if raised:
+        raise BaseExceptionGroup("what a turn changed could not be read", raised)
+    return tuple(gave)
+
+
+def _unmarked() -> Marking:
+    """A mark already answered with nothing to read against."""
+    marking: Marking = asyncio.get_running_loop().create_future()
+    marking.set_result(None)
+    return marking
 
 
 def _request(entry: object, since: datetime) -> PullRequested | None:

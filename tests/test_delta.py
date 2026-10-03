@@ -17,9 +17,10 @@ from hands.core.events import Closed, Ended, Joined, Prompted, StatusReported, S
 from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
-from hands.sessions.audit import DeltaRead, Entry
+from hands.sessions.audit import Entry
 from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Asked, Deltas, Mark
 from hands.sessions.registry import Sessions
+from hands.sessions.wide import WideEvent
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
 STOP_HEARD = Stamp(1500)
@@ -69,6 +70,11 @@ async def turn(root: Path, work: object = None, record: list[Entry] | None = Non
         work()
     await deltas.compare(SID, again=False)
     return await deltas.taken(SID)
+
+
+def readings(record: list[Entry]) -> list[WideEvent]:
+    """The event of each reading in record, in the order they ended."""
+    return [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.read"]
 
 
 async def test_a_turn_whose_only_change_came_from_a_shell_command_names_the_file_it_changed(tmp_path: Path) -> None:
@@ -344,7 +350,7 @@ async def test_the_forge_is_not_asked_about_a_push_to_the_default_branch(tmp_pat
     delta = await turn(root, push, record)
     assert delta.changes == (Pushed(git(root, "branch", "--show-current")),)
     assert not asked.exists()
-    assert [entry.forge for entry in record if isinstance(entry, DeltaRead)] == ["unasked"]
+    assert [event.facts["forge"] for event in readings(record)] == ["unasked"]
 
 
 async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -366,8 +372,8 @@ async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit
     delta = await deltas.taken(SID)
     assert [commit.subject for commit in delta.commits] == ["tidy"]
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
-    [read] = [entry for entry in record if isinstance(entry, DeltaRead)]
-    assert read.forge == "unanswered" and read.seconds < 1.0
+    [read] = readings(record)
+    assert read.facts["forge"] == "unanswered" and read.duration_ms < 1000
 
 
 async def test_a_forge_that_refuses_is_told_apart_from_a_slow_one_and_nothing_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -388,7 +394,7 @@ async def test_a_forge_that_refuses_is_told_apart_from_a_slow_one_and_nothing_fa
     finally:
         logger.remove(sink)
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
-    assert [entry.forge for entry in record if isinstance(entry, DeltaRead)] == ["refused"]
+    assert [event.facts["forge"] for event in readings(record)] == ["refused"]
     assert errors == []
 
 
@@ -409,7 +415,7 @@ async def test_a_machine_with_no_gh_has_no_forge_to_ask_and_nothing_failed(tmp_p
     finally:
         logger.remove(sink)
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
-    assert [entry.forge for entry in record if isinstance(entry, DeltaRead)] == ["absent"]
+    assert [event.facts["forge"] for event in readings(record)] == ["absent"]
     assert errors == []
 
 
@@ -431,16 +437,44 @@ async def test_each_reading_is_one_audit_line_with_what_it_found_and_what_the_fo
 
     record: list[Entry] = []
     await turn(root, open_one, record)
-    [read] = record
-    assert isinstance(read, DeltaRead)
-    assert (read.session, read.outcome, read.commits, read.files, read.forge) == (SID, "read", 1, 0, "answered")
-    assert read.changes == (Branched("fix", "created branch"), Pushed("fix"), PullRequested(7, "https://x/7", "created"))
+    [read] = readings(record)
+    assert (read.outcome, read.counts) == ("ok", {"commits": 1, "files": 0, "git_unanswered": 0})
+    assert (read.facts["session"], read.facts["reading"], read.facts["forge"]) == (SID, "read", "answered")
+    assert read.facts["changes"] == (Branched("fix", "created branch"), Pushed("fix"), PullRequested(7, "https://x/7", "created"))
 
 
-async def test_a_turn_outside_a_repository_is_one_unmarked_audit_line(tmp_path: Path) -> None:
+async def test_a_turn_outside_a_repository_is_one_unmarked_reading_that_counts_nothing_and_asks_no_forge(tmp_path: Path) -> None:
     record: list[Entry] = []
     await turn(tmp_path, None, record)
-    assert [(entry.outcome, entry.forge) for entry in record if isinstance(entry, DeltaRead)] == [("unmarked", "unasked")]
+    [read] = readings(record)
+    assert (read.outcome, read.facts["reading"], read.counts) == ("ok", "unmarked", {"commits": 0, "files": 0, "git_unanswered": 0})
+    assert "forge" not in read.facts and "index" not in read.facts
+
+
+async def test_a_reading_says_which_index_its_snapshot_started_from_and_counts_zero_where_nothing_changed(tmp_path: Path) -> None:
+    root = repo(tmp_path)
+    record: list[Entry] = []
+    await turn(root, None, record)
+    [mark] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.mark"]
+    [read] = readings(record)
+    assert (mark.outcome, mark.facts) == ("ok", {"session": SID, "index": "copied", "marked": True})
+    assert (read.outcome, read.counts) == ("ok", {"commits": 0, "files": 0, "git_unanswered": 0})
+    assert read.facts == {"session": SID, "reading": "read", "index": "copied", "changes": (), "forge": "unasked", "forge_seconds": 0.0}
+    # Two units of work, neither opened inside the other: two traces.
+    assert mark.trace_id != read.trace_id
+
+
+async def test_a_repository_with_no_index_yet_is_snapshotted_from_an_empty_one_and_says_why(tmp_path: Path) -> None:
+    root = tmp_path / "work"
+    git(tmp_path, "init", "-q", str(root))
+    (root / "a.py").write_text("x = 1\n")
+    record: list[Entry] = []
+    await turn(root, lambda: (root / "b.py").write_text("y = 2\n"), record)
+    [mark] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.mark"]
+    [read] = readings(record)
+    assert mark.facts["index"] == read.facts["index"] == "empty"
+    assert "No such file" in str(mark.facts["index_error"])
+    assert read.counts == {"commits": 0, "files": 1, "git_unanswered": 0}
 
 
 async def test_a_session_whose_directory_is_gone_is_not_logged_as_git_failing_to_start(tmp_path: Path) -> None:
@@ -764,12 +798,32 @@ async def test_a_mark_that_ran_out_of_time_reading_where_it_stands_is_no_mark_at
         git(root, "add", "-A")
         git(root, "commit", "-qm", f"made long before this turn {n}")
 
-    deltas = Slow(record=lambda _entry: None, inherited=os.environ)
+    record: list[Entry] = []
+    deltas = Slow(record=record.append, inherited=os.environ)
     await deltas.snapshot(SID, root)
     (root / "during.py").write_text("the turn's own work\n")
     await deltas.compare(SID, again=False)
     # No mark, so no delta: the turn is told by its steps alone, which is the one honest answer here.
     assert await deltas.taken(SID) == Delta()
+    # And the mark's event says git went unanswered, which is not the same as a directory with no repository in it.
+    [mark] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.mark"]
+    assert mark.facts["marked"] is False and mark.counts["git_unanswered"] >= 1
+
+
+class Unlocated(Deltas):
+    """A repository whose git will not say where its index is."""
+
+    async def _git(self, cwd: Path, *args: str, env: Mapping[str, str] | None = None, deadline: float) -> str | None:
+        return None if args[:2] == ("rev-parse", "--git-path") else await super()._git(cwd, *args, env=env, deadline=deadline)
+
+
+async def test_a_snapshot_whose_index_git_would_not_locate_says_so_and_not_that_it_was_empty(tmp_path: Path) -> None:
+    root = repo(tmp_path)
+    record: list[Entry] = []
+    deltas = Unlocated(record=record.append, inherited=os.environ)
+    await deltas.snapshot(SID, root)
+    [mark] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.mark"]
+    assert mark.facts["index"] == "unlocated" and "index_error" not in mark.facts
 
 
 def piled(root: Path, count: int) -> None:
@@ -810,7 +864,7 @@ async def test_more_turns_than_can_be_held_lose_the_newest_deltas_and_never_the_
     told = [await deltas.taken(SID) for _ in range(HELD + 2)]
     assert [[file.path for file in delta.files] for delta in told[:HELD]] == [[f"turn{n}.py"] for n in range(HELD)]
     assert told[HELD:] == [Delta(), Delta()]
-    assert sorted(entry.outcome for entry in record if isinstance(entry, DeltaRead)) == ["dropped"] * 2 + ["read"] * HELD
+    assert sorted(str(event.facts["reading"]) for event in readings(record)) == ["dropped"] * 2 + ["read"] * HELD
 
 
 class Exploding(Deltas):
@@ -818,6 +872,13 @@ class Exploding(Deltas):
 
     async def _between(self, mark: Mark, deadline: float, forging: float) -> tuple[Delta, Mark | None, Asked]:
         raise RuntimeError("a bug")
+
+
+class Unforged(Deltas):
+    """A reading whose forge side raises while its tree is still being read, as a bug in it would."""
+
+    async def _moved(self, mark: Mark, refs: object, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
+        raise RuntimeError("the forge side broke")
 
 
 class Endless(Deltas):
@@ -835,7 +896,68 @@ async def test_a_reading_that_raises_is_one_failed_audit_line(tmp_path: Path) ->
     await deltas.snapshot(SID, root)
     await deltas.compare(SID, again=False)
     assert not await deltas.taken(SID)
-    assert [entry.outcome for entry in record if isinstance(entry, DeltaRead)] == ["failed"]
+    assert [event.outcome for event in readings(record)] == ["failed"]
+
+
+async def test_a_reading_whose_one_side_raises_ends_the_other_with_it_and_says_what_was_raised(tmp_path: Path) -> None:
+    """The tree side would otherwise run on after the reading ended, and add what it found to an event already written."""
+    root = repo(tmp_path)
+    record: list[Entry] = []
+    deltas = Unforged(record=record.append, inherited=os.environ)
+    await deltas.snapshot(SID, root)
+    (root / "a.py").write_text("x = 2\n")
+    await deltas.compare(SID, again=False)
+    assert not await deltas.taken(SID)
+    [read] = readings(record)
+    assert read.outcome == "failed" and "RuntimeError: the forge side broke" in read.trace
+    assert any("in _moved" in line for line in read.trace)
+    # Nothing is left running to write to it.
+    assert asyncio.all_tasks() == {asyncio.current_task()}
+
+
+class Halted(Deltas):
+    """A reading whose forge side is cancelled on its own, as the loop's shutdown cancels every task at once."""
+
+    async def _moved(self, mark: Mark, refs: object, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
+        raise asyncio.CancelledError
+
+
+async def test_a_reading_whose_one_side_is_cancelled_is_a_cancelled_reading_and_not_a_failed_one(tmp_path: Path) -> None:
+    root = repo(tmp_path)
+    record: list[Entry] = []
+    deltas = Halted(record=record.append, inherited=os.environ)
+    await deltas.snapshot(SID, root)
+    await deltas.compare(SID, again=False)
+    [reading] = [task for task in asyncio.all_tasks() if task.get_name().startswith("what a turn of session")]
+    with pytest.raises(asyncio.CancelledError):
+        await reading
+    assert [event.outcome for event in readings(record)] == ["cancelled"]
+
+
+class Unmade(Deltas):
+    """A reading that cannot tell whether the turn made its branch, raising while it reads whether the turn pushed it."""
+
+    async def _made(self, root: Path, known: Mapping[str, str], branch: str, tracking: list[str], since: int, deadline: float) -> bool:
+        raise ValueError("a reflog line in a shape hands does not read")
+
+    async def _pushed(self, root: Path, name: str, was: str | None, deadline: float) -> bool:
+        # Slower than the branch side, so a reading that did not wait it out would end with it still running.
+        await asyncio.sleep(0.2)
+        return await super()._pushed(root, name, was, deadline)
+
+
+async def test_a_branch_reading_that_raises_waits_out_the_push_reading_beside_it(tmp_path: Path) -> None:
+    root = published(tmp_path)
+    record: list[Entry] = []
+    deltas = Unmade(record=record.append, inherited=os.environ)
+    await deltas.snapshot(SID, root)
+    git(root, "checkout", "-q", "-b", "fix")
+    git(root, "push", "-q", "-u", "origin", "fix")
+    await deltas.compare(SID, again=False)
+    assert not await deltas.taken(SID)
+    [read] = readings(record)
+    assert read.outcome == "failed" and "ValueError: a reflog line in a shape hands does not read" in read.trace
+    assert asyncio.all_tasks() == {asyncio.current_task()}
 
 
 async def test_a_reading_cancelled_by_the_shutdown_is_one_cancelled_audit_line(tmp_path: Path) -> None:
@@ -849,7 +971,7 @@ async def test_a_reading_cancelled_by_the_shutdown_is_one_cancelled_audit_line(t
     reading.cancel()
     with pytest.raises(asyncio.CancelledError):
         await reading
-    assert [entry.outcome for entry in record if isinstance(entry, DeltaRead)] == ["cancelled"]
+    assert [event.outcome for event in readings(record)] == ["cancelled"]
 
 
 class Torn(Deltas):

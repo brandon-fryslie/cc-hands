@@ -19,7 +19,6 @@ import fcntl
 import json
 import os
 import re
-import traceback
 from bisect import bisect_right
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
@@ -36,13 +35,13 @@ if TYPE_CHECKING:
     from loguru import Message
 
 from hands.core.attention import Amount, Attention, Delivery, EndedRoute, Overlay, Route
-from hands.core.delta import Branched, PullRequested, Pushed
 from hands.core.effects import AfterEnd, Allow, AuditRecord, Deny, Effect, Heard, Holding, Input, Type, Unclosed, Unmatched, Unregistered, Unsettled
 from hands.core.events import Event
 from hands.core.place import Place
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
 from hands.sessions.model_facts import ModelFact
+from hands.sessions.wide import WideEvent, chain
 
 
 @dataclass(frozen=True)
@@ -532,34 +531,6 @@ class TurnsSummarised:
     seconds: float
 
 
-# Whether the forge was asked about the pull requests of the branch a turn pushed, and what came of it: not asked
-# where the turn pushed nothing or pushed its remote's default branch, which no pull request is opened from; absent
-# where there is no gh to ask; unanswered where it was too slow, and refused where gh would not list or answered in
-# a shape hands does not read.
-Forge = Literal["unasked", "absent", "answered", "unanswered", "refused"]
-
-DeltaReadOutcome = Literal["unmarked", "dropped", "read", "failed", "cancelled"]
-
-
-@dataclass(frozen=True)
-class DeltaRead:
-    """One reading of what a turn changed in its repository, one per turn that stopped.
-
-    `outcome` is "unmarked" where nothing marked where the turn began (no repository, or one that could not be read),
-    "dropped" where too many readings were already waiting to be told, "read" where git answered, and "failed" or
-    "cancelled" where the reading did not finish. `seconds` is what the narrator may have waited through for it.
-    """
-
-    session: str
-    outcome: DeltaReadOutcome
-    commits: int
-    files: int
-    changes: tuple[Pushed | Branched | PullRequested, ...]
-    forge: Forge
-    forge_seconds: float
-    seconds: float
-
-
 NamingOutcome = Literal["renamed", "kept", "unread", "failed", "refused"]
 
 
@@ -698,7 +669,6 @@ Entry = (
     | Recounted
     | Summarised
     | TurnsSummarised
-    | DeltaRead
     | Named
     | NameGiven
     | NameWithheld
@@ -706,13 +676,14 @@ Entry = (
     | Restarting
     | Rolled
     | Failure
+    | WideEvent
 )
 Record = Callable[[Entry], None]
 Level = Literal["error", "info"]
 
 
 def level(entry: Entry) -> Level:
-    """Whether a line tells of something that went wrong: a Failure; an effect, a backlog read, a turn's reading or a
+    """Whether a line tells of something that went wrong: a Failure; an effect, a backlog read, a unit of work or a
     name that failed; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
     broke off; a tool that answered with an error; or a brain turn or side question that came to nothing."""
     # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
@@ -731,7 +702,7 @@ def level(entry: Entry) -> Level:
             return "error" if failed else "info"
         case Called(result=result):
             return "error" if "error" in result else "info"
-        case DeltaRead(outcome=outcome):
+        case WideEvent(outcome=outcome):
             return "error" if outcome == "failed" else "info"
         case Named(outcome=outcome):
             return "error" if outcome in ("unread", "failed", "refused") else "info"
@@ -887,6 +858,8 @@ def _json(value: object) -> object:
             return value
         case Path():
             return str(value)
+        case datetime():
+            return value.isoformat(timespec="milliseconds")
         case Enum():
             return _json(value.value)
         case Mapping():
@@ -915,26 +888,11 @@ def failures_to(record: Record) -> "Callable[[Message], None]":
                 source=f"{logged['name']}:{logged['function']}",
                 message=f"{logged['message']}{detail}",
                 where=f"{logged['file'].path}:{logged['line']}",
-                trace=() if exception is None or exception.value is None else _trace(exception.value),
+                trace=() if exception is None or exception.value is None else chain(exception.value),
             )
         )
 
     return sink
-
-
-def _trace(error: BaseException) -> tuple[str, ...]:
-    chain: list[BaseException] = []
-    link: BaseException | None = error
-    while link is not None and link not in chain:
-        chain.append(link)
-        link = link.__cause__ or (None if link.__suppress_context__ else link.__context__)
-    return tuple(line for cause in reversed(chain) for line in (f"{type(cause).__name__}: {cause}", *_frames(cause)))
-
-
-def _frames(error: BaseException) -> tuple[str, ...]:
-    # Without the source lines, which nothing here reads: looking them up opens every frame's file inside the sink.
-    frames = traceback.StackSummary.extract(traceback.walk_tb(error.__traceback__), lookup_lines=False)
-    return tuple(f"{frame.filename}:{frame.lineno} in {frame.name}" for frame in frames)
 
 
 def tail(directory: Path, count: int) -> tuple[list[str], int]:
