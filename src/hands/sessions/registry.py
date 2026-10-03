@@ -13,7 +13,7 @@ from hands.core.events import Abandoned, Event, PermissionRequested, Stopped, Ti
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
-from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
+from hands.core.session import Gone, Held, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
 from hands.core.status import Stamp
 from hands.sessions.audit import Applied, EffectFailed, Performed, Record, Typing
 from hands.sessions.clock import stamp_now
@@ -243,6 +243,10 @@ class Sessions:
         """Whether Claude Code's status of the session has been read, so whether a turn of it runs is known."""
         live = self.live_session(session)
         return live is not None and status_stamp(live.state) is not None
+
+    def held(self) -> dict[SessionId, Held]:
+        """Each live session's dialog that waits on an answer from the user, by session."""
+        return {session.membership.id: session.dialog for session in self._registry.live() if isinstance(session.dialog, Held)}
 
     def live_ids(self) -> list[SessionId]:
         """Every session that has not ended, by id."""

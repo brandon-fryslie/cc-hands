@@ -24,8 +24,10 @@ from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.summaries import Summaries, set_summaries, summaries
 from hands.sessions.tail import Tails
-from hands.voice.narrator import Recount, Recounts, Told, delivery, narrate, recount
-from hands.voice.speech import Pushed
+from hands.voice.narrator import Recount, Recounts, delivery, narrate, recount
+from hands.core.pending import News, Pending
+from hands.voice import speech
+from hands.voice.speech import Pushed, Unprompted, frames
 from hands.voice.tools import tell_turn_tool, turn_summaries_tool, set_overlay_tool
 
 ONE = SessionId("one")
@@ -43,7 +45,11 @@ def finished_turn(member: Membership) -> None:
     member.transcript.write_text(f"{json.dumps(asked, separators=(",", ":"))}\n{json.dumps(said, separators=(",", ":"))}\n")
 
 
-def handed(frame: Frame | None) -> str:
+def handed(told: Frame | Pending | None) -> str:
+    """What the floor hands the model of what the narrator told, as it lets it go: one message, and the model asked to answer it."""
+    pending = told.pending if isinstance(told, Unprompted) else told
+    assert pending is not None and not isinstance(pending, Frame)
+    [frame] = frames(pending, Pushed(), names=lambda id: id)
     assert isinstance(frame, LLMMessagesAppendFrame) and frame.run_llm
     match frame.messages:
         case [{"role": "user", "content": str() as content}]:
@@ -78,9 +84,9 @@ async def test_every_way_a_turn_is_told_tells_the_one_summary(tmp_path: Path) ->
     told: dict[Delivery, str] = {}
     for delivered in ("summaries", "watched", "on request", "muted"):
         recounts = Recounts()
-        frame = await recount(Tails(sessions), member.id, PromptId("p1"), None, "one", lambda _: None, Delta(), delivered, recounts, Pushed())
+        frame = await recount(Tails(sessions), member.id, PromptId("p1"), None, lambda _: None, Delta(), delivered, recounts)
         asked = await tell_turn_tool(sessions, recounts).body(session=member.id)
-        assert asked == {"turn": "\n\n".join(telling.news for telling in cast(Recount, recounts.of(member.id)).tellings), "now": "not reported yet"}
+        assert asked == {"turn": "\n\n".join(speech.told(member.id, "one", (telling,)) for telling in cast(Recount, recounts.of(member.id)).tellings), "now": "not reported yet"}
         told[delivered] = handed(frame) if frame is not None else str(asked["turn"])
         assert (frame is None) == (delivered in ("on request", "muted"))
     assert len(set(told.values())) == 1
@@ -100,9 +106,9 @@ async def test_a_turn_is_asked_for_only_of_a_running_session_and_one_with_nothin
         "turn": "[hands] The Claude Code session one finished a turn with nothing in it hands could tell. Tell the user so.",
         "now": "not reported yet",
     }
-    recounts.put(member.id, PromptId("p1"), Told("Told.", ()))
+    recounts.put(member.id, PromptId("p1"), News(None, "Told.", "", "", ()))
     recounts.unread(member.id, PromptId("p1"))
-    assert (await asked.body(session=member.id))["turn"] == "Told.\n\n[hands] hands could not read the rest of the turn the Claude Code session one finished. Tell the user so."
+    assert (await asked.body(session=member.id))["turn"] == f"{speech.told(member.id, 'one', (News(None, 'Told.', '', '', ()),))}\n\n[hands] hands could not read the rest of the turn the Claude Code session one finished. Tell the user so."
 
 
 async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatched_one_s_until_asked(tmp_path: Path) -> None:
@@ -115,19 +121,19 @@ async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatche
         await sessions.apply(Joined(each, "startup"))
         await sessions.apply(StatusReported(each.id, Report(Idle(), Stamp(1)), at=1.0))
     assert await set_overlay_tool(sessions, Overlays(home)).body(session=watched.id, overlay="watched") == {"readback": "I'll tell you each turn watched finishes."}
-    frames: asyncio.Queue[Frame] = asyncio.Queue()
+    queued: asyncio.Queue[Frame] = asyncio.Queue()
     recounts = Recounts()
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, entries.append, lambda: "off", Overlays(home), recounts))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), queued.put, entries.append, lambda: "off", Overlays(home), recounts))
     try:
         for each in (other, watched):
             await sessions.apply(Prompted(each.id, at=2.0, mode=None, prompt=PromptId("p1")))
             await sessions.apply(Stopped(each.id, REPLY, mode=None, prompt=PromptId("p1"), again=False, heard=Stamp(1500), request=RequestId(f"stop-{each.id}")))
-        told = handed(await asyncio.wait_for(frames.get(), 5.0))
+        told = handed(await asyncio.wait_for(queued.get(), 5.0))
     finally:
         narrating.cancel()
-    assert frames.empty()
-    assert [telling.news for telling in cast(Recount, recounts.of(watched.id)).tellings] == [told] and "session watched (id watched) finished a turn" in told
-    assert "session other (id other) finished a turn" in str(recounts.of(other.id))
+    assert queued.empty()
+    assert [speech.told(watched.id, "watched", (telling,)) for telling in cast(Recount, recounts.of(watched.id)).tellings] == [told] and "session watched (id watched) finished a turn" in told
+    assert [telling.reply for telling in cast(Recount, recounts.of(other.id)).tellings] == [REPLY]
     assert [(entry.session, entry.delivered) for entry in entries if isinstance(entry, Recounted)] == [(other.id, "on request"), (watched.id, "watched")]
 
 
@@ -141,7 +147,7 @@ async def test_a_session_whose_overlay_cannot_be_read_is_told_as_a_normal_one_an
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=entries.append)
     await sessions.apply(Joined(member, "startup"))
     sink = logger.add(failures_to(entries.append), level="ERROR", filter="hands")
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), asyncio.Queue[Frame]().put, entries.append, lambda: "off", Overlays(home), Recounts()))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), asyncio.Queue[Frame]().put, entries.append, lambda: "off", Overlays(home), Recounts()))
     try:
         await sessions.apply(Prompted(member.id, at=2.0, mode=None, prompt=PromptId("p1")))
         await sessions.apply(Stopped(member.id, REPLY, mode=None, prompt=PromptId("p1"), again=False, heard=Stamp(1500), request=RequestId("stop")))
@@ -238,17 +244,17 @@ async def test_a_muted_session_s_turn_is_held_with_summaries_on_and_told_when_as
         await sessions.apply(Joined(each, "startup"))
         await sessions.apply(StatusReported(each.id, Report(Idle(), Stamp(1)), at=1.0))
     await set_overlay_tool(sessions, Overlays(home)).body(session=muted.id, overlay="muted")
-    frames: asyncio.Queue[Frame] = asyncio.Queue()
+    queued: asyncio.Queue[Frame] = asyncio.Queue()
     recounts = Recounts()
-    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, entries.append, lambda: "on", Overlays(home), recounts))
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), queued.put, entries.append, lambda: "on", Overlays(home), recounts))
     try:
         for each in (muted, other):
             await sessions.apply(Prompted(each.id, at=2.0, mode=None, prompt=PromptId("p1")))
             await sessions.apply(Stopped(each.id, REPLY, mode=None, prompt=PromptId("p1"), again=False, heard=Stamp(1500), request=RequestId(f"stop-{each.id}")))
-        told = handed(await asyncio.wait_for(frames.get(), 5.0))
+        told = handed(await asyncio.wait_for(queued.get(), 5.0))
     finally:
         narrating.cancel()
-    assert frames.empty() and "session other (id other) finished a turn" in told
+    assert queued.empty() and "session other (id other) finished a turn" in told
     assert [(entry.session, entry.delivered) for entry in entries if isinstance(entry, Recounted)] == [(muted.id, "muted"), (other.id, "summaries")]
     asked = await tell_turn_tool(sessions, recounts).body(session=muted.id)
     assert "session muted (id muted) finished a turn" in str(asked["turn"]) and REPLY.split(". ")[0] in str(asked["turn"])

@@ -269,10 +269,12 @@ class Announced:
 
 @dataclass(frozen=True)
 class Yielded:
-    """What hands had to say unprompted while the user's turn was open, passed on as it closed: each frame's kind, in
-    order, and how long the turn held the floor."""
+    """What hands had to say unprompted, let go by the floor: the kind of each thing that came, in the order it came,
+    the kind of each thing told of it, in the order told, and how long the user's turn held it, 0 when no turn was
+    open. `held` longer than `told` is something folded into a session's telling or no longer waiting on the user."""
 
     held: tuple[str, ...]
+    told: tuple[str, ...]
     waited: float
 
 
@@ -287,18 +289,20 @@ class Relayed:
 class Recounted:
     """What hands told of a turn a session finished, and what the narration left the user able to ask for.
 
-    `told` is the summary the model is handed to say in its own words, and `delivered` how it reached the user: told
-    as the turn finished, or held for when they ask (tell_turn).
+    `reply` is the last thing the session said in the turn and `facts` what hands adds from its record: what the model
+    is handed to say in its own words, under the session's name as it is when told. `delivered` is how it reached the
+    user: told as the turn finished, or held for when they ask (tell_turn).
     `topics` is every part of the turn's narration that was built and not played — its sections, and what it
     asked through a dialog and is no longer waiting on — which makes this line the
     one place a developer who cannot see the screen can find out what "more on that" has to open. `questions`
-    is what the session is waiting on an answer to, kept apart so a log reader need not find it in `told`. `opened`
+    is what the session is waiting on an answer to. `opened`
     is the kind of thing that opened the turn — Asked, Notified, Commanded, or Shelled — so a turn the user's own
     command opened is told apart from one they asked for.
     """
 
     session: str
-    told: str
+    reply: str | None
+    facts: str
     topics: tuple[str, ...]
     questions: tuple[str, ...]
     delivered: Delivery

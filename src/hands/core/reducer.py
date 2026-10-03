@@ -588,7 +588,7 @@ def _expiring(session: SessionId, dialog: Dialog | None, at: Instant) -> tuple[D
         case Held(on=on, request=request, deadline=deadline) if at >= deadline:
             left, reply = _expiry(on)
             return left, [Reply(session, request, reply), Speak(Expired(session, on))]
-        case Held(on=on, deadline=deadline, warned=False) if at >= deadline - WARNING_LEAD_SECONDS:
-            return replace(dialog, warned=True), [Speak(DeadlineNear(session, on, remaining=deadline - at))]
+        case Held(on=on, request=request, deadline=deadline, warned=False) if at >= deadline - WARNING_LEAD_SECONDS:
+            return replace(dialog, warned=True), [Speak(DeadlineNear(session, request, on, remaining=deadline - at))]
         case _:
             return dialog, []

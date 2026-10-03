@@ -25,7 +25,7 @@ from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.names import Names
 from hands.sessions.server import serve_hooks
-from hands.voice.speech import Aloud, Narrated, Pushed, Tailed, frames, relay
+from hands.voice.speech import Aloud, Narrated, Pushed, Tailed, Unprompted, frames, relay
 
 from test_shim import STARTED
 from hands.voice.tools import DENIED_BY_VOICE, SENT_BACK_BY_VOICE, Tool, permission_tools
@@ -188,7 +188,7 @@ async def test_a_question_nobody_answers_by_its_deadline_is_left_to_its_dialog_a
     # Printing nothing decides nothing: the dialog, where the user may be answering, stays up.
     assert (code, stdout) == (0, "")
     [warning, expiry] = [await sessions.heard(), await sessions.heard()]
-    assert (warning, expiry) == (Speak(DeadlineNear(SID, moment.on, remaining=10.0)), Speak(Expired(SID, moment.on)))
+    assert (warning, expiry) == (Speak(DeadlineNear(SID, moment.request, moment.on, remaining=10.0)), Speak(Expired(SID, moment.on)))
     spoken = [said for heard in (warning, expiry) for said in frames(heard, Pushed(), names=lambda _: "quiz")]
     assert [cast(TTSSpeakFrame, said).text for said in spoken] == [
         "10 seconds left to answer quiz about its question.",
@@ -228,7 +228,7 @@ def test_the_brain_takes_what_a_session_asks_as_a_turn_of_its_own_after_the_user
 
 
 def test_under_the_brain_an_announcement_waits_in_hands_lane_behind_the_question_it_counts_down() -> None:
-    [said] = frames(Speak(DeadlineNear(SID, Permission("Bash", {"command": "ls"}), 10.0)), Tailed(), names=lambda _: "quiz")
+    [said] = frames(Speak(DeadlineNear(SID, RequestId("r1"), Permission("Bash", {"command": "ls"}), 10.0)), Tailed(), names=lambda _: "quiz")
     assert isinstance(said, Aloud) and said.spoken.text.startswith("10 seconds left to answer quiz")
 
 
@@ -267,7 +267,7 @@ async def test_an_unanswered_request_is_denied_at_its_deadline_after_one_warning
     code, stdout, _ = await shim.finished()
     assert (code, decision(stdout)) == (0, {"behavior": "deny", "message": EXPIRED_MESSAGE})
     assert [await sessions.heard(), await sessions.heard()] == [
-        Speak(DeadlineNear(SID, moment.on, remaining=10.0)),
+        Speak(DeadlineNear(SID, moment.request, moment.on, remaining=10.0)),
         Speak(Expired(SID, moment.on)),
     ]
     assert await call(named(sessions, "answer_permission"), request=moment.request, decision="allow") == {
@@ -436,13 +436,13 @@ def test_the_tools_say_their_arguments_and_complete_through_a_barge_in(sessions:
 
 
 async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the_speaker(home: Home, sessions: Sessions, clock: Clock) -> None:
-    frames: list[Frame] = []
+    queued: list[Frame] = []
 
     async def queue_frame(frame: Frame) -> None:
-        frames.append(frame)
+        queued.append(frame)
 
     shim, _ = await asked(home, sessions)
-    relaying = asyncio.create_task(relay(sessions, Pushed(), queue_frame, lambda _: None))
+    relaying = asyncio.create_task(relay(sessions, queue_frame, lambda _: None))
     await sessions.apply(Tick(DEADLINE - 10.0))
     await sessions.apply(Tick(DEADLINE))
     await asyncio.wait_for(shim.finished(), WAIT_SECONDS)
@@ -450,7 +450,7 @@ async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the
     relaying.cancel()
 
     # The request itself was taken off the queue by asked(); what follows it is spoken as written.
-    [spoken_warning, spoken_expiry] = frames
+    [spoken_warning, spoken_expiry] = [said for frame in queued for said in frames(cast(Unprompted, frame).pending, Pushed(), names=lambda _: "cc-hands")]
     assert isinstance(spoken_warning, TTSSpeakFrame) and isinstance(spoken_expiry, TTSSpeakFrame)
     assert spoken_warning.text == "10 seconds left to answer cc-hands about Bash."
     assert spoken_expiry.text == "Nobody answered cc-hands about Bash in time, so I told it no."

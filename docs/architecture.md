@@ -365,19 +365,23 @@ chosen by a table, not by code that looks at the event `[LAW:dataflow-not-contro
 Today no table chooses; two queues stand in for it. `Heard` carries permission
 announcements as `Speak` and permission requests as `Narrate`,
 relayed as soon as the reducer emits them. Relayed is not heard: everything hands says
-unprompted of the sessions, under either telling, passes the floor (`voice/floor.py`) ahead
-of the user aggregator, and from the press that opens the user's turn until that turn is
-sent, it waits there in order and follows the user's words (`Yielded` in the audit log).
+unprompted of the sessions, under either telling, reaches the floor (`voice/floor.py`) ahead
+of the user aggregator as a value, a `Pending` (`core/pending.py`), not yet a frame. From the
+press that opens the user's turn until that turn is sent it waits there and follows the user's
+words; what arrives with no turn open is let go at once, the same way. Either way the floor
+makes frames of it only as it lets it go, after `coalesce` (below), and each letting go is one
+`Yielded` line in the audit log: what came, what was told of it, and how long it waited.
 `Story` carries finished turns and sessions gone in one ordered
 queue, because an end spoken at once was heard before the last turn it ended. Every
-finished turn is summarised once (`voice/narrator.py`, `_news`): the session's last words,
-what its record adds, and what it is waiting on, for the model to say in its own words. How
-that one summary reaches the user is its `Delivery`: as a turn of the intermediary's own
+finished turn is read once into a `News` (`voice/narrator.py`, `recount`): the session's last
+words, what its record adds, and what it is waiting on. `speech.told` is the one place it
+becomes what the model is handed, under the session's name as it is when told, for the model
+to say in its own words. How that one summary reaches the user is its `Delivery`: as a turn of the intermediary's own
 — an `LLMMessagesAppendFrame` with `run_llm` on for an API model, a `Narrated` frame for
 the brain — when spoken summaries are on (`summaries`), or when they are off and the
 session is watched (`watched`); otherwise it is held (`on request`) and `tell_turn` hands it
 to the model when the user asks. Each session's last summary is held in `Recounts` either
-way, and each is a `Recounted` audit line naming its delivery. Nothing of a turn is said as
+way, as its `News`, and each is a `Recounted` audit line naming its delivery. Nothing of a turn is said as
 written past the model, and nothing is said of a session that sits at its prompt.
 `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
 with `run_llm` off. Each session has an overlay, `normal`, `watched`, or `muted`, one file per
@@ -387,8 +391,7 @@ muted session's turn is held whatever the switch says, until the user asks for i
 `tell_turn`. The user sets the overlay by voice with `set_overlay`, and the summaries
 switch with `turn_summaries` or `/hands:summaries`. A muted session's permission requests,
 questions, and plans are still narrated: held unsaid, each would wait out its deadline and
-be refused. The player, the routing table over every event kind, the priority queue, and
-`coalesce` below are planned.
+be refused. The player and the routing table over every event kind below are planned.
 
 The routing table is a value in `core`:
 
@@ -404,13 +407,23 @@ The per-session overlay is a second table over the first: a muted session's `pla
 becomes `note`, and its `narrate` stays, since a session that asks needs an answer. Adding a new event kind is a new row, and adding an overlay
 value is a new column `[LAW:one-type-per-behavior]`.
 
-Pending speech is a priority queue in `voice`: `blocking` before `result` before
-`fyi`, and nothing starts while the key is down. Before an utterance plays, a pure
-`coalesce` pass folds pending items from one session into one narration whose headline
-covers them all and whose segments keep their record ids, so three `Stop`s that
-arrived while you were talking start with one sentence, not three. Each item is a
-transition keyed by the record id that caused it, so nothing is announced twice
-`[LAW:one-source-of-truth]`.
+Pending speech is ordered as the floor lets it go, and nothing starts while the key is
+down. `coalesce` (`core/pending.py`) is pure: it drops what no longer waits on the user, a
+request answered at the keyboard while you talked and a deadline counted down on it, read
+off each session's held dialog, by request id, as the floor lets go; it folds one session's
+finished turns into one `Finished` where the first stood, whose headline covers them all
+("finished 3 turns") and whose tellings keep their narration parts and so their record ids,
+so three `Stop`s that arrived while you were talking start with one sentence, not three, and
+a turn that could not be read stays between the turns it came between, and a turn told again as it
+went on past its `Stop` is still one turn; and it orders the
+rest `known` (notes and the briefing, never spoken) before `blocking` (what a session asks)
+before `result` (finished turns) before `fyi` (a session gone), arrival order within each.
+A session's own story keeps the order it happened in: what it told before something sooner
+is told with that sooner thing, so its next turn's request is never heard ahead of the turn
+before it. A folded telling shares one `REPLY_SHOWN` bound among its turns. A `Pending`'s priority is read off its variant, never stored beside it. This
+queue is not the player's bookmarks: resuming replays a bookmarked sentence and never
+re-enqueues a telling. Each item is a transition keyed by the record id that caused it, so
+nothing is announced twice `[LAW:one-source-of-truth]`; that keying is planned.
 
 ## Hooks carry the moment; the transcript carries the record
 

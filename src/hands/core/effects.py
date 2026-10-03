@@ -144,6 +144,7 @@ class Asking:
 @dataclass(frozen=True)
 class DeadlineNear:
     session: SessionId
+    request: RequestId
     on: Blocker
     remaining: float  # seconds
 
