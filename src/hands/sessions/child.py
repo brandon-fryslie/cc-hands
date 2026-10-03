@@ -1,11 +1,11 @@
 """A child process run to its end inside a time limit, and never left behind by a caller that stops waiting on it."""
 
 import asyncio
-import contextlib
 import os
 import signal
 import subprocess
 import tempfile
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,22 +51,34 @@ async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[
     # The files are the thread's from here, and it closes them: a caller that leaves early cannot pull them from
     # under the read.
     ended = settles_off_loop(lambda: _ended(process, out, err), name=f"child {argv[0]} {process.pid}")
+    started = time.monotonic()
     try:
-        return await asyncio.wait_for(asyncio.shield(ended), timeout)
-    except BaseException as error:
-        # The group outlives a leader that has already exited. One whose processes have all exited has nothing
-        # left to kill: gone, ProcessLookupError; exited but not yet reaped, macOS says PermissionError.
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(process.pid, signal.SIGKILL)
-        why = f"it ran past {timeout:.1f}s" if isinstance(error, TimeoutError) else "its caller stopped waiting"
-        logger.info(f"killed {argv[0]} ({process.pid}) and everything it started, because {why}")
-        # Reaped by its own thread, which the kill releases; the loop stays live while a child the kill cannot
-        # end at once, one in uninterruptible I/O, finishes dying. A caller told twice to stop leaves without
-        # waiting, and the thread reaps it all the same.
-        await asyncio.shield(ended)
-        if isinstance(error, TimeoutError):
-            raise TimeoutError(f"{argv[0]} ran past {timeout:.1f}s") from None
+        # Waited on, not awaited: what the child's thread raised is the child's outcome, told below as its own.
+        await asyncio.wait((ended,), timeout=timeout)
+    except asyncio.CancelledError:
+        await _killed(argv[0], process.pid, ended, "its caller stopped waiting")
         raise
+    if not ended.done():
+        await _killed(argv[0], process.pid, ended, f"it ran past {timeout:.1f}s")
+        raise TimeoutError(f"{argv[0]} ran past {timeout:.1f}s")
+    ran = ended.result()
+    logger.debug(f"{argv[0]} ({process.pid}) exited {ran.returncode} in {time.monotonic() - started:.3f}s")
+    return ran
+
+
+async def _killed(name: str, pid: int, ended: asyncio.Future[Ran], why: str) -> None:
+    """Kill the child's process group, and wait while its thread reaps it."""
+    try:
+        os.killpg(pid, signal.SIGKILL)
+        logger.info(f"killed {name} ({pid}) and everything it started, because {why}")
+    except (ProcessLookupError, PermissionError):
+        # Every process in the group had exited: gone, ProcessLookupError; exited and not yet reaped, macOS says
+        # PermissionError. Nothing was killed, and the log says so.
+        logger.info(f"{name} ({pid}) had already ended when {why}")
+    # Reaped by its own thread, which the kill releases; the loop stays live while a child the kill cannot end at
+    # once, one in uninterruptible I/O, finishes dying. A caller told twice to stop leaves without waiting, and
+    # the thread reaps it all the same.
+    await asyncio.wait((ended,))
 
 
 def _ended(process: subprocess.Popen[bytes], out: IO[bytes], err: IO[bytes]) -> Ran:

@@ -40,8 +40,14 @@ def reaped(process: subprocess.Popen[bytes]) -> bool:
     return process.returncode is not None
 
 
-async def test_a_child_s_output_and_exit_are_what_it_ran_to() -> None:
-    assert await run("sh", "-c", "echo out; echo err >&2; exit 3", timeout=5) == Ran(3, b"out\n", b"err\n")
+async def test_a_child_s_output_and_exit_are_what_it_ran_to(started: list[subprocess.Popen[bytes]]) -> None:
+    exits: list[str] = []
+    sink = logger.add(lambda message: exits.append(message.record["message"]), level="DEBUG")
+    try:
+        assert await run("sh", "-c", "echo out; echo err >&2; exit 3", timeout=5) == Ran(3, b"out\n", b"err\n")
+    finally:
+        logger.remove(sink)
+    assert any(line.startswith(f"sh ({started[0].pid}) exited 3 in ") for line in exits)
 
 
 async def test_a_child_that_runs_past_its_time_is_killed_and_reaped(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
@@ -78,7 +84,7 @@ async def test_a_child_whose_caller_stops_waiting_is_killed_and_reaped(started: 
     assert any(f"killed sleep ({started[0].pid})" in line and "its caller stopped waiting" in line for line in logged)
 
 
-async def test_a_child_that_ended_as_it_was_killed_still_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_child_that_ended_as_it_was_killed_still_times_out(monkeypatch: pytest.MonkeyPatch, logged: list[str]) -> None:
     # What macOS says to a kill of a group whose processes have all exited but are not yet reaped.
     def exited(_pgid: int, _signal: int) -> None:
         raise PermissionError(1, "Operation not permitted")
@@ -88,6 +94,18 @@ async def test_a_child_that_ended_as_it_was_killed_still_times_out(monkeypatch: 
     with pytest.raises(TimeoutError):
         await run("sleep", "0.4", timeout=0.1)
     assert time.monotonic() - started >= 0.3, "it left before the child it could not kill was reaped"
+    assert any("had already ended when it ran past 0.1s" in line for line in logged)
+    assert not any(line.startswith("killed") for line in logged)
+
+
+async def test_a_failure_reading_what_a_child_wrote_is_its_own(monkeypatch: pytest.MonkeyPatch, logged: list[str]) -> None:
+    def unreadable(*_args: object) -> Ran:
+        raise OSError("the output could not be read")
+
+    monkeypatch.setattr(child, "_ended", unreadable)
+    with pytest.raises(OSError, match="could not be read"):
+        await run("true", timeout=5)
+    assert not any("killed" in line or "already ended" in line for line in logged), "a failure of its own was told as a kill"
 
 
 async def test_a_child_that_cannot_start_says_so() -> None:
