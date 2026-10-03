@@ -288,7 +288,7 @@ async def test_a_turn_goes_to_the_brain_and_its_words_come_off_the_wire(rig: Rig
     await rig.say({"role": "user", "content": "what is running?"})
     assert rig.brain.asked == ["what is running?"]
     exchange, route = rig.request()
-    assert route == Send((Tail(TAIL),))
+    assert route == Send((Tail(TAIL),), refusal="final")
     rig.stream(exchange, "Two sessions ", "are running.")
     await rig.until(lambda: len(rig.out.said()) == 2)
     rig.brain.end()
@@ -306,7 +306,7 @@ async def test_each_request_of_a_turn_carries_how_the_sessions_stand_as_it_leave
     rig.standing.append("[hands] The Claude Code sessions running now: auth, working.")
     _, second = rig.request(answering("mcp__hands__stage_draft", {"readback": "staged"}))
     # Composed as each request leaves, never kept from the one before.
-    assert (first, second) == (Send((Tail(TAIL),)), Send((Tail("[hands] The Claude Code sessions running now: auth, working."),)))
+    assert (first, second) == (Send((Tail(TAIL),), refusal="final"), Send((Tail("[hands] The Claude Code sessions running now: auth, working."),), refusal="final"))
     rig.brain.end()
 
 
@@ -362,7 +362,7 @@ async def test_stay_silent_holds_the_next_request_so_nothing_follows_it(rig: Rig
     closed = answering("mcp__hands__stay_silent", {"silent": True})
     closed["messages"] = [*closed["messages"], {"role": "assistant", "content": [{"type": "text", "text": SILENT}]}, {"role": "user", "content": "are you there?"}]  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType]
     exchange, route = rig.request(closed)
-    assert route == Send((Tail(TAIL),))
+    assert route == Send((Tail(TAIL),), refusal="final")
     rig.stream(exchange, "I am.")
     await rig.until(lambda: rig.out.said() == ["I am."])
     rig.brain.end()
@@ -513,7 +513,7 @@ RESETS = datetime(2026, 9, 30, 18, 0, tzinfo=UTC).timestamp()
 
 def unreached(exchange: str) -> Exchanged:
     """The proxy's record of a request it could not get to the API, told before it answers the brain 502."""
-    return Exchanged(exchange, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("ClientConnectorError: no route", 0.0))
+    return Exchanged(exchange, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("ClientConnectorError: no route", 0.0), True)
 
 
 @pytest.mark.parametrize(
@@ -612,7 +612,7 @@ async def test_a_stay_silent_answered_in_an_earlier_turn_does_not_hold_the_next(
     body = answering("mcp__hands__stay_silent", {"silent": True})
     body["messages"] = [*body["messages"], {"role": "user", "content": "are you there?"}]  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType]
     _, route = rig.request(body)
-    assert route == Send((Tail(TAIL),))
+    assert route == Send((Tail(TAIL),), refusal="final")
     rig.brain.end()
 
 
@@ -658,7 +658,7 @@ async def test_a_barge_in_before_the_brain_has_sent_the_turn_stops_nothing_and_t
     assert rig.brain.interrupts == 0
     assert not any(isinstance(entry, BrainInterrupted) for entry in rig.recorded)
     _, route = rig.request()
-    assert route == Send((Tail(TAIL),))
+    assert route == Send((Tail(TAIL),), refusal="final")
     rig.brain.end()
 
 

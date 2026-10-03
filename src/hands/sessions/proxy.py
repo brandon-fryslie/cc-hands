@@ -129,25 +129,27 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
 
         sent_at = clock()
 
-        def exchanged(changes: tuple[Change, ...], reply: Reached | Unreached | Held) -> Exchanged:
-            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply)
+        def exchanged(changes: tuple[Change, ...], reply: Reached | Unreached | Held, final: bool) -> Exchanged:
+            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply, final)
 
         match routed:
             case Hold(said=said):
                 content_type, answer = _held(parsed, said)
-                tell(exchanged((), Held(said, clock())))
+                tell(exchanged((), Held(said, clock()), False))
                 return web.Response(status=200, body=answer, headers={"Content-Type": content_type})
-            case Send(changes=changes):
+            case Send(changes=changes, refusal=refusal):
                 onward, changes = _edited(exchange, body, parsed, changes)
 
         try:
             reached = await client.request(request.method, upstream + request.path_qs, headers=_end_to_end(request.headers), data=onward)
         except (aiohttp.ClientError, OSError) as error:
-            tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock())))
-            return web.Response(status=502, text=f"hands' proxy could not reach {upstream}: {error}")
+            final = refusal == "final"
+            tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock()), final))
+            return web.Response(status=502, text=f"hands' proxy could not reach {upstream}: {error}", headers=_finality(CIMultiDict(), final))
         async with reached:
             tell(Answering(exchange, reached.status, spent(reached.status, reached.headers)))
-            response = web.StreamResponse(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers))
+            final = refusal == "final" and _retried(reached.status)
+            response = web.StreamResponse(status=reached.status, reason=reached.reason, headers=_finality(_end_to_end(reached.headers), final))
             if "Content-Length" in reached.headers:
                 response.content_length = int(reached.headers["Content-Length"])
             reader = reply_reader(kind, reached.headers, lambda event: tell(Heard(exchange, event)))
@@ -175,7 +177,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                 raise
             finally:
                 last = clock() if ended is None else ended
-                tell(exchanged(changes, Reached(reached.status, last if first is None else first, last, size, reply)))
+                tell(exchanged(changes, Reached(reached.status, last if first is None else first, last, size, reply), final))
         return response
 
     app = web.Application()
@@ -229,6 +231,19 @@ def _held(body: object, said: str) -> tuple[str, bytes]:
         ("message_stop", {"type": "message_stop"}),
     ]
     return "text/event-stream", b"".join(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode() for name, data in events)
+
+
+def _retried(status: int) -> bool:
+    """Whether a client asks again after an answer with this status, as Anthropic's SDK does unless told otherwise."""
+    return status in (408, 409, 429) or status >= 500
+
+
+def _finality(headers: CIMultiDict[str], final: bool) -> CIMultiDict[str]:
+    """`headers`, telling the client the refusal is final when it is, in place of whatever the API said: the SDK's own
+    header, read ahead of the status."""
+    if final:
+        headers["x-should-retry"] = "false"
+    return headers
 
 
 def _end_to_end(headers: Mapping[str, str]) -> CIMultiDict[str]:

@@ -271,7 +271,9 @@ class BrainStage(FrameProcessor):
         if not (turn.interrupted or any(name in self._silences for name, _ in answers)):
             turn.exchanges.append(sent.exchange)
             turn.opening, turn.calls, turn.failure = {}, {}, _UNNAMED
-            return Send((Tail(self._tail()),))
+            # Refused once is the turn's failure, said at once as the API variants say theirs, who ask once: asked
+            # again, Claude Code would keep the user waiting minutes on its retries before the turn failed.
+            return Send((Tail(self._tail()),), refusal="final")
         turn.readbacks.extend(_said(answer) for name, answer in answers if name in self._completes)
         return Hold(INTERRUPTED if turn.interrupted else SILENT)
 

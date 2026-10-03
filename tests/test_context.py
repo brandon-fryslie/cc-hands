@@ -152,7 +152,7 @@ def sent(body: object, kind: Kind | None = None, session: SessionId = BRAIN) -> 
 
 def ended(kind: Kind = MainTurn(None)) -> Exchanged:
     message = Message("m", "claude-opus-5-5", (Text("done"),), "end_turn", {})
-    return Exchanged("x", BRAIN, kind, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Streamed(message)))
+    return Exchanged("x", BRAIN, kind, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Streamed(message)), False)
 
 
 class Rig:
