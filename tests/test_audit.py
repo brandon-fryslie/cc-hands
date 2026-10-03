@@ -288,6 +288,21 @@ def test_hands_log_piped_into_a_reader_that_stops_ends_quietly(tmp_path: Path, m
     assert cli.main(["--home", str(tmp_path), "log"]) == 0
 
 
+def test_hands_log_prints_a_control_json_left_raw_as_its_escape_and_the_line_is_still_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    home = Home(tmp_path)
+    home.audit.write_text(json.dumps({"t": "a\x9b2J\x7f\u202eb\x1b"}, ensure_ascii=False) + "\n")
+
+    def interrupted(*_: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "LOG_POLL_SECONDS", 0)
+    monkeypatch.setattr(cli.time, "sleep", interrupted)
+    assert cli.main(["--home", str(tmp_path), "log"]) == 0
+    printed = capsys.readouterr().out
+    assert printed == '{"t": "a\\u009b2J\\u007f\\u202eb\\u001b"}\n'
+    assert json.loads(printed) == {"t": "a\x9b2J\x7f\u202eb\x1b"}
+
+
 def test_a_log_cut_short_and_regrown_past_the_offset_between_looks_is_read_from_its_first_line(tmp_path: Path) -> None:
     path = tmp_path / "audit.jsonl"
     path.write_text("old\n")

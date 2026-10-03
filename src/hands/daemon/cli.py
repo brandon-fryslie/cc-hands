@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable, Coroutine, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, TextIO
 
 from loguru import logger
 
@@ -23,6 +24,35 @@ from hands.threads import off_loop
 # The lowest level each module's lines reach the terminal at, by loguru's module prefix: "" is every module not named.
 TERMINAL_LEVELS: dict[str | None, str | int | bool] = {"": "WARNING", "hands": "INFO"}  # loguru's FilterDict
 
+if TYPE_CHECKING:
+    from loguru import Record
+
+# Every C0 and C1 control, DEL, and bidi embedding, override, and isolate, written as its JSON escape: a line's text
+# comes from transcripts, replies, and session names, and a raw ESC, BEL, or BS in it would move the cursor, ring the
+# bell, or rewrite the line, and a raw RLO would show it reversed. A line break and a tab are layout, and pass.
+VISIBLE = {
+    code: f"\\u{code:04x}"
+    for code in (*range(0x20), *range(0x7F, 0xA0), *range(0x202A, 0x202F), *range(0x2066, 0x206A))
+    if chr(code) not in "\n\t"
+}
+# loguru's default line, with the message in its visible form.
+LINE = (
+    "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | "
+    "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{extra[shown]}</level>\n{exception}"
+)
+
+
+def terminal_line(record: "Record") -> str:
+    """LINE, with this record's message made visible: loguru's way to give a format a field of its own is extra."""
+    record["extra"]["shown"] = record["message"].translate(VISIBLE)
+    return LINE
+
+
+def to_terminal(stream: TextIO) -> int:
+    """[LAW:single-enforcer] the one terminal sink: hands' own lines from INFO, every library's only from WARNING, and
+    no message read by the terminal as a control."""
+    return logger.add(stream, filter=TERMINAL_LEVELS, format=terminal_line)
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hands")
@@ -31,8 +61,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     commands.add_parser("check", help="say whether hands is set up to work here: its plugin, the claude shim on PATH, this terminal's Input Monitoring grant, and the running sessions; exits 0 only when every piece is there, 1 when one is missing, 2 when one could not be looked at")
-    shown = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
-    shown.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
+    indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
+    indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
     commands.add_parser("login", help="log the brain (HANDS_LLM=claude) in again, or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
     commands.add_parser("install-fritter", help="build fritter and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
@@ -57,10 +87,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 talkkey.ask()
                 print(f"hands: {readiness.grant(granted).said}, then run hands again.", file=sys.stderr)
                 return 1
-            # [LAW:single-enforcer] the one terminal sink, in place of loguru's DEBUG default: hands' own lines from
-            # INFO, and Pipecat's and every other library's only from WARNING, so a run's terminal is hands' to read.
+            # In place of loguru's DEBUG default, so a run's terminal is hands' to read.
             logger.remove()
-            logger.add(sys.stderr, filter=TERMINAL_LEVELS)
+            to_terminal(sys.stderr)
             # Read before this run's first heartbeat replaces it.
             after_crash = crashed_before(home)
             heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
@@ -87,6 +116,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits
             # in that second would leave this process watching its new one, pid 1, forever.
             parent = os.getppid() if arguments.parent is None else arguments.parent
+            # It shares the run's terminal, so its lines reach it through the run's sink.
+            logger.remove()
+            to_terminal(sys.stderr)
             from hands.daemon.menubar import show
 
             show(home, parent)
@@ -233,10 +265,11 @@ LOG_POLL_SECONDS = 0.25
 def tail_log(home: Home, lines: int) -> int:
     newest, position = audit.tail(home.audit, lines)
     try:
+        # json.dumps escapes C0 controls but writes DEL, C1, and bidi controls raw; their escapes keep each line JSON.
         for line in newest:
-            print(line, flush=True)
+            print(line.translate(VISIBLE), flush=True)
         for line in audit.follow(home.audit, position, lambda: time.sleep(LOG_POLL_SECONDS)):
-            print(line, flush=True)
+            print(line.translate(VISIBLE), flush=True)
     except KeyboardInterrupt:
         return 0
     except BrokenPipeError:
