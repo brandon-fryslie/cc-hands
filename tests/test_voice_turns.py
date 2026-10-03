@@ -28,7 +28,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
 from conftest import running, unprimed
-from hands.sessions.audit import Entry, Yielded
+from hands.sessions.audit import Entry, HoldHeard, Yielded
 from hands.voice import pipeline as built
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
@@ -165,14 +165,15 @@ async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator
         floor=Floor(lambda _: None, Pushed(), lambda id: id, dict),
         refocus=Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append),
         prompt=unprimed,
+        record=recorded.append,
     )
     out, clock, live = Recorded(), Clock(), dict[SessionId, Session]()
     texts: asyncio.Queue[str] = asyncio.Queue()
     heard: list[bytes] = []
 
-    async def transcribe(_self: Whisper, audio: bytes) -> str | None:
+    async def transcribe(_self: Whisper, hold: int, audio: bytes) -> HoldHeard:
         heard.append(audio)
-        return await texts.get() or None
+        return HoldHeard(hold, await texts.get() or None, ())
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
     # The floor sits where build_voice puts it, between Whisper and the user aggregator.
@@ -367,7 +368,7 @@ async def test_whisper_has_loaded_the_model_its_turns_transcribe_with_once_built
         return {"segments": []}
 
     monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
-    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="mlx-community/whisper-tiny"), prompt=unprimed)
+    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="mlx-community/whisper-tiny"), prompt=unprimed, record=lambda _: None)
     assert [options["path_or_hf_repo"] for options in asked] == ["mlx-community/whisper-tiny"]
     whisper._transcribing.append(1)  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
     [frame async for frame in whisper.run_stt(b"\x00\x00" * 16_000)]
@@ -375,6 +376,6 @@ async def test_whisper_has_loaded_the_model_its_turns_transcribe_with_once_built
 
 
 async def test_whisper_hears_only_the_keyed_microphone() -> None:
-    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=unprimed)
+    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=unprimed, record=lambda _: None)
     with pytest.raises(TypeError, match="carries no key"):
         await whisper.process_audio_frame(InputAudioRawFrame(b"\x00\x00", 16000, 1), FrameDirection.DOWNSTREAM)

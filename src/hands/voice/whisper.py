@@ -24,6 +24,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.types import assert_given, require_given
 
+from hands.sessions.audit import HoldHeard, Record, Unsaid
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved
 
@@ -49,10 +50,11 @@ class Whisper(WhisperSTTServiceMLX):
     never disagree about where a hold is.
     """
 
-    def __init__(self, *, settings: WhisperSTTServiceMLX.Settings, prompt: Callable[[], Awaitable[str | None]]) -> None:
+    def __init__(self, *, settings: WhisperSTTServiceMLX.Settings, prompt: Callable[[], Awaitable[str | None]], record: Record) -> None:
         super().__init__(settings=settings)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
         # The initial prompt each hold is transcribed with, read as it is: see hands.voice.vocabulary.
         self._prompt = prompt
+        self._record = record
         self._warm()
         # The key the last frame of microphone audio was captured under.
         self._captured: Key = "up"
@@ -138,16 +140,17 @@ class Whisper(WhisperSTTServiceMLX):
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         hold = self._transcribing.popleft()
         try:
-            text = await self._heard(audio)
+            heard = await self._heard(hold, audio)
         except Exception as error:
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from Whisper aloud.
             yield ErrorFrame(error=f"Whisper could not transcribe hold {hold}: {type(error).__name__}: {error}", exception=error)
         else:
-            match text:
+            # Recorded, so "I spoke and nothing happened" can be looked into.
+            self._record(heard)
+            match heard.said:
                 case None:
-                    # Not said: Brandon does not need to hear it (2026-09-27). Logged, so "I spoke and nothing happened"
-                    # can still be looked into.
-                    logger.info(f"Whisper heard nothing in hold {hold}")
+                    # Not said: Brandon does not need to hear it (2026-09-27).
+                    pass
                 case said:
                     language = cast("Language | None", assert_given(self._settings.language))
                     # Pipecat's span for a transcription, which its own run_stt opens.
@@ -156,8 +159,8 @@ class Whisper(WhisperSTTServiceMLX):
         # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
         yield TurnResolved(hold=hold)
 
-    async def _heard(self, audio: bytes) -> str | None:
-        """What was said in a hold's 16-bit samples, primed with the vocabulary as it is now; None where nothing was.
+    async def _heard(self, hold: int, audio: bytes) -> HoldHeard:
+        """What was said in a hold's 16-bit samples, primed with the vocabulary as it is now.
 
         Pipecat's own run_stt takes no prompt, so this is its transcription with one, its filters kept: a segment
         that is likely no speech is dropped, and so is one with the compression ratio Pipecat found Whisper's
@@ -166,18 +169,18 @@ class Whisper(WhisperSTTServiceMLX):
         """
         prompt = await self._prompt()
         await self.start_processing_metrics()
-        segments = await asyncio.to_thread(self._transcribe, np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0, prompt)
-        await self.stop_processing_metrics()
+        try:
+            segments = await asyncio.to_thread(self._transcribe, np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0, prompt)
+        finally:
+            await self.stop_processing_metrics()
         threshold = assert_given(self._settings.no_speech_prob)
-        heard: list[str] = []
+        said: list[str] = []
+        dropped: list[Unsaid] = []
         for segment in segments:
-            text: str = segment["text"].strip()
-            worded = any(character.isalnum() for character in text)
-            if worded and segment["no_speech_prob"] < threshold and segment["compression_ratio"] != _HALLUCINATED and segment["avg_logprob"] >= _GUESSED:
-                heard.append(text)
+            scored = Unsaid(segment["text"].strip(), segment["no_speech_prob"], segment["compression_ratio"], segment["avg_logprob"])
+            worded = any(character.isalnum() for character in scored.text)
+            if worded and scored.no_speech_prob < threshold and scored.compression_ratio != _HALLUCINATED and scored.avg_logprob >= _GUESSED:
+                said.append(scored.text)
             else:
-                logger.info(
-                    f"Whisper dropped {text!r} as not said: no_speech_prob {segment['no_speech_prob']:.2f},"
-                    f" compression_ratio {segment['compression_ratio']:.2f}, avg_logprob {segment['avg_logprob']:.2f}"
-                )
-        return " ".join(heard).strip() or None
+                dropped.append(scored)
+        return HoldHeard(hold, " ".join(said).strip() or None, tuple(dropped))

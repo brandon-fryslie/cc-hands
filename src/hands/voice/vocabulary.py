@@ -21,6 +21,7 @@ from hands.sessions.focus import Unreadable, focused
 from hands.sessions.home import Home
 from hands.sessions.registry import Listing, Sessions
 from hands.core.session import Session
+from hands.voice.readback import identifier
 
 # The most words Whisper is primed with. The same ten sentences, their ten identifiers placed among the names of the
 # files hands changed most recently, came back with six spelled as named among 40 words, three among 70 and four among
@@ -76,7 +77,8 @@ async def vocabulary(listings: Sequence[Listing[Session]], focus: Session | Unre
             repository, failed, focus_id = (), f"the focus: {reason}", None
         case None:
             repository, failed, focus_id = (), None, None
-    sessions = tuple(word for listing in listings for word in (listing.session.membership.cwd.name, listing.name) if word is not None)
+    # [LAW:one-source-of-truth] each session as it is spoken and addressed.
+    sessions = tuple(identifier(listing) for listing in listings)
     words = _unique((*repository, *sessions))[-WORDS:]
     return Primed(focus_id, words, failed, time.monotonic() - began)
 
@@ -123,9 +125,11 @@ class NotARepository(GitFailed):
 
 async def _git(cwd: Path, environment: Mapping[str, str], deadline: float, *args: str) -> str:
     left = deadline - time.monotonic()
+    if left <= 0:
+        raise GitFailed(f"reading the sessions' names spent the vocabulary's {READING:.1f}s before git {args[0]} in {cwd} could run")
     try:
         # git says why it failed in the C locale's words, which are the ones read below.
-        ran = await run("git", "--no-optional-locks", "-C", str(cwd), *args, timeout=max(left, 0.0), env={**environment, "LC_ALL": "C"})
+        ran = await run("git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**environment, "LC_ALL": "C"})
     except TimeoutError:
         raise GitFailed(f"git {args[0]} in {cwd} was still running when reading the vocabulary had spent its {READING:.1f}s") from None
     except OSError as error:

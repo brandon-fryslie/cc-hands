@@ -20,7 +20,7 @@ from pipecat.utils.errors import ErrorCategory
 from conftest import unprimed
 from hands.sessions import heartbeat
 from hands.daemon.cli import crashed_before
-from hands.sessions.audit import Announced, Entry
+from hands.sessions.audit import Announced, Entry, HoldHeard
 from hands.daemon import notify
 from hands.daemon.notify import notification_command, post_notification
 from hands.sessions.home import Home
@@ -341,15 +341,15 @@ async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
 async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_nothing_in(monkeypatch: pytest.MonkeyPatch) -> None:
     said: list[str | None | Exception] = []
 
-    async def transcribe(_self: Whisper, _audio: bytes) -> str | None:
+    async def transcribe(_self: Whisper, hold: int, _audio: bytes) -> HoldHeard:
         match said.pop():
             case Exception() as error:
                 raise error
             case text:
-                return text
+                return HoldHeard(hold, text, ())
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
-    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=unprimed)
+    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=unprimed, record=lambda _: None)
 
     async def push(_frame: Frame, _direction: object = None) -> None:
         pass

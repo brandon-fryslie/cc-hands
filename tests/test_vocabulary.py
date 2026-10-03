@@ -12,7 +12,7 @@ from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
 from hands.core.session import Membership, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
-from hands.sessions.audit import Entry, Primed, level
+from hands.sessions.audit import Entry, HoldHeard, Primed, Unsaid, level
 from hands.sessions.focus import Unreadable, set_focus
 from hands.sessions.home import Home
 from hands.sessions.registry import Listing, Sessions
@@ -60,7 +60,7 @@ async def test_the_focused_sessions_newest_files_and_branch_come_before_the_sess
 
     assert primed.words.index("old_billing") < primed.words.index("authMiddleware") < primed.words.index("sessionStore")
     assert "GUIDE" in primed.words and primed.words.count("README") == 1
-    assert primed.words[-4:] == ("auth-rework", "src", "cc-hands", "dictation bias")
+    assert primed.words[-3:] == ("auth-rework", "src", "cc-hands, dictation bias")
     assert (primed.focus, primed.failed) == (SessionId("s1"), None)
     assert level(primed) == "info"
 
@@ -93,7 +93,7 @@ async def test_a_session_outside_any_repository_is_primed_with_the_sessions_alon
 
     primed = await vocabulary([Listing(focus, "planning")], focus, {**ENVIRONMENT, "GIT_CEILING_DIRECTORIES": str(tmp_path)}, time.monotonic())
 
-    assert (primed.words, primed.failed) == (("notes", "planning"), None)
+    assert (primed.words, primed.failed) == (("notes, planning",), None)
 
 
 async def test_a_repository_with_no_commits_yet_is_primed_with_what_is_waiting_to_be_committed(repository: Path) -> None:
@@ -145,7 +145,7 @@ async def test_whisper_transcribes_each_hold_primed_with_the_vocabulary_as_it_is
     async def prompt() -> str | None:
         return next(prompts)
 
-    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=prompt)
+    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=prompt, record=lambda _: None)
     for hold in (1, 2):
         whisper._transcribing.append(hold)  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
         [frame async for frame in whisper.run_stt(b"\x00\x00" * 160)]
@@ -169,9 +169,16 @@ async def test_what_a_primed_whisper_makes_of_silence_is_not_said(monkeypatch: p
     async def prompt() -> str | None:
         return "authMiddleware"
 
-    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=prompt)
+    recorded: list[Entry] = []
+    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=prompt, record=recorded.append)
     said: list[str] = []
     for hold in (1, 2, 3):
         whisper._transcribing.append(hold)  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
         said += [frame.text async for frame in whisper.run_stt(b"\x00\x00" * 160) if isinstance(frame, TranscriptionFrame)]
     assert said == ["Okay"]
+    # Each hold is recorded with what was dropped from it and why, so a hold that sent nothing can be looked into.
+    assert recorded == [
+        HoldHeard(1, None, (Unsaid(".", 0.0, 0.11, -1.4),)),
+        HoldHeard(2, None, (Unsaid("The End", 0.0, 0.47, -2.11),)),
+        HoldHeard(3, "Okay", ()),
+    ]

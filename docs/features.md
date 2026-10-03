@@ -256,7 +256,9 @@ Need 2.
   read as it is transcribed (`hands.voice.vocabulary`): the names of the files
   changed in the focused session's last 30 commits and its uncommitted work, its
   branch, then every running session's project and name, newest last and at most
-  40 of them. Each hold's words are a `Primed` line in the audit log. Measured
+  40 of them. Each hold's words are a `Primed` line in the audit log,
+  and what Whisper made of it, with each segment dropped as not said, a `HoldHeard`
+  line: primed, Whisper turns silence into "." or "The End", which are dropped. Measured
   2026-10-03 through that code, ten sentences said by `say` in a repository with
   `authMiddleware.ts` among thirty files: `authMiddleware` 8/10 primed, 0/10
   unprimed; both misses were a voice saying "middle way". Built:
