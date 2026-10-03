@@ -29,7 +29,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import running
-from hands.brain.process import SPOKEN_OVER, Asked, Untaken
+from hands.brain.process import NOBODY, SPOKEN_OVER, Asked, Untaken
 from hands.core.effects import Allow, Deny
 from hands.core.session import Permission
 from hands.brain.stage import INTERRUPTED, SILENT, BrainStage
@@ -853,3 +853,52 @@ async def test_a_permission_held_after_the_user_spoke_over_its_turn_is_refused_a
     asked = rig.brain.permit("Write", {"file_path": "/Users/bmf/notes.txt"})
     assert asked.decision.result() == Deny(SPOKEN_OVER)
     assert rig.out.said() == ["I'll write it."]
+
+
+async def test_words_said_before_a_permission_is_asked_are_a_turn_of_their_own_and_never_part_of_its_answer(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "make the notes say hello"})
+    # Said before the turn's first request left: it waits as the next turn.
+    rig.context.add_message({"role": "user", "content": "also check the logs"})
+    await rig.worker.queue_frame(LLMContextFrame(rig.context))
+    await asyncio.sleep(0.1)
+    exchange, _ = rig.request()
+    rig.stream(exchange, "I'll write it.")
+    asked = rig.brain.permit("Write", {"file_path": "/Users/bmf/notes.txt"})
+    await rig.until(lambda: "May I use Write on notes.txt? Say yes to allow it." in rig.out.said())
+    rig.context.add_message({"role": "user", "content": "yes"})
+    await rig.worker.queue_frame(LLMContextFrame(rig.context))
+    await rig.until(lambda: not asked.open)
+    assert asked.decision.result() == Allow()
+    rig.brain.end()
+    await rig.until(lambda: len(rig.brain.asked) == 2)
+    assert rig.brain.asked == ["make the notes say hello", "also check the logs"]
+
+
+async def test_a_permission_to_run_a_command_is_asked_with_the_command_it_would_run(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "clean up the old branches"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "On it.")
+    rig.brain.permit("Bash", {"command": "git branch -D old", "description": "Delete the old branch"})
+    await rig.until(lambda: "May I use Bash to run git branch -D old? Say yes to allow it." in rig.out.said())
+    rig.brain.end()
+
+
+async def test_a_permission_settled_before_its_turn_came_to_be_said_is_never_asked(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "make the notes say hello"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "I'll write it.")
+    rig.brain.permit("Write", {"file_path": "/Users/bmf/notes.txt"}).settle(Deny(SPOKEN_OVER))
+    rig.stream(exchange, " Or not.")
+    await rig.until(lambda: " Or not." in rig.out.said())
+    assert rig.out.said() == ["I'll write it.", " Or not."]
+    rig.brain.end()
+
+
+async def test_a_permission_held_for_a_turn_the_stage_no_longer_asks_is_refused(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "make the notes say hello"})
+    teller = rig.brain.tellers[-1]
+    rig.brain.end()
+    await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
+    asked = Asked(Permission("Write", {"file_path": "/Users/bmf/notes.txt"}), asyncio.get_running_loop().create_future())
+    teller(asked)
+    assert asked.decision.result() == Deny(NOBODY)

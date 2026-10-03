@@ -90,7 +90,8 @@ _ASSENTING = _ASSENT | {"it", "please", "for", "that's", "all", "sounds"}
 def heard(words: str) -> Allow | Deny:
     """What a spoken answer to a permission request decides: an Allow for a plain yes, and for anything else a Deny that
     carries the user's words, so what asked hears what they said instead."""
-    said = re.findall(r"[a-z']+", words.lower())
+    # Every word counts, digits and all: one outside the yes words keeps the answer theirs to read.
+    said = re.findall(r"[\w']+", words.lower())
     if said and set(said) <= _ASSENTING and _ASSENT & set(said):
         return Allow()
     return Deny(f'The user was asked whether to allow this, and answered by voice, so it did not run. Do what they said, which was: "{words}"')

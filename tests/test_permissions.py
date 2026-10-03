@@ -134,7 +134,7 @@ def test_a_plain_yes_spoken_to_a_permission_allows_it(words: str) -> None:
     assert heard(words) == Allow()
 
 
-@pytest.mark.parametrize("words", ["No.", "Don't.", "Yes, but put it in the other file.", "Wait.", "Go ahead and delete everything else too.", "Please.", "", "Not yet."])
+@pytest.mark.parametrize("words", ["No.", "Don't.", "Yes, but put it in the other file.", "Wait.", "Go ahead and delete everything else too.", "Please.", "", "Not yet.", "Yes 2."])
 def test_anything_else_spoken_to_a_permission_refuses_it_carrying_the_words(words: str) -> None:
     # A yes with more said beside it is the brain's to read: it may want something other than what was asked.
     assert heard(words) == Deny(f'The user was asked whether to allow this, and answered by voice, so it did not run. Do what they said, which was: "{words}"')

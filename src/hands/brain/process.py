@@ -41,7 +41,7 @@ from hands.core.effects import Allow, Deny, Text
 from hands.core.session import ESCAPES, Permission, SessionId, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainPermission, BrainRefused, Record
-from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS, PERMISSION_HOOK_TIMEOUT_SECONDS
+from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS, declared
 from hands.sessions.hooks import called, hook_output
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.typing import Typist, Untyped
@@ -87,8 +87,6 @@ UNREADABLE: Mapping[str, Mapping[str, object]] = {"PermissionRequest": hook_outp
 # dialog about to open. Escape ends a turn with none of them (measured on 2.1.285), so a turn told to stop is over when
 # it is told.
 HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation")
-# [LAW:single-enforcer] a held permission's hook lives as long as a working session's, and is denied by the same deadline.
-HOOK_SECONDS = {"PermissionRequest": PERMISSION_HOOK_TIMEOUT_SECONDS}
 
 # The terminal the brain draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
@@ -159,13 +157,10 @@ def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
         "--append-system-prompt", launch.instruction,
         # hands' tools are how the brain reaches the sessions at all; a deny rule in its own setup still outranks this.
         "--allowedTools", f"mcp__{SERVER_NAME}",
-        "--settings", json.dumps({"hooks": {event: [{"hooks": [_hook(f"{hooks}/{event}", HOOK_SECONDS.get(event))]}] for event in HOOKS}}),
+        # [LAW:single-enforcer] each hook declared as the plugin declares it: a held permission's lives as long as a working
+        # session's, and is denied by the same deadline.
+        "--settings", json.dumps({"hooks": {event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}", **declared(event)}]}] for event in HOOKS}}),
     ]
-
-
-def _hook(url: str, seconds: int | None) -> dict[str, object]:
-    """One http hook: how long Claude Code waits on it when hands holds it, and Claude Code's own wait when hands does not."""
-    return {"type": "http", "url": url} if seconds is None else {"type": "http", "url": url, "timeout": seconds}
 
 
 def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> dict[str, str]:
@@ -738,7 +733,8 @@ async def _listen(hooks: "asyncio.Queue[_Posted]") -> tuple[web.AppRunner, str]:
             return web.json_response(UNREADABLE.get(event, {}))
         reply: asyncio.Future[Mapping[str, object]] = asyncio.get_running_loop().create_future()
         hooks.put_nowait(_Posted(event, said, reply))
-        return web.json_response(await reply)
+        # Shielded: a handler aiohttp cancels leaves the reply to be set by the brain, which is never refused a hook.
+        return web.json_response(await asyncio.shield(reply))
 
     app = web.Application()
     app.router.add_post("/{event}", hook)
