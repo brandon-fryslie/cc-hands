@@ -27,13 +27,10 @@ existed it held what was sent to the speaker instead, which was never the same s
 that the model cannot read an exact path or sha back out of its own memory; it has the session tools for
 facts, and what it said is now what was heard.
 
-One path that crosses this seam does not want a summary's liberties. A draft readback (`voice/readback.py`)
-is read out so the user can check what will be sent, and a path in it is spoken as its file name like any
-other — "fix src/auth.py" is heard as "fix auth". That is not a regression this filter introduced, because
-the unfiltered string was `s-r-c slash auth dot p y` and could not be checked by ear either, and the
-readback already passes through the model before it is spoken. But it does mean a readback can no longer
-be relied on to distinguish two files whose names agree, which is tracked as its own ticket rather than
-solved by giving this function a mode [LAW:no-mode-explosion].
+One path that crosses this seam wants every character heard: a draft readback (`voice/readback.py`), read
+out so the user can check what will be typed. It does not get a mode here [LAW:no-mode-explosion]. The
+readback says its paths and resolutions with `spelled`, whose output carries no tell for this filter to act
+on, so it reaches the speaker as the readback wrote it.
 
 The filter is stateless, so a barge-in in the middle of a sentence leaves nothing in it to reset.
 """

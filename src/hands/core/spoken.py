@@ -146,6 +146,31 @@ def spoken_ref(ref: str) -> str:
     return " ".join(ref.translate(_REF_SEPARATORS).split())
 
 
+# Every mark a path or a code name is typed with, by the name a developer reads it out by.
+_MARKS = {"/": "slash", ".": "dot", "_": "underscore", "-": "dash", "~": "tilde", "@": "at", ":": "colon", "+": "plus"}
+_MARK = re.compile("|".join(re.escape(mark) for mark in _MARKS))
+_HUMP = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def spelled(token: str) -> str:
+    """A token said so that it can be typed back from what was heard: each mark by its name, each hump of a
+    camel-case name as a word of its own with its capital kept.
+
+    For a caller that needs the listener to hear exactly what will be typed, which `spoken` deliberately does
+    not give: it says `src/auth.py` as "auth", the way a developer refers to a file in passing. What `spelled`
+    returns has no tell left for `spoken` to act on, so it reaches the speaker as written and the filter keeps
+    one behaviour for every utterance [LAW:no-mode-explosion].
+    """
+    return " ".join(_HUMP.sub(" ", _MARK.sub(lambda found: f" {_MARKS[found.group(0)]} ", token)).split())
+
+
+def spelled_paths(text: str) -> str:
+    """`text` with every path and file name in it `spelled`, by the same tells `spoken` finds them by
+    [LAW:one-source-of-truth]."""
+    text = _PATH.sub(lambda found: spelled(found.group(0)), text)
+    return _FILE.sub(lambda found: spelled(found.group(0)) if found.group(2) in _EXTENSIONS else found.group(0), text)
+
+
 def spoken(text: str) -> Spoken:
     """`text` in a form that can be spoken: the one conversion every utterance goes through.
 
