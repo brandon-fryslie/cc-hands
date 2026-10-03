@@ -227,7 +227,7 @@ notification when the daemon stops being up, and once the daemon is gone it post
 and goes away too.
 
 Every heartbeat rewrites `~/.hands/status.json`, every effect and failure is a line
-in `~/.hands/audit.jsonl` (retired to `audit.jsonl.1` at 32 MiB), and the daemon's output goes to its terminal. Each line's
+in the segmented log `~/.hands/audit/` (two 32 MiB segments at most), and the daemon's output goes to its terminal. Each line's
 `level` is `error` for anything that went wrong, so `jq -cR 'fromjson? | select(.level == "error")'`
 finds them all; the brain is told the same and reads the log itself when asked what happened.
 

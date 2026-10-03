@@ -291,12 +291,12 @@ LOG_POLL_SECONDS = 0.25
 
 
 def tail_log(home: Home, lines: int) -> int:
-    newest, position = audit.tail(home.audit, lines)
+    newest, offset = audit.tail(home.audit, lines)
     try:
         # json.dumps escapes C0 controls but writes DEL, C1, and bidi controls raw; their escapes keep each line JSON.
         for line in newest:
             print(line.translate(VISIBLE), flush=True)
-        for line in audit.follow(home.audit, position, lambda: time.sleep(LOG_POLL_SECONDS)):
+        for line in audit.follow(home.audit, offset, lambda: time.sleep(LOG_POLL_SECONDS)):
             print(line.translate(VISIBLE), flush=True)
     except KeyboardInterrupt:
         return 0

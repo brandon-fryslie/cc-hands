@@ -1584,11 +1584,13 @@ thing that failed `[LAW:no-silent-failure]`:
    is the rule the session sweep uses, from `hands.sessions.processes`. A pid that a
    later process took, after a crash or a reboot, reads as down rather than as not
    responding.
-3. **Log.** Every effect and every failure is one line in `~/.hands/audit.jsonl`,
-   written by the daemon alone (`hands.sessions.audit`). A line that would take it past
-   32 MiB first moves it to `audit.jsonl.1`, replacing the one there, and the new log
-   opens with a `Retired` line; `hands log` prints the newest lines and follows the
-   file across that move without losing one. Each line is a value encoded one way: its type
+3. **Log.** Every effect and every failure is one line in the segmented log
+   `~/.hands/audit/`, written by the daemon alone (`hands.sessions.audit`). Each
+   segment is named by its base offset; a line that would take the active segment past
+   32 MiB rolls the log to a new segment, which opens with a `Rolled` line, and
+   retention deletes all but the segment just closed and the new one. A segment is never
+   renamed and, once a later one exists, never appended to, so `hands log` prints the
+   newest lines and follows the log across a roll without losing one. Each line is a value encoded one way: its type
    under `"type"`, its fields beside it, nested events and effects alike, and the
    wall-clock time under `"at"`. `Sessions` is the single writer for the session
    side: an `Applied` event (only one that changed the registry or called for an

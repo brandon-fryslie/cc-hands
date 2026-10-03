@@ -28,13 +28,13 @@ from hands.sessions.audit import (
     Failure,
     Named,
     Performed,
-    START,
     Replied,
     Transcribed,
     encoded,
     failures_to,
     follow,
-    retired,
+    segment,
+    segments,
     tail,
 )
 from hands.sessions.home import Home
@@ -55,8 +55,9 @@ def member() -> Membership:
     return Membership(SessionId("s1"), pid=4242, cwd=Path("/code/cc-hands"), transcript=Path("/nowhere/s1.jsonl"))
 
 
-def lines(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text().splitlines()]
+def lines(log: Path) -> list[dict[str, Any]]:
+    """Every line of the log, its segments read oldest first."""
+    return [json.loads(line) for base in segments(log) for line in segment(log, base).read_text().splitlines()]
 
 
 async def invoke(tool: Tool, **arguments: object) -> Result:
@@ -84,27 +85,26 @@ def test_a_value_the_log_cannot_write_is_refused_rather_than_guessed_at() -> Non
 
 
 def test_the_log_is_the_user_s_alone_to_read_whether_it_is_new_or_was_there(tmp_path: Path) -> None:
-    fresh = tmp_path / "fresh.jsonl"
+    fresh = tmp_path / "fresh"
     AuditLog(fresh, clock=lambda: AT).record(Transcribed("send it"))
-    there = tmp_path / "there.jsonl"
-    there.write_text("")
-    there.chmod(0o644)
+    there = tmp_path / "there"
+    there.mkdir(mode=0o755)
     AuditLog(there, clock=lambda: AT)
-    assert [path.stat().st_mode & 0o777 for path in (fresh, there)] == [0o600, 0o600]
+    assert [path.stat().st_mode & 0o777 for path in (fresh, segment(fresh, 0), there)] == [0o700, 0o600, 0o700]
 
 
 def test_each_entry_is_one_line_stamped_with_when_it_was_written(tmp_path: Path) -> None:
-    log = AuditLog(tmp_path / "deep" / "audit.jsonl", clock=lambda: AT)
+    log = AuditLog(tmp_path / "deep" / "audit", clock=lambda: AT)
     log.record(Transcribed("send it"))
     log.record(Replied("Sent to cc-hands.", interrupted=False))
-    assert lines(tmp_path / "deep" / "audit.jsonl") == [
+    assert lines(tmp_path / "deep" / "audit") == [
         {"at": "2026-09-14T12:00:00.123+00:00", "level": "info", "type": "Transcribed", "text": "send it"},
         {"at": "2026-09-14T12:00:00.123+00:00", "level": "info", "type": "Replied", "text": "Sent to cc-hands.", "interrupted": False},
     ]
 
 
 def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing_else_is(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
+    path = tmp_path / "audit"
     log = AuditLog(path, clock=lambda: AT)
     log.record(Failure(source="hands.x:f", message="broke", where="/x.py:1", trace=()))
     log.record(BacklogUnread(project="/code/p", error="lit exited 3", seconds=0.1))
@@ -147,125 +147,113 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
 
 
 def test_text_cut_mid_emoji_is_a_line_that_reads_back_as_it_was_and_whole_characters_are_written_as_themselves(tmp_path: Path) -> None:
-    log = AuditLog(tmp_path / "audit.jsonl", clock=lambda: AT)
+    log = AuditLog(tmp_path / "audit", clock=lambda: AT)
     log.record(Transcribed("cut \ud83d, whole \U0001f600 é"))
-    assert lines(tmp_path / "audit.jsonl") == [{"at": "2026-09-14T12:00:00.123+00:00", "level": "info", "type": "Transcribed", "text": "cut \ud83d, whole \U0001f600 é"}]
-    assert "cut \\ud83d, whole \U0001f600 é" in (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert lines(tmp_path / "audit") == [{"at": "2026-09-14T12:00:00.123+00:00", "level": "info", "type": "Transcribed", "text": "cut \ud83d, whole \U0001f600 é"}]
+    assert "cut \\ud83d, whole \U0001f600 é" in segment(tmp_path / "audit", 0).read_text(encoding="utf-8")
 
 
-def test_the_tail_is_the_newest_whole_lines_and_following_picks_up_where_it_ended(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
-    assert tail(path, 5) == ([], START)
-    path.write_text("one\ntwo\nthree\npart")
-    newest, position = tail(path, 2)
-    assert newest == ["two", "three"]
+def test_the_tail_is_the_newest_complete_lines_and_following_picks_up_where_it_ended(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    assert tail(log, 5) == ([], 0)
+    log.mkdir()
+    segment(log, 0).write_text("one\ntwo\nthree\npart")
+    newest, offset = tail(log, 2)
+    assert (newest, offset) == (["two", "three"], 14)
 
     looks: list[str] = []
-    followed = follow(path, position, lambda: looks.append("look"))
-    with path.open("a") as log:
-        log.write("ial\nfour\n")
+    followed = follow(log, offset, lambda: looks.append("look"))
+    with segment(log, 0).open("a") as active:
+        active.write("ial\nfour\n")
     assert [next(followed), next(followed)] == ["partial", "four"]
-    # Cut short in place: the log is read again from its first line.
-    path.write_text("fresh\n")
-    assert next(followed) == "fresh"
 
 
-def test_a_log_moved_aside_is_followed_from_the_first_line_of_the_new_one_even_when_it_has_grown_past_the_old_offset(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
-    path.write_text("old\n")
-    _, position = tail(path, 1)
-    followed = follow(path, position, lambda: None)
-    path.rename(tmp_path / "audit.jsonl.1")
-    # Longer than the old log, and the old offset falls inside a two-byte character.
-    path.write_text("\u00e9t\u00e9\nsecond\n")
-    assert [next(followed), next(followed)] == ["\u00e9t\u00e9", "second"]
-
-
-def test_the_log_and_the_one_retired_before_it_never_hold_more_than_twice_the_bound(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
-    log = AuditLog(path, clock=lambda: AT, limit=1000)
+def test_the_log_never_holds_more_than_two_segments_of_the_bound(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    writer = AuditLog(log, clock=lambda: AT, segment_bytes=1000)
     for number in range(200):
-        log.record(Transcribed(f"line {number}"))
-        assert path.stat().st_size <= 1000
-    assert retired(path).stat().st_size <= 1000
-    assert retired(path).stat().st_mode & 0o777 == 0o600
-    # The new log opens with where its predecessor went, at how many bytes.
-    first, second = lines(path)[:2]
-    assert first["type"] == "Retired" and first["path"] == str(retired(path)) and 900 < first["size"] <= 1000
+        writer.record(Transcribed(f"line {number}"))
+        assert len(segments(log)) <= 2
+        assert all(segment(log, base).stat().st_size <= 1000 for base in segments(log))
+    closed, active = segments(log)
+    assert segment(log, closed).stat().st_mode & 0o777 == 0o600
+    # A segment is named by its base offset: where the one before it ended.
+    assert active == closed + segment(log, closed).stat().st_size
+    # The active segment opens with the roll that began it, and which segments retention deleted.
+    first, second = [json.loads(line) for line in segment(log, active).read_text().splitlines()][:2]
+    assert first["type"] == "Rolled" and first["base"] == active and first["deleted"] == [max(base for base in first["deleted"])]
     assert second["type"] == "Transcribed"
-    assert lines(path)[-1]["text"] == "line 199"
+    assert lines(log)[-1]["text"] == "line 199"
 
 
-def test_a_reader_following_the_log_across_its_retirement_loses_no_line(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
-    log = AuditLog(path, clock=lambda: AT, limit=1000)
-    log.record(Transcribed("before"))
-    _, position = tail(path, 1)
-    followed = follow(path, position, lambda: None)
-    # Enough between two looks to retire the log once, with lines left unread in the one retired.
+def test_a_reader_following_the_log_across_a_roll_loses_no_line(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    writer = AuditLog(log, clock=lambda: AT, segment_bytes=1000)
+    writer.record(Transcribed("before"))
+    _, offset = tail(log, 1)
+    followed = follow(log, offset, lambda: None)
+    # Enough between two reads to roll the log once, with lines left unread in the segment closed.
     for number in range(15):
-        log.record(Transcribed(f"line {number}"))
-    assert retired(path).exists()
+        writer.record(Transcribed(f"line {number}"))
+    assert len(segments(log)) == 2
     read = [json.loads(next(followed)) for _ in range(16)]
     assert [line["text"] for line in read if line["type"] == "Transcribed"] == [f"line {number}" for number in range(15)]
-    assert [line["type"] for line in read].count("Retired") == 1
+    assert [line["type"] for line in read].count("Rolled") == 1
 
 
-def test_the_tail_reaches_into_the_retired_log_when_the_new_one_is_short(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
-    retired(path).write_text("one\ntwo\n")
-    path.write_text("three\n")
-    assert tail(path, 2)[0] == ["two", "three"]
+def test_a_roll_just_after_the_reader_lists_the_segments_loses_no_line_and_tells_none_twice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    log = tmp_path / "audit"
+    writer = AuditLog(log, clock=lambda: AT, segment_bytes=400)
+    writer.record(Transcribed("before"))
+    _, offset = tail(log, 1)
+    listed = audit.segments
+    rolled = iter([True])
 
-
-def moved_aside_once_read(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
-    """The log is retired the moment after the reader first reads it: between its two looks at the two names."""
-    read = audit._read  # pyright: ignore[reportPrivateUsage]
-
-    def then_moved(at: Path, since: audit.Position) -> tuple[list[str], audit.Position]:
-        found = read(at, since)
-        if at == path and path.exists() and not retired(path).exists():
-            path.rename(retired(path))
+    def then_rolled(directory: Path) -> list[int]:
+        found = listed(directory)
+        for _ in zip(range(1), rolled):
+            for number in range(5):
+                writer.record(Transcribed(f"line {number}"))
         return found
 
-    monkeypatch.setattr(audit, "_read", then_moved)
+    monkeypatch.setattr(audit, "segments", then_rolled)
+    followed = follow(log, offset, lambda: None)
+    read = [json.loads(next(followed)) for _ in range(6)]
+    assert len(listed(log)) == 2
+    assert [line["text"] for line in read if line["type"] == "Transcribed"] == [f"line {number}" for number in range(5)]
 
 
-def test_a_log_retired_while_it_is_followed_gives_each_line_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = tmp_path / "audit.jsonl"
-    path.write_text("old\n")
-    _, position = tail(path, 1)
-    with path.open("a") as log:
-        log.write("new\n")
-    moved_aside_once_read(monkeypatch, path)
-    followed = follow(path, position, lambda: None)
-    assert next(followed) == "new"
-    path.write_text("after\n")
-    assert next(followed) == "after"
+def test_a_reader_behind_retention_goes_on_at_the_oldest_segment_kept(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    log.mkdir()
+    segment(log, 100).write_text("kept\n")
+    assert next(follow(log, 40, lambda: None)) == "kept"
 
 
-def test_a_log_retired_while_its_tail_is_read_is_told_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = tmp_path / "audit.jsonl"
-    path.write_text("one\n")
-    moved_aside_once_read(monkeypatch, path)
-    assert tail(path, 5)[0] == ["one"]
+def test_the_tail_reaches_into_the_older_segment_when_the_active_one_is_short(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    log.mkdir()
+    segment(log, 0).write_text("one\ntwo\n")
+    segment(log, 8).write_text("three\n")
+    assert tail(log, 2) == (["two", "three"], 14)
 
 
-def test_a_line_that_retires_the_log_is_stamped_with_the_retired_line_in_front_of_it(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
+def test_a_line_that_rolls_the_log_is_stamped_with_the_rolled_line_in_front_of_it(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
     ticks = iter(range(1000))
-    log = AuditLog(path, clock=lambda: AT.replace(second=next(ticks) % 60), limit=200)
+    writer = AuditLog(log, clock=lambda: AT.replace(second=next(ticks) % 60), segment_bytes=200)
     for number in range(5):
-        log.record(Transcribed(f"line {number}"))
-    stamps = [line["at"] for line in lines(retired(path)) + lines(path)]
+        writer.record(Transcribed(f"line {number}"))
+    stamps = [line["at"] for line in lines(log)]
     assert stamps == sorted(stamps)
-    assert [line["type"] for line in lines(path)][:2] == ["Retired", "Transcribed"]
+    newest = [json.loads(line) for line in segment(log, segments(log)[-1]).read_text().splitlines()]
+    assert [line["type"] for line in newest][:2] == ["Rolled", "Transcribed"]
 
 
 def test_a_line_the_disk_will_not_take_is_lost_out_loud_and_the_daemon_carries_on(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
+    path = tmp_path / "audit"
     log = AuditLog(path, clock=lambda: AT)
-    path.mkdir()  # opening a directory to append fails as a full or read-only disk does
+    segment(path, 0).mkdir()  # opening a directory to append fails as a full or read-only disk does
     warnings: list[str] = []
     sink = logger.add(lambda message: warnings.append(message.record["message"]), level="WARNING")
     try:
@@ -278,7 +266,8 @@ def test_a_line_the_disk_will_not_take_is_lost_out_loud_and_the_daemon_carries_o
 
 def test_following_stops_at_ctrl_c_after_printing_the_newest_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path)
-    home.audit.write_text("a\nb\nc\n")
+    home.audit.mkdir()
+    segment(home.audit, 0).write_text("a\nb\nc\n")
 
     def interrupted(_: float) -> None:
         raise KeyboardInterrupt
@@ -450,7 +439,8 @@ async def test_a_tool_that_raises_is_a_failure_line_naming_it_and_its_arguments(
 
 def test_hands_log_piped_into_a_reader_that_stops_ends_quietly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
-    home.audit.write_text("a\n")
+    home.audit.mkdir()
+    segment(home.audit, 0).write_text("a\n")
 
     def closed(*_: object, **__: object) -> None:
         raise BrokenPipeError
@@ -465,7 +455,8 @@ def test_hands_log_piped_into_a_reader_that_stops_ends_quietly(tmp_path: Path, m
 
 def test_hands_log_prints_a_control_json_left_raw_as_its_escape_and_the_line_is_still_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path)
-    home.audit.write_text(json.dumps({"t": "a\x9b2J\x7f\u202eb\x1b"}, ensure_ascii=False) + "\n")
+    home.audit.mkdir()
+    segment(home.audit, 0).write_text(json.dumps({"t": "a\x9b2J\x7f\u202eb\x1b"}, ensure_ascii=False) + "\n")
 
     def interrupted(*_: object) -> None:
         raise KeyboardInterrupt
@@ -478,17 +469,8 @@ def test_hands_log_prints_a_control_json_left_raw_as_its_escape_and_the_line_is_
     assert json.loads(printed) == {"t": "a\x9b2J\x7f\u202eb\x1b"}
 
 
-def test_a_log_cut_short_and_regrown_past_the_offset_between_looks_is_read_from_its_first_line(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
-    path.write_text("old\n")
-    _, position = tail(path, 1)
-    followed = follow(path, position, lambda: None)
-    path.write_text("regrown\nlines\n")
-    assert [next(followed), next(followed)] == ["regrown", "lines"]
-
-
 def test_an_entry_the_log_cannot_encode_is_a_failure_line_and_the_daemon_carries_on(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
+    path = tmp_path / "audit"
     log = AuditLog(path, clock=lambda: AT)
     sink = logger.add(failures_to(log.record), level="ERROR", filter="hands")
     try:
@@ -525,7 +507,7 @@ async def test_what_was_heard_where_nothing_waits_on_it_still_fails_loudly() -> 
 
 
 def test_a_brain_turn_that_failed_is_written_with_what_it_failed_of(tmp_path: Path) -> None:
-    path = tmp_path / "audit.jsonl"
+    path = tmp_path / "audit"
     AuditLog(path, clock=lambda: AT).record(BrainSpoke(("x1",), "", (), False, "user", 0.0, ModelFailed(ErrorCategory.SERVER)))
     [line] = lines(path)
     assert line["failed"] == {"type": "ModelFailed", "category": "server"}
