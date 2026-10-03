@@ -184,6 +184,9 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert not {"-p", "--print", "--settings", "--allowedTools", "--append-system-prompt"} & set(bare)
     env = environment(tmp_path / "brain", "http://127.0.0.1:1", {
         "PATH": "/bin",
+        # A command its setup's skill runs, firecrawl among them, is logged in by its own key or by what it stored under HOME.
+        "HOME": "/home/u",
+        "FIRECRAWL_API_KEY": "fc",
         "ANTHROPIC_API_KEY": "sk",
         "CLAUDE_CODE_OAUTH_TOKEN": "t",
         "ANTHROPIC_BASE_URL": "http://elsewhere",
@@ -193,7 +196,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
         "NODE_EXTRA_CA_CERTS": "/tmp/fritter-1/trusted.pem",
         "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128",
     })
-    assert env == {"PATH": "/bin", "HTTPS_PROXY": "http://corp:3128", **SLIM, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
+    assert env == {"PATH": "/bin", "HOME": "/home/u", "FIRECRAWL_API_KEY": "fc", "HTTPS_PROXY": "http://corp:3128", **SLIM, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
     # The account's claude.ai connectors stay out of every request, whatever the brain's own setup names.
     assert env["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
     # No turn opens but the ones hands types: no background task and no scheduled prompt opens one of its own.

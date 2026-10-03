@@ -98,6 +98,10 @@ account's skills and plugins out, which Claude Code reads from no other place. A
 its requests offer, at its first request and whenever they change.
 It works a project's backlog itself, with `lit` from its shell in the project's repository, as `lit quickstart` there
 says; `read_backlog` names where in it to run `lit`.
+It searches the web and reads pages with the `firecrawl` command from its shell, on that command's own login, as a
+skill of its setup says: `~/.hands/brain/skills/firecrawl/SKILL.md`, with `"deny": ["WebSearch", "WebFetch"]` in its
+settings so Firecrawl is its web. As a skill it adds one line to each request until it is used (about 110 bytes,
+2026-10-03); Firecrawl's MCP server would add every one of its tools' descriptions to every request.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
 and stops a turn with Escape, and types nothing else into it; its hooks say when a turn was taken and when it ended.
 What hands asks in the background, the Claude Code backend's summaries and the sentence an old tool result goes as,
