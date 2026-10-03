@@ -146,29 +146,38 @@ def spoken_ref(ref: str) -> str:
     return " ".join(ref.translate(_REF_SEPARATORS).split())
 
 
-# Every mark a path or a code name is typed with, by the name a developer reads it out by.
-_MARKS = {"/": "slash", ".": "dot", "_": "underscore", "-": "dash", "~": "tilde", "@": "at", ":": "colon", "+": "plus"}
+# Every mark a path, a flag or a code name is typed with, by the name a developer reads it out by.
+_MARKS = {
+    "/": "slash", ".": "dot", "_": "underscore", "-": "dash", "~": "tilde", "@": "at", ":": "colon", "+": "plus",
+    "#": "hash", "=": "equals",
+}
 _MARK = re.compile("|".join(re.escape(mark) for mark in _MARKS))
 _HUMP = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_JUNCTION = re.compile(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])")
+# A word's own punctuation is the sentence's, not the word's: "fix src/auth.py." ends a sentence, and
+# "(see notes.md)" is an aside. Peeled off so that only what will be typed as the token is spelled.
+_TOKEN = re.compile(r"""(?P<open>["'(\[]*)(?P<core>\S*?)(?P<close>["')\].,;:!?]*)(?=\s|$)""")
 
 
-def spelled(token: str) -> str:
-    """A token said so that it can be typed back from what was heard: each mark by its name, each hump of a
-    camel-case name as a word of its own with its capital kept.
+def spelled(text: str) -> str:
+    """`text` said so that it can be typed back from what was heard: every word that is typed differently from
+    how it is said — a path, a flag, a code name, a hash — has each mark said by its name and is broken into
+    the runs of letters and of digits it is made of, with each capital kept.
 
     For a caller that needs the listener to hear exactly what will be typed, which `spoken` deliberately does
-    not give: it says `src/auth.py` as "auth", the way a developer refers to a file in passing. What `spelled`
-    returns has no tell left for `spoken` to act on, so it reaches the speaker as written and the filter keeps
-    one behaviour for every utterance [LAW:no-mode-explosion].
+    not give: it says `src/auth.py` as "auth" and `a1b2c3d` as "a commit", the way a developer refers to them in
+    passing. Every tell `spoken` acts on inside a word needs a mark, a hump, or a letter and a digit in one run,
+    and a spelled word has none of them, so what this returns reaches the speaker as written and the filter
+    keeps one behaviour for every utterance [LAW:no-mode-explosion].
     """
-    return " ".join(_HUMP.sub(" ", _MARK.sub(lambda found: f" {_MARKS[found.group(0)]} ", token)).split())
+    return _TOKEN.sub(lambda found: found["open"] + _spelled_word(found["core"]) + found["close"], text)
 
 
-def spelled_paths(text: str) -> str:
-    """`text` with every path and file name in it `spelled`, by the same tells `spoken` finds them by
-    [LAW:one-source-of-truth]."""
-    text = _PATH.sub(lambda found: spelled(found.group(0)), text)
-    return _FILE.sub(lambda found: spelled(found.group(0)) if found.group(2) in _EXTENSIONS else found.group(0), text)
+def _spelled_word(word: str) -> str:
+    if not (_MARK.search(word) or _HUMP.search(word) or _JUNCTION.search(word)):
+        return word
+    marked = _MARK.sub(lambda found: f" {_MARKS[found.group(0)]} ", word)
+    return " ".join(_JUNCTION.sub(" ", _HUMP.sub(" ", marked)).split())
 
 
 def spoken(text: str) -> Spoken:
@@ -482,7 +491,7 @@ def _identifiers(text: str) -> str:
     text = _DOTTED_CALL.sub(lambda found: found.group(0).replace(".", " "), text)
     text = _DOTTED_NAME.sub(lambda found: found.group(0).replace(".", " "), text)
     text = _SNAKE.sub(lambda found: found.group(0).replace("_", " ").strip(), text)
-    return _CAMEL.sub(lambda found: re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", found.group(0)).lower(), text)
+    return _CAMEL.sub(lambda found: _HUMP.sub(" ", found.group(0)).lower(), text)
 
 
 def _tidied(text: str) -> str:

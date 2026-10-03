@@ -1,6 +1,6 @@
 """What the user hears about a draft, a command, or an interrupt, built from what happened to it, never from the model repeating itself.
 
-A draft is read back so the user can check what will be typed before it is, so its paths and resolutions are
+A draft is read back so the user can check what will be typed before it is, so its text and resolutions are
 `spelled` rather than left to the speaker's filter, which says a path as its file name and would have the user
 confirm "fix auth" for `src/auth.py` and `lib/auth.py` alike.
 """
@@ -14,7 +14,7 @@ from hands.core.effects import Command, Key, NotTyped, Text, Typed
 from hands.core.keyboard import KeyboardOutcome, NothingRunning
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
 from hands.core.session import Known, Mode, PermissionMode, Resolution, SessionId, UnknownMode
-from hands.core.spoken import spelled, spelled_paths
+from hands.core.spoken import spelled
 from hands.sessions.registry import Listing, Sessions
 
 _WORDS = re.compile(r"[^\s]+|\n")
@@ -24,9 +24,9 @@ def readback(outcome: DraftOutcome, name: str) -> str:
     """One spoken reply for the outcome; `name` is how the user knows the session."""
     match outcome:
         case DraftStaged(draft=draft, replaced=None):
-            return f"Draft for {name}{_reading(draft.resolutions)}: {spelled_paths(draft.text)}"
+            return f"Draft for {name}{_reading(draft.resolutions)}: {spelled(draft.text)}"
         case DraftStaged(draft=draft):
-            return f"New draft for {name}, replacing the last one{_reading(draft.resolutions)}: {spelled_paths(draft.text)}"
+            return f"New draft for {name}, replacing the last one{_reading(draft.resolutions)}: {spelled(draft.text)}"
         case DraftAmended(before=before, after=after):
             # Speak what changed, not the whole draft again.
             added = [resolution for resolution in after.resolutions if resolution not in before.resolutions]
@@ -42,7 +42,7 @@ def readback(outcome: DraftOutcome, name: str) -> str:
         case Typed():
             return f"Sent the draft to {name}."
         case NotTyped(input=Text(prompt=text), reason=reason):
-            return f"The draft for {name} was not sent, and is no longer staged: {reason}. It said: {spelled_paths(text)}"
+            return f"The draft for {name} was not sent, and is no longer staged: {reason}. It said: {spelled(text)}"
         case Unwrapped():
             return f"{name} was not started under fritter, so hands cannot type into it. The draft is still staged."
         case AtItsDialog():
@@ -133,7 +133,7 @@ def _changes(before: str, after: str) -> list[str]:
 
 
 def _spoken(words: list[str]) -> str:
-    return " ".join("a line break" if word == "\n" else spelled_paths(word) for word in words)
+    return " ".join("a line break" if word == "\n" else spelled(word) for word in words)
 
 
 def _change(removed: str, added: str) -> str:
