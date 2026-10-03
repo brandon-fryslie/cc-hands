@@ -43,6 +43,7 @@ from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.speech import answer_readback
+from hands.voice.voices import VOICES, Voices, parse_voice, spoken
 
 # What the model is handed back from a call: an object, as every tool API carries a result.
 Result = Mapping[str, object]
@@ -168,6 +169,7 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
         *permission_tools(sessions),
         watch_session_tool(sessions, overlays),
         turn_summaries_tool(home),
+        *voice_tools(Voices(home, player.lines)),
         *playback_tools(player),
         stay_silent_tool(),
     ]
@@ -652,6 +654,60 @@ def turn_summaries_tool(home: Home) -> Tool:
         return {"readback": described(to)}
 
     return tool(turn_summaries, completes=True)
+
+
+def voice_tools(voices: Voices) -> list[Tool]:
+    """Choosing the voice hands speaks in, by ear: the user hears the voices said by hands, and keeps one.
+
+    [LAW:nothing-unseen] each result names the voice hands speaks in after the call, and a hearing the voices it said,
+    so the Called line holds what was heard and what was kept.
+    """
+
+    async def voices_on_offer() -> Result:
+        """The voices hands can speak in, and the one it speaks in now.
+
+        Call this when the user asks what voice you speak in, or which voices there are. Say a voice's name as a person
+        would: bill_boerst is Bill Boerst.
+        """
+        try:
+            return {"speaking_in": await voices.speaking_in(), "voices": VOICES}
+        except Rejected as error:
+            return {"error": str(error)}
+
+    async def hear_voices(names: list[str]) -> Result:
+        """Hands says a line in each voice named, one after another, each saying its own name, then speaks on in the
+        voice it was using.
+
+        Call this when the user wants to hear what voices sound like: a few at a time, at most five unless they ask for
+        more, since each takes a few seconds. Say nothing before calling it. What you say after it is heard after the
+        last voice, so keep it to a few words asking which they would like. Hearing a voice does not choose it;
+        use_voice does.
+
+        Args:
+            names: the voices to hear, as voices_on_offer lists them.
+        """
+        try:
+            heard = tuple(parse_voice(name) for name in names)
+            return {"heard": heard, "speaking_in": await voices.hear(heard)}
+        except Rejected as error:
+            return {"error": str(error)}
+
+    async def use_voice(name: str) -> Result:
+        """Speak in this voice from now on. It lasts until the user chooses another, across restarts.
+
+        Call this when the user picks a voice. What you say next is in it, so say the returned readback.
+
+        Args:
+            name: the voice, as voices_on_offer lists it.
+        """
+        try:
+            voice = parse_voice(name)
+            await voices.use(voice)
+        except (Rejected, OSError) as error:
+            return {"error": str(error)}
+        return {"speaking_in": voice, "readback": f"This is {spoken(voice)}, and I'll speak in this voice from now on."}
+
+    return [tool(voices_on_offer), tool(hear_voices), tool(use_voice, completes=True)]
 
 
 def watch_session_tool(sessions: Sessions, overlays: Overlays) -> Tool:

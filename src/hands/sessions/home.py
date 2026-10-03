@@ -38,6 +38,11 @@ class Home:
         return self.root / "summaries"
 
     @property
+    def voice(self) -> Path:
+        """The voice hands speaks in, written by the daemon alone, when the user chooses one."""
+        return self.root / "voice"
+
+    @property
     def sentences(self) -> Path:
         """The summary store: a sentence for each content-addressed thing, written by the daemon alone."""
         return self.root / "sentences.db"

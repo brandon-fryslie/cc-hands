@@ -135,6 +135,11 @@ to watch are told as they finish, and any session's last turn is told when you a
 it. Permission requests, questions asked in a dialog, and plans are spoken either way.
 The setting lasts across restarts and takes effect from the next turn.
 
+Hands speaks in Charles, one of Pocket TTS's own voices, until you choose another. Ask
+it which voices there are and to let you hear some: each says a line in its own voice.
+Tell it which one to use, and what it says next is in that voice. The choice is kept in
+`~/.hands/voice`, so it lasts across restarts.
+
 The hooks need a Python 3.12 or newer on `PATH` (`python3.14`, `python3.13`,
 `python3.12`, or a `python3` that is new enough); they run hands' own `src` and need no
 venv. Without one, every hook fails saying so. The shim finds hands' home as the CLI

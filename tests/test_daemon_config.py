@@ -16,6 +16,7 @@ from hands.sessions.audit import Entry, LLMChosen, encoded
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.core.wire import UPSTREAM
+from hands.voice import voices
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
 
 HOME = Home(Path("/Users/someone/.hands"))
@@ -170,7 +171,7 @@ def test_unknown_choice_stops_at_the_door(monkeypatch: pytest.MonkeyPatch) -> No
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01))
     sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=lambda _event: None)
-    config = run.VoiceConfig(llm=AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL), whisper_model="w", voice="v")
+    config = run.VoiceConfig(llm=AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL), whisper_model="w", voice=voices.DEFAULT)
     return Home(tmp_path), sessions, heart, config
 
 
@@ -224,8 +225,9 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
         asyncio.run(start(lambda: run.configured(refused, lambda: None, home, sessions, lambda _event: None), heart, sessions.live_count, asyncio.Event()))
 
 
-def test_the_default_voice_is_charles_from_the_package_catalogue(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With HANDS_VOICE unset, the voice is Charles by the name the installed pocket_tts resolves itself.
+def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Charles by the name the installed pocket_tts resolves itself, until the user chooses another, which the next run
+    is built in.
 
     A voice state is a cache computed by one network and noise under another, and the loader does not check; so the
     default is a catalogue name, which the package maps to the state primed by the weights it loads. The membership
@@ -233,8 +235,11 @@ def test_the_default_voice_is_charles_from_the_package_catalogue(monkeypatch: py
     """
     from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
 
-    for var in ("HANDS_VOICE", "HANDS_LLM", "HANDS_LLM_URL", "HANDS_LLM_MODEL"):
+    for var in ("HANDS_LLM", "HANDS_LLM_URL", "HANDS_LLM_MODEL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    assert run.config_from_env(Home(Path("/nonexistent"))).voice == "charles"
+    home = Home(tmp_path)
+    assert run.config_from_env(home).voice == "charles"
     assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
+    voices.keep(home, voices.parse_voice("Bill Boerst"))
+    assert run.config_from_env(home).voice == "bill_boerst"

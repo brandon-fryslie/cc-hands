@@ -55,6 +55,7 @@ from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.tools import Tool, pipecat_function
 from hands.voice.turnstop import KeyTurnStop
+from hands.voice import voices
 from hands.voice.whisper import Whisper
 
 # [LAW:types-are-the-program] the two ways to reach a model differ in what
@@ -94,19 +95,13 @@ class ClaudeCodeBackend:
 LLMBackend = AnthropicBackend | OpenAICompatibleBackend | ClaudeCodeBackend
 
 
-# The voice hands speaks with unless HANDS_VOICE names another. [LAW:one-source-of-truth] a name from Pocket TTS's own
-# catalogue, which the package resolves to the state primed by the very weights it loads; a state primed elsewhere
-# is a cache from another network, and the loader cannot tell.
-DEFAULT_VOICE = "charles"
-
-
 @dataclass(frozen=True)
 class VoiceConfig:
     """Everything that varies between two runs of the pipeline."""
 
     llm: LLMBackend
     whisper_model: str
-    voice: str
+    voice: voices.Voice
     max_reply_tokens: int = 300
 
 
