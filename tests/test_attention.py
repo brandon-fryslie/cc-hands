@@ -201,6 +201,18 @@ async def test_a_normal_session_s_readback_with_summaries_on_says_its_turns_are_
     assert result == {"readback": "I'll tell you each turn dropped finishes, as I tell every session's with spoken summaries on."}
 
 
+async def test_an_overlay_set_with_the_switch_unreadable_is_set_and_read_back_as_the_narrator_will_deliver_it(tmp_path: Path) -> None:
+    member = membership(tmp_path, "dropped")
+    home = Home(tmp_path / "home")
+    home.summaries.parent.mkdir(parents=True, exist_ok=True)
+    home.summaries.write_text("loud\n")
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member, "startup"))
+    result = await set_overlay_tool(sessions, Overlays(home)).body(session=member.id, overlay="normal")
+    assert result == {"readback": "I'll hold dropped's turns until you ask for one."}
+    assert Overlays(home).of(member.id) == "normal"
+
+
 def test_set_overlay_offers_the_model_only_the_overlays_there_are(tmp_path: Path) -> None:
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     assert set_overlay_tool(sessions, Overlays(Home(tmp_path))).properties["overlay"]["enum"] == ["normal", "watched", "muted"]

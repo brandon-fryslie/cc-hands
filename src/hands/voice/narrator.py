@@ -143,7 +143,7 @@ async def narrate(
         name = spoken_name(sessions, story.session)
         match story:
             case Summarise(session=session, turn=turn, closing=closing):
-                delivered = delivery(await _switch(aloud), await _overlay(overlays, session))
+                delivered = delivery(await switch(aloud), await _overlay(overlays, session))
                 told = await recount(tails, session, turn, closing, name, record, await read.taken(session), delivered, recounts, telling)
             case SessionGone(session=session):
                 recounts.gone(session)
@@ -232,7 +232,7 @@ def _news(session: SessionId, name: str, turn: Turn, tree: Narration) -> str:
     )
 
 
-async def _switch(aloud: Callable[[], Summaries]) -> Summaries:
+async def switch(aloud: Callable[[], Summaries]) -> Summaries:
     """Where the summaries switch stands, read off the loop the speaker runs on; the default where it cannot be read.
 
     [LAW:no-silent-failure] a switch that cannot be read is logged as the error it is, which is an audit line, and the

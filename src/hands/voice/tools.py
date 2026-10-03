@@ -40,7 +40,7 @@ from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
 from hands.sessions.summaries import described, set_summaries, summaries
 from hands.core import playback
-from hands.voice.narrator import Recount, Recounts, delivery
+from hands.voice.narrator import Recount, Recounts, delivery, switch
 from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
@@ -826,11 +826,12 @@ def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
             if live is None:
                 raise Rejected(f"no running session has the id {id!r}; take one from list_sessions")
             await asyncio.to_thread(overlays.set, id, overlay)
-            # [LAW:one-source-of-truth] the readback is the delivery the narrator computes, so it says what will happen.
-            delivered = delivery(await asyncio.to_thread(summaries, overlays.home), overlay)
         except (Rejected, OSError) as error:
             logger.error(f"set_overlay could not set session {session!r} to {overlay!r}: {error}")
             return {"error": str(error)}
+        # [LAW:one-source-of-truth] the delivery the narrator computes, from the switch as it reads it, so the readback
+        # says what will happen to the session's next turn.
+        delivered = delivery(await switch(lambda: summaries(overlays.home)), overlay)
         return {"readback": _overlay_readback(spoken_name(sessions, id), delivered)}
 
     return tool(set_overlay, completes=True)
