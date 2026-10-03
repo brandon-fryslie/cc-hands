@@ -221,11 +221,15 @@ class Announced:
 
 @dataclass(frozen=True)
 class Routed:
-    """Something a session said to the user, the overlay its session had then, and whether it was passed on."""
+    """Something a session said to the user, the overlay that routed it, and whether it was passed on.
+
+    `unreadable` is why the session's own overlay could not be read, when it could not: the default routed it instead.
+    """
 
     heard: Heard
     overlay: Overlay
     passed: bool
+    unreadable: str | None
 
 
 @dataclass(frozen=True)

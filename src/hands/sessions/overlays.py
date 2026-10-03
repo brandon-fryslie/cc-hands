@@ -5,6 +5,7 @@ so a change is heard from the next thing the session says.
 """
 
 import os
+import tempfile
 from dataclasses import dataclass
 
 from hands.core.attention import DEFAULT, Overlay
@@ -36,7 +37,9 @@ class Overlays:
     def set(self, session: SessionId, to: Overlay) -> None:
         path = self.home.overlay(session)
         path.parent.mkdir(parents=True, exist_ok=True)
-        # [LAW:no-ambient-temporal-coupling] written beside and renamed into place, so the daemon never reads half a file.
-        staging = path.with_suffix(f".{os.getpid()}.tmp")
-        staging.write_text(f"{to}\n")
-        staging.replace(path)
+        # [LAW:no-ambient-temporal-coupling] written beside and renamed into place, so the daemon never reads half a file;
+        # each write stages under a name of its own, so two at once for one session cannot rename each other's away.
+        descriptor, staging = tempfile.mkstemp(dir=path.parent, prefix=f".{session}.")
+        with os.fdopen(descriptor, "w") as staged:
+            staged.write(f"{to}\n")
+        os.replace(staging, path)

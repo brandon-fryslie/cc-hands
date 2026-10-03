@@ -91,6 +91,41 @@ async def test_a_stop_is_announced_for_the_session_the_user_asked_about_and_not_
     ]
 
 
+async def test_watching_a_session_whose_nudge_already_went_unsaid_says_it_waits_now(tmp_path: Path) -> None:
+    waiting = membership(tmp_path, "waiting")
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(waiting, "startup"))
+    await sessions.apply(StatusReported(waiting.id, Report(Idle(), Stamp(1)), at=1.0))
+    await sessions.apply(Waited(waiting.id))
+    result = await watch_session_tool(sessions, Overlays(Home(tmp_path / "home"))).body(session=waiting.id, watch=True)
+    assert result == {"readback": "waiting is already waiting for you. I'll tell you the next time it stops."}
+
+
+async def test_a_session_whose_overlay_cannot_be_read_is_routed_by_default_and_the_route_says_why(tmp_path: Path) -> None:
+    unreadable = membership(tmp_path, "unreadable")
+    home = Home(tmp_path / "home")
+    home.overlays.mkdir(parents=True)
+    home.overlay(unreadable.id).write_text("loud\n")
+    entries: list[Entry] = []
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=entries.append)
+    await sessions.apply(Joined(unreadable, "startup"))
+    await sessions.apply(StatusReported(unreadable.id, Report(Idle(), Stamp(1)), at=1.0))
+
+    async def queue_frame(frame: Frame) -> None:
+        raise AssertionError(f"nothing is said for a session routed as by default: {frame}")
+
+    relaying = asyncio.create_task(relay(sessions, Overlays(home), Pushed(), queue_frame, entries.append))
+    try:
+        await sessions.apply(Waited(unreadable.id))
+        await _routed(entries, 1)
+    finally:
+        relaying.cancel()
+
+    [route] = [entry for entry in entries if isinstance(entry, Routed)]
+    assert (route.overlay, route.passed) == ("normal", False)
+    assert route.unreadable is not None and "loud" in route.unreadable
+
+
 async def test_a_session_that_is_not_running_cannot_be_watched(tmp_path: Path) -> None:
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     result = await watch_session_tool(sessions, Overlays(Home(tmp_path))).body(session="../escape", watch=True)

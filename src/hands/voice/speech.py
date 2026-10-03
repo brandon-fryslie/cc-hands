@@ -93,25 +93,25 @@ async def relay(sessions: Sessions, overlays: Overlays, telling: Telling, queue_
     """Hand what the sessions say to the pipeline, in the order it was decided, as each one's overlay lets it through, until cancelled."""
     while True:
         heard = await sessions.heard()
-        overlay = await _overlay(overlays, speaker(heard))
+        overlay, unreadable = await _overlay(overlays, speaker(heard))
         passed = routed(heard, overlay)
         # [LAW:nothing-unseen] the route taken, and the overlay that took it, for what was kept quiet as for what was said.
-        record(Routed(heard, overlay, passed))
+        record(Routed(heard, overlay, passed, unreadable))
         for each in frames(heard, telling, lambda id: spoken_name(sessions, id)) if passed else ():
             await queue_frame(each)
 
 
-async def _overlay(overlays: Overlays, session: SessionId) -> Overlay:
-    """The session's overlay, read off the loop the speaker runs on; the default where it cannot be read.
+async def _overlay(overlays: Overlays, session: SessionId) -> tuple[Overlay, str | None]:
+    """The session's overlay, read off the loop the speaker runs on; the default, and why, where it cannot be read.
 
     [LAW:no-silent-failure] an overlay that cannot be read is logged as the error it is, which is an audit line, and what
     the session said is routed as the default routes it.
     """
     try:
-        return await asyncio.to_thread(overlays.of, session)
+        return await asyncio.to_thread(overlays.of, session), None
     except (Rejected, OSError) as error:
         logger.error(f"cannot read the overlay of session {session}, so what it says is routed as by default, {DEFAULT}: {error}")
-        return DEFAULT
+        return DEFAULT, str(error)
 
 
 def frames(heard: Heard, telling: Telling, names: Names) -> Sequence[Frame]:
