@@ -3,7 +3,6 @@
 import argparse
 import asyncio
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -15,7 +14,7 @@ from typing import TYPE_CHECKING, TextIO
 from loguru import logger
 
 from hands.daemon import readiness
-from hands.daemon.starting import QUIT_SIGNALS, start
+from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, Ended, Ending, again, start
 from hands.sessions import audit, heartbeat, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.payload import Rejected
@@ -58,7 +57,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hands")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
+    running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
+    running.add_argument("--indicator", type=int, help="the pid of the menu-bar indicator to keep, which a restart hands on to the run it starts, rather than starting one")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     commands.add_parser("check", help="say whether hands is set up to work here: its plugin, the claude shim on PATH, this terminal's Input Monitoring grant, and the running sessions; exits 0 only when every piece is there, 1 when one is missing, 2 when one could not be looked at")
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
@@ -96,9 +96,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its
             # models load, seconds of silence in which the file would otherwise still name the process that died.
             heart.beat("starting", None, 0, False)
-            start_indicator(home)
-            asyncio.run(launch(lambda: loaded(home, heart, after_crash, granted), heart))
-            return 0
+            shown = start_indicator(home) if arguments.indicator is None else arguments.indicator
+            threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
+            audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+            match asyncio.run(launch(lambda: loaded(home, heart, audit_log, after_crash, granted), heart)):
+                case "quit":
+                    return 0
+                case "restart":
+                    again([sys.executable, "-m", "hands.daemon", "--home", str(home.root), "run", "--indicator", str(shown)], audit_log.record)
         case "status":
             return report(home)
         case "check":
@@ -127,59 +132,66 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
 
-# hands' run, given the event that stops it.
-type Run = Callable[[asyncio.Event], Coroutine[object, object, None]]
+# hands' run, given the event that stops it; it ends saying what it knew last.
+type Run = Callable[[asyncio.Event], Coroutine[object, object, Ended]]
 
 
-async def launch(load: Callable[[], Run], heart: heartbeat.Heart) -> None:
-    """The run `load` makes, with that load, which imports Pipecat, as the first step of its start.
+async def launch(load: Callable[[], Run], heart: heartbeat.Heart) -> Ending:
+    """The run `load` makes, with that load, which imports Pipecat, as the first step of its start; then how it was told to end.
 
-    [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the q key, and a failed
-    background task all set this one event, and it is installed before the import, so a stop is heard in every phase.
+    [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the restart signal, the q key,
+    and a failed background task all set this one event, and it is installed before the import, so a stop is heard in
+    every phase. The last heartbeat is written here, by the one place that knows whether a restart follows it.
     """
     quit_event = asyncio.Event()
+    ending: Ending = "quit"
+
+    def stop(how: Ending) -> None:
+        nonlocal ending
+        ending = how
+        quit_event.set()
+
     loop = asyncio.get_running_loop()
-    for signal_number in QUIT_SIGNALS:
-        loop.add_signal_handler(signal_number, quit_event.set)
+    for signal_number, how in STOP_SIGNALS.items():
+        loop.add_signal_handler(signal_number, stop, how)
     try:
         # No session has joined before the hooks are served, which is after the import.
         run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, quit_event)
-        if run is None:
-            heart.beat("stopped", None, 0, False)
-        else:
-            await run(quit_event)
+        last = Ended(None, 0) if run is None else await run(quit_event)
     finally:
         # From here a signal has its default effect again: nothing is left to stop gracefully.
-        for signal_number in QUIT_SIGNALS:
+        for signal_number in STOP_SIGNALS:
             loop.remove_signal_handler(signal_number)
+    # Written only by a run told to stop: one that raised leaves its last heartbeat naming a pid that is gone, or, as it
+    # restarts, one that stops beating, and neither reads as stopped.
+    heart.beat(LAST_BEAT[ending], last.last_audio_out, last.live_sessions, False)
+    return ending
 
 
-def loaded(home: Home, heart: heartbeat.Heart, after_crash: bool, granted: bool) -> Run:
+def loaded(home: Home, heart: heartbeat.Heart, audit_log: audit.AuditLog, after_crash: bool, granted: bool) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import config_from_env, run
 
     path = os.environ.get("PATH", "")
-    return lambda quit_event: run(lambda: config_from_env(home), lambda: survey(readiness.check(home, path, granted)), home, heart, quit_event, after_crash)
+    return lambda quit_event: run(lambda: config_from_env(home), lambda: survey(readiness.check(home, path, granted)), home, heart, audit_log, quit_event, after_crash)
 
 
-def start_indicator(home: Home) -> None:
+def start_indicator(home: Home) -> int:
     """The menu-bar indicator for this run, in a process of its own: AppKit wants a main thread, and this one is the daemon's."""
     # [LAW:single-enforcer] the indicator ends itself once the run that started it is gone (menubar.show), however the
     # run ended; a session of its own keeps the terminal's Ctrl-C and hangup from ending it first, before it has said so.
-    # Its output shares this terminal, so an indicator that fails is seen where the daemon's own failures are.
-    shown = subprocess.Popen(
-        [sys.executable, "-m", "hands.daemon", "--home", str(home.root), "indicator", "--parent", str(os.getpid())],
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
+    # Its output shares this terminal, so an indicator that fails is seen where the daemon's own failures are. A restart
+    # keeps the pid, so the indicator carries on into the run after it, which reaps it by that pid.
+    argv = [sys.executable, "-m", "hands.daemon", "--home", str(home.root), "indicator", "--parent", str(os.getpid())]
+    return os.posix_spawn(sys.executable, argv, os.environ, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)], setsid=True)
 
 
-def reap(shown: subprocess.Popen[bytes]) -> None:
+def reap(shown: int) -> None:
     """Wait on the indicator, so one that exits early is reaped and said, not left a zombie under the run."""
     # It exits of its own accord only once the run is gone, so an exit this process lives to see is a failure.
-    logger.error(f"the menu-bar indicator exited ({shown.wait()}) while hands runs; hands is not shown in the menu bar")
+    _, status = os.waitpid(shown, 0)
+    logger.error(f"the menu-bar indicator exited ({os.waitstatus_to_exitcode(status)}) while hands runs; hands is not shown in the menu bar")
 
 
 def report(home: Home) -> int:

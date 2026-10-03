@@ -4,13 +4,49 @@ Nothing here imports Pipecat, so the one beater can beat through that import as 
 """
 
 import asyncio
+import os
 import signal
+import sys
 from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Literal, NoReturn
 
+from hands.daemon.restart import RESTART_SIGNAL
 from hands.sessions import heartbeat
+from hands.sessions.audit import Record, Restarting
 
 # The signals that stop a run as the q key does: closing its terminal is how a run in a terminal is most often ended.
 QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+# How a run that was told to stop ends: gone, or started again.
+type Ending = Literal["quit", "restart"]
+# How each signal that stops a run ends it: the restart signal, which the plugin's restart skill sends, stops it as the
+# others do and then starts it again.
+STOP_SIGNALS: dict[signal.Signals, Ending] = {**{number: "quit" for number in QUIT_SIGNALS}, RESTART_SIGNAL: "restart"}
+# What the last heartbeat of a run says its pipeline is, by how the run ended: a restart is the next run starting, so
+# the indicator never reads the moment between the two as hands having stopped, and posts nothing.
+LAST_BEAT: dict[Ending, heartbeat.PipelineState] = {"quit": "stopped", "restart": "starting"}
+
+
+@dataclass(frozen=True)
+class Ended:
+    """What a run that was told to stop knew last, which its last heartbeat says beside the pipeline's state."""
+
+    last_audio_out: datetime | None
+    live_sessions: int
+
+
+def again(argv: list[str], record: Record) -> NoReturn:
+    """Start the run again as `argv`, in this process: the same pid, terminal, and children, with the code on disk now.
+
+    [LAW:one-source-of-truth] the pid stays the run's, so the menu-bar indicator watching it carries on, and the
+    sessions a run lists are read again from the home, where they outlive any one run.
+    """
+    record(Restarting(os.getpid()))
+    # exec replaces the process without running Python's exit: what is buffered for the terminal is written first.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(argv[0], argv)
 
 
 async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: heartbeat.Heart, live: Callable[[], int], quit_event: asyncio.Event) -> T | None:

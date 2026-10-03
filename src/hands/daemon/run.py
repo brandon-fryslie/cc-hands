@@ -81,7 +81,7 @@ from hands.voice.briefing import brief, tail
 from hands.voice.conversation import record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
-from hands.daemon.starting import keep_beating, start
+from hands.daemon.starting import Ended, keep_beating, start
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain_instruction
 from hands.voice.player import Player
 from hands.voice.tools import Tool, audited, intermediary_tools, standing
@@ -285,8 +285,9 @@ async def outlived(brain: Brain) -> None:
     raise RuntimeError(f"the brain exited ({code}) while hands was running")
 
 
-async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, quit_event: asyncio.Event, after_crash: bool) -> None:
-    audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+async def run(
+    configure: Callable[[], VoiceConfig], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, audit: AuditLog, quit_event: asyncio.Event, after_crash: bool
+) -> Ended:
     # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
     failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
     # What each turn changed in the repository it ran in, which no transcript record need name.
@@ -329,8 +330,7 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
         await proxy.close()
         tap.close()
         logger.remove(failures)
-    # Written only by a stop: a crash leaves the last heartbeat naming a pid that is gone, which reads as down.
-    heart.beat("stopped", None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count(), False)
+    return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
 async def configured(configure: Callable[[], VoiceConfig], survey: Callable[[], None], home: Home, sessions: Sessions, record: Record) -> VoiceConfig:
