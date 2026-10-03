@@ -186,7 +186,7 @@ uv run hands status                     # up, stopped, not responding, down, or 
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
-uv run pytest && uv run pyright
+make check                              # pytest, pyright, and fritter's Go tests; fails when any of them fails
 uv run python evals/intermediary.py    # conversations through the intermediary's prompt and tools; needs the model to be up
 ```
 
