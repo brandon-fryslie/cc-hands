@@ -318,12 +318,21 @@ class Sessions:
 
     def _reply(self, session: SessionId, request: RequestId, reply: HookReply) -> None:
         waiting = self._waiting.get(request)
-        if waiting is None:
-            # [LAW:no-silent-failure] the hook's connection is gone, most often because Claude Code's own timeout killed it.
-            logger.warning(f"reply {reply} for session {session} request {request}, which no hook is waiting on")
-            return
-        logger.info(f"replying to session {session} request {request}: {reply}")
-        waiting.set_result(reply)
+        match waiting:
+            case None:
+                # Most often Claude Code's own timeout killed the hook, and its handler has since forgotten the request.
+                why = "no hook is waiting on it"
+            case _ if waiting.cancelled():
+                # A closed connection cancels the future at once; the handler forgets the request only when it next runs.
+                why = "its hook has closed"
+            case _ if waiting.done():
+                why = f"its hook was already given {waiting.result()}"
+            case _:
+                logger.info(f"replying to session {session} request {request}: {reply}")
+                waiting.set_result(reply)
+                return
+        # [LAW:no-silent-failure] said with its cause, in the words the hook's own close uses for a reply it never got.
+        logger.warning(f"reply {reply} for session {session} request {request} was never delivered: {why}")
 
 
 def _ordered_by(effect: Effect) -> SessionId | None:
