@@ -97,6 +97,12 @@ class _Turn:
     exchanges: list[str] = field(default_factory=list[str])
     # A reply of the turn's own carried words or a call: a turn none of whose replies did said nothing to the user.
     replied: bool = False
+    # What a text block opens with: nothing until the turn has said a word, then a paragraph break, as Claude Code shows
+    # them. Joined bare, a block that ended on a closing fence ran the next one's words onto that fence, which no longer
+    # closed it, and every word to the end of the turn was held as code (hands-narration-2mc.1zu).
+    between: str = ""
+    # What goes ahead of the next words heard: the `between` of the text block they open.
+    ahead: str = ""
     # The call blocks the reply streaming now has opened and not yet closed, by index: a call is not run until it is whole.
     opening: dict[int, tuple[str, str]] = field(default_factory=dict[int, tuple[str, str]])
     # The calls the turn's last reply made whole, by id, which run until its next request leaves.
@@ -288,8 +294,11 @@ class BrainStage(FrameProcessor):
         match observed:
             # Said as it arrives, and never twice: a reply the API breaks mid-stream is not asked for again, streamed or
             # not; the turn ends in StopFailure, with the broken reply kept out of the brain's history (2.1.285, hands-wire-6ic.6dz).
+            case Heard(exchange=exchange, event=BlockStarted(block={"type": "text"})) if exchange in turn.exchanges:
+                turn.ahead = turn.between
             case Heard(exchange=exchange, event=TextDelta(text=text)) if exchange in turn.exchanges:
-                turn.said.put_nowait(text)
+                turn.said.put_nowait(turn.ahead + text)
+                turn.ahead, turn.between = "", "\n\n"
                 turn.replied = turn.replied or bool(text.strip())
             case Heard(exchange=exchange, event=BlockStarted(index=index, block={"type": "tool_use", "id": str() as call, "name": str() as name})) if exchange in turn.exchanges:
                 turn.opening[index] = (call, name)

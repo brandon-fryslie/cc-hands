@@ -682,3 +682,18 @@ async def test_a_barge_in_reaches_the_pipeline_even_when_the_brain_cannot_be_tol
     # Nothing of the turn after the barge-in: no end that would have TTS say the sentence spoken over.
     assert rig.out.shape() == ["LLMFullResponseStartFrame", "LLMTextFrame", "InterruptionFrame"]
     rig.brain.end()
+
+
+async def test_each_text_block_of_a_turn_is_its_own_paragraph_so_a_closing_fence_stays_on_its_own_line(rig: Rig) -> None:
+    """hands-narration-2mc.1zu: joined bare, the next block's words ran onto the closer and held the rest of the turn as code."""
+    await rig.say({"role": "user", "content": "run the tests"})
+    exchange, _ = rig.request()
+    rig.stage.hear(Heard(exchange, BlockStarted(0, {"type": "text", "text": ""})))
+    rig.stream(exchange, "Here is what I ran:\n```bash\nnpm test\n```")
+    rig.calls(exchange, ("t1", "mcp__hands__stage_draft"))
+    second, _ = rig.request(answering("mcp__hands__stage_draft", {"readback": "staged"}))
+    rig.stage.hear(Heard(second, BlockStarted(0, {"type": "text", "text": ""})))
+    rig.stream(second, "All 42 tests passed.")
+    rig.brain.end()
+    await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
+    assert "".join(rig.out.said()) == "Here is what I ran:\n```bash\nnpm test\n```\n\nAll 42 tests passed."

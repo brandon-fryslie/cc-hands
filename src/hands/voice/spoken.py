@@ -45,7 +45,7 @@ from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
 from pipecat.utils.text.base_text_filter import BaseTextFilter
 from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
 
-from hands.core.spoken import open_fence, spoken
+from hands.core.spoken import fence_after, spoken
 
 
 class SpokenForm(BaseTextFilter):
@@ -64,49 +64,50 @@ class SpokenForm(BaseTextFilter):
 class FenceAggregator(SimpleTextAggregator):
     """A streamed reply in sentences, except that a fenced block is one piece from its opening fence to its close.
 
-    A fence opens and closes only at the end of a line, so that is the only place the block is looked for,
-    and whether one is open is read off the buffer by the same rules `spoken` reads it by
-    [LAW:one-source-of-truth]. What came before the opening fence goes on ahead rather than waiting out the
-    block. A block the reply never closes is what `flush` hands on when the reply ends, and `spoken` says
-    an unclosed block as the block it is.
+    A fence opens and closes only on a line of its own, so each line is read as it finishes, by the same step
+    `spoken` reads a block by [LAW:one-source-of-truth] — the line, not the buffer, which a sentence break
+    may have started partway through one. What came before the opening fence goes on ahead rather than
+    waiting out the block. A block the reply never closes is what `flush` hands on when the reply ends, and
+    `spoken` says an unclosed block as the block it is.
     """
 
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
-        # Whether the buffer begins with a block not yet closed: recorded at the line end that opened it,
-        # so the characters inside it are not offered to the sentence splitter one by one.
-        self._in_block = False
+        self._fence: str | None = None
+        self._line = ""
 
     async def aggregate(self, text: str) -> AsyncIterator[Aggregation]:
         for char in text:
             self._text += char
-            if char == "\n":
-                piece = self._line_ended()
-                if piece is not None:
-                    yield piece
-                    continue
-            if not self._in_block:
-                sentence = await self._check_sentence_with_lookahead(char)
-                if sentence is not None:
-                    yield sentence
+            self._line += char
+            piece = self._line_ended() if char == "\n" else None
+            if piece is None and self._fence is None:
+                piece = await self._check_sentence_with_lookahead(char)
+            # Nothing ahead of a fence that opens the reply: no piece, rather than an empty one.
+            if piece is not None and piece.text.strip():
+                yield piece
 
     def _line_ended(self) -> Aggregation | None:
         """What a finished line lets go of: the text ahead of a block it opened, or the block it closed."""
-        opened = open_fence(self._text)
-        if not self._in_block and opened is not None:
-            self._in_block, self._needs_lookahead = True, False
-            ahead, self._text = self._text[:opened], self._text[opened:]
-            return Aggregation(text=ahead.strip(" "), type=AggregationType.SENTENCE)
-        if self._in_block and opened is None:
-            self._in_block = False
-            block, self._text = self._text, ""
-            return Aggregation(text=block.strip(" "), type=AggregationType.SENTENCE)
-        return None
+        line, self._line = self._line, ""
+        was, self._fence = self._fence, fence_after(line.rstrip("\n"), self._fence)
+        match was, self._fence:
+            case None, str():
+                self._needs_lookahead = False
+                # Where the opening line began, unless a sentence already went on ahead with the start of it.
+                begins = max(0, len(self._text) - len(line))
+                ahead, self._text = self._text[:begins], self._text[begins:]
+                return Aggregation(text=ahead.strip(" "), type=AggregationType.SENTENCE)
+            case str(), None:
+                block, self._text = self._text, ""
+                return Aggregation(text=block.strip(" "), type=AggregationType.SENTENCE)
+            case _:
+                return None
 
     async def handle_interruption(self) -> None:
         await super().handle_interruption()
-        self._in_block = False
+        self._fence, self._line = None, ""
 
     async def reset(self) -> None:
         await super().reset()
-        self._in_block = False
+        self._fence, self._line = None, ""

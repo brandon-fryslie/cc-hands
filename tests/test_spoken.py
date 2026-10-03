@@ -20,7 +20,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
 from pipecat.tests.utils import run_test
 
-from hands.core.spoken import Leak, open_fence, spoken, spoken_count, spoken_ref
+from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_transcript
 from hands.voice.spoken import FenceAggregator, SpokenForm
@@ -446,16 +446,15 @@ async def test_a_barge_in_inside_a_block_leaves_nothing_behind_for_the_next_repl
     assert flushed is not None and flushed.text == "Session two is waiting."
 
 
-@pytest.mark.parametrize(
-    ("written", "opened_at"),
-    [
-        ("No fence here.\n", None),
-        ("Here:\n```python\nx = 1\n", 6),
-        ("Here:\n```python\nx = 1\n```\n", None),
-        # The same rules `spoken` reads a block by: an inline span opens nothing, and a short closer closes nothing.
-        ("```bash``` is what I ran.\n", None),
-        ("````\n```\nquoted\n```\n", 0),
-    ],
-)
-def test_where_the_fence_a_stream_is_inside_of_opened(written: str, opened_at: int | None) -> None:
-    assert open_fence(written) == opened_at
+async def test_a_fence_written_inside_a_sentence_opens_nothing_after_the_sentence_before_it_goes_on() -> None:
+    """A sentence break partway along a line leaves the buffer starting mid-line; the line is what a fence opens on."""
+    pieces = FenceAggregator()
+    reply = "Use fences. ``` marks a block.\nThat is all. Your tests passed.\nBye now."
+    out = [piece.text for chunk in _chunks(reply) async for piece in pieces.aggregate(chunk)]
+    assert [text.strip() for text in out] == ["Use fences.", "``` marks a block.", "That is all.", "Your tests passed."]
+
+
+async def test_a_reply_that_opens_on_a_fence_goes_on_with_no_empty_piece_ahead_of_it() -> None:
+    pieces = FenceAggregator()
+    out = [piece.text for chunk in _chunks("```python\nx = 1\n```\nDone.") async for piece in pieces.aggregate(chunk)]
+    assert out == ["```python\nx = 1\n```\n"]

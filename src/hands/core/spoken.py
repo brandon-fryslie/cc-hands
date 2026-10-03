@@ -184,24 +184,16 @@ def _leaked(kind: str, lines: list[str], leaks: list[Leak]) -> list[str]:
     return [f"{leak}."]
 
 
-def open_fence(text: str) -> int | None:
-    """Where the fence that `text` ends inside of begins, or None when every fence in it is closed.
+def fence_after(line: str, fence: str | None) -> str | None:
+    """The fence left open once `line` is read, given the one open before it: the single step every reader of a
+    block takes, a line at a time [LAW:one-source-of-truth].
 
-    For the reader that sees a reply before it is broken into sentences: a block is only said as a block
-    when it reaches `spoken` in one piece, so whatever splits a stream has to know where one is open
-    [LAW:one-source-of-truth] — the same two rules `_unfenced` reads a block by, and no others.
+    `_unfenced` steps it over a whole text; the stream's aggregator steps it as each line of a reply finishes,
+    so the stream is broken up exactly where `spoken` will read a block, and nowhere inside one.
     """
-    at = 0
-    opened: tuple[int, str] | None = None
-    for line in text.splitlines(keepends=True):
-        bare = line.rstrip("\r\n")
-        if opened is None:
-            run = _opens(bare)
-            opened = None if run is None else (at, run)
-        elif _closes(bare, opened[1]):
-            opened = None
-        at += len(line)
-    return None if opened is None else opened[0]
+    if fence is None:
+        return _opens(line)
+    return None if _closes(line, fence) else fence
 
 
 def _opens(line: str) -> str | None:
@@ -233,20 +225,21 @@ def _unfenced(text: str, leaks: list[Leak]) -> str:
     and reading the rest of it out is the one thing this exists to prevent.
     """
     out: list[str] = []
-    held: list[str] | None = None
-    fence = ""
+    held: list[str] = []
+    fence: str | None = None
     for line in text.splitlines():
-        if held is None:
-            run = _opens(line)
-            if run is not None:
-                held, fence = [], run
-                continue
-        elif _closes(line, fence):
-            out.extend(_leaked("code", held, leaks))
-            held = None
-            continue
-        (out if held is None else held).append(line)
-    if held is not None:
+        was, fence = fence, fence_after(line, fence)
+        match was, fence:
+            case None, None:
+                out.append(line)
+            case str(), None:
+                out.extend(_leaked("code", held, leaks))
+                held = []
+            case str(), str():
+                held.append(line)
+            case None, str():
+                pass  # the opening fence, said with the block it opens
+    if fence is not None:
         out.extend(_leaked("code", held, leaks))
     return "\n".join(out)
 
