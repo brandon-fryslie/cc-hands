@@ -599,6 +599,16 @@ class Restarting:
 
 
 @dataclass(frozen=True)
+class Undelivered:
+    """Wide events sent to the collector that it did not take, each named by its span id, and why: it could not be
+    reached, it refused the request, or it rejected spans in it, when it does not say which. Each is in the log still."""
+
+    collector: str
+    spans: tuple[str, ...]
+    error: str
+
+
+@dataclass(frozen=True)
 class Rolled:
     """The first line of a segment: the log rolled to it at log offset `base`, and retention deleted the segments whose
     base offsets are `deleted`."""
@@ -677,6 +687,7 @@ Entry = (
     | Rolled
     | Failure
     | WideEvent
+    | Undelivered
 )
 Record = Callable[[Entry], None]
 Level = Literal["error", "info"]
@@ -684,13 +695,13 @@ Level = Literal["error", "info"]
 
 def level(entry: Entry) -> Level:
     """Whether a line tells of something that went wrong: a Failure; an effect, a backlog read, a unit of work or a
-    name that failed; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
+    name that failed; a wide event the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
     broke off; a tool that answered with an error; or a brain turn or side question that came to nothing."""
     # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | EffectFailed() | BacklogUnread() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
+        case Failure() | EffectFailed() | Undelivered() | BacklogUnread() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)
@@ -849,10 +860,11 @@ def encoded(value: object) -> dict[str, object]:
     # [LAW:dataflow-not-control-flow] one encoding for every entry, event, and effect, so a new variant needs no code here.
     if not is_dataclass(value) or isinstance(value, type):
         raise TypeError(f"an audit entry is a dataclass, not {type(value).__name__}")
-    return {"type": type(value).__name__, **{field.name: _json(getattr(value, field.name)) for field in fields(value)}}
+    return {"type": type(value).__name__, **{field.name: jsonable(getattr(value, field.name)) for field in fields(value)}}
 
 
-def _json(value: object) -> object:
+def jsonable(value: object) -> object:
+    """value as JSON holds it: a dataclass encoded, a time in ISO 8601, a set sorted."""
     match value:
         case None | bool() | int() | float() | str():
             return value
@@ -861,14 +873,14 @@ def _json(value: object) -> object:
         case datetime():
             return value.isoformat(timespec="milliseconds")
         case Enum():
-            return _json(value.value)
+            return jsonable(value.value)
         case Mapping():
-            return {str(key): _json(item) for key, item in cast(Mapping[object, object], value).items()}
+            return {str(key): jsonable(item) for key, item in cast(Mapping[object, object], value).items()}
         case list() | tuple():
-            return [_json(item) for item in cast(list[object] | tuple[object, ...], value)]
+            return [jsonable(item) for item in cast(list[object] | tuple[object, ...], value)]
         case set() | frozenset():
             # Sorted, so a set is written the same way on every line it is on.
-            return sorted((_json(item) for item in cast(set[object] | frozenset[object], value)), key=repr)
+            return sorted((jsonable(item) for item in cast(set[object] | frozenset[object], value)), key=repr)
         case _ if is_dataclass(value) and not isinstance(value, type):
             return encoded(value)
         case _:

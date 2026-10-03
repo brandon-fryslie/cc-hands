@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from hands.daemon.cli import launch
-from hands.daemon.config import edited
+from hands.daemon.config import edited, load
 from hands.daemon.starting import Ended, again, keep_beating
 from hands.sessions import heartbeat
 from hands.sessions.audit import AuditLog
@@ -30,6 +30,7 @@ def main() -> None:
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), PERIOD)
     heart.beat("starting", None, 0, listening=False, deaf=False)
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    settings = load(home)
 
     async def run(quit_event: asyncio.Event) -> Ended:
         sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=audit.record)
@@ -40,7 +41,7 @@ def main() -> None:
         beating.cancel()
         return Ended(None, sessions.live_count())
 
-    match asyncio.run(launch(lambda: run, heart, lambda: edited(home, audit.record, lambda _settings: None, period=0.05), audit.record)):
+    match asyncio.run(launch(lambda: run, heart, lambda: edited(home, audit.record, lambda _settings: None, settings, period=0.05), audit.record)):
         case "quit":
             return
         case "restart":

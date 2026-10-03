@@ -27,14 +27,16 @@ HOME = Home(Path("/Users/someone/.hands"))
 
 
 def test_no_file_is_claude_on_the_anthropic_api_and_whisper_large_v3_turbo(tmp_path: Path) -> None:
-    assert config.load(Home(tmp_path)) == (Config(llm=Anthropic(url=ANTHROPIC_URL, model=ANTHROPIC_MODEL), whisper_model="mlx-community/whisper-large-v3-turbo"), None)
+    assert config.load(Home(tmp_path)) == config.Settings(None, Config(llm=Anthropic(url=ANTHROPIC_URL, model=ANTHROPIC_MODEL), whisper_model="mlx-community/whisper-large-v3-turbo", collector=None))
     assert config.parse("") == Config()
 
 
 def test_the_file_names_the_backend_its_server_and_model_and_the_whisper_model(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text('[llm]\nbackend = "openai"\nurl = "https://reseller.example/v1"\nmodel = "gpt-other"\n\n[whisper]\nmodel = "w"\n')
-    assert config.load(home) == (Config(llm=OpenAI(url="https://reseller.example/v1", model="gpt-other"), whisper_model="w"), home.config)
+    settings = config.load(home)
+    assert settings.config == Config(llm=OpenAI(url="https://reseller.example/v1", model="gpt-other"), whisper_model="w")
+    assert settings.path(home) == home.config
     assert config.parse('[llm]\nbackend = "openai"\n').llm == OpenAI(url=OPENAI_URL, model=OPENAI_MODEL)
     assert config.parse('[llm]\nurl = "https://api-chicago.codexapi.pro"\nmodel = "claude-other"\n').llm == Anthropic(url="https://api-chicago.codexapi.pro", model="claude-other")
     assert config.parse('[llm]\nbackend = "claude"\nmodel = "claude-other"\n').llm == Claude(model="claude-other")
@@ -64,25 +66,34 @@ def test_a_file_that_does_not_parse_is_refused_saying_what_is_wrong(text: str, s
     assert said in str(refused.value)
 
 
-def test_a_refused_file_stops_the_start_naming_itself(tmp_path: Path) -> None:
+def test_a_refused_file_is_refused_naming_itself(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text('[llm]\nbackend = "local"\n')
-    with pytest.raises(SystemExit, match=f"{home.config}: \\[llm\\] backend 'local'"):
-        run.configured_from(home, {"ANTHROPIC_API_KEY": "k"})
+    with pytest.raises(Rejected, match=f"{home.config}: \\[llm\\] backend 'local'"):
+        config.load(home)
+
+
+def test_the_collector_is_an_http_address_spelled_without_a_trailing_slash() -> None:
+    assert config.parse("").collector is None
+    assert config.parse('[telemetry]\ncollector = "http://otel.example:4318/"\n').collector == "http://otel.example:4318"
+    with pytest.raises(Rejected, match="is not an http\\(s\\) URL"):
+        config.parse('[telemetry]\ncollector = "otel.example:4317"\n')
+    with pytest.raises(Rejected, match="\\[telemetry\\] has no 'endpoint'"):
+        config.parse('[telemetry]\nendpoint = "http://otel.example:4318"\n')
 
 
 def test_a_backend_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text('[llm]\nbackend = "openai"\n')
     with pytest.raises(SystemExit, match="hands: OPENAI_API_KEY is not set"):
-        run.configured_from(home, {})
+        run.configured_from(home, config.load(home), {})
 
 
 def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
     # The variables settings used to be: one still exported would run hands on the default backend, silently.
     home = Home(tmp_path)
     with pytest.raises(SystemExit, match=f"HANDS_LLM, HANDS_WHISPER_MODEL set, .* settings go in {home.config}"):
-        run.configured_from(home, {"ANTHROPIC_API_KEY": "k", "HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"})
+        run.configured_from(home, config.load(home), {"ANTHROPIC_API_KEY": "k", "HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"})
 
 
 def test_anthropic_on_its_own_url_spelled_with_a_slash_is_its_own_api() -> None:
@@ -228,19 +239,23 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
 
     keyed = {"ANTHROPIC_API_KEY": "sk-test"}
     home = Home(tmp_path)
-    assert run.configured_from(home, keyed).voice.voice == "charles"
+    assert run.configured_from(home, config.load(home), keyed).voice.voice == "charles"
     assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
     voices.keep(home, voices.parse_voice("Bill Boerst"))
-    assert run.configured_from(home, keyed).voice.voice == "bill_boerst"
+    assert run.configured_from(home, config.load(home), keyed).voice.voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
     home.voice.write_text("zed\n")
     with pytest.raises(SystemExit, match=f"{home.voice} says 'zed'"):
-        run.configured_from(home, keyed)
+        run.configured_from(home, config.load(home), keyed)
     # One it cannot read stops it the same way, naming the file.
     home.voice.unlink()
     home.voice.mkdir()
     with pytest.raises(SystemExit, match=str(home.voice)):
-        run.configured_from(home, keyed)
+        run.configured_from(home, config.load(home), keyed)
+
+
+# The settings of a run started with no file: every default.
+_NO_FILE = config.Settings(None, Config())
 
 
 def _reachable(_settings: Config) -> None:
@@ -249,7 +264,7 @@ def _reachable(_settings: Config) -> None:
 
 async def _edited_within(home: Home, recorded: list[Entry], seconds: float = 0.5) -> SettingsEdited | None:
     try:
-        return await asyncio.wait_for(config.edited(home, recorded.append, _reachable, period=0.01), seconds)
+        return await asyncio.wait_for(config.edited(home, recorded.append, _reachable, config.load(home), period=0.01), seconds)
     except TimeoutError:
         return None
 
@@ -335,15 +350,15 @@ async def test_a_file_that_cannot_be_read_is_a_refused_edit_and_outlived(tmp_pat
 
 async def test_a_save_written_in_two_steps_is_weighed_once_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
-    # What each poll reads, as an editor that truncates and then writes leaves it: one poll lands between the two.
-    reads = iter([None, b'[llm]\nbackend = "cla', b'[llm]\nbackend = "claude"\n', b'[llm]\nbackend = "claude"\n', b'[llm]\nbackend = "claude"\n'])
+    # What each poll after the run's read reads, as an editor that truncates and then writes leaves it: one poll lands between the two.
+    reads = iter([b'[llm]\nbackend = "cla', b'[llm]\nbackend = "claude"\n', b'[llm]\nbackend = "claude"\n', b'[llm]\nbackend = "claude"\n'])
 
     def held(_home: Home) -> bytes | None:
         return next(reads)
 
     monkeypatch.setattr(config, "_held", held)
     recorded: list[Entry] = []
-    assert await config.edited(home, recorded.append, _reachable, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert await config.edited(home, recorded.append, _reachable, _NO_FILE, period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
 
 
@@ -351,7 +366,7 @@ async def test_an_edit_naming_a_model_hands_cannot_reach_is_said_and_outlived(tm
     home = Home(tmp_path)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     recorded: list[Entry] = []
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(cli.reachable, home), period=0.01), 2.0))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(cli.reachable, home), config.load(home), period=0.01), 2.0))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nbackend = "openai"\n')
     while not recorded:
@@ -383,7 +398,7 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
         if settings.llm == Claude():
             home.config.write_text('[llm]\nbackend = "claud"\n')
 
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, overwritten, period=0.01), 0.5))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, overwritten, config.load(home), period=0.01), 0.5))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nbackend = "claude"\n')
     with pytest.raises(TimeoutError):
@@ -395,14 +410,14 @@ async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path
     home = Home(tmp_path)
     edit, other = b'[llm]\nbackend = "claude"\n', b'[llm]\nbackend = "openai"\n'
     # Seen, settled, saved over as its backend is checked, and back before the next poll.
-    reads = iter([None, edit, edit, other, edit, edit])
+    reads = iter([edit, edit, other, edit, edit])
 
     def held(_home: Home) -> bytes | None:
         return next(reads)
 
     monkeypatch.setattr(config, "_held", held)
     recorded: list[Entry] = []
-    assert await config.edited(home, recorded.append, _reachable, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert await config.edited(home, recorded.append, _reachable, _NO_FILE, period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
 
 

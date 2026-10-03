@@ -35,12 +35,12 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
-from hands.daemon.config import ANTHROPIC_URL, LLM, Anthropic, Claude, OpenAI, load
+from hands.daemon.config import ANTHROPIC_URL, LLM, Anthropic, Claude, OpenAI, Settings
 from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
-from hands.sessions.audit import AuditLog, LLMChosen, ProxyListening, Record, SettingsRead, TapListening, VoiceChosen, failures_to
+from hands.sessions.audit import LLMChosen, ProxyListening, Record, SettingsRead, TapListening, VoiceChosen, failures_to
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT, PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.statusfile import keep_reading_statuses
@@ -187,18 +187,17 @@ class Configured:
     settings: Path | None
 
 
-def configured_from(home: Home, environment: Mapping[str, str]) -> Configured:
-    """The process boundary: the settings file and the environment's secrets in, typed configuration out."""
+def configured_from(home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
+    """The process boundary: the settings the run started on and the environment's secrets in, typed configuration out."""
     # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
     # config.toml, and HANDS_HOME, where that is, is the one variable of hands' own it reads.
     if stray := sorted(name for name in environment if name.startswith("HANDS_") and name != "HANDS_HOME"):
         sys.exit(f"hands: {', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
     try:
-        settings, read = load(home)
-        llm = backend(settings.llm, home, environment)
+        llm = backend(settings.config.llm, home, environment)
     except Rejected as error:
         sys.exit(f"hands: {error}")
-    return Configured(VoiceConfig(llm=llm, whisper_model=settings.whisper_model, voice=_voice(home)), read)
+    return Configured(VoiceConfig(llm=llm, whisper_model=settings.config.whisper_model, voice=_voice(home)), settings.path(home))
 
 
 def _voice(home: Home) -> voices.Voice:
@@ -290,7 +289,7 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, audit: AuditLog, quit_event: asyncio.Event, after_crash: bool,
+    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, record: Record, quit_event: asyncio.Event, after_crash: bool,
     environment: Mapping[str, str],
 ) -> Ended:
     voice: Voice | None = None
@@ -298,19 +297,19 @@ async def run(
     # that raised still lets go of the socket and of every permission hook waiting on it.
     async with AsyncExitStack() as held:
         # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
-        failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
+        failures = logger.add(failures_to(record), level="ERROR", filter="hands")
         held.callback(logger.remove, failures)
         # What each turn changed in the repository it ran in, which no transcript record need name.
-        deltas = Deltas(audit.record, environment)
-        sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=audit.record, changes=deltas)
+        deltas = Deltas(record, environment)
+        sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=record, changes=deltas)
         # Before the hooks are served: a turn that finishes while the models load is named once they have.
         names = Names()
-        hooks = await serve_hooks(home, sessions, names, audit.record)
+        hooks = await serve_hooks(home, sessions, names, record)
         held.push_async_callback(hooks.cleanup)
-        wire = Wire(wire_to(audit.record))
+        wire = Wire(wire_to(record))
         proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=time.time)
         held.push_async_callback(proxy.close)
-        audit.record(ProxyListening(url=proxy.url, upstream=UPSTREAM))
+        record(ProxyListening(url=proxy.url, upstream=UPSTREAM))
         # [LAW:one-source-of-truth] the working sessions' exchanges reach the same observer as the brain's, so the log and
         # whatever listens hear one wire; and what they say of a turn reaches the registry as it is heard, as a hook does.
         def tapped(observed: Observed) -> None:
@@ -318,31 +317,31 @@ async def run(
             for move in moves(observed):
                 sessions.hear(move)
 
-        tap = await serve_tap(home.wire, tapped, audit.record, clock=time.time)
+        tap = await serve_tap(home.wire, tapped, record, clock=time.time)
         held.callback(tap.close)
-        audit.record(TapListening(path=home.wire))
-        display = await serve_display(sessions, DISPLAY_HOST, DISPLAY_PORT, DISPLAY_PATH, audit.record)
+        record(TapListening(path=home.wire))
+        display = await serve_display(sessions, DISPLAY_HOST, DISPLAY_PORT, DISPLAY_PATH, record)
         held.push_async_callback(display.cleanup)
         store = SummaryStore(Sentences(home.sentences))
         # [LAW:one-source-of-truth] one holder of each session's last turn: the narrator fills it, tell_turn reads it.
         recounts = Recounts()
         # [LAW:one-source-of-truth] one holder of where playback is: the pipeline's taps move it, the playback tools read it.
-        player = Player(audit.record)
+        player = Player(record)
         # [LAW:single-enforcer] one mover of the focus to a session just told of, for the model's stage and tell_turn alike.
-        refocus = Refocus(sessions, home, audit.record)
-        tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus)]
+        refocus = Refocus(sessions, home, record)
+        tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus)]
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, audit.record), heart, sessions.live_count, quit_event)
+        config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, lambda: as_sent(sessions, home), refocus, proxy.url, wire, store, home.fritter, home.audit, audit.record, environment) as minded:
+            async with mind(config, tools, lambda: as_sent(sessions, home), refocus, proxy.url, wire, store, home.fritter, home.audit, record, environment) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
-                lexicon = Lexicon(sessions, home, environment, audit.record)
-                floor = Floor(audit.record, minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)
-                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, player, floor, refocus, lexicon, audit.record), "the voice load"), heart, sessions.live_count, quit_event)
+                lexicon = Lexicon(sessions, home, environment, record)
+                floor = Floor(record, minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences, names, recounts)
+                    await converse(voice, home, sessions, heart, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 

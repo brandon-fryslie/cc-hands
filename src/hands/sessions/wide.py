@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from secrets import token_hex
 from typing import Literal, cast
 from uuid import uuid4
 
@@ -28,11 +29,13 @@ Outcome = Literal["ok", "failed", "cancelled"]
 class WideEvent:
     """One run of one unit of work: what it was, when it began and how long it took, how it ended, and every count and
     fact the run annotated it with. `trace_id` is shared by every unit opened inside another, so a run's parts are one
-    trace. `error` and `trace` say what a failed run raised, as a Failure line does. `counts` holds every count the unit
+    trace, and `span_id` is this run's own within it, named as `parent_id` by each unit opened inside it. `error` and `trace` say what a failed run raised, as a Failure line does. `counts` holds every count the unit
     declared, 0 for one the run never counted: ran and did nothing is a count of zero, where never ran is no event at all."""
 
     event: str
     trace_id: str
+    span_id: str
+    parent_id: str | None
     started_at: datetime
     duration_ms: float
     outcome: Outcome
@@ -47,6 +50,7 @@ class _Open:
     """The event a unit is building while it runs, and whether it has ended, after which nothing more lands on it."""
 
     trace_id: str
+    span_id: str
     counts: dict[str, int]
     facts: dict[str, object] = field(default_factory=dict[str, object])
     closed: bool = False
@@ -64,7 +68,8 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
     The body's exception is the body's: it is recorded on the event and raised on, never swallowed here.
     """
     enclosing = _open.get()
-    opened = _Open(uuid4().hex if enclosing is None else enclosing.trace_id, dict.fromkeys(counts, 0))
+    # The W3C Trace Context sizes, as OTLP carries them: a 16-byte trace id and an 8-byte span id, in hex.
+    opened = _Open(uuid4().hex if enclosing is None else enclosing.trace_id, token_hex(8), dict.fromkeys(counts, 0))
     started_at, began = datetime.now(UTC), time.monotonic()
     token = _open.set(opened)
     outcome: Outcome = "ok"
@@ -84,7 +89,7 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
         # already emitted and never reach the log, so it is refused instead.
         opened.closed = True
         duration_ms = round((time.monotonic() - began) * 1000, 3)
-        emit(WideEvent(event, opened.trace_id, started_at, duration_ms, outcome, error, trace, opened.counts, opened.facts))
+        emit(WideEvent(event, opened.trace_id, opened.span_id, None if enclosing is None else enclosing.span_id, started_at, duration_ms, outcome, error, trace, opened.counts, opened.facts))
 
 
 def annotate(**facts: object) -> None:

@@ -1777,7 +1777,18 @@ The event leaves through the `emit` the unit was opened with, which in the daemo
 the audit log's `record`. The audit log is the one export edge, and an event is one
 more line in it. So a run's facts go on its event and never on a hand-built line beside
 it. When a unit of work that already writes such a line is moved onto the floor, that
-line type is deleted, as `DeltaRead` was.
+line type is deleted, as `DeltaRead` was. Each event carries its own `span_id`, and a
+unit opened inside another names that one's as its `parent_id`, so a run's units are one
+trace.
+
+With `[telemetry] collector` set, the export edge also sends each event to that
+OpenTelemetry collector, as an OTLP/HTTP span carrying `service.name=hands`
+(`hands.sessions.otlp`). The event is written to the log first, whatever becomes of the
+collector, because hands reads the log back (`catch_up`, `hands log`): what it holds never
+depends on the network. Events are sent in batches from a thread of their own, so a slow
+or absent collector costs a unit of work nothing, and a batch the collector did not take
+is an `Undelivered` line naming each event by its span id `[LAW:nothing-unseen]`. hands
+names only the collector; which stores sit behind it is the homelab's.
 
 ## Endurance
 
@@ -1796,10 +1807,10 @@ transcripts governs the intermediary's own past.
 
 ## Configuration: one file, parsed once
 
-`config.toml` in the home (`~/.hands`, or `HANDS_HOME`) is read by `daemon` at startup
-and parsed into a frozen `Config` (`hands.daemon.config`). An edit is taken up the way
-everything else on disk is, by the run starting again on it: the start watches the
-file's bytes from before it reads them, and an edit that parses ends the run as the
+`config.toml` in the home (`~/.hands`, or `HANDS_HOME`) is read once, by `hands run` before
+its first heartbeat, and parsed into a frozen `Config` (`hands.daemon.config`). An edit is taken up the way
+everything else on disk is, by the run starting again on it: the watch weighs the
+file against the bytes the start read, and an edit that parses ends the run as the
 restart signal does `[LAW:single-enforcer]`, said as `SettingsEdited` before
 `Restarting`. One that does not parse, or names a backend whose key or login the
 start's own `backend` check refuses, is said as a `SettingsEdited` that was refused,
@@ -1823,6 +1834,7 @@ variant with a real alternative or it does not exist. The fields:
 | `[llm] model` | the model, for any backend |
 | `[llm] url` | another server that speaks the API, for `anthropic` and `openai` |
 | `[whisper] model` | the Whisper model the STT loads |
+| `[telemetry] collector` | the OpenTelemetry collector's OTLP/HTTP address each wide event is also sent to |
 
 The voice is not a setting: the user chooses it by voice while hands runs, and it is
 kept in the home's `voice` file. The permission timeout is declared in the hook
