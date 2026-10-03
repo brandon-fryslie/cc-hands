@@ -24,6 +24,8 @@ from hands.sessions.home import Home
 from hands.sessions.liveness import sweep
 from hands.sessions.membership import read_membership, write_membership
 from hands.sessions.registry import Sessions
+from hands.sessions.audit import NameGiven
+from hands.sessions.names import Finished, Names
 from hands.sessions.server import serve_hooks
 from hands.sessions.untap import untapped
 
@@ -50,7 +52,7 @@ def home() -> Iterator[Home]:
 @pytest.fixture
 async def sessions(home: Home) -> AsyncIterator[Sessions]:
     registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None)
-    runner = await serve_hooks(home, registry)
+    runner = await serve_hooks(home, registry, Names(), lambda _: None)
     yield registry
     await runner.cleanup()
 
@@ -251,7 +253,7 @@ async def test_a_hook_the_daemon_refuses_exits_nonzero_with_its_reason(home: Hom
 
 async def test_a_second_daemon_will_not_take_a_live_socket(home: Home, sessions: Sessions) -> None:
     with pytest.raises(RuntimeError, match="already listening"):
-        await serve_hooks(home, Sessions(60.0, clock=lambda: 0.0, record=lambda _: None))
+        await serve_hooks(home, Sessions(60.0, clock=lambda: 0.0, record=lambda _: None), Names(), lambda _: None)
     await shim(home, START)
     assert [listing.session.state for listing in sessions.live()] == [Unreported()]
 
@@ -263,7 +265,7 @@ async def test_a_socket_left_by_a_dead_daemon_is_reclaimed(home: Home) -> None:
     dead.close()
     assert home.socket.exists()
     registry = Sessions(60.0, clock=lambda: 0.0, record=lambda _: None)
-    runner = await serve_hooks(home, registry)
+    runner = await serve_hooks(home, registry, Names(), lambda _: None)
     try:
         assert await shim(home, START) == (0, STARTED, "")
         assert len(registry.live()) == 1
@@ -312,3 +314,39 @@ async def test_an_untapped_session_s_commands_are_given_nothing(home: Home, tmp_
     commands = tmp_path / "sessionstart-hook-0.sh"
     assert await shim(home, START, given={"HTTPS_PROXY": "http://corp:3128", "CLAUDE_ENV_FILE": str(commands)}) == (0, STARTED, "")
     assert not commands.exists()
+
+
+async def test_a_finished_turn_has_its_session_named_and_the_name_is_handed_to_claude_code_at_the_next_prompt_once(home: Home) -> None:
+    names = Names()
+    given: list[object] = []
+    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None, stop_hold=0.05)
+    runner = await serve_hooks(home, registry, names, given.append)
+    try:
+        await shim(home, START)
+        await shim(home, PROMPT)
+        assert await shim(home, STOP) == (0, "", "")
+        # The closing reply is what the name is judged from, with the transcript that holds the name it has now.
+        assert await asyncio.wait_for(names.next_finished(), 1.0) == Finished(SID, Path("/nowhere/t.jsonl"), "done")
+        names.rename(SID, "naming fix")
+        named = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "sessionTitle": "naming fix"}}
+        code, stdout, stderr = await shim(home, {**PROMPT, "prompt_id": "p2"})
+        assert (code, json.loads(stdout), stderr) == (0, named, "")
+        assert given == [NameGiven(SID, "naming fix")]
+        # Given once: the next prompt sets nothing, and Claude Code keeps the name it holds.
+        assert await shim(home, {**PROMPT, "prompt_id": "p3"}) == (0, "", "")
+    finally:
+        await runner.cleanup()
+
+
+async def test_a_turn_that_closed_on_no_reply_is_not_named(home: Home) -> None:
+    names = Names()
+    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None, stop_hold=0.05)
+    runner = await serve_hooks(home, registry, names, lambda _: None)
+    try:
+        await shim(home, START)
+        await shim(home, PROMPT)
+        await shim(home, {key: value for key, value in STOP.items() if key != "last_assistant_message"})
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(names.next_finished(), 0.2)
+    finally:
+        await runner.cleanup()

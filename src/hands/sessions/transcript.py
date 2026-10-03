@@ -14,11 +14,14 @@ from hands.sessions.payload import Payload, Rejected
 # Records are written without spaces, so this finds every title record cheaply.
 # It also finds a nested object with that type inside another record, so a
 # candidate counts only when the record's own type is the title.
-_AI_TITLE_RECORD = b'"type":"ai-title"'
+_CUSTOM_TITLE_RECORD = b'"type":"custom-title"'
 
 
-def ai_title(transcript: Path) -> str | None:
-    """The newest title Claude Code gave the session, or None before it has named one."""
+def session_name(transcript: Path) -> str | None:
+    """The newest name the session was given, by `/rename` or by hands through a hook, or None before it has one.
+
+    Claude Code's own ai-title is not a name: it runs to twenty-five words and the user never sees it.
+    """
     try:
         raw = transcript.read_bytes()
     except FileNotFoundError:
@@ -28,13 +31,13 @@ def ai_title(transcript: Path) -> str | None:
     # a record is whole only once its newline is written, so the tail after the
     # last newline is never parsed.
     *complete, _unfinished = raw.split(b"\n")
-    title = None
+    name = None
     for line in complete:
-        if _AI_TITLE_RECORD in line:
+        if _CUSTOM_TITLE_RECORD in line:
             record = Payload.parse(line)
-            if record.text("type") == "ai-title":
-                title = record.text("aiTitle")
-    return title
+            if record.text("type") == "custom-title":
+                name = record.text("customTitle")
+    return name
 
 
 # Only these two record types carry a turn; the rest (attachments, modes, titles, snapshots) are skipped unparsed.

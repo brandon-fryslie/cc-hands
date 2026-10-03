@@ -34,7 +34,7 @@ from hands.sessions.audit import Called, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.registry import Listing, Sessions
 from hands.voice.sentences import SummaryStore
-from hands.voice.readback import keyboard_readback, readback, spoken_mode, spoken_name, spoken_title
+from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.speech import answer_readback
 
 # What the model is handed back from a call: an object, as every tool API carries a result.
@@ -167,7 +167,10 @@ def stay_silent_tool() -> Tool:
 
 def list_sessions_tool(sessions: Sessions) -> Tool:
     async def list_sessions() -> Result:
-        """List the running Claude Code sessions with their titles, what each is doing, and the permission mode each is in.
+        """List the running Claude Code sessions by name, what each is doing, and the permission mode each is in.
+
+        A session's name is its project, then a short name for its work: "cc-hands, naming fix". That is how the user
+        speaks of a session, and how you speak of one to them.
 
         Call this when the user asks what is running, what sessions exist, what
         Claude is working on, or what mode a session is in. A session's mode is the
@@ -447,7 +450,7 @@ def standing(sessions: Sessions) -> list[dict[str, str]]:
 def describe_listing(listing: Listing[Session]) -> dict[str, str]:
     return {
         "id": listing.session.membership.id,
-        "title": spoken_title(listing),
+        "name": identifier(listing),
         "state": _spoken_state(listing.session.state, listing.session.dialog),
         "mode": "not reported yet" if listing.session.mode is None else spoken_mode(listing.session.mode),
     }

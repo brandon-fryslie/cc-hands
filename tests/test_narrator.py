@@ -110,7 +110,7 @@ async def test_a_finished_turn_is_handed_to_the_model_with_its_reply_and_the_ses
         told = handed(await asyncio.wait_for(frames.get(), 5.0))
     finally:
         narrating.cancel()
-    assert told.startswith("[hands] The Claude Code session Hands-free interactive coding agent architecture in cc-hands finished a turn. The last thing it said was:\n\n")
+    assert told.startswith("[hands] The Claude Code session cc-hands finished a turn. The last thing it said was:\n\n")
     # The fixture's closing text, whole: the session's own account of what it did.
     assert "API Error" in told
     assert told.endswith("in one or two spoken sentences, naming the session. It asks the user nothing.")
@@ -166,7 +166,7 @@ async def test_a_session_that_ends_after_its_turn_is_heard_ending_after_that_tur
     finally:
         narrating.cancel()
     assert "finished a turn" in handed(first)
-    assert isinstance(second, TTSSpeakFrame) and second.text == "The session Hands-free interactive coding agent architecture in cc-hands is gone."
+    assert isinstance(second, TTSSpeakFrame) and second.text == "The session cc-hands is gone."
 
 
 async def test_with_summaries_off_a_finished_turn_is_not_told_and_turning_them_on_brings_the_next_one_back(tmp_path: Path) -> None:
@@ -236,7 +236,7 @@ async def test_a_switch_that_cannot_be_read_is_logged_and_the_turn_told_as_the_d
     finally:
         narrating.cancel()
         logger.remove(sink)
-    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "untitled in cc-hands: It said: Want me to push it?"
+    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: It said: Want me to push it?"
     [failure] = [entry for entry in recorded if isinstance(entry, Failure)]
     assert "cannot read whether spoken summaries are on" in failure.message and "neither on nor off" in failure.message
 

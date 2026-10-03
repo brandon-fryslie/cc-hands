@@ -7,16 +7,21 @@ from uuid import uuid4
 from aiohttp import web
 from loguru import logger
 
-from hands.core.events import Attached, PermissionRequested, Stopped
-from hands.core.session import RequestId
+from hands.core.events import Attached, PermissionRequested, Prompted, Stopped
+from hands.core.session import Membership, RequestId
 from hands.sessions.home import Home
-from hands.sessions.hooks import hook_output, parse_hook
+from hands.sessions.audit import NameGiven, Record
+from hands.sessions.hooks import hook_output, name_output, parse_hook
+from hands.sessions.names import Finished, Names
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 
 
-async def serve_hooks(home: Home, sessions: Sessions) -> web.AppRunner:
-    """Listen on the home's socket until the returned runner is cleaned up."""
+async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Record) -> web.AppRunner:
+    """Listen on the home's socket until the returned runner is cleaned up.
+
+    A finished turn has its session's name judged again, and a prompt is answered with the name decided since the last.
+    """
 
     async def hook(request: web.Request) -> web.Response:
         body = await request.read()
@@ -38,7 +43,24 @@ async def serve_hooks(home: Home, sessions: Sessions) -> web.AppRunner:
                 return web.Response(status=204) if output is None else web.json_response(output)
             case Stopped() as stopped:
                 await sessions.stop(stopped)
+                match (stopped.closing, sessions.membership(stopped.session)):
+                    case (str() as closing, Membership(transcript=transcript)):
+                        names.finished(Finished(stopped.session, transcript, closing))
+                    case _:
+                        # A turn that closed on no reply has nothing to name it by, and a session that never joined
+                        # has no transcript to read its name from; either keeps the name it has.
+                        pass
                 return web.Response(status=204)
+            case Prompted() as prompted:
+                await sessions.apply(prompted)
+                # [LAW:no-ambient-temporal-coupling] a hook is the only way to hand Claude Code a title, and a prompt
+                # the soonest one after a name is decided: the name waits here for it.
+                match names.due(prompted.session):
+                    case None:
+                        return web.Response(status=204)
+                    case name:
+                        record(NameGiven(prompted.session, name))
+                        return web.json_response(name_output(name))
             case happened:
                 await sessions.apply(happened)
                 return web.Response(status=204)

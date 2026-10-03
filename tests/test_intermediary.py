@@ -26,8 +26,8 @@ evaluation = importlib.util.module_from_spec(_SPEC)
 sys.modules["intermediary_eval"] = evaluation
 _SPEC.loader.exec_module(evaluation)
 
-AUTH = {"id": "5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34", "title": "auth refactor in cc-hands", "state": "idle", "mode": "manual mode"}
-FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "title": "untitled in cc-hands", "state": "working", "mode": "not reported yet"}
+AUTH = {"id": "5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34", "name": "cc-hands, auth refactor", "state": "idle", "mode": "manual mode"}
+FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "name": "cc-hands", "state": "working", "mode": "not reported yet"}
 
 
 def names(sessions: Sessions) -> list[str]:
@@ -35,11 +35,11 @@ def names(sessions: Sessions) -> list[str]:
         return [tool.name for tool in intermediary_tools(sessions, SummaryStore(Sentences(Path(home) / "sentences.db")))]
 
 
-def test_the_briefing_names_each_session_by_title_state_and_mode_with_the_id_for_the_tools() -> None:
+def test_the_briefing_names_each_session_by_name_state_and_mode_with_the_id_for_the_tools() -> None:
     note = briefing([AUTH, FRESH])
     assert note.startswith("[hands] ")
-    assert f'"auth refactor in cc-hands" (id {AUTH["id"]}), idle, permission mode: manual mode' in note
-    assert f'"untitled in cc-hands" (id {FRESH["id"]}), working, permission mode: not reported yet' in note
+    assert f'"cc-hands, auth refactor" (id {AUTH["id"]}), idle, permission mode: manual mode' in note
+    assert f'"cc-hands" (id {FRESH["id"]}), working, permission mode: not reported yet' in note
     assert "Say nothing about this unless the user asks." in note
 
 
@@ -50,7 +50,7 @@ def test_the_briefing_with_nothing_running_says_so() -> None:
 def test_the_tail_names_each_session_as_the_briefing_does_and_says_it_is_current() -> None:
     told = tail([AUTH])
     assert told.startswith("[hands] ")
-    assert f'"auth refactor in cc-hands" (id {AUTH["id"]}), idle, permission mode: manual mode' in told
+    assert f'"cc-hands, auth refactor" (id {AUTH["id"]}), idle, permission mode: manual mode' in told
     assert "as this message is sent" in told and "Say nothing about this unless the user asks." in told
 
 

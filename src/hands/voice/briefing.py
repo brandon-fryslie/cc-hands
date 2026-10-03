@@ -20,7 +20,7 @@ from hands.voice.tools import standing
 
 def briefing(listed: Sequence[Mapping[str, str]]) -> str:
     """The note, from sessions as list_sessions describes them, so the two can never tell the model different things."""
-    # [LAW:one-source-of-truth] the id, title, state, and mode are describe_listing's words, the ones list_sessions returns.
+    # [LAW:one-source-of-truth] the id, name, state, and mode are describe_listing's words, the ones list_sessions returns.
     if not listed:
         return "[hands] hands has just started, and no Claude Code sessions are running. Say nothing about this unless the user asks."
     return (
@@ -41,7 +41,7 @@ def tail(listed: Sequence[Mapping[str, str]]) -> str:
 
 
 def _running(listed: Sequence[Mapping[str, str]]) -> str:
-    return "; ".join(f'"{session["title"]}" (id {session["id"]}), {session["state"]}, permission mode: {session["mode"]}' for session in listed)
+    return "; ".join(f'"{session["name"]}" (id {session["id"]}), {session["state"]}, permission mode: {session["mode"]}' for session in listed)
 
 
 async def brief(sessions: Sessions, telling: Telling, queue_frame: Callable[[Frame], Awaitable[None]]) -> None:
