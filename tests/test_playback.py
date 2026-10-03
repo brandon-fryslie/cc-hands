@@ -16,7 +16,6 @@ from hands.core.playback import (
     BOOKMARKS,
     Bookmark,
     LastOne,
-    begun,
     NothingCut,
     NothingSaid,
     Playback,
@@ -30,8 +29,9 @@ from hands.core.playback import (
     resume,
     skip,
 )
-from hands.sessions.audit import CutOff, Entry
+from hands.sessions.audit import Called, CutOff, Entry
 from hands.voice.player import Player, said
+from hands.voice.tools import audited, playback_tools
 
 # What happens at the speaker, as the taps report it: a sentence handed to it, one played to its end, the user cutting in.
 Happening = str
@@ -65,15 +65,17 @@ def played(*happenings: Happening) -> Playback:
         (("A.", "B.", "done", "cut"), skip, LastOne(), ()),
         # Saying it again says the whole reading, cut off or not, and one said whole no longer waits to be gone back to.
         (("A.", "B.", "done", "cut"), repeat, Replay(("A.", "B.")), ()),
-        (("A.", "B.", "done", "done"), repeat, Replay(("A.", "B.")), ()),
+        (("A.", "B.", "done", "done", "cut"), repeat, Replay(("A.", "B.")), ()),
+        # The model said a word of its own before asking: what is said again is what the user cut in on, not that word.
+        (("A.", "done", "cut", "Sure."), repeat, Replay(("A.",)), ()),
         # A reading played to its end was not cut off, whenever the user speaks next.
         (("A.", "done", "cut"), resume, NothingCut(), ()),
         ((), resume, NothingCut(), ()),
         ((), skip, NothingCut(), ()),
         ((), repeat, NothingSaid(), ()),
-        # Cut in on the answer to a side question to say "go back": it goes back past that answer to the reading cut
-        # off before it, and the answer waits beneath.
-        (("A.", "B.", "cut", "C.", "D.", "done", "cut"), resume, Replay(("A.", "B.")), (Bookmark(("C.", "D."), 1),)),
+        # Cut in on the answer to a side question to say "go back": it goes back past that answer, which is left, to
+        # the reading cut off before it.
+        (("A.", "B.", "cut", "C.", "D.", "done", "cut"), resume, Replay(("A.", "B.")), ()),
         # The answer had played to its end: going back is to the reading cut off before it all the same.
         (("A.", "B.", "cut", "C.", "done", "cut"), resume, Replay(("A.", "B.")), ()),
         # Skipping skips what was cut in on.
@@ -101,7 +103,7 @@ def test_a_sentence_handed_after_a_reading_ended_starts_a_new_one_and_one_handed
 
 def test_what_is_said_again_is_itself_a_reading_that_can_be_cut_and_gone_back_to() -> None:
     playback, _ = resume(played("A.", "B.", "C.", "cut"))
-    again = reduce(handed, ("A.", "B.", "C."), begun(playback, ("A.", "B.", "C.")))
+    again = reduce(handed, ("A.", "B.", "C."), queued(playback, ("A.", "B.", "C.")))
     after, said = resume(cut(finished(again)))
     assert said == Replay(("B.", "C."))
     assert after.bookmarks == ()
@@ -115,9 +117,15 @@ def test_lines_said_again_while_a_reading_still_plays_go_on_from_it() -> None:
     assert resume(cut(playback))[1] == Replay(("A.", "B."))
 
 
+def test_a_word_handed_before_the_lines_queued_takes_its_own_place_and_loses_none_of_them() -> None:
+    # The lines were queued while the model's word was still on its way to the speaker.
+    playback = cut(handed(handed(queued(Playback(), ("A.", "B.", "C.")), "Sure."), "A."))
+    assert playback.stopped == Bookmark(("Sure.", "A.", "B.", "C."), 0)
+
+
 def test_a_reading_said_again_and_cut_before_all_of_it_reached_the_speaker_is_gone_back_to_whole() -> None:
     # The barge-in drops what had not yet reached the speaker; the reading knew it from the start, and keeps it.
-    said_again = handed(begun(Playback(), ("A.", "B.", "C.")), "A.")
+    said_again = handed(queued(Playback(), ("A.", "B.", "C.")), "A.")
     assert said_again.reading == ("A.",)
     assert resume(cut(said_again))[1] == Replay(("A.", "B.", "C."))
     assert repeat(cut(said_again))[1] == Replay(("A.", "B.", "C."))
@@ -203,6 +211,21 @@ async def test_an_act_with_nothing_to_say_again_says_why(act: Callable[[Playback
         assert await player.act(act) == (line,)
         said = await heard.until(1, TTSSpeakFrame)
         assert [frame.text for frame in said if isinstance(frame, TTSSpeakFrame)] == [line]
+
+
+async def test_each_playback_tool_answers_with_what_was_said_and_how_many_readings_still_wait() -> None:
+    recorded: list[Entry] = []
+    player = Player(recorded.append)
+    tools = {tool.name: audited(tool, recorded.append) for tool in playback_tools(player)}
+    async with stood(player) as (run, heard):
+        # A barge-in overtakes frames still queued, so each waits for what is ahead of it to be heard.
+        for frame, seen in ((spoken("A."), 1), (spoken("B."), 2), (InterruptionFrame(), 1), (spoken("C."), 3), (InterruptionFrame(), 2)):
+            await run.worker.queue_frame(frame)
+            await heard.until(seen, type(frame))
+        recorded.clear()
+        assert await tools["resume"].body() == {"said": ("A.", "B."), "waiting": 0}
+        assert await tools["skip"].body() == {"said": ("Nothing was cut off to go back to.",), "waiting": 0}
+        assert [type(entry) for entry in recorded] == [Called, Called]
 
 
 def test_skipping_the_last_sentence_says_so() -> None:

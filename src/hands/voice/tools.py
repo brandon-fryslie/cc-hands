@@ -174,7 +174,8 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
 def playback_tools(player: Player) -> list[Tool]:
     """Going back over what was said: hands says it again from where the speaker was, never the model from memory.
 
-    [LAW:nothing-unseen] each call's result is what hands said for it, so its Called line holds what was heard.
+    [LAW:nothing-unseen] each call's result is what hands said for it and how many cut-off readings still wait, so its
+    Called line holds what was heard and where it left playback.
     """
 
     async def resume() -> Result:
@@ -183,21 +184,21 @@ def playback_tools(player: Player) -> list[Tool]:
         Hands says it, exactly as it was said, from the start of the sentence that was cut off. Calling it is the whole
         reply: add no words of your own, and never retell what you remember saying.
         """
-        return {"said": await player.act(playback.resume)}
+        return {"said": await player.act(playback.resume), "waiting": player.waiting}
 
     async def skip() -> Result:
         """Skip the sentence the user cut in on, and go on with what you were saying from the one after it.
 
         Hands says the rest. Calling it is the whole reply: add no words of your own.
         """
-        return {"said": await player.act(playback.skip)}
+        return {"said": await player.act(playback.skip), "waiting": player.waiting}
 
     async def repeat() -> Result:
         """Say again the last thing you said, whole, exactly as it was said.
 
         Hands says it. Calling it is the whole reply: add no words of your own, and never say it again yourself.
         """
-        return {"said": await player.act(playback.repeat)}
+        return {"said": await player.act(playback.repeat), "waiting": player.waiting}
 
     return [tool(resume, then="silence"), tool(skip, then="silence"), tool(repeat, then="silence")]
 

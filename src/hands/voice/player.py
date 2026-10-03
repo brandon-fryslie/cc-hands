@@ -41,6 +41,11 @@ class Player:
         # Stood ahead of the TTS service, the one place the lines enter the pipeline; it passes everything else on.
         self.lines = IdentityFilter()
 
+    @property
+    def waiting(self) -> int:
+        """How many readings cut off wait to be gone back to."""
+        return len(self._playback.bookmarks)
+
     def watching(self, speaker: FrameProcessor, output: FrameProcessor) -> BaseObserver:
         """The observer reading the speaker off what `speaker`, the TTS service, and `output`, the output transport, push."""
         return _Watch(self, speaker, output)
