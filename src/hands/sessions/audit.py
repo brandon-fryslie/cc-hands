@@ -19,7 +19,6 @@ import fcntl
 import json
 import os
 import re
-import traceback
 from bisect import bisect_right
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
@@ -42,7 +41,7 @@ from hands.core.place import Place
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
 from hands.sessions.model_facts import ModelFact
-from hands.sessions.wide import WideEvent
+from hands.sessions.wide import WideEvent, chain
 
 
 @dataclass(frozen=True)
@@ -889,26 +888,11 @@ def failures_to(record: Record) -> "Callable[[Message], None]":
                 source=f"{logged['name']}:{logged['function']}",
                 message=f"{logged['message']}{detail}",
                 where=f"{logged['file'].path}:{logged['line']}",
-                trace=() if exception is None or exception.value is None else _trace(exception.value),
+                trace=() if exception is None or exception.value is None else chain(exception.value),
             )
         )
 
     return sink
-
-
-def _trace(error: BaseException) -> tuple[str, ...]:
-    chain: list[BaseException] = []
-    link: BaseException | None = error
-    while link is not None and link not in chain:
-        chain.append(link)
-        link = link.__cause__ or (None if link.__suppress_context__ else link.__context__)
-    return tuple(line for cause in reversed(chain) for line in (f"{type(cause).__name__}: {cause}", *_frames(cause)))
-
-
-def _frames(error: BaseException) -> tuple[str, ...]:
-    # Without the source lines, which nothing here reads: looking them up opens every frame's file inside the sink.
-    frames = traceback.StackSummary.extract(traceback.walk_tb(error.__traceback__), lookup_lines=False)
-    return tuple(f"{frame.filename}:{frame.lineno} in {frame.name}" for frame in frames)
 
 
 def tail(directory: Path, count: int) -> tuple[list[str], int]:

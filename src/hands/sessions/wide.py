@@ -2,7 +2,7 @@
 
     with unit("delta.read", record, counts=("commits", "files")):
         annotate(session=session)       # a fact about this run, from anywhere inside it
-        count(commits=len(commits))     # a count it declared; one it never set is written as 0
+        count(commits=len(commits))     # added to a count it declared; one it never counted is written as 0
 
 Code inside a unit of work never emits; it annotates the event the nearest open unit holds, and the unit emits it, once,
 on success, on failure, and on cancellation alike [LAW:nothing-unseen]. The event leaves through the `emit` the unit was
@@ -12,12 +12,13 @@ in it, so no fact about a run is kept both as an event and as a line beside it [
 
 import asyncio
 import time
+import traceback
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, cast
 from uuid import uuid4
 
 Outcome = Literal["ok", "failed", "cancelled"]
@@ -27,8 +28,8 @@ Outcome = Literal["ok", "failed", "cancelled"]
 class WideEvent:
     """One run of one unit of work: what it was, when it began and how long it took, how it ended, and every count and
     fact the run annotated it with. `trace_id` is shared by every unit opened inside another, so a run's parts are one
-    trace. `counts` holds every count the unit declared, 0 for one the run never set: ran and did nothing is a count of
-    zero, where never ran is no event at all."""
+    trace. `error` and `trace` say what a failed run raised, as a Failure line does. `counts` holds every count the unit
+    declared, 0 for one the run never counted: ran and did nothing is a count of zero, where never ran is no event at all."""
 
     event: str
     trace_id: str
@@ -36,17 +37,19 @@ class WideEvent:
     duration_ms: float
     outcome: Outcome
     error: str | None
+    trace: tuple[str, ...]
     counts: Mapping[str, int]
     facts: Mapping[str, object]
 
 
 @dataclass
 class _Open:
-    """The event a unit is building while it runs."""
+    """The event a unit is building while it runs, and whether it has ended, after which nothing more lands on it."""
 
     trace_id: str
     counts: dict[str, int]
     facts: dict[str, object] = field(default_factory=dict[str, object])
+    closed: bool = False
 
 
 # [LAW:no-shared-mutable-globals] owned by unit alone, which sets it as a unit opens and resets it as it closes; a task
@@ -66,18 +69,22 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
     token = _open.set(opened)
     outcome: Outcome = "ok"
     error: str | None = None
+    trace: tuple[str, ...] = ()
     try:
         yield
     except asyncio.CancelledError:
         outcome = "cancelled"
         raise
     except BaseException as raised:
-        outcome, error = "failed", f"{type(raised).__name__}: {raised}"
+        outcome, error, trace = "failed", f"{type(raised).__name__}: {raised}", chain(raised)
         raise
     finally:
         _open.reset(token)
+        # A task the body started copied this unit along and may outlive it: what it adds now would change an event
+        # already emitted and never reach the log, so it is refused instead.
+        opened.closed = True
         duration_ms = round((time.monotonic() - began) * 1000, 3)
-        emit(WideEvent(event, opened.trace_id, started_at, duration_ms, outcome, error, opened.counts, opened.facts))
+        emit(WideEvent(event, opened.trace_id, started_at, duration_ms, outcome, error, trace, opened.counts, opened.facts))
 
 
 def annotate(**facts: object) -> None:
@@ -86,17 +93,41 @@ def annotate(**facts: object) -> None:
 
 
 def count(**counts: int) -> None:
-    """Set counts the unit of work open here declared. A name it did not declare is a bug, refused out loud."""
+    """Add to counts the unit of work open here declared. A name it did not declare is a bug, refused out loud."""
     opened = _current()
     undeclared = counts.keys() - opened.counts.keys()
     if undeclared:
         raise KeyError(f"counts this unit of work did not declare: {sorted(undeclared)}")
-    opened.counts.update(counts)
+    for name, n in counts.items():
+        opened.counts[name] += n
 
 
 def _current() -> _Open:
     opened = _open.get()
-    if opened is None:
+    if opened is None or opened.closed:
         # [LAW:no-silent-failure] a fact with no unit to land on is code running outside the layer it was written for.
         raise LookupError("no unit of work is open here to annotate")
     return opened
+
+
+def chain(error: BaseException) -> tuple[str, ...]:
+    """What raised error: it and each exception it was raised from or while handling, the first cause first, each named
+    and then followed by the frames it came up through, the raising one last; and inside a group, each it gathered."""
+    links: list[BaseException] = []
+    link: BaseException | None = error
+    while link is not None and link not in links:
+        links.append(link)
+        link = link.__cause__ or (None if link.__suppress_context__ else link.__context__)
+    return tuple(line for cause in reversed(links) for line in (f"{type(cause).__name__}: {cause}", *_frames(cause), *_gathered(cause)))
+
+
+def _gathered(error: BaseException) -> tuple[str, ...]:
+    # A TaskGroup raises its children's errors as one group, whose own name says only how many there were.
+    children = cast(BaseExceptionGroup[BaseException], error).exceptions if isinstance(error, BaseExceptionGroup) else ()
+    return tuple(line for child in children for line in chain(child))
+
+
+def _frames(error: BaseException) -> tuple[str, ...]:
+    # Without the source lines, which nothing here reads: looking them up opens every frame's file inside the sink.
+    frames = traceback.StackSummary.extract(traceback.walk_tb(error.__traceback__), lookup_lines=False)
+    return tuple(f"{frame.filename}:{frame.lineno} in {frame.name}" for frame in frames)

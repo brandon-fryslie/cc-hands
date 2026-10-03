@@ -1158,7 +1158,9 @@ beside the tree and must answer `SPARE` before the narrator's `PATIENCE` runs ou
 pull request and never the commit. Both sources speak in the same `GitChange` values, so a push
 both saw is said once. Each mark is one `delta.mark` wide event and each reading one
 `delta.read`, and each says which index its snapshot started from: the repository's
-own, copied, or an empty one.
+own, copied; an empty one; or none, because git would not say where the index is. Each
+also counts the git commands that did not answer, so a git that timed out reads
+differently from a repository with nothing to tell.
 
 A turn told twice has git read twice, each telling against where the one before it left off.
 No prompt marks where the part after a blocked `Stop` began, so every reading also keeps where
@@ -1763,11 +1765,13 @@ counts as a crash: the run raises, exits nonzero, and reads as down until it is 
 ## Wide events
 
 A unit of work runs inside `hands.sessions.wide.unit`, which leaves exactly one
-`WideEvent` however the run ends: ok, failed with what it raised, or cancelled
-`[LAW:nothing-unseen]`. Code inside the run calls `annotate` to add a fact and `count`
-to set a count the unit declared. It never emits anything itself. A declared count the
-run never set is written as 0, so a run that did nothing reads differently from a run
-that never happened. A unit opened inside another shares its `trace_id`.
+`WideEvent` however the run ends: ok, failed with what it raised and the frames it
+came up through, or cancelled `[LAW:nothing-unseen]`. Code inside the run calls
+`annotate` to add a fact and `count` to add to a count the unit declared. It never
+emits anything itself. A declared count the run never added to is written as 0, so a
+run that did nothing reads differently from a run that never happened. A unit opened
+inside another shares its `trace_id`. A task that outlives the unit it was started in
+cannot add to the event once it is emitted: it is refused with a `LookupError`.
 
 The event leaves through the `emit` the unit was opened with, which in the daemon is
 the audit log's `record`. The audit log is the one export edge, and an event is one

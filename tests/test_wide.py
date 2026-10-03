@@ -31,6 +31,8 @@ def test_a_unit_that_raises_is_a_failed_event_saying_what_it_raised_and_the_erro
             raise RuntimeError("git is on fire")
     [event] = emitted
     assert (event.outcome, event.error, event.facts) == ("failed", "RuntimeError: git is on fire", {"step": "reading"})
+    # As a Failure line does: what was raised, and the frames it came up through.
+    assert event.trace[0] == "RuntimeError: git is on fire" and any("in test_a_unit_that_raises" in line for line in event.trace)
 
 
 async def test_a_unit_cancelled_mid_run_is_a_cancelled_event_and_not_a_failure() -> None:
@@ -71,6 +73,30 @@ def test_two_units_one_after_the_other_are_two_traces() -> None:
         with unit("job", emitted.append):
             pass
     assert emitted[0].trace_id != emitted[1].trace_id
+
+
+def test_counting_adds_to_what_the_unit_has_counted_so_far() -> None:
+    emitted: list[WideEvent] = []
+    with unit("job", emitted.append, counts=("retries",)):
+        count(retries=1)
+        count(retries=2)
+    assert emitted[0].counts == {"retries": 3}
+
+
+async def test_a_task_that_outlives_its_unit_cannot_change_the_event_already_emitted() -> None:
+    emitted: list[WideEvent] = []
+    ended = asyncio.Event()
+
+    async def straggler() -> None:
+        await ended.wait()
+        annotate(late=True)
+
+    with unit("job", emitted.append):
+        task = asyncio.create_task(straggler())
+    ended.set()
+    with pytest.raises(LookupError):
+        await task
+    assert emitted[0].facts == {}
 
 
 def test_a_count_the_unit_did_not_declare_is_refused_and_fails_the_unit() -> None:
