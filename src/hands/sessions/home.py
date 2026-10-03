@@ -82,6 +82,12 @@ class Home:
         """The brain's CLAUDE_CONFIG_DIR: its login, settings, and skills, and under it the empty directory it runs in."""
         return self.root / "brain"
 
+    @property
+    def phone(self) -> Path:
+        """The phone's key, made by whichever of the daemon and `hands phone` asks first, and the certificates its page
+        is served with, which the daemon alone writes."""
+        return self.root / "phone"
+
     def membership(self, session: SessionId) -> Path:
         return self.memberships / f"{session}.json"
 

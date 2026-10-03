@@ -279,10 +279,10 @@ Need 8. Where the microphone is.
   wakeword` in `Config`; the `hotkey` edge is a macOS event tap that reports real
   key-down and key-up, including a headset's media key. Done when holding the
   hotkey in another app drives a turn and releasing ends it.
-- **Phone over WebRTC.** `Transport.WebRTC` serves Pipecat's SmallWebRTC transport
-  and one page with a hold-to-talk button; reachable over the LAN and Tailscale.
-  Done when a full turn round-trips from a phone with earbuds and the transcript
-  contains no words from the reply.
+- **Phone over WebRTC.** A hold-to-talk page served over HTTPS on the LAN and the
+  tailnet, beside the desk for the whole run; the place the last turn opened at is
+  where hands hears and speaks. Done when a full turn round-trips from a phone with
+  earbuds and the transcript contains no words from the reply.
 - **Wake word with VAD stop, half-duplex.** The `wakeword` edge opens the gate on
   the wake word and closes it when Silero reports the configured silence; the
   detector is deaf while the output transport plays. Done when a turn completes

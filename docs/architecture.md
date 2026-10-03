@@ -1594,13 +1594,46 @@ half-duplex: while the output transport is playing, the wake-word detector is de
 because an open mic in a room with speakers hears the pipeline's own voice. Acoustic
 echo cancellation would lift that restriction and is a separate, later ticket.
 
-**The transport is a variant too.** `Local(input_device, output_device)` is the Mac's
-own mic and speakers. `WebRTC(host, port)` is Pipecat's SmallWebRTC transport serving
-a page that a phone opens over the LAN or Tailscale; the page's talk button is a
-proper key-down/key-up gate edge, and earbuds on the phone make own-voice bleed
-moot. The pipeline between the transport and the gate is the same object in both
-cases; `build_voice` matches on the variant exactly the way `build_llm` matches on
-the backend.
+**The phone is a second place, beside the desk.** The desk is the Mac's own mic and
+speakers; the phone is a page hands serves (`hands.voice.phonepage`) that a phone
+opens over the LAN or the tailnet, with a talk button. Both are there for the whole
+run, with no setting to choose between them: the gate holds the place the last turn
+was opened at, and that place is where hands is. The pipeline hears only that place's
+microphone, so Whisper gets one stream of frames, and the speaker plays to that place,
+so a reply, a session's news, and a turn's tone go where the user is
+(`hands.voice.ptt`, `hands.voice.microphone`). A call connecting moves hands to the
+phone, and the call ending moves it back to the desk in the same step, so nothing is
+played to a phone that has gone. An offer answered but not yet connected moves
+nothing, so a page that cannot reach hands never holds its speech; the newest offer
+lets go of any older one not yet up, and replaces the call that is up once it
+connects. The other place cannot touch a turn that is not its own: a Shift typed at
+the desk while the user talks on the phone arms nothing. A turn opened at one place
+while a hold is open at the other drops both, as a key pressed while the talk key is
+held drops the turn, and the gate cues and tells the moves as it took them. Only a
+turn opening moves hands, never a press still arming, which may be Shift: so a hold
+at the place hands is not at keeps none of the words said before it opened a turn,
+and typing at the desk never takes a call's replies off the phone.
+
+The call (`hands.voice.phone`) is one WebRTC connection made with aiortc directly.
+hands' speech goes to the phone on an audio track. The phone's microphone does not:
+the page sends it as plain 16-bit audio over the call's ordered data channel, in
+order with its button's presses and releases, and holds a release back until every
+block its microphone captured before it has been sent. A release that overtook the
+words said before it would cut the end of the turn; on one ordered channel the key
+travels with the audio, as `KeyedAudio` makes it travel at the desk. Earbuds keep
+hands' voice out of the phone's microphone, so the phone's audio is gated by its
+button alone.
+
+A browser gives a page the microphone only over HTTPS. Under the tailnet name,
+hands shows the certificate `tailscale cert` issues for it, which the phone trusts
+as it is; under a LAN address it shows a self-signed one, which the phone is asked
+once to accept, and which hands makes again at a start within 30 days of its end;
+the tailnet's is asked of Tailscale again daily while the page is served. The page is open to anyone who reaches the port; a call is not: an
+offer must carry the phone's key, a secret in the home that travels in the page
+address's fragment, which a browser never sends with the page request. `hands phone`
+prints the addresses with the key, the first as a QR code. aiortc never notices a
+browser closed outright, so a page that sends nothing for `QUIET_SECS` is hung up:
+it sends its microphone every 20 ms for as long as it is open.
 
 **One audio owner.** Pipecat's output transport is the only thing that plays sound.
 When two sessions finish at once, their utterances line up behind it instead of

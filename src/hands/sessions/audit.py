@@ -39,6 +39,7 @@ from hands.core.attention import Amount, Attention, Delivery, EndedRoute, Overla
 from hands.core.delta import Branched, PullRequested, Pushed
 from hands.core.effects import AfterEnd, Allow, AuditRecord, Deny, Effect, Heard, Holding, Input, Type, Unclosed, Unmatched, Unregistered, Unsettled
 from hands.core.events import Event
+from hands.core.place import Place
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
 from hands.sessions.model_facts import ModelFact
@@ -116,6 +117,70 @@ class DisplayListening:
     """Where hands took the text Claude Code displays for this run: the URL the plugin's MessageDisplay hook posts to."""
 
     url: str
+
+
+@dataclass(frozen=True)
+class PhoneServing:
+    """The phone's page was served for this run on this port, on the LAN and under this tailnet name."""
+
+    port: int
+    tailnet: str
+
+
+@dataclass(frozen=True)
+class PhoneUntailed:
+    """The phone's page was served for this run on this port on the LAN alone, and why Tailscale gave it no name."""
+
+    port: int
+    reason: str
+
+
+# Why a call ended: a newer call took its place, the page hung up, the connection failed, the page stopped sending
+# (closed outright, or the phone asleep), or hands stopped.
+PhoneGone = Literal["replaced", "hung up", "failed", "went quiet", "stopped"]
+
+
+@dataclass(frozen=True)
+class Moved:
+    """hands moved to this place: a turn was opened there, or the phone's call came or went; and whether a hold open
+    at the place it left was thrown away."""
+
+    to: Place
+    by: Literal["turn", "call"]
+    dropped: bool
+
+
+@dataclass(frozen=True)
+class PhoneArrived:
+    """A call from the phone's page was taken, from this address: hands is at the phone."""
+
+    remote: str
+
+
+@dataclass(frozen=True)
+class PhoneLeft:
+    """The call from the phone ended, why, and how long it was up: hands is at the desk."""
+
+    remote: str
+    reason: PhoneGone
+    seconds: float
+
+
+@dataclass(frozen=True)
+class PhoneUnreached:
+    """A call from the phone's page was answered and let go before it connected, why, and how long after its offer:
+    hands never moved to it."""
+
+    remote: str
+    reason: PhoneGone
+    seconds: float
+
+
+@dataclass(frozen=True)
+class PhoneRefused:
+    """A call was offered without the phone's key, from this address, and was not taken."""
+
+    remote: str
 
 
 @dataclass(frozen=True)
@@ -596,6 +661,13 @@ Entry = (
     | ProxyListening
     | TapListening
     | DisplayListening
+    | PhoneServing
+    | Moved
+    | PhoneUntailed
+    | PhoneArrived
+    | PhoneLeft
+    | PhoneUnreached
+    | PhoneRefused
     | CopiesLost
     | Exchanged
     | McpConnected
@@ -647,7 +719,7 @@ def level(entry: Entry) -> Level:
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | EffectFailed() | BacklogUnread():
+        case Failure() | EffectFailed() | BacklogUnread() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)
@@ -671,7 +743,7 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
-            | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | CopiesLost()
+            | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()

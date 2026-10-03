@@ -18,12 +18,17 @@ from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioO
 from hands.voice.cues import OPENED, sound
 from hands.voice.coreaudio import DefaultDevices
 from hands.voice.microphone import ECHO_PATH_SECS, Devices, Input, KeyedAudioTransport, NoInput, Output, PortAudio, buffer_age, default_input, heard
+from hands.voice.phone import Phone
 from hands.voice.ptt import Gate, PushToTalk
 
 LOUD = b"\x7f\x7f" * 320
 QUIET = bytes(len(LOUD))
 DOWN = Gate(key="down")
 CHUNK = len(LOUD) / (2 * 16000)  # how long LOUD plays at 16 kHz mono
+
+
+def _phone() -> Phone:
+    return Phone(PushToTalk(lambda _: None), heard_rate=16000, played_rate=16000, record=lambda _: None)
 
 
 def test_only_a_held_key_after_the_speaker_has_gone_quiet_is_heard() -> None:
@@ -37,10 +42,11 @@ class Rig:
 
     def __init__(self) -> None:
         self.now = 0.0
-        self.key = PushToTalk()
+        self.key = PushToTalk(lambda _: None)
+        self.phone = Phone(self.key, heard_rate=16000, played_rate=16000, record=lambda _: None)
         self.pushed: list[bytes] = []
         params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
-        self.transport = KeyedAudioTransport(params, self.key, clock=lambda: self.now)
+        self.transport = KeyedAudioTransport(params, self.key, self.phone, clock=lambda: self.now)
         self.speaker = self.transport.output()
         self.microphone = self.transport.input()
         self.microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
@@ -88,7 +94,7 @@ async def test_the_reply_already_given_to_the_speaker_is_not_heard_after_a_press
     devices = Rig()
     await devices.play(LOUD, at=1.0)
     await devices.capture(at=1.0)  # key up
-    devices.key.move("start")
+    devices.key.move("start", "desk")
     await devices.capture(at=1.0 + CHUNK + ECHO_PATH_SECS - 0.01)  # the reply still in the room
     await devices.capture(at=1.0 + CHUNK + ECHO_PATH_SECS)  # gone
     assert devices.pushed == [QUIET, QUIET, LOUD]
@@ -96,7 +102,7 @@ async def test_the_reply_already_given_to_the_speaker_is_not_heard_after_a_press
 
 async def test_silence_written_to_the_speaker_keeps_nothing_shut() -> None:
     devices = Rig()
-    devices.key.move("start")
+    devices.key.move("start", "desk")
     await devices.play(QUIET, at=1.0)
     await devices.capture(at=1.01)
     assert devices.pushed == [LOUD]
@@ -104,7 +110,7 @@ async def test_silence_written_to_the_speaker_keeps_nothing_shut() -> None:
 
 async def test_a_late_callback_is_judged_by_when_its_sound_was_recorded() -> None:
     devices = Rig()
-    devices.key.move("start")
+    devices.key.move("start", "desk")
     await devices.play(LOUD, at=1.0)
     # Delivered after the speaker went quiet, but recorded 50 ms before: the reply's tail.
     await devices.capture(at=1.0 + CHUNK + ECHO_PATH_SECS + 0.01, age=0.05)
@@ -119,7 +125,7 @@ def test_a_buffer_the_host_cannot_date_is_as_old_as_its_callback() -> None:
 
 async def test_a_chunk_whose_write_an_interruption_cancels_still_holds_the_microphone_shut() -> None:
     devices = Rig()
-    devices.key.move("start")
+    devices.key.move("start", "desk")
     devices.stream.blocking = True
     devices.now = 1.0
     writing = asyncio.create_task(devices.speaker.write_audio_frame(OutputAudioRawFrame(audio=LOUD, sample_rate=16000, num_channels=1)))
@@ -188,7 +194,7 @@ class FreshPortAudio:
 def lost_transport(log: list[str]) -> KeyedAudioTransport:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
     defaults = iter([DefaultDevices(input=1, output=1), DefaultDevices(input=2, output=2)])
-    transport = KeyedAudioTransport(params, PushToTalk(), portaudio=lambda: FreshPortAudio(log), defaults=lambda: next(defaults))
+    transport = KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), portaudio=lambda: FreshPortAudio(log), defaults=lambda: next(defaults))
     speaker, microphone = transport.output(), transport.input()
     speaker.get_event_loop = asyncio.get_running_loop
     microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
@@ -244,7 +250,7 @@ async def test_the_streams_are_opened_as_pipecat_opens_them() -> None:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
     setup = FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=cast(Any, None), audio_in_sample_rate=16000, audio_out_sample_rate=24000)
     for portaudio, output, input_ in (
-        (ours, KeyedAudioTransport(params, PushToTalk()).output(), KeyedAudioTransport(params, PushToTalk()).input()),
+        (ours, KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone()).output(), KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone()).input()),
         (pipecats, LocalAudioOutputTransport(cast(pyaudio.PyAudio, pipecats), params), LocalAudioInputTransport(cast(pyaudio.PyAudio, pipecats), params)),
     ):
         setattr(output, "_py_audio", portaudio)
@@ -292,7 +298,7 @@ async def test_with_no_microphone_left_the_transport_reopens_to_speak_and_says_i
 
 async def test_a_daemon_started_with_no_microphone_runs_rather_than_failing_its_setup() -> None:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
-    transport = KeyedAudioTransport(params, PushToTalk(), portaudio=lambda: DeafPortAudio([]), defaults=lambda: DefaultDevices(0, 1))
+    transport = KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), portaudio=lambda: DeafPortAudio([]), defaults=lambda: DefaultDevices(0, 1))
     assert not transport.deaf  # nothing is said of hearing before setup opens the microphone
     setup = FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=cast(Any, None), audio_in_sample_rate=16000, audio_out_sample_rate=24000)
     await transport.input().setup(setup)
@@ -314,7 +320,7 @@ def test_only_portaudios_own_no_default_input_reads_as_no_microphone() -> None:
 async def test_a_turns_cue_is_played_at_once_and_holds_nothing_shut() -> None:
     devices = Rig()
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]  # as setup sets it
-    devices.key.move("start")
+    devices.key.move("start", "desk")
     devices.now = 1.0
     devices.speaker.cue(OPENED)
     await devices.capture(at=1.0)  # a word said over the cue
@@ -355,7 +361,7 @@ async def test_a_tone_that_fails_to_play_loses_only_the_tone() -> None:
 async def test_a_chunk_queued_behind_a_cue_holds_the_microphone_shut_from_when_it_plays() -> None:
     devices = Rig()
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
-    devices.key.move("start")
+    devices.key.move("start", "desk")
     devices.stream.blocking = True
     devices.now = 1.0
     devices.speaker.cue(OPENED)  # the barge-in's tone, still going to the device

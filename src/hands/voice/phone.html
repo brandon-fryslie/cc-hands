@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>hands</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --fg: #1d1c1a; --muted: #6b6862; --ring: #d9d5cd;
+    --idle: #2f2d2a; --live: #c2410c; --bad: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141312; --fg: #eeebe6; --muted: #9a958d; --ring: #2c2a27; --idle: #e9e5de; --live: #f97316; --bad: #f87171; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 17px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px;
+    padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  }
+  #talk {
+    width: min(68vw, 300px); aspect-ratio: 1; border-radius: 50%;
+    border: 10px solid var(--ring); background: var(--idle); color: var(--bg);
+    font: 600 22px/1.2 inherit; letter-spacing: .02em;
+    touch-action: none; cursor: pointer; transition: transform .08s, background .08s;
+  }
+  #talk:disabled { opacity: .35; cursor: default; }
+  #talk.held { background: var(--live); transform: scale(.96); }
+  #state { color: var(--muted); min-height: 1.4em; text-align: center; max-width: 30ch; }
+  #state.bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<button id="talk" type="button">Connect</button>
+<p id="state" role="status" aria-live="polite"></p>
+<audio id="out" autoplay playsinline></audio>
+<script>
+"use strict";
+// The phone's key travels in the fragment, which the browser never sends with the page's own request.
+const key = decodeURIComponent(location.hash.slice(1));
+const talk = document.getElementById("talk");
+const state = document.getElementById("state");
+const out = document.getElementById("out");
+
+// Every render quantum of the microphone goes to the page as it is captured; a "mark" sent in comes back out after
+// every block captured before it, which is how a release is sent only once the words said before it have been.
+const TAP = `
+registerProcessor("tap", class extends AudioWorkletProcessor {
+  constructor() { super(); this.port.onmessage = () => this.port.postMessage("mark"); }
+  process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice(0)); return true; }
+});`;
+
+let call = null;  // {pc, channel, audio, stream}
+let held = false;
+
+function say(text, bad = false) { state.textContent = text; state.classList.toggle("bad", bad); }
+
+function pcm(blocks) {
+  const length = blocks.reduce((n, b) => n + b.length, 0);
+  const samples = new Int16Array(length);
+  let i = 0;
+  for (const block of blocks) for (const s of block) samples[i++] = Math.max(-32768, Math.min(32767, Math.round(s * 32767)));
+  return samples.buffer;
+}
+
+async function connect() {
+  if (!key) { say("Open this page from the address `hands phone` prints.", true); return; }
+  talk.disabled = true;
+  say("Connecting…");
+  const stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
+  const audio = new AudioContext();
+  await audio.audioWorklet.addModule(URL.createObjectURL(new Blob([TAP], {type: "text/javascript"})));
+  const tap = new AudioWorkletNode(audio, "tap");
+  const mute = audio.createGain();
+  mute.gain.value = 0;
+  // Connected through to the output, silent, so the browser keeps pulling the microphone through the tap.
+  audio.createMediaStreamSource(stream).connect(tap).connect(mute).connect(audio.destination);
+
+  const pc = new RTCPeerConnection();
+  pc.addTransceiver("audio", {direction: "recvonly"});
+  pc.ontrack = (event) => { out.srcObject = new MediaStream([event.track]); out.play(); };
+  const channel = pc.createDataChannel("talk", {ordered: true});
+  channel.binaryType = "arraybuffer";
+  // Twenty milliseconds of the microphone a message.
+  const per = Math.round(audio.sampleRate / 50);
+  let pending = [], count = 0, marked = null;
+  tap.port.onmessage = ({data}) => {
+    if (data === "mark") { flush(); marked(); return; }
+    pending.push(data); count += data.length;
+    if (count >= per) flush();
+  };
+  function flush() {
+    if (count && channel.readyState === "open") channel.send(pcm(pending));
+    pending = []; count = 0;
+  }
+  // Each press and release goes out after the one before it has: a press made while a release still waits on its mark
+  // is sent after that release, so hands hears them in the order the button made them, and one mark is out at a time.
+  let sent = Promise.resolve();
+  call = {pc, channel, audio, stream, ended: false,
+    press() { sent = sent.then(() => channel.send("press")); },
+    // The release waits for the mark to come back through the tap: everything said before it has been sent first.
+    release() { sent = sent.then(() => new Promise((done) => { marked = () => { channel.send("release"); done(); }; tap.port.postMessage("mark"); })); },
+  };
+  channel.onopen = () => { talk.disabled = false; talk.textContent = "Hold to talk"; say("Connected. Hold the button and speak."); };
+  channel.onclose = () => hungUp("hands hung up.");
+  pc.onconnectionstatechange = () => { if (pc.connectionState === "failed") hungUp("The connection to hands failed."); };
+
+  await pc.setLocalDescription(await pc.createOffer());
+  // Every candidate is gathered before the offer goes: hands answers once, with all of its own.
+  await new Promise((done) => {
+    if (pc.iceGatheringState === "complete") return done();
+    pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && done());
+  });
+  const answered = await fetch("offer", {
+    method: "POST",
+    headers: {"Authorization": `Bearer ${key}`, "Content-Type": "application/json"},
+    body: JSON.stringify({sdp: pc.localDescription.sdp, type: "offer", rate: audio.sampleRate}),
+  });
+  if (!answered.ok) throw new Error(await answered.text());
+  await pc.setRemoteDescription(await answered.json());
+}
+
+function hungUp(why) {
+  if (!call || call.ended) return;
+  call.ended = true;
+  call.stream.getTracks().forEach((t) => t.stop());
+  call.audio.close();
+  call.pc.close();
+  call = null; held = false;
+  talk.classList.remove("held");
+  talk.disabled = false;
+  talk.textContent = "Connect";
+  say(why, true);
+}
+
+async function down(event) {
+  event.preventDefault();
+  if (!call) {
+    connect().catch((error) => { hungUp(""); talk.disabled = false; say(`Could not connect: ${error.message}`, true); });
+    return;
+  }
+  if (call.channel.readyState !== "open" || held) return;
+  talk.setPointerCapture(event.pointerId);
+  held = true;
+  talk.classList.add("held");
+  call.press();
+}
+
+function up() {
+  if (!held) return;
+  held = false;
+  talk.classList.remove("held");
+  call.release();
+}
+
+talk.addEventListener("pointerdown", down);
+talk.addEventListener("pointerup", up);
+talk.addEventListener("pointercancel", up);
+talk.addEventListener("contextmenu", (event) => event.preventDefault());
+// A page put away mid-hold lets go of the button; one closed hangs up.
+document.addEventListener("visibilitychange", () => { if (document.hidden) up(); });
+addEventListener("pagehide", () => { if (call) { call.channel.close(); call.pc.close(); } });
+</script>
+</body>
+</html>
