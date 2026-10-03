@@ -111,6 +111,8 @@ async def _run(*command: str) -> str | Untailed:
         out, err = await asyncio.wait_for(process.communicate(), TAILSCALE_TIMEOUT_SECONDS)
     except TimeoutError:
         process.kill()
+        # Reaped, so a renewal that times out every day leaves no process and no pipes behind.
+        await process.wait()
         return Untailed(f"{' '.join(command[1:3])} took over {TAILSCALE_TIMEOUT_SECONDS:.0f}s")
     if process.returncode != 0:
         return Untailed(f"{' '.join(command[1:3])} failed ({process.returncode}): {err.decode().strip()}")

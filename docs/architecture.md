@@ -1609,7 +1609,10 @@ lets go of any older one not yet up, and replaces the call that is up once it
 connects. The other place cannot touch a turn that is not its own: a Shift typed at
 the desk while the user talks on the phone arms nothing. A turn opened at one place
 while a hold is open at the other drops both, as a key pressed while the talk key is
-held drops the turn, and the gate cues and tells the moves as it took them.
+held drops the turn, and the gate cues and tells the moves as it took them. Only a
+turn opening moves hands, never a press still arming, which may be Shift: so a hold
+at the place hands is not at keeps none of the words said before it opened a turn,
+and typing at the desk never takes a call's replies off the phone.
 
 The call (`hands.voice.phone`) is one WebRTC connection made with aiortc directly.
 hands' speech goes to the phone on an audio track. The phone's microphone does not:
