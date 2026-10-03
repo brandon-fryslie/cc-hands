@@ -262,6 +262,18 @@ class Transcribed:
 
 
 @dataclass(frozen=True)
+class Primed:
+    """The words Whisper was primed with for one hold, oldest first, and how long reading them took. `focus` is the
+    session whose repository was read, None where no running session is focused; `failed` says why the focus or its
+    repository gave no words where either could not be read."""
+
+    focus: SessionId | None
+    words: tuple[str, ...]
+    failed: str | None
+    seconds: float
+
+
+@dataclass(frozen=True)
 class Replied:
     """What the intermediary said in one turn."""
 
@@ -580,6 +592,7 @@ Entry = (
     | BrainSpoke
     | BrainExited
     | Transcribed
+    | Primed
     | Replied
     | CutOff
     | Called
@@ -634,8 +647,8 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case Refocused(outcome=outcome):
             return "error" if outcome == "failed" else "info"
-        case SettingsEdited(refused=refused):
-            return "info" if refused is None else "error"
+        case Primed(failed=failed) | SettingsEdited(refused=failed):
+            return "info" if failed is None else "error"
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
             | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | CopiesLost()

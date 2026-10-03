@@ -38,6 +38,10 @@ def no_whisper_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
 
 
+async def unprimed() -> None:
+    """Whisper's prompt where no test is about its vocabulary: none, so it transcribes unprimed."""
+
+
 def _dead_pid() -> int:
     process = subprocess.Popen(["true"])
     process.wait()
