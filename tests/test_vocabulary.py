@@ -154,10 +154,11 @@ async def test_whisper_transcribes_each_hold_primed_with_the_vocabulary_as_it_is
 
 
 async def test_what_a_primed_whisper_makes_of_silence_is_not_said(monkeypatch: pytest.MonkeyPatch) -> None:
-    # What large-v3-turbo returned, primed, for a second of silence and for "show me the diff for auth middleware".
+    # What large-v3-turbo returned, primed, for one and three seconds of silence and for "okay" said quietly under noise.
     silence = {"text": " .", "no_speech_prob": 0.0, "compression_ratio": 0.11, "avg_logprob": -1.4}
-    speech = {"text": " show me the diff for authMiddleware", "no_speech_prob": 0.0, "compression_ratio": 0.81, "avg_logprob": -0.23}
-    held = iter([[silence], [speech]])
+    longer = {"text": " The End", "no_speech_prob": 0.0, "compression_ratio": 0.47, "avg_logprob": -2.11}
+    speech = {"text": " Okay", "no_speech_prob": 0.0, "compression_ratio": 0.33, "avg_logprob": -0.95}
+    held = iter([[silence], [longer], [speech]])
 
     def transcribe(_audio: object, **options: object) -> dict[str, object]:
         # The load is unprimed and hears nothing.
@@ -170,7 +171,7 @@ async def test_what_a_primed_whisper_makes_of_silence_is_not_said(monkeypatch: p
 
     whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=prompt)
     said: list[str] = []
-    for hold in (1, 2):
+    for hold in (1, 2, 3):
         whisper._transcribing.append(hold)  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
         said += [frame.text async for frame in whisper.run_stt(b"\x00\x00" * 160) if isinstance(frame, TranscriptionFrame)]
-    assert said == ["show me the diff for authMiddleware"]
+    assert said == ["Okay"]

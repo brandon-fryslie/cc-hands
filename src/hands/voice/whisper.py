@@ -33,10 +33,12 @@ _SILENCE = np.zeros(16_000, dtype=np.float32)
 # The compression ratio Pipecat drops a segment for, as a hallucination.
 _HALLUCINATED = 0.5555555555555556
 
-# Whisper's logprob_threshold: a segment decoded with a lower average log probability is a failed decoding. Primed, the
-# silence of a hold with nothing said comes back as "." or "The End" at -1.1 to -2.7, which no other filter drops;
-# twenty sentences said by `say`, primed and not, all came back above -0.8 (2026-10-03).
-_GUESSED = -1.0
+# The average log probability below which a segment is Whisper guessing. Primed, the silence of a hold with nothing said
+# comes back as "." (no word, dropped for that) or as "The End" and "and" at -2.1 and -2.7, which no other filter drops.
+# Fourteen short commands said by `say`, clean and quiet under noise, primed and not, came back no lower than -0.97
+# where heard right and -1.38 where misheard; Whisper's own logprob_threshold, -1.0, would drop "okay" said
+# quietly (2026-10-03).
+_GUESSED = -1.5
 
 
 class Whisper(WhisperSTTServiceMLX):
@@ -159,8 +161,8 @@ class Whisper(WhisperSTTServiceMLX):
 
         Pipecat's own run_stt takes no prompt, so this is its transcription with one, its filters kept: a segment
         that is likely no speech is dropped, and so is one with the compression ratio Pipecat found Whisper's
-        hallucinations to have. A segment Whisper decoded below its logprob_threshold is dropped too: that is what a
-        primed Whisper makes of silence.
+        hallucinations to have. A segment with no word in it, or one Whisper only guessed at, is dropped too: that is
+        what a primed Whisper makes of silence.
         """
         prompt = await self._prompt()
         await self.start_processing_metrics()
@@ -169,11 +171,13 @@ class Whisper(WhisperSTTServiceMLX):
         threshold = assert_given(self._settings.no_speech_prob)
         heard: list[str] = []
         for segment in segments:
-            if segment["no_speech_prob"] < threshold and segment["compression_ratio"] != _HALLUCINATED and segment["avg_logprob"] >= _GUESSED:
-                heard.append(segment["text"].strip())
+            text: str = segment["text"].strip()
+            worded = any(character.isalnum() for character in text)
+            if worded and segment["no_speech_prob"] < threshold and segment["compression_ratio"] != _HALLUCINATED and segment["avg_logprob"] >= _GUESSED:
+                heard.append(text)
             else:
                 logger.info(
-                    f"Whisper dropped {segment['text'].strip()!r} as not said: no_speech_prob {segment['no_speech_prob']:.2f},"
+                    f"Whisper dropped {text!r} as not said: no_speech_prob {segment['no_speech_prob']:.2f},"
                     f" compression_ratio {segment['compression_ratio']:.2f}, avg_logprob {segment['avg_logprob']:.2f}"
                 )
         return " ".join(heard).strip() or None

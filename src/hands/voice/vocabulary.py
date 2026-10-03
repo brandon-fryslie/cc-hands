@@ -127,7 +127,7 @@ async def _git(cwd: Path, environment: Mapping[str, str], deadline: float, *args
         # git says why it failed in the C locale's words, which are the ones read below.
         ran = await run("git", "--no-optional-locks", "-C", str(cwd), *args, timeout=max(left, 0.0), env={**environment, "LC_ALL": "C"})
     except TimeoutError:
-        raise GitFailed(f"git {args[0]} in {cwd} did not answer in {READING:.1f}s") from None
+        raise GitFailed(f"git {args[0]} in {cwd} was still running when reading the vocabulary had spent its {READING:.1f}s") from None
     except OSError as error:
         raise GitFailed(f"cannot run git in {cwd}: {error}") from None
     said = ran.err.decode(errors="replace").strip()
