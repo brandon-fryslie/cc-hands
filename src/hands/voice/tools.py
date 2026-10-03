@@ -235,7 +235,7 @@ def defaulting_to_focus(tool: Tool, home: Home) -> Tool:
     line = tool.properties["session"]
 
     async def call(session: object = "", **arguments: object) -> Result:
-        if session not in ("", None):
+        if not _unnamed(session):
             return await tool.body(session=session, **arguments)
         match await asyncio.to_thread(focused, home):
             case None:
@@ -275,7 +275,7 @@ def focus_session_tool(sessions: Sessions, home: Home) -> Tool:
             session: The session's id, from list_sessions. Empty to focus none, when the user says to stop working in one.
         """
         try:
-            to = None if session == "" else _session_id(session)
+            to = None if _unnamed(session) else _session_id(session)
             # [LAW:parse-dont-validate] only a session the registry holds can be focused.
             if to is not None and sessions.live_session(to) is None:
                 raise Rejected(f"no running session has the id {to!r}; take one from list_sessions")
@@ -1032,6 +1032,11 @@ def _request_id(request: object) -> RequestId:
             return RequestId(request)
         case other:
             raise Rejected(f"request should be the request id string, got {other!r}")
+
+
+def _unnamed(session: object) -> bool:
+    """Whether the model named no session: empty, or null, which some models send for an argument left empty."""
+    return session in ("", None)
 
 
 def _session_id(session: object) -> SessionId:
