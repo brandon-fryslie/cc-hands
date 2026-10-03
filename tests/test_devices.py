@@ -16,9 +16,12 @@ class Follower:
         self.defaults = DefaultDevices(input=1, output=1)
         self.opened_on = self.defaults
         self.changes = asyncio.Event()
+        self.looked = asyncio.Event()
         self.opened = list(opened)
         self.reopens = 0
         self.said: list[SystemFact] = []
+        self.spoke = asyncio.Event()
+        self.reopening = asyncio.Event()
         self.release = asyncio.Event()
         self.release.set()
 
@@ -26,10 +29,13 @@ class Follower:
         self.reopens += 1
         # The transport reads the defaults as PortAudio lists them, which is before it has finished reopening.
         self.opened_on = self.defaults
+        self.reopening.set()
         await self.release.wait()
         return self.opened.pop(0)
 
     async def current(self) -> DefaultDevices:
+        # Nothing here yields, so once the follower has looked, it is waiting on the changes or already reopening.
+        self.looked.set()
         return self.defaults
 
     def follow(self) -> "asyncio.Task[None]":
@@ -37,18 +43,26 @@ class Follower:
 
     async def say(self, fact: SystemFact) -> None:
         self.said.append(fact)
+        self.spoke.set()
+
+    async def saying(self, count: int) -> None:
+        """Return once the follower has said `count` things, however slowly the loop runs."""
+        async with asyncio.timeout(5):
+            while len(self.said) < count:
+                self.spoke.clear()
+                await self.spoke.wait()
 
 
 async def test_a_change_of_defaults_reopens_the_transport_and_says_where_the_audio_went() -> None:
     follower = Follower(BUILT_IN)
     following = follower.follow()
-    await asyncio.sleep(0.01)
+    await follower.looked.wait()
     # An unplugged headset changes the default input and output together, as two notices, one after the reopen began.
     follower.defaults = DefaultDevices(input=2, output=2)
     follower.changes.set()
-    await asyncio.sleep(0)
+    await follower.reopening.wait()
     follower.changes.set()
-    await asyncio.sleep(0.01)
+    await follower.saying(1)
     following.cancel()
     assert follower.reopens == 1
     assert follower.said == [AudioMoved(BUILT_IN)]
@@ -58,14 +72,14 @@ async def test_a_change_that_comes_while_the_transport_reopens_is_followed_too()
     follower = Follower(HEADSET, BUILT_IN)
     follower.release.clear()
     following = follower.follow()
-    await asyncio.sleep(0.01)
+    await follower.looked.wait()
     follower.defaults = DefaultDevices(input=2, output=2)  # plugged in
     follower.changes.set()
-    await asyncio.sleep(0.01)
+    await follower.reopening.wait()
     follower.defaults = DefaultDevices(input=1, output=1)  # and pulled out again before the first reopen finished
     follower.changes.set()
     follower.release.set()
-    await asyncio.sleep(0.01)
+    await follower.saying(2)
     following.cancel()
     assert follower.said == [AudioMoved(HEADSET), AudioMoved(BUILT_IN)]
 
@@ -88,7 +102,7 @@ async def test_a_headset_unplugged_before_the_pipeline_started_is_followed_once_
     follower = Follower(BUILT_IN)
     follower.defaults = DefaultDevices(input=2, output=2)  # moved while the models loaded, after PortAudio listed the old ones
     following = follower.follow()
-    await asyncio.sleep(0.01)
+    await follower.saying(1)
     following.cancel()
     assert follower.said == [AudioMoved(BUILT_IN)]
 
@@ -97,10 +111,10 @@ async def test_a_follower_stopped_during_a_reopen_waits_for_it_to_finish() -> No
     follower = Follower(BUILT_IN)
     follower.release.clear()
     following = follower.follow()
-    await asyncio.sleep(0.01)
+    await follower.looked.wait()
     follower.defaults = DefaultDevices(input=2, output=2)
     follower.changes.set()
-    await asyncio.sleep(0.01)
+    await follower.reopening.wait()
     following.cancel()
     await asyncio.sleep(0.01)
     assert not following.done()  # the reopen holds the streams, so the stop waits for it
