@@ -4,9 +4,12 @@ side questions hands asks of a Claude Code of their own."""
 import asyncio
 import json
 import os
+import pickle
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -451,17 +454,20 @@ async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_n
 
 async def test_a_hands_that_dies_without_stopping_its_brain_leaves_neither_fritter_nor_claude_running(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     # hands killed outright: no stop, no cleanup, only the kernel's hangup of the terminal it held.
-    hands = subprocess.run([sys.executable, "-c", f"""
-import asyncio, os
-from pathlib import PosixPath
-from hands.brain.process import Launch, Station, _child_of, start
+    # Its temp dir is the test's, so what a dead hands leaves there - the brain's socket dir - goes with the test.
+    temp = Path(tempfile.mkdtemp(dir="/tmp"))  # short: the sockets in it are held to the unix socket path limit
+    hands = await asyncio.create_subprocess_exec(sys.executable, "-c", """
+import asyncio, os, pickle, sys
+from hands.brain.process import _child_of, start
 async def main():
-    brain = await start({launch(tmp_path, fritter)!r}, lambda _entry: None)
+    brain = await start(pickle.load(sys.stdin.buffer), lambda _entry: None)
     print(brain.pid, _child_of(brain.pid), flush=True)
     os._exit(0)
 asyncio.run(main())
-"""], capture_output=True, text=True, timeout=30, check=True)
-    pids = [int(pid) for pid in hands.stdout.split()]
+""", stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
+    out, err = await asyncio.wait_for(hands.communicate(pickle.dumps(launch(tmp_path, fritter))), 30)
+    assert hands.returncode == 0, err.decode()
+    pids = [int(pid) for pid in out.split()]
     assert len(pids) == 2
 
     def alive(pid: int) -> bool:
@@ -476,6 +482,7 @@ asyncio.run(main())
     finally:
         for pid in filter(alive, pids):
             os.kill(pid, signal.SIGKILL)
+        shutil.rmtree(temp)
 
 
 async def test_a_brain_with_no_fritter_to_run_under_is_refused_naming_the_install(tmp_path: Path, fake_claude: Path) -> None:
