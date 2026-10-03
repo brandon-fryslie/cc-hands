@@ -10,7 +10,7 @@ asked at all.
 """
 
 import json
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Awaitable, Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -22,6 +22,7 @@ from loguru import logger
 from multidict import CIMultiDict
 
 from hands.core.wire import (
+    Answered,
     Answering,
     Body,
     Change,
@@ -43,6 +44,9 @@ from hands.sessions.replies import reply_reader, sent_of, shielded, spent
 
 # Headers that describe one hop's connection rather than the request or reply, so each hop sets its own.
 HOP_BY_HOP = frozenset({"connection", "content-length", "host", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"})
+
+# What the proxy answers a request it refuses on the API's behalf: one it could not reach, or one held final.
+REFUSED = 502
 
 Observe = Callable[[Observed], None]
 Router = Callable[[Sent], Route]
@@ -129,45 +133,65 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
 
         sent_at = clock()
 
-        def exchanged(changes: tuple[Change, ...], reply: Reached | Unreached | Held) -> Exchanged:
-            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply)
+        def exchanged(changes: tuple[Change, ...], reply: Reached | Unreached | Held, final: bool) -> Exchanged:
+            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply, final)
 
         match routed:
             case Hold(said=said):
                 content_type, answer = _held(parsed, said)
-                tell(exchanged((), Held(said, clock())))
+                tell(exchanged((), Held(said, clock()), False))
                 return web.Response(status=200, body=answer, headers={"Content-Type": content_type})
-            case Send(changes=changes):
+            case Send(changes=changes, refusal=refusal):
                 onward, changes = _edited(exchange, body, parsed, changes)
 
         try:
             reached = await client.request(request.method, upstream + request.path_qs, headers=_end_to_end(request.headers), data=onward)
         except (aiohttp.ClientError, OSError) as error:
-            tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock())))
-            return web.Response(status=502, text=f"hands' proxy could not reach {upstream}: {error}")
+            # A client asks again after the proxy's 502 unless told the refusal is final.
+            final = refusal == "final"
+            tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock()), final))
+            return web.Response(status=REFUSED, text=f"hands' proxy could not reach {upstream}: {error}", headers=_told(final))
         async with reached:
             tell(Answering(exchange, reached.status, spent(reached.status, reached.headers)))
-            response = web.StreamResponse(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers))
-            if "Content-Length" in reached.headers:
-                response.content_length = int(reached.headers["Content-Length"])
             reader = reply_reader(kind, reached.headers, lambda event: tell(Heard(exchange, event)))
             first: Seconds | None = None
             ended: Seconds | None = None
             size = 0
+            final = False
             # What a reply is recorded as when its handler is cancelled mid-way: the client hung up, or hands is stopping.
             reply: Body = Garbled("the proxy stopped reading the reply: its client hung up or hands stopped")
-            try:
-                await response.prepare(request)
+
+            async def read(relay: Callable[[bytes], Awaitable[None]]) -> None:
+                nonlocal first, ended, size, reply
                 async for chunk in reached.content.iter_any():
                     first = clock() if first is None else first
                     size += len(chunk)
                     # [LAW:no-ambient-temporal-coupling] read before it is written on: whatever the client does once it
                     # has these bytes, its result line on stdout included, comes after hands has heard them.
                     reader.feed(chunk)
-                    await response.write(chunk)
+                    await relay(chunk)
                 ended = clock()
                 reply = reader.finish()
-                await response.write_eof()
+
+            try:
+                if reached.status < 400:
+                    response = _relayed(reached)
+                    await response.prepare(request)
+                    await read(response.write)
+                    await response.write_eof()
+                else:
+                    # A refusal is read whole before it is answered: whether it is held final turns on what it says.
+                    # Held final, it reaches the client as the proxy's own, which Claude Code ends on, since it asks
+                    # again after an overload whatever the header says (2.1.286); whoever speaks the turn's failure
+                    # reads it off the wire.
+                    parts: list[bytes] = []
+
+                    async def keep(chunk: bytes) -> None:
+                        parts.append(chunk)
+
+                    await read(keep)
+                    final = refusal == "final" and _asked_again(reached.status, reached.headers, reply)
+                    response = _refused(reached) if final else web.Response(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers), body=b"".join(parts))
             except (aiohttp.ClientError, OSError) as error:
                 # Upstream dropped the reply, or the client hung up on it: either way the rest is not coming, and the
                 # client's connection ends as the upstream one did.
@@ -175,7 +199,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                 raise
             finally:
                 last = clock() if ended is None else ended
-                tell(exchanged(changes, Reached(reached.status, last if first is None else first, last, size, reply)))
+                tell(exchanged(changes, Reached(reached.status, last if first is None else first, last, size, reply), final))
         return response
 
     app = web.Application()
@@ -229,6 +253,43 @@ def _held(body: object, said: str) -> tuple[str, bytes]:
         ("message_stop", {"type": "message_stop"}),
     ]
     return "text/event-stream", b"".join(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode() for name, data in events)
+
+
+def _asked_again(status: int, headers: Mapping[str, str], reply: Body) -> bool:
+    """Whether Claude Code asks again after this answer (`lMo`, 2.1.286)."""
+    told = headers.get("x-should-retry")
+    match status, told, reply:
+        case (int() as answered, _, _) if answered < 400:
+            return False
+        # Asking again after a 401 is how the client refreshes its login, and that stays its own.
+        case (401, _, _):
+            return False
+        # Overloaded: asked again whatever the header says.
+        case (529, _, _) | (_, _, Answered(body={"error": {"type": "overloaded_error"}})):
+            return True
+        case (_, "true" | "false", _):
+            return told == "true"
+        case _:
+            return status in (408, 409, 429) or status >= 500
+
+
+def _told(final: bool) -> dict[str, str]:
+    """The header that tells the client a refusal is final, the SDK's own, read ahead of the status."""
+    return {"x-should-retry": "false"} if final else {}
+
+
+def _relayed(reached: aiohttp.ClientResponse) -> web.StreamResponse:
+    """The API's reply as it came, to be streamed on byte for byte."""
+    response = web.StreamResponse(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers))
+    if "Content-Length" in reached.headers:
+        response.content_length = int(reached.headers["Content-Length"])
+    return response
+
+
+def _refused(reached: aiohttp.ClientResponse) -> web.Response:
+    """The proxy's own refusal, told final, in place of the API's, saying what the API answered."""
+    said = f"hands' proxy: the API answered {reached.status} {reached.reason} (request-id {reached.headers.get('request-id')}), and hands holds that final"
+    return web.Response(status=REFUSED, text=said, headers=_told(True))
 
 
 def _end_to_end(headers: Mapping[str, str]) -> CIMultiDict[str]:

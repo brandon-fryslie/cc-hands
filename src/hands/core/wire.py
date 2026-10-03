@@ -10,7 +10,7 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import cast
+from typing import Literal, cast
 
 from hands.core.session import PromptId, SessionId
 
@@ -705,6 +705,9 @@ class Send:
     """The request goes to the API with these changes made to it, and as it came when there are none."""
 
     changes: tuple[Change, ...] = ()
+    # What the client makes of the API refusing it: asks again on its own schedule, or, told the refusal is final, ends
+    # there, so the refusal is heard the moment it comes.
+    refusal: Literal["retried", "final"] = "retried"
 
 
 @dataclass(frozen=True)
@@ -892,6 +895,8 @@ class Exchanged:
     requested_at: Seconds
     sent_at: Seconds
     reply: Reached | Unreached | Held | Uncopied
+    # The client was answered the proxy's own refusal, told final (x-should-retry: false), in place of the API's answer.
+    final: bool
 
 
 Observed = Sent | Heard | Answering | Exchanged

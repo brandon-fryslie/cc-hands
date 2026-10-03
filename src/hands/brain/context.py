@@ -9,6 +9,7 @@ brain's and its compaction too, so each of them shares the main turn's cached pr
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import Protocol
 
 from loguru import logger
@@ -171,8 +172,9 @@ class Kept:
         # The keeper's first: a history it cannot read fails the whole route before the stage has counted the request.
         kept = self._keeper.changes(sent)
         match self._stage.route(sent):
-            case Send(changes=changes):
-                return Send((*kept, *changes))
+            # [LAW:one-source-of-truth] the stage's Send as it routed it, every field carried, with the keeper's changes first.
+            case Send() as send:
+                return replace(send, changes=(*kept, *send.changes))
             case Hold() as held:
                 return held
 

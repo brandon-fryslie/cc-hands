@@ -271,7 +271,9 @@ class BrainStage(FrameProcessor):
         if not (turn.interrupted or any(name in self._silences for name, _ in answers)):
             turn.exchanges.append(sent.exchange)
             turn.opening, turn.calls, turn.failure = {}, {}, _UNNAMED
-            return Send((Tail(self._tail()),))
+            # Refused once is the turn's failure, said at once as the API variants say theirs, who ask once: asked
+            # again, Claude Code would keep the user waiting minutes on its retries before the turn failed.
+            return Send((Tail(self._tail()),), refusal="final")
         turn.readbacks.extend(_said(answer) for name, answer in answers if name in self._completes)
         return Hold(INTERRUPTED if turn.interrupted else SILENT)
 
@@ -295,7 +297,8 @@ class BrainStage(FrameProcessor):
                 turn.calls[call] = name
             # [LAW:one-source-of-truth] why a turn failed is the wire's, as the API variants read it off their own calls: the
             # head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
-            # told before its 502. Claude Code asks again after most failures (ten times, 2.1.285): the latest request's is the turn's.
+            # told before its 502. Its own main turns are held final, so Claude Code asks once; a 401 it asks again after
+            # refreshing its login: the latest request's is the turn's.
             case Answering(exchange=exchange, status=status, limit=limit) if exchange in turn.exchanges:
                 turn.failure = limit or ModelFailed(classify_http_status_code(status))
             case Exchanged(exchange=exchange, reply=Unreached()) if exchange in turn.exchanges:

@@ -7,6 +7,7 @@ import json
 from datetime import UTC, datetime
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Literal
 
 import aiohttp
 import brotli
@@ -273,6 +274,72 @@ async def test_an_api_that_cannot_be_reached_is_a_502_and_an_unreached_exchange(
     assert isinstance(exchange.reply, Unreached) and exchange.reply.failed_at == 7.0
 
 
+OVERLOADED = b'{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'
+FAILED = b'{"type":"error","error":{"type":"api_error","message":"Internal server error"}}'
+
+
+@pytest.mark.parametrize(
+    ("refusal", "status", "retry", "said", "final"),
+    [
+        # Asked again by its status.
+        ("final", 500, None, FAILED, True),
+        ("final", 429, None, FAILED, True),
+        ("final", 408, None, FAILED, True),
+        ("final", 409, None, FAILED, True),
+        # An overload Claude Code asks again after whatever the header says.
+        ("final", 529, None, OVERLOADED, True),
+        ("final", 529, "false", OVERLOADED, True),
+        ("final", 503, "false", OVERLOADED, True),
+        # Asked again because the API said so, or not because it said not.
+        ("final", 400, "true", FAILED, True),
+        ("final", 503, "false", FAILED, False),
+        # Not asked again anyway; asking again after a 401 is how the client refreshes its login, and that stays its own.
+        ("final", 400, None, FAILED, False),
+        ("final", 401, None, FAILED, False),
+        ("final", 401, "true", FAILED, False),
+        ("final", 200, "true", b"{}", False),
+        ("retried", 529, None, OVERLOADED, False),
+    ],
+)
+async def test_a_refusal_routed_final_is_the_proxys_own_502_the_client_does_not_ask_again_after(
+    serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], refusal: Literal["retried", "final"], status: int, retry: str | None, said: bytes, final: bool
+) -> None:
+    async def answered(_request: web.Request) -> web.Response:
+        told = {} if retry is None else {"X-Should-Retry": retry}
+        return web.Response(status=status, body=said, headers={"Content-Type": "application/json", "request-id": "req_9", **told})
+
+    _, wire = await serve(answered)
+    wire.route = lambda _sent: Send(refusal=refusal)
+    got, headers, body = await post(wire.proxy.url)
+    told = {name.lower(): value for name, value in headers.items()}.get("x-should-retry")
+    if final:
+        # Nothing of the API's answer that Claude Code would ask again after reaches it; what it was, and its id, do.
+        assert (got, told, b"overloaded_error" in body, f"{status}".encode() in body, b"req_9" in body) == (502, "false", False, True, True)
+    else:
+        assert (got, told, body) == (status, retry, said)
+    # The record is the API's answer, whatever the client was told.
+    exchange = only_exchange(wire)
+    assert isinstance(exchange.reply, Reached) and (exchange.reply.status, exchange.reply.reply_bytes, exchange.final) == (status, len(said), final)
+
+
+@pytest.mark.parametrize(("refusal", "final"), [("final", True), ("retried", False)])
+async def test_an_api_that_cannot_be_reached_is_final_when_routed_so(refusal: Literal["retried", "final"], final: bool) -> None:
+    seen: list[Observed] = []
+    probe = web.AppRunner(web.Application())
+    await probe.setup()
+    await web.TCPSite(probe, "127.0.0.1", 0).start()
+    dead = f"http://127.0.0.1:{probe.addresses[0][1]}"
+    await probe.cleanup()
+    proxy = await serve_proxy(dead, seen.append, lambda _sent: Send(refusal=refusal), clock=lambda: 7.0)
+    try:
+        status, headers, _ = await post(proxy.url)
+    finally:
+        await proxy.close()
+    assert (status, headers.get("x-should-retry")) == (502, "false" if final else None)
+    [exchange] = [observed for observed in seen if isinstance(observed, Exchanged)]
+    assert isinstance(exchange.reply, Unreached) and exchange.final is final
+
+
 async def test_a_client_that_hangs_up_mid_stream_ends_the_upstream_reply_and_is_recorded(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream_ended = asyncio.Event()
 
@@ -388,12 +455,14 @@ async def test_a_spent_usage_limit_is_heard_from_the_answers_head_before_the_cli
         return response
 
     _, wire = await serve(refused)
-    async with aiohttp.ClientSession() as client:
-        async with client.post(wire.proxy.url + "/v1/messages", data=REQUEST, headers=HEADERS) as response:
-            [answering] = [seen for seen in wire.seen if isinstance(seen, Answering)]
-            assert (answering.status, answering.limit) == (429, UsageLimitReached(RESETS))
-            rest.set()
-            assert (response.status, await response.read()) == (429, refusal)
+    asked = asyncio.create_task(post(wire.proxy.url))
+    while not any(isinstance(seen, Answering) for seen in wire.seen):
+        await asyncio.sleep(0.01)
+    [answering] = [seen for seen in wire.seen if isinstance(seen, Answering)]
+    assert (answering.status, answering.limit, asked.done()) == (429, UsageLimitReached(RESETS), False)
+    rest.set()
+    status, _, body = await asked
+    assert (status, body) == (429, refusal)
     assert answering.exchange == only_exchange(wire).exchange
 
 
@@ -482,7 +551,7 @@ async def test_a_route_that_raises_is_logged_and_the_request_goes_on_as_it_came(
 def test_the_daemon_keeps_one_audit_line_per_exchange_and_nothing_per_event() -> None:
     lines: list[Entry] = []
     observe = wire_to(lines.append)
-    exchange = Exchanged("e1", None, MainTurn(None), "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0))
+    exchange = Exchanged("e1", None, MainTurn(None), "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0), False)
     observe(Sent("e1", None, MainTurn(None), None))
     observe(Heard("e1", TextDelta(0, "hi")))
     observe(exchange)
