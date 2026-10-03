@@ -19,7 +19,7 @@ would be a flag is a variant with a real alternative, or it does not exist.
 
 import asyncio
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -81,13 +81,13 @@ def load(home: Home) -> tuple[Config, Path | None]:
     return _settings(home, held), None if held is None else home.config
 
 
-async def edited(home: Home, record: Record, period: float = EDIT_SECONDS) -> SettingsEdited:
+async def edited(home: Home, record: Record, reachable: Callable[[Config], object], period: float = EDIT_SECONDS) -> SettingsEdited:
     """The edit, once the file holds settings other than it held when this began: written, rewritten, or removed.
 
     [LAW:no-ambient-temporal-coupling] begun before the run reads the file, so an edit is never missed: one that lands
     between the two starts a run already on it again, which is the same run once more. An edit is weighed once its
     bytes read the same on two polls, so a save an editor writes in two steps is weighed whole. One that does not
-    parse is said and outlived, and the run keeps the settings it has; the next edit is weighed as any other, and one
+    parse, or names a model `reachable` (blocking, so run off the loop) refuses, is said and outlived, and the run keeps the settings it has; the next edit is weighed as any other, and one
     back to the file the run is on is no edit.
     """
     on = seen = weighed = _held(home)
@@ -101,7 +101,7 @@ async def edited(home: Home, record: Record, period: float = EDIT_SECONDS) -> Se
             continue
         weighed = now
         try:
-            _settings(home, now)
+            await asyncio.to_thread(reachable, _settings(home, now))
         except Rejected as error:
             record(SettingsEdited(path=str(home.config), refused=str(error)))
             continue

@@ -70,8 +70,8 @@ mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts �
 ```
 
 hands' settings are `~/.hands/config.toml`; with no file, every setting is its default. Save an
-edit while hands runs and it restarts on it, keeping its sessions; an edit it cannot read is said
-in `hands log`, and hands runs on as it was:
+edit while hands runs and it restarts on it, keeping its sessions; an edit it cannot read, or one
+naming a backend whose key or login it lacks, is said in `hands log`, and hands runs on as it was:
 
 ```toml
 [llm]

@@ -8,13 +8,14 @@ import threading
 import time
 from collections.abc import Callable, Coroutine, Sequence
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 
 from loguru import logger
 
 from hands.daemon import readiness
-from hands.daemon.config import edited
+from hands.daemon.config import Config, edited
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, Ended, Ending, again, start
 from hands.sessions import audit, heartbeat, wrapper
 from hands.sessions.home import Home, default_home
@@ -102,7 +103,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             shown = start_indicator(home) if kept is None else kept
             threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
             audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
-            match asyncio.run(launch(lambda: loaded(home, heart, audit_log, after_crash, granted), heart, lambda: edited(home, audit_log.record), audit_log.record)):
+            match asyncio.run(launch(lambda: loaded(home, heart, audit_log, after_crash, granted), heart, lambda: edited(home, audit_log.record, partial(reachable, home)), audit_log.record)):
                 case "quit":
                     return 0
                 case "restart":
@@ -194,6 +195,15 @@ async def launch(
         for signal_number in STOP_SIGNALS:
             loop.remove_signal_handler(signal_number)
     return ending
+
+
+def reachable(home: Home, settings: Config) -> None:
+    """Raises Rejected where a start on `settings` could not reach its model: the start's own check, made before the
+    restart an edit asks for, so an edit naming a key or a login hands lacks is refused and outlived, not restarted on."""
+    # Imported here, as in loaded: an edit is weighed off the loop, after the import the start makes.
+    from hands.daemon.run import backend
+
+    backend(settings.llm, home, os.environ)
 
 
 def loaded(home: Home, heart: heartbeat.Heart, audit_log: audit.AuditLog, after_crash: bool, granted: bool) -> Run:

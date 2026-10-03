@@ -5,11 +5,12 @@ import os
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 
 import pytest
 
-from hands.daemon import config, run
+from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, Anthropic, Claude, Config, OpenAI
 from hands.daemon.starting import start
 from hands.daemon.run import backend
@@ -70,6 +71,13 @@ def test_a_refused_file_stops_the_start_naming_itself(tmp_path: Path) -> None:
         run.configured_from(home, {"ANTHROPIC_API_KEY": "k"})
 
 
+def test_a_backend_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[llm]\nbackend = "openai"\n')
+    with pytest.raises(SystemExit, match="hands: OPENAI_API_KEY is not set"):
+        run.configured_from(home, {})
+
+
 def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
     # The variables settings used to be: one still exported would run hands on the default backend, silently.
     home = Home(tmp_path)
@@ -84,7 +92,7 @@ def test_anthropic_on_its_own_url_spelled_with_a_slash_is_its_own_api() -> None:
 def test_anthropic_on_its_own_api_is_keyed_by_the_environment_else_the_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
     kept: dict[str, str] = {}
     monkeypatch.setattr(run, "keychain_password", kept.get)
-    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set and the keychain holds no HANDS_LLM_ANT_KEY"):
+    with pytest.raises(Rejected, match="ANTHROPIC_API_KEY is not set and the keychain holds no HANDS_LLM_ANT_KEY"):
         backend(Anthropic(), HOME, {})
     kept["HANDS_LLM_ANT_KEY"] = "from-keychain"
     assert backend(Anthropic(), HOME, {}) == AnthropicBackend(base_url=ANTHROPIC_URL, api_key="from-keychain", model=ANTHROPIC_MODEL)
@@ -94,7 +102,7 @@ def test_anthropic_on_its_own_api_is_keyed_by_the_environment_else_the_keychain(
 def test_the_keychain_key_never_leaves_for_another_server(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(run, "keychain_password", {"HANDS_LLM_ANT_KEY": "anthropic-own"}.get)
     other = Anthropic(url="https://api-chicago.codexapi.pro", model="claude-other")
-    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set"):
+    with pytest.raises(Rejected, match="ANTHROPIC_API_KEY is not set"):
         backend(other, HOME, {})
     assert backend(other, HOME, {"ANTHROPIC_API_KEY": "k"}) == AnthropicBackend(base_url="https://api-chicago.codexapi.pro", api_key="k", model="claude-other")
 
@@ -102,7 +110,7 @@ def test_the_keychain_key_never_leaves_for_another_server(monkeypatch: pytest.Mo
 def test_openai_needs_its_key() -> None:
     # Unset, or an empty line in a .env, or only space, is no key.
     for environment in ({}, {"OPENAI_API_KEY": ""}, {"OPENAI_API_KEY": "   "}):
-        with pytest.raises(SystemExit, match="OPENAI_API_KEY is not set"):
+        with pytest.raises(Rejected, match="OPENAI_API_KEY is not set"):
             backend(OpenAI(), HOME, environment)
     # Space around a key in a .env line is not part of the key.
     assert backend(OpenAI(), HOME, {"OPENAI_API_KEY": " k "}) == OpenAICompatibleBackend(base_url=OPENAI_URL, api_key="k", model=OPENAI_MODEL)
@@ -122,10 +130,10 @@ def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fa
 def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_switches(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     home.brain.mkdir(parents=True)
-    with pytest.raises(SystemExit, match="settings could not be read"):
+    with pytest.raises(Rejected, match="settings could not be read"):
         backend(Claude(), home, os.environ)
     (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}')
-    with pytest.raises(SystemExit, match='its account\'s syncClaudeAiSkills: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'):
+    with pytest.raises(Rejected, match='its account\'s syncClaudeAiSkills: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'):
         backend(Claude(), home, os.environ)
 
 
@@ -137,7 +145,7 @@ def test_the_brain_is_logged_as_reaching_anthropics_api_through_the_proxy_on_its
 
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
-    with pytest.raises(SystemExit, match="cd /Users/someone/.hands/brain/cwd && CLAUDE_CONFIG_DIR=/Users/someone/.hands/brain claude"):
+    with pytest.raises(Rejected, match="cd /Users/someone/.hands/brain/cwd && CLAUDE_CONFIG_DIR=/Users/someone/.hands/brain claude"):
         backend(Claude(), HOME, os.environ)
 
 
@@ -235,9 +243,13 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
         run.configured_from(home, keyed)
 
 
+def _reachable(_settings: Config) -> None:
+    pass
+
+
 async def _edited_within(home: Home, recorded: list[Entry], seconds: float = 0.5) -> SettingsEdited | None:
     try:
-        return await asyncio.wait_for(config.edited(home, recorded.append, period=0.01), seconds)
+        return await asyncio.wait_for(config.edited(home, recorded.append, _reachable, period=0.01), seconds)
     except TimeoutError:
         return None
 
@@ -331,8 +343,24 @@ async def test_a_save_written_in_two_steps_is_weighed_once_whole(tmp_path: Path,
 
     monkeypatch.setattr(config, "_held", held)
     recorded: list[Entry] = []
-    assert await config.edited(home, recorded.append, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert await config.edited(home, recorded.append, _reachable, period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
+
+
+async def test_an_edit_naming_a_model_hands_cannot_reach_is_said_and_outlived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    recorded: list[Entry] = []
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(cli.reachable, home), period=0.01), 2.0))
+    await asyncio.sleep(0.05)
+    home.config.write_text('[llm]\nbackend = "openai"\n')
+    while not recorded:
+        await asyncio.sleep(0.01)
+    assert not watching.done()
+    assert recorded == [SettingsEdited(path=str(home.config), refused="OPENAI_API_KEY is not set; the [llm] backend hands is set to run on needs it to reach its model.")]
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    home.config.write_text('[llm]\nbackend = "openai"\nmodel = "gpt-other"\n')
+    assert await watching == SettingsEdited(path=str(home.config), refused=None)
 
 
 def test_the_default_whisper_model_is_pipecats_large_v3_turbo() -> None:
