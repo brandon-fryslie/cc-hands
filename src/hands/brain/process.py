@@ -323,14 +323,13 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
         process = await asyncio.create_subprocess_exec(
-            *argv,
+            *_holding_terminal(os.ttyname(slave), argv),
             cwd=station.cwd,
             env={**environment(station.config_dir, station.proxy_url, os.environ), "TERM": "xterm-256color"},
             stdin=slave,
             stdout=slave,
             stderr=slave,
             start_new_session=True,
-            preexec_fn=_hold_terminal,
         )
     except BaseException:
         os.close(master)
@@ -340,11 +339,15 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
     return ClaudeCode(process, _Terminal(master))
 
 
-def _hold_terminal() -> None:
-    """In the child, in the session of its own it was just given: its terminal becomes the session's, so hands' end,
-    however it comes, hangs it up and ends what runs on it, as closing a window does. Without it, a hands that dies
-    without stopping it leaves it running for good."""
-    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:
+    """argv, run so that its terminal is its session's controlling terminal: hands' end, however it comes, hangs the
+    terminal up and ends what runs on it, as closing a window does. Without it, a hands that dies without stopping it
+    leaves it running for good.
+
+    A session leader with no controlling terminal takes the first terminal it opens, so the shell opens it and execs
+    argv in its place, keeping its pid. [LAW:no-ambient-temporal-coupling] no Python runs between fork and exec, where
+    a lock another of hands' threads held at the fork would hang the child, and hands with it."""
+    return ["/bin/sh", "-c", ': <>"$0"; exec "$@"', terminal, *argv]
 
 
 @dataclass

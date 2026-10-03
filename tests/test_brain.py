@@ -456,6 +456,15 @@ async def test_a_hands_that_dies_without_stopping_its_brain_leaves_neither_fritt
     # hands killed outright: no stop, no cleanup, only the kernel's hangup of the terminal it held.
     # Its temp dir is the test's, so what a dead hands leaves there - the brain's socket dir - goes with the test.
     temp = Path(tempfile.mkdtemp(dir="/tmp"))  # short: the sockets in it are held to the unix socket path limit
+    pids: list[int] = []
+
+    def alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
     hands = await asyncio.create_subprocess_exec(sys.executable, "-c", """
 import asyncio, os, pickle, sys
 from hands.brain.process import _child_of, start
@@ -465,21 +474,18 @@ async def main():
     os._exit(0)
 asyncio.run(main())
 """, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
-    out, err = await asyncio.wait_for(hands.communicate(pickle.dumps(launch(tmp_path, fritter))), 30)
-    assert hands.returncode == 0, err.decode()
-    pids = [int(pid) for pid in out.split()]
-    assert len(pids) == 2
-
-    def alive(pid: int) -> bool:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        return True
-
     try:
+        out, err = await asyncio.wait_for(hands.communicate(pickle.dumps(launch(tmp_path, fritter))), 30)
+        assert hands.returncode == 0, err.decode()
+        pids = [int(pid) for pid in out.split()]
+        assert len(pids) == 2
+
         await until(lambda: not any(map(alive, pids)))
     finally:
+        # Whatever failed, nothing it started outlives the test: killing a hands that hangs is itself its brain's hangup.
+        if hands.returncode is None:
+            hands.kill()
+            await hands.wait()
         for pid in filter(alive, pids):
             os.kill(pid, signal.SIGKILL)
         shutil.rmtree(temp)
