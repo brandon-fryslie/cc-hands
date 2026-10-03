@@ -55,7 +55,12 @@ def heard(text: str, *resolutions: Resolution) -> str:
         ("rename user_id to userId", "rename user underscore id to user Id"),
         ("run with --force", "run with dash dash force"),
         ("revert a1b2c3d", "revert a 1 b 2 c 3 d"),
-        ("(see notes.md)", "(see notes dot md)"),
+        ("(see notes.md)", "open paren see notes dot md close paren"),
+        ("call foo.bar() then cd ..", "call foo dot bar open paren close paren then cd dot dot"),
+        ("fix `src/auth.py`", "fix backtick src slash auth dot py backtick"),
+        ("fix it\n```\nsrc/a.py\n```", "fix it\nbacktick backtick backtick\nsrc slash a dot py\nbacktick backtick backtick"),
+        ("rm *.py; echo $HOME/x", "rm star dot py; echo dollar HOME slash x"),
+        ("open C:\\x\\y.py and a|b", "open C colon backslash x backslash y dot py and a pipe b"),
         ("fix the login flow", "fix the login flow"),
     ],
 )
@@ -92,6 +97,7 @@ def test_an_amended_path_is_heard_whole() -> None:
         "src/auth.py", "user_id", "HTTP2Handler", "~/code/cc-hands", "a+b@c:d", "tokenHelper", "a1b2c3d4",
         "Xyzabcdefghijklmnop12", "build/a1b2c3d.js", "session sessionBase64encoder.ts", "--max-count=5",
         "0f8fad5b-d9cb-469f-a165-70867728950e", "request abcDEF123456xyz", "https://x.com/a.py", "foo.d.ts",
+        "```", "a|b", "foo.bar()", "`src/auth.py`", "| a | b |", "**bold**", "<https://x.com>", "[a](b.md)",
     ],
 )
 def test_the_speaker_filter_leaves_a_spelled_token_as_written(token: str) -> None:

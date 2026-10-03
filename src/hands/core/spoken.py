@@ -146,17 +146,23 @@ def spoken_ref(ref: str) -> str:
     return " ".join(ref.translate(_REF_SEPARATORS).split())
 
 
-# Every mark a path, a flag or a code name is typed with, by the name a developer reads it out by.
+# Every mark a word can be typed with, by the name a developer reads it out by. All of them but the apostrophe,
+# which a contraction carries and every voice says: a mark left off this table is one `spoken` drops or the
+# voice guesses at, and the listener confirms a draft they never heard [LAW:one-source-of-truth].
 _MARKS = {
-    "/": "slash", ".": "dot", "_": "underscore", "-": "dash", "~": "tilde", "@": "at", ":": "colon", "+": "plus",
-    "#": "hash", "=": "equals",
+    "/": "slash", "\\": "backslash", ".": "dot", "_": "underscore", "-": "dash", "~": "tilde", "@": "at",
+    ":": "colon", "+": "plus", "#": "hash", "=": "equals", "|": "pipe", "$": "dollar", "*": "star",
+    "&": "ampersand", "%": "percent", "^": "caret", "<": "less than", ">": "greater than", "`": "backtick",
+    "(": "open paren", ")": "close paren", "[": "open bracket", "]": "close bracket", "{": "open brace",
+    "}": "close brace", ",": "comma", ";": "semicolon", "!": "bang", "?": "question mark", '"': "quote",
 }
 _MARK = re.compile("|".join(re.escape(mark) for mark in _MARKS))
 _HUMP = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _JUNCTION = re.compile(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])")
-# A word's own punctuation is the sentence's, not the word's: "fix src/auth.py." ends a sentence, and
-# "(see notes.md)" is an aside. Peeled off so that only what will be typed as the token is spelled.
-_TOKEN = re.compile(r"""(?P<open>["'(\[]*)(?P<core>\S*?)(?P<close>["')\].,;:!?]*)(?=\s|$)""")
+# The full stop, comma or quote around a word belongs to the sentence, not the word: "fix src/auth.py." ends a
+# sentence. A word made of nothing else is its own: `cd ..` is typed with both dots, so it is spelled whole.
+_STOPS = "\"'.,;:!?"
+_TOKEN = re.compile(rf"(?P<open>[\"']*)(?P<core>\S*?[^\s{_STOPS}]|\S+)(?P<close>[{_STOPS}]*)(?=\s|$)")
 
 
 def spelled(text: str) -> str:
