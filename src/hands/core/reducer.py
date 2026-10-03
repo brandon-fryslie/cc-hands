@@ -578,8 +578,12 @@ def _expiry(on: Blocker) -> tuple[Dialog | None, HookReply]:
 def _gathered(turn: Turn, event: Progressed | Displayed) -> Turn:
     """The turn with the calls it made and the text it wrote gathered, until they settle; either of a turn since over
     moves nothing, since that turn's result is told instead. Text is displayed for seconds after its turn's Stop (2.1.280)."""
-    match turn:
-        case Opened(gathering=gathering) if not ids(turn).isdisjoint(event.turn):
+    match turn, event:
+        case Opened(gathering=None), Displayed(text=text) if not text.strip():
+            # Blank lines alone are nothing said, so they begin no burst: one would be told as the session's name and
+            # nothing after it. Within a burst they part its paragraphs.
+            return turn
+        case Opened(gathering=gathering), _ if not ids(turn).isdisjoint(event.turn):
             began = Gathering((), "", event.at, event.at) if gathering is None else gathering
             match event:
                 case Progressed(doings=doings):

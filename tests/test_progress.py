@@ -327,6 +327,17 @@ def test_text_is_gathered_with_the_calls_and_told_with_them_once_both_settle() -
     assert turn_of(told) == Opened(TURN, latest=TESTS)
 
 
+def test_blank_lines_alone_begin_no_burst_but_part_the_paragraphs_of_one() -> None:
+    # A burst of nothing would be told as the session's name and nothing after it.
+    idle = running(Opened(TURN))
+    assert reduce(idle, Displayed(SID, (TURN,), "\n", at=10.0)) == (idle, [])
+    registry, _ = reduce(idle, Displayed(SID, (TURN,), "First.\n", at=10.0))
+    registry, _ = reduce(registry, Displayed(SID, (TURN,), "\n", at=10.5))
+    registry, _ = reduce(registry, Displayed(SID, (TURN,), "Then.\n", at=11.0))
+    _, effects = reduce(registry, Tick(11.0 + SETTLE))
+    assert effects == [Progress(SID, frozenset({TURN}), (), "First.\n\nThen.\n")]
+
+
 def test_an_explanation_still_being_written_is_told_at_its_longest_wait() -> None:
     registry = running(Opened(TURN))
     for at in range(0, int(LONGEST) * 4):
