@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from hands.daemon import run
+from hands.daemon.starting import start
 from hands.daemon.run import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, backend_from_env
 from hands.sessions import heartbeat
 from hands.sessions.audit import Entry, LLMChosen, encoded
@@ -183,7 +184,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         return config
 
     recorded: list[Entry] = []
-    starting = asyncio.create_task(run.start(lambda: run.configured(prompted, lambda: None, home, sessions, recorded.append), heart, sessions, asyncio.Event()))
+    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda: None, home, sessions, recorded.append), heart, sessions.live_count, asyncio.Event()))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -208,7 +209,7 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
 
     quit_event = asyncio.Event()
     quit_event.set()
-    assert await run.start(lambda: run.configured(prompted, lambda: None, home, sessions, lambda _event: None), heart, sessions, quit_event) is None
+    assert await start(lambda: run.configured(prompted, lambda: None, home, sessions, lambda _event: None), heart, sessions.live_count, quit_event) is None
     never.set()
 
 
@@ -220,7 +221,7 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
         raise SystemExit("no key")
 
     with pytest.raises(SystemExit, match="no key"):
-        asyncio.run(run.start(lambda: run.configured(refused, lambda: None, home, sessions, lambda _event: None), heart, sessions, asyncio.Event()))
+        asyncio.run(start(lambda: run.configured(refused, lambda: None, home, sessions, lambda _event: None), heart, sessions.live_count, asyncio.Event()))
 
 
 def test_the_default_voice_is_charles_from_the_package_catalogue(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -19,7 +19,6 @@ Latency from key release to the first audio out is logged for every turn.
 import asyncio
 import atexit
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -82,6 +81,7 @@ from hands.voice.briefing import brief, tail
 from hands.voice.conversation import record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
+from hands.daemon.starting import keep_beating, start
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
 from hands.voice.tools import Tool, audited, intermediary_tools, standing
 from hands.brain.mcp import serve_mcp
@@ -284,11 +284,7 @@ async def outlived(brain: Brain) -> None:
     raise RuntimeError(f"the brain exited ({code}) while hands was running")
 
 
-# The signals that stop a run as the q key does: closing its terminal is how a run in a terminal is most often ended.
-QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-
-
-async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, after_crash: bool) -> None:
+async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, quit_event: asyncio.Event, after_crash: bool) -> None:
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
     # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
     failures = logger.add(failures_to(audit.record), level="ERROR", filter="hands")
@@ -310,21 +306,15 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
 
     tap = await serve_tap(home.wire, tapped, audit.record, clock=time.time)
     audit.record(TapListening(path=home.wire))
-    quit_event = asyncio.Event()
-    # [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the q key, and a failed
-    # background task all set this one event, and it is installed before the start, so a stop is heard in every phase of the run.
-    loop = asyncio.get_running_loop()
-    for signal_number in QUIT_SIGNALS:
-        loop.add_signal_handler(signal_number, quit_event.set)
     voice: Voice | None = None
     store = SummaryStore(Sentences(home.sentences))
     tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store, Overlays(home))]
     try:
-        config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions, quit_event)
+        config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
             async with mind(config, tools, sessions, proxy.url, wire, store, home.fritter, audit.record) as minded:
-                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, audit.record), "the voice load"), heart, sessions, quit_event)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, audit.record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences, names)
@@ -333,9 +323,6 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
         await hooks.cleanup()
         await proxy.close()
         tap.close()
-        # From here a signal has its default effect again: nothing is left to stop gracefully.
-        for signal_number in QUIT_SIGNALS:
-            loop.remove_signal_handler(signal_number)
         logger.remove(failures)
     # Written only by a stop: a crash leaves the last heartbeat naming a pid that is gone, which reads as down.
     heart.beat("stopped", None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count(), False)
@@ -351,28 +338,6 @@ async def configured(configure: Callable[[], VoiceConfig], survey: Callable[[], 
     record(LLMChosen(backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model, account=_account(config.llm)))
     return config
 
-
-async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: heartbeat.Heart, sessions: Sessions, quit_event: asyncio.Event) -> T | None:
-    """What `prepare` makes, while the loop beats "starting"; None when told to stop first.
-
-    [LAW:single-enforcer] one beater says "starting" for each step of the start. Its slow steps run off the loop: saying
-    what hands is missing asks `claude`, reading the configuration can wait on the user at a keychain prompt, and loading
-    the models takes seconds. A start that waits reads as starting, and only a stuck loop as not responding.
-    """
-    preparing = asyncio.create_task(prepare())
-    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, sessions.live_count(), False), heart.period.total_seconds()))
-    quitting = asyncio.create_task(quit_event.wait())
-    try:
-        await asyncio.wait({preparing, starting, quitting}, return_when=asyncio.FIRST_COMPLETED)
-    finally:
-        # A stop does not wait for the models or the keychain: their threads are daemons, which the process exits without.
-        for task in (preparing, starting, quitting):
-            if not task.done():
-                task.cancel()
-    if starting.done() and not starting.cancelled():
-        # [LAW:no-silent-failure] the heartbeat only ends by raising, and its error stops the run as the steady one does.
-        starting.result()
-    return preparing.result() if preparing.done() and not preparing.cancelled() else None
 
 async def converse(
     voice: Voice,
@@ -509,13 +474,6 @@ class PipelineWatch:
         async def started(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
             self.state = "running"
             self.started.set()
-
-
-async def keep_beating(beat: Callable[[], None], period: float) -> None:
-    """Write the heartbeat now and once a period after, until cancelled."""
-    while True:
-        beat()
-        await asyncio.sleep(period)
 
 
 def _wall(instant: float | None) -> datetime | None:

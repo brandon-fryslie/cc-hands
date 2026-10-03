@@ -3,9 +3,11 @@
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+import threading
+from collections.abc import Callable, Coroutine, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -13,8 +15,8 @@ import pytest
 
 from hands.daemon import indicator
 from hands.sessions import heartbeat
-from hands.daemon.cli import beating_while_importing, main
-from hands.daemon.run import keep_beating
+from hands.daemon.cli import launch, main
+from hands.daemon.starting import keep_beating
 from hands.threads import off_loop
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -65,41 +67,47 @@ def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -
     assert second.written_at >= first.written_at
 
 
-def test_a_start_still_importing_beats_starting_once_a_period_while_modules_keep_loading_and_stops_with_the_import(
-    tmp_path: Path,
-) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT)
-    package = tmp_path / "slowly"
-    package.mkdir()
-    (package / "__init__.py").write_text("")
-    for name in ("first", "second", "third"):
-        (package / f"{name}.py").write_text("")
-    sys.path.insert(0, str(tmp_path))
-    now = [100.0]
-    beats: list[heartbeat.Status] = []
+async def test_a_start_still_importing_pipecat_beats_starting_until_the_run_it_loads_begins(tmp_path: Path) -> None:
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    imported = threading.Event()
+    ran: list[asyncio.Event] = []
 
-    def imported(module: str, seconds: float) -> None:
-        now[0] += seconds
-        __import__(module)
-        if (status := heartbeat.read(heart.path)) is not None and status not in beats:
-            beats.append(status)
+    async def run(quit_event: asyncio.Event) -> None:
+        ran.append(quit_event)
 
-    try:
-        with beating_while_importing(heart, lambda: now[0]):
-            imported("slowly", 0.5)  # inside the period: the beat before the import still stands
-            imported("slowly.first", 1.5)  # a period after the context opened
-            imported("slowly.second", 1.0)  # half a period after that one
-            imported("slowly.third", 1.0)  # a period after it
-        assert [(status.pid, status.pipeline) for status in beats] == [(4242, "starting"), (4242, "starting")]
-        # The finder is gone with the import: nothing loaded later beats as starting.
-        imported_after = len(beats)
-        (package / "fourth.py").write_text("")
-        imported("slowly.fourth", 60.0)
-        assert len(beats) == imported_after
-    finally:
-        sys.path.remove(str(tmp_path))
-        for module in [name for name in sys.modules if name == "slowly" or name.startswith("slowly.")]:
-            del sys.modules[module]
+    def load() -> Callable[[asyncio.Event], Coroutine[object, object, None]]:
+        imported.wait()
+        return run
+
+    launched = asyncio.create_task(launch(load, heart))
+    # The import finishes only once the start has said "starting" three times while it waited.
+    beats: set[datetime] = set()
+    while len(beats) < 3:
+        status = heartbeat.read(heart.path)
+        if status is not None and status.pipeline == "starting":
+            beats.add(status.written_at)
+        await asyncio.sleep(0.005)
+    imported.set()
+    await launched
+    assert len(ran) == 1 and not ran[0].is_set()
+
+
+async def test_a_stop_during_the_pipecat_import_ends_the_run_as_stopped(tmp_path: Path) -> None:
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    never = threading.Event()
+
+    def load() -> Callable[[asyncio.Event], Coroutine[object, object, None]]:
+        never.wait()
+        raise AssertionError("the import never finished")
+
+    launched = asyncio.create_task(launch(load, heart))
+    while heartbeat.read(heart.path) is None:
+        await asyncio.sleep(0.005)
+    os.kill(os.getpid(), signal.SIGTERM)
+    await launched
+    status = heartbeat.read(heart.path)
+    assert status is not None and status.pipeline == "stopped"
+    never.set()
 
 
 def test_no_file_is_a_daemon_that_never_ran(tmp_path: Path) -> None:

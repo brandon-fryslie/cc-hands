@@ -7,20 +7,18 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Generator, Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass
+from collections.abc import Callable, Coroutine, Sequence
 from datetime import UTC, datetime
-from importlib.machinery import ModuleSpec
 from pathlib import Path
-from types import ModuleType
 
 from loguru import logger
 
 from hands.daemon import readiness
+from hands.daemon.starting import QUIT_SIGNALS, start
 from hands.sessions import audit, heartbeat, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.payload import Rejected
+from hands.threads import off_loop
 
 # The lowest level each module's lines reach the terminal at, by loguru's module prefix: "" is every module not named.
 TERMINAL_LEVELS: dict[str | None, str | int | bool] = {"": "WARNING", "hands": "INFO"}  # loguru's FilterDict
@@ -70,12 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # models load, seconds of silence in which the file would otherwise still name the process that died.
             heart.beat("starting", None, 0, False)
             start_indicator(home)
-            # Imported here, after that heartbeat, and so that `hands status` answers without loading Pipecat.
-            with beating_while_importing(heart, time.monotonic):
-                from hands.daemon.run import config_from_env, run
-
-            path = os.environ.get("PATH", "")
-            asyncio.run(run(lambda: config_from_env(home), lambda: survey(readiness.check(home, path, granted)), home, heart, after_crash))
+            asyncio.run(launch(lambda: loaded(home, heart, after_crash, granted), heart))
             return 0
         case "status":
             return report(home)
@@ -102,36 +95,40 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
 
-@dataclass
-class ImportBeat:
-    """A finder that finds nothing: each import that begins says "starting" again, at most once a heartbeat period."""
-
-    heart: heartbeat.Heart
-    clock: Callable[[], float]
-    last: float
-
-    def find_spec(self, fullname: str, path: Sequence[str] | None, target: ModuleType | None = None, /) -> ModuleSpec | None:
-        now = self.clock()
-        if now - self.last >= self.heart.period.total_seconds():
-            # Set before the beat, so an import the write itself begins finds the beat already out.
-            self.last = now
-            self.heart.beat("starting", None, 0, False)
-        return None
+# hands' run, given the event that stops it.
+type Run = Callable[[asyncio.Event], Coroutine[object, object, None]]
 
 
-@contextmanager
-def beating_while_importing(heart: heartbeat.Heart, clock: Callable[[], float]) -> Generator[None]:
-    """Beat "starting" while the body imports, for as long as each module it loads leads on to the next.
+async def launch(load: Callable[[], Run], heart: heartbeat.Heart) -> None:
+    """The run `load` makes, with that load, which imports Pipecat, as the first step of its start.
 
-    Pipecat's import takes seconds before any loop exists to beat from. [LAW:no-silent-failure] the beat follows the
-    import's progress, not a timer: an import that stops getting anywhere stops the beats, and reads as not responding.
+    [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the q key, and a failed
+    background task all set this one event, and it is installed before the import, so a stop is heard in every phase.
     """
-    finder = ImportBeat(heart, clock, clock())
-    sys.meta_path.insert(0, finder)
+    quit_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signal_number in QUIT_SIGNALS:
+        loop.add_signal_handler(signal_number, quit_event.set)
     try:
-        yield
+        # No session has joined before the hooks are served, which is after the import.
+        run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, quit_event)
+        if run is None:
+            heart.beat("stopped", None, 0, False)
+        else:
+            await run(quit_event)
     finally:
-        sys.meta_path.remove(finder)
+        # From here a signal has its default effect again: nothing is left to stop gracefully.
+        for signal_number in QUIT_SIGNALS:
+            loop.remove_signal_handler(signal_number)
+
+
+def loaded(home: Home, heart: heartbeat.Heart, after_crash: bool, granted: bool) -> Run:
+    """hands' run, once the seconds it takes to import Pipecat have passed."""
+    # Imported here, so that `hands status` answers without loading Pipecat.
+    from hands.daemon.run import config_from_env, run
+
+    path = os.environ.get("PATH", "")
+    return lambda quit_event: run(lambda: config_from_env(home), lambda: survey(readiness.check(home, path, granted)), home, heart, quit_event, after_crash)
 
 
 def start_indicator(home: Home) -> None:
