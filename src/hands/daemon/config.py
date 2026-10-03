@@ -106,18 +106,18 @@ async def edited(home: Home, record: Record, reachable: Callable[[Config], objec
             continue
         if now == weighed:
             continue
-        weighed = now
         try:
             settings = _settings(home, now)
-            if settings == running:
+            if settings != running:
+                # reachable blocks, on a keychain prompt or a login check, on a thread a stop does not wait for.
+                await off_loop(partial(reachable, settings), "weighing a settings edit")
+                if _held(home) == now:
+                    return SettingsEdited(path=str(home.config), refused=None)
+                # Saved over while weighed: no verdict, so these bytes are weighed again should they come back.
                 continue
-            # reachable blocks, on a keychain prompt or a login check, on a thread a stop does not wait for.
-            await off_loop(partial(reachable, settings), "weighing a settings edit")
         except Rejected as error:
             record(SettingsEdited(path=str(home.config), refused=str(error)))
-            continue
-        if _held(home) == now:
-            return SettingsEdited(path=str(home.config), refused=None)
+        weighed = now
 
 
 @dataclass(frozen=True)

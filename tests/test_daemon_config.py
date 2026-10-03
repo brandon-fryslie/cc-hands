@@ -391,6 +391,21 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
     assert [type(entry) for entry in recorded] == [SettingsEdited] and "'claud'" in str(recorded[0])
 
 
+async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    edit, other = b'[llm]\nbackend = "claude"\n', b'[llm]\nbackend = "openai"\n'
+    # Seen, settled, saved over as its backend is checked, and back before the next poll.
+    reads = iter([None, edit, edit, other, edit, edit])
+
+    def held(_home: Home) -> bytes | None:
+        return next(reads)
+
+    monkeypatch.setattr(config, "_held", held)
+    recorded: list[Entry] = []
+    assert await config.edited(home, recorded.append, _reachable, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert recorded == []
+
+
 def test_the_default_whisper_model_is_pipecats_large_v3_turbo() -> None:
     from pipecat.services.whisper.stt import MLXModel
 
