@@ -83,6 +83,7 @@ from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
 from hands.daemon.starting import keep_beating, start
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain_instruction
+from hands.voice.player import Player
 from hands.voice.tools import Tool, audited, intermediary_tools, standing
 from hands.brain.mcp import serve_mcp
 from hands.brain.asides import Asides
@@ -310,13 +311,15 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
     store = SummaryStore(Sentences(home.sentences))
     # [LAW:one-source-of-truth] one holder of each session's last turn: the narrator fills it, tell_turn reads it.
     recounts = Recounts()
-    tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store, home, recounts)]
+    # [LAW:one-source-of-truth] one holder of where playback is: the pipeline's taps move it, the playback tools read it.
+    player = Player(audit.record)
+    tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store, home, recounts, player)]
     try:
         config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
             async with mind(config, tools, sessions, proxy.url, wire, store, home.fritter, home.audit, audit.record) as minded:
-                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, audit.record), "the voice load"), heart, sessions.live_count, quit_event)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, player, audit.record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, heart, quit_event, after_crash, audit.record, deltas, minded, store, sentences, names, recounts)

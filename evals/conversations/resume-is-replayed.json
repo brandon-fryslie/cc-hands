@@ -1,0 +1,39 @@
+{
+  "about": "Asked to go back to what was cut off, it resumes rather than retelling from memory.",
+  "sessions": [
+    {
+      "id": "5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34",
+      "name": "cc-hands, auth refactor",
+      "state": "idle",
+      "mode": "manual mode"
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": "What did the auth refactor do?"
+    },
+    {
+      "role": "assistant",
+      "content": "The auth refactor moved token refresh into the session middleware, and its tests pass. It also"
+    },
+    {
+      "role": "user",
+      "content": "Hang on, is the docs session still running?"
+    },
+    {
+      "role": "assistant",
+      "content": "No, only the auth refactor is running."
+    },
+    {
+      "role": "user",
+      "content": "OK, go back to what you were talking about."
+    }
+  ],
+  "expect": {
+    "call": {
+      "name": "resume",
+      "args": {}
+    }
+  }
+}

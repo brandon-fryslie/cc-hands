@@ -23,6 +23,7 @@ from pipecat.tests.utils import run_test
 from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_transcript
+from hands.voice.player import Player
 from hands.voice.spoken import FenceAggregator, SpokenForm
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
@@ -350,12 +351,14 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         ),
         tools=[],
         llm=FrameProcessor(),
+        player=(player := Player(lambda _: None)),
         record=lambda _: None,
     )
     filters = given["text_filters"]
     assert isinstance(filters, list) and [type(one) for one in cast(list[object], filters)] == [SpokenForm]
-    # And the model's reply reaches the filter in pieces a fenced block is never split across.
-    assert isinstance(voice.llm.next, Pieces) and voice.llm.next.next is voice.tts
+    # And the model's reply reaches the filter in pieces a fenced block is never split across, past only where the
+    # player's lines enter, which lets it through.
+    assert isinstance(voice.llm.next, Pieces) and voice.llm.next.next is player.lines and player.lines.next is voice.tts
     assert isinstance(pieced["text_aggregator"], FenceAggregator)
 
 

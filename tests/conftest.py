@@ -6,7 +6,7 @@ import shutil
 import stat
 import subprocess
 import sys
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +15,7 @@ import mlx_whisper
 import pytest
 from aiohttp import web
 from pipecat.frames.frames import ErrorFrame, Frame
+from pipecat.observers.base_observer import BaseObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
@@ -148,9 +149,9 @@ class Running:
 
 
 @asynccontextmanager
-async def running(processors: list[FrameProcessor]) -> AsyncGenerator[Running]:
-    """Runs the processors as one pipeline from its start until the block ends, then cancels it."""
-    worker = PipelineWorker(Pipeline(processors), idle_timeout_secs=None)
+async def running(processors: list[FrameProcessor], observers: Sequence[BaseObserver] = ()) -> AsyncGenerator[Running]:
+    """Runs the processors as one pipeline, watched by the observers, from its start until the block ends, then cancels it."""
+    worker = PipelineWorker(Pipeline(processors), observers=list(observers), idle_timeout_secs=None)
     started = asyncio.Event()
     errors: list[ErrorFrame] = []
 
