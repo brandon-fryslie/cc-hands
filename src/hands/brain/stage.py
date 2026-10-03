@@ -130,7 +130,6 @@ class BrainStage(FrameProcessor):
         self._tail = tail
         self._record = record
         self._now = clock
-        self._completes = frozenset(wire_name(tool) for tool in tools if tool.completes)
         self._tools = {wire_name(tool): tool for tool in tools}
         # How many of the context's messages the brain has been handed: the rest are new to it.
         self._told = 0
@@ -258,7 +257,7 @@ class BrainStage(FrameProcessor):
         # A tool whose effect must land runs to its end; stopped by the harness, it would land and be written in
         # history as refused. Its turn's next request is held instead, so the model is not asked to go on either way.
         running = tuple(turn.calls.values())
-        turn.stopped = not any(name in self._completes for name in running)
+        turn.stopped = not any(self._completes(name) for name in running)
         self._record(BrainInterrupted(running, turn.stopped))
         return turn.stopped
 
@@ -284,8 +283,13 @@ class BrainStage(FrameProcessor):
             turn.opening, turn.calls, turn.failure = {}, {}, _UNNAMED
             # Refused once is the turn's failure, said at once as the API variants say theirs, who ask once.
             return Send((Tail(self._tail()),), refusal="final")
-        turn.readbacks.extend(said for name, answer in answers if name in self._completes and (said := _owed(answer)) is not None)
+        turn.readbacks.extend(said for name, answer in answers if self._completes(name) and (said := _owed(answer)) is not None)
         return Hold(INTERRUPTED if turn.interrupted else SILENT)
+
+    def _completes(self, name: str) -> bool:
+        """Whether a barge-in lets the call finish, as hands' tools say: a call to a tool not hands' never does."""
+        tool = self._tools.get(name)
+        return tool is not None and tool.completes
 
     def _silent(self, name: str, answer: ToolAnswer) -> bool:
         """Whether the call was the whole reply, as hands' tools say: a call to a tool not hands' never is."""

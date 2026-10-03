@@ -21,7 +21,7 @@ from pipecat.frames.frames import FunctionCallResultProperties, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.drafts import AmendDraft, DiscardDraft, SendDraft, StageDraft
+from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
 from hands.core.progress import Doing, said
@@ -872,6 +872,19 @@ def draft_tools(sessions: Sessions, lines: FrameProcessor) -> list[Tool]:
     `lines` stands ahead of the TTS service: a draft's readback is said through it by hands, as written.
     """
 
+    async def aloud(outcome: DraftOutcome, name: str) -> Result:
+        """A staged or amended draft read back by hands, as written: what the user checks it by is spelled for the ear,
+        and a model asked to say it would say it in its own words. Any other outcome changed nothing, so it is the
+        model's to answer, as a refusal: to retry, as with the session's id, or to say what went wrong."""
+        match outcome:
+            case DraftStaged() | DraftAmended():
+                said = readback(outcome, name)
+                # Kept out of the context: the result the model is handed holds it once.
+                await lines.push_frame(TTSSpeakFrame(said, append_to_context=False))
+                return {"said": said}
+            case _:
+                return {"error": readback(outcome, name)}
+
     async def stage_draft(session: str, text: str, resolutions: list[Resolved]) -> Result:
         """Stage a prompt the user dictated for a session. It is not sent until the user says to send it.
 
@@ -882,7 +895,7 @@ def draft_tools(sessions: Sessions, lines: FrameProcessor) -> list[Tool]:
             text: The prompt.
             resolutions: Each spoken phrase you turned into something exact, such as a file name, with what you made of it. Empty when you resolved nothing.
         """
-        return await _aloud(lines, await _answer("stage_draft", sessions, session, lambda id: StageDraft(id, parse_draft(text, resolutions)), sessions.draft, readback))
+        return await _answer("stage_draft", sessions, session, lambda id: StageDraft(id, parse_draft(text, resolutions)), sessions.draft, aloud)
 
     async def amend_draft(session: str, text: str, resolutions: list[Resolved]) -> Result:
         """Replace a session's staged draft with a corrected one when the user changes it.
@@ -894,7 +907,7 @@ def draft_tools(sessions: Sessions, lines: FrameProcessor) -> list[Tool]:
             text: The whole corrected prompt, not only the changed words.
             resolutions: Every resolution the corrected prompt relies on.
         """
-        return await _aloud(lines, await _answer("amend_draft", sessions, session, lambda id: AmendDraft(id, parse_draft(text, resolutions)), sessions.draft, readback))
+        return await _answer("amend_draft", sessions, session, lambda id: AmendDraft(id, parse_draft(text, resolutions)), sessions.draft, aloud)
 
     async def discard_draft(session: str) -> Result:
         """Throw away a session's staged draft without sending it.
@@ -902,7 +915,7 @@ def draft_tools(sessions: Sessions, lines: FrameProcessor) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        return await _answer("discard_draft", sessions, session, DiscardDraft, sessions.draft, readback)
+        return await _answer("discard_draft", sessions, session, DiscardDraft, sessions.draft, _for_the_model(readback))
 
     async def send_draft(session: str) -> Result:
         """Type a session's staged draft into it and press Return. Call it only once the user has said to send it.
@@ -912,7 +925,7 @@ def draft_tools(sessions: Sessions, lines: FrameProcessor) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        return await _answer("send_draft", sessions, session, SendDraft, sessions.draft, readback)
+        return await _answer("send_draft", sessions, session, SendDraft, sessions.draft, _for_the_model(readback))
 
     # A barge-in must not cancel a draft call part way: the draft would change, or be sent, without its readback heard.
     return [
@@ -923,16 +936,13 @@ def draft_tools(sessions: Sessions, lines: FrameProcessor) -> list[Tool]:
     ]
 
 
-async def _aloud(lines: FrameProcessor, result: Result) -> Result:
-    """The readback said by hands, as written: what the user checks a draft by is spelled for the ear, and a model asked
-    to say it would say it in its own words. A refusal is left for the model to answer."""
-    match result:
-        case {"readback": str() as said}:
-            # Kept out of the context: the result the model is handed holds it once.
-            await lines.push_frame(TTSSpeakFrame(said, append_to_context=False))
-            return {"said": said}
-        case _:
-            return result
+def _for_the_model[O](say: Callable[[O, str], str]) -> Callable[[O, str], Awaitable[Result]]:
+    """An outcome's readback handed to the model, which says it."""
+
+    async def answer(outcome: O, name: str) -> Result:
+        return {"readback": say(outcome, name)}
+
+    return answer
 
 
 async def _answer[R, O](
@@ -941,7 +951,7 @@ async def _answer[R, O](
     session: object,
     request: Callable[[SessionId], R],
     apply: Callable[[R], Awaitable[O]],
-    say: Callable[[O, str], str],
+    say: Callable[[O, str], Awaitable[Result]],
 ) -> Result:
     # [LAW:no-silent-failure] the model hears each failure and says it; the log keeps it.
     try:
@@ -950,7 +960,7 @@ async def _answer[R, O](
     except Rejected as error:
         logger.error(f"{name} refused its arguments: {error}")
         return {"error": str(error)}
-    return {"readback": say(outcome, spoken_name(sessions, id))}
+    return await say(outcome, spoken_name(sessions, id))
 
 
 def keyboard_tools(sessions: Sessions) -> list[Tool]:
@@ -967,7 +977,7 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
             command: The command's name, such as "compact" or "model".
             args: What follows the name, such as "opus" for model. Empty when the user gave nothing.
         """
-        return await _answer("send_command", sessions, session, lambda id: SendCommand(id, parse_command(command, args)), sessions.keyboard, keyboard_readback)
+        return await _answer("send_command", sessions, session, lambda id: SendCommand(id, parse_command(command, args)), sessions.keyboard, _for_the_model(keyboard_readback))
 
     async def interrupt_session(session: str) -> Result:
         """Stop what a session is doing, as pressing Escape at its keyboard does. At a permission dialog that is the dialog's no.
@@ -977,7 +987,7 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        return await _answer("interrupt_session", sessions, session, Interrupt, sessions.keyboard, keyboard_readback)
+        return await _answer("interrupt_session", sessions, session, Interrupt, sessions.keyboard, _for_the_model(keyboard_readback))
 
     # A barge-in must not cancel either part way: it would be typed without its readback heard.
     return [tool(body, completes=True) for body in (send_command, interrupt_session)]

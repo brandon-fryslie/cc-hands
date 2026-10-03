@@ -36,11 +36,7 @@
     {
       "role": "tool",
       "tool_call_id": "call_1",
-      "content": "{\"readback\": \"Draft for cc-hands, auth refactor: Use the new token helper in the login flow.\"}"
-    },
-    {
-      "role": "assistant",
-      "content": "Draft for cc-hands, auth refactor: Use the new token helper in the login flow."
+      "content": "{\"said\": \"Draft for cc-hands, auth refactor: Use the new token helper in the login flow.\"}"
     },
     {
       "role": "user",

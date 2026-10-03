@@ -78,12 +78,15 @@ async def test_a_draft_staged_amended_and_discarded_is_read_back_at_each_step(tm
 
 async def test_an_ended_session_is_told_its_draft_cannot_change_and_the_draft_can_still_be_discarded(tmp_path: Path) -> None:
     sessions, id = await joined(tmp_path)
-    tools = draft_tools(sessions, Lines())
+    lines = Lines()
+    tools = draft_tools(sessions, lines)
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     await sessions.apply(Ended(id, "other"))
+    # Nothing changed, so it is the model's to answer, and hands says nothing of it.
     assert await call(tools, "amend_draft", session=id, text="run the linter", resolutions=[]) == {
-        "said": "cc-hands has ended, so its draft cannot be staged, changed, or sent."
+        "error": "cc-hands has ended, so its draft cannot be staged, changed, or sent."
     }
+    assert len(lines.said) == 1
     assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for cc-hands."}
 
 
@@ -104,6 +107,16 @@ async def test_arguments_that_do_not_parse_are_refused_to_the_model_and_nothing_
     result = await call(draft_tools(sessions, lines), "stage_draft", session=id, text=text, resolutions=resolutions)
     assert error in str(result["error"])
     assert lines.frames == []
+
+
+async def test_a_draft_for_no_session_or_with_none_staged_is_refused_to_the_model_which_can_retry(tmp_path: Path) -> None:
+    sessions, id = await joined(tmp_path)
+    lines = Lines()
+    [stage, amend, *_] = draft_tools(sessions, lines)
+    assert await call([stage], "stage_draft", session="cc-hands", text="run the tests", resolutions=[]) == {"error": "There is no session cc-hands."}
+    assert await call([amend], "amend_draft", session=id, text="run the tests", resolutions=[]) == {"error": "There is no draft for cc-hands."}
+    assert lines.frames == []
+    assert await handled(amend, session=id, text="run the tests", resolutions=[]) is None
 
 
 async def test_the_draft_tools_say_their_arguments_and_complete_through_a_barge_in(tmp_path: Path) -> None:
