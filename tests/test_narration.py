@@ -16,6 +16,7 @@ from hands.core.turn import (
     Questioned,
     Ran,
     Ref,
+    Reported,
     Said,
     Tested,
     Turn,
@@ -135,6 +136,16 @@ def test_a_dialog_escaped_is_still_waiting_and_one_claude_went_on_past_is_not() 
     dialog = Questioned(None, (Question("Merge now?", ("Merge", "Wait"), None),))
     assert [question.text for question in told(dialog, Interruption(None)).questions] == ["It is asking: Merge now? Either Merge or Wait."]
     assert told(dialog, Said(None, "Going with a merge, then."), Said(None, "Merged, and the suites pass.")).questions == ()
+
+
+def test_a_notification_that_arrives_after_a_dialog_or_an_interruption_moves_nothing() -> None:
+    """Claude Code writes a background task's report where it lands, after the dialog the user escaped or the
+    interruption that ended the turn: neither is any less where the turn ended."""
+    dialog = Questioned(None, (Question("Merge now?", ("Merge", "Wait"), None),))
+    report = Reported(None, "<task-notification/>", None)
+    assert [question.text for question in told(dialog, report, Interruption(None)).questions] == ["It is asking: Merge now? Either Merge or Wait."]
+    assert told(Said(None, "On it."), Interruption(Ref("u9")), report).facts() == "You interrupted it."
+    assert told(Said(None, "Want me to run the tests?"), report).asked() == "It said: Want me to run the tests?"
 
 
 def test_a_turn_that_asked_nothing_has_nothing_to_say_of_a_question() -> None:

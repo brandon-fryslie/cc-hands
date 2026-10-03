@@ -191,7 +191,8 @@ class Following:
                 was, self.answering = self.answering, self.asked
                 return None if was is None or self.answering is None or was == self.answering else Continued(session, was, self.answering)
             case _:
-                # A local_command record: Claude Code's own, written under no prompt id, and no answer of Claude's.
+                # A local_command record or a mid-turn notification's attachment: Claude Code's own, written under no
+                # prompt id, and no answer of Claude's.
                 return None
 
     def restart(self) -> None:

@@ -12,13 +12,14 @@ from hands.core.session import Membership, PromptId, SessionId
 from hands.core.steps import Call, Result, recognise
 from hands.core.narration import narration
 from hands.core.subagents import Subagent, reporting
-from hands.core.turn import AgentId, AgentTask, Asked, Continuing, Delegated, Notified, Other, Ran, Ref, Said, Turn
+from hands.core.turn import AgentId, AgentTask, Asked, Continuing, Delegated, Notified, Other, Ran, Ref, Reported, Said, Turn
 from hands.sessions.audit import Entry, Recounted
 from hands.sessions.payload import Payload
 from hands.sessions.registry import Sessions
 from hands.sessions.subagents import read_subagent
 from hands.sessions.tail import Tails
-from hands.sessions.transcript import edge_of
+from hands.sessions.transcript import edge_of, turn_record
+from hands.sessions.turning import Turning
 from hands.voice.narrator import Recounts, recount
 from hands.voice.tools import expand_tool
 
@@ -34,10 +35,35 @@ def _record(fields: dict[str, object]) -> str:
     return json.dumps(fields, separators=(",", ":"))
 
 
+def notification(task: str, summary: str) -> str:
+    """A task notification's own markup, the same wherever Claude Code writes it."""
+    return f"<task-notification>\n<task-id>{task}</task-id>\n<status>completed</status>\n<summary>{summary}</summary>\n<result>One finding.</result>\n</task-notification>"
+
+
 def notified(task: str, summary: str) -> str:
     """A task notification as Claude Code writes it into the parent's transcript, opening a turn of its own."""
-    text = f"<task-notification>\n<task-id>{task}</task-id>\n<status>completed</status>\n<summary>{summary}</summary>\n<result>One finding.</result>\n</task-notification>"
+    text = notification(task, summary)
     return _record({"type": "user", "uuid": "n1", "promptId": "p2", "origin": {"kind": "task-notification", "producer": "session-task"}, "message": {"role": "user", "content": text}})
+
+
+def reported(task: str, summary: str) -> str:
+    """A task notification as Claude Code writes it when the session is still working: an attachment of the turn under way."""
+    attachment = {"type": "queued_command", "prompt": notification(task, summary), "commandMode": "task-notification", "origin": {"kind": "task-notification", "producer": "session-task"}}
+    return _record({"type": "attachment", "uuid": "q1", "parentUuid": "u2", "attachment": attachment})
+
+
+def working(tmp_path: Path, task: str) -> Path:
+    """A session that launches the reviewer in the background and is still working when it reports back."""
+    transcript = tmp_path / "s1.jsonl"
+    records = [
+        _record({"type": "user", "uuid": "u1", "promptId": "p2", "message": {"role": "user", "content": "Review PR 66 while you fix the parser."}}),
+        _record({"type": "assistant", "uuid": "c1", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Agent", "input": {"description": "/code-review medium 66", "prompt": "Review PR 66.", "run_in_background": True}}]}}),
+        _record({"type": "user", "uuid": "u2", "promptId": "p2", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "Async agent launched successfully."}]}}),
+        reported(task, 'Agent "/code-review medium 66" finished'),
+        _record({"type": "assistant", "uuid": "r1", "message": {"content": [{"type": "text", "text": "The review found one issue."}]}}),
+    ]
+    transcript.write_text("".join(f"{record}\n" for record in records))
+    return transcript
 
 
 def parent(tmp_path: Path, task: str, summary: str = 'Agent "/code-review medium 66" finished') -> Path:
@@ -98,6 +124,45 @@ async def test_what_the_reviewer_found_is_answered_from_the_reviewers_own_steps(
     # The telling says whose work it carries, so progress heard of that subagent gives way to it.
     held = recounts.of(SID)
     assert held is not None and held.tellings[-1].reported == frozenset({REVIEWER})
+
+
+async def test_a_reviewer_that_reports_while_its_parent_works_is_told_with_that_turn(tmp_path: Path) -> None:
+    transcript = working(tmp_path, REVIEWER)
+    reviewer(transcript)
+    recorded: list[Entry] = []
+    recounts = await told(transcript, recorded)
+    [work] = await opened(recounts, WORK)
+    assert FOUND in work
+    [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
+    assert recounted.subagents == (REVIEWER,) and WORK in recounted.topics
+    held = recounts.of(SID)
+    assert held is not None and held.tellings[-1].reported == frozenset({REVIEWER})
+    # One subagent, launched and then heard from: counted once, and its report as what arrived, not a second subagent.
+    told_parts = {segment.topic.name: segment.text for segment in held.parts}
+    assert told_parts["the subagents"] == "The subagents: one subagent."
+    assert told_parts["the notifications"] == "The notifications: one notification."
+
+
+def test_a_notification_handed_to_a_working_session_is_a_step_of_its_turn() -> None:
+    """Not an opening, and not a tool: a message queued after it is folded into the same turn, as it was before it."""
+    turning = Turning()
+    queued = _record({"type": "user", "uuid": "u3", "promptId": "p2", "message": {"role": "user", "content": "and the docs"}})
+    records = [
+        _record({"type": "user", "uuid": "u1", "promptId": "p2", "message": {"role": "user", "content": "Review PR 66."}}),
+        _record({"type": "assistant", "uuid": "c1", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "pytest"}}]}}),
+        _record({"type": "user", "uuid": "u2", "promptId": "p2", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "1 passed"}]}}),
+        reported(REVIEWER, 'Agent "/code-review medium 66" finished'),
+        queued,
+    ]
+    edges = [turning.consume(record) for line in records if (record := turn_record(line.encode())) is not None]
+    assert [type(edge) for edge in edges] == [Asked, type(None), type(None), type(None), type(None)]
+    [report] = [step for step in turning.steps() if isinstance(step, Reported)]
+    assert report.ref == Ref("q1") and report.agent == AgentTask(REVIEWER, "/code-review medium 66")
+
+
+def test_an_attachment_that_only_mentions_a_notification_is_no_record_of_a_turn() -> None:
+    hooked = _record({"type": "attachment", "uuid": "h1", "attachment": {"type": "hook_additional_context", "commandMode": "task-notification"}})
+    assert b'"commandMode":"task-notification"' in hooked.encode() and turn_record(hooked.encode()) is None
 
 
 async def test_a_notification_from_a_background_command_is_told_as_it_was(tmp_path: Path) -> None:
