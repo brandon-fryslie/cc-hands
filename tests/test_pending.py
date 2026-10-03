@@ -19,7 +19,7 @@ def news(reply: str) -> News:
 
 
 def finished(session: SessionId, *replies: str) -> Finished:
-    return Finished(session, tuple(news(reply) for reply in replies))
+    return Finished(session, tuple(news(reply) for reply in replies), "full")
 
 
 def asks(session: SessionId, request: str, on: Permission = BASH) -> Narrate:
@@ -130,5 +130,5 @@ def test_coalesce(pending: Sequence[Pending], waiting: Mapping[SessionId, Held],
 
 def test_a_folded_telling_keeps_every_turn_s_parts() -> None:
     first, second = News(None, "one", "", "", (Segment(THE_TESTS, "one test run"),), frozenset()), News(None, "two", "It committed.", "Push it?", (), frozenset())
-    [folded] = coalesce((Finished(API, (first,)), Finished(API, (second,))), {})
-    assert folded == Finished(API, (first, second))
+    [folded] = coalesce((Finished(API, (first,), "full"), Finished(API, (second,), "brief")), {})
+    assert folded == Finished(API, (first, second), "brief")

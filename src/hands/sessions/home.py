@@ -33,9 +33,9 @@ class Home:
         return self.root / "audit"
 
     @property
-    def summaries(self) -> Path:
-        """Whether finished turns are spoken, written by `/hands:summaries` alone."""
-        return self.root / "summaries"
+    def attention(self) -> Path:
+        """What hands says unprompted, written by the attention tool and `/hands:attention` alone."""
+        return self.root / "attention.json"
 
     @property
     def voice(self) -> Path:

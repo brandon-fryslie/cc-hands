@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from hands.core.attention import Amount
 from hands.core.effects import DeadlineNear, Expired, Narrate, Note, SessionGone, Speak
 from hands.core.narration import Segment
 from hands.core.progress import Doing
@@ -40,10 +41,12 @@ def went_on(before: News, after: News) -> bool:
 
 @dataclass(frozen=True)
 class Finished:
-    """A session finished one or more turns, told together: `coalesce` folds a session's pending tellings into one."""
+    """A session finished one or more turns, told together, as much of them as the user set: `coalesce` folds a
+    session's pending tellings into one, told as the last of them was set to be."""
 
     session: SessionId
     news: tuple[News, ...]
+    amount: Amount
 
 
 @dataclass(frozen=True)
@@ -190,8 +193,8 @@ def _folded(pending: Sequence[Pending]) -> list[Pending]:
 def _joined(before: Pending | None, each: Finished | Working) -> Pending:
     """`each` folded into the telling of its kind that came before it in its slot, or standing alone in a slot of its own."""
     match before, each:
-        case Finished(news=earlier), Finished(session=session, news=news):
-            return Finished(session, (*earlier, *news))
+        case Finished(news=earlier), Finished(session=session, news=news, amount=amount):
+            return Finished(session, (*earlier, *news), amount)
         case Working(of=frozenset() as was, doings=earlier), Working(session=session, of=frozenset() as turn, doings=doings):
             return Working(session, was | turn, (*earlier, *doings))
         case Working(of=AgentTask() as agent, doings=earlier), Working(session=session, doings=doings):

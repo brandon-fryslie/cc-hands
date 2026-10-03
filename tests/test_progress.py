@@ -9,7 +9,7 @@ import pytest
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
-from hands.core.attention import Overlay, Route, progress_route
+from hands.core.attention import Amount, Attention, Level, Overlay, Route, Switch, progress_route
 from hands.core.effects import Progress
 from hands.core.events import Displayed, Progressed, StatusReported, Tick
 from hands.core.pending import Finished, News, Pending, Unread, Working, coalesce
@@ -90,8 +90,8 @@ def test_a_burst_is_due_once_it_settles_and_no_later_than_its_longest_wait() -> 
 @pytest.mark.parametrize(
     ("focused", "overlay", "route"),
     [
-        (True, "normal", "play"),
-        (True, "watched", "play"),
+        (True, "normal", "full"),
+        (True, "watched", "full"),
         (True, "muted", "note"),
         (False, "normal", "note"),
         (False, "watched", "note"),
@@ -99,11 +99,19 @@ def test_a_burst_is_due_once_it_settles_and_no_later_than_its_longest_wait() -> 
     ],
 )
 def test_only_the_focus_is_heard_working_and_never_a_muted_one(focused: bool, overlay: Overlay, route: Route) -> None:
-    assert progress_route(focused, overlay) == route
+    assert progress_route(Attention(), focused, overlay) == route
+
+
+@pytest.mark.parametrize(
+    ("progress", "quiet", "route"),
+    [("full", "off", "full"), ("brief", "off", "brief"), ("off", "off", "note"), ("full", "on", "note"), ("brief", "on", "note")],
+)
+def test_the_focus_is_heard_working_as_much_as_progress_is_set_and_not_at_all_while_quiet(progress: Level, quiet: Switch, route: Route) -> None:
+    assert progress_route(Attention(progress=progress, quiet=quiet), True, "normal") == route
 
 
 def finished(session: SessionId) -> Finished:
-    return Finished(session, (News(TURN, "Done.", "", "", (), frozenset()),))
+    return Finished(session, (News(TURN, "Done.", "", "", (), frozenset()),), "full")
 
 
 @pytest.mark.parametrize(
@@ -271,19 +279,22 @@ async def test_the_relay_hands_the_focus_on_to_be_played_leaves_any_other_to_the
     async def queue_frame(frame: Frame) -> None:
         queued.append(frame)
 
-    async def attending(session: SessionId) -> tuple[bool, Overlay]:
-        return session == SID, "normal"
+    async def attending(session: SessionId) -> tuple[Attention, bool, Overlay]:
+        return Attention(progress="brief"), session == SID, "normal"
 
     sessions = Heard()
     for session in (SID, OTHER):
         sessions.waiting.put_nowait(Progress(session, frozenset({TURN}), (TESTS,), ""))
-    relaying = asyncio.create_task(relay(sessions, queue_frame, recorded.append, attending, played.append))  # pyright: ignore[reportArgumentType]  (only heard() is asked)
+    relaying = asyncio.create_task(relay(sessions, queue_frame, recorded.append, attending, lambda progress, amount: played.append((progress, amount))))  # pyright: ignore[reportArgumentType]  (only heard() is asked)
     while len([entry for entry in recorded if isinstance(entry, Routed)]) < 2:
         await asyncio.sleep(0.01)
     relaying.cancel()
     assert queued == []
-    assert played == [Progress(SID, frozenset({TURN}), (TESTS,), "")]
-    assert [entry for entry in recorded if not isinstance(entry, Relayed)] == [Routed(SID, True, "normal", "play"), Routed(OTHER, False, "normal", "note")]
+    assert played == [(Progress(SID, frozenset({TURN}), (TESTS,), ""), "brief")]
+    assert [entry for entry in recorded if not isinstance(entry, Relayed)] == [
+        Routed(SID, Attention(progress="brief"), True, "normal", "brief"),
+        Routed(OTHER, Attention(progress="brief"), False, "normal", "note"),
+    ]
 
 
 def test_what_a_session_last_set_out_to_do_is_in_its_listing() -> None:
@@ -308,7 +319,7 @@ def test_progress_relayed_and_told_is_a_line_the_audit_log_can_write() -> None:
     # lines went unrecorded.
     heard = encoded(Relayed(Progress(SID, frozenset({PromptId("p2"), TURN}), (TESTS,), "a line\n")))["heard"]
     assert isinstance(heard, dict) and heard["of"] == ["p1", "p2"] and heard["written"] == "a line\n"
-    assert encoded(ProgressTold(SID, 7, "explain how DNS works", None, current=True))["explained"] == "explain how DNS works"
+    assert encoded(ProgressTold(SID, 7, "explain how DNS works", None, current=True, amount="full"))["explained"] == "explain how DNS works"
 
 
 def test_calls_read_after_their_session_ended_are_behind_not_wrong() -> None:
@@ -356,7 +367,7 @@ def test_text_is_said_by_its_summary_ahead_of_the_calls() -> None:
     assert said((Doing(WRITING, None), Doing(WRITING, None))) == "write two things"
 
 
-async def played(progress: Progress, turn: Callable[[], Turn], explain: Callable[[str], Awaitable[str]]) -> tuple[list[Pending], list[ProgressTold]]:
+async def played(progress: Progress, turn: Callable[[], Turn], explain: Callable[[str], Awaitable[str]], amount: Amount = "full") -> tuple[list[Pending], list[ProgressTold]]:
     """What the player hands the floor of one progress, and its line in the audit log, with the session's turn as `turn`
     says when it is asked."""
     queued: list[Frame] = []
@@ -369,7 +380,7 @@ async def played(progress: Progress, turn: Callable[[], Turn], explain: Callable
         return Session(MEMBER, Running(Busy(), Stamp(1000), None), mode=None, turn=turn())
 
     playing = Playing()
-    playing.put_nowait(progress)
+    playing.put_nowait((progress, amount))
     player = asyncio.create_task(keep_playing(playing, live_session, queue_frame, recorded.append, explain))
     while not any(isinstance(entry, ProgressTold) for entry in recorded):
         await asyncio.sleep(0.01)
@@ -384,10 +395,25 @@ async def unasked(text: str) -> str:
 async def test_a_burst_of_calls_alone_is_played_as_written() -> None:
     queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), ""), lambda: Opened(TURN), unasked)
     assert queued == [Working(SID, IN_TURN, (TESTS,))]
-    assert told == [ProgressTold(SID, 0, None, None, current=True)]
+    assert told == [ProgressTold(SID, 0, None, None, current=True, amount="full")]
 
 
 WRITTEN = "First, how DNS works.\n1. The OS asks its resolver.\n"
+
+
+async def test_briefly_the_focus_is_heard_saying_what_it_is_doing_without_its_calls() -> None:
+    async def explain(_text: str) -> str:
+        return "Explain how DNS resolution works."
+
+    queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), WRITTEN), lambda: Opened(TURN), explain, "brief")
+    assert queued == [Working(SID, IN_TURN, (explained("explain how DNS resolution works"),))]
+    assert told == [ProgressTold(SID, len(WRITTEN), "explain how DNS resolution works", None, current=True, amount="brief")]
+
+
+async def test_briefly_a_burst_of_calls_alone_is_not_said_and_its_line_says_so() -> None:
+    queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), ""), lambda: Opened(TURN), unasked, "brief")
+    assert queued == []
+    assert told == [ProgressTold(SID, 0, None, None, current=True, amount="brief")]
 
 
 async def test_the_focus_is_heard_explaining_by_a_summary_of_what_it_wrote() -> None:
@@ -400,7 +426,7 @@ async def test_the_focus_is_heard_explaining_by_a_summary_of_what_it_wrote() -> 
     queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), WRITTEN), lambda: Opened(TURN), explain)
     assert asked == [WRITTEN.strip()]
     assert queued == [Working(SID, IN_TURN, (explained("explain how DNS resolution works"), TESTS))]
-    assert told == [ProgressTold(SID, len(WRITTEN), "explain how DNS resolution works", None, current=True)]
+    assert told == [ProgressTold(SID, len(WRITTEN), "explain how DNS resolution works", None, current=True, amount="full")]
     [spoken] = frames(queued[0], Pushed(), names=lambda _: "cc-hands")
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: explain how DNS resolution works, then run the test suite."
 
@@ -411,7 +437,7 @@ async def test_text_that_cannot_be_summarised_is_said_to_have_been_written_and_n
 
     queued, told = await played(Progress(SID, frozenset({TURN}), (), WRITTEN), lambda: Opened(TURN), explain)
     assert queued == [Working(SID, IN_TURN, (Doing(WRITING, None),))]
-    assert told == [ProgressTold(SID, len(WRITTEN), None, "SummaryFailed: nothing came back", current=True)]
+    assert told == [ProgressTold(SID, len(WRITTEN), None, "SummaryFailed: nothing came back", current=True, amount="full")]
 
 
 async def test_progress_whose_turn_ended_while_it_was_summarised_is_not_played() -> None:
@@ -424,7 +450,7 @@ async def test_progress_whose_turn_ended_while_it_was_summarised_is_not_played()
 
     queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), WRITTEN), lambda: turn[0], explain)
     assert queued == []
-    assert told == [ProgressTold(SID, len(WRITTEN), "explain how DNS resolution works", None, current=False)]
+    assert told == [ProgressTold(SID, len(WRITTEN), "explain how DNS resolution works", None, current=False, amount="full")]
 
 
 async def test_a_burst_is_not_kept_waiting_on_the_summary_of_the_one_ahead_of_it() -> None:
@@ -446,8 +472,8 @@ async def test_a_burst_is_not_kept_waiting_on_the_summary_of_the_one_ahead_of_it
 
     playing = Playing()
     player = asyncio.create_task(keep_playing(playing, lambda _: Session(MEMBER, Running(Busy(), Stamp(1000), None), mode=None, turn=Opened(TURN)), queue_frame, lambda _: None, explain))
-    playing.put_nowait(Progress(SID, frozenset({TURN}), (), "first"))
-    playing.put_nowait(Progress(SID, frozenset({TURN}), (), "second"))
+    playing.put_nowait((Progress(SID, frozenset({TURN}), (), "first"), "full"))
+    playing.put_nowait((Progress(SID, frozenset({TURN}), (), "second"), "full"))
     await asyncio.wait_for(second_asked.wait(), timeout=1.0)
     while len(queued) < 2:
         await asyncio.sleep(0.01)
@@ -663,7 +689,7 @@ def test_a_subagent_s_burst_and_its_parent_s_are_told_apart() -> None:
 
 def test_a_subagent_s_work_folds_only_with_its_own_and_gives_way_to_the_result_it_reports_back_to() -> None:
     own = Working(SID, frozenset({TURN}), (Doing(EDITING, "edit a.py"),))
-    reported = Finished(SID, (News(PromptId("p2"), "Done.", "", "", (), frozenset({AGENT})),))
+    reported = Finished(SID, (News(PromptId("p2"), "Done.", "", "", (), frozenset({AGENT})),), "full")
     assert coalesce((Working(SID, REVIEW, (READ_TAIL,)), own, Working(SID, REVIEW, (TESTS,))), {}) == (Working(SID, REVIEW, (READ_TAIL, TESTS)), own)
     # The turn it reports back to tells its work better, wherever its last burst settled.
     assert coalesce((Working(SID, REVIEW, (TESTS,)), reported), {}) == (reported,)
@@ -671,7 +697,7 @@ def test_a_subagent_s_work_folds_only_with_its_own_and_gives_way_to_the_result_i
 
 
 def test_a_subagent_working_on_in_the_background_is_still_news_after_a_result_that_does_not_report_it() -> None:
-    unrelated = Finished(SID, (News(PromptId("p2"), "Done.", "", "", (), frozenset()),))
+    unrelated = Finished(SID, (News(PromptId("p2"), "Done.", "", "", (), frozenset()),), "full")
     assert coalesce((Working(SID, REVIEW, (TESTS,)), unrelated), {}) == (Working(SID, REVIEW, (TESTS,)), unrelated)
 
 

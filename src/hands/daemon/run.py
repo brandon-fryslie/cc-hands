@@ -55,7 +55,7 @@ from hands.sessions.names import Names
 from hands.sessions.server import serve_display, serve_hooks
 from hands.sessions.tap import moves, serve_tap
 from hands.sessions.overlays import Overlays
-from hands.sessions.summaries import summaries
+from hands.sessions.attention import attention
 from hands.voice.devices import follow_default_devices
 from hands.voice.cues import cues
 from hands.voice.hold import Move
@@ -413,12 +413,12 @@ async def converse(
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
-        asyncio.create_task(relay(sessions, voice.worker.queue_frame, record, partial(attending, home, overlays), playing.put_nowait), name="the session speech relay"),
+        asyncio.create_task(relay(sessions, voice.worker.queue_frame, record, partial(attending, home, overlays, lambda: attention(home)), lambda progress, amount: playing.put_nowait((progress, amount))), name="the session speech relay"),
         asyncio.create_task(
             keep_playing(playing, sessions.live_session, voice.worker.queue_frame, record, minded.summariser(EXPLAIN_INSTRUCTION, EXPLAIN_MAX_TOKENS, EXPLAIN_TIMEOUT_SECONDS)),
             name="the progress player",
         ),
-        asyncio.create_task(narrate(sessions, tails, voice.worker.queue_frame, record, lambda: summaries(home), overlays, recounts, changes=deltas), name="the session narrator"),
+        asyncio.create_task(narrate(sessions, tails, voice.worker.queue_frame, record, lambda: attention(home), overlays, recounts, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
         asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),

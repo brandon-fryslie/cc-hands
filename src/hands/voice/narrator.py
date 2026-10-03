@@ -6,8 +6,8 @@ it can answer about it. The reply is the session's own account: its author knows
 reading a trimmed transcript does not.
 
 [LAW:one-source-of-truth] every telling of a finished turn is the one summary `speech.told` makes, however it reaches the
-user: handed to the model as the turn finishes, with spoken summaries on or the session watched, or held in `Recounts`
-until the user asks for it (tell_turn), as a muted session's always is. Nothing of a turn is said as written past the model.
+user: handed to the model as the turn finishes, as finished turns are set to be told or the session is watched, or held
+in `Recounts` until the user asks for it (tell_turn), as a muted session's always is. Nothing of a turn is said as written past the model.
 """
 
 import asyncio
@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from loguru import logger
 from pipecat.frames.frames import Frame
 
-from hands.core.attention import DEFAULT as DEFAULT_OVERLAY, Delivery, Overlay
+from hands.core.attention import DEFAULT as DEFAULT_OVERLAY, Amount, Attention, Delivery, Overlay, Route, Spoken, Withheld, delivery, ended_route
 from hands.core.delta import Delta
 from hands.core.effects import SessionGone, Summarise
 from hands.core.narration import Segment, narration
@@ -25,14 +25,13 @@ from hands.core.pending import Finished, News, Unread
 from hands.core.session import PromptId, SessionId
 from hands.core.subagents import Subagent, reporting
 from hands.core.turn import Said
-from hands.sessions.audit import Recounted, Record
+from hands.sessions.audit import EndedRouted, Recounted, Record
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.focus import focused
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
-from hands.sessions.summaries import DEFAULT, Summaries
 from hands.sessions.subagents import read_subagent
 from hands.sessions.tail import Tails, Telling
 from hands.voice.speech import Unprompted
@@ -98,45 +97,35 @@ class Recounts:
         self._last.pop(session, None)
 
 
-def delivery(switch: Summaries, overlay: Overlay) -> Delivery:
-    """How a finished turn reaches the user: a muted session's only when the user asks for it; otherwise every session's
-    as it finishes with summaries on, a watched one's as it finishes with them off, and any other's when asked for."""
-    # [LAW:dataflow-not-control-flow] a table over the two settings, every pair of them a row the type checker holds to.
-    match switch, overlay:
-        case _, "muted":
-            return "muted"
-        case "on", _:
-            return "summaries"
-        case "off", "watched":
-            return "watched"
-        case "off", "normal":
-            return "on request"
-
-
 async def narrate(
     sessions: Sessions,
     tails: Tails,
     queue_frame: Callable[[Frame], Awaitable[None]],
     record: Record,
-    aloud: Callable[[], Summaries],
+    aloud: Callable[[], Attention],
     overlays: Overlays,
     recounts: Recounts,
     changes: Changes | None = None,
 ) -> None:
     """Summarise each finished turn and tell each session gone, in the order they happened, until cancelled.
 
-    `aloud` and `overlays` are read at every finished turn, so a change to either is heard from the next one.
+    `aloud`, what the user set hands to say unprompted, and `overlays` are read at every finished turn and every session
+    ending, so a change to either is heard from the next one.
     """
     read = changes or NoChanges()
     while True:
         story = await sessions.story()
         match story:
             case Summarise(session=session, turn=turn, closing=closing):
-                delivered = delivery(await switch(aloud), await _overlay(overlays, session))
+                delivered = delivery(await set_to(aloud), await _overlay(overlays, session))
                 told = await recount(tails, session, turn, closing, record, await read.taken(session), delivered, recounts)
             case SessionGone(session=session):
                 recounts.gone(session)
-                told = story
+                attention = await set_to(aloud)
+                route = ended_route(attention)
+                # [LAW:nothing-unseen] whether the ending was said, and what was set that decided it.
+                record(EndedRouted(session, attention, route))
+                told = _routed(route, story)
         if told is not None:
             await queue_frame(Unprompted(told))
 
@@ -163,7 +152,7 @@ async def recount(
     except _FAILURES as error:
         _unread(session, error)
         recounts.unread(session, turn)
-        return _delivered(delivered, Unread(session))
+        return _delivered(delivered, lambda _: Unread(session))
     if told is None or not (told.turn.steps or delta):
         logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")
         recounts.put(session, turn, None)
@@ -191,7 +180,7 @@ async def recount(
     # with the telling until the session's next turn, for the user to open.
     await tails.spoken(told)
     recounts.put(session, turn, news)
-    return _delivered(delivered, Finished(session, (news,)))
+    return _delivered(delivered, lambda amount: Finished(session, (news,), amount))
 
 
 async def _subagents(session: SessionId, told: Telling) -> tuple[tuple[Subagent, ...], tuple[str, ...]]:
@@ -211,26 +200,35 @@ async def _subagents(session: SessionId, told: Telling) -> tuple[tuple[Subagent,
     return tuple(read), tuple(unread)
 
 
-def _delivered[T](delivered: Delivery, told: T) -> T | None:
-    """What is told, as the turn finishes with summaries on or the session watched; none when it waits to be asked for."""
+def _delivered[T](delivered: Delivery, told: Callable[[Amount], T]) -> T | None:
+    """What is told, as much of it as is set, as the turn finishes; none when it waits to be asked for."""
     match delivered:
-        case "summaries" | "watched":
-            return told
-        case "on request" | "muted":
+        case Spoken(amount=amount):
+            return told(amount)
+        case Withheld():
             return None
 
 
-async def switch(aloud: Callable[[], Summaries]) -> Summaries:
-    """Where the summaries switch stands, read off the loop the speaker runs on; the default where it cannot be read.
+def _routed(route: Route, gone: SessionGone) -> SessionGone | None:
+    match route:
+        case "brief" | "full":
+            return gone
+        case "note":
+            # [LAW:one-source-of-truth] the audit log holds the ending, for catch_up to tell when asked.
+            return None
 
-    [LAW:no-silent-failure] a switch that cannot be read is logged as the error it is, which is an audit line, and the
-    turn is handled as the default handles it.
+
+async def set_to(aloud: Callable[[], Attention]) -> Attention:
+    """What the user set hands to say unprompted, read off the loop the speaker runs on; the defaults where it cannot be read.
+
+    [LAW:no-silent-failure] a setting that cannot be read is logged as the error it is, which is an audit line, and
+    what it decides is decided as the defaults decide it.
     """
     try:
         return await asyncio.to_thread(aloud)
     except (Rejected, OSError) as error:
-        logger.error(f"cannot read whether spoken summaries are on, so this turn is handled as they are by default, {DEFAULT}: {error}")
-        return DEFAULT
+        logger.error(f"cannot read what hands is set to say unprompted, so this is handled as the defaults handle it, {Attention()}: {error}")
+        return Attention()
 
 
 async def _overlay(overlays: Overlays, session: SessionId) -> Overlay:
@@ -245,11 +243,12 @@ async def _overlay(overlays: Overlays, session: SessionId) -> Overlay:
         return DEFAULT_OVERLAY
 
 
-async def attending(home: Home, overlays: Overlays, session: SessionId) -> tuple[bool, Overlay]:
-    """Whether the session is the focus, and its overlay, each read as its progress is relayed: a focus that cannot be
-    read is no focus, and an overlay that cannot be read is the default, each logged as the error it is."""
+async def attending(home: Home, overlays: Overlays, aloud: Callable[[], Attention], session: SessionId) -> tuple[Attention, bool, Overlay]:
+    """What hands is set to say unprompted, whether the session is the focus, and its overlay, each read as its progress
+    is relayed: a setting or an overlay that cannot be read is the default, and a focus that cannot be read is no focus,
+    each logged as the error it is."""
     focus = await asyncio.to_thread(focused, home)
-    return focus == session, await _overlay(overlays, session)
+    return await set_to(aloud), focus == session, await _overlay(overlays, session)
 
 
 def _unread(session: SessionId, error: Exception) -> None:

@@ -48,8 +48,8 @@ The first eight tickets are the first working version; progress while working an
 subagent narration follow it. A first slice of them runs today: each turn a session
 finishes is summarised in one to three sentences and spoken with the session's name,
 and a session's end is spoken after its last turn. That summary plays only while
-`/hands:summaries on` has turned it on; off, the default, a finished turn plays only
-what it is waiting on the user to answer. The notes on the items below say
+finished turns are set to be told (`/hands:attention finished full`, or said to hands);
+off, the default, a finished turn plays only what it is waiting on the user to answer. The notes on the items below say
 what each has and what remains.
 
 - **Transcript tail and step recognisers.** While a session is registered, the
@@ -198,9 +198,10 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
   `Session.mode`; `list_sessions` speaks it; a mode change is a `Note`. Done when
   shift-tab in a session is reflected in the next `list_sessions`.
 - **One turn summary.** Every finished turn is summarised once, and that summary is
-  what the user hears of it: as the turn finishes for every session with spoken
-  summaries on, or for a watched session with them off, and when the user asks for it
-  (`tell_turn`) otherwise; a muted session's only when asked. A session is watched,
+  what the user hears of it: as the turn finishes for every session with finished
+  turns told, briefly or in full, or for a watched session with them off, and when the
+  user asks for it (`tell_turn`) otherwise; a muted session's, or any while hands is
+  quiet, only when asked. A session is watched,
   normal, or muted by `set_overlay`. Both settings are set by voice and hold
   across restarts. Nothing is said of a session that sits at its prompt
   (hands-narration-2mc.d52).
@@ -215,7 +216,7 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
 Need 3. How several sessions share one ear.
 
 - **Routing table and overlays.** The per-session overlay `normal | watched | muted`,
-  set by `set_overlay`, and `delivery`, the table over it and the summaries switch; a
+  set by `set_overlay`, and `delivery`, the table over it and what is set to be said; a
   muted session's `Stop`s are held unsaid until the user asks for one (`tell_turn`),
   and what it asks is still said. `focus_session`, and every tool's
   `session` argument defaulting to the focus, are hands-attention-ssy.xfs. Built:
@@ -232,9 +233,12 @@ Need 3. How several sessions share one ear.
 - **Catch-up.** `catch_up(minutes)` reads the audit log and narrates what was said
   and done while you were away, at summary depth. Done when "what did I miss"
   after ten minutes lists every session that finished.
-- **Quiet.** A global overlay under which only `blocking` speaks and everything else
-  is a note. Done when "be quiet for a while" suppresses `Stop`s and a permission
-  request still gets through.
+- **What hands says unprompted.** One control, `attention`: finished turns, the
+  focused session's progress, and a session ending, each on or off and at a level, and
+  quiet, under which only what blocks speaks and everything else waits to be asked
+  for. Set in one short utterance, from the next thing hands would say, across
+  restarts. Built: tests/test_attention.py, tests/test_progress.py,
+  tests/test_narrator.py; not verified live.
 
 ## Ending a session by voice (`hands-lifecycle-n1m`)
 
