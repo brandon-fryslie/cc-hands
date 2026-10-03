@@ -54,6 +54,7 @@ from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.names import Names
 from hands.sessions.server import serve_hooks
 from hands.sessions.tap import moves, serve_tap
+from hands.sessions.overlays import Overlays
 from hands.sessions.summaries import summaries
 from hands.voice.devices import follow_default_devices
 from hands.voice.cues import cues
@@ -317,7 +318,7 @@ async def run(configure: Callable[[], VoiceConfig], survey: Callable[[], None], 
         loop.add_signal_handler(signal_number, quit_event.set)
     voice: Voice | None = None
     store = SummaryStore(Sentences(home.sentences))
-    tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store)]
+    tools = [audited(tool, audit.record) for tool in intermediary_tools(sessions, store, Overlays(home))]
     try:
         config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions, quit_event)
         if config is not None:
@@ -417,7 +418,7 @@ async def converse(
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
-        asyncio.create_task(relay(sessions, minded.telling, voice.worker.queue_frame), name="the session speech relay"),
+        asyncio.create_task(relay(sessions, Overlays(home), minded.telling, voice.worker.queue_frame, record), name="the session speech relay"),
         asyncio.create_task(narrate(sessions, tails, minded.telling, voice.worker.queue_frame, record, lambda: summaries(home), changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
         asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),

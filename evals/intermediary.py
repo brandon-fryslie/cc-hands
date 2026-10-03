@@ -60,7 +60,8 @@ from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.openai.llm import OpenAILLMService
 
 from hands.core.spoken import spoken
-from hands.sessions.home import default_home
+from hands.sessions.home import Home, default_home
+from hands.sessions.overlays import Overlays
 from hands.daemon.run import backend_from_env
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
@@ -127,7 +128,8 @@ Ask = Callable[[list[LLMContextMessage]], Awaitable[tuple[str, tuple[Call, ...]]
 
 def asker(backend: LLMBackend) -> Ask:
     """The one place the backend variant is inspected: each asks the way its daemon service would."""
-    tools = intermediary_tools(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None), SummaryStore(Sentences(Path(tempfile.mkdtemp()) / "sentences.db")))
+    scratch = Path(tempfile.mkdtemp())
+    tools = intermediary_tools(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None), SummaryStore(Sentences(scratch / "sentences.db")), Overlays(Home(scratch)))
     match backend:
         case OpenAICompatibleBackend(base_url=base_url, api_key=api_key):
             service = build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=MAX_REPLY_TOKENS)

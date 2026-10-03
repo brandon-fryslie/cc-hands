@@ -199,8 +199,10 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
   shift-tab in a session is reflected in the next `list_sessions`.
 - **Waiting-for-you nudge.** The `idle_prompt` notification becomes a `Speak`: "X
   is waiting for you.", or "X has a question for you." when its turn ended on one.
-  Done when leaving a session idle triggers exactly one nudge.
+  Done when leaving a watched session idle triggers exactly one nudge.
   Built: heard live on 2.1.280, once per idle period, 60 s after the turn ended.
+  Said only for a session the user asked to hear from (`watch_session`), which holds
+  across restarts; every other session's nudge is dropped (hands-announce-5md).
 - **An interrupted turn.** Escape or Ctrl-C mid-turn fires no `Stop` and no later
   `idle_prompt`, so the tail reads the transcript's own record of the interrupt, which
   names the prompt of the turn it stopped. That turn, and no other, goes idle; it is
