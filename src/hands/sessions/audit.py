@@ -22,7 +22,8 @@ if TYPE_CHECKING:
     # Defined only in loguru's type stubs.
     from loguru import Message
 
-from hands.core.effects import AuditRecord, Effect, Input, Type
+from hands.core.attention import Overlay
+from hands.core.effects import AuditRecord, Effect, Heard, Input, Type
 from hands.core.events import Event
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged
@@ -219,6 +220,15 @@ class Announced:
 
 
 @dataclass(frozen=True)
+class Routed:
+    """Something a session said to the user, the overlay its session had then, and whether it was passed on."""
+
+    heard: Heard
+    overlay: Overlay
+    passed: bool
+
+
+@dataclass(frozen=True)
 class Recounted:
     """What hands told of a turn a session finished, and what the narration left the user able to ask for.
 
@@ -362,6 +372,7 @@ Entry = (
     | Replied
     | Called
     | Announced
+    | Routed
     | Recounted
     | Summarised
     | TurnsSummarised

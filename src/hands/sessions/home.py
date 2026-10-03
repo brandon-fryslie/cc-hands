@@ -69,6 +69,14 @@ class Home:
     def membership(self, session: SessionId) -> Path:
         return self.memberships / f"{session}.json"
 
+    @property
+    def overlays(self) -> Path:
+        """One file per session saying how its news reaches the user, written by the daemon alone."""
+        return self.root / "overlays"
+
+    def overlay(self, session: SessionId) -> Path:
+        return self.overlays / session
+
 
 def default_home() -> Home:
     """HANDS_HOME, or ~/.hands: the hook shim, which Claude Code runs with no arguments of hands', finds it as the CLI does."""

@@ -32,6 +32,7 @@ from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
 from hands.sessions.audit import Called, Record
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
@@ -143,13 +144,13 @@ def audited(tool: Tool, record: Record) -> Tool:
     return replace(tool, body=call)
 
 
-def intermediary_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
+def intermediary_tools(sessions: Sessions, store: SummaryStore, overlays: Overlays) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them.
 
     [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
     tool added here is one the eval's model is offered too.
     """
-    return [list_sessions_tool(sessions), *session_tools(sessions, store), *backlog_tools(sessions, store), *draft_tools(sessions), *keyboard_tools(sessions), *permission_tools(sessions), stay_silent_tool()]
+    return [list_sessions_tool(sessions), *session_tools(sessions, store), *backlog_tools(sessions, store), *draft_tools(sessions), *keyboard_tools(sessions), *permission_tools(sessions), watch_session_tool(sessions, overlays), stay_silent_tool()]
 
 
 def stay_silent_tool() -> Tool:
@@ -497,6 +498,34 @@ def _waiting_on(on: Blocker) -> str:
             return "waiting for the user to answer its question"
         case Plan():
             return "waiting for the user to approve its plan"
+
+
+def watch_session_tool(sessions: Sessions, overlays: Overlays) -> Tool:
+    async def watch_session(session: str, watch: bool) -> Result:
+        """Tell the user whenever a session stops and is waiting for them, or stop telling them.
+
+        A session is not watched until the user asks: a stop of one they did not ask about is not said. What a session
+        asks them, a permission, a question, or a plan, is said whether it is watched or not. Call this when the user
+        asks to be told when a session stops or finishes, or to stop hearing about it. It lasts until they change it,
+        across restarts. Say the returned readback to the user.
+
+        Args:
+            session: The session's id, from list_sessions.
+            watch: true to tell the user when it stops, false to stop telling them.
+        """
+        try:
+            id = _session_id(session)
+            # [LAW:parse-dont-validate] the id becomes a file name in the home, so only a session the registry holds is one.
+            if sessions.live_session(id) is None:
+                raise Rejected(f"no running session has the id {id!r}; take one from list_sessions")
+            await asyncio.to_thread(overlays.set, id, "watched" if watch else "normal")
+        except (Rejected, OSError) as error:
+            logger.error(f"watch_session could not set session {session!r}: {error}")
+            return {"error": str(error)}
+        name = spoken_name(sessions, id)
+        return {"readback": f"I'll tell you when {name} is waiting for you." if watch else f"I won't tell you when {name} stops, only when it asks you something."}
+
+    return tool(watch_session, completes=True)
 
 
 class Resolved(TypedDict):

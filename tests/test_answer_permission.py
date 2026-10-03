@@ -24,6 +24,7 @@ from hands.core.status import Busy, Idle, Report, Stamp
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.names import Names
+from hands.sessions.overlays import Overlays
 from hands.sessions.server import serve_hooks
 from hands.voice.speech import Aloud, Narrated, Pushed, Tailed, frames, relay
 
@@ -442,7 +443,7 @@ async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the
         frames.append(frame)
 
     shim, _ = await asked(home, sessions)
-    relaying = asyncio.create_task(relay(sessions, Pushed(), queue_frame))
+    relaying = asyncio.create_task(relay(sessions, Overlays(home), Pushed(), queue_frame, lambda _: None))
     await sessions.apply(Tick(DEADLINE - 10.0))
     await sessions.apply(Tick(DEADLINE))
     await asyncio.wait_for(shim.finished(), WAIT_SECONDS)

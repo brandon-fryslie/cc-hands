@@ -17,6 +17,7 @@ from hands.core.session import Membership, Permission, PromptId, RequestId, Sess
 from hands.sessions.audit import Entry, Failure, Recounted, failures_to
 from hands.sessions.registry import Sessions
 from hands.sessions.home import Home
+from hands.sessions.overlays import Overlays
 from hands.sessions.summaries import Summaries, set_summaries, summaries
 from hands.sessions.tail import Tails
 from hands.voice.narrator import REPLY_SHOWN, narrate, recount
@@ -186,7 +187,7 @@ async def test_with_summaries_off_a_finished_turn_is_not_told_and_turning_them_o
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record)
     frames: asyncio.Queue[Frame] = asyncio.Queue()
     narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, record, lambda: summaries(home)))
-    relaying = asyncio.create_task(relay(sessions, Pushed(), frames.put))
+    relaying = asyncio.create_task(relay(sessions, Overlays(home), Pushed(), frames.put, record))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))

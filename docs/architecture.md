@@ -386,8 +386,12 @@ queue, because an end spoken at once was heard before the last turn it ended. A 
 turn reaches the intermediary as a turn of its own — an `LLMMessagesAppendFrame` with
 `run_llm` on for an API model, a `Narrated` frame for the brain — with no player and no
 segments. `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
-with `run_llm` off. The player, the routing table, the overlays, the priority
-queue, and `coalesce` below are planned.
+with `run_llm` off. Each session has an overlay, `normal` or `watched`, one file per
+session under `~/.hands/overlays` that the relay reads for everything `Heard` carries
+(`hands/core/attention.py`): a `normal` session's nudge is dropped, a `watched` one's is
+spoken, and everything else passes whatever the overlay; the user sets it by voice with
+`watch_session`, and each routing is a `Routed` audit line. The player, the routing
+table, the priority queue, and `coalesce` below are planned.
 
 The routing table is a value in `core`:
 
