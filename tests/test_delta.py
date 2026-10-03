@@ -320,8 +320,7 @@ print(slowest)
 def test_a_loop_ended_mid_reading_kills_and_reaps_its_git_and_closes(tmp_path: Path) -> None:
     """The daemon's shutdown cancels a reading wherever it is, and must not then wait for ever on a git it spawned.
 
-    Python 3.12's asyncio did: cancelled while connecting a new child's pipes, it waited on pipes that would never
-    connect. 3.13 fixed it, which is why hands needs 3.13."""
+    Python 3.12's asyncio subprocesses did: cancelled while starting, they waited for an exit nothing would deliver."""
     root = repo(tmp_path)
     try:
         ran = subprocess.run((sys.executable, "-c", SHUT_DOWN, str(root)), capture_output=True, text=True, timeout=10)

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from hands.core.sentences import Thing
-from hands.sessions.child import finished
+from hands.sessions.child import run
 from hands.sessions.payload import Payload, Rejected
 
 # The largest backlog on this machine (links, 8.6 MB of export) takes 5 s; past this lit is stuck, not slow.
@@ -94,17 +94,15 @@ class Backlog:
 async def read_backlog(project: Path) -> Backlog:
     """The backlog lit holds for `project`; raises Unread when lit cannot say, and Rejected when what it said does not parse."""
     try:
-        process = await asyncio.create_subprocess_exec("lit", "export", cwd=project, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    except OSError as error:
-        raise Unread(f"cannot run lit in {project}: {error}") from error
-    try:
-        out, err = await finished(process, EXPORT_TIMEOUT_SECONDS)
+        ran = await run("lit", "export", timeout=EXPORT_TIMEOUT_SECONDS, cwd=project)
     except TimeoutError:
         raise Unread(f"lit export in {project} did not answer in {EXPORT_TIMEOUT_SECONDS:.0f}s") from None
-    if process.returncode != 0:
-        raise Unread(f"lit export in {project} exited {process.returncode}: {err.decode(errors='replace').strip()[-300:]}")
+    except OSError as error:
+        raise Unread(f"cannot run lit in {project}: {error}") from error
+    if ran.returncode != 0:
+        raise Unread(f"lit export in {project} exited {ran.returncode}: {ran.err.decode(errors='replace').strip()[-300:]}")
     # Off the loop: the largest export takes tens of milliseconds to parse, which the voice pipeline would hear.
-    return await asyncio.to_thread(parse_export, out)
+    return await asyncio.to_thread(parse_export, ran.out)
 
 
 def parse_export(raw: bytes) -> Backlog:
