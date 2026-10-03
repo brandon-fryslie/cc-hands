@@ -8,7 +8,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 
-from hands.core.attention import DEFAULT, Overlay
+from hands.core.attention import DEFAULT, Overlay, overlay_named
 from hands.core.session import SessionId
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -26,13 +26,11 @@ class Overlays:
             written = path.read_bytes().strip()
         except FileNotFoundError:
             return DEFAULT
-        match written:
-            case b"normal":
-                return "normal"
-            case b"watched":
-                return "watched"
-            case _:
+        match overlay_named(written.decode(errors="replace")):
+            case None:
                 raise Rejected(f"{path} says {written!r}, which is no overlay")
+            case overlay:
+                return overlay
 
     def set(self, session: SessionId, to: Overlay) -> None:
         path = self.home.overlay(session)

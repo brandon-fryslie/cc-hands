@@ -1,5 +1,6 @@
 """A finished turn is told through one summary: as it finishes, for every session with spoken summaries on or for a
-watched one with them off, and when the user asks for it otherwise. What a session asks is said for every one."""
+watched one with them off, and when the user asks for it otherwise, as a muted one's always is. What a session asks is
+said for every one."""
 
 import asyncio
 import json
@@ -25,7 +26,7 @@ from hands.sessions.summaries import Summaries, summaries
 from hands.sessions.tail import Tails
 from hands.voice.narrator import Recount, Recounts, Told, delivery, narrate, recount
 from hands.voice.speech import Pushed
-from hands.voice.tools import tell_turn_tool, turn_summaries_tool, watch_session_tool
+from hands.voice.tools import tell_turn_tool, turn_summaries_tool, set_overlay_tool
 
 ONE = SessionId("one")
 REPLY = "Pushed the fix. Want me to open a pull request?"
@@ -53,9 +54,16 @@ def handed(frame: Frame | None) -> str:
 
 @pytest.mark.parametrize(
     ("switch", "overlay", "delivered"),
-    [("on", "normal", "summaries"), ("on", "watched", "summaries"), ("off", "watched", "watched"), ("off", "normal", "on request")],
+    [
+        ("on", "normal", "summaries"),
+        ("on", "watched", "summaries"),
+        ("off", "watched", "watched"),
+        ("off", "normal", "on request"),
+        ("on", "muted", "muted"),
+        ("off", "muted", "muted"),
+    ],
 )
-def test_a_turn_is_told_as_it_finishes_with_summaries_on_or_the_session_watched_and_otherwise_when_asked(
+def test_a_turn_is_told_as_it_finishes_with_summaries_on_or_the_session_watched_and_otherwise_or_muted_when_asked(
     switch: Summaries, overlay: Overlay, delivered: Delivery
 ) -> None:
     assert delivery(switch, overlay) == delivered
@@ -68,13 +76,13 @@ async def test_every_way_a_turn_is_told_tells_the_one_summary(tmp_path: Path) ->
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member, "startup"))
     told: dict[Delivery, str] = {}
-    for delivered in ("summaries", "watched", "on request"):
+    for delivered in ("summaries", "watched", "on request", "muted"):
         recounts = Recounts()
         frame = await recount(Tails(sessions), member.id, PromptId("p1"), None, "one", lambda _: None, Delta(), delivered, recounts, Pushed())
         asked = await tell_turn_tool(sessions, recounts).body(session=member.id)
         assert asked == {"turn": "\n\n".join(telling.news for telling in cast(Recount, recounts.of(member.id)).tellings), "now": "not reported yet"}
         told[delivered] = handed(frame) if frame is not None else str(asked["turn"])
-        assert (frame is None) == (delivered == "on request")
+        assert (frame is None) == (delivered in ("on request", "muted"))
     assert len(set(told.values())) == 1
     [summary] = set(told.values())
     assert summary.endswith(f"so they can answer without looking at the screen: It said: {REPLY.split('. ')[1]}")
@@ -106,7 +114,7 @@ async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatche
         finished_turn(each)
         await sessions.apply(Joined(each, "startup"))
         await sessions.apply(StatusReported(each.id, Report(Idle(), Stamp(1)), at=1.0))
-    assert await watch_session_tool(sessions, Overlays(home)).body(session=watched.id, watch=True) == {"readback": "I'll tell you each turn watched finishes."}
+    assert await set_overlay_tool(sessions, Overlays(home)).body(session=watched.id, overlay="watched") == {"readback": "I'll tell you each turn watched finishes."}
     frames: asyncio.Queue[Frame] = asyncio.Queue()
     recounts = Recounts()
     narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, entries.append, lambda: "off", Overlays(home), recounts))
@@ -123,7 +131,7 @@ async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatche
     assert [(entry.session, entry.delivered) for entry in entries if isinstance(entry, Recounted)] == [(other.id, "on request"), (watched.id, "watched")]
 
 
-async def test_a_session_whose_overlay_cannot_be_read_is_told_as_unwatched_and_the_reason_is_logged(tmp_path: Path) -> None:
+async def test_a_session_whose_overlay_cannot_be_read_is_told_as_a_normal_one_and_the_reason_is_logged(tmp_path: Path) -> None:
     member = membership(tmp_path, "unreadable")
     finished_turn(member)
     home = Home(tmp_path / "home")
@@ -145,7 +153,7 @@ async def test_a_session_whose_overlay_cannot_be_read_is_told_as_unwatched_and_t
         logger.remove(sink)
     [recounted] = [entry for entry in entries if isinstance(entry, Recounted)]
     assert recounted.delivered == "on request"
-    assert any(isinstance(entry, Failure) and "cannot read whether session unreadable is watched" in entry.message and "loud" in entry.message for entry in entries)
+    assert any(isinstance(entry, Failure) and "cannot read the overlay of session unreadable" in entry.message and "loud" in entry.message for entry in entries)
 
 
 async def test_a_turn_asked_for_before_any_has_finished_is_said_to_be_missing(tmp_path: Path) -> None:
@@ -159,24 +167,69 @@ async def test_a_turn_asked_for_before_any_has_finished_is_said_to_be_missing(tm
 async def test_spoken_summaries_are_turned_on_and_off_by_voice_and_hold_across_a_restart(tmp_path: Path) -> None:
     home = Home(tmp_path)
     switching = turn_summaries_tool(home).body
-    assert await switching(on=True) == {"readback": "Spoken turn summaries are on: every turn a session finishes is told aloud."}
+    assert await switching(on=True) == {"readback": "Spoken turn summaries are on: every turn a session finishes is told aloud, except a muted session's."}
     assert summaries(Home(tmp_path)) == "on"
     await switching(on=False)
     assert summaries(Home(tmp_path)) == "off"
 
 
-async def test_unwatching_a_session_says_what_is_still_told(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("overlay", "readback"),
+    [
+        ("watched", "I'll tell you each turn dropped finishes."),
+        ("normal", "I'll tell dropped's turns as I tell any session's: with spoken summaries on, or when you ask."),
+        ("muted", "dropped is muted: I'll tell its turns only when you ask. It still speaks when it needs your answer."),
+    ],
+)
+async def test_setting_a_session_s_overlay_says_what_is_told_of_it_and_holds(tmp_path: Path, overlay: Overlay, readback: str) -> None:
     member = membership(tmp_path, "dropped")
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member, "startup"))
-    result = await watch_session_tool(sessions, Overlays(Home(tmp_path / "home"))).body(session=member.id, watch=False)
-    assert result == {"readback": "I won't tell you when dropped finishes a turn, only when it asks you something."}
+    result = await set_overlay_tool(sessions, Overlays(Home(tmp_path / "home"))).body(session=member.id, overlay=overlay)
+    assert result == {"readback": readback}
+    assert Overlays(Home(tmp_path / "home")).of(member.id) == overlay
+
+
+async def test_an_overlay_the_model_names_that_is_none_is_refused_and_nothing_is_set(tmp_path: Path) -> None:
+    member = membership(tmp_path, "one")
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member, "startup"))
+    result = await set_overlay_tool(sessions, Overlays(Home(tmp_path / "home"))).body(session=member.id, overlay="quiet")
+    assert "error" in result and "'quiet' is no overlay" in str(result["error"])
+    assert not (tmp_path / "home" / "overlays").exists()
+
+
+async def test_a_muted_session_s_turn_is_held_with_summaries_on_and_told_when_asked(tmp_path: Path) -> None:
+    """Muting turns a session's Stops into notes: nothing is said as it finishes, and the model still answers what it did."""
+    muted, other = membership(tmp_path, "muted"), membership(tmp_path, "other")
+    home = Home(tmp_path / "home")
+    entries: list[Entry] = []
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=entries.append)
+    for each in (muted, other):
+        finished_turn(each)
+        await sessions.apply(Joined(each, "startup"))
+        await sessions.apply(StatusReported(each.id, Report(Idle(), Stamp(1)), at=1.0))
+    await set_overlay_tool(sessions, Overlays(home)).body(session=muted.id, overlay="muted")
+    frames: asyncio.Queue[Frame] = asyncio.Queue()
+    recounts = Recounts()
+    narrating = asyncio.create_task(narrate(sessions, Tails(sessions), Pushed(), frames.put, entries.append, lambda: "on", Overlays(home), recounts))
+    try:
+        for each in (muted, other):
+            await sessions.apply(Prompted(each.id, at=2.0, mode=None, prompt=PromptId("p1")))
+            await sessions.apply(Stopped(each.id, REPLY, mode=None, prompt=PromptId("p1"), again=False, heard=Stamp(1500), request=RequestId(f"stop-{each.id}")))
+        told = handed(await asyncio.wait_for(frames.get(), 5.0))
+    finally:
+        narrating.cancel()
+    assert frames.empty() and "session other (id other) finished a turn" in told
+    assert [(entry.session, entry.delivered) for entry in entries if isinstance(entry, Recounted)] == [(muted.id, "muted"), (other.id, "summaries")]
+    asked = await tell_turn_tool(sessions, recounts).body(session=muted.id)
+    assert "session muted (id muted) finished a turn" in str(asked["turn"]) and REPLY.split(". ")[0] in str(asked["turn"])
 
 
 def test_an_overlay_holds_across_a_restart_and_a_session_never_set_is_normal(tmp_path: Path) -> None:
-    Overlays(Home(tmp_path)).set(ONE, "watched")
+    Overlays(Home(tmp_path)).set(ONE, "muted")
     restarted = Overlays(Home(tmp_path))
-    assert (restarted.of(ONE), restarted.of(SessionId("other"))) == ("watched", "normal")
+    assert (restarted.of(ONE), restarted.of(SessionId("other"))) == ("muted", "normal")
     restarted.set(ONE, "normal")
     assert Overlays(Home(tmp_path)).of(ONE) == "normal"
 
@@ -189,8 +242,8 @@ def test_an_overlay_file_holding_anything_else_is_refused(tmp_path: Path) -> Non
         Overlays(home).of(ONE)
 
 
-async def test_a_session_that_is_not_running_cannot_be_watched(tmp_path: Path) -> None:
+async def test_a_session_that_is_not_running_cannot_have_its_overlay_set(tmp_path: Path) -> None:
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
-    result = await watch_session_tool(sessions, Overlays(Home(tmp_path))).body(session="../escape", watch=True)
+    result = await set_overlay_tool(sessions, Overlays(Home(tmp_path))).body(session="../escape", overlay="watched")
     assert "error" in result
     assert not (tmp_path / "overlays").exists()

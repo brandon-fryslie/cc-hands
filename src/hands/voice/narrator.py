@@ -7,7 +7,7 @@ reading a trimmed transcript does not.
 
 [LAW:one-source-of-truth] every telling of a finished turn is the one summary `_news` makes, however it reaches the
 user: handed to the model as the turn finishes, with spoken summaries on or the session watched, or held in `Recounts`
-until the user asks for it (tell_turn). Nothing of a turn is said as written past the model.
+until the user asks for it (tell_turn), as a muted session's always is. Nothing of a turn is said as written past the model.
 """
 
 import asyncio
@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
-from hands.core.attention import DEFAULT as UNWATCHED, Delivery, Overlay
+from hands.core.attention import DEFAULT as DEFAULT_OVERLAY, Delivery, Overlay
 from hands.core.delta import Delta
 from hands.core.effects import SessionGone, Summarise
 from hands.core.narration import Narration, Segment, narration
@@ -108,9 +108,12 @@ class Recounts:
 
 
 def delivery(switch: Summaries, overlay: Overlay) -> Delivery:
-    """How a finished turn reaches the user: every session's as it finishes with summaries on, a watched one's as it
-    finishes with them off, and any other's when the user asks for it."""
+    """How a finished turn reaches the user: a muted session's only when the user asks for it; otherwise every session's
+    as it finishes with summaries on, a watched one's as it finishes with them off, and any other's when asked for."""
+    # [LAW:dataflow-not-control-flow] a table over the two settings, every pair of them a row the type checker holds to.
     match switch, overlay:
+        case _, "muted":
+            return "muted"
         case "on", _:
             return "summaries"
         case "off", "watched":
@@ -202,7 +205,7 @@ def _delivered(delivered: Delivery, frame: Frame) -> Frame | None:
     match delivered:
         case "summaries" | "watched":
             return frame
-        case "on request":
+        case "on request" | "muted":
             return None
 
 
@@ -243,15 +246,15 @@ async def _switch(aloud: Callable[[], Summaries]) -> Summaries:
 
 
 async def _overlay(overlays: Overlays, session: SessionId) -> Overlay:
-    """Whether the session is watched, read off the loop the speaker runs on; the default where it cannot be read.
+    """The session's overlay, read off the loop the speaker runs on; the default where it cannot be read.
 
-    [LAW:no-silent-failure] logged as the error it is, which is an audit line, and the turn is handled as an unwatched one's.
+    [LAW:no-silent-failure] logged as the error it is, which is an audit line, and the turn is handled as the default's.
     """
     try:
         return await asyncio.to_thread(overlays.of, session)
     except (Rejected, OSError) as error:
-        logger.error(f"cannot read whether session {session} is watched, so this turn is handled as an unwatched one's: {error}")
-        return UNWATCHED
+        logger.error(f"cannot read the overlay of session {session}, so this turn is handled as a {DEFAULT_OVERLAY} session's: {error}")
+        return DEFAULT_OVERLAY
 
 
 def _unread(session: SessionId, name: str, error: Exception) -> TTSSpeakFrame:
