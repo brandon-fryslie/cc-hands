@@ -4,7 +4,9 @@ side questions hands asks of a Claude Code of their own."""
 import asyncio
 import json
 import os
+import signal
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -445,6 +447,35 @@ async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_n
         await brain.stop()
     turns = [entry for entry in recorded if isinstance(entry, BrainAsked | BrainAnswered)]
     assert turns == [BrainAsked("slow"), BrainAnswered("p1", None), BrainAsked("and now?"), BrainAnswered("p2", None)]
+
+
+async def test_a_hands_that_dies_without_stopping_its_brain_leaves_neither_fritter_nor_claude_running(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    # hands killed outright: no stop, no cleanup, only the kernel's hangup of the terminal it held.
+    hands = subprocess.run([sys.executable, "-c", f"""
+import asyncio, os
+from pathlib import PosixPath
+from hands.brain.process import Launch, Station, _child_of, start
+async def main():
+    brain = await start({launch(tmp_path, fritter)!r}, lambda _entry: None)
+    print(brain.pid, _child_of(brain.pid), flush=True)
+    os._exit(0)
+asyncio.run(main())
+"""], capture_output=True, text=True, timeout=30, check=True)
+    pids = [int(pid) for pid in hands.stdout.split()]
+    assert len(pids) == 2
+
+    def alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    try:
+        await until(lambda: not any(map(alive, pids)))
+    finally:
+        for pid in filter(alive, pids):
+            os.kill(pid, signal.SIGKILL)
 
 
 async def test_a_brain_with_no_fritter_to_run_under_is_refused_naming_the_install(tmp_path: Path, fake_claude: Path) -> None:

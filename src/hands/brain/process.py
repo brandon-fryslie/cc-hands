@@ -330,6 +330,7 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
             stdout=slave,
             stderr=slave,
             start_new_session=True,
+            preexec_fn=_hold_terminal,
         )
     except BaseException:
         os.close(master)
@@ -337,6 +338,13 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
     finally:
         os.close(slave)
     return ClaudeCode(process, _Terminal(master))
+
+
+def _hold_terminal() -> None:
+    """In the child, in the session of its own it was just given: its terminal becomes the session's, so hands' end,
+    however it comes, hangs it up and ends what runs on it, as closing a window does. Without it, a hands that dies
+    without stopping it leaves it running for good."""
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
 
 @dataclass
@@ -552,7 +560,7 @@ async def start(launch: Launch, record: Record) -> Brain:
         await asyncio.sleep(SETTLE_SECONDS)
     except BaseException:
         # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
-        # its own, so nothing else would end it when hands does.
+        # its own, which nothing but hands' own end would hang up.
         if running is not None:
             await running.stop()
         await listener.cleanup()
