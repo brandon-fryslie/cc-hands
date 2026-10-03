@@ -18,7 +18,7 @@ from hands.core.events import Continued, Interrupted, Progressed, Read, Taken, T
 from hands.core.progress import Doing, doing
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.status import Stamp
-from hands.core.turn import AgentId, AgentTask, Answering, Continuing, Interruption, Opening, Said, Step, Turn
+from hands.core.turn import AgentId, AgentTask, Answering, Delegated, Continuing, Interruption, Opening, Said, Step, Turn
 from hands.core.steps import Call
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.subagents import started_from, subagents_of, transcript_of
@@ -407,7 +407,7 @@ class Tails:
             id = AgentId(meta.name.removeprefix("agent-").removesuffix(".meta.json"))
             if id not in following.delegates:
                 path = transcript_of(following.path, id)
-                offset = _size(path) if history else 0
+                offset = _whole(path) if history else 0
                 if offset:
                     # [LAW:nothing-unseen] where its work starts being heard from, and how much of it is history.
                     logger.info(f"subagent {id} of session {session} was working before hands followed the session, so it is heard from where its transcript ends: {offset} bytes of it are history")
@@ -451,6 +451,24 @@ async def keep_tailing(tails: Tails, period: float, apply: Callable[[Transcribed
 
 class Unstarted(Exception):
     """Nothing says which call started a subagent: it names no job, and its parent is not running one skill."""
+
+
+def _whole(path: Path) -> int:
+    """Where the transcript's last whole record ends: a record Claude Code is part way through writing is not read from
+    its middle. None of it before Claude Code writes its first record."""
+    try:
+        with path.open("rb") as file:
+            at = file.seek(0, os.SEEK_END)
+            while at > 0:
+                back = min(4096, at)
+                at -= back
+                file.seek(at)
+                newline = file.read(back).rfind(b"\n")
+                if newline >= 0:
+                    return at + newline + 1
+            return 0
+    except FileNotFoundError:
+        return 0
 
 
 def _size(path: Path) -> int:
@@ -534,7 +552,9 @@ def _attributed(session: SessionId, delegate: Delegate, following: Following) ->
 
 def _started(session: SessionId, delegate: Delegate, following: Following) -> AgentTask:
     """The call that started the subagent, by the job it gave it: as Claude Code names it beside the transcript, or, for
-    a skill run in a subagent of its own, which it names no job for, as the parent invoked the one skill it is running.
+    a skill run in a subagent of its own, which it names no job for, as the parent's call that invoked it: the one whose
+    result names this subagent, as a fork run in the background has at once, and else the one skill the parent is
+    still running, as a fork in the foreground is until it reports back.
 
     A subagent a subagent started is the work of the call in the session that started the first: what the session
     is doing is what is heard, and its subagents' own subagents are how that one does it.
@@ -556,9 +576,13 @@ def _started(session: SessionId, delegate: Delegate, following: Following) -> Ag
             return AgentTask(delegate.id, description.strip())
         case _:
             parent = following.reading.turn
+            invoked = [step for reading in (following.reading, *following.ended) for step in reading.turn.slots if isinstance(step, Delegated) and step.id == delegate.id]
             running = [call.input for id, call in parent.calls.items() if call.tool == "Skill" and isinstance(parent.slots[parent.places[id]], str)]
-            match running:
-                case [{"skill": str() as skill, **rest}]:
+            match invoked, running:
+                case [Delegated(description=description), *_], _:
+                    logger.info(f"subagent {delegate.id} names no job, so it is heard as the work of the call whose result names it: {description!r}")
+                    return AgentTask(delegate.id, description)
+                case _, [{"skill": str() as skill, **rest}]:
                     arguments = rest.get("args")
                     invoked = f"/{skill} {arguments if isinstance(arguments, str) else ''}".strip()
                     logger.info(f"subagent {delegate.id} names no job, so it is heard as the work of the one skill its parent is running: {invoked!r}")

@@ -544,6 +544,37 @@ async def test_a_skill_run_in_a_subagent_of_its_own_is_the_work_of_the_skill_its
     assert any(f"subagent {AGENT} names no job, so it is heard as the work of the one skill its parent is running: '/code-review high 152'" in line for line in infos)
 
 
+async def test_a_skill_forked_into_the_background_is_the_work_of_the_call_whose_result_names_it(tmp_path: Path) -> None:
+    # Run in the background, the skill's call has its result at once, so it is running no longer as its subagent works.
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    tails = Tails(Known(transcript))
+    await tails.catch_up()
+    forked = {"success": True, "commandName": "code-review", "status": "forked", "background": True, "agentId": AGENT, "result": "Running in the background as @code-review"}
+    launched = json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "launched"}]}, "toolUseResult": forked}, separators=(",", ":"))
+    with transcript.open("a") as file:
+        file.write(lines(SKILL, launched))
+    subagent(transcript, {"agentType": "general-purpose", "requestShape": "background"}, JOB, READS)
+    heard, infos = await logged("INFO", progressed(tails))
+    assert [event for event in heard if isinstance(event.of, AgentTask)] == [Progressed(SID, AgentTask(AGENT, "/code-review high 152"), (READ_TAIL,), 7.0)]
+    assert any(f"subagent {AGENT} names no job, so it is heard as the work of the call whose result names it" in line for line in infos)
+
+
+async def test_a_subagent_already_working_is_followed_from_its_last_whole_record(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    own = subagent(transcript, {"description": "Review the parser change"}, JOB)
+    # Claude Code is part way through writing a record as hands follows the session.
+    with own.open("a") as file:
+        file.write(READS[:40])
+    tails = Tails(Known(transcript))
+    _, errors = await logged("ERROR", tails.catch_up())
+    with own.open("a") as file:
+        file.write(READS[40:] + "\n")
+    heard, more = await logged("ERROR", progressed(tails))
+    assert heard == [Progressed(SID, REVIEW, (READ_TAIL,), 7.0)] and errors == more == []
+
+
 async def test_a_subagent_a_subagent_started_is_heard_as_the_work_of_the_call_in_the_session_that_started_the_first(tmp_path: Path) -> None:
     # Measured: Claude Code keeps a subagent's own subagents beside the session's, each naming the one that started it.
     transcript = tmp_path / "t.jsonl"
