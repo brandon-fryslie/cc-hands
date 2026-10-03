@@ -16,6 +16,14 @@ AgentId = NewType("AgentId", str)
 
 
 @dataclass(frozen=True)
+class AgentTask:
+    """A subagent, and the job it was given as its parent described it."""
+
+    id: AgentId
+    description: str
+
+
+@dataclass(frozen=True)
 class Said:
     """Assistant text, as Claude wrote it for a screen."""
 
@@ -145,13 +153,12 @@ class Asked:
 class Notified:
     """A background task's notification, which Claude Code hands the session as its next prompt.
 
-    `task` is the id the notification names: a subagent's `AgentId` when a subagent reports back, and a background
-    command's or a monitor's own id otherwise. None for a notification that names no task.
+    `agent` is the subagent reporting back; None for a notification from a background command or a monitor.
     """
 
     ref: Ref | None
     text: str
-    task: str | None
+    agent: AgentTask | None
 
 
 @dataclass(frozen=True)

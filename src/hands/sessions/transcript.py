@@ -10,7 +10,7 @@ from typing import cast
 
 from hands.core.session import ESCAPES, PromptId
 from hands.core.status import Stamp
-from hands.core.turn import Asked, Commanded, Interruption, Notified, Opening, Ref, Shelled
+from hands.core.turn import AgentId, AgentTask, Asked, Commanded, Interruption, Notified, Opening, Ref, Shelled
 from hands.sessions.payload import Payload, Rejected
 
 # Records are written without spaces, so this finds every title record cheaply.
@@ -172,14 +172,16 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | Typed | 
             return None
     match fields.get("origin"):
         case {"kind": "task-notification"}:
-            task = _TASK.search(text)
-            return Notified(ref, text, None if task is None else task.group(1))
+            task, agent = _TASK.search(text), _AGENT.search(text)
+            return Notified(ref, text, None if task is None or agent is None else AgentTask(AgentId(task.group(1)), agent.group(1)))
         case _:
             return Asked(ref, text)
 
 
-# The task a notification is about, which Claude Code names only inside the notification's own markup.
+# The task a notification is about, which Claude Code names only inside the notification's own markup, and, where the
+# task is a subagent's, the job it was given: `Agent "/code-review high 124" finished`, or `... was stopped by Claude`.
 _TASK = re.compile(r"<task-id>([^<\s]+)</task-id>")
+_AGENT = re.compile(r'<summary>Agent "([^<]+)" [^"<]*</summary>')
 
 # The markup Claude Code writes, at the start of a record of the user's side, for what the user ran rather than wrote:
 # a slash command (its name first when Claude Code carries it out, its message first when it hands Claude a skill),

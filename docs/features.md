@@ -130,9 +130,9 @@ what each has and what remains.
   before it stops, and a long explanation is summarised before it finishes.
 - **Subagent narration.** After the first working version. A subagent's transcript
   under the session's `subagents/` directory is read with the parent's own fold
-  where the subagent reports back, its description comes from the `.meta.json`
-  beside it, and its steps are a part of that turn to open, linked by the
-  `agentId` the parent's call and the notification name. Done when "what did the
+  where the subagent reports back, named by the job its parent gave it, and its
+  steps are a part of that turn to open, linked by the `agentId` the parent's call
+  and the notification name. Done when "what did the
   reviewer find" is answered from the subagent's own steps.
 
 ## Loud daemon (`hands-liveness-x20`)

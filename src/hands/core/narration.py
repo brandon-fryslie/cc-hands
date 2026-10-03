@@ -189,7 +189,8 @@ def narration(turn: Turn, delta: Delta, subagents: tuple[Subagent, ...]) -> Narr
             if InDialog(step, question) not in waiting
         ),
         sections=_sections(sectioned),
-        subagents=tuple(_own_work(subagent) for subagent in subagents),
+        # A subagent stopped before it did anything has nothing to open.
+        subagents=tuple(_own_work(subagent) for subagent in subagents if subagent.steps),
     )
 
 

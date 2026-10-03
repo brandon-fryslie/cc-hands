@@ -127,8 +127,8 @@ def _forked(call: Call) -> Step | None:
         return None
     asked = " ".join(part for part in (f"/{name}", _text(call.input.get("args"))) if part)
     # Run in the background, it reports back as a notification, as an async agent does; run in the foreground, its
-    # result is its report.
-    report = None if structured.get("background") is True or call.result is None else call.result.text
+    # result is its report, which the record holds apart from the line Claude Code heads it with.
+    report = None if structured.get("background") is True else _text(structured.get("result"))
     return Delegated(call.ref, name, asked, report, _agent(structured))
 
 

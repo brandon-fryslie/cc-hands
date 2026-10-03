@@ -825,13 +825,16 @@ summarising.
 **Subagents.** On the parent's transcript a subagent is one call and its report, which
 becomes `Delegated`: an `Agent` call, or a `Skill` call whose result says `forked`, as
 /code-review's does. Either result carries the subagent's `agentId`. Its own records are
-in `<session>/subagents/agent-<id>.jsonl`, every one with `isSidechain` true, with its
-`description` in the `.meta.json` beside it; the parent's transcript holds none of them.
-Where the subagent reports back, in a task notification whose `<task-id>` is its
-`agentId` or in the result of a call that ran it in the foreground, its transcript is
+in `<session>/subagents/agent-<id>.jsonl`, every one with `isSidechain` true; the
+parent's transcript holds none of them. Where the subagent reports back, in a task
+notification whose `<task-id>` is its `agentId` and whose `<summary>` reads `Agent
+"<job>" ...`, or in the result of a call that ran it in the foreground, its transcript is
 folded by the backfill's own fold and told as a part of that turn, "the subagents' own
-work" (failure mode 21). A notification's task id that names no transcript is a
-background command or a monitor.
+work" (failure mode 21), named by the job the parent gave it. The record the transcript
+starts from is that job, not work: a subagent's prompt, or for a fork, the parent's
+launching call copied in. A notification whose summary names no agent is a background
+command or a monitor. The notification is read with the telling that answers it, never
+again with a later telling of the same turn.
 
 **Results outside the transcript.** A formatter, a code generator, or a `sed` in a
 shell command changes files that no `Edited` step names. So at `UserPromptSubmit` the

@@ -168,7 +168,7 @@ async def recount(
         logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")
         recounts.put(session, turn, None)
         return None
-    subagents = await _subagents(session, told)
+    subagents, unread = await _subagents(session, told)
     tree = narration(told.turn, delta, subagents)
     # The last words wherever they fall: a turn interrupted mid-work, or one ending on a dialog, said what it had done
     # before the step that ended it.
@@ -184,6 +184,7 @@ async def recount(
             delivered,
             opened=type(told.turn.opening).__name__,
             subagents=tuple(subagent.id for subagent in subagents),
+            unread=unread,
         )
     )
     # Marked told however it is delivered, so the tail lets the steps go: what is kept of them is the tree's parts, held
@@ -193,22 +194,21 @@ async def recount(
     return _delivered(delivered, Finished(session, (news,)))
 
 
-async def _subagents(session: SessionId, told: Telling) -> tuple[Subagent, ...]:
-    """The subagents that reported back in the turn, each read from its own transcript.
+async def _subagents(session: SessionId, told: Telling) -> tuple[tuple[Subagent, ...], tuple[str, ...]]:
+    """The subagents that reported back in the turn, each read from its own transcript, and the ids of those that could not be.
 
-    A subagent whose transcript cannot be read is said in the log and left out, and the turn is told without it: the
-    parent's own record of it, the call and the report, is still the turn's [LAW:no-silent-failure].
+    A subagent whose transcript cannot be read is said in the log and on the turn's audit line, and the turn is told
+    without it: the parent's own record of it, the call and the report, is still the turn's [LAW:no-silent-failure].
     """
     read: list[Subagent] = []
+    unread: list[str] = []
     for task in reporting(told.turn):
         try:
-            subagent = await asyncio.to_thread(read_subagent, told.transcript, task)
+            read.append(await asyncio.to_thread(read_subagent, told.transcript, task))
         except _FAILURES as error:
-            logger.error(f"cannot read the work of subagent {task} of session {session}, so its turn is told without it: {type(error).__name__}: {error}")
-            continue
-        if subagent is not None:
-            read.append(subagent)
-    return tuple(read)
+            logger.error(f"cannot read the work of subagent {task.id} of session {session}, so its turn is told without it: {type(error).__name__}: {error}")
+            unread.append(task.id)
+    return tuple(read), tuple(unread)
 
 
 def _delivered[T](delivered: Delivery, told: T) -> T | None:
