@@ -32,6 +32,7 @@ from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
 from hands.sessions.audit import Called, Record
+from hands.sessions.focus import focused, set_focus
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
@@ -158,16 +159,21 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
     tool added here is one the eval's model is offered too.
     """
     overlays = Overlays(home)
-    return [
-        list_sessions_tool(sessions, overlays),
+    # Every tool that acts on one session, each taking the focus for the session the user did not name.
+    on_a_session = [
         *session_tools(sessions, store),
         tell_turn_tool(sessions, recounts),
         expand_tool(sessions, recounts),
         *backlog_tools(sessions, store),
         *draft_tools(sessions),
         *keyboard_tools(sessions),
-        *permission_tools(sessions),
         watch_session_tool(sessions, overlays),
+    ]
+    return [
+        list_sessions_tool(sessions, overlays, home),
+        focus_session_tool(sessions, home),
+        *(defaulting_to_focus(tool, home) for tool in on_a_session),
+        *permission_tools(sessions),
         turn_summaries_tool(home),
         *voice_tools(Voices(home, player.lines, fetched)),
         *playback_tools(player),
@@ -220,7 +226,62 @@ def stay_silent_tool() -> Tool:
     return tool(stay_silent, then="silence")
 
 
-def list_sessions_tool(sessions: Sessions, overlays: Overlays) -> Tool:
+def defaulting_to_focus(tool: Tool, home: Home) -> Tool:
+    """The tool, its session argument made optional: a call that names no session acts on the focused one."""
+    # [LAW:single-enforcer] the one place a session left unnamed becomes the focus, for every tool that acts on one, so
+    # what "the focus" means is said once and the model never has to remember which session that is.
+    if "session" not in tool.required:
+        raise TypeError(f"the tool {tool.name} takes no session the focus could stand in for")
+    line = tool.properties["session"]
+
+    async def call(session: object = "", **arguments: object) -> Result:
+        if session not in ("", None):
+            return await tool.body(session=session, **arguments)
+        try:
+            focus = await asyncio.to_thread(focused, home)
+        except (Rejected, OSError) as error:
+            logger.error(f"{tool.name} named no session, and the focus cannot be read: {error}")
+            return {"error": f"no session was named, and which one is focused cannot be read: {error}"}
+        if focus is None:
+            return {"error": "no session was named and none is focused: ask the user which session they mean"}
+        # [LAW:nothing-unseen] the session the focus stood in for rides on the result, so its Called line says where the call went.
+        return {**await tool.body(session=focus, **arguments), "focused_session": focus}
+
+    return replace(
+        tool,
+        properties={**tool.properties, "session": {**line, "description": f"{line['description']} Empty for the focused session."}},
+        required=tuple(name for name in tool.required if name != "session"),
+        body=call,
+    )
+
+
+def focus_session_tool(sessions: Sessions, home: Home) -> Tool:
+    async def focus_session(session: str) -> Result:
+        """Make a session the one the user is talking to: what they say for a session without naming one goes to it.
+
+        Call this when the user says to focus a session, switch or move to one, or work in one, such as "switch to
+        cc-hands" or "focus the laws session". Do not ask them to confirm it. It holds from the next thing they say, and
+        across restarts, until they move it; a session they name still gets what they say to it, focused or not. Say
+        the returned readback.
+
+        Args:
+            session: The session's id, from list_sessions. Empty to focus none, when the user says to stop working in one.
+        """
+        try:
+            to = None if session == "" else _session_id(session)
+            # [LAW:parse-dont-validate] only a session the registry holds can be focused.
+            if to is not None and sessions.live_session(to) is None:
+                raise Rejected(f"no running session has the id {to!r}; take one from list_sessions")
+            await asyncio.to_thread(set_focus, home, to)
+        except (Rejected, OSError) as error:
+            logger.error(f"focus_session could not focus {session!r}: {error}")
+            return {"error": str(error)}
+        return {"readback": "No session is focused now." if to is None else f"Now on {spoken_name(sessions, to)}."}
+
+    return tool(focus_session, completes=True)
+
+
+def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home) -> Tool:
     async def list_sessions() -> Result:
         """List the running Claude Code sessions by name, what each is doing, and the permission mode each is in.
 
@@ -232,11 +293,21 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays) -> Tool:
         one it reported when it last did something: a mode changed at its keyboard
         while it sits at its prompt is seen when it is next prompted, and one changed
         in the middle of a turn at its next tool call. `watched` says whether each turn it finishes is told to the
-        user as it finishes (watch_session).
+        user as it finishes (watch_session). `focus` is the id of the session the user is talking to when they name
+        none (focus_session), or "none".
         """
-        return {"sessions": [{**entry, "watched": await _watched(overlays, SessionId(entry["id"]))} for entry in standing(sessions)]}
+        return {"sessions": [{**entry, "watched": await _watched(overlays, SessionId(entry["id"]))} for entry in standing(sessions)], "focus": await _focus(home)}
 
     return tool(list_sessions)
+
+
+async def _focus(home: Home) -> str:
+    try:
+        focus = await asyncio.to_thread(focused, home)
+    except (Rejected, OSError) as error:
+        logger.error(f"cannot read the focus to list it: {error}")
+        return f"unknown, it cannot be read: {error}"
+    return "none" if focus is None else focus
 
 
 async def _watched(overlays: Overlays, session: SessionId) -> str:

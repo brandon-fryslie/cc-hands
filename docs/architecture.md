@@ -1307,9 +1307,11 @@ Models are unreliable at holding "which session we are talking about" and "I am
 mid-draft" across a long conversation, and both failures are expensive. So both live
 in the daemon as typed state and the tools default to them.
 
-**Focus** is `SessionId | None`. Every tool that takes a `session` argument accepts
-its omission as "the focus". "Switch to cc-hands" is `focus_session`, and the change
-is a `Note` so the model knows without announcing it. The registry, not the prompt,
+**Focus** is `SessionId | None`, kept in the home's `focus` file (`hands.sessions.focus`)
+and read at each use. Every tool that acts on a session accepts the omission of its
+`session` argument as "the focus" (`defaulting_to_focus`), and a session it names wins
+over the focus. "Switch to cc-hands" is `focus_session`, with no confirmation. The
+model is told the focus at the tail of every request, so hands, not the prompt,
 answers "which one did you mean".
 
 **Drafts** are per target: `NoDraft | Staged(text, resolutions)`. The readback is

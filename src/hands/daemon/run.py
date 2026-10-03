@@ -76,7 +76,7 @@ from hands.voice.summary import Summariser, aside, summariser
 from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
 from hands.voice.summarising import SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS, keep_summarising
 from hands.voice.sentences import SummaryStore
-from hands.voice.briefing import brief, tail
+from hands.voice.briefing import as_sent, brief
 from hands.voice.conversation import record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
@@ -85,7 +85,7 @@ from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain
 from hands.voice.player import Player
 from hands.voice import voices
 from hands.sessions.payload import Rejected
-from hands.voice.tools import Tool, audited, intermediary_tools, standing
+from hands.voice.tools import Tool, audited, intermediary_tools
 from hands.brain.mcp import serve_mcp
 from hands.brain.asides import Asides
 from hands.brain.process import Brain, Launch, NotLoggedIn, Station, Unstartable, account_kept_out, logged_in, start as start_brain, workdir
@@ -237,7 +237,7 @@ class Mind:
 
 @asynccontextmanager
 async def mind(
-    config: VoiceConfig, tools: Sequence[Tool], sessions: Sessions, proxy_url: str, wire: Wire, store: Store, fritter: Path, log: Path, record: Record
+    config: VoiceConfig, tools: Sequence[Tool], tail: Callable[[], str], proxy_url: str, wire: Wire, store: Store, fritter: Path, log: Path, record: Record
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
     through, the stage that speaks for it from the wire, the keeper of its context, and what answers hands' side questions."""
@@ -259,7 +259,7 @@ async def mind(
                     # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
                     # its own: nothing but the user's turns and their stops is ever typed into the brain.
                     asides = Asides(station, record)
-                    stage = BrainStage(brain, tools, lambda: tail(standing(sessions)), record)
+                    stage = BrainStage(brain, tools, tail, record)
                     keeper = Keeper(brain.session, asides.ask, store, EVERY, record)
                     with wire.joined(Kept(stage, keeper, brain, asides)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
@@ -329,7 +329,7 @@ async def run(
         config = await start(lambda: configured(configure, survey, home, sessions, audit.record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, sessions, proxy.url, wire, store, home.fritter, home.audit, audit.record) as minded:
+            async with mind(config, tools, lambda: as_sent(sessions, home), proxy.url, wire, store, home.fritter, home.audit, audit.record) as minded:
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, player, audit.record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
@@ -391,7 +391,7 @@ async def converse(
             failures.append(error)
             quit_event.set()
 
-    await brief(sessions, minded.telling, voice.worker.queue_frame)
+    await brief(sessions, home, minded.telling, voice.worker.queue_frame)
     # First sight of every project a session is already working in: its backlog is said before anyone asks for it.
     for listing in sessions.live():
         store.want(listing.session.membership.cwd)

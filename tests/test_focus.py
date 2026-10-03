@@ -1,0 +1,155 @@
+"""The focus: the session the user's words go to when they name none, set in one call, held in the home, and never a lock."""
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from hands.core.effects import Input, Text, Type
+from hands.core.events import Joined
+from hands.core.session import Membership, PromptText, SessionId
+from hands.sessions.audit import AuditLog, tail as audit_tail
+from hands.sessions.focus import focused, set_focus
+from hands.sessions.home import Home
+from hands.sessions.payload import Rejected
+from hands.sessions.registry import Sessions
+from hands.sessions.sentences import Sentences
+from hands.voice.briefing import as_sent
+from hands.voice.narrator import Recounts
+from hands.voice.player import Player
+from hands.voice.sentences import SummaryStore
+from hands.voice.tools import Tool, audited, defaulting_to_focus, intermediary_tools, stay_silent_tool
+
+HANDS = SessionId("s-hands")
+LAWS = SessionId("s-laws")
+
+
+async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None, typist=typed.append)
+    for id, project in ((HANDS, "cc-hands"), (LAWS, "laws")):
+        await sessions.apply(Joined(Membership(id, 4242, Path("/code") / project, tmp / f"{id}.jsonl", tmp / f"{id}.sock"), "startup"))
+    return sessions
+
+
+def tools(sessions: Sessions, home: Home) -> dict[str, Tool]:
+    """The tools as the daemon gives them, focus defaulting and all."""
+    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None))
+    return {tool.name: tool for tool in given}
+
+
+async def say(given: dict[str, Tool], text: str, **session: str) -> dict[str, object]:
+    """One dictated turn, staged and sent, naming the session only where `session` does."""
+    staged = await given["stage_draft"].body(text=text, resolutions=[], **session)
+    assert "error" not in staged, staged
+    return dict(await given["send_draft"].body(**session))
+
+
+def typed_to(typed: list[Type[Input]]) -> list[tuple[str, Input]]:
+    return [(effect.socket.stem, effect.input) for effect in typed]
+
+
+async def test_unnamed_turns_reach_the_focus_and_one_call_moves_it_while_a_named_turn_reaches_the_one_named(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions = await two_sessions(tmp_path, typed)
+    given = tools(sessions, Home(tmp_path / "home"))
+
+    assert await given["focus_session"].body(session=HANDS) == {"readback": "Now on cc-hands."}
+    for text in ("run the tests", "fix what failed", "commit it"):
+        assert await say(given, text) == {"readback": "Sent the draft to cc-hands.", "focused_session": HANDS}
+    assert await given["focus_session"].body(session=LAWS) == {"readback": "Now on laws."}
+    await say(given, "read the new law")
+    # Focused on laws, a turn that names cc-hands reaches cc-hands: the focus is a default, never a lock.
+    assert await say(given, "and push it", session=HANDS) == {"readback": "Sent the draft to cc-hands."}
+
+    assert typed_to(typed) == [
+        (HANDS, Text(PromptText("run the tests"))),
+        (HANDS, Text(PromptText("fix what failed"))),
+        (HANDS, Text(PromptText("commit it"))),
+        (LAWS, Text(PromptText("read the new law"))),
+        (HANDS, Text(PromptText("and push it"))),
+    ]
+
+
+async def test_the_focus_outlives_a_restart_and_is_what_the_brain_is_told_with_every_request(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions = await two_sessions(tmp_path, typed)
+    await tools(sessions, Home(tmp_path / "home"))["focus_session"].body(session=LAWS)
+
+    # A daemon started again reads the home afresh.
+    again = Home(tmp_path / "home")
+    assert focused(again) == LAWS
+    assert f'The focused session, the one the user\'s words go to when they name none, is "laws" (id {LAWS}).' in as_sent(sessions, again)
+    assert (await tools(sessions, again)["list_sessions"].body())["focus"] == LAWS
+
+
+async def test_with_no_focus_an_unnamed_turn_is_refused_and_nothing_is_typed(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions = await two_sessions(tmp_path, typed)
+    given = tools(sessions, Home(tmp_path / "home"))
+
+    assert "No session is focused." in as_sent(sessions, Home(tmp_path / "home"))
+    assert await given["stage_draft"].body(text="run the tests", resolutions=[]) == {"error": "no session was named and none is focused: ask the user which session they mean"}
+    assert typed == []
+
+
+async def test_focusing_none_clears_it_and_a_session_that_is_not_running_cannot_be_focused(tmp_path: Path) -> None:
+    sessions = await two_sessions(tmp_path, [])
+    home = Home(tmp_path / "home")
+    given = tools(sessions, home)
+
+    await given["focus_session"].body(session=HANDS)
+    assert await given["focus_session"].body(session="gone") == {"error": "no running session has the id 'gone'; take one from list_sessions"}
+    assert focused(home) == HANDS
+    assert await given["focus_session"].body(session="") == {"readback": "No session is focused now."}
+    assert focused(home) is None
+
+
+async def test_a_focused_session_that_has_stopped_running_is_said_so(tmp_path: Path) -> None:
+    sessions = await two_sessions(tmp_path, [])
+    home = Home(tmp_path / "home")
+    set_focus(home, SessionId("ended"))
+    assert "The focused session (id ended) is not running now." in as_sent(sessions, home)
+
+
+async def test_a_focus_file_holding_no_session_id_is_refused_and_the_brain_is_told_it_cannot_be_read(tmp_path: Path) -> None:
+    sessions = await two_sessions(tmp_path, [])
+    home = Home(tmp_path / "home")
+    home.root.mkdir()
+    home.focus.write_text("../escape\n")
+    with pytest.raises(Rejected, match="no session id"):
+        focused(home)
+    assert "Which session is focused cannot be read:" in as_sent(sessions, home)
+    result = await tools(sessions, home)["read_backlog"].body()
+    assert "which one is focused cannot be read" in str(result["error"])
+
+
+async def test_every_tool_that_acts_on_a_session_takes_the_focus_for_one_left_unnamed(tmp_path: Path) -> None:
+    given = tools(await two_sessions(tmp_path, []), Home(tmp_path / "home"))
+    defaulted = {name for name, tool in given.items() if "session" in tool.properties and "session" not in tool.required}
+    assert defaulted == {
+        "read_session", "read_turn", "tell_turn", "expand", "read_backlog", "read_ticket",
+        "stage_draft", "amend_draft", "discard_draft", "send_draft", "send_command", "interrupt_session", "watch_session",
+    }  # fmt: skip
+    assert all(str(given[name].properties["session"]["description"]).endswith("Empty for the focused session.") for name in defaulted)
+    # focus_session's own empty means "focus none", never "the focus".
+    assert given["focus_session"].required == ("session",)
+    with pytest.raises(TypeError, match="stay_silent takes no session"):
+        defaulting_to_focus(stay_silent_tool(), Home(tmp_path / "home"))
+
+
+async def test_the_session_the_focus_stood_in_for_is_on_the_calls_audit_line(tmp_path: Path) -> None:
+    sessions = await two_sessions(tmp_path, [])
+    home = Home(tmp_path / "home")
+    path = tmp_path / "audit"
+    record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
+    given = {name: audited(tool, record) for name, tool in tools(sessions, home).items()}
+
+    await given["focus_session"].body(session=LAWS)
+    await given["stage_draft"].body(text="run the tests", resolutions=[])
+
+    called = [line for line in map(json.loads, audit_tail(path, 1000)[0]) if line["type"] == "Called"]
+    assert [(line["tool"], line["arguments"], line["result"]) for line in called] == [
+        ("focus_session", {"session": LAWS}, {"readback": "Now on laws."}),
+        ("stage_draft", {"text": "run the tests", "resolutions": []}, {"readback": "Draft for laws: run the tests", "focused_session": LAWS}),
+    ]
