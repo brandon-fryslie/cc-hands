@@ -24,12 +24,11 @@ from pipecat.frames.frames import (
     LLMTextFrame,
     TTSSpeakFrame,
 )
-from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.workers.runner import WorkerRunner
 
+from conftest import running
 from hands.brain.process import Untaken
 from hands.brain.stage import INTERRUPTED, SILENT, BrainStage
 from hands.core.session import SessionId
@@ -185,28 +184,11 @@ async def rig() -> AsyncGenerator[Rig, None]:
     now = [0.0]
     stage = BrainStage(brain, TOOLS, lambda: standing[-1], recorded.append, clock=lambda: now[0])
     out = Spoken()
-    worker = PipelineWorker(Pipeline([stage, out]), idle_timeout_secs=None)
-    started = asyncio.Event()
-    errors: list[ErrorFrame] = []
-
-    @worker.event_handler("on_pipeline_started")
-    async def _started(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
-        started.set()
-
-    @worker.event_handler("on_pipeline_error")
-    async def _failed(_worker: PipelineWorker, error: ErrorFrame) -> None:  # pyright: ignore[reportUnusedFunction]
-        errors.append(error)
-
-    runner = WorkerRunner(handle_sigint=False)
-    await runner.add_workers(worker)
-    running = asyncio.create_task(runner.run())
-    # As the daemon runs it: a watch beside the pipeline.
-    asking = asyncio.create_task(stage.ask_each())
-    await asyncio.wait_for(started.wait(), PATIENCE_SECS)
-    yield Rig(worker, stage, brain, out, recorded, errors, standing, now)
-    asking.cancel()
-    await worker.cancel()
-    await running
+    async with running([stage, out]) as run:
+        # As the daemon runs it: a watch beside the pipeline.
+        asking = asyncio.create_task(stage.ask_each())
+        yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now)
+        asking.cancel()
 
 
 def answering(name: str, result: object, call_id: str = "t1") -> dict[str, object]:
@@ -472,15 +454,13 @@ async def test_notes_that_came_in_one_ask_are_not_asked_again_empty(rig: Rig) ->
     assert rig.brain.asked == ["first", "[hands] api finished.\n\n[hands] web finished."]
 
 
-async def test_a_turn_whose_last_reply_carried_nothing_is_said_as_the_models_empty_reply(rig: Rig) -> None:
+async def test_a_turn_whose_replies_carried_nothing_is_said_as_the_models_empty_reply(rig: Rig) -> None:
     unsaid = "api finished a turn, and I could not tell it."
     await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", unsaid))
     await rig.until(lambda: len(rig.brain.asked) == 1)
-    # A call answered, then a reply with nothing in it: whitespace is not words.
+    # Whitespace is not words.
     exchange, _ = rig.request()
-    rig.calls(exchange, ("t1", "mcp__hands__read_session"))
-    last, _ = rig.request(answering("mcp__hands__read_session", {"steps": []}))
-    rig.stream(last, " ")
+    rig.stream(exchange, " ")
     rig.brain.end()
     await rig.until(lambda: len(rig.errors) == 1)
     assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == ModelReplyEmpty()
@@ -490,6 +470,22 @@ async def test_a_turn_whose_last_reply_carried_nothing_is_said_as_the_models_emp
     # [LAW:nothing-unseen] the empty reply is on the turn's line in the audit log.
     [spoke] = [entry for entry in rig.recorded if isinstance(entry, BrainSpoke)]
     assert spoke.failed == ModelReplyEmpty()
+    # An empty reply is whole and in the brain's history: its next turn is not told the API broke one off.
+    await rig.say({"role": "user", "content": "hello?"})
+    assert rig.brain.asked[-1] == "hello?"
+
+
+async def test_a_turn_that_called_a_tool_and_then_answered_nothing_is_no_empty_reply(rig: Rig) -> None:
+    """Claude often ends a turn with an empty reply to a tool's result: the call already did what the turn was for."""
+    await rig.say({"role": "user", "content": "what is api doing?"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "Let me look.")
+    rig.calls(exchange, ("t1", "mcp__hands__read_session"))
+    rig.request(answering("mcp__hands__read_session", {"steps": []}))
+    rig.brain.end()
+    await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
+    await asyncio.sleep(0.1)
+    assert rig.errors == []
 
 
 async def test_a_turn_ending_on_a_call_that_lands_is_no_empty_reply(rig: Rig) -> None:

@@ -95,8 +95,8 @@ class _Turn:
     spoken: list[str]
     # The requests on the wire that are this turn's own, in the order they left.
     exchanges: list[str] = field(default_factory=list[str])
-    # Those of its requests whose reply carried words or a call: one that carried neither said nothing to the user.
-    answered: set[str] = field(default_factory=set[str])
+    # A reply of the turn's own carried words or a call: a turn none of whose replies did said nothing to the user.
+    replied: bool = False
     # The call blocks the reply streaming now has opened and not yet closed, by index: a call is not run until it is whole.
     opening: dict[int, tuple[str, str]] = field(default_factory=dict[int, tuple[str, str]])
     # The calls the turn's last reply made whole, by id, which run until its next request leaves.
@@ -110,8 +110,8 @@ class _Turn:
     failure: ModelFact = _UNNAMED
 
     def empty(self) -> bool:
-        """The turn ended on a reply of its own with nothing in it, one the user did not speak over."""
-        return not self.interrupted and any(exchange not in self.answered for exchange in self.exchanges[-1:])
+        """The model answered the turn, the user did not speak over it, and nothing it answered said or did anything."""
+        return bool(self.exchanges) and not (self.interrupted or self.replied)
 
 
 class BrainStage(FrameProcessor):
@@ -202,7 +202,7 @@ class BrainStage(FrameProcessor):
             await self.push_frame(TTSSpeakFrame(readback))
         # A brain that failed the turn itself has no answer to read.
         failure = None if asked.exception() is not None else _failed(turn, asked.result().error)
-        self._record(BrainSpoke(tuple(turn.exchanges), "".join(turn.spoken), tuple(turn.readbacks), turn.interrupted, asker, waited, None if failure is None else failure[1]))
+        self._record(BrainSpoke(tuple(turn.exchanges), "".join(turn.spoken), tuple(turn.readbacks), turn.interrupted, asker, waited, None if failure is None else failure.fact))
         if (error := asked.exception()) is not None:
             # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
             # from its own watch, but one that never took the turn, or could not be typed into, is still running.
@@ -214,10 +214,9 @@ class BrainStage(FrameProcessor):
         elif failure is not None:
             # [LAW:no-silent-failure] said as the API services' failures are: an error from the model's stage. No category:
             # Pipecat takes an invalid request or a refused login as permanent and stops the stage, and the brain goes on.
-            error, fact = failure
-            self._broken_off = _broken_off("".join(turn.spoken))
+            self._broken_off = failure.note
             await self._unsaid(unsaid)
-            await self.push_error(error, exception=ModelFault(fact))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+            await self.push_error(failure.error, exception=ModelFault(failure.fact))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
     async def _unsaid(self, unsaid: Sequence[str]) -> None:
         """What hands had for the brain to tell, said as written since the brain did not: a system fact, kept out of the context."""
@@ -285,11 +284,10 @@ class BrainStage(FrameProcessor):
             # not; the turn ends in StopFailure, with the broken reply kept out of the brain's history (2.1.285, hands-wire-6ic.6dz).
             case Heard(exchange=exchange, event=TextDelta(text=text)) if exchange in turn.exchanges:
                 turn.said.put_nowait(text)
-                if text.strip():
-                    turn.answered.add(exchange)
+                turn.replied = turn.replied or bool(text.strip())
             case Heard(exchange=exchange, event=BlockStarted(index=index, block={"type": "tool_use", "id": str() as call, "name": str() as name})) if exchange in turn.exchanges:
                 turn.opening[index] = (call, name)
-                turn.answered.add(exchange)
+                turn.replied = True
             # Claude Code runs a call once its block is whole, before the reply's last byte, and hands hears each byte
             # before Claude Code does: the call is running from here on.
             case Heard(exchange=exchange, event=BlockStopped(index=index)) if exchange in turn.exchanges and index in turn.opening:
@@ -314,15 +312,25 @@ def _user_text(message: LLMStandardMessage) -> str:
     return content
 
 
-def _failed(turn: _Turn, error: str | None) -> tuple[str, ModelFact] | None:
-    """What a turn the brain finished failed of, as the stage's error says it and as the fact it is; None for one that did not."""
+@dataclass(frozen=True)
+class _Failure:
+    """What a turn the brain finished failed of: the stage's error, the fact it is, and the note the brain's next turn carries."""
+
+    error: str
+    fact: ModelFact
+    note: str
+
+
+def _failed(turn: _Turn, error: str | None) -> _Failure | None:
+    """What a turn the brain finished failed of; None for one that did not."""
     if turn.stopped:
         # Told to stop by hands is asked for, not a failure, whatever the turn ended in.
         return None
     if error is not None:
-        return f"the brain's turn ended in error: {error}", turn.failure
+        return _Failure(f"the brain's turn ended in error: {error}", turn.failure, _broken_off("".join(turn.spoken)))
     if turn.empty():
-        return "the brain's reply was empty", ModelReplyEmpty()
+        # An empty reply is a whole one, kept in the brain's history: there is nothing broken off to tell it of.
+        return _Failure("the brain's reply was empty", ModelReplyEmpty(), "")
     return None
 
 

@@ -2,25 +2,23 @@
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
 import pytest
 from aiohttp import web
-from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, LLMContextFrame, LLMFullResponseEndFrame
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.worker import PipelineWorker
+from anthropic import AsyncAnthropic
+from pipecat.frames.frames import Frame, InterruptionFrame, LLMContextFrame, LLMFullResponseEndFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.workers.runner import WorkerRunner
 
-from conftest import ServeChat
-from hands.sessions.model_facts import ModelFault, ModelReplyEmpty
-from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend, build_llm
+from conftest import Api, ServeApi, ServeChat, running
+from hands.sessions.model_facts import ModelFault, ModelReplyEmpty, ModelUnreachable
+from hands.voice.pipeline import AnthropicBackend, AnthropicService, OpenAICompatibleBackend, build_llm
+from hands.voice.system import model_fact
 from hands.voice.tools import pipecat_function, stay_silent_tool
 
 PATIENCE_SECS = 5.0
@@ -91,25 +89,28 @@ def anthropic_stream(reply: Reply) -> list[str]:
 
 @dataclass
 class Streaming:
-    """A server streaming one reply from both endpoints, until `release` is set when the test holds it open."""
+    """A served model streaming one reply from both endpoints: `received` is set as a request arrives, and the reply is
+    streamed once `release` is set, at once when the test does not hold it."""
 
-    url: str
-    anthropic_url: str
+    api: Api
+    received: asyncio.Event
     release: asyncio.Event
 
 
 @pytest.fixture
-async def streaming() -> AsyncIterator[Callable[[Reply, bool], Awaitable[Streaming]]]:
-    runners: list[web.AppRunner] = []
+async def streaming(api_server: ServeApi) -> AsyncIterator[Callable[[Reply, bool], Awaitable[Streaming]]]:
+    releases: list[asyncio.Event] = []
 
     async def serve(reply: Reply, held: bool) -> Streaming:
-        release = asyncio.Event()
+        received, release = asyncio.Event(), asyncio.Event()
+        releases.append(release)
         if not held:
             release.set()
 
         async def stream(request: web.Request, events: list[str]) -> web.StreamResponse:
             response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await response.prepare(request)
+            received.set()
             await release.wait()
             for event in events:
                 await response.write(event.encode())
@@ -121,60 +122,23 @@ async def streaming() -> AsyncIterator[Callable[[Reply, bool], Awaitable[Streami
         async def message(request: web.Request) -> web.StreamResponse:
             return await stream(request, anthropic_stream(reply))
 
-        app = web.Application()
-        app.router.add_post("/v1/chat/completions", complete)
-        app.router.add_post("/v1/messages", message)
-        runner = web.AppRunner(app)
-        runners.append(runner)
-        await runner.setup()
-        await web.TCPSite(runner, "127.0.0.1", 0).start()
-        host = f"http://127.0.0.1:{runner.addresses[0][1]}"
-        return Streaming(f"{host}/v1", host, release)
+        return Streaming(await api_server(complete, message), received, release)
 
     yield serve
-    for runner in runners:
-        await runner.cleanup()
+    # A reply still held would keep its handler, and the server's cleanup, waiting for good.
+    for release in releases:
+        release.set()
 
 
-def service(shape: Literal["openai", "anthropic"], server: Streaming) -> AnthropicLLMService | OpenAILLMService:
+Shape = Literal["openai", "anthropic"]
+
+
+def service(shape: Shape, server: Streaming) -> AnthropicLLMService | OpenAILLMService:
     match shape:
         case "openai":
-            return build_llm(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), instruction="Speak.", max_tokens=50)
+            return build_llm(OpenAICompatibleBackend(base_url=server.api.url, api_key="k", model="m"), instruction="Speak.", max_tokens=50)
         case "anthropic":
-            return build_llm(AnthropicBackend(base_url=server.anthropic_url, api_key="k", model="m"), instruction="Speak.", max_tokens=50)
-
-
-@dataclass
-class Running:
-    worker: PipelineWorker
-    errors: list[ErrorFrame]
-    ended: asyncio.Event
-
-
-@asynccontextmanager
-async def running(llm: FrameProcessor) -> AsyncGenerator[Running]:
-    """The service in a pipeline of its own, the way the daemon runs it: its errors are what the system channel says."""
-    worker = PipelineWorker(Pipeline([llm, Ends(ended := asyncio.Event())]), idle_timeout_secs=None)
-    errors: list[ErrorFrame] = []
-    started = asyncio.Event()
-
-    @worker.event_handler("on_pipeline_started")
-    async def _started(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
-        started.set()
-
-    @worker.event_handler("on_pipeline_error")
-    async def _failed(_worker: PipelineWorker, error: ErrorFrame) -> None:  # pyright: ignore[reportUnusedFunction]
-        errors.append(error)
-
-    runner = WorkerRunner(handle_sigint=False)
-    await runner.add_workers(worker)
-    task = asyncio.create_task(runner.run())
-    await asyncio.wait_for(started.wait(), PATIENCE_SECS)
-    try:
-        yield Running(worker, errors, ended)
-    finally:
-        await worker.cancel()
-        await task
+            return build_llm(AnthropicBackend(base_url=server.api.anthropic_url, api_key="k", model="m"), instruction="Speak.", max_tokens=50)
 
 
 class Ends(FrameProcessor):
@@ -196,11 +160,11 @@ def asked() -> LLMContextFrame:
 
 
 @pytest.mark.parametrize("shape", ["openai", "anthropic"])
-async def test_an_empty_reply_is_reported_as_the_models_empty_reply(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Literal["openai", "anthropic"]) -> None:
+async def test_an_empty_reply_is_reported_as_the_models_empty_reply(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Shape) -> None:
     llm = service(shape, await streaming("empty", False))
-    async with running(llm) as run:
+    async with running([llm, Ends(ended := asyncio.Event())]) as run:
         await run.worker.queue_frame(asked())
-        await asyncio.wait_for(run.ended.wait(), PATIENCE_SECS)
+        await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
         [error] = run.errors
         assert error.processor is llm
         assert isinstance(error.exception, ModelFault) and error.exception.fact == ModelReplyEmpty()
@@ -208,25 +172,49 @@ async def test_an_empty_reply_is_reported_as_the_models_empty_reply(streaming: C
 
 @pytest.mark.parametrize("shape", ["openai", "anthropic"])
 @pytest.mark.parametrize("reply", ["words", "stay_silent"])
-async def test_a_reply_with_words_or_a_call_to_stay_silent_is_no_failure(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Literal["openai", "anthropic"], reply: Reply) -> None:
+async def test_a_reply_with_words_or_a_call_to_stay_silent_is_no_failure(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Shape, reply: Reply) -> None:
     llm = service(shape, await streaming(reply, False))
-    async with running(llm) as run:
+    async with running([llm, Ends(ended := asyncio.Event())]) as run:
         await run.worker.queue_frame(asked())
-        await asyncio.wait_for(run.ended.wait(), PATIENCE_SECS)
+        await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
         await asyncio.sleep(0.1)
         assert run.errors == []
 
 
 @pytest.mark.parametrize("shape", ["openai", "anthropic"])
-async def test_a_reply_the_user_spoke_over_is_no_empty_reply(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Literal["openai", "anthropic"]) -> None:
+async def test_a_reply_the_user_spoke_over_is_no_empty_reply(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Shape) -> None:
     server = await streaming("empty", True)
     llm = service(shape, server)
-    async with running(llm) as run:
+    async with running([llm, Ends(ended := asyncio.Event())]) as run:
         await run.worker.queue_frame(asked())
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(server.received.wait(), PATIENCE_SECS)
         # Pipecat closes the reply it cancels with the same end frame a finished reply has.
         await run.worker.queue_frame(InterruptionFrame())
-        await asyncio.wait_for(run.ended.wait(), PATIENCE_SECS)
-        server.release.set()
+        await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
         await asyncio.sleep(0.2)
         assert run.errors == []
+
+
+@pytest.mark.parametrize("shape", ["openai", "anthropic"])
+async def test_a_reply_cut_off_by_the_pipeline_stopping_is_no_empty_reply(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Shape) -> None:
+    server = await streaming("empty", True)
+    llm = service(shape, server)
+    async with running([llm, Ends(asyncio.Event())]) as run:
+        await run.worker.queue_frame(asked())
+        await asyncio.wait_for(server.received.wait(), PATIENCE_SECS)
+    # Stopped mid-request, as the daemon stops: its errors are all in by the time the pipeline has.
+    assert run.errors == []
+
+
+async def test_an_anthropic_request_that_times_out_is_said_as_the_model_out_of_reach(streaming: Callable[[Reply, bool], Awaitable[Streaming]]) -> None:
+    server = await streaming("empty", True)
+    llm = AnthropicService(
+        api_key="k",
+        client=AsyncAnthropic(base_url=server.api.anthropic_url, api_key="k", max_retries=0, timeout=0.2),
+        settings=AnthropicService.Settings(model="m", system_instruction="Speak.", max_tokens=50),
+    )
+    async with running([llm, Ends(ended := asyncio.Event())]) as run:
+        await run.worker.queue_frame(asked())
+        await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
+        [error] = run.errors
+        assert model_fact(error) == ModelUnreachable()

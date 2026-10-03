@@ -23,13 +23,12 @@ from pipecat.frames.frames import (
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
-from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
-from pipecat.workers.runner import WorkerRunner
 
+from conftest import running
 from hands.sessions.audit import Entry, Yielded
 from hands.voice import pipeline as built
 from hands.voice.floor import Floor
@@ -152,30 +151,19 @@ async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
         record=recorded.append,
     )
     out, clock = Recorded(), Clock()
-    # The floor sits where build_voice puts it, between Whisper and the user aggregator.
-    worker = PipelineWorker(Pipeline([voice.stt, Floor(recorded.append, clock), voice.user_turns, out]), idle_timeout_secs=None)
-    made = Rig(worker, voice.stt, out, recorded, clock)
+    texts: asyncio.Queue[str] = asyncio.Queue()
+    heard: list[bytes] = []
 
     async def transcribe(_self: WhisperSTTServiceMLX, audio: bytes) -> AsyncGenerator[Frame, None]:
-        made.heard.append(audio)
-        text = await made.texts.get()
-        for heard in [text] if text else []:
-            yield TranscriptionFrame(heard, "user", "now")
+        heard.append(audio)
+        text = await texts.get()
+        for each in [text] if text else []:
+            yield TranscriptionFrame(each, "user", "now")
 
     monkeypatch.setattr(WhisperSTTServiceMLX, "run_stt", transcribe)
-    started = asyncio.Event()
-
-    @worker.event_handler("on_pipeline_started")
-    async def _started(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
-        started.set()
-
-    runner = WorkerRunner(handle_sigint=False)
-    await runner.add_workers(worker)
-    running = asyncio.create_task(runner.run())
-    await asyncio.wait_for(started.wait(), PATIENCE_SECS)
-    yield made
-    await worker.cancel()
-    await running
+    # The floor sits where build_voice puts it, between Whisper and the user aggregator.
+    async with running([voice.stt, Floor(recorded.append, clock), voice.user_turns, out]) as run:
+        yield Rig(run.worker, voice.stt, out, recorded, clock, texts, heard)
 
 
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
