@@ -1025,19 +1025,17 @@ characters: its closing run must be its own character and at least as long, beca
 four-backtick block is how a model quotes a three-backtick one, and a length-blind
 closer ended the outer block at the inner opening and read the quoted code out loud.
 
-Two limits of the seam rather than of the function, both from the streaming path, where Pipecat hands
-the filter one aggregated sentence at a time. A list the intermediary streams is seen an item at a
-time and so is not counted aloud as a sequence, where the same list inside a summary is. And a fenced
-block spanning chunks is only seen in the chunk its fence lands in; the rest arrives carrying no fence
-and is read out as the ordinary text it then resembles, which is tracked as `hands-narration-2mc.1zu`.
-
-Carrying the open fence in the filter was tried and reverted. Pipecat does support a stateful filter —
-`handle_interruption` is called on every filter when an interruption frame arrives — but it never tells
-a text filter that a reply ended, so the carry has no bounded lifetime: a reply that legitimately ends
-inside a fence leaves it set, and every later utterance is replaced by a block announcement until the
-user interrupts. Muting the assistant is worse than the fault it fixes. Closing this means skipping the
-block at the aggregator, where it is broken up, and not in the filter. Every rule that makes text
-sayable at all still applies to every chunk.
+On the streaming path the filter sees a reply a piece at a time, so a list the intermediary streams
+is seen an item at a time and is not counted aloud as a sequence, where the same list inside a summary
+is. A fenced block cannot survive that split — its continuation arrives carrying no fence and would be
+read out as the ordinary text it resembles — so the reply is never split inside one. Pipecat's
+`LLMTextProcessor` stands between the model and the TTS service with `FenceAggregator`
+(`voice/spoken.py`), which breaks the stream into sentences and holds a block whole from its opening
+fence to its close, reading where one is open by the same rules `spoken` uses. Pipecat flushes that
+aggregator when a reply ends and resets it on a barge-in, so a reply that ends inside a fence is said as
+its block and leaves nothing behind for the next one. Carrying the open fence in the filter instead was
+tried and reverted: Pipecat never tells a text filter that a reply ended, and a reply that ended inside
+a fence left every later utterance replaced by a block announcement.
 
 The filtered text is also what the intermediary remembers, because Pipecat builds the frame it appends
 to the assistant context out of what a filter returned. That is intended: of the five places a

@@ -175,14 +175,55 @@ def _leaked(kind: str, lines: list[str], leaks: list[Leak]) -> list[str]:
 
     An empty fence and a table of nothing but its own rule have no content to apologise for. Saying "a
     block of code of 0 lines" tells the listener something was there when nothing was — and warning about
-    it [LAW:no-silent-failure] would report a fault every time the closing fence of a block split across
-    two streamed chunks arrived on its own, which is the shape this seam is already known to produce.
+    it [LAW:no-silent-failure] would report a fault where nothing reached the ear at all.
     """
     if not lines:
         return []
     leak = Leak(kind, len(lines))
     leaks.append(leak)
     return [f"{leak}."]
+
+
+def open_fence(text: str) -> int | None:
+    """Where the fence that `text` ends inside of begins, or None when every fence in it is closed.
+
+    For the reader that sees a reply before it is broken into sentences: a block is only said as a block
+    when it reaches `spoken` in one piece, so whatever splits a stream has to know where one is open
+    [LAW:one-source-of-truth] — the same two rules `_unfenced` reads a block by, and no others.
+    """
+    at = 0
+    opened: tuple[int, str] | None = None
+    for line in text.splitlines(keepends=True):
+        bare = line.rstrip("\r\n")
+        if opened is None:
+            run = _opens(bare)
+            opened = None if run is None else (at, run)
+        elif _closes(bare, opened[1]):
+            opened = None
+        at += len(line)
+    return None if opened is None else opened[0]
+
+
+def _opens(line: str) -> str | None:
+    """The fence run a line opens a block with, or None where it opens nothing."""
+    found = _FENCE.match(line)
+    # A backtick fence may not carry a backtick in what follows it, so "```bash``` is what I ran" opens
+    # nothing: it is a sentence with an inline span at the front of it, and treating it as a fence
+    # swallowed every line after it to the end of the reply [LAW:parse-dont-validate].
+    if found is None or (found["run"][0] == "`" and "`" in found["info"]):
+        return None
+    return found["run"]
+
+
+def _closes(line: str, fence: str) -> bool:
+    """Closed only by its own fence, at least as long.
+
+    A four-backtick block is how a model quotes a three-backtick one, and a closer that ignored length
+    ended the outer block at the inner opening — which read the quoted code out loud, the one thing this
+    exists to prevent.
+    """
+    found = _FENCE.match(line)
+    return found is not None and found["run"][0] == fence[0] and len(found["run"]) >= len(fence) and not found["info"].strip()
 
 
 def _unfenced(text: str, leaks: list[Leak]) -> str:
@@ -195,18 +236,12 @@ def _unfenced(text: str, leaks: list[Leak]) -> str:
     held: list[str] | None = None
     fence = ""
     for line in text.splitlines():
-        found = _FENCE.match(line)
         if held is None:
-            # A backtick fence may not carry a backtick in what follows it, so "```bash``` is what I ran"
-            # opens nothing: it is a sentence with an inline span at the front of it, and treating it as a
-            # fence swallowed every line after it to the end of the reply [LAW:parse-dont-validate].
-            if found and not (found["run"][0] == "`" and "`" in found["info"]):
-                held, fence = [], found["run"]
+            run = _opens(line)
+            if run is not None:
+                held, fence = [], run
                 continue
-        elif found and found["run"][0] == fence[0] and len(found["run"]) >= len(fence) and not found["info"].strip():
-            # Closed only by its own fence, at least as long. A four-backtick block is how a model quotes a
-            # three-backtick one, and a closer that ignored length ended the outer block at the inner
-            # opening — which read the quoted code out loud, the one thing this exists to prevent.
+        elif _closes(line, fence):
             out.extend(_leaked("code", held, leaks))
             held = None
             continue

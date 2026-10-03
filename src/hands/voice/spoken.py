@@ -6,24 +6,18 @@ ticket asks for and the reason nothing else here has to be trusted: the narrator
 system's own reports and the intermediary's own words all pass through this one function, and text that
 never went through it cannot reach the speaker at all [LAW:single-enforcer].
 
-What arrives here is a whole utterance for a `TTSSpeakFrame` and one aggregated sentence at a time for a
-streamed reply, and two things follow from the second. A list the intermediary streams is seen an item at a
-time and is not counted aloud as a sequence, where the same list inside a summary is. And a block that
-spans chunks is only seen in the chunk its fence lands in: the rest arrives carrying no fence and is read
-out as the ordinary text it now looks like, which is tracked as hands-narration-2mc.1zu.
+What arrives here is a whole utterance for a `TTSSpeakFrame` and one aggregated piece at a time for a
+streamed reply. A list the intermediary streams is therefore seen an item at a time and is not counted
+aloud as a sequence, where the same list inside a summary is.
 
-Carrying the open fence between calls was tried and reverted, and the reason is worth keeping. Pipecat
-does support a stateful filter — it calls `handle_interruption` on every filter when an interruption
-frame arrives — but it never tells a text filter that a reply *ended*: `LLMFullResponseEndFrame` and
-`EndFrame` are handled by the service without reaching the filters. So a carry has no bounded lifetime.
-A reply that legitimately ends inside a fence — truncated output, a model that forgets the closer —
-leaves it set, and every later utterance, announcements included, is replaced by a block announcement
-until the user happens to interrupt. That mutes the assistant, which is worse than the fault it fixes
-[LAW:no-ambient-temporal-coupling]. Closing this properly means skipping the block where it is broken
-up, at the aggregator, and not here.
-
-Every rule that makes text sayable at all still applies to every chunk, which is the guarantee that does
-hold here.
+A fenced block is the one shape that cannot survive being split: its continuation arrives carrying no
+fence and is read out as the ordinary text it then resembles. So the reply is not split inside one.
+`FenceAggregator` breaks the stream into sentences everywhere else and holds a block whole until its
+closing fence, and it lives in front of the TTS service in Pipecat's `LLMTextProcessor`, which flushes it
+when a reply ends and resets it when the user interrupts. That is where the open fence belongs. Carried
+in this filter instead, it was tried and reverted: Pipecat never tells a text filter that a reply ended,
+so a reply that ended inside a fence left every later utterance replaced by a block announcement
+[LAW:no-ambient-temporal-coupling]. The aggregator's lifetime is the reply's, by Pipecat's own frames.
 
 The filtered text is also what the intermediary remembers: Pipecat builds the frame it appends to the
 assistant context from the text a filter returned. Of the five places a `TTSSpeakFrame` is built, three
@@ -41,15 +35,17 @@ readback already passes through the model before it is spoken. But it does mean 
 be relied on to distinguish two files whose names agree, which is tracked as its own ticket rather than
 solved by giving this function a mode [LAW:no-mode-explosion].
 
-Stateless, so a barge-in in the middle of a sentence leaves nothing to reset. In a system where the user
-interrupts constantly, a filter holding half an utterance between calls is a bug waiting for the second
-half that never comes [LAW:no-ambient-temporal-coupling].
+The filter is stateless, so a barge-in in the middle of a sentence leaves nothing in it to reset.
 """
 
-from loguru import logger
-from pipecat.utils.text.base_text_filter import BaseTextFilter
+from collections.abc import AsyncIterator
 
-from hands.core.spoken import spoken
+from loguru import logger
+from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
+from pipecat.utils.text.base_text_filter import BaseTextFilter
+from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
+
+from hands.core.spoken import open_fence, spoken
 
 
 class SpokenForm(BaseTextFilter):
@@ -63,3 +59,54 @@ class SpokenForm(BaseTextFilter):
             # fault is there rather than here. Said either way — never read out, never silently dropped.
             logger.warning(f"{leak} reached the speaker, so it was said as what it was rather than read out")
         return said.text
+
+
+class FenceAggregator(SimpleTextAggregator):
+    """A streamed reply in sentences, except that a fenced block is one piece from its opening fence to its close.
+
+    A fence opens and closes only at the end of a line, so that is the only place the block is looked for,
+    and whether one is open is read off the buffer by the same rules `spoken` reads it by
+    [LAW:one-source-of-truth]. What came before the opening fence goes on ahead rather than waiting out the
+    block. A block the reply never closes is what `flush` hands on when the reply ends, and `spoken` says
+    an unclosed block as the block it is.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        # Whether the buffer begins with a block not yet closed: recorded at the line end that opened it,
+        # so the characters inside it are not offered to the sentence splitter one by one.
+        self._in_block = False
+
+    async def aggregate(self, text: str) -> AsyncIterator[Aggregation]:
+        for char in text:
+            self._text += char
+            if char == "\n":
+                piece = self._line_ended()
+                if piece is not None:
+                    yield piece
+                    continue
+            if not self._in_block:
+                sentence = await self._check_sentence_with_lookahead(char)
+                if sentence is not None:
+                    yield sentence
+
+    def _line_ended(self) -> Aggregation | None:
+        """What a finished line lets go of: the text ahead of a block it opened, or the block it closed."""
+        opened = open_fence(self._text)
+        if not self._in_block and opened is not None:
+            self._in_block, self._needs_lookahead = True, False
+            ahead, self._text = self._text[:opened], self._text[opened:]
+            return Aggregation(text=ahead.strip(" "), type=AggregationType.SENTENCE)
+        if self._in_block and opened is None:
+            self._in_block = False
+            block, self._text = self._text, ""
+            return Aggregation(text=block.strip(" "), type=AggregationType.SENTENCE)
+        return None
+
+    async def handle_interruption(self) -> None:
+        await super().handle_interruption()
+        self._in_block = False
+
+    async def reset(self) -> None:
+        await super().reset()
+        self._in_block = False

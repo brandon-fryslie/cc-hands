@@ -10,11 +10,20 @@ from typing import cast
 
 import pytest
 from loguru import logger
+from pipecat.frames.frames import (
+    AggregatedTextFrame,
+    Frame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
+)
+from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
+from pipecat.tests.utils import run_test
 
-from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
+from hands.core.spoken import Leak, open_fence, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_transcript
-from hands.voice.spoken import SpokenForm
+from hands.voice.spoken import FenceAggregator, SpokenForm
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
 
@@ -322,8 +331,18 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
             given.update(kwargs)
             super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
+    pieced: dict[str, object] = {}
+
+    class Pieces(FrameProcessor):
+        """The processor that breaks the reply up, recorded for what it was given to break it with."""
+
+        def __init__(self, **kwargs: object) -> None:
+            pieced.update(kwargs)
+            super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+
     monkeypatch.setattr(built, "PocketTTSService", Recorded)
-    built.build_voice(
+    monkeypatch.setattr(built, "LLMTextProcessor", Pieces)
+    voice = built.build_voice(
         built.VoiceConfig(
             llm=built.OpenAICompatibleBackend(base_url="http://example/v1", api_key="k", model="m"),
             whisper_model="mlx-community/whisper-tiny",
@@ -335,6 +354,9 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
     )
     filters = given["text_filters"]
     assert isinstance(filters, list) and [type(one) for one in cast(list[object], filters)] == [SpokenForm]
+    # And the model's reply reaches the filter in pieces a fenced block is never split across.
+    assert isinstance(voice.llm.next, Pieces) and voice.llm.next.next is voice.tts
+    assert isinstance(pieced["text_aggregator"], FenceAggregator)
 
 
 def test_a_ref_is_said_by_the_caller_that_knows_it_is_one() -> None:
@@ -367,3 +389,73 @@ def test_a_small_count_is_the_word_a_listener_hears() -> None:
     assert [spoken_count(n) for n in (0, 1, 2, 12)] == ["no", "one", "two", "twelve"]
     # Past the table a digit is read correctly and read shorter, and "forty-seven files" buys nothing.
     assert spoken_count(47) == "47"
+
+
+def _chunks(reply: str) -> list[str]:
+    """A reply as a model streams it: a few characters at a time, cut wherever the cut falls, fences included."""
+    return [reply[i : i + 5] for i in range(0, len(reply), 5)]
+
+
+def _streamed(*replies: str) -> list[Frame]:
+    return [
+        frame
+        for reply in replies
+        for frame in (LLMFullResponseStartFrame(), *map(LLMTextFrame, _chunks(reply)), LLMFullResponseEndFrame())
+    ]
+
+
+async def _heard(frames: list[Frame]) -> tuple[list[str], list[str]]:
+    """What reaches the ear, piece by piece, through the processor and filter the pipeline installs — and what was logged."""
+    down, _ = await run_test(LLMTextProcessor(text_aggregator=FenceAggregator()), frames_to_send=frames)
+    form = SpokenForm()
+    warned: list[str] = []
+    sink = logger.add(lambda message: warned.append(message), level="WARNING")
+    try:
+        pieces = [await form.filter(frame.text) for frame in down if isinstance(frame, AggregatedTextFrame)]
+    finally:
+        logger.remove(sink)
+    return [piece for piece in pieces if piece], warned
+
+
+async def test_a_block_streamed_in_pieces_is_announced_once_and_none_of_it_is_read_out() -> None:
+    """hands-narration-2mc.1zu: the block's continuation used to arrive with no fence on it and be read out."""
+    heard, warned = await _heard(
+        _streamed(
+            "Here is the fix.\n```python\ndef add(a, b):\n    # Sum them. Then hand it back.\n    return a + b\n"
+            'print("Done! It adds.")\n```\nThat should do it.'
+        )
+    )
+    assert heard == ["Here is the fix.", "a block of code of 4 lines.", "That should do it."]
+    assert len(warned) == 1 and "a block of code of 4 lines" in warned[0]
+
+
+async def test_a_reply_that_ends_inside_a_fence_leaves_nothing_behind_for_the_next() -> None:
+    """The reverted carry muted every later utterance after a reply that never closed its block."""
+    heard, _ = await _heard(_streamed("Here:\n```python\nx = 1\ny = 2", "Your tests all passed."))
+    assert heard == ["Here:", "a block of code of 2 lines.", "Your tests all passed."]
+
+
+async def test_a_barge_in_inside_a_block_leaves_nothing_behind_for_the_next_reply() -> None:
+    """Driven at the aggregator, because a test pipeline lets the interruption overtake the text queued ahead of it."""
+    pieces = FenceAggregator()
+    cut = [piece for chunk in _chunks("```python\nx = 1\ny = 2\n") async for piece in pieces.aggregate(chunk)]
+    await pieces.handle_interruption()
+    after = [piece for chunk in _chunks("Session two is waiting. ") async for piece in pieces.aggregate(chunk)]
+    assert [piece.text for piece in cut + after if piece.text] == []
+    flushed = await pieces.flush()
+    assert flushed is not None and flushed.text == "Session two is waiting."
+
+
+@pytest.mark.parametrize(
+    ("written", "opened_at"),
+    [
+        ("No fence here.\n", None),
+        ("Here:\n```python\nx = 1\n", 6),
+        ("Here:\n```python\nx = 1\n```\n", None),
+        # The same rules `spoken` reads a block by: an inline span opens nothing, and a short closer closes nothing.
+        ("```bash``` is what I ran.\n", None),
+        ("````\n```\nquoted\n```\n", 0),
+    ],
+)
+def test_where_the_fence_a_stream_is_inside_of_opened(written: str, opened_at: int | None) -> None:
+    assert open_fence(written) == opened_at
