@@ -158,13 +158,13 @@ async def test_a_control_in_what_was_heard_reaches_the_terminal_as_its_escape_an
     user, assistant = pair.user(), pair.assistant()
     record_turns(user, assistant, unrecorded)
     try:
-        await fire(user, "on_user_turn_message_added", UserTurnMessageAddedMessage("\x1b[2Kgone\x07 back\x08\x08 {x}", "t1"))
+        await fire(user, "on_user_turn_message_added", UserTurnMessageAddedMessage("\x1b[2Kgone\x07 back\x08\x08 {x}\x9b2J\x7f\u202eo", "t1"))
     finally:
         logger.remove(sink)
 
     written = terminal.getvalue()
-    assert written.endswith(" - heard: \\x1b[2Kgone\\x07 back\\x08\\x08 {x}\n")
-    assert not {"\x1b", "\x07", "\x08"} & set(written)
+    assert written.endswith(" - heard: \\u001b[2Kgone\\u0007 back\\u0008\\u0008 {x}\\u009b2J\\u007f\\u202eo\n")
+    assert not {"\x1b", "\x07", "\x08", "\x9b", "\x7f", "\u202e"} & set(written)
 
 
 async def wrapped(tmp: Path, typist: Callable[[Type[Input]], None], record: Record = unrecorded) -> tuple[Sessions, SessionId]:
