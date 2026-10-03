@@ -6,17 +6,22 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.session import SessionId
+from hands.core.session import Membership, SessionId
 from hands.sessions.audit import Entry, Named
 from hands.sessions.names import Finished, Names
 from hands.voice.naming import NotAName, asked, judge, parsed
 from hands.voice.summary import SummaryFailed
 
 SID = SessionId("s1")
+PROJECT = Path("/code/cc-hands")
 
 
-def transcript(tmp_path: Path, *names: str) -> Path:
-    path = tmp_path / "s1.jsonl"
+def member(path: Path, id: str = "s1", cwd: Path = PROJECT) -> Membership:
+    return Membership(SessionId(id), pid=4242, cwd=cwd, transcript=path)
+
+
+def transcript(tmp_path: Path, *names: str, file: str = "s1.jsonl") -> Path:
+    path = tmp_path / file
     records = [{"type": "ai-title", "aiTitle": "A long title Claude Code wrote that nobody sees"}]
     records += [{"type": "custom-title", "customTitle": name, "sessionId": "s1"} for name in names]
     path.write_text("".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records))
@@ -32,9 +37,10 @@ def answering(reply: str, heard: list[str] | None = None):
     return name
 
 
-async def judged(path: Path, reply: str, names: Names, heard: list[str] | None = None) -> Named:
+async def judged(path: Path, reply: str, names: Names, heard: list[str] | None = None, beside: tuple[Membership, ...] = ()) -> Named:
     recorded: list[Entry] = []
-    await judge(Finished(SID, path, "I fixed how sessions are named."), names, answering(reply, heard), recorded.append)
+    turn = Finished(member(path), "I fixed how sessions are named.")
+    await judge(turn, names, (turn.membership, *beside), answering(reply, heard), recorded.append)
     [line] = recorded
     assert isinstance(line, Named)
     return line
@@ -47,7 +53,7 @@ async def test_a_session_whose_work_moved_on_is_given_a_new_name_at_its_next_pro
     assert (line.outcome, line.before, line.name) == ("renamed", "auth refactor", "Naming fix")
     assert names.due(SID) == "Naming fix"
     # The model is shown the name the session has now, and the last thing it said.
-    assert heard == [asked("auth refactor", "I fixed how sessions are named.")]
+    assert heard == [asked("auth refactor", [], "I fixed how sessions are named.")]
     assert "Its name now: auth refactor" in heard[0] and "I fixed how sessions are named." in heard[0]
 
 
@@ -80,7 +86,7 @@ async def test_a_model_that_fails_leaves_the_name_as_it_is_and_says_why(tmp_path
     async def failing(_text: str) -> str:
         raise SummaryFailed("the model returned no summary")
 
-    await judge(Finished(SID, transcript(tmp_path, "auth refactor"), "done"), names, failing, recorded.append)
+    await judge(Finished(member(transcript(tmp_path, "auth refactor")), "done"), names, (), failing, recorded.append)
     [line] = recorded
     assert isinstance(line, Named) and line.outcome == "failed" and "no summary" in (line.error or "")
     assert names.due(SID) is None
@@ -101,11 +107,48 @@ async def test_a_later_name_replaces_one_not_yet_given(tmp_path: Path) -> None:
     assert (names.due(SID), names.due(SID)) == ("second idea", None)
 
 
+async def test_a_name_decided_and_not_yet_given_is_the_one_judged_and_kept(tmp_path: Path) -> None:
+    names = Names()
+    path = transcript(tmp_path, "auth refactor")
+    await judged(path, "naming fix", names)
+    heard: list[str] = []
+    # The session has not prompted since, so Claude Code still holds the old name; the decided one is what it will have.
+    line = await judged(path, "naming fix", names, heard)
+    assert (line.outcome, line.before) == ("kept", "naming fix")
+    assert "Its name now: naming fix" in heard[0]
+    assert names.due(SID) == "naming fix"
+
+
+async def test_a_name_longer_than_three_words_the_session_already_has_is_kept(tmp_path: Path) -> None:
+    names = Names()
+    line = await judged(transcript(tmp_path, "auth token refresh rework"), "auth token refresh rework", names)
+    assert (line.outcome, line.name) == ("kept", "auth token refresh rework")
+    assert names.due(SID) is None
+
+
+async def test_the_model_is_shown_the_names_of_the_other_sessions_in_the_project_only(tmp_path: Path) -> None:
+    names = Names()
+    names.rename(SessionId("s3"), "hook tests")
+    beside = (
+        member(transcript(tmp_path, "naming fix", file="s2.jsonl"), "s2"),
+        member(transcript(tmp_path, file="s3.jsonl"), "s3"),
+        member(transcript(tmp_path, "elsewhere", file="s4.jsonl"), "s4", cwd=Path("/code/other")),
+    )
+    heard: list[str] = []
+    await judged(transcript(tmp_path), "naming review", names, heard, beside)
+    assert "The other sessions in its project: naming fix; hook tests\n" in heard[0]
+
+
+def test_the_model_is_shown_the_end_of_a_long_closing_where_the_overview_is() -> None:
+    shown = asked(None, [], "detail " * 400 + "Where it stands: the naming fix is merged.")
+    assert shown.endswith("Where it stands: the naming fix is merged.") and "(the start cut)" in shown
+
+
 @pytest.mark.parametrize("reply", ["", "   ", '""', "one two three four"])
 def test_what_is_not_a_name_of_one_to_three_words_is_refused(reply: str) -> None:
     with pytest.raises(NotAName):
-        parsed(reply)
+        parsed(reply, "auth refactor")
 
 
 def test_a_name_is_its_words_without_the_quotes_or_stop_around_them() -> None:
-    assert parsed("  'naming   fix'.\n") == "naming fix"
+    assert parsed("  'naming   fix'.\n", None) == "naming fix"

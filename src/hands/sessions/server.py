@@ -44,8 +44,8 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
             case Stopped() as stopped:
                 await sessions.stop(stopped)
                 match (stopped.closing, sessions.membership(stopped.session)):
-                    case (str() as closing, Membership(transcript=transcript)):
-                        names.finished(Finished(stopped.session, transcript, closing))
+                    case (str() as closing, Membership() as membership):
+                        names.finished(Finished(membership, closing))
                     case _:
                         # A turn that closed on no reply has nothing to name it by, and a session that never joined
                         # has no transcript to read its name from; either keeps the name it has.

@@ -420,7 +420,7 @@ async def converse(
         asyncio.create_task(relay(sessions, minded.telling, voice.worker.queue_frame), name="the session speech relay"),
         asyncio.create_task(narrate(sessions, tails, minded.telling, voice.worker.queue_frame, record, lambda: summaries(home), changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
-        asyncio.create_task(keep_naming(names, minded.summariser(NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),
+        asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),
     ]

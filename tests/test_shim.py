@@ -25,7 +25,7 @@ from hands.sessions.liveness import sweep
 from hands.sessions.membership import read_membership, write_membership
 from hands.sessions.registry import Sessions
 from hands.sessions.audit import NameGiven
-from hands.sessions.names import Finished, Names
+from hands.sessions.names import Names
 from hands.sessions.server import serve_hooks
 from hands.sessions.untap import untapped
 
@@ -326,7 +326,8 @@ async def test_a_finished_turn_has_its_session_named_and_the_name_is_handed_to_c
         await shim(home, PROMPT)
         assert await shim(home, STOP) == (0, "", "")
         # The closing reply is what the name is judged from, with the transcript that holds the name it has now.
-        assert await asyncio.wait_for(names.next_finished(), 1.0) == Finished(SID, Path("/nowhere/t.jsonl"), "done")
+        finished = await asyncio.wait_for(names.next_finished(), 1.0)
+        assert (finished.membership.id, finished.membership.transcript, finished.closing) == (SID, Path("/nowhere/t.jsonl"), "done")
         names.rename(SID, "naming fix")
         named = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "sessionTitle": "naming fix"}}
         code, stdout, stderr = await shim(home, {**PROMPT, "prompt_id": "p2"})

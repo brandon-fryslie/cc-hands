@@ -7,17 +7,15 @@ Claude Code holds a session's name, and the latest one set wins, whoever set it:
 
 import asyncio
 from dataclasses import dataclass
-from pathlib import Path
 
-from hands.core.session import SessionId
+from hands.core.session import Membership, SessionId
 
 
 @dataclass(frozen=True)
 class Finished:
     """A turn a session finished, as its Stop hook told it: what the name is judged from."""
 
-    session: SessionId
-    transcript: Path
+    membership: Membership
     closing: str
 
 
@@ -38,6 +36,11 @@ class Names:
     def rename(self, session: SessionId, name: str) -> None:
         """Give the session this name at its next prompt; a later decision replaces one not yet given."""
         self._due[session] = name
+
+    def current(self, session: SessionId, held: str | None) -> str | None:
+        """The session's name as it will stand at its next prompt: one hands has decided, or else `held`, the one
+        Claude Code holds."""
+        return self._due.get(session, held)
 
     def due(self, session: SessionId) -> str | None:
         """The name to give the session at this prompt, handed over once; None when hands has none waiting for it."""
