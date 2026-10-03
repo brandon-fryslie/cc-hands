@@ -644,8 +644,8 @@ call, the record it was written in, and the result that came back — and gives 
 it is, through one table keyed by tool name `[LAW:one-type-per-behavior]`. A recogniser
 claims a call only when the record carries what its step asserts, so failure needs no
 case anywhere: a failed edit records no patch, and is therefore an `Other` rather than an
-`Edited`. `hands.core.turn.Opening` stays `Asked | Notified`, the prompt that opened the
-turn; a question Claude put to the user is the `Questioned` step.
+`Edited`. `hands.core.turn.Opening` is `Asked | Notified | Commanded | Shelled`, what opened
+the turn; a question Claude put to the user is the `Questioned` step.
 
 **The tail** runs today, in `hands.sessions.tail`. From the moment the registry lists a
 session, `keep_tailing` reads what that session's JSONL has gained, ten times a second,
@@ -730,8 +730,12 @@ GitChange = Committed | Pushed | Branched | PullRequested   # what a command did
 class Asked:      ref: Ref | None; text: str    # the user's own prompt, typed or sent through the SDK
 @dataclass(frozen=True)
 class Notified:   ref: Ref | None; text: str    # a background task's report, handed over as the next prompt
+@dataclass(frozen=True)
+class Commanded:  ref: Ref | None; name: str; args: str; output: str | None   # a slash command the user ran
+@dataclass(frozen=True)
+class Shelled:    ref: Ref | None; command: str; output: str | None           # a `!` command the user ran
 
-Opening = Asked | Notified          # who opened the turn, so a notification is never told as something asked
+Opening = Asked | Notified | Commanded | Shelled   # who opened the turn, so nothing is told as something asked that was not
 Happening = Opening | Step          # what a reading of a session is made of; an opening is markable like a step
 
 @dataclass(frozen=True)
@@ -920,8 +924,15 @@ that session has not been told. A turn opens at the last user record that is
 not `isMeta`, not `isCompactSummary`, whose content is a string or a block list with no
 tool result in it, and that does not follow a tool call or tool result: a message sent
 while a tool runs belongs to the turn under way, and an image or document attached to a
-prompt is named rather than read. The opening is `Asked`, or `Notified` when its
-`origin.kind` is `task-notification`. The steps are assistant text (`Said`) and tool
+prompt is named rather than read. The opening is `Commanded` for a record that opens with
+Claude Code's slash-command markup (`<command-name>` or `<command-message>`), `Shelled` for
+`<bash-input>`, `Notified` when its `origin.kind` is `task-notification`, and `Asked`
+otherwise. What a command printed (`<local-command-stdout>`, `<bash-stdout>`, and their
+stderr, marked) is a record of its own after the command's; it opens nothing, and joins the opening
+whose record it names as its `parentUuid`, with terminal escapes dropped (`hands.core.turn.printed`). A
+command and its output are as often written as a `system` record of subtype `local_command` as a user one,
+and are read the same either way; such a record carries no prompt id and is no answer of Claude's. A skill
+run in a fork of its own is written as the words typed, and its output is what makes it `Commanded`. The steps are assistant text (`Said`) and tool
 calls matched to their results by id, each handed to `recognise`; subagent records and
 thinking blocks are skipped, thinking because it is how Claude reached a result rather
 than a result.

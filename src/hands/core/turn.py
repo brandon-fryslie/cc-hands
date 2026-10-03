@@ -1,7 +1,7 @@
 """A turn as the summariser reads it: what opened it, and each thing Claude said or did, in order."""
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import NewType
 
 from hands.core.delta import Branched, Changed, Committed, Delta, GitChange, PullRequested, Pushed
@@ -141,8 +141,52 @@ class Notified:
     text: str
 
 
-# [LAW:types-are-the-program] who opened the turn is a variant, so a notification is never reported as something the user asked.
-Opening = Asked | Notified
+@dataclass(frozen=True)
+class Commanded:
+    """A slash command the user ran: one Claude Code carries out itself, like /model, or one that hands Claude a skill.
+
+    `output` is what Claude Code printed for it, which its own record after the command's carries; a command that
+    hands Claude a skill prints nothing, and is answered in the steps instead.
+    """
+
+    ref: Ref | None
+    name: str
+    args: str
+    output: str | None = None
+
+
+@dataclass(frozen=True)
+class Shelled:
+    """A shell command the user ran with `!`, and what it printed, which Claude Code writes in the record after it."""
+
+    ref: Ref | None
+    command: str
+    output: str | None = None
+
+
+# [LAW:types-are-the-program] who opened the turn is a variant, so a notification is never reported as something the
+# user asked, and a command the user ran is never reported as words the user wrote.
+Opening = Asked | Notified | Commanded | Shelled
+
+
+def printed(opening: Opening, of: Ref | None, output: str) -> Opening | None:
+    """The opening with what Claude Code printed for it, which arrives as a record of its own naming the command's as `of`;
+    None for output that names another record, which this opening is not the command of.
+
+    [LAW:one-source-of-truth] the one place output joins its command, for the tail and the backfill alike.
+    """
+    match opening:
+        case _ if of is None or opening.ref != of:
+            return None
+        case Commanded() | Shelled():
+            # Empty output printed nothing.
+            return opening if not output else replace(opening, output=output if opening.output is None else f"{opening.output}\n{output}")
+        case Asked(ref=ref, text=text):
+            # A skill run in a fork of its own is written as the words typed, and is known for a command by its output.
+            name, _, args = text.strip().partition(" ")
+            return Commanded(ref, name, args.strip(), output or None)
+        case Notified():
+            return None
 
 # One thing that happened in a session: what opened a turn, or a step of the answer to it. A Turn holds the two
 # apart because it is summarised as a whole, against its request. A reading of a session that nobody was
@@ -158,7 +202,7 @@ def turns(happenings: Sequence[Happening]) -> list[range]:
     Steps before the first opening, in a transcript that starts part way through a turn, are a turn of their own:
     nothing that happened is left without a turn to be read under.
     """
-    starts = [index for index, happening in enumerate(happenings) if index == 0 or isinstance(happening, Asked | Notified)]
+    starts = [index for index, happening in enumerate(happenings) if index == 0 or isinstance(happening, Opening)]
     return [range(start, end) for start, end in zip(starts, [*starts[1:], len(happenings)])]
 
 
@@ -295,6 +339,12 @@ def describe(happening: Happening, budget: Budget) -> str:
             return f"The user asked:\n{_cut(text, budget.opening)}"
         case Notified(text=text):
             return f"A background task reported:\n{_cut(text, budget.opening)}"
+        case Commanded(name=name, args=args, output=output):
+            ran = f"The user ran the command {_cut(' '.join(part for part in (name, args) if part), budget.opening)}"
+            return ran if output is None else f"{ran}\nClaude Code printed: {_cut(output, budget.result)}"
+        case Shelled(command=command, output=output):
+            ran = f"The user ran the shell command {_cut(command, budget.opening)}"
+            return ran if output is None else f"{ran}\nOutput: {_cut(output, budget.result)}"
         case Said(text=text):
             return f"Claude said:\n{_cut(text, budget.said)}"
         case Edited(path=path, created=created, change=change):

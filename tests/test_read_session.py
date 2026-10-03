@@ -299,7 +299,7 @@ async def test_an_hour_long_session_is_a_sentence_per_turn_said_off_the_voice_pa
     # Nothing is said yet: each finished turn is its request, and none of it waited on a model.
     first = await sentences(sessions, store)
     assert [turn["turn"] for turn in first["turns"]] == list(range(1, 31))
-    assert first["turns"][4] == {"turn": 5, "asked": "The user asked:\ndo task 4"}
+    assert first["turns"][4] == {"turn": 5, "opened": "The user asked:\ndo task 4"}
     assert first["unsummarised"] == 30 and first["working"] is False and first["earlier"] == 0
 
     recorded: list[Entry] = []
@@ -329,7 +329,7 @@ async def test_the_turn_a_running_session_is_on_is_not_summarised_until_it_is_do
 
     answer = await sentences(sessions, store)
     assert answer["working"] is True and answer["unsummarised"] == 1
-    assert answer["turns"][1] == {"turn": 2, "asked": "The user asked:\ndo task 1"}
+    assert answer["turns"][1] == {"turn": 2, "opened": "The user asked:\ndo task 1"}
     wanted = await store.wanted()
     assert isinstance(wanted, Turns) and [due.id for due in wanted.due] == ["turn-1"]
 
@@ -368,7 +368,7 @@ async def test_a_transcript_that_starts_part_way_through_a_turn_says_so_rather_t
     transcript.write_text("".join(f"{record}\n" for record in [said("r0", "picking up where it was"), *hour(turns=1, steps=1)]))
     answer = await sentences(await joined(transcript), SummaryStore(Sentences(tmp_path / "sentences.db")))
     assert answer["turns"][0] == {"turn": 1, "began": "Claude said:\npicking up where it was"}
-    assert answer["turns"][1] == {"turn": 2, "asked": "The user asked:\ndo task 0"}
+    assert answer["turns"][1] == {"turn": 2, "opened": "The user asked:\ndo task 0"}
 
 
 async def test_a_turn_said_after_it_was_queued_is_not_asked_for_again(tmp_path: Path) -> None:

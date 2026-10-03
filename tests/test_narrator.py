@@ -117,7 +117,7 @@ async def test_a_finished_turn_is_handed_to_the_model_with_its_reply_and_the_ses
     assert "API Error" in told
     assert told.endswith("in one or two spoken sentences, naming the session. It asks the user nothing.")
     [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
-    assert recounted == Recounted(SID, told, ("what it said", "the commands"), (), by_model=True)
+    assert recounted == Recounted(SID, told, ("what it said", "the commands"), (), by_model=True, opened="Asked")
 
 
 async def test_the_brain_takes_a_finished_turn_as_a_narration_and_never_through_the_pipelines_context(tmp_path: Path) -> None:
@@ -212,13 +212,22 @@ async def test_with_summaries_off_a_finished_turn_is_not_told_and_turning_them_o
         relaying.cancel()
     assert "is waiting for permission to use Bash" in handed(heard)
     assert "Pushed." in told and "Fixed." not in told
-    assert Recounted(SID, "", ("what it said",), (), by_model=False) in recorded
+    assert Recounted(SID, "", ("what it said",), (), by_model=False, opened="Asked") in recorded
 
 
 async def test_with_summaries_off_a_turn_waiting_on_an_answer_still_asks_it_without_the_model(tmp_path: Path) -> None:
     spoken = await recount(tailing(said_turn(tmp_path, "Fixed it. Want me to push it?")), SID, PromptId("p1"), None, "cc-hands", lambda _: None, Delta(), "off", Tailed())
     # Held in the brain's lane with what hands handed it, so it is heard in the order it happened.
     assert isinstance(spoken, Aloud) and spoken.spoken.text == "cc-hands: It said: Want me to push it?"
+
+
+async def test_a_turn_a_slash_command_opened_is_logged_as_commanded_rather_than_asked(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    skill = json.dumps({"type": "user", "uuid": "c1", "promptId": "p1", "message": {"role": "user", "content": "<command-message>ship</command-message>\n<command-name>/ship</command-name>\n<command-args>it</command-args>"}}, separators=(",", ":"))
+    transcript.write_text(f"{skill}\n{_said('u2', 'Shipped.')}\n")
+    recorded: list[Entry] = []
+    await recount(tailing(transcript), SID, PromptId("p1"), None, "cc-hands", recorded.append, Delta(), "off", Tailed())
+    assert [entry.opened for entry in recorded if isinstance(entry, Recounted)] == ["Commanded"]
 
 
 async def test_a_switch_that_cannot_be_read_is_logged_and_the_turn_told_as_the_default(tmp_path: Path) -> None:

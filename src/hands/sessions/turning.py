@@ -8,10 +8,12 @@ two can never disagree about what a turn did — only about which records they w
 from dataclasses import dataclass, field, replace
 from typing import cast
 
+from loguru import logger
+
 from hands.core.steps import Call, Result, recognise
-from hands.core.turn import Asked, Interruption, Notified, Opening, Said, Step
+from hands.core.turn import Interruption, Opening, Said, Step, printed
 from hands.sessions.payload import Payload
-from hands.sessions.transcript import blocks, edge_of, holds_a_tool, ref_of, result_text, structured_result
+from hands.sessions.transcript import Printed, blocks, edge_of, holds_a_tool, ref_of, result_text, structured_result
 
 
 @dataclass
@@ -28,7 +30,7 @@ class Turning:
     # there, so the steps held are always the turn's last ones.
     forgotten: int = 0
 
-    def consume(self, record: Payload) -> Opening | Interruption | None:
+    def consume(self, record: Payload) -> Opening | Printed | Interruption | None:
         """Read one record in, and say where it opened a turn or cut one off rather than continuing one.
 
         The edge is returned rather than taken, because what it means is the reader's to decide: the tail lets go
@@ -39,8 +41,14 @@ class Turning:
         parts = blocks(record)
         self.mid_tool = holds_a_tool(record)
         match edge:
-            case Asked() | Notified():
-                # The record that opens a turn is what was asked, not a step of the answer.
+            case Printed(of=of, output=output):
+                # The command's, not the answer's: it joins the opening the command made.
+                joined = None if self.opening is None else printed(self.opening, of, output)
+                if joined is None:
+                    # [LAW:nothing-unseen] output that joins nothing is left out of every telling, and said here.
+                    logger.warning(f"what a command printed names record {of}, which opened no turn being read, so it is told with none: {output[:80]!r}")
+                else:
+                    self.opening = joined
                 return edge
             case Interruption():
                 # The last step of the turn it cuts off, told in its place like any other.
@@ -48,6 +56,9 @@ class Turning:
                 return edge
             case None:
                 pass
+            case _:
+                # The record that opens a turn is what was asked or run, not a step of the answer.
+                return edge
         ref = ref_of(record)
         # `toolUseResult` describes one call, so a record carrying results for several says which of them it
         # belongs to for none: each is then recognised from its own text, rather than from another call's record.

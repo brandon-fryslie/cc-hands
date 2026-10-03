@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from hands.core.narration import asked_in, open_questions, reading
-from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Opening, Said, Step, Turn
-from hands.sessions.transcript import turn_record
+from hands.core.turn import Answering, Continuing, Interruption, Opening, Said, Step, Turn
+from hands.sessions.transcript import Printed, turn_record
 from hands.sessions.turning import Turning
 
 # Real turns, each lifted whole out of a real transcript, beside a few words of each question it is waiting on.
@@ -46,11 +46,11 @@ def _folded(transcript: Path) -> tuple[Opening, list[Step]]:
         if record is None:
             continue
         match turning.consume(record):
-            case Asked() | Notified() as opening:
+            case Printed() | Interruption() | None:
+                pass
+            case opening:
                 turning.clear()
                 turning.begin(opening)
-            case Interruption() | None:
-                pass
     assert turning.opening is not None, f"{transcript} holds no turn"
     return turning.opening, turning.steps()
 

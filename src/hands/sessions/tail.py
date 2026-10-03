@@ -17,7 +17,7 @@ from loguru import logger
 from hands.core.events import Continued, Interrupted, Read, Taken, Transcribed
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.status import Stamp
-from hands.core.turn import Answering, Asked, Continuing, Interruption, Notified, Said, Step, Turn
+from hands.core.turn import Answering, Continuing, Interruption, Opening, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.transcript import prompt_of, turn_record, written_of
 from hands.sessions.turning import Turning
@@ -92,7 +92,7 @@ class Following:
         """Read one record into the turn, setting the turn before it aside where this record opens a new one, and
         saying where it cut the turn off."""
         edge = self.reading.turn.consume(record)
-        if isinstance(edge, Asked | Notified):
+        if isinstance(edge, Opening):
             self.open(edge)
         prompt = prompt_of(record)
         if prompt is not None:
@@ -100,7 +100,7 @@ class Following:
             self.reading.ids.add(prompt)
         return edge if isinstance(edge, Interruption) else None
 
-    def open(self, opening: Asked | Notified) -> None:
+    def open(self, opening: Opening) -> None:
         """A turn opened: the one before it is set aside until it is told, and nothing read of it counts for this one."""
         if self.reading.turn.opening is not None:
             # Bounded: a transcript is read from its start, and every turn before the daemon attached ends here untold.
@@ -136,10 +136,13 @@ class Following:
                 # A record that names no prompt says nothing of which one Claude is answering.
                 was, self.asked = self.asked, prompt_of(record) or self.asked
                 return None if self.asked is None or self.asked == was else Taken(session, self.asked, _written(session, record), at)
-            case _:
-                # An assistant record: Claude answering whatever the user's side last carried.
+            case "assistant":
+                # Claude answering whatever the user's side last carried.
                 was, self.answering = self.answering, self.asked
                 return None if was is None or self.answering is None or was == self.answering else Continued(session, was, self.answering)
+            case _:
+                # A local_command record: Claude Code's own, written under no prompt id, and no answer of Claude's.
+                return None
 
     def restart(self) -> None:
         """Read this file again from its start: nothing read of the file it was says anything about the file it is."""

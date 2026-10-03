@@ -10,7 +10,8 @@ from loguru import logger
 
 from hands.core.events import Continued, Interrupted, Read, Taken, Transcribed
 from hands.core.session import Membership, PromptId, RequestId, SessionId
-from hands.core.turn import Asked, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Turn
+from hands.core.turn import Asked, Commanded, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Shelled, Turn, describe
+from hands.voice.tools import TURN_SENTENCE_BUDGET
 from hands.core.effects import Summarise
 from hands.core.events import Attached, Joined, Prompted, StatusReported, Stopped
 from hands.core import status
@@ -1007,3 +1008,93 @@ async def test_a_first_record_still_being_written_explains_no_reading(tmp_path: 
     finally:
         logger.remove(sink)
     assert said == []
+
+
+# Claude Code's own records for what the user ran rather than wrote, in the shapes 2.1.285 writes them: the caveat
+# ahead of a command it carries out itself, the command, and what it printed, which names the command as its parent and
+# is as often a system record as a user one; a skill command, whose skill body is a meta record; and a `!` command
+# with its output.
+CAVEAT = '{"type":"user","isMeta":true,"promptId":"p2","message":{"role":"user","content":"<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request.</local-command-caveat>"}}'
+MODEL = '{"uuid":"c1","type":"user","promptId":"p2","message":{"role":"user","content":"<command-name>/model</command-name>\\n            <command-message>model</command-message>\\n            <command-args></command-args>"}}'
+MODEL_SET = '{"uuid":"c1o","parentUuid":"c1","type":"system","subtype":"local_command","content":"<local-command-stdout>Set model to `Sonnet 5.5` for this session only</local-command-stdout>","level":"info"}'
+COMPACT = '{"uuid":"c2","type":"user","promptId":"p2","message":{"role":"user","content":"<command-name>/compact</command-name>\\n            <command-message>compact</command-message>\\n            <command-args></command-args>"}}'
+COMPACTED = '{"uuid":"c2o","parentUuid":"c2","type":"user","promptId":"p2","message":{"role":"user","content":"<local-command-stdout>\\u001b[2mCompacted (ctrl+o to see full summary)\\u001b[22m</local-command-stdout>"}}'
+SKILL = '{"uuid":"c3","type":"user","origin":{"kind":"human"},"promptId":"p2","message":{"role":"user","content":"<command-message>delegate-some-shit</command-message>\\n<command-name>/delegate-some-shit</command-name>\\n<command-args>lh86 to a subagent now</command-args>"}}'
+SKILL_BODY = '{"type":"user","isMeta":true,"promptId":"p2","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /skills/delegate"}]}}'
+SHELL = '{"uuid":"c4","type":"user","promptId":"p2","message":{"role":"user","content":"<bash-input>lit next</bash-input>"}}'
+SHELL_OUT = '{"uuid":"c4o","parentUuid":"c4","type":"user","promptId":"p2","message":{"role":"user","content":"<bash-stdout>hands-narration-8ip  open</bash-stdout><bash-stderr>sync: 1 local change</bash-stderr>"}}'
+
+
+async def test_a_command_claude_code_carries_out_opens_one_turn_of_its_own_with_what_it_printed(tmp_path: Path) -> None:
+    """The bug this closes: /model's command and its output were each read as a prompt, so the tail opened two turns."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, CAVEAT, MODEL, MODEL_SET))
+    tails = await following(transcript)
+    assert await turn_of(transcript) == Turn(Commanded(Ref("c1"), "/model", "", "Set model to `Sonnet 5.5` for this session only"), ())
+    # The prompt's turn and the command's: its output opened no third.
+    assert tails._following[SID].reading.number == 2  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_what_compact_printed_reaches_the_turn_without_the_terminals_colours(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, COMPACT, COMPACTED))
+    assert await turn_of(transcript) == Turn(Commanded(Ref("c2"), "/compact", "", "Compacted (ctrl+o to see full summary)"), ())
+
+
+async def test_a_skill_command_opens_the_turn_claude_answers_with_its_arguments(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, SKILL, SKILL_BODY, DONE))
+    assert await turn_of(transcript) == Turn(Commanded(Ref("c3"), "/delegate-some-shit", "lh86 to a subagent now"), (Said(None, "Done."),))
+
+
+async def test_a_shell_command_opens_one_turn_with_its_output_and_no_markup(tmp_path: Path) -> None:
+    """The bug this closes: a `!` answer opened on its bash records, and the narrator was handed XML as what the user asked."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, SHELL, SHELL_OUT, DONE))
+    shelled = Shelled(Ref("c4"), "lit next", "hands-narration-8ip  open\nstderr: sync: 1 local change")
+    assert await turn_of(transcript) == Turn(shelled, (Said(None, "Done."),))
+    assert "<" not in describe(shelled, TURN_SENTENCE_BUDGET)
+
+
+async def test_what_another_command_printed_is_no_part_of_a_skill_commands_turn(tmp_path: Path) -> None:
+    """Output joins the command it names as its parent, never whichever command opened the turn it lands in."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, SKILL, SKILL_BODY, DONE, MODEL_SET))
+    assert await turn_of(transcript) == Turn(Commanded(Ref("c3"), "/delegate-some-shit", "lh86 to a subagent now"), (Said(None, "Done."),))
+
+
+async def test_a_command_claude_code_writes_as_a_system_record_opens_its_turn_like_any_other(tmp_path: Path) -> None:
+    """The bug this closes: /mcp and /model, written as system local_command records, were skipped with their output."""
+    mcp = '{"uuid":"c5","type":"system","subtype":"local_command","content":"<command-name>/mcp</command-name>\\n<command-message>mcp</command-message>\\n<command-args></command-args>","level":"info"}'
+    dismissed = '{"uuid":"c5o","parentUuid":"c5","type":"system","subtype":"local_command","content":"<local-command-stdout>MCP dialog dismissed</local-command-stdout>","level":"info"}'
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, mcp, dismissed))
+    assert await turn_of(transcript) == Turn(Commanded(Ref("c5"), "/mcp", "", "MCP dialog dismissed"), ())
+
+
+async def test_what_a_local_command_printed_is_no_answer_of_claudes_under_the_commands_prompt(tmp_path: Path) -> None:
+    """The bug this closes: a local_command output record, read as Claude answering, carried p1's turn on under /model's p2."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, WRITING, MODEL, MODEL_SET))
+    assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Taken(SID, PromptId("p2"), None, 7.0)]
+
+
+async def test_a_skill_run_in_a_fork_written_as_typed_words_is_read_as_a_command_by_its_output(tmp_path: Path) -> None:
+    """The bug this closes: `/code-review medium <pr>` was told as words the user asked, and its output dropped."""
+    typed = '{"uuid":"c6","type":"user","promptId":"p2","message":{"role":"user","content":"/code-review medium 100"}}'
+    launched = '{"uuid":"c6o","parentUuid":"c6","type":"system","subtype":"local_command","content":"<local-command-stdout>Running in the background as @code-review</local-command-stdout>","level":"info"}'
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(PROMPT, DONE, typed, launched))
+    assert await turn_of(transcript) == Turn(Commanded(Ref("c6"), "/code-review", "medium 100", "Running in the background as @code-review"), ())
+
+
+async def test_what_a_command_printed_that_joins_no_turn_is_said(tmp_path: Path) -> None:
+    said: list[str] = []
+    sink = logger.add(lambda message: said.append(message.record["message"]), level="WARNING", filter="hands.sessions.turning")
+    try:
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text(lines(PROMPT, DONE, MODEL_SET))
+        assert await turn_of(transcript) == Turn(Asked(None, "first"), (Said(None, "Done."),))
+    finally:
+        logger.remove(sink)
+    assert any("names record c1, which opened no turn" in line for line in said)

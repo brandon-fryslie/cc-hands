@@ -1,14 +1,16 @@
 """What a session's JSONL transcript knows that its hooks do not carry: one record at a time, as it is written."""
 
 import json
+import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from hands.core.session import PromptId
+from hands.core.session import ESCAPES, PromptId
 from hands.core.status import Stamp
-from hands.core.turn import Asked, Interruption, Notified, Opening, Ref
+from hands.core.turn import Asked, Commanded, Interruption, Notified, Opening, Ref, Shelled
 from hands.sessions.payload import Payload, Rejected
 
 # Records are written without spaces, so this finds every title record cheaply.
@@ -40,8 +42,9 @@ def session_name(transcript: Path) -> str | None:
     return name
 
 
-# Only these two record types carry a turn; the rest (attachments, modes, titles, snapshots) are skipped unparsed.
-_TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"')
+# Only these record types carry a turn; the rest (attachments, modes, titles, snapshots) are skipped unparsed. A
+# command the user ran, and what it printed, are written as either a user record or a system local_command one.
+_TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"', b'"subtype":"local_command"')
 
 
 def turn_record(line: bytes) -> Payload | None:
@@ -53,9 +56,18 @@ def turn_record(line: bytes) -> Payload | None:
         return None
     record = Payload.parse(line)
     fields = record.fields
-    if fields.get("type") not in ("user", "assistant") or fields.get("isSidechain") is True:
+    if fields.get("isSidechain") is True:
         # A subagent's own records are its transcript's, and are narrated there.
         return None
+    match fields.get("type"), fields.get("subtype"), fields.get("content"):
+        case "system", "local_command", str():
+            return record
+        case "system", "local_command", other:
+            raise Rejected(f"a local_command record's content should be a string, got {type(other).__name__}")
+        case ("user" | "assistant"), _, _:
+            pass
+        case _:
+            return None
     # [LAW:parse-dont-validate] the message is shaped here, at the one place a line becomes a record, so that
     # reading a turn out of it cannot raise halfway through a record its reader has already begun to consume.
     shaped = message(record)
@@ -74,8 +86,21 @@ _NO_RESPONSE = "No response requested."
 _INTERRUPTED = ("[Request interrupted by user]", "[Request interrupted by user for tool use]")
 
 
-def edge_of(record: Payload, mid_tool: bool) -> Opening | Interruption | None:
-    """Where this record begins a turn, or cuts the one under way off; None for a record in the middle of one."""
+@dataclass(frozen=True)
+class Printed:
+    """What Claude Code printed for a command the user ran, written as a record of its own after the command's.
+
+    Neither a request nor a step: it is the command's, the record `of` names as its parent, and joins the opening that
+    record made (`printed`).
+    """
+
+    of: Ref | None
+    output: str
+
+
+def edge_of(record: Payload, mid_tool: bool) -> Opening | Printed | Interruption | None:
+    """Where this record begins a turn, cuts the one under way off, or carries what a command printed; None for a
+    record in the middle of a turn."""
     if record.fields.get("type") == "user" and result_text(message(record).get("content")) in _INTERRUPTED:
         # Written as a user's message with no tool result in it, so it would otherwise read as the next prompt.
         return Interruption(ref_of(record))
@@ -109,7 +134,7 @@ def written_of(record: Payload) -> Stamp | None:
             raise Rejected(f"a transcript record's timestamp should be a string, got {type(other).__name__}")
 
 
-def _opening_of(record: Payload, mid_tool: bool) -> Opening | None:
+def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | None:
     """What opens a turn: a prompt or a notification Claude Code handed a session that was not waiting on a tool.
 
     `mid_tool` says whether the record before this one was a tool call or its result.
@@ -118,13 +143,19 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | None:
         # Sent while a tool ran: Claude Code folds it into the turn already under way, whose Stop has not come.
         return None
     fields = record.fields
+    ref = ref_of(record)
+    if fields.get("type") == "system":
+        # A local_command record holds nothing but what the user ran or what it printed (`turn_record`).
+        return _ran(ref, cast(str, fields["content"]), ref_of(record, "parentUuid"))
     # Meta records (skill bodies, command caveats) and compaction's summary are Claude Code's own, not a new request.
     if fields.get("type") != "user" or fields.get("isMeta") is True or fields.get("isCompactSummary") is True:
         return None
     parts = blocks(record)
     match message(record).get("content"):
         case str() as text:
-            pass
+            ran = _ran(ref, text, ref_of(record, "parentUuid"))
+            if ran is not None:
+                return ran
         case list() if parts and not any(block.get("type") == "tool_result" for block in parts):
             # A prompt with an image or a document attached, or one sent through the SDK. Anything but a tool result,
             # rather than a list of the block kinds known today: a kind added tomorrow would otherwise stop opening the
@@ -133,7 +164,6 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | None:
             text = result_text(parts)
         case _:
             return None
-    ref = ref_of(record)
     match fields.get("origin"):
         case {"kind": "task-notification"}:
             return Notified(ref, text)
@@ -141,13 +171,46 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | None:
             return Asked(ref, text)
 
 
+# The markup Claude Code writes, at the start of a record of the user's side, for what the user ran rather than wrote:
+# a slash command (its name first when Claude Code carries it out, its message first when it hands Claude a skill),
+# a `!` command, and what either printed. Seen on 2.1.226 to 2.1.286.
+_RAN = re.compile(r"\s*<(command-name|command-message|bash-input|local-command-stdout|local-command-stderr|bash-stdout|bash-stderr)>")
+# Each output tag, and how what it holds is told: what went to stderr is marked, so a command that failed is not told as
+# one that printed its answer.
+_OUTPUTS = (("local-command-stdout", ""), ("bash-stdout", ""), ("local-command-stderr", "stderr: "), ("bash-stderr", "stderr: "))
+
+
+def _ran(ref: Ref | None, text: str, parent: Ref | None) -> Commanded | Shelled | Printed | None:
+    """What the user ran, read off the markup Claude Code wrote around it; None for text that does not open with it.
+
+    [LAW:types-are-the-program] each kind is read as itself, so neither a command's markup nor its output's
+    terminal colours ever reach the narration as something the user asked.
+    """
+    match _RAN.match(text):
+        case None:
+            return None
+        case found if found.group(1) in ("command-name", "command-message"):
+            return Commanded(ref, _tagged(text, "command-name"), _tagged(text, "command-args"))
+        case found if found.group(1) == "bash-input":
+            return Shelled(ref, _tagged(text, "bash-input"))
+        case _:
+            return Printed(parent, "\n".join(f"{mark}{output}" for tag, mark in _OUTPUTS if (output := _tagged(text, tag))))
+
+
+def _tagged(text: str, tag: str) -> str:
+    """What one of Claude Code's tags holds, with what a terminal is told dropped; empty where the record has none."""
+    found = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
+    return "" if found is None else ESCAPES.sub("", found.group(1)).strip()
+
+
 def holds_a_tool(record: Payload) -> bool:
     """Whether this record is a tool call or a tool's result, which is what makes the record after it mid-turn."""
     return any(block.get("type") in ("tool_use", "tool_result") for block in blocks(record))
 
 
-def ref_of(record: Payload) -> Ref | None:
-    value = record.fields.get("uuid")
+def ref_of(record: Payload, key: str = "uuid") -> Ref | None:
+    """The record a record names under `key`: itself under its uuid, the record before it under its parentUuid."""
+    value = record.fields.get(key)
     return Ref(value) if isinstance(value, str) else None
 
 

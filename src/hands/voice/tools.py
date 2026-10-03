@@ -27,7 +27,7 @@ from hands.core.session import Blocker, Membership, CommandName, Dialog, Held, I
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
 from hands.core.sentences import Due, turn_digest
-from hands.core.turn import Asked, Budget, Happening, Notified, body, describe, turns
+from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
 from hands.sessions.audit import Called, Record
@@ -218,7 +218,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
 
         Call this when the user asks what a session has been doing, or to catch up on one that was already
         running before you attached. Answer from the sentences; call read_turn to hear more of one turn, or of the
-        one it is on. A finished turn with no summary yet has only its request, and its sentence is being written.
+        one it is on. A finished turn with no summary yet has only what opened it (a request, or a command the user ran), and its sentence is being written.
         When `working` comes back true the session is still on its last turn. You are given its newest turns; when
         `earlier` is above zero there are that many before them, and calling again with `before` set to the first
         turn you were given reads those.
@@ -321,13 +321,9 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
 
 
 def _opened(first: Happening) -> dict[str, object]:
-    """How a turn with no sentence is told: by its request, or, in a transcript that starts part way through one, by the
-    step it was first read at, which nobody asked for."""
-    match first:
-        case Asked() | Notified():
-            return {"asked": describe(first, READBACK_BUDGET)}
-        case _:
-            return {"began": describe(first, READBACK_BUDGET)}
+    """How a turn with no sentence is told: by what opened it, or, in a transcript that starts part way through one, by the
+    step it was first read at, which opened nothing."""
+    return {"opened" if isinstance(first, Opening) else "began": describe(first, READBACK_BUDGET)}
 
 
 async def _session_reading(sessions: Sessions, session: str) -> tuple[Membership, Reading] | str:
