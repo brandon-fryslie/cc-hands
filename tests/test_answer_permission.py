@@ -16,6 +16,7 @@ import pytest
 from loguru import logger
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
 
+from hands.core.attention import Overlay
 from hands.core.effects import Allow, HookReply, Narrate, Withdraw, Asking, DeadlineNear, Expired, Speak
 from hands.core.events import PermissionRequested, StatusReported, Tick, ToolFinished
 from hands.core.reducer import EXPIRED_MESSAGE
@@ -189,7 +190,7 @@ async def test_a_question_nobody_answers_by_its_deadline_is_left_to_its_dialog_a
     assert (code, stdout) == (0, "")
     [warning, expiry] = [await sessions.heard(), await sessions.heard()]
     assert (warning, expiry) == (Speak(DeadlineNear(SID, moment.request, moment.on, remaining=10.0)), Speak(Expired(SID, moment.on)))
-    spoken = [said for heard in (warning, expiry) for said in frames(heard, Pushed(), names=lambda _: "quiz")]
+    spoken = [said for heard in (warning, expiry) for said in frames(cast(Speak, heard), Pushed(), names=lambda _: "quiz")]
     assert [cast(TTSSpeakFrame, said).text for said in spoken] == [
         "10 seconds left to answer quiz about its question.",
         "Nobody answered quiz about its question in time, so it is left waiting at its dialog.",
@@ -442,7 +443,10 @@ async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the
         queued.append(frame)
 
     shim, _ = await asked(home, sessions)
-    relaying = asyncio.create_task(relay(sessions, queue_frame, lambda _: None))
+    async def unfocused(_session: SessionId) -> tuple[bool, Overlay]:
+        return False, "normal"
+
+    relaying = asyncio.create_task(relay(sessions, queue_frame, lambda _: None, unfocused))
     await sessions.apply(Tick(DEADLINE - 10.0))
     await sessions.apply(Tick(DEADLINE))
     await asyncio.wait_for(shim.finished(), WAIT_SECONDS)
@@ -524,7 +528,7 @@ async def test_a_plan_nobody_answers_by_its_deadline_is_left_to_its_dialog(home:
     code, stdout, _ = await shim.finished()
     assert (code, stdout) == (0, "")
     [warning, expiry] = [await sessions.heard(), await sessions.heard()]
-    assert [cast(TTSSpeakFrame, said).text for heard in (warning, expiry) for said in frames(heard, Pushed(), names=lambda _: "planner")] == [
+    assert [cast(TTSSpeakFrame, said).text for heard in (warning, expiry) for said in frames(cast(Speak, heard), Pushed(), names=lambda _: "planner")] == [
         "10 seconds left to answer planner about its plan.",
         "Nobody answered planner about its plan in time, so it is left waiting at its dialog.",
     ]

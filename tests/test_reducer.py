@@ -29,7 +29,8 @@ from hands.core.effects import (
     Unregistered,
     Withdraw,
 )
-from hands.core.events import Abandoned, Attached, Closed, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Taken, Joined, Read, PermissionRequested, Prompted, SessionEvent, StartSource, StatusReported, Stopped, Tick, ToolFinished
+from hands.core.events import Abandoned, Attached, Closed, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Taken, Joined, Read, PermissionRequested, Prompted, Progressed, SessionEvent, StartSource, StatusReported, Stopped, Tick, ToolFinished
+from hands.core import progress
 from hands.core.reducer import EXPIRED_MESSAGE, UNTOLD, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
     AskedQuestion,
@@ -102,6 +103,7 @@ HEARD: list[SessionEvent] = [
     Continued(ONE.id, was=TURN, now=NEXT),
     PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None),
     ToolFinished(ONE.id, at=5.0, call=BASH, mode=None),
+    Progressed(ONE.id, (TURN,), (progress.Doing(progress.RUNNING, "run the test suite"),), at=5.0),
 ]
 
 

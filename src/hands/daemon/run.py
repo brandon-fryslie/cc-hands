@@ -25,6 +25,7 @@ import time
 from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -72,7 +73,7 @@ from hands.voice.pipeline import (
     build_voice,
 )
 from hands.voice.naming import NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS, keep_naming
-from hands.voice.narrator import Recounts, narrate
+from hands.voice.narrator import Recounts, attending, narrate
 from hands.voice.speech import Pushed, Tailed, Telling, relay
 from hands.voice.summary import Summariser, aside, summariser
 from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
@@ -398,13 +399,14 @@ async def converse(
     # First sight of every project a session is already working in: its backlog is said before anyone asks for it.
     for listing in sessions.live():
         store.want(listing.session.membership.cwd)
+    overlays = Overlays(home)
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
-        asyncio.create_task(relay(sessions, voice.worker.queue_frame, record), name="the session speech relay"),
-        asyncio.create_task(narrate(sessions, tails, voice.worker.queue_frame, record, lambda: summaries(home), Overlays(home), recounts, changes=deltas), name="the session narrator"),
+        asyncio.create_task(relay(sessions, voice.worker.queue_frame, record, partial(attending, home, overlays)), name="the session speech relay"),
+        asyncio.create_task(narrate(sessions, tails, voice.worker.queue_frame, record, lambda: summaries(home), overlays, recounts, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
         asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),

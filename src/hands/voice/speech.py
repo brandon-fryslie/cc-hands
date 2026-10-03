@@ -7,11 +7,13 @@ from dataclasses import dataclass
 
 from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
 
-from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, SessionGone, Speak
-from hands.core.pending import Briefing, Finished, News, Pending, Unread, went_on
+from hands.core.attention import Overlay, Route, progress_route
+from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Progress, SessionGone, Speak
+from hands.core.pending import Briefing, Finished, News, Pending, Unread, Working, went_on
+from hands.core.progress import Doing, said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
-from hands.core.session import AskedQuestion, Blocker, Permission, Plan, Question, SessionId
-from hands.sessions.audit import Record, Relayed
+from hands.core.session import AskedQuestion, Blocker, Permission, Plan, PromptId, Question, SessionId
+from hands.sessions.audit import Record, Relayed, Routed
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode
 
@@ -99,12 +101,40 @@ def bounded(text: str, limit: int) -> str:
     return text if len(text) <= limit else f"{text[:limit]}... (cut short)"
 
 
-async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]], record: Record) -> None:
+# How a session is attended to as its progress is relayed: whether it is the focus, and its overlay, read as it is.
+Attending = Callable[[SessionId], Awaitable[tuple[bool, Overlay]]]
+
+
+async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]], record: Record, attending: Attending) -> None:
     """Hand what the sessions say to the floor, in the order it was decided, until cancelled."""
     while True:
         heard = await sessions.heard()
         record(Relayed(heard))
-        await queue_frame(Unprompted(heard))
+        for pending in await _pending(heard, record, attending):
+            await queue_frame(Unprompted(pending))
+
+
+async def _pending(heard: Heard, record: Record, attending: Attending) -> tuple[Pending, ...]:
+    """What the floor is handed of what was heard: progress as the focus and the overlay route it, the rest as it is."""
+    match heard:
+        case Progress(session=session, turn=turn, doings=doings):
+            focused, overlay = await attending(session)
+            route = progress_route(focused, overlay)
+            # [LAW:nothing-unseen] which way progress went, and what decided it.
+            record(Routed(session, focused, overlay, route))
+            return _routed(route, session, turn, doings)
+        case Speak() | Narrate() | Note():
+            return (heard,)
+
+
+def _routed(route: Route, session: SessionId, turn: frozenset[PromptId], doings: tuple[Doing, ...]) -> tuple[Pending, ...]:
+    match route:
+        case "play":
+            return (Working(session, turn, doings),)
+        case "note":
+            # [LAW:one-source-of-truth] the session listing says what a working session last set out to do, for either
+            # model to read when asked, so nothing is added to a context that keeps every message it is given.
+            return ()
 
 
 def frames(pending: Pending, telling: Telling, names: Names) -> Sequence[Frame]:
@@ -130,6 +160,11 @@ def frames(pending: Pending, telling: Telling, names: Names) -> Sequence[Frame]:
             return (as_written(TTSSpeakFrame(f"The session {names(session)} is gone."), telling),)
         case Briefing(note=note), _:
             return (LLMMessagesAppendFrame([{"role": "user", "content": note}], run_llm=False),)
+        case Working(session=session, doings=doings), _:
+            # Said as written: what it is doing is arithmetic over its calls, with nothing for a model to add. Kept out of
+            # a pushed context, which keeps every message it is given and would take one every few seconds a session
+            # works: the session listing says what it last set out to do [LAW:one-source-of-truth].
+            return (as_written(TTSSpeakFrame(f"{names(session)}: {said(doings)}.", append_to_context=False), telling),)
 
 
 def told(session: SessionId, name: str, news: Sequence[News]) -> str:

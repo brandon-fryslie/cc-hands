@@ -18,6 +18,7 @@ from hands.core.effects import (
     ModeChanged,
     Narrate,
     Note,
+    Progress,
     Asking,
     DeadlineNear,
     Expired,
@@ -51,6 +52,7 @@ from hands.core.events import (
     Read,
     PermissionRequested,
     Prompted,
+    Progressed,
     SessionEvent,
     StartSource,
     StatusReported,
@@ -58,6 +60,7 @@ from hands.core.events import (
     Tick,
     ToolFinished,
 )
+from hands.core.progress import Gathering
 from hands.core.session import Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, UnknownMode, Unnamed, Unreported, Untold, status_stamp
 from hands.core import status
 from hands.core.status import Report, Stamp
@@ -186,6 +189,8 @@ def _enter(registry: Registry, event: SessionEvent) -> tuple[Registry, list[Effe
             match event:
                 case Ended(reason=reason):
                     return _end(registry, was, was.membership, _said_at_end(was.membership.id, reason))
+                case Progressed():
+                    return registry.put(replace(was, turn=_gathered(was.turn, event))), []
                 case _:
                     return _moved(registry, was, event)
 
@@ -505,7 +510,7 @@ def _remoded(session: SessionId, before: Mode | None, after: Mode | None) -> lis
 def _unheard(event: SessionEvent, record: AuditRecord) -> list[Effect]:
     """What an event for a session the registry does not hold live calls for."""
     match event:
-        case Taken() | Interrupted() | Continued() | Read():
+        case Taken() | Interrupted() | Continued() | Progressed() | Read():
             # Read from a transcript the tail goes on reading a moment after its session ends: behind, not wrong.
             return []
         case _:
@@ -573,14 +578,36 @@ def _expiry(on: Blocker) -> tuple[Dialog | None, HookReply]:
             return LetGo(on), Withdraw()
 
 
+def _gathered(turn: Turn, progressed: Progressed) -> Turn:
+    """The turn with the calls it made gathered, until they settle; calls of a turn since over move nothing, since that
+    turn's result is told instead."""
+    match turn:
+        case Opened(gathering=gathering) if not _ids(turn).isdisjoint(progressed.turn):
+            began = Gathering((), progressed.at, progressed.at) if gathering is None else gathering
+            return replace(turn, gathering=began.joined(progressed.doings, progressed.at), latest=progressed.doings[-1])
+        case _:
+            return turn
+
+
 def _ticked(registry: Registry, at: Instant) -> tuple[Registry, list[Effect]]:
     after, effects = registry, list[Effect]()
     for session in registry.live():
         id = session.membership.id
         dialog, expiring = _expiring(id, session.dialog, at)
-        after = after.put(replace(session, dialog=dialog))
-        effects += expiring
+        turn, settled = _burst(id, session.turn, at)
+        after = after.put(replace(session, dialog=dialog, turn=turn))
+        effects += [*expiring, *settled]
     return after, effects
+
+
+def _burst(session: SessionId, turn: Turn, at: Instant) -> tuple[Turn, list[Effect]]:
+    """[LAW:no-ambient-temporal-coupling] gathered calls are told at the tick that finds them settled, so how often the
+    transcript is read moves when a burst is heard, never what it holds."""
+    match turn:
+        case Opened(gathering=Gathering() as gathering) if at >= gathering.due():
+            return replace(turn, gathering=None), [Progress(session, _ids(turn), gathering.doings)]
+        case _:
+            return turn, []
 
 
 def _expiring(session: SessionId, dialog: Dialog | None, at: Instant) -> tuple[Dialog | None, list[Effect]]:

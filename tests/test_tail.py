@@ -950,7 +950,7 @@ async def test_a_transcript_read_from_its_start_hands_on_only_the_turn_it_is_in(
         assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p4"), Stamp(2000), 7.0), Continued(SID, was=PromptId("p3"), now=PromptId("p4"))]
     finally:
         logger.remove(sink)
-    assert said == [f"read the transcript of session {SID} from its start: 8 of 10 events are of turns before the one it is in, which goes by ['p4']"]
+    assert said == [f"read the transcript of session {SID} from its start: 8 of 10 events are of turns before the one it is in, which goes by ['p4']; calls that turn made before hands followed it, not heard as progress: 1"]
     with transcript.open("a") as more:
         more.write(lines(CUT_OFF_MID_TOOL.replace('"p1"', '"p4"')))
     assert heard(await tails.catch_up()) == [Interrupted(SID, PromptId("p4"), at=7.0)]
