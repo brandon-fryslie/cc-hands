@@ -706,14 +706,27 @@ def _past(directory: Path, offset: int) -> tuple[list[str], int]:
     bases = segments(directory)
     if not bases:
         return [], offset
-    # An offset out of range - behind retention, or past the end of a log begun again from zero - goes on at the oldest
-    # segment kept. Behind retention, the Rolled line naming the segment the reader missed is still ahead of it.
-    if not bases[0] <= offset <= bases[-1] + _size(segment(directory, bases[-1])):
+    # An offset this log never handed out - behind retention, or past the end of or mid-line in a log begun again from
+    # zero - goes on at the oldest segment kept. Behind retention, the Rolled line naming the segment missed is ahead.
+    held = [base for base in bases if base <= offset]
+    if not held or not _starts_a_line(segment(directory, held[-1]), offset - held[-1]):
         offset = bases[0]
     base = max(held for held in bases if held <= offset)
     lines, end = _lines(segment(directory, base), offset - base)
     later = [held for held in bases if held > base]
     return lines, (later[0] if later else base + end)
+
+
+def _starts_a_line(path: Path, at: int) -> bool:
+    """Whether a line of path begins at byte at: every offset a reader is given is a segment's base or follows a newline."""
+    if at == 0:
+        return True
+    try:
+        with path.open("rb") as log:
+            log.seek(at - 1)
+            return log.read(1) == b"\n"
+    except FileNotFoundError:
+        return False
 
 
 def _lines(path: Path, start: int) -> tuple[list[str], int]:

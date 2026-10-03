@@ -238,6 +238,9 @@ def test_a_reader_past_the_end_of_a_log_begun_again_goes_on_at_its_start(tmp_pat
     log.mkdir()
     segment(log, 0).write_text("fresh\n")
     assert next(follow(log, 50_000_000, lambda: None)) == "fresh"
+    # Begun again and grown past the offset, which now falls inside a line.
+    segment(log, 0).write_text("a line longer than the offset\n")
+    assert next(follow(log, 5, lambda: None)) == "a line longer than the offset"
 
 
 def test_a_log_deleted_under_its_writer_begins_again_at_the_next_line(tmp_path: Path) -> None:
