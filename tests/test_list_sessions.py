@@ -8,6 +8,7 @@ from pathlib import Path
 from hands.core.events import Ended, Joined, PermissionRequested, Prompted, StatusReported, Taken
 from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId, Question
 from hands.core.status import Busy, Idle, Report, Stamp, Waiting
+from hands.sessions.focus import set_focus
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Sessions
@@ -33,7 +34,7 @@ def named(path: Path, *names: str) -> None:
 
 
 async def call(sessions: Sessions, tmp_path: Path) -> object:
-    return await list_sessions_tool(sessions, Overlays(Home(tmp_path / "home"))).body()
+    return await list_sessions_tool(sessions, Overlays(Home(tmp_path / "home")), Home(tmp_path / "home")).body()
 
 
 async def test_live_sessions_are_named_by_their_project_then_their_newest_name(tmp_path: Path) -> None:
@@ -60,6 +61,7 @@ async def test_live_sessions_are_named_by_their_project_then_their_newest_name(t
     ):
         await sessions.apply(event)
     Overlays(Home(tmp_path / "home")).set(working.id, "watched")
+    set_focus(Home(tmp_path / "home"), working.id)
 
     assert await call(sessions, tmp_path) == {
         "sessions": [
@@ -67,7 +69,8 @@ async def test_live_sessions_are_named_by_their_project_then_their_newest_name(t
             {"id": "untitled", "name": "untitled", "state": "idle", "mode": "not reported yet", "watched": "no"},
             {"id": "blocked", "name": "blocked, auth refactor", "state": "waiting for permission to use Bash", "mode": "manual mode", "watched": "no"},
             {"id": "asking", "name": "asking", "state": "waiting for the user to answer its question", "mode": "not reported yet", "watched": "no"},
-        ]
+        ],
+        "focus": "working",
     }
 
 
@@ -77,7 +80,7 @@ async def test_a_session_that_joins_on_its_permission_request_is_listed_as_waiti
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     for event in (Joined(lagging, "startup"), PermissionRequested(lagging.id, at=1.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default")):
         await sessions.apply(event)
-    assert await call(sessions, tmp_path) == {"sessions": [{"id": "lagging", "name": "lagging", "state": "waiting for permission to use Bash", "mode": "manual mode", "watched": "no"}]}
+    assert await call(sessions, tmp_path) == {"sessions": [{"id": "lagging", "name": "lagging", "state": "waiting for permission to use Bash", "mode": "manual mode", "watched": "no"}], "focus": None}
 
 
 def test_a_name_record_still_being_written_is_not_read(tmp_path: Path) -> None:
@@ -94,10 +97,10 @@ async def test_a_transcript_whose_name_cannot_be_read_lists_the_session_by_its_p
     broken.transcript.write_text('{"type":"custom-title","sessionId":"broken"}\n')
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(broken, "startup"))
-    assert await call(sessions, tmp_path) == {"sessions": [{"id": "broken", "name": "broken", "state": "not reported yet", "mode": "not reported yet", "watched": "no"}]}
+    assert await call(sessions, tmp_path) == {"sessions": [{"id": "broken", "name": "broken", "state": "not reported yet", "mode": "not reported yet", "watched": "no"}], "focus": None}
 
 
 def test_the_tool_is_named_and_described_from_its_body() -> None:
-    tool = list_sessions_tool(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), Overlays(Home(Path("/nonexistent"))))
+    tool = list_sessions_tool(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")))
     assert (tool.name, tool.required) == ("list_sessions", ())
     assert "running Claude Code sessions" in tool.description

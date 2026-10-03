@@ -43,6 +43,11 @@ class Home:
         return self.root / "voice"
 
     @property
+    def focus(self) -> Path:
+        """The session the user is talking to when they name none, written by the daemon alone; absent for none."""
+        return self.root / "focus"
+
+    @property
     def sentences(self) -> Path:
         """The summary store: a sentence for each content-addressed thing, written by the daemon alone."""
         return self.root / "sentences.db"
