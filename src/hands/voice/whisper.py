@@ -33,6 +33,11 @@ _SILENCE = np.zeros(16_000, dtype=np.float32)
 # The compression ratio Pipecat drops a segment for, as a hallucination.
 _HALLUCINATED = 0.5555555555555556
 
+# Whisper's logprob_threshold: a segment decoded with a lower average log probability is a failed decoding. Primed, the
+# silence of a hold with nothing said comes back as "." or "The End" at -1.1 to -2.7, which no other filter drops;
+# twenty sentences said by `say`, primed and not, all came back above -0.8 (2026-10-03).
+_GUESSED = -1.0
+
 
 class Whisper(WhisperSTTServiceMLX):
     """The pipeline's voice activity detector as well as its transcriber.
@@ -142,7 +147,10 @@ class Whisper(WhisperSTTServiceMLX):
                     # can still be looked into.
                     logger.info(f"Whisper heard nothing in hold {hold}")
                 case said:
-                    yield TranscriptionFrame(said, self._user_id, time_now_iso8601(), cast("Language | None", assert_given(self._settings.language)))
+                    language = cast("Language | None", assert_given(self._settings.language))
+                    # Pipecat's span for a transcription, which its own run_stt opens.
+                    await self._handle_transcription(said, True, language)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's tracing decorator is untyped)
+                    yield TranscriptionFrame(said, self._user_id, time_now_iso8601(), language)
         # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
         yield TurnResolved(hold=hold)
 
@@ -151,12 +159,21 @@ class Whisper(WhisperSTTServiceMLX):
 
         Pipecat's own run_stt takes no prompt, so this is its transcription with one, its filters kept: a segment
         that is likely no speech is dropped, and so is one with the compression ratio Pipecat found Whisper's
-        hallucinations to have.
+        hallucinations to have. A segment Whisper decoded below its logprob_threshold is dropped too: that is what a
+        primed Whisper makes of silence.
         """
         prompt = await self._prompt()
         await self.start_processing_metrics()
         segments = await asyncio.to_thread(self._transcribe, np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0, prompt)
         await self.stop_processing_metrics()
         threshold = assert_given(self._settings.no_speech_prob)
-        heard = (each for each in segments if each.get("no_speech_prob", 0.0) < threshold and each.get("compression_ratio") != _HALLUCINATED)
-        return " ".join(segment["text"].strip() for segment in heard).strip() or None
+        heard: list[str] = []
+        for segment in segments:
+            if segment["no_speech_prob"] < threshold and segment["compression_ratio"] != _HALLUCINATED and segment["avg_logprob"] >= _GUESSED:
+                heard.append(segment["text"].strip())
+            else:
+                logger.info(
+                    f"Whisper dropped {segment['text'].strip()!r} as not said: no_speech_prob {segment['no_speech_prob']:.2f},"
+                    f" compression_ratio {segment['compression_ratio']:.2f}, avg_logprob {segment['avg_logprob']:.2f}"
+                )
+        return " ".join(heard).strip() or None

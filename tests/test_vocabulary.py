@@ -2,10 +2,12 @@
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import mlx_whisper
 import pytest
+from pipecat.frames.frames import TranscriptionFrame
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
 from hands.core.session import Membership, Running, Session, SessionId
@@ -54,7 +56,7 @@ async def test_the_focused_sessions_newest_files_and_branch_come_before_the_sess
     focus = session(repository / "src")
     other = session(tmp_path / "cc-hands", "s2")
 
-    primed = await vocabulary([Listing(focus, None), Listing(other, "dictation bias")], focus, ENVIRONMENT)
+    primed = await vocabulary([Listing(focus, None), Listing(other, "dictation bias")], focus, ENVIRONMENT, time.monotonic())
 
     assert primed.words.index("old_billing") < primed.words.index("authMiddleware") < primed.words.index("sessionStore")
     assert "GUIDE" in primed.words and primed.words.count("README") == 1
@@ -63,12 +65,23 @@ async def test_the_focused_sessions_newest_files_and_branch_come_before_the_sess
     assert level(primed) == "info"
 
 
+async def test_a_rename_not_yet_staged_is_named_where_it_went(repository: Path) -> None:
+    commit(repository, "billing.ts")
+    (repository / "billing.ts").rename(repository / "ledger.ts")
+    git(repository, "add", "-N", "ledger.ts")
+    focus = session(repository)
+
+    primed = await vocabulary([], focus, ENVIRONMENT, time.monotonic())
+
+    assert primed.words == ("billing", "ledger", "auth-rework")
+
+
 async def test_only_the_newest_words_are_kept(repository: Path) -> None:
     commit(repository, *(f"old_{n}.py" for n in range(WORDS + 10)))
     commit(repository, "authMiddleware.ts")
     focus = session(repository)
 
-    primed = await vocabulary([], focus, ENVIRONMENT)
+    primed = await vocabulary([], focus, ENVIRONMENT, time.monotonic())
 
     assert len(primed.words) == WORDS
     assert primed.words[-2:] == ("authMiddleware", "auth-rework")
@@ -78,7 +91,7 @@ async def test_a_session_outside_any_repository_is_primed_with_the_sessions_alon
     focus = session(tmp_path / "notes")
     (tmp_path / "notes").mkdir()
 
-    primed = await vocabulary([Listing(focus, "planning")], focus, {**ENVIRONMENT, "GIT_CEILING_DIRECTORIES": str(tmp_path)})
+    primed = await vocabulary([Listing(focus, "planning")], focus, {**ENVIRONMENT, "GIT_CEILING_DIRECTORIES": str(tmp_path)}, time.monotonic())
 
     assert (primed.words, primed.failed) == (("notes", "planning"), None)
 
@@ -87,7 +100,7 @@ async def test_a_repository_with_no_commits_yet_is_primed_with_what_is_waiting_t
     (repository / "authMiddleware.ts").write_text("new")
     focus = session(repository)
 
-    primed = await vocabulary([Listing(focus, None)], focus, ENVIRONMENT)
+    primed = await vocabulary([Listing(focus, None)], focus, ENVIRONMENT, time.monotonic())
 
     assert (primed.words, primed.failed) == (("authMiddleware", "auth-rework", "shop"), None)
 
@@ -95,7 +108,7 @@ async def test_a_repository_with_no_commits_yet_is_primed_with_what_is_waiting_t
 async def test_a_repository_git_cannot_read_primes_nothing_of_its_own_and_says_why(repository: Path) -> None:
     focus = session(repository)
 
-    primed = await vocabulary([Listing(focus, None)], focus, {"PATH": "/nonexistent"})
+    primed = await vocabulary([Listing(focus, None)], focus, {"PATH": "/nonexistent"}, time.monotonic())
 
     assert primed.words == ("shop",)
     assert primed.failed is not None and "cannot run git" in primed.failed
@@ -103,7 +116,7 @@ async def test_a_repository_git_cannot_read_primes_nothing_of_its_own_and_says_w
 
 
 async def test_a_focus_that_cannot_be_read_says_so(tmp_path: Path) -> None:
-    primed = await vocabulary([], Unreadable("garbled"), ENVIRONMENT)
+    primed = await vocabulary([], Unreadable("garbled"), ENVIRONMENT, time.monotonic())
 
     assert (primed.focus, primed.words, primed.failed) == (None, (), "the focus: garbled")
     assert level(primed) == "error"
@@ -138,3 +151,26 @@ async def test_whisper_transcribes_each_hold_primed_with_the_vocabulary_as_it_is
         [frame async for frame in whisper.run_stt(b"\x00\x00" * 160)]
     # The load is unprimed; each hold is primed with what the vocabulary was when it was transcribed.
     assert asked == [None, "authMiddleware", "sessionStore"]
+
+
+async def test_what_a_primed_whisper_makes_of_silence_is_not_said(monkeypatch: pytest.MonkeyPatch) -> None:
+    # What large-v3-turbo returned, primed, for a second of silence and for "show me the diff for auth middleware".
+    silence = {"text": " .", "no_speech_prob": 0.0, "compression_ratio": 0.11, "avg_logprob": -1.4}
+    speech = {"text": " show me the diff for authMiddleware", "no_speech_prob": 0.0, "compression_ratio": 0.81, "avg_logprob": -0.23}
+    held = iter([[silence], [speech]])
+
+    def transcribe(_audio: object, **options: object) -> dict[str, object]:
+        # The load is unprimed and hears nothing.
+        return {"segments": [] if options["initial_prompt"] is None else next(held)}
+
+    monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
+
+    async def prompt() -> str | None:
+        return "authMiddleware"
+
+    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=prompt)
+    said: list[str] = []
+    for hold in (1, 2):
+        whisper._transcribing.append(hold)  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
+        said += [frame.text async for frame in whisper.run_stt(b"\x00\x00" * 160) if isinstance(frame, TranscriptionFrame)]
+    assert said == ["show me the diff for authMiddleware"]

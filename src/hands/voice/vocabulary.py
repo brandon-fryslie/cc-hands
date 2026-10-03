@@ -30,8 +30,9 @@ WORDS = 40
 # The commits whose files are read, newest first: as far back as the work a session is in is likely to reach.
 COMMITS = 30
 
-# What reading the repository may spend, all its git commands together. Whisper waits on it before it transcribes, so
-# it is time added to every turn; a repository slower than this primes Whisper with the sessions' names alone.
+# What reading the vocabulary may spend, the sessions' names and the repository's commands together. Whisper waits on it
+# before it transcribes, so it is time added to every turn; where git is still running past it, Whisper is primed with
+# the sessions' names alone.
 READING = 1.0
 
 
@@ -46,9 +47,10 @@ class Lexicon:
         self._record = record
 
     async def __call__(self) -> str | None:
+        began = time.monotonic()
         # Read off the loop: a name is read from its session's transcript.
         listings = await asyncio.to_thread(self._sessions.live)
-        primed = await vocabulary(listings, self._focus(), self._environment)
+        primed = await vocabulary(listings, self._focus(), self._environment, began)
         self._record(primed)
         # [LAW:dataflow-not-control-flow] no words is no prompt, which is Whisper unprimed.
         return ", ".join(primed.words) or None
@@ -62,10 +64,10 @@ class Lexicon:
                 return self._sessions.live_session(session)
 
 
-async def vocabulary(listings: Sequence[Listing[Session]], focus: Session | Unreadable | None, environment: Mapping[str, str]) -> Primed:
+async def vocabulary(listings: Sequence[Listing[Session]], focus: Session | Unreadable | None, environment: Mapping[str, str], began: float) -> Primed:
     """The repository words of the focused session, then every running session's project and name: oldest first, since
-    Whisper keeps the end of a prompt too long for it."""
-    began = time.monotonic()
+    Whisper keeps the end of a prompt too long for it. `began` is when reading the vocabulary started, `listings` among
+    it, on the monotonic clock."""
     match focus:
         case Session() as session:
             repository, failed = await _repository(session.membership.cwd, environment, began + READING)
@@ -105,7 +107,7 @@ def _status_paths(status: str) -> list[str]:
     for entry in entries:
         if entry:
             paths.append(entry[3:])
-            if entry[0] in "RC":
+            if "R" in entry[:2] or "C" in entry[:2]:
                 # The source follows its destination as an entry of its own, and was not changed in this work.
                 next(entries)
     return paths
@@ -122,7 +124,8 @@ class NotARepository(GitFailed):
 async def _git(cwd: Path, environment: Mapping[str, str], deadline: float, *args: str) -> str:
     left = deadline - time.monotonic()
     try:
-        ran = await run("git", "--no-optional-locks", "-C", str(cwd), *args, timeout=max(left, 0.0), env={**environment, "GIT_OPTIONAL_LOCKS": "0"})
+        # git says why it failed in the C locale's words, which are the ones read below.
+        ran = await run("git", "--no-optional-locks", "-C", str(cwd), *args, timeout=max(left, 0.0), env={**environment, "LC_ALL": "C"})
     except TimeoutError:
         raise GitFailed(f"git {args[0]} in {cwd} did not answer in {READING:.1f}s") from None
     except OSError as error:
