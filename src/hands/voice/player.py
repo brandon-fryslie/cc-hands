@@ -70,10 +70,10 @@ class Player:
 
     async def act(self, act: Act) -> tuple[str, ...]:
         """Moves playback by `act`, and says what it says, which is always something: a reading said again, or why not.
-        What it says is a new reading, held whole from the start so a barge-in on it loses none of it."""
+        What it says is held whole from the start, so a barge-in on it loses none of it."""
         moved, played = act(self._playback)
         lines = said(played)
-        self._playback = playback.begun(moved, lines)
+        self._playback = playback.queued(moved, lines)
         for sentence in lines:
             # One sentence a frame, so each is a position.
             await self.lines.push_frame(TTSSpeakFrame(sentence))

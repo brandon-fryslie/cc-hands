@@ -56,6 +56,13 @@ def begun(playback: Playback, coming: tuple[str, ...]) -> Playback:
     return Playback(coming=coming, interrupted=playback.bookmarks[-BOOKMARKS:])
 
 
+def queued(playback: Playback, sentences: tuple[str, ...]) -> Playback:
+    """Hands will hand the speaker these next, and knows them before it does: the rest of the reading playing, or a new
+    one, as for each sentence handed."""
+    start = begun(playback, ()) if playback.over else playback
+    return replace(start, coming=(*start.coming, *sentences))
+
+
 def handed(playback: Playback, sentence: str) -> Playback:
     """A sentence is on its way to the speaker: the next of the reading playing, or the first of a new one."""
     start = begun(playback, ()) if playback.over else playback

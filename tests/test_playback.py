@@ -25,6 +25,7 @@ from hands.core.playback import (
     cut,
     finished,
     handed,
+    queued,
     repeat,
     resume,
     skip,
@@ -104,6 +105,14 @@ def test_what_is_said_again_is_itself_a_reading_that_can_be_cut_and_gone_back_to
     after, said = resume(cut(finished(again)))
     assert said == Replay(("B.", "C."))
     assert after.bookmarks == ()
+
+
+def test_lines_said_again_while_a_reading_still_plays_go_on_from_it() -> None:
+    # The model said a few words of its own before asking to go back: those still playing, the lines follow them, and
+    # the words finishing count as the words, not as the first line.
+    playback = finished(handed(queued(handed(Playback(), "Sure."), ("A.", "B.")), "A."))
+    assert playback.reading == ("Sure.", "A.") and playback.played == 1
+    assert resume(cut(playback))[1] == Replay(("A.", "B."))
 
 
 def test_a_reading_said_again_and_cut_before_all_of_it_reached_the_speaker_is_gone_back_to_whole() -> None:
