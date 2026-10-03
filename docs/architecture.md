@@ -1656,8 +1656,8 @@ thing that failed `[LAW:no-silent-failure]`:
    the system channel writes `Announced` with whether it spoke or posted; the narrator
    writes each turn summary it speaks as `Recounted`; and a
    loguru sink turns every error a `hands` module logs into a `Failure`. A dictation is
-   traced from the words to the readback: `Transcribed`, `Called stage_draft`,
-   `Replied`. The log watches
+   traced from the words to the readback: `Transcribed`, then `Called stage_draft`
+   with what hands said back, which no model rewords. The log watches
    and never steers: a line the disk will not take is lost with a warning on stderr,
    a value it cannot encode is a `Failure` line instead, and the draft, the question, or the tick it described goes on. `hands log` follows
    the file by inode and offset, so a log moved aside is read from its first line.

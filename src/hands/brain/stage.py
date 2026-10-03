@@ -18,7 +18,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
 
 from loguru import logger
 from pipecat.frames.frames import (
@@ -57,7 +57,7 @@ from hands.core.wire import (
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Asker, BrainAnswered, BrainInterrupted, BrainSpoke, Record
 from hands.voice.speech import Aloud, Narrated
-from hands.voice.tools import Tool
+from hands.voice.tools import Result, Tool, silent
 
 
 class Asking(Protocol):
@@ -131,7 +131,7 @@ class BrainStage(FrameProcessor):
         self._record = record
         self._now = clock
         self._completes = frozenset(wire_name(tool) for tool in tools if tool.completes)
-        self._silences = frozenset(wire_name(tool) for tool in tools if tool.then == "silence")
+        self._tools = {wire_name(tool): tool for tool in tools}
         # How many of the context's messages the brain has been handed: the rest are new to it.
         self._told = 0
         # [LAW:no-ambient-temporal-coupling] the turn is the brain's, from its write to its result line, not the pipeline's:
@@ -279,13 +279,18 @@ class BrainStage(FrameProcessor):
             return Send(refusal="final")
         # Only the calls this turn's last reply opened: a request carries every result of the brain's history.
         answers = [(turn.calls[answer.call], answer) for answer in tool_answers(sent.body) if answer.call in turn.calls]
-        if not (turn.interrupted or any(name in self._silences for name, _ in answers)):
+        if not (turn.interrupted or any(self._silent(name, answer) for name, answer in answers)):
             turn.exchanges.append(sent.exchange)
             turn.opening, turn.calls, turn.failure = {}, {}, _UNNAMED
             # Refused once is the turn's failure, said at once as the API variants say theirs, who ask once.
             return Send((Tail(self._tail()),), refusal="final")
-        turn.readbacks.extend(_said(answer) for name, answer in answers if name in self._completes)
+        turn.readbacks.extend(said for name, answer in answers if name in self._completes and (said := _owed(answer)) is not None)
         return Hold(INTERRUPTED if turn.interrupted else SILENT)
+
+    def _silent(self, name: str, answer: ToolAnswer) -> bool:
+        """Whether the call was the whole reply, as hands' tools say: a call to a tool not hands' never is."""
+        tool, result = self._tools.get(name), _result(answer)
+        return tool is not None and result is not None and silent(tool, result)
 
     def hear(self, observed: Observed) -> None:
         turn = self._turn
@@ -355,14 +360,21 @@ def _broken_off(spoken: str) -> str:
     return f'[hands] The API broke off your last turn. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.' if spoken else ""
 
 
-def _said(answer: ToolAnswer) -> str:
-    """What a call that must land handed back for the user: its readback, or why it failed, which the model would have said."""
+def _result(answer: ToolAnswer) -> Result | None:
+    """What the tool handed back, or None for the MCP server's own failure: a line of text naming the tool and what went wrong."""
     try:
         result: object = json.loads(answer.text)
     except ValueError:
-        # The MCP server's own failure: a line of text naming the tool and what went wrong.
-        return answer.text
-    match result:
+        return None
+    return cast(Result, result) if isinstance(result, dict) else None
+
+
+def _owed(answer: ToolAnswer) -> str | None:
+    """What a call that must land handed back for the user and nobody has said: its readback, or why it failed, which
+    the model would have said. None when hands said it as the call ran."""
+    match _result(answer):
+        case {"said": str()}:
+            return None
         case {"readback": str() as said} | {"error": str() as said}:
             return said
         case _:

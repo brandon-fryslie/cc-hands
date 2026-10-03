@@ -17,7 +17,8 @@ import docstring_parser
 from loguru import logger
 from pipecat.adapters.schemas import direct_function
 from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.frames.frames import FunctionCallResultProperties
+from pipecat.frames.frames import FunctionCallResultProperties, TTSSpeakFrame
+from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.drafts import AmendDraft, DiscardDraft, SendDraft, StageDraft
@@ -64,7 +65,8 @@ class Tool:
     properties: Mapping[str, JsonSchema]
     required: tuple[str, ...]
     body: Body
-    # "reply": the model is asked to go on once it has the result. "silence": the call is the whole reply.
+    # "reply": the model is asked to go on once it has the result. "silence": the call is the whole reply, unless it
+    # hands back an error, which the model is asked to answer: a refused call did nothing, and only the model can retry it.
     then: Literal["reply", "silence"]
     # True when a barge-in must not stop a call part way: its effect would land without its readback heard.
     completes: bool
@@ -122,15 +124,20 @@ def _schema(hint: object) -> JsonSchema:
 def pipecat_function(tool: Tool) -> FunctionSchema:
     """The tool as Pipecat's LLM stage calls it: the schema it advertises, and a handler that hands back the body's reply."""
     # [LAW:single-enforcer] the one place a tool meets Pipecat, so what "silence" and "completes" mean there is said once.
-    properties = None if tool.then == "reply" else FunctionCallResultProperties(run_llm=False)
-
     async def handler(params: FunctionCallParams) -> None:
-        await params.result_callback(await tool.body(**params.arguments), properties=properties)
+        result = await tool.body(**params.arguments)
+        properties = FunctionCallResultProperties(run_llm=False) if silent(tool, result) else None
+        await params.result_callback(result, properties=properties)
 
     # Pipecat's decorator is untyped; it only marks the handler with its call options.
     options = cast(Callable[[Handler], Handler], direct_function.tool_options(cancel_on_interruption=not tool.completes))  # pyright: ignore[reportUnknownMemberType]
 
     return FunctionSchema(tool.name, tool.description, {name: dict(schema) for name, schema in tool.properties.items()}, list(tool.required), handler=options(handler))
+
+
+def silent(tool: Tool, result: Result) -> bool:
+    """Whether the call is the whole reply: a silence tool's, unless it was refused."""
+    return tool.then == "silence" and "error" not in result
 
 
 # How much of a session one reading hands over. A session that has run for an hour has hundreds of steps, and
@@ -182,7 +189,7 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
         tell_turn_tool(sessions, recounts),
         expand_tool(sessions, recounts),
         *backlog_tools(sessions, store),
-        *draft_tools(sessions),
+        *draft_tools(sessions, player.lines),
         *keyboard_tools(sessions),
         set_overlay_tool(sessions, overlays),
     ]
@@ -859,32 +866,35 @@ class Resolved(TypedDict):
     meant: str
 
 
-def draft_tools(sessions: Sessions) -> list[Tool]:
-    """stage_draft, amend_draft, discard_draft, send_draft: a prompt dictated for a session, read back until it is right, then sent."""
+def draft_tools(sessions: Sessions, lines: FrameProcessor) -> list[Tool]:
+    """stage_draft, amend_draft, discard_draft, send_draft: a prompt dictated for a session, read back until it is right, then sent.
+
+    `lines` stands ahead of the TTS service: a draft's readback is said through it by hands, as written.
+    """
 
     async def stage_draft(session: str, text: str, resolutions: list[Resolved]) -> Result:
         """Stage a prompt the user dictated for a session. It is not sent until the user says to send it.
 
-        Say the returned readback to the user word for word.
+        Hands reads the draft back to the user as it will be typed. Calling it is the whole reply: add no words of your own.
 
         Args:
             session: The session's id, from list_sessions.
             text: The prompt.
             resolutions: Each spoken phrase you turned into something exact, such as a file name, with what you made of it. Empty when you resolved nothing.
         """
-        return await _answer("stage_draft", sessions, session, lambda id: StageDraft(id, parse_draft(text, resolutions)), sessions.draft, readback)
+        return await _aloud(lines, await _answer("stage_draft", sessions, session, lambda id: StageDraft(id, parse_draft(text, resolutions)), sessions.draft, readback))
 
     async def amend_draft(session: str, text: str, resolutions: list[Resolved]) -> Result:
         """Replace a session's staged draft with a corrected one when the user changes it.
 
-        Say the returned readback to the user word for word.
+        Hands reads back what changed. Calling it is the whole reply: add no words of your own.
 
         Args:
             session: The session's id, from list_sessions.
             text: The whole corrected prompt, not only the changed words.
             resolutions: Every resolution the corrected prompt relies on.
         """
-        return await _answer("amend_draft", sessions, session, lambda id: AmendDraft(id, parse_draft(text, resolutions)), sessions.draft, readback)
+        return await _aloud(lines, await _answer("amend_draft", sessions, session, lambda id: AmendDraft(id, parse_draft(text, resolutions)), sessions.draft, readback))
 
     async def discard_draft(session: str) -> Result:
         """Throw away a session's staged draft without sending it.
@@ -905,7 +915,24 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         return await _answer("send_draft", sessions, session, SendDraft, sessions.draft, readback)
 
     # A barge-in must not cancel a draft call part way: the draft would change, or be sent, without its readback heard.
-    return [tool(body, completes=True) for body in (stage_draft, amend_draft, discard_draft, send_draft)]
+    return [
+        tool(stage_draft, then="silence", completes=True),
+        tool(amend_draft, then="silence", completes=True),
+        tool(discard_draft, completes=True),
+        tool(send_draft, completes=True),
+    ]
+
+
+async def _aloud(lines: FrameProcessor, result: Result) -> Result:
+    """The readback said by hands, as written: what the user checks a draft by is spelled for the ear, and a model asked
+    to say it would say it in its own words. A refusal is left for the model to answer."""
+    match result:
+        case {"readback": str() as said}:
+            # Kept out of the context: the result the model is handed holds it once.
+            await lines.push_frame(TTSSpeakFrame(said, append_to_context=False))
+            return {"said": said}
+        case _:
+            return result
 
 
 async def _answer[R, O](

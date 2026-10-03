@@ -6,12 +6,16 @@ import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 from loguru import logger
+from pipecat.frames.frames import Frame, FunctionCallResultProperties, TTSSpeakFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import AssistantTurnStoppedMessage, LLMContextAggregatorPair, UserTurnMessageAddedMessage
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Command, Input, Key, Text, Type
 from hands.core.events import Ended, Joined, StatusReported
@@ -28,6 +32,21 @@ def unrecorded(_: object) -> None:
     pass
 
 
+class Lines(FrameProcessor):
+    """The processor standing ahead of the speaker, keeping what hands hands it."""
+
+    def __init__(self) -> None:
+        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        self.frames: list[Frame] = []
+
+    async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+        self.frames.append(frame)
+
+    @property
+    def said(self) -> list[tuple[str, bool]]:
+        return [(frame.text, frame.append_to_context) for frame in self.frames if isinstance(frame, TTSSpeakFrame)]
+
+
 async def joined(tmp: Path, record: Record = unrecorded) -> tuple[Sessions, SessionId]:
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record)
     membership = Membership(SessionId("s1"), pid=4242, cwd=Path("/code/cc-hands"), transcript=tmp / "none.jsonl")
@@ -42,27 +61,28 @@ async def call(tools: list[Tool], name: str, **arguments: object) -> dict[str, o
 
 async def test_a_draft_staged_amended_and_discarded_is_read_back_at_each_step(tmp_path: Path) -> None:
     sessions, id = await joined(tmp_path)
-    tools = draft_tools(sessions)
+    lines = Lines()
+    tools = draft_tools(sessions, lines)
     resolved = [{"heard": "auth middleware", "meant": "authMiddleware.ts"}]
 
     staged = await call(tools, "stage_draft", session=id, text="refactor authMiddleware.ts to use the old helper", resolutions=resolved)
-    assert staged == {
-        "readback": "Draft for cc-hands, reading 'auth middleware' as auth Middleware dot ts: "
-        "refactor auth Middleware dot ts to use the old helper"
-    }
+    first = "Draft for cc-hands, reading 'auth middleware' as auth Middleware dot ts: refactor auth Middleware dot ts to use the old helper"
+    assert staged == {"said": first}
     amended = await call(tools, "amend_draft", session=id, text="refactor authMiddleware.ts to use the new token helper", resolutions=resolved)
-    assert amended == {"readback": "In the draft for cc-hands: 'old' is now 'new token'"}
+    assert amended == {"said": "In the draft for cc-hands: 'old' is now 'new token'"}
+    # Said by hands as written, straight to the speaker: no model is asked to say it, so none rewords it.
+    assert lines.said == [(first, False), ("In the draft for cc-hands: 'old' is now 'new token'", False)]
     assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for cc-hands."}
     assert await call(tools, "discard_draft", session=id) == {"readback": "There is no draft for cc-hands."}
 
 
 async def test_an_ended_session_is_told_its_draft_cannot_change_and_the_draft_can_still_be_discarded(tmp_path: Path) -> None:
     sessions, id = await joined(tmp_path)
-    tools = draft_tools(sessions)
+    tools = draft_tools(sessions, Lines())
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     await sessions.apply(Ended(id, "other"))
     assert await call(tools, "amend_draft", session=id, text="run the linter", resolutions=[]) == {
-        "readback": "cc-hands has ended, so its draft cannot be staged, changed, or sent."
+        "said": "cc-hands has ended, so its draft cannot be staged, changed, or sent."
     }
     assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for cc-hands."}
 
@@ -78,24 +98,50 @@ async def test_an_ended_session_is_told_its_draft_cannot_change_and_the_draft_ca
         ("fine", "none", "resolutions should be a list"),
     ],
 )
-async def test_arguments_that_do_not_parse_are_refused_out_loud(text: str, resolutions: object, error: str, tmp_path: Path) -> None:
+async def test_arguments_that_do_not_parse_are_refused_to_the_model_and_nothing_is_said(text: str, resolutions: object, error: str, tmp_path: Path) -> None:
     sessions, id = await joined(tmp_path)
-    result = await call(draft_tools(sessions), "stage_draft", session=id, text=text, resolutions=resolutions)
+    lines = Lines()
+    result = await call(draft_tools(sessions, lines), "stage_draft", session=id, text=text, resolutions=resolutions)
     assert error in str(result["error"])
+    assert lines.frames == []
 
 
 async def test_the_draft_tools_say_their_arguments_and_complete_through_a_barge_in(tmp_path: Path) -> None:
     sessions, _ = await joined(tmp_path)
-    tools = draft_tools(sessions)
+    tools = draft_tools(sessions, Lines())
     assert [tool.name for tool in tools] == ["stage_draft", "amend_draft", "discard_draft", "send_draft"]
     assert tools[0].required == ("session", "text", "resolutions")
     assert tools[0].properties["resolutions"]["items"] == {"type": "object", "properties": {"heard": {"type": "string"}, "meant": {"type": "string"}}, "required": ["heard", "meant"]}
     assert all(tool.completes for tool in tools)
+    assert [tool.then for tool in tools] == ["silence", "silence", "reply", "reply"]
+
+
+async def handled(tool: Tool, **arguments: object) -> FunctionCallResultProperties | None:
+    """What Pipecat is told once the call is answered: None asks the model to go on."""
+    told: list[FunctionCallResultProperties | None] = []
+
+    async def result_callback(_: object, *, properties: FunctionCallResultProperties | None = None) -> None:
+        told.append(properties)
+
+    params = cast(FunctionCallParams, SimpleNamespace(arguments=arguments, result_callback=result_callback))
+    handler = pipecat_function(tool)._handler  # pyright: ignore[reportPrivateUsage]
+    assert handler is not None
+    await handler(params)
+    [properties] = told
+    return properties
+
+
+async def test_pipecat_runs_no_model_after_a_staged_draft_and_asks_it_to_answer_a_refused_one(tmp_path: Path) -> None:
+    sessions, id = await joined(tmp_path)
+    [stage, *_] = draft_tools(sessions, Lines())
+    staged = await handled(stage, session=id, text="run the tests", resolutions=[])
+    assert staged is not None and staged.run_llm is False
+    assert await handled(stage, session=id, text="  ", resolutions=[]) is None
 
 
 async def test_pipecat_is_told_a_barge_in_cancels_no_draft_tool(tmp_path: Path) -> None:
     sessions, _ = await joined(tmp_path)
-    handlers = [pipecat_function(tool)._handler for tool in draft_tools(sessions)]  # pyright: ignore[reportPrivateUsage]
+    handlers = [pipecat_function(tool)._handler for tool in draft_tools(sessions, Lines())]  # pyright: ignore[reportPrivateUsage]
     assert [getattr(handler, "_pipecat_cancel_on_interruption") for handler in handlers] == [False] * 4
 
 
@@ -107,19 +153,19 @@ async def fire(aggregator: object, event: str, message: object) -> None:
     await asyncio.gather(*(task for _, task in cast(set[tuple[str, asyncio.Task[None]]], getattr(aggregator, "_event_tasks"))))
 
 
-async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to_the_readback(tmp_path: Path) -> None:
+async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to_the_readback_hands_said(tmp_path: Path) -> None:
     path = tmp_path / "audit"
     record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
     sessions, id = await joined(tmp_path, record)
-    tools = [audited(tool, record) for tool in draft_tools(sessions)]
+    tools = [audited(tool, record) for tool in draft_tools(sessions, Lines())]
     pair = LLMContextAggregatorPair(LLMContext())
     user, assistant = pair.user(), pair.assistant()
     record_turns(user, assistant, record)
 
     await fire(user, "on_user_turn_message_added", UserTurnMessageAddedMessage("tell cc-hands to run the tests", "t1"))
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
+    # The call was the whole reply: the model said nothing of its own.
     await fire(assistant, "on_assistant_turn_stopped", AssistantTurnStoppedMessage("", False, "t2"))
-    await fire(assistant, "on_assistant_turn_stopped", AssistantTurnStoppedMessage("Draft for cc-hands: run the tests", False, "t2"))
 
     written = [json.loads(line) for line in tail(path, 1000)[0]]
     trace = [(line["type"], line.get("text") or line.get("tool")) for line in written]
@@ -127,9 +173,8 @@ async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to
         ("Applied", None),
         ("Transcribed", "tell cc-hands to run the tests"),
         ("Called", "stage_draft"),
-        ("Replied", "Draft for cc-hands: run the tests"),
     ]
-    assert written[2]["result"] == {"readback": "Draft for cc-hands: run the tests"}
+    assert written[2]["result"] == {"said": "Draft for cc-hands: run the tests"}
     assert [datetime.fromisoformat(line["at"]) for line in written] == sorted(datetime.fromisoformat(line["at"]) for line in written)
 
 
@@ -176,7 +221,7 @@ async def wrapped(tmp: Path, typist: Callable[[Type[Input]], None], record: Reco
 async def test_a_sent_draft_is_typed_into_its_session_once_and_is_gone(tmp_path: Path) -> None:
     typed: list[Type[Input]] = []
     sessions, id = await wrapped(tmp_path, typed.append)
-    tools = draft_tools(sessions)
+    tools = draft_tools(sessions, Lines())
     await call(tools, "stage_draft", session=id, text="/compact the tests", resolutions=[])
     assert await call(tools, "send_draft", session=id) == {"readback": "Sent the draft to cc-hands."}
     assert await call(tools, "send_draft", session=id) == {"readback": "There is no draft for cc-hands."}
@@ -189,7 +234,7 @@ async def test_a_send_fritter_could_not_type_is_said_with_the_draft_it_was(tmp_p
         raise Untyped("fritter did not type into session s1: cannot write to the session")
 
     sessions, id = await wrapped(tmp_path, refused)
-    tools = draft_tools(sessions)
+    tools = draft_tools(sessions, Lines())
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     assert await call(tools, "send_draft", session=id) == {
         "readback": "The draft for cc-hands was not sent, and is no longer staged: "
@@ -199,7 +244,7 @@ async def test_a_send_fritter_could_not_type_is_said_with_the_draft_it_was(tmp_p
 
 async def test_a_session_nobody_wrapped_is_refused_by_name_and_its_draft_survives(tmp_path: Path) -> None:
     sessions, id = await joined(tmp_path)
-    tools = draft_tools(sessions)
+    tools = draft_tools(sessions, Lines())
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     assert await call(tools, "send_draft", session=id) == {
         "readback": "cc-hands was not started under fritter, so hands cannot type into it. The draft is still staged."
@@ -210,7 +255,7 @@ async def test_a_session_nobody_wrapped_is_refused_by_name_and_its_draft_survive
 async def test_a_session_waiting_at_a_permission_dialog_is_sent_nothing(tmp_path: Path) -> None:
     typed: list[Type[Input]] = []
     sessions, id = await wrapped(tmp_path, typed.append)
-    tools = draft_tools(sessions)
+    tools = draft_tools(sessions, Lines())
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     # Claude Code says it waits at a dialog, whether or not hands holds the dialog's hook.
     await sessions.apply(StatusReported(id, Report(Waiting("permission prompt"), Stamp(1)), 0.0))
@@ -224,7 +269,7 @@ async def test_what_is_typed_is_in_the_audit_log_before_the_readback(tmp_path: P
     path = tmp_path / "audit"
     record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
     sessions, id = await wrapped(tmp_path, lambda _: None, record)
-    tools = [audited(tool, record) for tool in draft_tools(sessions)]
+    tools = [audited(tool, record) for tool in draft_tools(sessions, Lines())]
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     await call(tools, "send_draft", session=id)
     written = [json.loads(line) for line in tail(path, 1000)[0]]
