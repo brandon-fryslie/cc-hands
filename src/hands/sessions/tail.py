@@ -100,8 +100,8 @@ class Delegate:
     # own, though a fork's is the parent's call that launched it, copied in ahead of the fork's own work.
     job: bool
     turn: Turning = field(default_factory=Turning)
-    # Who its calls are said to be the work of, once it has made one: read then, so a subagent that never works again
-    # after hands begins following its session is never asked who started it. Unstarted where nothing says, which is
+    # Who its calls are said to be the work of, once its transcript grows: read then, so a subagent that never works
+    # again after hands begins following its session is never asked who started it. Unstarted where nothing says, which is
     # said once, and its calls are then told as nobody's.
     agent: "AgentTask | Unstarted | None" = None
 
@@ -414,10 +414,14 @@ class Tails:
                 following.delegates[id] = Delegate(id, path, offset, meta, job=offset == 0)
         progressed = list[Progressed]()
         for delegate in following.delegates.values():
+            if _size(delegate.path) == delegate.offset:
+                # A subagent that has done nothing new, as one that reported back long since has: its file is not opened.
+                continue
             try:
+                # Named before its calls are read, so a meta that cannot be read yet leaves them to be read with it.
+                agent = _attributed(session, delegate, following)
                 made = _read_delegate(session, delegate)
-                agent = _attributed(session, delegate, following) if made else None
-                if agent is not None:
+                if made and agent is not None:
                     progressed.append(Progressed(session, agent, tuple(made), self._known.now()))
             except (OSError, Rejected) as error:
                 # [LAW:no-silent-failure] said, and the subagent's transcript is read on from where it was: what it does
@@ -519,9 +523,6 @@ def _records(lines: Iterable[bytes], whose: str) -> Iterator[Payload]:
 
 def _read_delegate(session: SessionId, delegate: Delegate) -> list[Doing]:
     """What each call the subagent's transcript gained sets out to do. Raises OSError for a transcript that cannot be read."""
-    if _size(delegate.path) == delegate.offset:
-        # A subagent that has done nothing new, as one that reported back long since has: its file is not opened.
-        return []
     read = _appended(delegate.path, delegate.offset)
     if read.restarted:
         logger.warning(f"the transcript of subagent {delegate.id} of session {session} is shorter than what was read of it, so it is read again from its start")

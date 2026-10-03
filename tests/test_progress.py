@@ -575,6 +575,20 @@ async def test_a_subagent_already_working_is_followed_from_its_last_whole_record
     assert heard == [Progressed(SID, REVIEW, (READ_TAIL,), 7.0)] and errors == more == []
 
 
+async def test_a_subagent_s_calls_wait_for_the_file_naming_its_job_to_be_readable(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    tails = Tails(Known(transcript))
+    await tails.catch_up()
+    subagent(transcript, {}, JOB, READS)
+    meta = transcript.with_suffix("") / "subagents" / f"agent-{AGENT}.meta.json"
+    # Caught part way through being written.
+    meta.write_text('{"description": "Review')
+    assert await progressed(tails) == []
+    meta.write_text(json.dumps({"description": "Review the parser change"}))
+    assert await progressed(tails) == [Progressed(SID, REVIEW, (READ_TAIL,), 7.0)]
+
+
 async def test_a_subagent_a_subagent_started_is_heard_as_the_work_of_the_call_in_the_session_that_started_the_first(tmp_path: Path) -> None:
     # Measured: Claude Code keeps a subagent's own subagents beside the session's, each naming the one that started it.
     transcript = tmp_path / "t.jsonl"
