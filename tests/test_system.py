@@ -11,6 +11,7 @@ import anthropic
 import httpx2
 import openai
 import pytest
+from loguru import logger
 from pipecat.frames.frames import ErrorFrame, Frame, TranscriptionFrame, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
@@ -19,7 +20,8 @@ from pipecat.utils.errors import ErrorCategory
 from hands.sessions import heartbeat
 from hands.daemon.cli import crashed_before
 from hands.sessions.audit import Announced, Entry
-from hands.daemon.notify import notification_command
+from hands.daemon import notify
+from hands.daemon.notify import notification_command, post_notification
 from hands.sessions.home import Home
 from hands.voice.system import (
     NoMicrophone,
@@ -363,6 +365,20 @@ def test_the_notification_text_is_an_argument_not_part_of_the_script() -> None:
     command = notification_command('-say "hi" \\ now')
     assert command[-2:] == ["--", '-say "hi" \\ now']
     assert all('"hi"' not in part for part in command[:-1])
+
+
+async def test_a_notification_osascript_never_posts_is_refused_and_said(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def stuck(*_argv: str, timeout: float) -> None:
+        raise TimeoutError
+
+    monkeypatch.setattr(notify, "run", stuck)
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
+    try:
+        assert await post_notification("hello") is False
+    finally:
+        logger.remove(sink)
+    assert errors == [f"osascript did not post 'hello' in {notify.POST_TIMEOUT_SECONDS:.0f}s"]
 
 
 GONE = "a pid no process holds"

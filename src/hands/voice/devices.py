@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from hands.voice.coreaudio import DefaultDevices, default_device_changes, default_devices
 from hands.voice.microphone import Devices, KeyedAudioTransport
 from hands.voice.system import AudioMoved, SystemFact
-from hands.voice.threads import off_loop
+from hands.threads import off_loop
 
 
 async def follow(

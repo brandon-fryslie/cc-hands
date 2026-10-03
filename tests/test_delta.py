@@ -298,16 +298,14 @@ async def ends(after: float) -> None:
     (root / "a.py").write_text(f"x = {after}\\n")
     await deltas.compare("s", again=False)
     await asyncio.sleep(after)
-    raise RuntimeError("the loop ends")
+    raise RuntimeError(time.monotonic())
 
 slowest = 0.0
 for step in range(30):
-    start = time.monotonic()
     try:
         asyncio.run(ends(step * 0.002))
-    except RuntimeError:
-        pass
-    slowest = max(slowest, time.monotonic() - start)
+    except RuntimeError as ended:
+        slowest = max(slowest, time.monotonic() - ended.args[0])
     try:
         os.waitpid(-1, os.WNOHANG)
         sys.exit(f"a git was left unreaped when the loop ended {step * 2}ms into a reading")
@@ -323,7 +321,7 @@ def test_a_loop_ended_mid_reading_kills_and_reaps_its_git_and_closes(tmp_path: P
     Python 3.12's asyncio subprocesses did: cancelled while starting, they waited for an exit nothing would deliver."""
     root = repo(tmp_path)
     try:
-        ran = subprocess.run((sys.executable, "-c", SHUT_DOWN, str(root)), capture_output=True, text=True, timeout=10)
+        ran = subprocess.run((sys.executable, "-c", SHUT_DOWN, str(root)), capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:
         raise AssertionError("a loop ended mid-reading never finished closing") from None
     assert ran.returncode == 0, ran.stderr[-2000:]

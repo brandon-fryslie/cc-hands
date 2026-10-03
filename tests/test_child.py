@@ -4,8 +4,11 @@ import asyncio
 import os
 import subprocess
 import time
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
+from loguru import logger
 
 from hands.sessions import child
 from hands.sessions.child import Ran, run
@@ -25,34 +28,54 @@ def started(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen[bytes]]:
     return seen
 
 
+@pytest.fixture
+def logged() -> Iterator[list[str]]:
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(message.record["message"]), level="INFO")
+    yield messages
+    logger.remove(sink)
+
+
 def reaped(process: subprocess.Popen[bytes]) -> bool:
-    # A child killed and not yet reaped still answers signal 0, as a zombie; only a reaped one is not there at all.
-    try:
-        os.kill(process.pid, 0)
-    except ProcessLookupError:
-        return True
-    return False
+    return process.returncode is not None
 
 
 async def test_a_child_s_output_and_exit_are_what_it_ran_to() -> None:
     assert await run("sh", "-c", "echo out; echo err >&2; exit 3", timeout=5) == Ran(3, b"out\n", b"err\n")
 
 
-async def test_a_child_that_runs_past_its_time_is_killed_and_reaped(started: list[subprocess.Popen[bytes]]) -> None:
+async def test_a_child_that_runs_past_its_time_is_killed_and_reaped(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
     start = time.monotonic()
     with pytest.raises(TimeoutError):
         await run("sleep", "30", timeout=0.2)
     assert time.monotonic() - start < 2
     assert reaped(started[0])
+    assert any(f"killed sleep ({started[0].pid})" in line and "ran past 0.2s" in line for line in logged)
 
 
-async def test_a_child_whose_caller_stops_waiting_is_killed_and_reaped(started: list[subprocess.Popen[bytes]]) -> None:
+async def test_what_a_child_started_is_killed_with_it(tmp_path: Path) -> None:
+    pid = tmp_path / "pid"
+    with pytest.raises(TimeoutError):
+        await run("sh", "-c", f"sleep 30 & echo $! > {pid}; wait", timeout=0.5)
+    grandchild = int(pid.read_text())
+    # Killed, it is reparented to launchd and reaped there; give that a moment before asking after it.
+    for _ in range(50):
+        try:
+            os.kill(grandchild, 0)
+        except ProcessLookupError:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"the sleep {grandchild} its timed-out parent started is still running")
+
+
+async def test_a_child_whose_caller_stops_waiting_is_killed_and_reaped(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
     running = asyncio.create_task(run("sleep", "30", timeout=30))
     await asyncio.sleep(0.1)
     running.cancel()
     with pytest.raises(asyncio.CancelledError):
         await running
     assert reaped(started[0])
+    assert any(f"killed sleep ({started[0].pid})" in line and "its caller stopped waiting" in line for line in logged)
 
 
 async def test_a_child_that_cannot_start_says_so() -> None:
