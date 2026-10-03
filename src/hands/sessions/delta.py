@@ -69,6 +69,15 @@ MOST_COMMITS = 500
 
 
 @dataclass(frozen=True)
+class Refs:
+    """Each local branch and remote-tracking ref and the commit it names, and the branch each remote's HEAD follows."""
+
+    named: Mapping[str, str]
+    # Where git knows it: a clone does, a repository that added its remote may not.
+    defaults: frozenset[str]
+
+
+@dataclass(frozen=True)
 class Mark:
     """Where a repository stood: the commit it was on, and a tree of everything in it git would keep."""
 
@@ -79,7 +88,7 @@ class Mark:
     tree: str
     # Every local branch and remote-tracking ref, and the commit each names. None where git would not list them,
     # never empty for it: read as a repository with no branches, every branch it has is one the turn made.
-    refs: Mapping[str, str] | None
+    refs: Refs | None
     # When the mark was taken, on the wall clock a forge stamps a pull request with.
     at: datetime
 
@@ -329,15 +338,19 @@ class Deltas:
         )
         return () if not listed else tuple(Commit(*line.split("\x1f", 1)) for line in listed.splitlines() if "\x1f" in line)
 
-    async def _refs(self, root: Path, deadline: float) -> dict[str, str] | None:
+    async def _refs(self, root: Path, deadline: float) -> Refs | None:
         """Each local branch and remote-tracking ref and the commit it names. A symbolic ref names a ref, not a
-        commit — `origin/HEAD` follows the remote's default branch — so none of them is one."""
+        commit — `origin/HEAD` follows the remote's default branch — so none of them is one: it names a default."""
         listed = await self._git(root, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", "refs/heads", "refs/remotes", deadline=deadline)
         if listed is None:
             return None
-        return {name: sha for line in listed.splitlines() for name, sha, symbolic in [line.split("\0")] if not symbolic}
+        lines = [line.split("\0") for line in listed.splitlines()]
+        return Refs(
+            {name: sha for name, sha, symbolic in lines if not symbolic},
+            frozenset(symbolic.split("/", 3)[3] for _, _, symbolic in lines if symbolic.startswith("refs/remotes/")),
+        )
 
-    async def _moved(self, mark: Mark, refs: Mapping[str, str] | None, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
+    async def _moved(self, mark: Mark, refs: Refs | None, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
         """Whether the turn made the branch this worktree is on, whether it pushed it, and the pull requests opened from it.
 
         That branch alone. Every worktree of a repository, and the terminal beside it, share refs/heads and refs/remotes
@@ -353,16 +366,16 @@ class Deltas:
             return (), UNASKED
         since = int(mark.at.timestamp())
         # `refs/remotes/<remote>/<branch>`, and a branch may hold slashes where a remote does not.
-        tracking = [name for name in refs if name.startswith("refs/remotes/") and name.split("/", 3)[3:] == [branch]]
+        tracking = [name for name in refs.named if name.startswith("refs/remotes/") and name.split("/", 3)[3:] == [branch]]
         # A ref the turn left where it found it was pushed nothing, whatever its log says.
-        moved = [name for name in tracking if mark.refs.get(name) != refs[name]]
+        moved = [name for name in tracking if mark.refs.named.get(name) != refs.named[name]]
         made, pushes = await asyncio.gather(
-            self._made(mark.root, mark.refs, branch, tracking, since, deadline), asyncio.gather(*(self._pushed(mark.root, name, mark.refs.get(name), deadline) for name in moved))
+            self._made(mark.root, mark.refs.named, branch, tracking, since, deadline), asyncio.gather(*(self._pushed(mark.root, name, mark.refs.named.get(name), deadline) for name in moved))
         )
         pushed = any(pushes)
         # [LAW:carrying-cost] no pull request is opened from a remote's default branch, and most pushes are to it: asking
         # the forge after each would spend a request a turn on an answer that is always no.
-        opened, asked = await self._opened(mark, branch, min(deadline, forging)) if pushed and branch not in await self._defaults(mark.root, deadline) else ((), UNASKED)
+        opened, asked = await self._opened(mark, branch, min(deadline, forging)) if pushed and branch not in refs.defaults else ((), UNASKED)
         return (*([Branched(branch, "created branch")] if made else []), *([Pushed(branch)] if pushed else []), *opened), asked
 
     async def _made(self, root: Path, known: Mapping[str, str], branch: str, tracking: list[str], since: int, deadline: float) -> bool:
@@ -395,34 +408,38 @@ class Deltas:
                 return True
         return False
 
-    async def _defaults(self, root: Path, deadline: float) -> set[str]:
-        """The branch each remote's HEAD follows, where git knows it: a clone does, a repository that added its remote may not."""
-        listed = await self._git(root, "for-each-ref", "--format=%(symref:lstrip=3)", "refs/remotes", deadline=deadline)
-        return set() if listed is None else {line for line in listed.splitlines() if line}
-
     async def _opened(self, mark: Mark, branch: str, deadline: float) -> tuple[tuple[PullRequested, ...], Asked]:
-        """The pull requests the forge says were opened from `branch` since the mark. Nothing on this machine records one."""
+        """The pull requests the forge says this user opened from `branch` since the mark. Nothing on this machine records one.
+
+        This user's alone: a fork's pull request from a branch of the same name is someone else's. A forge that is slow
+        or refuses is what a forge a network away is some days, so neither is a failure here: the reading's audit line
+        says which it was, and the turn is told without its pull request.
+        """
         gh = shutil.which("gh")
         if gh is None:
             # A machine with no gh has no forge to ask, which is how it is set up and not something that went wrong.
             return (), Asked("absent", 0.0)
         began = time.monotonic()
-        answer = await self._ask(
-            f"gh pr list in {mark.root}",
-            (gh, "pr", "list", "--head", branch, "--state", "all", "--json", "number,url,createdAt"),
-            cwd=mark.root,
-            deadline=deadline,
-        )
+        if deadline <= began:
+            return (), Asked("unanswered", 0.0)
+        try:
+            ran = await run(
+                gh, "pr", "list", "--head", branch, "--author", "@me", "--state", "all", "--json", "number,url,createdAt", timeout=deadline - began, cwd=mark.root
+            )
+        except TimeoutError:
+            return (), Asked("unanswered", round(time.monotonic() - began, 3))
         took = round(time.monotonic() - began, 3)
-        if answer is None:
-            return (), Asked("unanswered", took)
+        if ran.returncode != 0:
+            # Not a GitHub remote, not signed in, no default repository: gh says which.
+            logger.info(f"gh would not list the pull requests of {branch} in {mark.root}: {ran.err.decode(errors='replace').strip()}")
+            return (), Asked("refused", took)
         # The forge stamps to the second, so a pull request opened in the second the mark was taken is still since it.
         since = mark.at.replace(microsecond=0)
         try:
-            listed: object = json.loads(answer)
+            listed: object = json.loads(ran.out)
         except ValueError as error:
             logger.warning(f"gh said something about the pull requests of {branch} that is not JSON, so none is told: {error}")
-            return (), Asked("unanswered", took)
+            return (), Asked("refused", took)
         entries = cast(list[object], listed) if isinstance(listed, list) else [listed]
         return tuple(request for entry in entries if (request := _request(entry, since)) is not None), Asked("answered", took)
 
@@ -456,13 +473,7 @@ class Deltas:
             return await self._git(root, "write-tree", env=env, deadline=deadline)
 
     async def _git(self, cwd: Path, *args: str, env: Mapping[str, str] | None = None, deadline: float) -> str | None:
-        # `-C` and not the child's working directory, so a session whose directory is gone is git's own quiet refusal
-        # and not a process that could not be started.
-        argv = ("git", "--no-optional-locks", "-C", str(cwd), *args)
-        return await self._ask(f"git {args[0]} in {cwd}", argv, env={"GIT_OPTIONAL_LOCKS": "0", **(env or {})}, deadline=deadline)
-
-    async def _ask(self, what: str, argv: tuple[str, ...], *, env: Mapping[str, str] | None = None, cwd: Path | None = None, deadline: float) -> str | None:
-        """What one command said, or None where it could not answer inside what is left of the deadline.
+        """What one git command said, or None where git could not answer inside what is left of the deadline.
 
         [LAW:no-silent-failure] a repository that cannot be read leaves the turn told without its delta and
         says why in the log, rather than failing the summary of a turn that mostly happened elsewhere. The
@@ -471,18 +482,20 @@ class Deltas:
         """
         left = deadline - time.monotonic()
         if left <= 0:
-            logger.warning(f"there was no time left to run {what}, so the turn is told without it")
+            logger.warning(f"there was no time left to run git {args[0]} in {cwd}, so the turn is told without it")
             return None
         try:
-            ran = await run(*argv, timeout=left, cwd=cwd, env={**os.environ, **(env or {})})
+            ran = await run(
+                "git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", **(env or {})}
+            )
         except TimeoutError:
-            logger.error(f"{what} did not answer in {left:.1f}s, so the turn is told without it")
+            logger.error(f"git {args[0]} in {cwd} did not answer in {left:.1f}s, so the turn is told without it")
             return None
         except OSError as error:
-            logger.error(f"cannot run {what}: {error}")
+            logger.error(f"cannot run git in {cwd}: {error}")
             return None
         if ran.returncode != 0:
-            logger.debug(f"{what}: {ran.err.decode(errors='replace').strip()}")
+            logger.debug(f"git {args[0]} in {cwd}: {ran.err.decode(errors='replace').strip()}")
             return None
         return ran.out.decode(errors="replace").strip()
 

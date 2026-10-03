@@ -18,7 +18,7 @@ from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
 from hands.sessions.audit import DeltaRead, Entry
-from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Deltas
+from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Asked, Deltas, Mark
 from hands.sessions.registry import Sessions
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
@@ -219,7 +219,7 @@ async def test_a_pull_request_opened_from_a_branch_the_turn_pushed_is_read_from_
 
     delta = await turn(root, open_one)
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"), PullRequested(7, "https://x/7", "created"))
-    assert asked.read_text().split() == ["pr", "list", "--head", "fix", "--state", "all", "--json", "number,url,createdAt"]
+    assert asked.read_text().split() == ["pr", "list", "--head", "fix", "--author", "@me", "--state", "all", "--json", "number,url,createdAt"]
 
 
 async def test_the_forge_is_not_asked_about_a_turn_that_pushed_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -368,6 +368,28 @@ async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
     [read] = [entry for entry in record if isinstance(entry, DeltaRead)]
     assert read.forge == "unanswered" and read.seconds < 1.0
+
+
+async def test_a_forge_that_refuses_is_told_apart_from_a_slow_one_and_nothing_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A remote that is not GitHub, or a gh not signed in: gh says no at once, and that is not a failure of hands."""
+    from loguru import logger
+
+    root = published(tmp_path)
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    (bin / "gh").write_text("#!/bin/sh\necho 'none of the git remotes point to a known GitHub host' >&2\nexit 1\n")
+    (bin / "gh").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin}{os.pathsep}{os.environ['PATH']}")
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
+    record: list[Entry] = []
+    try:
+        delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
+    finally:
+        logger.remove(sink)
+    assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
+    assert [entry.forge for entry in record if isinstance(entry, DeltaRead)] == ["refused"]
+    assert errors == []
 
 
 async def test_a_machine_with_no_gh_has_no_forge_to_ask_and_nothing_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -778,7 +800,8 @@ async def test_more_turns_than_can_be_held_lose_the_newest_deltas_and_never_the_
     handed one is handed its own.
     """
     root = repo(tmp_path)
-    deltas = Deltas(record=lambda _entry: None)
+    record: list[Entry] = []
+    deltas = Deltas(record=record.append)
     for n in range(HELD + 2):
         await deltas.snapshot(SID, root)
         (root / f"turn{n}.py").write_text(f"turn {n}\n")
@@ -787,6 +810,46 @@ async def test_more_turns_than_can_be_held_lose_the_newest_deltas_and_never_the_
     told = [await deltas.taken(SID) for _ in range(HELD + 2)]
     assert [[file.path for file in delta.files] for delta in told[:HELD]] == [[f"turn{n}.py"] for n in range(HELD)]
     assert told[HELD:] == [Delta(), Delta()]
+    assert sorted(entry.outcome for entry in record if isinstance(entry, DeltaRead)) == ["dropped"] * 2 + ["read"] * HELD
+
+
+class Exploding(Deltas):
+    """A reading that raises, as a bug in it would."""
+
+    async def _between(self, mark: Mark, deadline: float, forging: float) -> tuple[Delta, Mark | None, Asked]:
+        raise RuntimeError("a bug")
+
+
+class Endless(Deltas):
+    """A reading that never finishes on its own, so the daemon's shutdown is what ends it."""
+
+    async def _between(self, mark: Mark, deadline: float, forging: float) -> tuple[Delta, Mark | None, Asked]:
+        await asyncio.Event().wait()
+        raise AssertionError("never reached")
+
+
+async def test_a_reading_that_raises_is_one_failed_audit_line(tmp_path: Path) -> None:
+    root = repo(tmp_path)
+    record: list[Entry] = []
+    deltas = Exploding(record=record.append)
+    await deltas.snapshot(SID, root)
+    await deltas.compare(SID, again=False)
+    assert not await deltas.taken(SID)
+    assert [entry.outcome for entry in record if isinstance(entry, DeltaRead)] == ["failed"]
+
+
+async def test_a_reading_cancelled_by_the_shutdown_is_one_cancelled_audit_line(tmp_path: Path) -> None:
+    root = repo(tmp_path)
+    record: list[Entry] = []
+    deltas = Endless(record=record.append)
+    await deltas.snapshot(SID, root)
+    await deltas.compare(SID, again=False)
+    [reading] = [task for task in asyncio.all_tasks() if task.get_name().startswith("what a turn of session")]
+    await asyncio.sleep(0)
+    reading.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reading
+    assert [entry.outcome for entry in record if isinstance(entry, DeltaRead)] == ["cancelled"]
 
 
 class Torn(Deltas):

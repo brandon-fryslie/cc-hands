@@ -306,9 +306,10 @@ class TurnsSummarised:
 
 
 # Whether the forge was asked about the pull requests of the branch a turn pushed, and what came of it: not asked
-# where the turn pushed nothing or pushed its remote's default branch, which no pull request is opened from, and
-# absent where there is no gh to ask.
-Forge = Literal["unasked", "absent", "answered", "unanswered"]
+# where the turn pushed nothing or pushed its remote's default branch, which no pull request is opened from; absent
+# where there is no gh to ask; unanswered where it was too slow, and refused where gh would not list or answered in
+# a shape hands does not read.
+Forge = Literal["unasked", "absent", "answered", "unanswered", "refused"]
 
 DeltaReadOutcome = Literal["unmarked", "dropped", "read", "failed", "cancelled"]
 
