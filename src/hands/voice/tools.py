@@ -12,6 +12,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Literal, TypedDict, cast, get_args, get_origin, get_type_hints, is_typeddict
 
 import docstring_parser
@@ -601,7 +602,7 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
 
         Call this when the user asks what is in the backlog, what is left to do, or what comes next. Answer from the
         sentences; call read_ticket to hear more of one. A ticket with no summary yet has only its title, and its
-        sentence is being written.
+        sentence is being written. `repository` is the directory whose tracker this backlog is.
 
         Args:
             session: The id, from list_sessions, of a session working in the project.
@@ -609,9 +610,10 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         match await _backlog(sessions, store, session):
             case str() as error:
                 return {"error": error}
-            case (backlog, said):
+            case (project, backlog, said):
                 roots = backlog.roots()
                 return {
+                    "repository": str(project),
                     **({"summary": said[BACKLOG]} if BACKLOG in said else {}),
                     "items": [_ticket_line(backlog, said, id) for id in roots],
                     "unsummarised": sum(id not in said for id in roots),
@@ -632,9 +634,9 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         match await _backlog(sessions, store, session):
             case str() as error:
                 return {"error": error}
-            case (backlog, said) if ticket not in backlog.tickets:
+            case (_, backlog, said) if ticket not in backlog.tickets:
                 return {"error": f"the backlog has no ticket {ticket}"}
-            case (backlog, said):
+            case (_, backlog, said):
                 parent = backlog.parent.get(ticket)
                 found = backlog.tickets[ticket]
                 return {
@@ -647,8 +649,8 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
     return [tool(read_backlog), tool(read_ticket)]
 
 
-async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tuple[Backlog, Mapping[str, str]] | str:
-    """The session's project backlog read fresh, and every sentence already said of it; or why it could not be read."""
+async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tuple[Path, Backlog, Mapping[str, str]] | str:
+    """The session's project, its backlog read fresh, and every sentence already said of it; or why it could not be read."""
     member = sessions.membership(SessionId(session))
     if member is None:
         return f"there is no session {session}"
@@ -660,7 +662,7 @@ async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tup
         return f"the backlog in {member.cwd} could not be read: {error}"
     # Every read is a sighting: what changed since the last pass is said in the background, never while this call waits.
     store.want(member.cwd)
-    return backlog, store.reckon(backlog.thing()).said
+    return member.cwd, backlog, store.reckon(backlog.thing()).said
 
 
 def _ticket_line(backlog: Backlog, said: Mapping[str, str], id: str) -> dict[str, object]:

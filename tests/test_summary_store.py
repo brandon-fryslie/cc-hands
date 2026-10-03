@@ -3,6 +3,9 @@
 import json
 import os
 import re
+import shlex
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -311,6 +314,8 @@ async def test_read_backlog_serves_titles_until_the_sentences_are_made_and_asks_
     read_backlog = (await tools(project, store))["read_backlog"]
     before = dict(await read_backlog(session="s1"))
     assert "summary" not in before and before["unsummarised"] == 2
+    # Where the tracker is, so the brain works it there with lit.
+    assert before["repository"] == str(project)
     assert before["items"] == [
         {"id": "e1", "title": "The wire", "children_open": 2, "children_done": 1},
         {"id": "t1", "title": "Fix the flaky test", "status": "open"},
@@ -345,6 +350,33 @@ async def test_the_backlog_tools_say_what_they_could_not_read(project: Path, tmp
     assert await bodies["read_backlog"](session="s9") == {"error": "there is no session s9"}
     (project / "export.json").unlink()
     assert "could not be read" in str((await bodies["read_backlog"](session="s1"))["error"])
+
+
+@pytest.mark.skipif(shutil.which("lit") is None, reason="the brain works a tracker with lit")
+async def test_what_the_brain_files_ranks_comments_on_and_closes_from_its_own_directory_lands_in_the_tracker_read_backlog_reads(tmp_path: Path) -> None:
+    repository, brain = tmp_path / "a project", tmp_path / "brain" / "cwd"
+    repository.mkdir()
+    brain.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["lit", "init"], cwd=repository, check=True, capture_output=True)
+    bodies = await tools(repository, SummaryStore(Sentences(tmp_path / "sentences.db")))
+    empty = dict(await bodies["read_backlog"](session="s1"))
+    assert empty["items"] == []
+
+    def lit(*arguments: str) -> str:
+        """lit as the brain's shell runs it: from the brain's own directory, in the repository read_backlog named; the id it printed."""
+        command = f"cd {shlex.quote(str(empty['repository']))} && lit {shlex.join(arguments)}"
+        return subprocess.run(["/bin/sh", "-c", command], cwd=brain, check=True, capture_output=True, text=True).stdout.split()[0]
+
+    mic, parser, docs = (lit("new", "--title", title, "--topic", "voice") for title in ("Fix the flaky mic test", "Fix the parser", "Write the docs"))
+    lit("rank", docs, "--above", mic)
+    lit("comment", "add", parser, "--body", "Seen again on CI.")
+    lit("close", mic, "--resolution", "obsolete", "--reason", "The mic test is gone.")
+    read = dict(await bodies["read_backlog"](session="s1"))
+    assert [item["title"] for item in read["items"]] == ["Write the docs", "Fix the parser"]
+    commented = dict(await bodies["read_ticket"](session="s1", ticket=parser, full=True))
+    assert [comment["body"] for comment in commented["comments"]] == ["Seen again on CI."]
+    assert dict(await bodies["read_ticket"](session="s1", ticket=mic))["status"] == "closed"
 
 
 def test_the_store_keeps_what_it_was_told_across_opening_it_again(tmp_path: Path) -> None:

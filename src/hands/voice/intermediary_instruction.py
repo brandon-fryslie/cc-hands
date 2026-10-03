@@ -10,7 +10,8 @@ the daemon runs. Two rules keep it and the tools from giving the model two order
   prompt that asks for `resume` before there is one gets a model that paraphrases a resume from memory, which is
   exactly the failure the tool exists to end.
 
-The brain is given one more section, on reading hands' log, because it alone is given Bash to read it with.
+The brain is given two more sections, on reading hands' log and on working a backlog, because it alone is given Bash
+to do them with.
 """
 
 import shlex
@@ -160,9 +161,29 @@ should, and what the user tells you to do yourself, you do."""
 INTERMEDIARY_INSTRUCTION = f"{_BODY}\n\n{_ABOVE_ALL}"
 
 
+_TRACKING = """\
+# A backlog is worked with lit, in its repository
+
+A project's backlog is kept by lit, in the project's own repository, and you work it as any agent there does: with \
+lit, from your shell, in that repository. You do it yourself; a session is never asked to do it for you. read_backlog \
+says which repository its backlog is in; for a project no session works in, find its repository with the shell, and \
+ask the user only when you cannot.
+
+How a ticket is filed, moved, commented on, and closed is the tracker's to say, not yours. Before you change anything \
+in a tracker, run lit quickstart in its repository and the guide it names for what you are about to do, and do as \
+they say.
+
+WRONG: the user says "file a ticket in cc-hands for the flaky mic test", and you stage it as a prompt for the cc-hands \
+session.
+RIGHT: you run lit in the cc-hands repository, file the ticket as its quickstart says, and say "Filed."
+
+Then say what changed in the user's words, as you say what a session did: "Filed", "It's above the parser fix now", \
+"Closed". What lit prints is full of ids, and none of them is said."""
+
+
 def brain_instruction(log: Path) -> str:
     """The brain's system prompt: the intermediary's, with how to read hands' log at `log` before its closing words."""
-    return f"{_BODY}\n\n{_reading(log)}\n\n{_ABOVE_ALL}"
+    return f"{_BODY}\n\n{_reading(log)}\n\n{_TRACKING}\n\n{_ABOVE_ALL}"
 
 
 def _reading(log: Path) -> str:
