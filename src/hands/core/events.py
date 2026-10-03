@@ -6,6 +6,7 @@ from typing import Literal
 from hands.core.progress import Doing
 from hands.core.session import Blocker, Instant, Membership, FinishedCall, Mode, PromptId, RequestId, SessionId
 from hands.core.status import Report, Stamp
+from hands.core.turn import AgentTask
 
 
 StartSource = Literal["startup", "resume", "clear", "compact"]
@@ -136,11 +137,13 @@ class Read:
 
 @dataclass(frozen=True)
 class Progressed:
-    """The turn made calls since its transcript was last read: what each sets out to do, read as its record landed."""
+    """The session made calls since its transcripts were last read: what each sets out to do, read as its record landed."""
 
     session: SessionId
-    # Every id the turn the calls were read into goes by, sorted, so calls read late, of a turn since over, move nothing.
-    turn: tuple[PromptId, ...]
+    # Whose calls they are. The turn's own go by every id the turn they were read into goes by, sorted, so calls read
+    # late, of a turn since over, move nothing. A subagent's are its own, whatever turn its parent is in: run in the
+    # background, it works on after the turn that started it ends.
+    of: tuple[PromptId, ...] | AgentTask
     doings: tuple[Doing, ...]
     at: Instant  # when they were read
 

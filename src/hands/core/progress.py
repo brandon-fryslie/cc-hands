@@ -74,7 +74,7 @@ def _ran(_tool: str, input: Mapping[str, object]) -> Doing:
     # Claude Code asks for a description of every command, in the imperative ("Run the test suite"), which is what
     # this sentence is made of; the command itself is code, and never read aloud.
     description = _text(input, "description")
-    return Doing(RUNNING, None if description is None else _lowered(description))
+    return Doing(RUNNING, None if description is None else lowered(description))
 
 
 def _edited(_tool: str, input: Mapping[str, object]) -> Doing:
@@ -106,7 +106,7 @@ def _fetched(_tool: str, input: Mapping[str, object]) -> Doing:
 
 def _delegated(_tool: str, input: Mapping[str, object]) -> Doing:
     description = _text(input, "description")
-    return Doing(DELEGATING, None if description is None else f"start a subagent to {_lowered(description)}")
+    return Doing(DELEGATING, None if description is None else f"start a subagent to {lowered(description)}")
 
 
 def _planned(_tool: str, _input: Mapping[str, object]) -> Doing:
@@ -165,10 +165,10 @@ def _text(input: Mapping[str, object], key: str) -> str | None:
 
 def explained(summary: str) -> Doing:
     """Text Claude wrote, said as its summary: a phrase in the imperative, as the middle of a sentence."""
-    return Doing(EXPLAINING, _lowered(summary.strip().rstrip(".!")))
+    return Doing(EXPLAINING, lowered(summary.strip().rstrip(".!")))
 
 
-def _lowered(phrase: str) -> str:
+def lowered(phrase: str) -> str:
     """An imperative phrase as the middle of a sentence: "Run the tests" is "run the tests", and "PR" stays "PR"."""
     first, rest = phrase[:1], phrase[1:]
     return first.lower() + rest if rest[:1].islower() or not rest else phrase

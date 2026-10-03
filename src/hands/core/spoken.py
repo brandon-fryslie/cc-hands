@@ -97,6 +97,8 @@ _PATH = re.compile(
     r"(?<![\w/])(?:/(?:[\w.\-]+/)+[\w.\-]+"
     rf"|(?:[\w.\-]+/)+[\w\-]+\.(?:{'|'.join(sorted(_EXTENSIONS))}))\b"
 )
+# A slash command, or a plugin's: "/code-review", "/lit:next". A slash between two words, as "and/or" has, is no command.
+_COMMAND = re.compile(r"(?<![\w/.])/([A-Za-z][\w-]*(?::[\w-]+)*)(?![\w/])")
 _FLAG = re.compile(r"(?<![\w-])--?([A-Za-z][\w-]*)(=)?")
 _DOTTED_CALL = re.compile(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\b(?=\s*\()")
 # Three names joined by dots is a module; two is "e.g." or a sentence that ended without a space after it.
@@ -219,6 +221,7 @@ def spoken(text: str) -> Spoken:
     said = _links(said)
     said = _hashes(said)
     said = _paths(said)
+    said = _commands(said)
     said = _flags(said)
     said = _identifiers(said)
     return Spoken(_tidied(said), tuple(leaks))
@@ -498,6 +501,11 @@ def _spoken_path(path: str, shared: set[str]) -> str:
     if len(parts) < 2 or _stem(path) not in shared:
         return _stem(path)
     return f"{parts[-2]} {_stem(path)}"
+
+
+def _commands(text: str) -> str:
+    """A slash command is its name, as a flag is: the slash, and the dashes and colon in it, are how it is typed."""
+    return _COMMAND.sub(lambda found: re.sub(r"[-:]", " ", found.group(1)), text)
 
 
 def _flags(text: str) -> str:

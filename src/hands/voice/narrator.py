@@ -173,7 +173,7 @@ async def recount(
     # The last words wherever they fall: a turn interrupted mid-work, or one ending on a dialog, said what it had done
     # before the step that ended it.
     replied = [step.text for step in told.turn.steps if isinstance(step, Said)][-1:]
-    news = News(turn, replied[0] if replied else None, tree.facts(), tree.asked(), tree.parts)
+    news = News(turn, replied[0] if replied else None, tree.facts(), tree.asked(), tree.parts, frozenset(task.id for task in reporting(told.turn)))
     record(
         Recounted(
             session,

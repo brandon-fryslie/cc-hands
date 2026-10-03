@@ -8,6 +8,7 @@ from typing import Literal
 from hands.core.events import SessionEvent
 from hands.core.progress import Doing
 from hands.core.session import Blocker, CommandName, Keystroke, Mode, PromptId, PromptText, RequestId, SessionId
+from hands.core.turn import AgentTask
 
 
 @dataclass(frozen=True)
@@ -196,8 +197,9 @@ class Progress:
     session's overlay are read, not here."""
 
     session: SessionId
-    # Every id the turn the calls were made in goes by, so its result is known for theirs wherever it stands.
-    turn: frozenset[PromptId]
+    # Whose calls they are: the turn's own, by every id the turn they were made in goes by, so its result is known for
+    # theirs wherever it stands; or a subagent's, said as the work of the call that started it.
+    of: frozenset[PromptId] | AgentTask
     doings: tuple[Doing, ...]
     # The text the turn wrote among them, as it was displayed; empty when it wrote none.
     written: str

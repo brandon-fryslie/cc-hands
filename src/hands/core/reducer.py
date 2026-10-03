@@ -5,7 +5,7 @@ Code did first is read from what Claude Code put on them, never from the order h
 files a hook or a record under, and the clock it stamps a status, a record, and a reading of the transcript with.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 
 from hands.core.effects import (
@@ -61,10 +61,11 @@ from hands.core.events import (
     Tick,
     ToolFinished,
 )
-from hands.core.progress import Gathering
+from hands.core.progress import Doing, Gathering
 from hands.core.session import ids, Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, UnknownMode, Unnamed, Unreported, Untold, status_stamp
 from hands.core import status
 from hands.core.status import Report, Stamp
+from hands.core.turn import AgentTask
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
@@ -190,6 +191,8 @@ def _enter(registry: Registry, event: SessionEvent) -> tuple[Registry, list[Effe
             match event:
                 case Ended(reason=reason):
                     return _end(registry, was, was.membership, _said_at_end(was.membership.id, reason))
+                case Progressed(of=AgentTask() as agent, doings=doings, at=at):
+                    return registry.put(replace(was, subagents=_helped(was.subagents, agent, doings, at))), []
                 case Progressed() | Displayed():
                     return registry.put(replace(was, turn=_gathered(was.turn, event))), []
                 case _:
@@ -583,7 +586,7 @@ def _gathered(turn: Turn, event: Progressed | Displayed) -> Turn:
             # Blank lines alone are nothing said, so they begin no burst: one would be told as the session's name and
             # nothing after it. Within a burst they part its paragraphs.
             return turn
-        case Opened(gathering=gathering), _ if not ids(turn).isdisjoint(event.turn):
+        case Opened(gathering=gathering), Progressed(of=tuple() as of) | Displayed(turn=of) if not ids(turn).isdisjoint(of):
             began = Gathering((), "", event.at, event.at) if gathering is None else gathering
             match event:
                 case Progressed(doings=doings):
@@ -594,14 +597,23 @@ def _gathered(turn: Turn, event: Progressed | Displayed) -> Turn:
             return turn
 
 
+def _helped(subagents: Mapping[AgentTask, Gathering], agent: AgentTask, doings: tuple[Doing, ...], at: Instant) -> Mapping[AgentTask, Gathering]:
+    """The subagent's calls gathered with what it did before them that nobody has been told of yet."""
+    began = subagents.get(agent, Gathering((), "", at, at))
+    return {**subagents, agent: began.joined(doings, at)}
+
+
 def _ticked(registry: Registry, at: Instant) -> tuple[Registry, list[Effect]]:
     after, effects = registry, list[Effect]()
     for session in registry.live():
         id = session.membership.id
         dialog, expiring = _expiring(id, session.dialog, at)
         turn, settled = _burst(id, session.turn, at)
-        after = after.put(replace(session, dialog=dialog, turn=turn))
-        effects += [*expiring, *settled]
+        # [LAW:dataflow-not-control-flow] each subagent's burst settles on the same clock as its parent's own.
+        due = {agent: gathering for agent, gathering in session.subagents.items() if at >= gathering.due()}
+        subagents = {agent: gathering for agent, gathering in session.subagents.items() if agent not in due}
+        after = after.put(replace(session, dialog=dialog, turn=turn, subagents=subagents))
+        effects += [*expiring, *settled, *(Progress(id, agent, gathering.doings, gathering.written) for agent, gathering in due.items())]
     return after, effects
 
 

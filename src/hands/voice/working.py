@@ -11,6 +11,7 @@ from hands.core.effects import Progress
 from hands.core.pending import Working
 from hands.core.progress import WRITING, Doing, explained
 from hands.core.session import Opened, PromptId, Session, SessionId, ids
+from hands.core.turn import AgentTask
 from hands.sessions.audit import ProgressTold, Record
 from hands.voice.speech import Unprompted
 from hands.voice.summary import SUMMARY_FAILURES, Summariser
@@ -42,12 +43,12 @@ async def keep_playing(
         while True:
             progress, summary = await summarising.get()
             explaining, failed = await summary
-            current = _running(live_session(progress.session), progress.turn)
+            current = _current(live_session(progress.session), progress.of)
             # [LAW:nothing-unseen] what the text came to, and whether it was played.
             record(ProgressTold(progress.session, len(progress.written), None if explaining is None else explaining.alone, failed, current))
             if current:
                 said = progress.doings if explaining is None else (explaining, *progress.doings)
-                await queue_frame(Unprompted(Working(progress.session, progress.turn, said)))
+                await queue_frame(Unprompted(Working(progress.session, progress.of, said)))
 
 
 async def _explained(progress: Progress, explain: Summariser) -> tuple[Doing | None, str | None]:
@@ -66,10 +67,13 @@ async def _explained(progress: Progress, explain: Summariser) -> tuple[Doing | N
                 return Doing(WRITING, None), f"{type(error).__name__}: {error}"
 
 
-def _running(session: Session | None, turn: frozenset[PromptId]) -> bool:
-    """Whether the session still runs the turn that goes by any of these ids."""
-    match session:
-        case Session(turn=Opened() as opened):
+def _current(session: Session | None, of: frozenset[PromptId] | AgentTask) -> bool:
+    """Whether the session still runs the turn that goes by any of these ids; for a subagent's work, whether the session
+    is still live, since the turn its work is told with may not have opened yet."""
+    match session, of:
+        case Session(turn=Opened() as opened), frozenset() as turn:
             return not ids(opened).isdisjoint(turn)
+        case Session(), AgentTask():
+            return True
         case _:
             return False

@@ -2,12 +2,13 @@
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, NewType, Self
 
 from hands.core.progress import Doing, Gathering
 from hands.core.status import Going, Stamp
+from hands.core.turn import AgentTask
 
 SessionId = NewType("SessionId", str)
 RequestId = NewType("RequestId", str)
@@ -283,6 +284,9 @@ class Session:
     earlier: frozenset[PromptId] = frozenset()
     # [LAW:no-ambient-temporal-coupling] Stops heard before the records that say whose they are, in the order heard.
     unnamed: tuple[Unnamed, ...] = ()
+    # What each subagent did that nobody has been told of yet. Kept here, and not on the turn: a subagent run in the
+    # background works on after the turn that started it ends, and its progress is news whatever phase its parent is in.
+    subagents: Mapping[AgentTask, Gathering] = field(default_factory=dict[AgentTask, Gathering])
 
 
 @dataclass(frozen=True)

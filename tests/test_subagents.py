@@ -95,6 +95,9 @@ async def test_what_the_reviewer_found_is_answered_from_the_reviewers_own_steps(
     assert FOUND in work and "git diff master...HEAD" in work
     [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
     assert recounted.subagents == (REVIEWER,) and WORK in recounted.topics
+    # The telling says whose work it carries, so progress heard of that subagent gives way to it.
+    held = recounts.of(SID)
+    assert held is not None and held.tellings[-1].reported == frozenset({REVIEWER})
 
 
 async def test_a_notification_from_a_background_command_is_told_as_it_was(tmp_path: Path) -> None:
