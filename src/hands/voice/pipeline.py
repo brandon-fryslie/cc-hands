@@ -29,6 +29,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregator,
     LLMContextAggregatorPair,
@@ -50,7 +51,7 @@ from hands.voice.floor import Floor
 from hands.voice.latency import LatencyObserver
 from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.ptt import PushToTalk
-from hands.voice.spoken import SpokenForm
+from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.tools import Tool, pipecat_function
 from hands.voice.turnstop import KeyTurnStop
 from hands.voice.whisper import Whisper
@@ -243,6 +244,9 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
     # answer about what the user heard, and before this filter it held what was sent to the speaker,
     # which was never the same string. See voice/spoken.py, which also records what it costs.
     tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice), text_filters=[SpokenForm()])
+    # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
+    # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
+    pieces = LLMTextProcessor(text_aggregator=FenceAggregator())
 
     turns = UserTurnStrategies(
         start=[VADUserTurnStartStrategy()],
@@ -257,7 +261,7 @@ def build_voice(config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor,
 
     # Ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
     # context or the model's stage takes it, and follows the user's words when given back.
-    pipeline = Pipeline([transport.input(), stt, Floor(record), user_aggregator, llm, tts, transport.output(), assistant_aggregator])
+    pipeline = Pipeline([transport.input(), stt, Floor(record), user_aggregator, llm, pieces, tts, transport.output(), assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True),

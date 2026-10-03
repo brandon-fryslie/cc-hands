@@ -175,14 +175,47 @@ def _leaked(kind: str, lines: list[str], leaks: list[Leak]) -> list[str]:
 
     An empty fence and a table of nothing but its own rule have no content to apologise for. Saying "a
     block of code of 0 lines" tells the listener something was there when nothing was — and warning about
-    it [LAW:no-silent-failure] would report a fault every time the closing fence of a block split across
-    two streamed chunks arrived on its own, which is the shape this seam is already known to produce.
+    it [LAW:no-silent-failure] would report a fault where nothing reached the ear at all.
     """
     if not lines:
         return []
     leak = Leak(kind, len(lines))
     leaks.append(leak)
     return [f"{leak}."]
+
+
+def fence_after(line: str, fence: str | None) -> str | None:
+    """The fence left open once `line` is read, given the one open before it: the single step every reader of a
+    block takes, a line at a time [LAW:one-source-of-truth].
+
+    `_unfenced` steps it over a whole text; the stream's aggregator steps it as each line of a reply finishes,
+    so the stream is broken up exactly where `spoken` will read a block, and nowhere inside one.
+    """
+    if fence is None:
+        return _opens(line)
+    return None if _closes(line, fence) else fence
+
+
+def _opens(line: str) -> str | None:
+    """The fence run a line opens a block with, or None where it opens nothing."""
+    found = _FENCE.match(line)
+    # A backtick fence may not carry a backtick in what follows it, so "```bash``` is what I ran" opens
+    # nothing: it is a sentence with an inline span at the front of it, and treating it as a fence
+    # swallowed every line after it to the end of the reply [LAW:parse-dont-validate].
+    if found is None or (found["run"][0] == "`" and "`" in found["info"]):
+        return None
+    return found["run"]
+
+
+def _closes(line: str, fence: str) -> bool:
+    """Closed only by its own fence, at least as long.
+
+    A four-backtick block is how a model quotes a three-backtick one, and a closer that ignored length
+    ended the outer block at the inner opening — which read the quoted code out loud, the one thing this
+    exists to prevent.
+    """
+    found = _FENCE.match(line)
+    return found is not None and found["run"][0] == fence[0] and len(found["run"]) >= len(fence) and not found["info"].strip()
 
 
 def _unfenced(text: str, leaks: list[Leak]) -> str:
@@ -192,26 +225,21 @@ def _unfenced(text: str, leaks: list[Leak]) -> str:
     and reading the rest of it out is the one thing this exists to prevent.
     """
     out: list[str] = []
-    held: list[str] | None = None
-    fence = ""
+    held: list[str] = []
+    fence: str | None = None
     for line in text.splitlines():
-        found = _FENCE.match(line)
-        if held is None:
-            # A backtick fence may not carry a backtick in what follows it, so "```bash``` is what I ran"
-            # opens nothing: it is a sentence with an inline span at the front of it, and treating it as a
-            # fence swallowed every line after it to the end of the reply [LAW:parse-dont-validate].
-            if found and not (found["run"][0] == "`" and "`" in found["info"]):
-                held, fence = [], found["run"]
-                continue
-        elif found and found["run"][0] == fence[0] and len(found["run"]) >= len(fence) and not found["info"].strip():
-            # Closed only by its own fence, at least as long. A four-backtick block is how a model quotes a
-            # three-backtick one, and a closer that ignored length ended the outer block at the inner
-            # opening — which read the quoted code out loud, the one thing this exists to prevent.
-            out.extend(_leaked("code", held, leaks))
-            held = None
-            continue
-        (out if held is None else held).append(line)
-    if held is not None:
+        was, fence = fence, fence_after(line, fence)
+        match was, fence:
+            case None, None:
+                out.append(line)
+            case str(), None:
+                out.extend(_leaked("code", held, leaks))
+                held = []
+            case str(), str():
+                held.append(line)
+            case None, str():
+                pass  # the opening fence, said with the block it opens
+    if fence is not None:
         out.extend(_leaked("code", held, leaks))
     return "\n".join(out)
 
