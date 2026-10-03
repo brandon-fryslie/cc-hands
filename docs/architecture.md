@@ -1105,10 +1105,11 @@ beside the tree and must answer `SPARE` before the narrator's `PATIENCE` runs ou
 pull request and never the commit. Both sources speak in the same `GitChange` values, so a push
 both saw is said once. Each reading is one `DeltaRead` line in the audit log.
 
-What git says is *not* said of a turn told twice. `Compare` pops the mark and only
-`UserPromptSubmit` sets one, so the second telling of a turn whose first `Stop` was blocked
-is handed an empty delta, and a commit made in its second half — a heredoc commit, which no
-step records either — is never read by hands at all. `hands-narration-k4q` owns closing it.
+A turn told twice has git read twice, each telling against where the one before it left off.
+No prompt marks where the part after a blocked `Stop` began, so every reading also keeps where
+it found the repository, and `Compare(again=True)` reads against that instead of the prompt's
+mark: a commit made in the turn's second half — a heredoc commit, which no step records
+either — is told with the second telling, and nothing the first told is told again.
 
 **What the turn asked always plays, once, and the daemon decides whether it asked.** A turn
 that ends on a question is waiting on the listener whether or not a hook blocks, so
