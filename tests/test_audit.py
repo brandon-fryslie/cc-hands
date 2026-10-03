@@ -1,6 +1,7 @@
 """The audit log: what is written, how it reads back, and what becomes a line when writing or encoding fails."""
 
 import asyncio
+import inspect
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,10 +18,14 @@ from hands.daemon import cli
 from hands.sessions.audit import (
     Applied,
     AuditLog,
+    AsideAnswered,
+    BacklogUnread,
+    BrainAnswered,
     BrainSpoke,
     Called,
     Entry,
     Failure,
+    Named,
     Performed,
     START,
     Replied,
@@ -31,10 +36,11 @@ from hands.sessions.audit import (
     tail,
 )
 from hands.sessions.home import Home
-from hands.sessions.model_facts import ModelFailed
+from hands.sessions.model_facts import ModelFailed, ModelReplyEmpty
 from hands.sessions.registry import Sessions
 from hands.voice.tools import Result, Tool, audited, draft_tools, tool
 from hands.core.status import Busy, Report, Stamp
+from hands.core.wire import Answered, Exchanged, Garbled, MainTurn, Reached, Uncopied, Unreached
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
 STOP_HEARD = Stamp(1500)
@@ -51,7 +57,7 @@ def lines(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
-async def invoke(tool: Tool, **arguments: object) -> object:
+async def invoke(tool: Tool, **arguments: object) -> Result:
     return await tool.body(**arguments)
 
 
@@ -72,7 +78,7 @@ def test_an_entry_is_its_type_and_fields_nested_values_alike() -> None:
 
 def test_a_value_the_log_cannot_write_is_refused_rather_than_guessed_at() -> None:
     with pytest.raises(TypeError, match="cannot encode a set"):
-        encoded(Called("t", {"odd": {1, 2}}, None))
+        encoded(Called("t", {"odd": {1, 2}}, {}))
 
 
 def test_the_log_is_the_user_s_alone_to_read_whether_it_is_new_or_was_there(tmp_path: Path) -> None:
@@ -90,15 +96,58 @@ def test_each_entry_is_one_line_stamped_with_when_it_was_written(tmp_path: Path)
     log.record(Transcribed("send it"))
     log.record(Replied("Sent to cc-hands.", interrupted=False))
     assert lines(tmp_path / "deep" / "audit.jsonl") == [
-        {"at": "2026-09-14T12:00:00.123+00:00", "type": "Transcribed", "text": "send it"},
-        {"at": "2026-09-14T12:00:00.123+00:00", "type": "Replied", "text": "Sent to cc-hands.", "interrupted": False},
+        {"at": "2026-09-14T12:00:00.123+00:00", "level": "info", "type": "Transcribed", "text": "send it"},
+        {"at": "2026-09-14T12:00:00.123+00:00", "level": "info", "type": "Replied", "text": "Sent to cc-hands.", "interrupted": False},
+    ]
+
+
+def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing_else_is(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, clock=lambda: AT)
+    log.record(Failure(source="hands.x:f", message="broke", where="/x.py:1", trace=()))
+    log.record(BacklogUnread(project="/code/p", error="lit exited 3", seconds=0.1))
+    log.record(BrainAnswered(prompt="p1", error="rate_limit"))
+    log.record(BrainAnswered(prompt="p2", error=None))
+    log.record(Named(session="s1", outcome="kept", before="a b", name=None, reply="a b", error=None, seconds=0.1))
+    log.record(Named(session="s1", outcome="failed", before="a b", name=None, reply=None, error="timed out", seconds=0.1))
+    log.record(AsideAnswered("q", "", True, SessionId("s2"), 0.0, 9.0))
+    log.record(BrainSpoke(("x1",), "", (), False, "user", 0.0, ModelReplyEmpty()))
+    log.record(BrainSpoke(("x1",), "Sent.", (), False, "user", 0.0, None))
+    log.record(Called("tell_turn", {}, {"error": "no running session has the id 'x'"}))
+    # An "error" deep in a line, in what a tool handed back, does not make the line hands' error.
+    log.record(Called("read_turn", {}, {"turn": {"error": {"type": "rate_limit_error"}}}))
+    for reply in (
+        Reached(200, 0.0, 0.0, 2, Answered({"input_tokens": 3})),
+        Reached(429, 0.0, 0.0, 2, Answered({"type": "error", "error": {"type": "rate_limit_error"}})),
+        Reached(200, 0.0, 0.0, 2, Garbled("the stream ended early")),
+        Unreached("ClientConnectorError: no route", 0.0),
+        Uncopied("the copy broke off", 0.0),
+    ):
+        log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False))
+    assert [(line["type"], line["level"]) for line in lines(path)] == [
+        ("Failure", "error"),
+        ("BacklogUnread", "error"),
+        ("BrainAnswered", "error"),
+        ("BrainAnswered", "info"),
+        ("Named", "info"),
+        ("Named", "error"),
+        ("AsideAnswered", "error"),
+        ("BrainSpoke", "error"),
+        ("BrainSpoke", "info"),
+        ("Called", "error"),
+        ("Called", "info"),
+        ("Exchanged", "info"),
+        ("Exchanged", "error"),
+        ("Exchanged", "error"),
+        ("Exchanged", "error"),
+        ("Exchanged", "error"),
     ]
 
 
 def test_text_cut_mid_emoji_is_a_line_that_reads_back_as_it_was_and_whole_characters_are_written_as_themselves(tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit.jsonl", clock=lambda: AT)
     log.record(Transcribed("cut \ud83d, whole \U0001f600 é"))
-    assert lines(tmp_path / "audit.jsonl") == [{"at": "2026-09-14T12:00:00.123+00:00", "type": "Transcribed", "text": "cut \ud83d, whole \U0001f600 é"}]
+    assert lines(tmp_path / "audit.jsonl") == [{"at": "2026-09-14T12:00:00.123+00:00", "level": "info", "type": "Transcribed", "text": "cut \ud83d, whole \U0001f600 é"}]
     assert "cut \\ud83d, whole \U0001f600 é" in (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
 
 
@@ -156,18 +205,57 @@ def test_following_stops_at_ctrl_c_after_printing_the_newest_lines(tmp_path: Pat
     assert capsys.readouterr().out == "b\nc\n"
 
 
-def test_an_error_logged_anywhere_is_a_failure_line_with_its_exception() -> None:
+def _out_of_space() -> None:
+    raise OSError("no space left")
+
+
+def _write_heartbeat() -> None:
+    logger.info("not a failure")
+    try:
+        _out_of_space()
+    except OSError:
+        logger.exception("cannot write the heartbeat")
+    logger.error("no exception here")
+    try:
+        try:
+            _out_of_space()
+        except OSError as error:
+            raise RuntimeError("the heartbeat is lost") from error
+    except RuntimeError:
+        logger.exception("the daemon is not beating")
+
+
+def test_an_error_logged_anywhere_is_a_failure_line_with_its_exception_where_it_was_logged_and_the_frames_it_came_up_through() -> None:
     recorded: list[Entry] = []
     sink = logger.add(failures_to(recorded.append), level="ERROR")
     try:
-        logger.info("not a failure")
-        try:
-            raise OSError("no space left")
-        except OSError:
-            logger.exception("cannot write the heartbeat")
+        _write_heartbeat()
     finally:
         logger.remove(sink)
-    assert recorded == [Failure(source="test_audit:test_an_error_logged_anywhere_is_a_failure_line_with_its_exception", message="cannot write the heartbeat: OSError: no space left")]
+    # Each line of _write_heartbeat and _out_of_space, counted from its def.
+    at = {name: inspect.getsourcelines(function)[1] for name, function in (("write", _write_heartbeat), ("raise", _out_of_space))}
+    assert recorded == [
+        Failure(
+            source="test_audit:_write_heartbeat",
+            message="cannot write the heartbeat: OSError: no space left",
+            where=f"{__file__}:{at['write'] + 5}",
+            trace=("OSError: no space left", f"{__file__}:{at['write'] + 3} in _write_heartbeat", f"{__file__}:{at['raise'] + 1} in _out_of_space"),
+        ),
+        Failure(source="test_audit:_write_heartbeat", message="no exception here", where=f"{__file__}:{at['write'] + 6}", trace=()),
+        # Raised from another, it comes after the one it was raised from: the first cause, where it began, is first.
+        Failure(
+            source="test_audit:_write_heartbeat",
+            message="the daemon is not beating: RuntimeError: the heartbeat is lost",
+            where=f"{__file__}:{at['write'] + 13}",
+            trace=(
+                "OSError: no space left",
+                f"{__file__}:{at['write'] + 9} in _write_heartbeat",
+                f"{__file__}:{at['raise'] + 1} in _out_of_space",
+                "RuntimeError: the heartbeat is lost",
+                f"{__file__}:{at['write'] + 11} in _write_heartbeat",
+            ),
+        ),
+    ]
 
 
 async def test_an_event_that_changed_nothing_is_not_a_line_and_one_that_did_is() -> None:
@@ -270,7 +358,11 @@ async def test_a_tool_that_raises_is_a_failure_line_naming_it_and_its_arguments(
             await invoke(audited(tool(broken), recorded.append), session="s1")
     finally:
         logger.remove(sink)
-    assert recorded == [Failure(source="hands.voice.tools:call", message="the tool broken raised, called with {'session': 's1'}: RuntimeError: the transcript went away")]
+    [failure] = recorded
+    assert isinstance(failure, Failure)
+    assert (failure.source, failure.message) == ("hands.voice.tools:call", "the tool broken raised, called with {'session': 's1'}: RuntimeError: the transcript went away")
+    # Where it was raised, a frame of the test's own, is the last frame; where hands logged it is in the tools.
+    assert failure.trace[-1].endswith(" in broken") and failure.where.split("/")[-1].startswith("tools.py:")
 
 
 def test_hands_log_piped_into_a_reader_that_stops_ends_quietly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -317,7 +409,7 @@ def test_an_entry_the_log_cannot_encode_is_a_failure_line_and_the_daemon_carries
     log = AuditLog(path, clock=lambda: AT)
     sink = logger.add(failures_to(log.record), level="ERROR", filter="hands")
     try:
-        log.record(Called("list_sessions", {}, object()))
+        log.record(Called("list_sessions", {}, {"sessions": object()}))
     finally:
         logger.remove(sink)
     [line] = lines(path)

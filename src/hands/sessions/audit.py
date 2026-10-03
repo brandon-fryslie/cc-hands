@@ -4,17 +4,19 @@
 
 Each line is a value from this module or from the core, encoded the same way: its type's name under
 "type" and its fields beside it, nested values alike, with the wall-clock time the line was written
-under "at". Nothing here decides what happened; it records what the rest of the daemon already decided.
+under "at", and whether it tells of something that went wrong under "level", between the two. Nothing here
+decides what happened; it records what the rest of the daemon already decided.
 """
 
 import json
 import os
+import traceback
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, assert_never, cast
 
 from loguru import logger
 
@@ -24,10 +26,10 @@ if TYPE_CHECKING:
 
 from hands.core.attention import Delivery
 from hands.core.delta import Branched, PullRequested, Pushed
-from hands.core.effects import AuditRecord, Effect, Heard, Input, Type
+from hands.core.effects import AfterEnd, AuditRecord, Effect, Heard, Holding, Input, Type, Unclosed, Unmatched, Unregistered, Unsettled
 from hands.core.events import Event
 from hands.core.session import SessionId
-from hands.core.wire import Exchanged
+from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
 from hands.sessions.model_facts import ModelFact
 
 
@@ -210,7 +212,7 @@ class Called:
 
     tool: str
     arguments: Mapping[str, object]
-    result: object
+    result: Mapping[str, object]
 
 
 @dataclass(frozen=True)
@@ -383,10 +385,14 @@ class BacklogUnread:
 
 @dataclass(frozen=True)
 class Failure:
-    """An error the daemon logged: where it was raised and what it said."""
+    """An error the daemon logged: the module and function that logged it, what it said, the file and line it was logged
+    at, and, when it was logged with an exception, that exception and each it was raised from or while handling, the
+    first cause first, each named and then followed by the frames it came up through, the raising one last."""
 
     source: str
     message: str
+    where: str
+    trace: tuple[str, ...]
 
 
 Entry = (
@@ -426,6 +432,53 @@ Entry = (
     | Failure
 )
 Record = Callable[[Entry], None]
+Level = Literal["error", "info"]
+
+
+def level(entry: Entry) -> Level:
+    """Whether a line tells of something that went wrong: a Failure; an effect, a backlog read, a turn's reading or a
+    name that failed; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
+    broke off; a tool that answered with an error; or a brain turn or side question that came to nothing."""
+    # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
+    # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
+    # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
+    match entry:
+        case Failure() | EffectFailed() | BacklogUnread():
+            return "error"
+        case Exchanged(reply=reply):
+            return _reply_level(reply)
+        case BrainAnswered(error=error) | NameWithheld(error=error):
+            return "info" if error is None else "error"
+        case BrainSpoke(failed=fact):
+            return "info" if fact is None else "error"
+        case AsideAnswered(failed=failed):
+            return "error" if failed else "info"
+        case Called(result=result):
+            return "error" if "error" in result else "info"
+        case DeltaRead(outcome=outcome):
+            return "error" if outcome == "failed" else "info"
+        case Named(outcome=outcome):
+            return "error" if outcome in ("unread", "failed", "refused") else "info"
+        case (
+            Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
+            | Applied() | Performed() | Typing() | LLMChosen() | ProxyListening() | TapListening() | CopiesLost()
+            | McpConnected() | BrainLaunched() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
+            | Transcribed() | Replied() | Announced() | Yielded() | Relayed() | Recounted() | Summarised()
+            | TurnsSummarised() | NameGiven()
+        ):
+            return "info"
+        case _:
+            assert_never(entry)
+
+
+def _reply_level(reply: Reached | Unreached | Held | Uncopied) -> Level:
+    match reply:
+        case Unreached() | Uncopied() | Reached(body=Garbled()):
+            return "error"
+        case Reached(status=status):
+            return "error" if status >= 400 else "info"
+        case Held():
+            return "info"
 
 
 class AuditLog:
@@ -441,7 +494,7 @@ class AuditLog:
         # [LAW:single-enforcer] the log watches what the daemon does and never changes it: a line it cannot encode or
         # write is lost here, not a send's answer, a tool's result, a permission's question, or a background task.
         try:
-            line = json.dumps({"at": self._clock().isoformat(timespec="milliseconds"), **encoded(entry)}, ensure_ascii=False)
+            line = json.dumps({"at": self._clock().isoformat(timespec="milliseconds"), "level": level(entry), **encoded(entry)}, ensure_ascii=False)
         except TypeError as error:
             # [LAW:no-silent-failure] a bug in what was recorded: logged as an error, it is a Failure line, whose fields always encode.
             logger.error(f"the audit log cannot encode a {type(entry).__name__} line: {error}")
@@ -494,9 +547,31 @@ def failures_to(record: Record) -> "Callable[[Message], None]":
         logged = message.record
         exception = logged["exception"]
         detail = "" if exception is None or exception.value is None else f": {type(exception.value).__name__}: {exception.value}"
-        record(Failure(source=f"{logged['name']}:{logged['function']}", message=f"{logged['message']}{detail}"))
+        record(
+            Failure(
+                source=f"{logged['name']}:{logged['function']}",
+                message=f"{logged['message']}{detail}",
+                where=f"{logged['file'].path}:{logged['line']}",
+                trace=() if exception is None or exception.value is None else _trace(exception.value),
+            )
+        )
 
     return sink
+
+
+def _trace(error: BaseException) -> tuple[str, ...]:
+    chain: list[BaseException] = []
+    link: BaseException | None = error
+    while link is not None and link not in chain:
+        chain.append(link)
+        link = link.__cause__ or (None if link.__suppress_context__ else link.__context__)
+    return tuple(line for cause in reversed(chain) for line in (f"{type(cause).__name__}: {cause}", *_frames(cause)))
+
+
+def _frames(error: BaseException) -> tuple[str, ...]:
+    # Without the source lines, which nothing here reads: looking them up opens every frame's file inside the sink.
+    frames = traceback.StackSummary.extract(traceback.walk_tb(error.__traceback__), lookup_lines=False)
+    return tuple(f"{frame.filename}:{frame.lineno} in {frame.name}" for frame in frames)
 
 
 @dataclass(frozen=True)
