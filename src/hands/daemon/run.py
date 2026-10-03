@@ -41,7 +41,7 @@ from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
-from hands.sessions.audit import AuditLog, LLMChosen, ProxyListening, Record, TapListening, failures_to
+from hands.sessions.audit import AuditLog, LLMChosen, ProxyListening, Record, TapListening, VoiceChosen, failures_to
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.statusfile import keep_reading_statuses
@@ -60,7 +60,6 @@ from hands.voice.cues import cues
 from hands.voice.hold import Move
 from hands.voice.keys import drive_quit, drive_talk_key
 from hands.voice.pipeline import (
-    DEFAULT_VOICE,
     AnthropicBackend,
     ClaudeCodeBackend,
     LLMBackend,
@@ -84,6 +83,8 @@ from hands.threads import off_loop
 from hands.daemon.starting import Ended, keep_beating, start
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain_instruction
 from hands.voice.player import Player
+from hands.voice import voices
+from hands.sessions.payload import Rejected
 from hands.voice.tools import Tool, audited, intermediary_tools, standing
 from hands.brain.mcp import serve_mcp
 from hands.brain.asides import Asides
@@ -202,8 +203,16 @@ def config_from_env(home: Home) -> VoiceConfig:
     return VoiceConfig(
         llm=backend_from_env(home),
         whisper_model=os.environ.get("HANDS_WHISPER_MODEL", MLXModel.LARGE_V3_TURBO),
-        voice=os.environ.get("HANDS_VOICE", DEFAULT_VOICE),
+        voice=_voice(home),
     )
+
+
+def _voice(home: Home) -> voices.Voice:
+    """The voice the user kept; a kept name hands has no voice for, or a file it cannot read, stops the process naming it."""
+    try:
+        return voices.chosen(home)
+    except (Rejected, OSError) as error:
+        sys.exit(str(error))
 
 
 @dataclass(frozen=True)
@@ -341,6 +350,7 @@ async def configured(configure: Callable[[], VoiceConfig], survey: Callable[[], 
     config = await off_loop(configure, "the configuration read")
     # [LAW:nothing-unseen] which server and model the environment chose is read from the log, not re-derived from a shell.
     record(LLMChosen(backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model, account=_account(config.llm)))
+    record(VoiceChosen(voice=config.voice))
     return config
 
 

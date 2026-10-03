@@ -37,6 +37,7 @@ from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.speech import Aloud
 from hands.voice.turnstop import TurnOpened, TurnResolved
 from hands.voice.whisper import Whisper
+from hands.voice import voices
 
 CLOSING = "that is all"
 
@@ -146,7 +147,7 @@ async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Rig, None]:
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
     voice = built.build_voice(
-        built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), whisper_model="unused", voice="unused"),
+        built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), whisper_model="unused", voice=voices.DEFAULT),
         tools=[],
         llm=FrameProcessor(),
         player=Player(recorded.append),

@@ -9,11 +9,11 @@ With no argument it says where the switch stands. The daemon reads the file at e
 [LAW:one-source-of-truth], so a change is heard from the next turn on.
 """
 
-import os
 import sys
 from collections.abc import Sequence
 from typing import Literal
 
+from hands.sessions.files import replace_whole
 from hands.sessions.home import Home, default_home
 from hands.sessions.payload import Rejected
 
@@ -41,11 +41,8 @@ def summaries(home: Home) -> Summaries:
 
 
 def set_summaries(home: Home, to: Summaries) -> None:
-    home.root.mkdir(parents=True, exist_ok=True)
-    # [LAW:no-ambient-temporal-coupling] written beside and renamed into place, so the daemon never reads half a file.
-    staging = home.summaries.with_suffix(f".{os.getpid()}.tmp")
-    staging.write_text(f"{to}\n")
-    staging.replace(home.summaries)
+    # [LAW:no-ambient-temporal-coupling] replaced whole, so the daemon never reads half a file.
+    replace_whole(home.summaries, f"{to}\n", 0o644)
 
 
 def described(to: Summaries) -> str:
