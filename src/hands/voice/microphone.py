@@ -480,9 +480,14 @@ class KeyedAudioTransport(LocalAudioTransport):
         defaults = self._defaults()
         portaudio = self._portaudio()
         cancelling = self._echo()
-        speaker, microphone = self._speaker.open_stream(portaudio, cancelling), self._microphone.open_stream(portaudio, cancelling)
-        speaker.stream.start_stream()
-        microphone.stream.start_stream()
+        try:
+            speaker, microphone = self._speaker.open_stream(portaudio, cancelling), self._microphone.open_stream(portaudio, cancelling)
+            speaker.stream.start_stream()
+            microphone.stream.start_stream()
+        except BaseException:
+            # No stream was started on it, so nothing calls back into it, and no let_go will reach it: it goes here.
+            cancelling.close()
+            raise
         return _Started(defaults, portaudio, speaker, microphone)
 
 

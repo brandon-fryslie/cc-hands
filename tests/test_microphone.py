@@ -297,6 +297,22 @@ async def test_a_reopen_opens_both_streams_on_one_new_canceller_and_reports_the_
     assert (event.event, event.outcome, event.facts, dict(event.counts)) == ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0})
 
 
+class RefusingPortAudio(FreshPortAudio):
+    """PortAudio started again on a device that refuses to open."""
+
+    def open(self, **settings: object) -> LostStream:
+        raise OSError(-9996, "Invalid input device")
+
+
+async def test_a_reopen_whose_streams_fail_to_open_lets_go_of_the_canceller_it_made_for_them() -> None:
+    log: list[str] = []
+    transport = lost_transport(log)
+    setattr(transport, "_portaudio", lambda: RefusingPortAudio(log))
+    with pytest.raises(OSError, match="Invalid input device"):
+        await transport.reopen()
+    assert "close canceller 2" in log  # the run fails, and exits without LiveKit's assertion over a canceller left open
+
+
 async def test_a_frame_given_while_the_transport_reopens_waits_and_plays_on_the_new_stream() -> None:
     rig = Rig()
     rig.speaker.detach()
