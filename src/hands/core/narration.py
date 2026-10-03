@@ -31,6 +31,7 @@ from hands.core.turn import (
     Ref,
     Reported,
     Said,
+    Step,
     Tested,
     Turn,
     body,
@@ -59,6 +60,7 @@ THE_COMMANDS = Topic("the commands", "command")
 WHAT_IT_READ = Topic("what it read", "look")
 THE_PLAN = Topic("the plan", "task")
 THE_SUBAGENTS = Topic("the subagents", "subagent")
+THE_NOTIFICATIONS = Topic("the notifications", "notification")
 THE_OTHER_TOOLS = Topic("the other tools", "tool call")
 THE_REPOSITORY = Topic("the repository", "file")
 THE_INTERRUPTION = Topic("the interruption", "interruption")
@@ -88,9 +90,10 @@ def topic_of(step: Sectioned) -> Topic:
             return THE_PLAN
         case Delegated():
             return THE_SUBAGENTS
-        case Reported(agent=agent):
-            # A subagent's report is told with the subagents; a background command's or a monitor's is a tool's.
-            return THE_OTHER_TOOLS if agent is None else THE_SUBAGENTS
+        case Reported():
+            # Something that arrived, not something Claude did: counted with the subagents, a report would count the
+            # subagent its launch already counts a second time, and with the tools it would be a call nobody made.
+            return THE_NOTIFICATIONS
         case Other():
             return THE_OTHER_TOOLS
 
@@ -181,7 +184,7 @@ def narration(turn: Turn, delta: Delta, subagents: tuple[Subagent, ...]) -> Narr
         # Said by the types, for the reason the repository is: whether the turn was stopped is a fact its record holds,
         # and a model asked for it can drop it [LAW:one-source-of-truth]. Said of a turn that ends on one: a queued
         # message that cut a tool off mid-turn let the turn go on, and it is a step.
-        interrupted=tuple(Segment(THE_INTERRUPTION, "You interrupted it.", (step,)) for step in turn.steps[-1:] if isinstance(step, Interruption)),
+        interrupted=tuple(Segment(THE_INTERRUPTION, "You interrupted it.", (step,)) for step in _acted(turn)[-1:] if isinstance(step, Interruption)),
         repository=_repository(delta, changes),
         questions=_questions(waiting),
         settled=tuple(
@@ -239,15 +242,22 @@ def open_questions(turn: Turn) -> tuple[Open, ...]:
     5 of the 94 unanswered dialogs in this machine's transcripts were on 2026-09-25. Text an interruption
     followed was cut off, not left waiting.
     """
+    acted = _acted(turn)
     unanswered = [
         InDialog(step, question)
-        for at, step in enumerate(turn.steps)
-        if isinstance(step, Questioned) and all(isinstance(later, Interruption) for later in turn.steps[at + 1 :])
+        for at, step in enumerate(acted)
+        if isinstance(step, Questioned) and all(isinstance(later, Interruption) for later in acted[at + 1 :])
         for question in step.questions
         if question.answer is None
     ]
-    closing = [InText(step, " ".join(asked)) for step in turn.steps[-1:] if isinstance(step, Said) for asked in [asked_in(step.text)] if asked]
+    closing = [InText(step, " ".join(asked)) for step in acted[-1:] if isinstance(step, Said) for asked in [asked_in(step.text)] if asked]
     return (*unanswered, *closing)
+
+
+def _acted(turn: Turn) -> list[Step]:
+    """The turn's steps that Claude or the user took, which are what say where it ended: a notification arriving after a
+    question or an interruption, as 10 of this machine's 5,243 mid-turn ones did on 2026-10-03, moves nothing."""
+    return [step for step in turn.steps if not isinstance(step, Reported)]
 
 
 def _questions(waiting: tuple[Open, ...]) -> tuple[Segment, ...]:

@@ -35,16 +35,20 @@ def _record(fields: dict[str, object]) -> str:
     return json.dumps(fields, separators=(",", ":"))
 
 
+def notification(task: str, summary: str) -> str:
+    """A task notification's own markup, the same wherever Claude Code writes it."""
+    return f"<task-notification>\n<task-id>{task}</task-id>\n<status>completed</status>\n<summary>{summary}</summary>\n<result>One finding.</result>\n</task-notification>"
+
+
 def notified(task: str, summary: str) -> str:
     """A task notification as Claude Code writes it into the parent's transcript, opening a turn of its own."""
-    text = f"<task-notification>\n<task-id>{task}</task-id>\n<status>completed</status>\n<summary>{summary}</summary>\n<result>One finding.</result>\n</task-notification>"
+    text = notification(task, summary)
     return _record({"type": "user", "uuid": "n1", "promptId": "p2", "origin": {"kind": "task-notification", "producer": "session-task"}, "message": {"role": "user", "content": text}})
 
 
 def reported(task: str, summary: str) -> str:
     """A task notification as Claude Code writes it when the session is still working: an attachment of the turn under way."""
-    text = f"<task-notification>\n<task-id>{task}</task-id>\n<status>completed</status>\n<summary>{summary}</summary>\n<result>One finding.</result>\n</task-notification>"
-    attachment = {"type": "queued_command", "prompt": text, "commandMode": "task-notification", "origin": {"kind": "task-notification", "producer": "session-task"}}
+    attachment = {"type": "queued_command", "prompt": notification(task, summary), "commandMode": "task-notification", "origin": {"kind": "task-notification", "producer": "session-task"}}
     return _record({"type": "attachment", "uuid": "q1", "parentUuid": "u2", "attachment": attachment})
 
 
@@ -133,6 +137,10 @@ async def test_a_reviewer_that_reports_while_its_parent_works_is_told_with_that_
     assert recounted.subagents == (REVIEWER,) and WORK in recounted.topics
     held = recounts.of(SID)
     assert held is not None and held.tellings[-1].reported == frozenset({REVIEWER})
+    # One subagent, launched and then heard from: counted once, and its report as what arrived, not a second subagent.
+    told_parts = {segment.topic.name: segment.text for segment in held.parts}
+    assert told_parts["the subagents"] == "The subagents: one subagent."
+    assert told_parts["the notifications"] == "The notifications: one notification."
 
 
 def test_a_notification_handed_to_a_working_session_is_a_step_of_its_turn() -> None:
