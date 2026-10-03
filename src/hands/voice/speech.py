@@ -10,9 +10,10 @@ from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSS
 from hands.core.attention import Overlay, Route, progress_route
 from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Progress, SessionGone, Speak
 from hands.core.pending import Briefing, Finished, News, Pending, Unread, Working, went_on
-from hands.core.progress import said
+from hands.core.progress import lowered, said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
-from hands.core.session import AskedQuestion, Blocker, Permission, Plan, Question, SessionId
+from hands.core.session import AskedQuestion, Blocker, Permission, Plan, PromptId, Question, SessionId
+from hands.core.turn import AgentTask
 from hands.sessions.audit import Record, Relayed, Routed
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode
@@ -171,11 +172,20 @@ def frames(pending: Pending, telling: Telling, names: Names) -> Sequence[Frame]:
             return (as_written(TTSSpeakFrame(f"The session {names(session)} is gone."), telling),)
         case Briefing(note=note), _:
             return (LLMMessagesAppendFrame([{"role": "user", "content": note}], run_llm=False),)
-        case Working(session=session, doings=doings), _:
+        case Working(session=session, of=of, doings=doings), _:
             # Said as written: what it is doing is arithmetic over its calls, with nothing for a model to add. Kept out of
             # a pushed context, which keeps every message it is given and would take one every few seconds a session
             # works: the session listing says what it last set out to do [LAW:one-source-of-truth].
-            return (as_written(TTSSpeakFrame(f"{names(session)}: {said(doings)}.", append_to_context=False), telling),)
+            return (as_written(TTSSpeakFrame(f"{_doer(names(session), of)}: {said(doings)}.", append_to_context=False), telling),)
+
+
+def _doer(name: str, of: frozenset[PromptId] | AgentTask) -> str:
+    """Who did what progress tells: the session, or its subagent, named by the job the call that started it gave it."""
+    match of:
+        case AgentTask(description=description):
+            return f"{name}, its subagent to {lowered(description)}"
+        case frozenset():
+            return name
 
 
 def told(session: SessionId, name: str, news: Sequence[News]) -> str:

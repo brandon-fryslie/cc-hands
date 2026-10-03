@@ -18,7 +18,7 @@ from hands.core.events import Continued, Interrupted, Progressed, Read, Taken, T
 from hands.core.progress import Doing, doing
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.status import Stamp
-from hands.core.turn import Answering, Continuing, Interruption, Opening, Said, Step, Turn
+from hands.core.turn import AgentId, AgentTask, Answering, Continuing, Interruption, Opening, Said, Step, Turn
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.transcript import prompt_of, turn_record, written_of
 from hands.sessions.turning import Turning
@@ -86,6 +86,32 @@ class Reading:
 
 
 @dataclass
+class Delegate:
+    """A subagent's own transcript, followed from where it was last read, for the calls it makes while it works."""
+
+    id: AgentId
+    path: Path
+    offset: int
+    # The file Claude Code writes beside the transcript as it starts the subagent, naming the job it gave it.
+    meta: Path
+    # Whether the record its transcript starts from is still to be read: the job it was given, which is no call of its
+    # own, though a fork's is the parent's call that launched it, copied in ahead of the fork's own work.
+    job: bool
+    turn: Turning = field(default_factory=Turning)
+    # Who its calls are said to be the work of, once it has made one: read then, so a subagent that never works again
+    # after hands begins following its session is never asked who started it.
+    agent: AgentTask | None = None
+
+    def made(self) -> list[Doing]:
+        """What each call read since this was last asked sets out to do, in the order they were made."""
+        made = [doing(call.tool, call.input) for call in self.turn.calls.values()]
+        # [LAW:carrying-cost] only what its calls set out to do is heard of a subagent while it works: what it did is read
+        # from its transcript whole when it reports back, so nothing read here is kept.
+        self.turn.forget(self.turn.forgotten + len(self.turn.slots))
+        return [each for each in made if each is not None]
+
+
+@dataclass
 class Following:
     """One transcript as far as it has been read: the turn open in it, and the ones before it that may not be told yet."""
 
@@ -100,6 +126,8 @@ class Following:
     # in goes by the second, which a queued message changes mid-turn with no hook to say so.
     asked: PromptId | None = None
     answering: PromptId | None = None
+    # Every subagent of the session known, by id, each followed in its own transcript.
+    delegates: dict[AgentId, Delegate] = field(default_factory=dict[AgentId, Delegate])
 
     def consume(self, record: Payload) -> Interruption | None:
         """Read one record into the turn, setting the turn before it aside where this record opens a new one, and
@@ -164,6 +192,7 @@ class Following:
         self.ended = []
         self.offset = 0
         self.asked = self.answering = None
+        self.delegates = {}
 
 
 class Known(Protocol):
@@ -358,6 +387,7 @@ class Tails:
         made = following.reading.made()
         if made and not history:
             heard.append((following.reading.number, Progressed(session, tuple(sorted(following.reading.ids)), tuple(made), self._known.now())))
+        heard += [(following.reading.number, event) for event in self._delegated(session, following, history)]
         current = following.current()
         live = [event for number, event in heard if not history or number >= current]
         if history and (heard or made):
@@ -370,6 +400,32 @@ class Tails:
         # was read has what that reading found; and not while a record is half written, which may have been begun before.
         if not unfinished:
             self._transcribed.append(Read(session, through))
+
+    def _delegated(self, session: SessionId, following: Following, history: bool) -> list[Progressed]:
+        """What each subagent of the session set out to do since its transcript was last read, said as its own.
+
+        A subagent is known by the file Claude Code writes beside its transcript as it starts it. One started before
+        hands began following its session is followed from where its transcript ends then: its work so far is history.
+        """
+        folder = following.path.with_suffix("") / "subagents"
+        for meta in folder.glob("agent-*.meta.json"):
+            id = AgentId(meta.name.removeprefix("agent-").removesuffix(".meta.json"))
+            if id not in following.delegates:
+                path = folder / f"agent-{id}.jsonl"
+                offset = _size(path) if history else 0
+                following.delegates[id] = Delegate(id, path, offset, meta, job=offset == 0)
+        progressed = list[Progressed]()
+        for delegate in following.delegates.values():
+            try:
+                made = _read_delegate(session, delegate)
+                if made:
+                    agent = delegate.agent = delegate.agent or _started(delegate, following.reading.turn)
+                    progressed.append(Progressed(session, agent, tuple(made), self._known.now()))
+            except (OSError, Rejected, Unstarted) as error:
+                # [LAW:no-silent-failure] said, and the subagent's transcript is read on from where it was: what it does
+                # next is heard, and its parent's own work is heard whatever became of this.
+                logger.error(f"what subagent {delegate.id} of session {session} set out to do cannot be told: {type(error).__name__}: {error}")
+        return progressed
 
     def _interrupted(self, session: SessionId, record: Payload) -> Interrupted | None:
         prompt = prompt_of(record)
@@ -393,6 +449,69 @@ async def keep_tailing(tails: Tails, period: float, apply: Callable[[Transcribed
         for transcribed in await tails.catch_up():
             await apply(transcribed)
         await asyncio.sleep(period)
+
+
+class Unstarted(Exception):
+    """Nothing says which call started a subagent: it names no job, and its parent is not running one skill."""
+
+
+def _size(path: Path) -> int:
+    """How much of a subagent's transcript is written: none before Claude Code writes its first record."""
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return 0
+
+
+def _read_delegate(session: SessionId, delegate: Delegate) -> list[Doing]:
+    """What each call the subagent's transcript gained sets out to do. Raises OSError for a transcript that cannot be read."""
+    if _size(delegate.path) <= delegate.offset:
+        # A subagent that has done nothing new, as one that reported back long since has: its file is not opened.
+        return []
+    with delegate.path.open("rb") as file:
+        file.seek(delegate.offset)
+        raw = file.read()
+    # [LAW:no-ambient-temporal-coupling] a record is whole only once its newline is written.
+    *complete, unfinished = raw.split(b"\n")
+    delegate.offset += len(raw) - len(unfinished)
+    for line in complete:
+        try:
+            record = turn_record(line)
+        except Rejected as error:
+            # [LAW:no-silent-failure] one unreadable line is skipped and said; the rest of its work is still heard.
+            logger.error(f"a record in the transcript of subagent {delegate.id} of session {session} could not be read, so it is not told: {error}")
+            continue
+        if record is None:
+            continue
+        job, delegate.job = delegate.job, False
+        if job and record.fields.get("parentUuid") is None:
+            # The job it was given, which no call of its own made.
+            continue
+        delegate.turn.consume(record)
+    return delegate.made()
+
+
+def _started(delegate: Delegate, parent: Turning) -> AgentTask:
+    """The call that started the subagent, by the job it gave it: as Claude Code names it beside the transcript, or, for
+    a skill run in a subagent of its own, which it names no job for, as the parent invoked the one skill it is running.
+
+    Raises OSError for a file that cannot be read, Rejected for one that is not JSON, and Unstarted where neither says.
+    """
+    match Payload.parse(delegate.meta.read_bytes()).fields.get("description"):
+        case str() as description if description.strip():
+            logger.info(f"subagent {delegate.id} is heard as the work of the job {delegate.meta.name} names: {description.strip()!r}")
+            return AgentTask(delegate.id, description.strip())
+        case _:
+            running = [call.input for id, call in parent.calls.items() if call.tool == "Skill" and isinstance(parent.slots[parent.places[id]], str)]
+            match running:
+                case [{"skill": str() as skill, **rest}]:
+                    arguments = rest.get("args")
+                    invoked = f"/{skill} {arguments if isinstance(arguments, str) else ''}".strip()
+                    # [LAW:nothing-unseen] which of the two said who started it.
+                    logger.info(f"subagent {delegate.id} names no job, so it is heard as the work of the one skill its parent is running: {invoked!r}")
+                    return AgentTask(delegate.id, invoked)
+                case _:
+                    raise Unstarted(f"{delegate.meta} names no job, and its parent is running {len(running)} skills")
 
 
 def _written(session: SessionId, record: Payload) -> Stamp | None:

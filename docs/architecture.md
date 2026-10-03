@@ -1215,6 +1215,17 @@ suite."). Text that cannot be summarised is said as "write something", never rea
 progress was being summarised is not played, its result being told instead; the registry says so as the summary is
 ready, and a `ProgressTold` line records the text's length, its phrase or its failure, and whether it played.
 
+A subagent is heard the same way while it works, from its own transcript. The tail knows one by the
+`agent-<id>.meta.json` Claude Code writes beside that transcript as it starts it, and follows any started before hands
+followed its session from where its transcript ended then. Its calls are a `Progressed` whose `of` is the subagent, an
+`AgentTask` named by the job the call that started it gave it: the meta file's `description`, or, for a skill run in a
+subagent of its own, which names none, the one `Skill` call its parent is running ("/code-review high 152"). A
+subagent nothing names is said in the log and never told as another's. The record its transcript starts from is
+its job, not its work, as for its report. The reducer gathers its calls on the `Session`, not the turn, since one run
+in the background works on after the turn that started it ends ("cc-hands, its subagent to review the parser change:
+read tail.py, then run the test suite."). `coalesce` folds a subagent's progress only with its own, and drops it where any result of
+its session is told after it: its work is told with whichever turn it reports back to.
+
 ## Playback: bookmarks and resume
 
 You will cut the reading off often, to ask which file or to answer something else, and

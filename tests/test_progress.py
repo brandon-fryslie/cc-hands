@@ -1,21 +1,24 @@
 """Progress while a session works: its calls read as they are made, gathered until they settle, and heard by the focus."""
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
 import pytest
+from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core.attention import Overlay, Route, progress_route
 from hands.core.effects import Progress
 from hands.core.events import Displayed, Progressed, StatusReported, Tick
 from hands.core.pending import Finished, News, Pending, Unread, Working, coalesce
-from hands.core.progress import EDITING, WRITING, LONGEST, RUNNING, SETTLE, Doing, Gathering, doing, explained, said
+from hands.core.progress import EDITING, READING, WRITING, LONGEST, RUNNING, SETTLE, Doing, Gathering, doing, explained, said
 from hands.core.reducer import reduce
-from hands.core.session import Gone, Membership, Opened, PromptId, Registry, Running, Session, SessionId, Told, Turn, Untold
+from hands.core.session import Gone, Idle, Membership, Opened, PromptId, Registry, Running, Session, SessionId, Told, Turn, Untold
 from hands.core import status
 from hands.core.status import Busy, Report, Stamp
+from hands.core.turn import AgentId, AgentTask
 from hands.sessions.audit import Applied, Entry, ProgressTold, Relayed, Routed, encoded
 from hands.sessions.tail import Tails
 from hands.voice.speech import Aloud, Pushed, Tailed, Unprompted, frames, relay
@@ -294,7 +297,7 @@ def test_calls_read_are_a_line_the_audit_log_can_write() -> None:
     assert encoded(Applied(Progressed(SID, (TURN,), (TESTS,), at=7.0)))["event"] == {
         "type": "Progressed",
         "session": SID,
-        "turn": ["p1"],
+        "of": ["p1"],
         "doings": [{"type": "Doing", "work": {"type": "Work", "several": "run {count} commands", "one": "run a command"}, "alone": "run the test suite"}],
         "at": 7.0,
     }
@@ -304,7 +307,7 @@ def test_progress_relayed_and_told_is_a_line_the_audit_log_can_write() -> None:
     # Found live: the log could not write the set progress carries its turn as, and every burst's Relayed and Performed
     # lines went unrecorded.
     heard = encoded(Relayed(Progress(SID, frozenset({PromptId("p2"), TURN}), (TESTS,), "a line\n")))["heard"]
-    assert isinstance(heard, dict) and heard["turn"] == ["p1", "p2"] and heard["written"] == "a line\n"
+    assert isinstance(heard, dict) and heard["of"] == ["p1", "p2"] and heard["written"] == "a line\n"
     assert encoded(ProgressTold(SID, 7, "explain how DNS works", None, current=True))["explained"] == "explain how DNS works"
 
 
@@ -455,3 +458,129 @@ async def test_a_burst_is_not_kept_waiting_on_the_summary_of_the_one_ahead_of_it
         Working(SID, IN_TURN, (explained("explain the first thing"),)),
         Working(SID, IN_TURN, (explained("explain the second thing"),)),
     ]
+
+
+# A focused session's subagent, heard step by step while it works, each step said as the work of the call that started it.
+
+AGENT = AgentId("a0eea659e39132f84")
+REVIEW = AgentTask(AGENT, "Review the parser change")
+READ_TAIL = Doing(READING, "read tail.py")
+
+# The job a subagent is given is the record its transcript starts from, and no call of its own.
+JOB = '{"type":"user","parentUuid":null,"uuid":"u0","message":{"role":"user","content":"Review the diff."}}'
+# A fork's transcript starts from the parent's call that launched it, copied in.
+LAUNCH = '{"type":"assistant","parentUuid":null,"uuid":"u0","message":{"content":[{"type":"tool_use","id":"p9","name":"Agent","input":{"description":"Review the parser change","prompt":"..."}}]}}'
+READS = '{"type":"assistant","parentUuid":"u0","uuid":"u1","message":{"content":[{"type":"tool_use","id":"s1","name":"Read","input":{"file_path":"/a/tail.py"}}]}}'
+RUNS = '{"type":"assistant","parentUuid":"u1","uuid":"u2","message":{"content":[{"type":"tool_use","id":"s2","name":"Bash","input":{"command":"uv run pytest","description":"Run the test suite"}}]}}'
+SKILL = '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"code-review","args":"high 152"}}]}}'
+
+
+def subagent(transcript: Path, meta: dict[str, object], *records: str) -> Path:
+    """A subagent of the session `transcript` is the transcript of, as Claude Code starts it: the file naming its job, then its own transcript."""
+    folder = transcript.with_suffix("") / "subagents"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"agent-{AGENT}.meta.json").write_text(json.dumps(meta))
+    own = folder / f"agent-{AGENT}.jsonl"
+    own.write_text(lines(*records))
+    return own
+
+
+async def progressed(tails: Tails) -> list[Progressed]:
+    return [event for event in await tails.catch_up() if isinstance(event, Progressed)]
+
+
+@pytest.mark.parametrize("job", [JOB, LAUNCH], ids=["a prompt", "a fork's launching call"])
+async def test_a_subagent_is_heard_call_by_call_as_the_work_of_the_call_that_started_it(tmp_path: Path, job: str) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    tails = Tails(Known(transcript))
+    await tails.catch_up()
+    own = subagent(transcript, {"agentType": "general-purpose", "description": "Review the parser change"}, job, READS)
+    assert await progressed(tails) == [Progressed(SID, REVIEW, (READ_TAIL,), 7.0)]
+    with own.open("a") as file:
+        file.write(lines(RUNS))
+    assert await progressed(tails) == [Progressed(SID, REVIEW, (TESTS,), 7.0)]
+    assert await progressed(tails) == []
+
+
+async def test_a_subagent_already_working_as_hands_follows_its_session_is_heard_from_then_on(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    own = subagent(transcript, {"description": "Review the parser change"}, JOB, READS)
+    tails = Tails(Known(transcript))
+    # What it did before hands followed its session is history.
+    assert await progressed(tails) == []
+    with own.open("a") as file:
+        file.write(lines(RUNS))
+    assert await progressed(tails) == [Progressed(SID, REVIEW, (TESTS,), 7.0)]
+
+
+async def test_a_skill_run_in_a_subagent_of_its_own_is_the_work_of_the_skill_its_parent_invoked(tmp_path: Path) -> None:
+    # Claude Code names no job for it: measured, 124 foreground skill forks with no description beside them.
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    tails = Tails(Known(transcript))
+    await tails.catch_up()
+    with transcript.open("a") as file:
+        file.write(lines(SKILL))
+    subagent(transcript, {"agentType": "general-purpose", "requestShape": "foreground"}, JOB, READS)
+    assert [event for event in await progressed(tails) if isinstance(event.of, AgentTask)] == [Progressed(SID, AgentTask(AGENT, "/code-review high 152"), (READ_TAIL,), 7.0)]
+
+
+async def test_a_subagent_nothing_says_the_start_of_is_said_in_the_log_and_never_told_as_another_s(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    tails = Tails(Known(transcript))
+    await tails.catch_up()
+    subagent(transcript, {"agentType": "general-purpose"}, JOB, READS)
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
+    try:
+        assert await progressed(tails) == []
+    finally:
+        logger.remove(sink)
+    assert len(errors) == 1 and f"subagent {AGENT} of session {SID}" in errors[0] and "Unstarted" in errors[0]
+
+
+def idle() -> Registry:
+    # The parent's turn is over: a subagent run in the background works on after it.
+    session = Session(Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl")), Idle(Stamp(1000), TURN), mode=None, turn=Told(TURN))
+    return Registry(permission_deadline=60.0, sessions={SID: session}, drafts={})
+
+
+def test_a_subagent_s_calls_are_gathered_whatever_its_parent_is_doing_and_told_once_they_settle() -> None:
+    registry, effects = reduce(idle(), Progressed(SID, REVIEW, (READ_TAIL,), at=10.0))
+    registry, more = reduce(registry, Progressed(SID, REVIEW, (TESTS,), at=11.0))
+    assert effects == more == []
+    assert reduce(registry, Tick(10.0 + SETTLE))[1] == []
+    told, effects = reduce(registry, Tick(11.0 + SETTLE))
+    assert effects == [Progress(SID, REVIEW, (READ_TAIL, TESTS), "")]
+    assert reduce(told, Tick(30.0))[1] == []
+
+
+def test_a_subagent_s_burst_and_its_parent_s_are_told_apart() -> None:
+    session = idle().sessions[SID]
+    assert isinstance(session, Session)
+    registry = Registry(permission_deadline=60.0, sessions={SID: Session(session.membership, session.state, None, turn=Opened(TURN))}, drafts={})
+    registry, _ = reduce(registry, Progressed(SID, (TURN,), (Doing(EDITING, "edit a.py"),), at=10.0))
+    registry, _ = reduce(registry, Progressed(SID, REVIEW, (TESTS,), at=10.0))
+    assert reduce(registry, Tick(10.0 + SETTLE))[1] == [Progress(SID, frozenset({TURN}), (Doing(EDITING, "edit a.py"),), ""), Progress(SID, REVIEW, (TESTS,), "")]
+
+
+def test_a_subagent_s_work_folds_only_with_its_own_and_gives_way_to_a_result_told_after_it() -> None:
+    own = Working(SID, frozenset({TURN}), (Doing(EDITING, "edit a.py"),))
+    finished = Finished(SID, (News(PromptId("p2"), "Done.", "", "", ()),))
+    assert coalesce((Working(SID, REVIEW, (READ_TAIL,)), own, Working(SID, REVIEW, (TESTS,))), {}) == (Working(SID, REVIEW, (READ_TAIL, TESTS)), own)
+    # Whichever turn it reports back to tells its work better than progress heard after that turn's result.
+    assert coalesce((Working(SID, REVIEW, (TESTS,)), finished), {}) == (finished,)
+    assert coalesce((finished, Working(SID, REVIEW, (TESTS,))), {}) == (finished, Working(SID, REVIEW, (TESTS,)))
+
+
+def test_a_subagent_s_work_is_said_as_the_job_its_call_gave_it() -> None:
+    [spoken] = frames(Working(SID, REVIEW, (READ_TAIL, TESTS)), Pushed(), names=lambda _: "cc-hands")
+    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands, its subagent to review the parser change: read tail.py, then run the test suite."
+
+
+async def test_a_subagent_s_work_is_played_though_its_parent_s_turn_is_over() -> None:
+    queued, _ = await played(Progress(SID, REVIEW, (TESTS,), ""), lambda: Told(TURN), unasked)
+    assert queued == [Working(SID, REVIEW, (TESTS,))]
