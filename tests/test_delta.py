@@ -912,7 +912,33 @@ async def test_a_reading_whose_one_side_raises_ends_the_other_with_it_and_says_w
     assert read.outcome == "failed" and "RuntimeError: the forge side broke" in read.trace
     assert any("in _moved" in line for line in read.trace)
     # Nothing is left running to write to it.
-    assert not deltas._running  # pyright: ignore[reportPrivateUsage]
+    assert asyncio.all_tasks() == {asyncio.current_task()}
+
+
+class Unmade(Deltas):
+    """A reading that cannot tell whether the turn made its branch, raising while it reads whether the turn pushed it."""
+
+    async def _made(self, root: Path, known: Mapping[str, str], branch: str, tracking: list[str], since: int, deadline: float) -> bool:
+        raise ValueError("a reflog line in a shape hands does not read")
+
+    async def _pushed(self, root: Path, name: str, was: str | None, deadline: float) -> bool:
+        # Slower than the branch side, so a reading that did not wait it out would end with it still running.
+        await asyncio.sleep(0.2)
+        return await super()._pushed(root, name, was, deadline)
+
+
+async def test_a_branch_reading_that_raises_waits_out_the_push_reading_beside_it(tmp_path: Path) -> None:
+    root = published(tmp_path)
+    record: list[Entry] = []
+    deltas = Unmade(record=record.append, inherited=os.environ)
+    await deltas.snapshot(SID, root)
+    git(root, "checkout", "-q", "-b", "fix")
+    git(root, "push", "-q", "-u", "origin", "fix")
+    await deltas.compare(SID, again=False)
+    assert not await deltas.taken(SID)
+    [read] = readings(record)
+    assert read.outcome == "failed" and "ValueError: a reflog line in a shape hands does not read" in read.trace
+    assert asyncio.all_tasks() == {asyncio.current_task()}
 
 
 async def test_a_reading_cancelled_by_the_shutdown_is_one_cancelled_audit_line(tmp_path: Path) -> None:

@@ -16,11 +16,11 @@ import shutil
 import tempfile
 import time
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, cast, overload
 
 from loguru import logger
 
@@ -318,13 +318,7 @@ class Deltas:
         refs = await self._refs(mark.root, deadline)
         # Beside the tree and not before it: the forge is a network away where git is a disk away, and the narrator
         # gives up on the whole reading at once, so a forge read first spends the commit's time on a pull request.
-        # [LAW:no-ambient-temporal-coupling] both waited out, so one that raises does not end the reading while the other
-        # runs on and writes to its event after it has ended. Not a TaskGroup: on shutdown it cancels its children a
-        # second time, and a child told twice to stop leaves its git unreaped (child.run).
-        worked, moved = await asyncio.gather(self._worked(mark, deadline), self._moved(mark, refs, deadline, forging), return_exceptions=True)
-        if isinstance(worked, BaseException) or isinstance(moved, BaseException):
-            raise BaseExceptionGroup("what a turn changed could not be read", [side for side in (worked, moved) if isinstance(side, BaseException)])
-        (files, patch, tree), (changes, asked) = worked, moved
+        (files, patch, tree), (changes, asked) = await _settled(self._worked(mark, deadline), self._moved(mark, refs, deadline, forging))
         # [LAW:parse-dont-validate] as in _mark: where the repository stands is known only if both were read, and a HEAD
         # that would not answer is no commit only where git says there is none yet.
         reached = None if tree is None or (head is None and not await self._unborn(mark.root, deadline)) else Mark(mark.root, head, tree, refs, at)
@@ -397,8 +391,8 @@ class Deltas:
         tracking = [name for name in refs.named if name.startswith("refs/remotes/") and name.split("/", 3)[3:] == [branch]]
         # A ref the turn left where it found it was pushed nothing, whatever its log says.
         moved = [name for name in tracking if mark.refs.named.get(name) != refs.named[name]]
-        made, pushes = await asyncio.gather(
-            self._made(mark.root, mark.refs.named, branch, tracking, since, deadline), asyncio.gather(*(self._pushed(mark.root, name, mark.refs.named.get(name), deadline) for name in moved))
+        made, *pushes = await _settled(
+            self._made(mark.root, mark.refs.named, branch, tracking, since, deadline), *(self._pushed(mark.root, name, mark.refs.named.get(name), deadline) for name in moved)
         )
         pushed = any(pushes)
         # [LAW:carrying-cost] no pull request is opened from a remote's default branch, and most pushes are to it: asking
@@ -535,6 +529,24 @@ class Deltas:
             logger.debug(f"git {args[0]} in {cwd}: {ran.err.decode(errors='replace').strip()}")
             return None
         return ran.out.decode(errors="replace").strip()
+
+
+@overload
+async def _settled[A, B](first: Awaitable[A], second: Awaitable[B], /) -> tuple[A, B]: ...
+@overload
+async def _settled[T](*sides: Awaitable[T]) -> tuple[T, ...]: ...
+async def _settled(*sides: Awaitable[object]) -> tuple[object, ...]:
+    """Every side of a reading run together and waited out, then what each gave; where any raised, all they raised.
+
+    [LAW:single-enforcer] the one way a reading runs its sides at once. Waited out, so a side that raises does not end the
+    reading while another runs on and writes to its event after it has ended [LAW:no-ambient-temporal-coupling]. Not a
+    TaskGroup: on shutdown it cancels its children a second time, and a child told twice to stop leaves its git unreaped.
+    """
+    gave = await asyncio.gather(*sides, return_exceptions=True)
+    raised = [side for side in gave if isinstance(side, BaseException)]
+    if raised:
+        raise BaseExceptionGroup("what a turn changed could not be read", raised)
+    return tuple(gave)
 
 
 def _unmarked() -> Marking:
