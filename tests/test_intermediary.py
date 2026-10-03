@@ -107,9 +107,11 @@ def test_the_prompt_names_no_tool_the_daemon_does_not_give() -> None:
         assert named <= given, f"the prompt names {sorted(named - given)}, which the daemon does not give"
 
 
-def test_only_the_brain_which_has_bash_is_told_of_the_log_and_it_keeps_the_closing_words_last() -> None:
+def test_only_the_brain_which_has_bash_is_told_of_the_log_and_of_lit_and_it_keeps_the_closing_words_last() -> None:
     told = brain_instruction(Path("/my home/audit"))
     assert ".jsonl" not in INTERMEDIARY_INSTRUCTION and "Bash" not in INTERMEDIARY_INSTRUCTION
+    # Working a tracker is done from a shell, so only the brain is told it works one with lit.
+    assert "lit quickstart" in told and not re.search(r"\blit\b", INTERMEDIARY_INSTRUCTION)
     assert told.startswith(INTERMEDIARY_INSTRUCTION.split("\n\n# Above all")[0]) and told.endswith(INTERMEDIARY_INSTRUCTION.split("\n\n")[-1])
     # A home with a space in it is one argument to every command the brain is shown.
     assert f"'/my home/audit'/{SEGMENT_GLOB}" in told
