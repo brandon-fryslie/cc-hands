@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from hands.core.session import Membership, SessionId
-from hands.daemon.cli import launch
+from hands.daemon.cli import launch, still_shown
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.starting import Ended
 from hands.sessions import heartbeat
@@ -116,3 +116,36 @@ async def test_the_restart_signal_ends_a_run_as_a_restart_whose_last_heartbeat_s
     last = heartbeat.read(heart.path)
     # Not stopped: the indicator reads the moment before the next run as starting, and posts nothing.
     assert last is not None and (last.pipeline, last.last_audio_out, last.live_sessions) == ("starting", NOW, 3)
+
+
+async def test_a_restart_asked_while_a_quit_winds_the_run_down_does_not_start_it_again(tmp_path: Path) -> None:
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    winding_down = asyncio.Event()
+
+    async def run(quit_event: asyncio.Event) -> Ended:
+        # As the q key does: the event is set with no signal, and the run takes a while to close.
+        quit_event.set()
+        winding_down.set()
+        await asyncio.sleep(0.05)
+        return Ended(None, 0)
+
+    launched = asyncio.create_task(launch(lambda: run, heart))
+    await winding_down.wait()
+    os.kill(os.getpid(), RESTART_SIGNAL)
+    assert await launched == "quit"
+    last = heartbeat.read(heart.path)
+    assert last is not None and last.pipeline == "stopped"
+
+
+def test_a_handed_on_indicator_is_kept_only_while_it_runs() -> None:
+    shown = subprocess.Popen(["sleep", "60"])
+    try:
+        assert still_shown(shown.pid) == shown.pid
+    finally:
+        shown.kill()
+        shown.wait()
+    # Reaped by the run before, as its reap thread does with an indicator that exits.
+    assert still_shown(shown.pid) is None
+    exited = subprocess.Popen(["true"])
+    while still_shown(exited.pid) is not None:
+        time.sleep(0.01)

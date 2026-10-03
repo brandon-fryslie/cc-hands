@@ -58,7 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
     commands = parser.add_subparsers(dest="command", required=True)
     running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
-    running.add_argument("--indicator", type=int, help="the pid of the menu-bar indicator to keep, which a restart hands on to the run it starts, rather than starting one")
+    running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID, if it is still running, is kept rather than another started")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     commands.add_parser("check", help="say whether hands is set up to work here: its plugin, the claude shim on PATH, this terminal's Input Monitoring grant, and the running sessions; exits 0 only when every piece is there, 1 when one is missing, 2 when one could not be looked at")
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
@@ -90,20 +90,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             # In place of loguru's DEBUG default, so a run's terminal is hands' to read.
             logger.remove()
             to_terminal(sys.stderr)
-            # Read before this run's first heartbeat replaces it.
-            after_crash = crashed_before(home)
+            # Read before this run's first heartbeat replaces it. A restart's run before it was told to stop, which is
+            # no crash, however long the start took that its last heartbeat may read as gone quiet.
+            after_crash = arguments.restarted is None and crashed_before(home)
             heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
             # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its
             # models load, seconds of silence in which the file would otherwise still name the process that died.
             heart.beat("starting", None, 0, False)
-            shown = start_indicator(home) if arguments.indicator is None else arguments.indicator
+            kept = None if arguments.restarted is None else still_shown(arguments.restarted)
+            shown = start_indicator(home) if kept is None else kept
             threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
             audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
             match asyncio.run(launch(lambda: loaded(home, heart, audit_log, after_crash, granted), heart)):
                 case "quit":
                     return 0
                 case "restart":
-                    again([sys.executable, "-m", "hands.daemon", "--home", str(home.root), "run", "--indicator", str(shown)], audit_log.record)
+                    # -P, as the plugin's launcher runs Python: the terminal's directory is kept off the path.
+                    again([sys.executable, "-P", "-m", "hands.daemon", "--home", str(home.root), "run", "--restarted", str(shown)], audit_log.record)
         case "status":
             return report(home)
         case "check":
@@ -147,8 +150,10 @@ async def launch(load: Callable[[], Run], heart: heartbeat.Heart) -> Ending:
     ending: Ending = "quit"
 
     def stop(how: Ending) -> None:
+        # The first stop says how the run ends, the q key's and a failed task's included, which set the event alone:
+        # a restart asked while a quit winds the run down is not one.
         nonlocal ending
-        ending = how
+        ending = ending if quit_event.is_set() else how
         quit_event.set()
 
     loop = asyncio.get_running_loop()
@@ -185,6 +190,15 @@ def start_indicator(home: Home) -> int:
     # keeps the pid, so the indicator carries on into the run after it, which reaps it by that pid.
     argv = [sys.executable, "-m", "hands.daemon", "--home", str(home.root), "indicator", "--parent", str(os.getpid())]
     return os.posix_spawn(sys.executable, argv, os.environ, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)], setsid=True)
+
+
+def still_shown(indicator: int) -> int | None:
+    """The indicator a restart handed on, while it runs; one that exited is reaped here, or was by the run before."""
+    try:
+        exited, _ = os.waitpid(indicator, os.WNOHANG)
+    except ChildProcessError:
+        return None
+    return indicator if exited == 0 else None
 
 
 def reap(shown: int) -> None:

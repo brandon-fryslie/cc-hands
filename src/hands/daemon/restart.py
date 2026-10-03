@@ -1,7 +1,7 @@
 """`/hands:restart`: start the running daemon again, so it runs the code, prompt, and brain setup on disk now.
 
-The plugin's skill runs this module under the plugin's own Python, which has only the standard library, so it imports
-nothing else:
+The plugin's skill runs this module under the plugin's own Python, which has no venv, so it imports only the standard
+library and hands' data modules:
 
     hooks/python -m hands.daemon.restart
 
@@ -26,8 +26,9 @@ from hands.sessions.payload import Rejected
 
 # [LAW:one-source-of-truth] the one signal both ends mean "restart" by: the daemon's handler and this sender.
 RESTART_SIGNAL = signal.SIGUSR1
-# How long the new run has to say its pipeline is running: its start loads the speech models.
-BACK_WITHIN = timedelta(seconds=120)
+# How long the new run has to say its pipeline is running: its start loads the speech models. Well under the two
+# minutes a Claude Code command is given by default, so the deadline is said rather than cut off.
+BACK_WITHIN = timedelta(seconds=90)
 # How often the heartbeat is looked at while waiting.
 LOOK_SECONDS = 0.2
 
@@ -66,7 +67,11 @@ def restart(home: Home, now: Callable[[], datetime], wait: Callable[[], None], w
             pass
         case verdict:
             return NotRunning(verdict)
-    os.kill(before.pid, RESTART_SIGNAL)
+    try:
+        os.kill(before.pid, RESTART_SIGNAL)
+    except ProcessLookupError:
+        # It ended between the look and the ask: what its heartbeat says now is why it was not restarted.
+        return NotRunning(heartbeat.look(home.status, now()))
     while True:
         at = now()
         match heartbeat.look(home.status, at):
@@ -86,8 +91,7 @@ def restart(home: Home, now: Callable[[], datetime], wait: Callable[[], None], w
 def said(outcome: Outcome, now: datetime) -> str:
     match outcome:
         case Restarted(status=status, took=took):
-            sessions = "1 live session" if status.live_sessions == 1 else f"{status.live_sessions} live sessions"
-            return f"hands restarted: pid {status.pid} is running again after {took.total_seconds():.0f}s, with {sessions}."
+            return f"hands restarted: pid {status.pid} is running again after {took.total_seconds():.0f}s, with {heartbeat.live_sessions(status)}."
         case NotRunning(verdict=verdict):
             return f"hands was not restarted: {heartbeat.describe(verdict, now)}."
         case NotBack(verdict=verdict, waited=waited):
