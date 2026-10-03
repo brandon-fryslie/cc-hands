@@ -91,7 +91,7 @@ class Heart:
     started_at: datetime
     period: timedelta
 
-    def beat(self, pipeline: PipelineState, last_audio_out: datetime | None, live_sessions: int, listening: bool, deaf: bool) -> None:
+    def beat(self, pipeline: PipelineState, last_audio_out: datetime | None, live_sessions: int, *, listening: bool, deaf: bool) -> None:
         write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions, listening, deaf))
 
 

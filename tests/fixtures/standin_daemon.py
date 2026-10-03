@@ -27,14 +27,14 @@ PERIOD = timedelta(milliseconds=100)
 def main() -> None:
     home = Home(Path(sys.argv[1]))
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), PERIOD)
-    heart.beat("starting", None, 0, False, False)
+    heart.beat("starting", None, 0, listening=False, deaf=False)
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
 
     async def run(quit_event: asyncio.Event) -> Ended:
         sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=audit.record)
         # As hands' run does before its models load: the sessions already running are listed from the home.
         await sweep(home, sessions, frozenset())
-        beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), False, False), PERIOD.total_seconds()))
+        beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), listening=False, deaf=False), PERIOD.total_seconds()))
         await quit_event.wait()
         beating.cancel()
         return Ended(None, sessions.live_count())

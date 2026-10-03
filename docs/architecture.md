@@ -1564,16 +1564,17 @@ thing that failed `[LAW:no-silent-failure]`:
    or "hands is back after a crash" when the last heartbeat names a pid that is gone
    without having said `stopped`.
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
-   uptime, pipeline state, last audio out, and the count of live sessions. `hands
-   status` prints it. When TTS itself is down, a macOS notification is posted through
+   uptime, pipeline state, last audio out, the count of live sessions, whether a turn is
+   open, and whether the microphone is open on no device. `hands status` prints it. When TTS itself is down, a macOS notification is posted through
    `osascript`. `hands indicator` is a menu-bar status item in a process of its own,
    which `hands run` starts in a session of its own, so neither the daemon dying nor the
    terminal's Ctrl-C takes it down first. It lives while the process that started it does,
    and once that is gone, until the light leaves up: it posts that notice and exits. Once a second it judges the heartbeat through `heartbeat.look`, the one
    read-and-judge that `hands status`, the crash check at start, and the hook shim also use. Its title
-   shows one of five lights: up, not responding, down, off (stopped or never ran), and
-   unreadable. An unreadable heartbeat is warned of as loudly as a dead daemon. It
-   posts a notification when the light leaves up, at most once a minute, so a loop that
+   shows one of six lights: up, deaf (up, with no microphone to hear through), not
+   responding, down, off (stopped or never ran), and unreadable. An unreadable heartbeat
+   is warned of as loudly as a dead daemon. It posts a notification when the light
+   changes into deaf or out of a running light (up or deaf) into a warning, at most once a minute, so a loop that
    stalls and recovers over and over is not announced every time. A departure inside that
    minute is held, and posted when the minute is up if hands is still not up. A daemon it finds already
    down on its first look is shown but not announced. A heartbeat whose pid is outside

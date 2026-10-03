@@ -379,7 +379,7 @@ async def converse(
     failures: list[BaseException] = []
 
     def beat() -> None:
-        heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count(), voice.key.gate.turn_open, voice.audio.deaf)
+        heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open, deaf=voice.audio.deaf)
 
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead

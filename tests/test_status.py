@@ -64,15 +64,15 @@ def test_a_heartbeat_from_before_hearing_was_written_reads_as_able_to_hear(tmp_p
 
 def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT)
-    heart.beat("starting", None, 0, False, False)
+    heart.beat("starting", None, 0, listening=False, deaf=True)
     first = heartbeat.read(heart.path)
-    heart.beat("running", NOW, 2, True, True)
+    heart.beat("running", NOW, 2, listening=True, deaf=False)
     second = heartbeat.read(heart.path)
     assert first is not None and second is not None
     assert (first.pid, first.started_at, first.heartbeat, first.pipeline, first.live_sessions) == (4242, NOW, BEAT, "starting", 0)
     assert (second.pid, second.started_at, second.heartbeat, second.pipeline, second.last_audio_out) == (4242, NOW, BEAT, "running", NOW)
     assert (first.listening, second.listening) == (False, True)
-    assert (first.deaf, second.deaf) == (False, True)
+    assert (first.deaf, second.deaf) == (True, False)
     assert second.written_at >= first.written_at
 
 
@@ -320,6 +320,12 @@ def test_losing_the_microphone_is_announced_and_so_is_a_deaf_daemon_going_down()
     at = [NOW + timedelta(seconds=seconds) for seconds in (0, 100, 110, 200, 300, 400)]
     looks = list(zip([up, deaf, deaf, up, deaf, down], at))
     assert shown_over(looks) == [(), (heartbeat.describe(deaf, at[1]),), (), (), (heartbeat.describe(deaf, at[4]),), (heartbeat.describe(down, at[5]),)]
+
+
+def test_a_stuck_daemon_that_recovers_unable_to_hear_says_so() -> None:
+    up, stuck, deaf = heartbeat.Up(beat()), heartbeat.Unresponsive(beat()), heartbeat.Up(beat(deaf=True))
+    at = [NOW + timedelta(seconds=seconds) for seconds in (0, 100, 200)]
+    assert shown_over(list(zip([up, stuck, deaf], at))) == [(), (heartbeat.describe(stuck, at[1]),), (heartbeat.describe(deaf, at[2]),)]
 
 
 def test_a_deaf_daemon_is_read_from_the_heartbeat_by_hands_status(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

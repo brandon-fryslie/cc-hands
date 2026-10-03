@@ -76,9 +76,9 @@ def show(before: Shown | None, verdict: Verdict, now: datetime) -> Shown:
             return Shown(after, shown, text, (), False, None)
         case Shown(light=was, owed=owed, posted_at=posted_at):
             # A departure held back by the quiet window is owed, not dropped: it goes out when the window closes,
-            # unless hands has come back up by then and there is nothing left to tell. A daemon that cannot hear is
-            # still running, so its going down or getting stuck is a departure as much as up's.
-            owing = after != "up" and (owed or (was in RUNNING and after != was))
+            # unless hands has come back up by then and there is nothing left to tell. A change is news when either
+            # side is a running light: leaving one for a warning, or arriving at deaf from anywhere, stuck included.
+            owing = after != "up" and (owed or (after != was and (was in RUNNING or after in RUNNING)))
             quiet = posted_at is not None and now - posted_at < QUIET
             notices = (text,) if owing and not quiet else ()
             return Shown(after, shown, text, notices, owing and not notices, now if notices else posted_at)
