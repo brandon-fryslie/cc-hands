@@ -8,11 +8,11 @@ from dataclasses import dataclass
 from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
 
 from hands.core.attention import Overlay, Route, progress_route
-from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Progress, SessionGone, Speak
+from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Progress, SessionGone, Speak
 from hands.core.pending import Briefing, Finished, News, Pending, Unread, Working, went_on
-from hands.core.progress import Doing, said
+from hands.core.progress import said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
-from hands.core.session import AskedQuestion, Blocker, Permission, Plan, PromptId, Question, SessionId
+from hands.core.session import AskedQuestion, Blocker, Permission, Plan, Question, SessionId
 from hands.sessions.audit import Record, Relayed, Routed
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode
@@ -105,36 +105,31 @@ def bounded(text: str, limit: int) -> str:
 Attending = Callable[[SessionId], Awaitable[tuple[bool, Overlay]]]
 
 
-async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]], record: Record, attending: Attending) -> None:
-    """Hand what the sessions say to the floor, in the order it was decided, until cancelled."""
+async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]], record: Record, attending: Attending, play: Callable[[Progress], None]) -> None:
+    """Hand what the sessions say to the floor, in the order it was decided, until cancelled; progress to be played is
+    handed to `play`, since text in it waits on a summary, and what a session asks never waits behind that."""
     while True:
         heard = await sessions.heard()
         record(Relayed(heard))
-        for pending in await _pending(heard, record, attending):
-            await queue_frame(Unprompted(pending))
+        match heard:
+            case Progress(session=session):
+                focused, overlay = await attending(session)
+                route = progress_route(focused, overlay)
+                # [LAW:nothing-unseen] which way progress went, and what decided it.
+                record(Routed(session, focused, overlay, route))
+                _routed(route, heard, play)
+            case Speak() | Narrate() | Note():
+                await queue_frame(Unprompted(heard))
 
 
-async def _pending(heard: Heard, record: Record, attending: Attending) -> tuple[Pending, ...]:
-    """What the floor is handed of what was heard: progress as the focus and the overlay route it, the rest as it is."""
-    match heard:
-        case Progress(session=session, turn=turn, doings=doings):
-            focused, overlay = await attending(session)
-            route = progress_route(focused, overlay)
-            # [LAW:nothing-unseen] which way progress went, and what decided it.
-            record(Routed(session, focused, overlay, route))
-            return _routed(route, session, turn, doings)
-        case Speak() | Narrate() | Note():
-            return (heard,)
-
-
-def _routed(route: Route, session: SessionId, turn: frozenset[PromptId], doings: tuple[Doing, ...]) -> tuple[Pending, ...]:
+def _routed(route: Route, progress: Progress, play: Callable[[Progress], None]) -> None:
     match route:
         case "play":
-            return (Working(session, turn, doings),)
+            play(progress)
         case "note":
             # [LAW:one-source-of-truth] the session listing says what a working session last set out to do, for either
             # model to read when asked, so nothing is added to a context that keeps every message it is given.
-            return ()
+            pass
 
 
 def frames(pending: Pending, telling: Telling, names: Names) -> Sequence[Frame]:

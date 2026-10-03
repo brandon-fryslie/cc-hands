@@ -103,6 +103,13 @@ class TapListening:
 
 
 @dataclass(frozen=True)
+class DisplayListening:
+    """Where hands took the text Claude Code displays for this run: the URL the plugin's MessageDisplay hook posts to."""
+
+    url: str
+
+
+@dataclass(frozen=True)
 class CopiesLost:
     """Copies of a session's exchanges that its fritter could not hand to hands, told with the first copy since that it
     did: hands was down, or was not reading them. The session's own exchanges went on regardless."""
@@ -297,6 +304,19 @@ class Routed:
 
 
 @dataclass(frozen=True)
+class ProgressTold:
+    """Progress routed to be played, as it went to the floor: how much text it held, the clause that text was summarised
+    as or why it could not be, and whether its turn still ran once it was ready, since progress of a turn that has ended
+    is not played: its result is told instead."""
+
+    session: SessionId
+    written: int  # characters of text, 0 for a burst of calls alone
+    explained: str | None
+    failed: str | None
+    current: bool
+
+
+@dataclass(frozen=True)
 class Recounted:
     """What hands told of a turn a session finished, and what the narration left the user able to ask for.
 
@@ -481,6 +501,7 @@ Entry = (
     | VoiceChosen
     | ProxyListening
     | TapListening
+    | DisplayListening
     | CopiesLost
     | Exchanged
     | McpConnected
@@ -502,6 +523,7 @@ Entry = (
     | Yielded
     | Relayed
     | Routed
+    | ProgressTold
     | Recounted
     | Summarised
     | TurnsSummarised
@@ -542,9 +564,11 @@ def level(entry: Entry) -> Level:
             return "error" if outcome == "failed" else "info"
         case Named(outcome=outcome):
             return "error" if outcome in ("unread", "failed", "refused") else "info"
+        case ProgressTold(failed=failed):
+            return "info" if failed is None else "error"
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
-            | Applied() | Performed() | Typing() | LLMChosen() | VoiceChosen() | ProxyListening() | TapListening() | CopiesLost()
+            | Applied() | Performed() | Typing() | LLMChosen() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Routed() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()

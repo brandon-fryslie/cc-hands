@@ -248,6 +248,11 @@ class Told:
 Turn = Opened | Untold | Told
 
 
+def ids(turn: Turn) -> frozenset[PromptId]:
+    """Every id the turn goes by: none for the Told a session starts in, before any turn is."""
+    return turn.others if turn.turn is None else turn.others | {turn.turn}
+
+
 @dataclass(frozen=True)
 class Unnamed:
     """A Stop under an id no record hands has read names yet. Claude Code writes a turn's records before it fires the

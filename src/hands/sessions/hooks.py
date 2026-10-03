@@ -7,7 +7,7 @@ from typing import get_args
 from loguru import logger
 
 from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
-from hands.core.events import Attached, Ended, EndReason, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished
+from hands.core.events import Attached, Displayed, Ended, EndReason, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished
 from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.core.status import Stamp
 from hands.sessions.home import Home
@@ -43,6 +43,21 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, heard: Stamp, request: Re
             happened = _happened(payload, session, at, heard, request)
             recorded = recorded_membership(home, session)
             return Hook(None if recorded is None else Attached(recorded), happened)
+
+
+def parse_display(raw: bytes, *, at: Instant) -> Displayed:
+    """A MessageDisplay hook's POST body: the lines of Claude's text it displayed, in the turn its prompt_id names.
+
+    Raises Rejected for anything else, so the one route that takes this hook takes nothing more. It joins no session:
+    a session hands has not heard of is joined by its next shim hook, and text it displayed before then is behind.
+    """
+    # [LAW:parse-dont-validate] past this function nothing looks at hook JSON again.
+    payload = Payload.parse(raw)
+    match payload.text("hook_event_name"):
+        case "MessageDisplay":
+            return Displayed(payload.session_id(), (_prompt(payload),), payload.text("delta"), at)
+        case other:
+            raise Rejected(f"hook event {other!r} is not taken here: only MessageDisplay is posted to this route")
 
 
 def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, request: RequestId) -> SessionEvent:

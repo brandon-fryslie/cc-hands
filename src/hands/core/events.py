@@ -146,6 +146,18 @@ class Progressed:
 
 
 @dataclass(frozen=True)
+class Displayed:
+    """Claude Code displayed lines of Claude's text as it streamed them: its MessageDisplay hook, one batch of finished
+    lines, or every line since the last batch when the one before was slow to be taken (2.1.280)."""
+
+    session: SessionId
+    # The id of the turn it was written in, as the hook names it; a tuple, as a Progressed's is, though a hook names one.
+    turn: tuple[PromptId, ...]
+    text: str
+    at: Instant  # when it was heard
+
+
+@dataclass(frozen=True)
 class StatusReported:
     """Claude Code set the session's status: read from the file it keeps for the session each time its stamp moves, so a
     status set again to what it was is heard, and so is a busy that came and went between two reads."""
@@ -201,7 +213,7 @@ class Tick:
 # Events about a session the registry must already know; a join is how it comes to.
 # What moves a live session on its axes; its end is the one session event that moves none of them.
 Moving = Prompted | Stopped | Closed | Interrupted | Taken | Continued | Read | StatusReported | PermissionRequested | ToolFinished
-SessionEvent = Moving | Progressed | Ended
+SessionEvent = Moving | Progressed | Displayed | Ended
 # What a session's transcript says that none of its hooks do: of its turn, and how far it has been read.
 Transcribed = Taken | Interrupted | Continued | Progressed | Read
 # What the liveness sweep saw in one membership file.

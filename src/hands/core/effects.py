@@ -192,13 +192,16 @@ class Note:
 
 @dataclass(frozen=True)
 class Progress:
-    """A running turn's calls, gathered until they settled: how the user hears of them is decided where the focus and the
+    """A running turn's calls and text, gathered until they settled: how the user hears of them is decided where the focus and the
     session's overlay are read, not here."""
 
     session: SessionId
-    # Every id the turn the calls were made in goes by, so its result is known for theirs wherever it stands.
-    turn: frozenset[PromptId]
+    # Every id the turn the calls were made in goes by, sorted, so its result is known for theirs wherever it stands; a
+    # tuple, since the audit log writes no set.
+    turn: tuple[PromptId, ...]
     doings: tuple[Doing, ...]
+    # The text the turn wrote among them, as it was displayed; empty when it wrote none.
+    written: str
 
 
 Heard = Speak | Narrate | Note | Progress

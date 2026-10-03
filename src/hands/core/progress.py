@@ -1,4 +1,5 @@
-"""Progress while a session works: each tool call as it is made, and a burst of them said as one sentence.
+"""Progress while a session works: each tool call as it is made, the text Claude writes as it writes it, and a burst
+of them said as one sentence.
 
 A call is said by what it sets out to do, read off its input, and never by its result: the result is the turn's to
 tell when it finishes, and a call is worth hearing about while it runs, before there is any result to tell.
@@ -34,6 +35,8 @@ RUNNING = Work("run {count} commands", "run a command")
 DELEGATING = Work("start {count} subagents", "start a subagent")
 PLANNING = Work("update its plan", "update its plan")
 USING = Work("use {count} tools", "use a tool")
+# Text Claude wrote, said by a summary of it; one that could not be summarised is said as written, and never read out.
+EXPLAINING = Work("explain {count} things", "write something")
 
 
 @dataclass(frozen=True)
@@ -157,6 +160,11 @@ def _text(input: Mapping[str, object], key: str) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def explained(summary: str) -> Doing:
+    """Text Claude wrote, said as its summary: a phrase in the imperative, as the middle of a sentence."""
+    return Doing(EXPLAINING, _lowered(summary.strip().rstrip(".!")))
+
+
 def _lowered(phrase: str) -> str:
     """An imperative phrase as the middle of a sentence: "Run the tests" is "run the tests", and "PR" stays "PR"."""
     first, rest = phrase[:1], phrase[1:]
@@ -172,14 +180,20 @@ LONGEST = 8.0
 
 @dataclass(frozen=True)
 class Gathering:
-    """Calls a running turn made that nobody has been told of yet, and when the first and the last of them were read."""
+    """Calls a running turn made and text it wrote that nobody has been told of yet, and when the first and the last of
+    them came."""
 
     doings: tuple[Doing, ...]
+    # Every line written since the burst began, as Claude Code displayed it; empty when it wrote none.
+    written: str
     first: float
     last: float
 
     def joined(self, doings: Sequence[Doing], at: float) -> "Gathering":
-        return Gathering((*self.doings, *doings), self.first, at)
+        return Gathering((*self.doings, *doings), self.written, self.first, at)
+
+    def wrote(self, text: str, at: float) -> "Gathering":
+        return Gathering(self.doings, self.written + text, self.first, at)
 
     def due(self) -> float:
         """When the burst is told: once it has settled, and no later than its first call's longest wait."""

@@ -42,8 +42,8 @@ from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
-from hands.sessions.audit import AuditLog, LLMChosen, ProxyListening, Record, TapListening, VoiceChosen, failures_to
-from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS
+from hands.sessions.audit import AuditLog, DisplayListening, LLMChosen, ProxyListening, Record, TapListening, VoiceChosen, failures_to
+from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT, DISPLAY_URL, PERMISSION_DEADLINE_SECONDS
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.statusfile import keep_reading_statuses
 from hands.sessions.tail import Tails, keep_tailing
@@ -52,7 +52,7 @@ from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.names import Names
-from hands.sessions.server import serve_hooks
+from hands.sessions.server import serve_display, serve_hooks
 from hands.sessions.tap import moves, serve_tap
 from hands.sessions.overlays import Overlays
 from hands.sessions.summaries import summaries
@@ -75,7 +75,9 @@ from hands.voice.pipeline import (
 from hands.voice.naming import NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS, keep_naming
 from hands.voice.narrator import Recounts, attending, narrate
 from hands.voice.speech import Pushed, Tailed, Telling, relay
+from hands.voice.working import Playing, keep_playing
 from hands.voice.summary import Summariser, aside, summariser
+from hands.voice.progress_instruction import EXPLAIN_INSTRUCTION, EXPLAIN_MAX_TOKENS, EXPLAIN_TIMEOUT_SECONDS
 from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
 from hands.voice.summarising import SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS, keep_summarising
 from hands.voice.sentences import SummaryStore
@@ -321,6 +323,8 @@ async def run(
 
     tap = await serve_tap(home.wire, tapped, audit.record, clock=time.time)
     audit.record(TapListening(path=home.wire))
+    display = await serve_display(sessions, DISPLAY_HOST, DISPLAY_PORT, DISPLAY_PATH)
+    audit.record(DisplayListening(url=DISPLAY_URL))
     voice: Voice | None = None
     store = SummaryStore(Sentences(home.sentences))
     # [LAW:one-source-of-truth] one holder of each session's last turn: the narrator fills it, tell_turn reads it.
@@ -341,6 +345,7 @@ async def run(
     finally:
         # A run that raised still lets go of the socket and of every permission hook waiting on it.
         await hooks.cleanup()
+        await display.cleanup()
         await proxy.close()
         tap.close()
         logger.remove(failures)
@@ -388,7 +393,7 @@ async def converse(
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
         # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
-        # nothing is asked aloud, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
+        # nothing is asked aloud, without the progress player the focus is not heard working, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
         # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
@@ -400,12 +405,17 @@ async def converse(
     for listing in sessions.live():
         store.want(listing.session.membership.cwd)
     overlays = Overlays(home)
+    playing = Playing()
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
-        asyncio.create_task(relay(sessions, voice.worker.queue_frame, record, partial(attending, home, overlays)), name="the session speech relay"),
+        asyncio.create_task(relay(sessions, voice.worker.queue_frame, record, partial(attending, home, overlays), playing.put_nowait), name="the session speech relay"),
+        asyncio.create_task(
+            keep_playing(playing, sessions.live_session, voice.worker.queue_frame, record, minded.summariser(EXPLAIN_INSTRUCTION, EXPLAIN_MAX_TOKENS, EXPLAIN_TIMEOUT_SECONDS)),
+            name="the progress player",
+        ),
         asyncio.create_task(narrate(sessions, tails, voice.worker.queue_frame, record, lambda: summaries(home), overlays, recounts, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
         asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),
