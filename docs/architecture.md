@@ -1024,17 +1024,17 @@ was answering is asked only once no words of the user's are waiting. What the na
 says as written waits in the same lane (`Aloud`), so a session's end is heard after its
 last turn. `BrainSpoke.waited` is how long each turn waited in its lane.
 
-**What is in front.** Built: as the user's turn is handed to the brain, hands reads once
+**What is in front.** Built: as the user's words reach the brain's stage, hands reads once
 what is in front on the Mac's screen (`sessions/front.py`, decided by the pure
 `core/front.py`), and the brain reads it after the user's words: the app in front and the
 session its front tab shows, or that it shows none. It is never watched between turns, and
-a narration is not read against it. The app in front is the owner of the frontmost window
-in the window list; an app that says by AppleScript which terminal its front tab shows
+a narration is not read against it. The app in front is the one LaunchServices says is
+(`lsappinfo front`), whether or not a window of its is on screen; an app that says by AppleScript which terminal its front tab shows
 (iTerm2, Terminal) is asked, and any other shows every terminal under it, which names the
 session when it holds one. A tab running tmux shows the pane its client is on. A session is
 in front when that terminal is on its line of ancestors: its fritter's, its tab's or its
-pane's. A screen hands cannot read (no window, a refused AppleScript, several sessions in an
-app that cannot say its front tab) is left out of the turn, and `BrainSpoke.asker`, a
+pane's. A screen hands cannot read (no app in front, a refused or unanswered AppleScript,
+several sessions under the terminals it shows) is left out of the turn, and `BrainSpoke.asker`, a
 `UserAsked`, records what was read or why it was not, and how long the read took.
 
 The rest of this section is planned: step summaries built as steps arrive, and streaming.

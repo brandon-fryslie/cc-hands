@@ -230,9 +230,9 @@ class Mind:
 
 
 async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFront:
-    """What is in front on the Mac's screen among the sessions running now, read off the event loop."""
+    """What is in front on the Mac's screen among the sessions running now."""
     running = {listing.session.membership.id: (listing.session.membership.pid, identifier(listing)) for listing in sessions.live()}
-    return await asyncio.to_thread(read_front, running, environment)
+    return await read_front(running, environment)
 
 
 @asynccontextmanager

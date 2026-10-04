@@ -155,7 +155,7 @@ class BrainStage(FrameProcessor):
     ) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._brain = brain
-        # What is in front on the Mac's screen, read as the user's turn is submitted.
+        # What is in front on the Mac's screen, read as the user's words arrive.
         self._front = front
         # Moves the focus to a session whose telling the brain takes.
         self._refocus = refocus
@@ -171,7 +171,8 @@ class BrainStage(FrameProcessor):
         # once the brain has ended it. What waits is in two lanes, the user's and hands', and the user's goes first.
         # Each thing waiting is kept with when it arrived. Hands' lane holds what it says as written beside what it
         # hands the brain, so a session's story is heard in the order it happened.
-        self._contexts: deque[tuple[str, float]] = deque()
+        # The user's words wait with the read of the screen begun as they arrived.
+        self._contexts: deque[tuple[str, float, asyncio.Task[UserAsked]]] = deque()
         self._hands: deque[tuple[Narrated | Aloud, float]] = deque()
         self._waiting = asyncio.Event()
         self._turn: _Turn | None = None
@@ -189,9 +190,13 @@ class BrainStage(FrameProcessor):
                     asked.settle(heard(words))
             case LLMContextFrame(context=context):
                 # [LAW:no-ambient-temporal-coupling] read as it arrives, so an answer given later takes only its own words,
-                # never words of the user's still waiting to be asked.
-                self._contexts.append((self._news(context), self._now()))
-                self._waiting.set()
+                # never words of the user's still waiting to be asked. A context frame is a call to answer, not a message:
+                # one that gained the brain nothing asks nothing.
+                # [LAW:no-ambient-temporal-coupling] the screen is read from as the words arrive, not as their turn is
+                # taken: the user may look elsewhere while it waits.
+                if news := self._news(context):
+                    self._contexts.append((news, self._now(), asyncio.ensure_future(self._read_front())))
+                    self._waiting.set()
             case Narrated() | Aloud():
                 self._hands.append((frame, self._now()))
                 self._waiting.set()
@@ -210,17 +215,17 @@ class BrainStage(FrameProcessor):
         raising what stopped it, since a stage that can no longer ask leaves every question unanswered."""
         while True:
             waiting, arrived = await self._upcoming()
+            # How long it waited in its lane, which reading the screen is not.
+            waited = self._now() - arrived
             match waiting:
-                case str() as text:
-                    # A context frame is a call to answer, not a message: one that gained the brain nothing asks nothing.
-                    if text:
-                        asker = await self._read_front()
-                        await self._ask("\n\n".join(part for part in (text, told(asker.front)) if part), asker, (), arrived)
+                case (str() as text, reading):
+                    asker = await reading
+                    await self._ask("\n\n".join(part for part in (text, told(asker.front)) if part), asker, (), waited)
                 case Narrated(text=text, unsaid=unsaid, session=session):
                     # [LAW:no-ambient-temporal-coupling] moved as the telling is taken, with the user's last turn ended and
                     # none waiting, since they go first, and before the brain is asked, so its request reads the new focus.
                     await self._refocus(session)
-                    await self._ask(text, HandsAsked(), (unsaid,), arrived)
+                    await self._ask(text, HandsAsked(), (unsaid,), waited)
                 case Aloud(spoken=spoken):
                     await self.push_frame(spoken)
 
@@ -229,7 +234,7 @@ class BrainStage(FrameProcessor):
         front = await self._front()
         return UserAsked(front, (self._now() - began) * 1000)
 
-    async def _upcoming(self) -> tuple[str | Narrated | Aloud, float]:
+    async def _upcoming(self) -> tuple[tuple[str, asyncio.Task[UserAsked]] | Narrated | Aloud, float]:
         """What is next: the user's words while any wait, since what they said goes ahead of what hands has to tell, all
         that waits of them asked as one turn."""
         while not (self._contexts or self._hands):
@@ -238,13 +243,17 @@ class BrainStage(FrameProcessor):
         if not self._contexts:
             return self._hands.popleft()
         arrived = self._contexts[0][1]
-        news = "\n\n".join(text for text, _ in self._contexts if text)
+        *earlier, (_, _, reading) = self._contexts
+        # Asked as one turn, read against the screen as the last of them arrived.
+        for _, _, superseded in earlier:
+            superseded.cancel()
+        news = "\n\n".join(text for text, _, _ in self._contexts)
         self._contexts.clear()
-        return news, arrived
+        return (news, reading), arrived
 
-    async def _ask(self, text: str, asker: Asker, unsaid: Sequence[str], arrived: float) -> None:
-        """One turn of the brain's; `unsaid` is what hands says as written if the brain cannot take it."""
-        waited = self._now() - arrived
+    async def _ask(self, text: str, asker: Asker, unsaid: Sequence[str], waited: float) -> None:
+        """One turn of the brain's; `unsaid` is what hands says as written if the brain cannot take it, and `waited` how
+        long it waited in its lane."""
         note, self._broken_off = self._broken_off, ""
         text = "\n\n".join(part for part in (note, text) if part)
         said: asyncio.Queue[str | Asked | None] = asyncio.Queue()

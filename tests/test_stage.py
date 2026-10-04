@@ -383,6 +383,27 @@ async def test_a_users_turn_carries_what_was_in_front_as_it_was_submitted_and_it
     assert rig.brain.asked[-1] == f"and now?\n\n{told(NoSessionInFront('Safari'))}"
 
 
+async def test_words_that_wait_behind_a_turn_carry_what_was_in_front_as_they_arrived_and_the_wait_leaves_out_the_read(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "what is running?"})
+    spoken_at = SessionInFront("iTerm2", SessionId("s1"), "hands, docs")
+    rig.fronts.append(spoken_at)
+    rig.context.add_message({"role": "user", "content": "what's this one doing?"})
+    await rig.worker.queue_frame(LLMContextFrame(rig.context))
+    await rig.worker.queue_frame(TTSSpeakFrame("marker"))
+    await rig.until(lambda: "marker" in rig.out.said())
+    # The user looked elsewhere while the first turn was still being answered.
+    rig.fronts.append(NoSessionInFront("Safari"))
+    rig.now[0] = 2.5
+    rig.brain.end()
+    await rig.until(lambda: len(rig.brain.asked) == 2)
+    assert rig.brain.asked[-1] == f"what's this one doing?\n\n{told(spoken_at)}"
+    exchange, _ = rig.request()
+    rig.stream(exchange, "Writing docs.")
+    rig.brain.end()
+    await rig.until(lambda: any(isinstance(entry, BrainSpoke) and entry.text == "Writing docs." for entry in rig.recorded))
+    assert BrainSpoke((exchange,), "Writing docs.", (), False, UserAsked(spoken_at, 0.0), 2.5, None) in rig.recorded
+
+
 async def test_a_turn_hands_narrates_is_not_read_against_the_screen(rig: Rig) -> None:
     rig.fronts.append(SessionInFront("iTerm2", SessionId("s1"), "hands, docs"))
     await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api")))

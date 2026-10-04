@@ -37,7 +37,7 @@ def test_an_app_showing_no_session_terminal_is_no_session_in_front_and_says_whic
 def test_an_app_that_cannot_say_its_front_tab_and_holds_several_sessions_is_left_unread() -> None:
     match in_front(Screen("Ghostty", frozenset({TAB, CLIENT})), {CLIENT: PANE}, [DOCS, TESTS, LAWS]):
         case FrontUnread(reason=reason):
-            assert reason == "2 sessions run in Ghostty, and which of its tabs is in front cannot be asked"
+            assert reason == "2 sessions run under the terminals Ghostty shows"
         case other:
             pytest.fail(f"read as {other}")
 
@@ -88,3 +88,16 @@ def test_the_kernel_says_each_process_terminal_and_the_terminals_a_session_runs_
     assert next(_terminals(grandchild.pid, processes)) == device
     assert device not in set(_terminals(os.getpid(), processes))
     assert [found.pid for found in _under(process.pid, processes)] == [grandchild.pid]
+
+
+def test_the_process_table_holds_roots_processes_too_so_every_line_of_parents_ends_at_launchd() -> None:
+    processes = process_table()
+    # A terminal app starts each tab's shell through /usr/bin/login, which runs as root: a table of this user's
+    # processes alone breaks the line between a session and its app there.
+    assert processes[1].uid == 0
+    for process in processes.values():
+        line = process
+        while line.pid != 1:
+            line = processes[line.parent]
+    # Its own parent, the kernel, is not in the table, so a walk up ends there.
+    assert processes[1].parent not in processes

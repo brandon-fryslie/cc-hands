@@ -61,7 +61,9 @@ def in_front(screen: Screen, panes: Mapping[int, int], candidates: Collection[Ca
         case [candidate]:
             return SessionInFront(screen.app, candidate.session, candidate.name)
         case several:
-            return FrontUnread(f"{len(several)} sessions run in {screen.app}, and which of its tabs is in front cannot be asked")
+            # Two sessions on one terminal, one started from the other or suspended under it, or an app holding several
+            # that cannot say which of its tabs is in front.
+            return FrontUnread(f"{len(several)} sessions run under the terminals {screen.app} shows")
 
 
 def told(front: InFront) -> str:

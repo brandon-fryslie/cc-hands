@@ -7,9 +7,11 @@ import ctypes
 import ctypes.util
 import errno
 import os
+import struct
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 
 @dataclass(frozen=True)
@@ -27,78 +29,77 @@ class Terminal:
 
 def terminal_processes() -> list[Terminal]:
     """Every process of this user's that has a controlling terminal: interactive programs, never daemons or apps."""
-    return [process for pid in _own_pids() if (process := _terminal(pid)) is not None]
+    own = os.geteuid()
+    return [terminal for process in process_table().values() if process.uid == own and process.tty is not None and (terminal := _terminal(process)) is not None]
 
 
 @dataclass(frozen=True)
 class Process:
-    """A process of this user's: its parent, and the device number of the terminal it is controlled by, which is
-    `st_rdev` of that terminal's /dev path; None for a process with no controlling terminal, as an app or a daemon has none."""
+    """A process of any user's: its parent, its effective user, and the device number of the terminal it is controlled
+    by, which is `st_rdev` of that terminal's /dev path; None for a process with no controlling terminal, as an app or a
+    daemon has none."""
 
     pid: int
     parent: int
+    uid: int
     tty: int | None
 
 
 def process_table() -> dict[int, Process]:
-    """Every process of this user's, by pid, as it stands now."""
-    return {process.pid: process for pid in _own_pids() if (process := _process(pid)) is not None}
+    """Every process on the Mac but the kernel's, by pid, as it stands now: root's too, as the /usr/bin/login a terminal app starts each
+    tab through, so a line of parents runs unbroken from a session up to its app."""
+    mib = (ctypes.c_int * 3)(*_KERN_PROC_ALL)
+    size = ctypes.c_size_t(0)
+    if _libc.sysctl(mib, len(mib), None, ctypes.byref(size), None, 0) != 0:
+        _raise_errno("kern.proc.all")
+    # With room to spare for processes started between the two calls.
+    size.value += 256 * _KINFO_PROC_SIZE
+    table = ctypes.create_string_buffer(size.value)
+    if _libc.sysctl(mib, len(mib), table, ctypes.byref(size), None, 0) != 0:
+        _raise_errno("kern.proc.all")
+    if size.value % _KINFO_PROC_SIZE:
+        # A record of another size is a kernel whose struct is not the one laid out above; no errno says so.
+        raise OSError(f"kern.proc.all gave {size.value} bytes, not a whole number of this kernel's {_KINFO_PROC_SIZE}-byte kinfo_proc")
+    processes = (_process(flag, pid, uid, parent, tty) for flag, pid, uid, parent, tty in _KINFO_PROC.iter_unpack(table.raw[: size.value]))
+    # Not kernel_task, pid 0, which is its own parent: without it every line of parents ends, at launchd.
+    return {process.pid: process for process in processes if process.pid != 0}
 
 
-def _process(pid: int) -> Process | None:
-    """The process under pid; None if it has exited since it was listed."""
-    try:
-        bsd = _pidinfo(pid, _PROC_PIDTBSDINFO, _BSDINFO_SIZE)
-    except _Exited:
-        return None
-    controlled = ctypes.c_uint32.from_buffer(bsd, 0).value & _PROC_FLAG_CONTROLT
-    tty = ctypes.c_uint32.from_buffer(bsd, _TTY_AT).value if controlled else None
-    return Process(pid, ctypes.c_uint32.from_buffer(bsd, _PARENT_AT).value, tty)
+def _process(flag: int, pid: int, uid: int, parent: int, tty: int) -> Process:
+    return Process(pid, parent, uid, tty if flag & _P_CONTROLT else None)
 
 
-# libproc: struct proc_bsdinfo (136 bytes: flags, status, exit status, pid, then the parent's pid; the controlling
-# terminal's device, e_tdev, at 108) and struct proc_vnodepathinfo (two vnode_info_path of 1176 bytes, the cwd's first,
-# its path after a 152-byte vnode_info).
+# sysctl kern.proc.all: one struct kinfo_proc of 648 bytes per process; its extern_proc's p_flag and p_pid, then its
+# eproc's effective uid (e_ucred.cr_uid), parent's pid, and controlling terminal's device, at these offsets.
+_KERN_PROC_ALL = (1, 14, 0)  # CTL_KERN, KERN_PROC, KERN_PROC_ALL
+_KINFO_PROC = struct.Struct("=32xi4xi376xI136xi8xi72x")
+_KINFO_PROC_SIZE = _KINFO_PROC.size
+_P_CONTROLT = 0x2
+# libproc: struct proc_bsdinfo (136 bytes), asked only whether a process still exists, and struct proc_vnodepathinfo
+# (two vnode_info_path of 1176 bytes, the cwd's first, its path after a 152-byte vnode_info).
 _libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-_PROC_UID_ONLY = 4
-_PROC_PIDTBSDINFO, _BSDINFO_SIZE, _PARENT_AT, _TTY_AT = 3, 136, 16, 108
+_PROC_PIDTBSDINFO, _BSDINFO_SIZE = 3, 136
 _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE, _CWD_PATH_AT, _MAXPATHLEN = 9, 2352, 152, 1024
-_PROC_FLAG_CONTROLT = 0x80
 # kern.procargs2.<pid>: argc, the path the process was exec'd by as execve was given it, padding, its arguments, and
 # its environment, each string ending in a NUL.
 _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 _KERN_PROCARGS2 = (1, 49)  # CTL_KERN, KERN_PROCARGS2
 
 
-def _own_pids() -> list[int]:
-    # Asked once for the room needed, then with room to spare for processes started between the two calls.
-    room = _listpids(None, 0)
-    pids = (ctypes.c_int * (room // ctypes.sizeof(ctypes.c_int) + 256))()
-    filled = _listpids(pids, ctypes.sizeof(pids))
-    # A pid of 0 is an unused slot.
-    return [pid for pid in pids[: filled // ctypes.sizeof(ctypes.c_int)] if pid]
+def _raise_errno(what: str) -> NoReturn:
+    failure = ctypes.get_errno()
+    raise OSError(failure, f"{what} could not be read: {os.strerror(failure)}")
 
 
-def _listpids(into: ctypes.Array[ctypes.c_int] | None, size: int) -> int:
-    used = _libproc.proc_listpids(_PROC_UID_ONLY, os.getuid(), into, size)
-    if used <= 0:
-        failure = ctypes.get_errno()
-        raise OSError(failure, f"proc_listpids could not list this user's processes: {os.strerror(failure)}")
-    return used
-
-
-def _terminal(pid: int) -> Terminal | None:
-    """The process under pid, if it has a controlling terminal; None if it has none, or has exited since it was listed."""
+def _terminal(process: Process) -> Terminal | None:
+    """The process at a terminal, with where it runs and what it was started as; None if it has exited since it was listed."""
     try:
-        bsd = _pidinfo(pid, _PROC_PIDTBSDINFO, _BSDINFO_SIZE)
-        if not ctypes.c_uint32.from_buffer(bsd, 0).value & _PROC_FLAG_CONTROLT:
-            return None
-        cwd = Path(os.fsdecode(_string(_pidinfo(pid, _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE).raw[_CWD_PATH_AT : _CWD_PATH_AT + _MAXPATHLEN])))
-        executable, environment = _started_as(pid)
+        cwd = Path(os.fsdecode(_string(_pidinfo(process.pid, _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE).raw[_CWD_PATH_AT : _CWD_PATH_AT + _MAXPATHLEN])))
+        executable, environment = _started_as(process.pid)
     except _Exited:
         return None
     # A path exec'd relative to the directory the process was started in; a session keeps that directory.
-    return Terminal(pid, ctypes.c_uint32.from_buffer(bsd, _PARENT_AT).value, (cwd / executable).resolve(), cwd, environment)
+    return Terminal(process.pid, process.parent, (cwd / executable).resolve(), cwd, environment)
 
 
 def _started_as(pid: int) -> tuple[Path, dict[str, str]]:
