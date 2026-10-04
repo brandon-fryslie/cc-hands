@@ -118,8 +118,9 @@ async def test_focusing_none_clears_it_and_a_session_that_is_not_running_cannot_
     assert await given["focus_session"].body(session="") == {"readback": "No session is focused now."}
     assert focused(home) is None
     await given["focus_session"].body(session=HANDS)
-    assert await given["focus_session"].body(session=None) == {"readback": "No session is focused now."}
-    assert focused(home) is None
+    # A null is no session id: the call is refused, and the focus stays where it was.
+    assert await given["focus_session"].body(session=None) == {"error": "session should be a string, got None"}
+    assert focused(home) == HANDS
 
 
 async def test_a_focused_session_that_has_stopped_running_is_said_so(tmp_path: Path) -> None:

@@ -1,5 +1,7 @@
 """Each call of a tool is one wide event, through whichever adapter called it: returned, raised, or refused."""
 
+from typing import Literal, TypedDict
+
 import pytest
 
 from hands.sessions.audit import Entry
@@ -23,6 +25,24 @@ async def refusing(session: str) -> Result:
         session: Whose.
     """
     return {"error": f"no running session has the id {session!r}"}
+
+
+class Line(TypedDict):
+    text: str
+    loud: bool
+
+
+async def typed(text: str, loud: bool, times: int, tone: Literal["flat", "bright"], lines: list[Line]) -> Result:
+    """Say it, as asked.
+
+    Args:
+        text: What to say.
+        loud: Whether to say it loudly.
+        times: How many times.
+        tone: The tone to say it in.
+        lines: More to say.
+    """
+    raise AssertionError("a call whose arguments do not fit never reaches the body")
 
 
 async def broken(session: str) -> Result:
@@ -67,6 +87,40 @@ async def test_a_call_with_arguments_the_body_does_not_take_is_refused_to_the_mo
     assert result == {"error": "echo was called with the wrong arguments: missing a required argument: 'text'"}
     event = run(recorded)
     assert (event.outcome, event.error, event.facts) == ("failed", result["error"], {"tool": "echo", "called": Called({"words": "hi"}, result)})
+
+
+FITTING: dict[str, object] = {"text": "hi", "loud": False, "times": 2, "tone": "flat", "lines": [{"text": "more", "loud": True}]}
+
+
+@pytest.mark.parametrize(
+    ("given", "refusal"),
+    [
+        # The truthiness of a string is not what the model said: 'false' would have been taken as true.
+        ({"loud": "false"}, "loud should be true or false, got 'false'"),
+        ({"times": "3"}, "times should be an integer, got '3'"),
+        ({"times": True}, "times should be an integer, got True"),
+        ({"text": 3}, "text should be a string, got 3"),
+        ({"text": None}, "text should be a string, got None"),
+        ({"tone": "dull"}, "'dull' is no tone; it is one of flat, bright"),
+        ({"lines": "more"}, "lines should be a list, got 'more'"),
+        ({"lines": ["more"]}, "lines[0] should be an object, got 'more'"),
+        ({"lines": [{"text": "more"}]}, "lines[0] has no loud"),
+        ({"lines": [{"text": "more", "loud": "yes"}]}, "lines[0].loud should be true or false, got 'yes'"),
+        ({"loud": "false", "times": "3"}, "loud should be true or false, got 'false'; times should be an integer, got '3'"),
+    ],
+)
+async def test_an_argument_that_is_not_what_the_schema_says_is_refused_before_the_body_runs_and_one_failed_event(given: dict[str, object], refusal: str) -> None:
+    recorded: list[Entry] = []
+    arguments = {**FITTING, **given}
+    result = await audited(tool(typed), recorded.append).body(**arguments)
+    assert result == {"error": refusal}
+    event = run(recorded)
+    assert (event.outcome, event.error, event.facts) == ("failed", refusal, {"tool": "typed", "called": Called(arguments, result)})
+
+
+async def test_arguments_that_are_what_the_schema_says_reach_the_body() -> None:
+    with pytest.raises(AssertionError, match="never reaches the body"):
+        await tool(typed).body(**FITTING)
 
 
 async def test_a_call_that_raises_is_one_failed_event_with_what_raised_and_where_and_raises_on() -> None:
