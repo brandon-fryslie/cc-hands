@@ -3,7 +3,9 @@ hold, transcribes a hold the key sent (hands.voice.transcription), throws away o
 done with each."""
 
 import asyncio
+import io
 import math
+import wave
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
 
@@ -182,7 +184,7 @@ class Whisper(SegmentedSTTService):
         await self.start_processing_metrics()
         try:
             # Off the loop: the model runs for a third of a second a hold, and the speaker and the key go on meanwhile.
-            scored = await asyncio.to_thread(transcription.segments, audio, prompt)
+            scored = await asyncio.to_thread(transcription.segments, _samples(audio), prompt)
         finally:
             await self.stop_processing_metrics()
         said: list[str] = []
@@ -194,6 +196,16 @@ class Whisper(SegmentedSTTService):
             else:
                 dropped.append(segment)
         return HoldHeard(hold, " ".join(said).strip() or None, tuple(dropped), levels)
+
+
+def _samples(wav: bytes) -> bytes:
+    """The samples of a hold's WAV, as Pipecat wraps them at the pipeline's input rate; a WAV in any form but the one
+    Whisper hears is refused, loudly, rather than heard sped up or slowed down [LAW:parse-dont-validate]."""
+    with wave.open(io.BytesIO(wav)) as read:
+        heard = (read.getnchannels(), read.getsampwidth(), read.getframerate())
+        if heard != (1, 2, transcription.RATE):
+            raise ValueError(f"a hold came as {heard[0]} channel(s) of {8 * heard[1]}-bit audio at {heard[2]} Hz; Whisper hears mono 16-bit at {transcription.RATE} Hz")
+        return read.readframes(read.getnframes())
 
 
 def _dbfs(audio: bytes | bytearray) -> float | None:

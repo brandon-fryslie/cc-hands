@@ -24,6 +24,7 @@ from hands.daemon.smoke import FOLDER, QUIET_SECS, SESSION_GIVEN, WORDS, Caller,
 from hands.sessions import heartbeat
 from hands.sessions.audit import HoldHeard, Levels, Typing, TypingFailed, Unsaid, encoded, segment
 from hands.sessions.home import Home
+from hands.voice import transcription
 from hands.sessions.wide import Fact, Outcome, WideEvent
 
 SESSION = SessionId("5086f176-e3cf-4222-bdb9-d7993c507d33")
@@ -205,7 +206,7 @@ def test_with_hands_not_running_the_run_stops_at_up_and_its_event_says_so(tmp_pa
     [command] = events(home)
     assert (command["event"], command["outcome"], command["facts"]["command"], command["facts"]["failed_at"]) == ("hands.command", "failed", "smoke", "up")
     assert command["error"] == "exited 1"
-    assert "reached" not in command["facts"]
+    assert "reached" not in command["facts"] and "model" not in command["facts"]
     assert command["facts"]["why"] == f"hands has not run: there is no heartbeat at {home.status}; start it with `hands run`"
 
 
@@ -222,5 +223,6 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     [command] = events(home)
     facts = command["facts"]
     assert facts["word"] in WORDS and facts["folder"] == str((home.root / FOLDER).resolve())
+    assert facts["model"] == transcription.MODEL
     assert (facts["reached"], facts["failed_at"], facts["why"], facts["daemon_errors"]) == ("up", "joined", "there is no `claude` on PATH", [])
     assert isinstance(facts["up_ms"], int) and facts["up"].startswith(f"hands is up: pid {os.getpid()}") and "joined_ms" not in facts

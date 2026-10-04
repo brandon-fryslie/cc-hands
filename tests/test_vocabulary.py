@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import pytest
+from mlx_whisper.tokenizer import get_encoding
 
 from hands.core.session import Membership, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
@@ -71,6 +72,17 @@ async def test_a_rename_not_yet_staged_is_named_where_it_went(repository: Path) 
     primed = await vocabulary([], focus, ENVIRONMENT, time.monotonic())
 
     assert primed.words == ("billing", "ledger", "auth-rework")
+
+
+async def test_a_word_whisper_refuses_in_a_prompt_is_left_out(repository: Path) -> None:
+    commit(repository, "<|endoftext|>.ts", "ledger.ts")
+    focus = session(repository)
+
+    primed = await vocabulary([], focus, ENVIRONMENT, time.monotonic())
+
+    assert primed.words == ("ledger", "auth-rework")
+    # As MLX Whisper encodes an initial prompt, which raises on a special token's text.
+    get_encoding("multilingual").encode(" " + prompt(primed.words))
 
 
 async def test_only_the_newest_words_are_kept(repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:

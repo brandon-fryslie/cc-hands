@@ -455,8 +455,9 @@ dependencies = [
     { name = "ifaddr", marker = "sys_platform == 'darwin'" },
     { name = "livekit", marker = "sys_platform == 'darwin'" },
     { name = "loguru", marker = "sys_platform == 'darwin'" },
+    { name = "mlx-whisper", marker = "sys_platform == 'darwin'" },
     { name = "openwakeword", marker = "sys_platform == 'darwin'" },
-    { name = "pipecat-ai", extra = ["anthropic", "local", "mlx-whisper", "pocket-tts"], marker = "sys_platform == 'darwin'" },
+    { name = "pipecat-ai", extra = ["anthropic", "local", "pocket-tts"], marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-coreaudio", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
@@ -480,8 +481,9 @@ requires-dist = [
     { name = "ifaddr", specifier = ">=0.2" },
     { name = "livekit", specifier = ">=1.1.20,<2" },
     { name = "loguru", specifier = ">=0.7" },
+    { name = "mlx-whisper", specifier = ">=0.4.3,<0.5" },
     { name = "openwakeword", specifier = ">=0.6,<0.7" },
-    { name = "pipecat-ai", extras = ["anthropic", "local", "mlx-whisper", "pocket-tts"], specifier = ">=1.9.0,<2" },
+    { name = "pipecat-ai", extras = ["anthropic", "local", "pocket-tts"], specifier = ">=1.9.0,<2" },
     { name = "pyobjc-framework-cocoa", specifier = ">=11" },
     { name = "pyobjc-framework-coreaudio", specifier = ">=11" },
     { name = "pyobjc-framework-quartz", specifier = ">=12.2.2" },
@@ -1088,9 +1090,6 @@ anthropic = [
 ]
 local = [
     { name = "pyaudio", marker = "sys_platform == 'darwin'" },
-]
-mlx-whisper = [
-    { name = "mlx-whisper", marker = "sys_platform == 'darwin'" },
 ]
 pocket-tts = [
     { name = "pocket-tts", marker = "sys_platform == 'darwin'" },

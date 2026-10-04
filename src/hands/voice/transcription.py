@@ -7,8 +7,6 @@ and hands measured it slower: key release to transcript 613 to 724 ms through Lo
 the same six spoken turns, by upload and by its Realtime socket alike (hands-dictation-2bs.kpm, 2026-10-04).
 """
 
-import io
-import wave
 from typing import Any, cast
 
 import mlx_whisper
@@ -22,8 +20,11 @@ LANGUAGE = "en"
 # The model every hold is transcribed with, fetched from the Hugging Face hub into its cache on the first load.
 MODEL = "mlx-community/whisper-large-v3-turbo"
 
-# A second of silence at the 16 kHz Whisper hears at: what the model is loaded by.
-_SILENCE = np.zeros(16_000, dtype=np.float32)
+# The sample rate Whisper hears at; the audio it is given is mono 16-bit at this rate.
+RATE = 16_000
+
+# A second of silence: what the model is loaded by.
+_SILENCE = np.zeros(RATE, dtype=np.float32)
 
 
 def load() -> None:
@@ -38,10 +39,8 @@ def load() -> None:
     _transcribe(_SILENCE, None)
 
 
-def segments(wav: bytes, prompt: str | None) -> list[Unsaid]:
-    """The segments Whisper hears in a 16 kHz mono 16-bit WAV, primed with `prompt`. It blocks while the model runs."""
-    with wave.open(io.BytesIO(wav)) as read:
-        samples = read.readframes(read.getnframes())
+def segments(samples: bytes, prompt: str | None) -> list[Unsaid]:
+    """The segments Whisper hears in mono 16-bit `samples` at RATE, primed with `prompt`. It blocks while the model runs."""
     return [
         Unsaid(str(segment["text"]).strip(), float(segment["compression_ratio"]), float(segment["avg_logprob"]))
         for segment in _transcribe(np.frombuffer(samples, dtype=np.int16).astype(np.float32) / 32768.0, prompt)

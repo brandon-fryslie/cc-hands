@@ -50,13 +50,13 @@ def primed(*prompts: str | None) -> Callable[[], Awaitable[str | None]]:
     return prompt
 
 
-def wav(samples: bytes) -> bytes:
-    """A hold as Pipecat hands it to run_stt: 16 kHz mono 16-bit WAV."""
+def wav(samples: bytes, rate: int = 16_000) -> bytes:
+    """A hold as Pipecat hands it to run_stt: mono 16-bit WAV at the pipeline's input rate, 16 kHz unless said."""
     out = BytesIO()
     with wave.open(out, "wb") as file:
         file.setnchannels(1)
         file.setsampwidth(2)
-        file.setframerate(16_000)
+        file.setframerate(rate)
         file.writeframes(samples)
     return out.getvalue()
 
@@ -141,3 +141,14 @@ async def test_a_hold_the_model_fails_is_said_as_an_error_and_whisper_transcribe
     assert error.category is not None and not error.category.is_permanent and whisper.is_usable
     assert [frame.text for frame in after if isinstance(frame, TranscriptionFrame)] == ["Okay."]
     assert [entry.hold for entry in recorded if isinstance(entry, HoldHeard)] == [8]
+
+
+async def test_a_hold_at_a_rate_whisper_does_not_hear_is_said_as_an_error_and_never_transcribed(model: Model) -> None:
+    recorded: list[Entry] = []
+    whisper = Whisper(prompt=primed(None), record=recorded.append)
+    loaded = len(model.asked)
+
+    failed = await transcribe(whisper, 3, wav(b"\x00\x00" * 48_000, rate=48_000))
+
+    [error] = [frame for frame in failed if isinstance(frame, ErrorFrame)]
+    assert "48000 Hz" in error.error and len(model.asked) == loaded

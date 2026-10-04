@@ -15,7 +15,6 @@ backend said it and whether in its own words or a tool's readback: it is what th
 """
 
 import asyncio
-import io
 import json
 import os
 import random
@@ -88,7 +87,7 @@ FINISH_SECONDS = 180.0
 POLL_SECONDS = 0.2
 
 # The call's audio, both ways: 16-bit mono at the rate `say` is asked for and Whisper hears at, in the page's 20 ms frames.
-RATE = 16000
+RATE = transcription.RATE
 FRAME_SECS = 0.02
 FRAME_BYTES = round(RATE * FRAME_SECS) * 2
 # A frame of hands' speech is voiced above this RMS; the silence it sends between utterances is all zeros.
@@ -186,17 +185,6 @@ def as_from_a_terminal(environment: Mapping[str, str], home: Home) -> dict[str, 
     """`environment` as a terminal outside any session has it, the home's sessions report to named: no tap and nothing
     else of a session the test may have been run inside."""
     return {**{name: value for name, value in untapped(environment).items() if name not in SESSION_GIVEN}, "HANDS_HOME": str(home.root)}
-
-
-def as_wav(audio: bytes) -> bytes:
-    """16-bit mono audio at RATE, as the WAV file Whisper is given a hold in."""
-    written = io.BytesIO()
-    with wave.open(written, "wb") as file:
-        file.setnchannels(1)
-        file.setsampwidth(2)
-        file.setframerate(RATE)
-        file.writeframes(audio)
-    return written.getvalue()
 
 
 @dataclass
@@ -356,6 +344,10 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
             smoked.reached("up", heartbeat.describe(verdict, datetime.now(UTC)))
         case _:
             raise NotReached("up", f"{heartbeat.describe(verdict, datetime.now(UTC))}; start it with `hands run`")
+    # The test's own ear, no part of hands, loaded before the session joins: its failure is the test's, raised, never named
+    # as a stage, and no stage's time goes on the load.
+    annotate(model=transcription.MODEL)
+    await asyncio.to_thread(transcription.load)
     claude = shutil.which("claude", path=environment.get("PATH"))
     if claude is None:
         raise NotReached("joined", "there is no `claude` on PATH")
@@ -502,7 +494,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
 
 async def _transcribed(audio: bytes) -> str:
     """`audio`, as the Whisper hands transcribes with hears it, unprimed."""
-    heard = await asyncio.to_thread(transcription.segments, as_wav(audio), None)
+    heard = await asyncio.to_thread(transcription.segments, audio, None)
     return " ".join(segment.text for segment in heard).strip()
 
 

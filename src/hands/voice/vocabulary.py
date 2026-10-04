@@ -11,6 +11,7 @@ of the running sessions, which they say to move between them.
 """
 
 import asyncio
+import re
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -84,7 +85,7 @@ async def vocabulary(listings: Sequence[Listing[Session]], focus: Session | Unre
             repository, failed, focus_id = (), None, None
     # [LAW:one-source-of-truth] each session as it is spoken and addressed.
     sessions = tuple(identifier(listing) for listing in listings)
-    words = _unique((*repository, *sessions))[-WORDS:]
+    words = _unique([word for word in (*repository, *sessions) if not _SPECIAL.search(word)])[-WORDS:]
     while (tokens := _tokens(words)) > TOKENS:
         words = words[1:]
     return Primed(focus_id, words, tokens, failed, time.monotonic() - began)
@@ -104,6 +105,8 @@ def _tokens(words: Sequence[str]) -> int:
 # The encoding Whisper itself primes with, read as the module is imported, with Pipecat while hands starts, so no hold
 # waits the ~50 ms reading it takes.
 _WHISPER_BPE = get_encoding("multilingual")
+# A special token's text, which MLX Whisper refuses in a prompt: a file named <|endoftext|> would fail every hold.
+_SPECIAL = re.compile("|".join(map(re.escape, _WHISPER_BPE.special_tokens_set)))
 
 
 async def _repository(cwd: Path, environment: Mapping[str, str], deadline: float) -> tuple[tuple[str, ...], str | None]:
