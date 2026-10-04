@@ -5,6 +5,9 @@ The call is where the phone is. While one is up hands is at the phone: a call ar
 call ending moves it back to the desk, in the same step that ends the call, so nothing is ever played to a phone that
 has gone. A newer call replaces the one before it: the page last opened is the one in the user's hand.
 
+[LAW:nothing-unseen] a call is one unit of work, `phone.call`, from its page's offer to its end: refused at the page,
+let go before it connected, or left after hands was at it, and why; its duration is how long it lasted.
+
 The page sends its microphone as plain 16-bit audio over the call's data channel, in order with its button, and hands
 plays to it over an audio track. Earbuds keep hands' voice out of the phone's microphone, and the page asks the browser
 for its echo cancellation as well; so the phone's audio is gated by its button alone, with none of the desk
@@ -15,7 +18,6 @@ import asyncio
 import fractions
 import time
 from collections import deque
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -25,9 +27,10 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 from loguru import logger
 
-from hands.sessions.audit import PhoneArrived, PhoneGone, PhoneLeft, PhoneUnreached, Record
-from hands.voice.hold import Move
+from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
+from hands.sessions.wide import Begun, ended, since
+from hands.voice.hold import Move
 from hands.voice.ptt import KeyedAudio, PushToTalk
 
 # The length of each frame sent to the phone: Opus's own 20 ms.
@@ -36,6 +39,50 @@ FRAME_SECS = 0.02
 # for as long as it is open, so a channel this quiet is a page closed, a phone put to sleep, or a network gone: measured
 # 2026-10-03, a browser closed outright leaves aiortc's connection "connected" for good.
 QUIET_SECS = 3.0
+
+
+# Why a call ended: a newer call took its place, the page hung up, the connection failed, the page stopped sending
+# (closed outright, or the phone asleep), or hands stopped.
+PhoneGone = Literal["replaced", "hung up", "failed", "went quiet", "stopped"]
+
+
+@dataclass(frozen=True)
+class CallRefused:
+    """The page's offer was not taken: it came without the phone's key, or was no offer."""
+
+    why: str
+
+
+@dataclass(frozen=True)
+class CallUnreached:
+    """The call was answered and let go before it connected: hands never moved to it."""
+
+    reason: PhoneGone
+
+
+@dataclass(frozen=True)
+class CallLeft:
+    """The call was up, hands at the phone from `arrived_ms` after its offer, and it ended."""
+
+    reason: PhoneGone
+    arrived_ms: float
+
+
+# How a call ended; or what raised as hands answered it.
+CallEnd = CallRefused | CallUnreached | CallLeft | BaseException
+
+
+def call_ended(record: Record, began: Begun, remote: str, end: CallEnd) -> None:
+    """[LAW:single-enforcer] the one place a call's event is written, as it ends, however it ends: failed where it was
+    refused, where its connection failed, or where answering it raised."""
+    match end:
+        case BaseException():
+            ended("phone.call", record, began, end, remote=remote)
+        case CallRefused(why=why):
+            ended("phone.call", record, began, None, why, remote=remote, ended=end)
+        case CallUnreached(reason=reason) | CallLeft(reason=reason):
+            failure = "the call's connection failed" if reason == "failed" else None
+            ended("phone.call", record, began, None, failure, remote=remote, ended=end)
 
 
 class Outbound(MediaStreamTrack):
@@ -133,10 +180,12 @@ class _Call:
     resampler: AudioResampler
     rate: int
     remote: str
-    started: float
+    began: Begun
     # Set by every message the page sends; the watch hangs up a call that goes QUIET_SECS without one.
     heard: asyncio.Event
+    # Set as it arrives: its watch, and how long after its offer it came.
     watch: asyncio.Task[None] | None = None
+    arrived_ms: float = 0.0
 
 
 class Phone:
@@ -153,12 +202,11 @@ class Phone:
     already gone moves nothing.
     """
 
-    def __init__(self, key: PushToTalk, heard_rate: int, played_rate: int, record: Record, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, key: PushToTalk, heard_rate: int, played_rate: int, record: Record) -> None:
         self._key = key
         self._heard_rate = heard_rate
         self._played_rate = played_rate
         self._record = record
-        self._clock = clock
         # The call hands is at, and the newest offer answered and not yet up.
         self._call: _Call | None = None
         self._offered: _Call | None = None
@@ -167,14 +215,15 @@ class Phone:
         # The moves the page's button has made, as the gate took them, for what follows a move: its tone and its words.
         self.moves: asyncio.Queue[Move] = asyncio.Queue()
 
-    async def answer(self, offer: Offer, remote: str) -> RTCSessionDescription:
-        """Answer the call a page offers, with every candidate hands has; it is taken once it connects."""
+    async def answer(self, offer: Offer, remote: str, began: Begun) -> RTCSessionDescription:
+        """Answer the call a page offers, `began` as it was offered, with every candidate hands has; it is taken once it
+        connects."""
         # [LAW:one-source-of-truth] no ICE server: the phone reaches hands at an address it already has, on the LAN or
         # the tailnet, so hands' own addresses are every candidate there is.
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         outbound = Outbound(self._played_rate)
         resampler = AudioResampler(format="s16", layout="mono", rate=self._heard_rate)
-        call = _Call(peer, outbound, resampler, offer.rate, remote, self._clock(), asyncio.Event())
+        call = _Call(peer, outbound, resampler, offer.rate, remote, began, asyncio.Event())
         peer.addTrack(outbound)
 
         @peer.on("datachannel")
@@ -212,8 +261,9 @@ class Phone:
         try:
             await peer.setRemoteDescription(RTCSessionDescription(offer.sdp, offer.type))
             await peer.setLocalDescription(await peer.createAnswer())
-        except BaseException:
-            # Never offered, so nothing else holds the peer to close it.
+        except BaseException as error:
+            # Never offered, so nothing else ends its call or holds the peer to close it.
+            call_ended(self._record, began, remote, error)
             await peer.close()
             raise
         older, self._offered = self._offered, call
@@ -225,9 +275,8 @@ class Phone:
         # await: a speaker reading the gate between them never finds the phone without a call.
         self._offered = None
         gone = self._leave("replaced")
-        self._call = call
+        self._call, call.arrived_ms = call, since(call.began.began)
         self._key.go("phone")
-        self._record(PhoneArrived(remote=call.remote))
         # Watched from the channel's opening: the page sends nothing before it.
         call.watch = asyncio.create_task(self._watch(call), name="the phone's call watch")
         match gone:
@@ -242,7 +291,7 @@ class Phone:
             case None:
                 pass
             case _Call():
-                self._record(PhoneUnreached(remote=offered.remote, reason=reason, seconds=round(self._clock() - offered.started, 1)))
+                call_ended(self._record, offered.began, offered.remote, CallUnreached(reason))
                 await offered.peer.close()
 
     async def _watch(self, call: _Call) -> None:
@@ -285,7 +334,7 @@ class Phone:
                 call.outbound.stop()
                 if call.watch is not None and call.watch is not asyncio.current_task():
                     call.watch.cancel()
-                self._record(PhoneLeft(remote=call.remote, reason=reason, seconds=round(self._clock() - call.started, 1)))
+                call_ended(self._record, call.began, call.remote, CallLeft(reason, call.arrived_ms))
                 return call
 
     async def hang_up(self, reason: PhoneGone) -> None:
