@@ -492,8 +492,8 @@ async def api_in_front() -> InFront:
 
 @dataclass
 class Served:
-    """The rig asking a served model, each hold's words noted on their way: every request the model was made, and each
-    note's event."""
+    """The rig asking a served model, the user's words noted on their way: every request the model was made, and each
+    read of the screen's event."""
 
     rig: Rig
     requests: list[dict[str, object]]
@@ -540,8 +540,8 @@ async def test_an_api_models_request_carries_hands_notes_beside_the_users_words_
     assert user_texts(requests[0]) == [note, "what time is it"]
     noted_once, words, told = user_texts(requests[1])
     assert (noted_once, words) == (note, "what time is it") and told.startswith("[hands] The Claude Code session api is waiting for permission")
-    # [LAW:nothing-unseen] the one hold noted is one event: what was read, and where the user was.
-    [noted] = events(asked.noted, "voice.noted")
+    # [LAW:nothing-unseen] the one hold let go is one event: what was read, and where the user was.
+    [noted] = events(asked.noted, "front.read")
     assert noted.outcome == "ok" and noted.facts == {"front": SessionInFront("iTerm2", API, "api"), "modality": "audio-only"}
 
 
@@ -558,48 +558,33 @@ async def test_a_turn_whose_screen_could_not_be_read_is_asked_with_where_the_use
         await asked.rig.texts.put("what time is it")
         await asked.rig.until(lambda: len(asked.requests) == 1)
     assert user_texts(asked.requests[0]) == [AUDIO_ONLY, "what time is it"]
-    [noted] = events(asked.noted, "voice.noted")
+    [noted] = events(asked.noted, "front.read")
     assert noted.outcome == "ok" and noted.facts == {"front": unread, "modality": "audio-only"}
 
 
-async def test_a_key_pressed_while_the_screen_is_read_joins_the_turn_which_is_asked_once_with_each_holds_note(
+async def never_read() -> InFront:
+    await asyncio.Event().wait()
+    raise AssertionError("a read that never ends ended")
+
+
+async def test_words_that_arrive_before_the_screen_is_read_are_asked_at_once_with_where_the_user_is_alone(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi
 ) -> None:
-    reading, read = asyncio.Event(), asyncio.Event()
-
-    async def front() -> InFront:
-        reading.set()
-        await read.wait()
-        return await api_in_front()
-
-    async with served(monkeypatch, tmp_path, api_server, "anthropic", front) as asked:
-        rig = asked.rig
-        await rig.hold(["down", "up"])
-        await rig.texts.put("what time is it")
-        await reading.wait()
-        # The first hold's screen is still being read: the turn is open, so this hold is part of it.
-        await rig.hold(["down", "up"])
-        await rig.until(lambda: len(rig.out.holds) == 2)
-        await rig.texts.put("in Lisbon")
-        read.set()
-        await rig.until(lambda: len(asked.requests) == 1)
-        assert (rig.out.started, rig.out.stopped) == (1, 1)
-    note = f"{IN_FRONT}\n\n{AUDIO_ONLY}"
-    assert [user_texts(request) for request in asked.requests] == [[note, note, "what time is it in Lisbon"]]
-    assert [noted.outcome for noted in events(asked.noted, "voice.noted")] == ["ok", "ok"]
+    async with served(monkeypatch, tmp_path, api_server, "anthropic", never_read) as asked:
+        await asked.rig.hold(["down", "up"])
+        await asked.rig.texts.put("what time is it")
+        await asked.rig.until(lambda: len(asked.requests) == 1)
+        await asked.rig.until(lambda: len(events(asked.noted, "front.read")) == 1)
+    assert user_texts(asked.requests[0]) == [AUDIO_ONLY, "what time is it"]
+    # The read the words did not wait for is seen as ended by them, with where the user was.
+    [read] = events(asked.noted, "front.read")
+    assert read.outcome == "cancelled" and read.facts == {"modality": "audio-only"}
 
 
-async def test_what_hands_held_through_a_turn_whose_screen_was_slow_to_read_follows_the_users_words_and_their_note(
+async def test_what_hands_held_through_a_noted_turn_follows_the_users_words_and_their_note(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi
 ) -> None:
-    reading, read = asyncio.Event(), asyncio.Event()
-
-    async def front() -> InFront:
-        reading.set()
-        await read.wait()
-        return await api_in_front()
-
-    async with served(monkeypatch, tmp_path, api_server, "anthropic", front) as asked:
+    async with served(monkeypatch, tmp_path, api_server, "anthropic", api_in_front) as asked:
         rig, requests = asked.rig, asked.requests
         rig.live[API] = waiting_on(API, "r1")
         await rig.hold(["down", "down"])
@@ -608,10 +593,6 @@ async def test_what_hands_held_through_a_turn_whose_screen_was_slow_to_read_foll
         await rig.until(lambda: "marker" in rig.out.order)
         await rig.hold(["up"])
         await rig.texts.put("what time is it")
-        await reading.wait()
-        # Nothing is asked, and nothing hands held is given back, while the screen is read.
-        assert requests == [] and rig.out.sent == []
-        read.set()
         await rig.until(lambda: len(requests) == 2)
     note = f"{IN_FRONT}\n\n{AUDIO_ONLY}"
     assert user_texts(requests[0]) == [note, "what time is it"]

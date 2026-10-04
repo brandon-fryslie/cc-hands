@@ -1100,13 +1100,17 @@ next move. It is a hint the brain chooses by, never a limit on what hands does.
 
 **The same notes on an API backend.** Built: `core/beside.py` composes both notes for
 either model. Under an API model `voice/beside.py`'s `Noting` stands between the floor
-and the user aggregator: as a hold's words arrive from Whisper it reads the same two
-readers and puts the notes into the context as a message, then passes the words on. The
-hold is resolved behind its words, so the turn stays open through the read: the note is
-in the context ahead of the user's words, a key pressed meanwhile joins the turn, and
-what hands tells of the sessions, which the floor holds until the turn ends, follows both
-and is followed by no note. Each hold noted is one `voice.noted` wide event: its `front`
-and `modality` facts are what was read, and its duration is the read.
+and the user aggregator. As the key is let go on a hold it reads the same two readers,
+the screen as a task beside the pipeline while Whisper transcribes; as the hold's words
+arrive it passes them on and puts the notes into the context as a message behind them.
+No frame waits on the read: words that arrive before it is done are noted with where the
+user is alone. The hold is resolved behind its words, so the note is in the context ahead
+of the user's words, which the turn writes as it ends, and what hands tells of the
+sessions, which the floor holds until then, follows both and is followed by no note.
+Holds let go before the first one's words arrive are noted once, as the last was let go.
+Each hold let go is one `front.read` wide event: its `front` and `modality` facts are
+what was read, its duration is the read, and its outcome is `cancelled` where the words
+arrived first or a later hold's read took its place.
 
 The rest of this section is planned: step summaries built as steps arrive, and streaming.
 
