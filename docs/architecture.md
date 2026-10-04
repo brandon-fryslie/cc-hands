@@ -1636,7 +1636,13 @@ output buffer ahead. So the canceller holds what was written, and each 10 ms of
 microphone takes the next 10 ms of it, or silence when there is none. Each microphone
 stream let go of is one `microphone.let_go` wide event, carrying how many frames its
 canceller heard, how many of those had nothing playing, and how much of the speaker's
-sound it dropped unheard. Measured on
+sound it dropped unheard. Every frame the microphone pushes carries the same sound as it
+was captured, before the canceller (`KeyedAudio.captured`), and Whisper keeps it for the
+frames a hold is made of, so each hold's `HoldHeard` line says its mean power in dBFS
+on both sides (`levels.captured_dbfs`, `levels.heard_dbfs`): a transcript made of the
+reply's echo left over reads loud captured and quiet heard, one of the room with nobody
+speaking reads quiet on both. A level is null for digital silence, and at the phone,
+heard through no canceller, the two are equal. Measured on
 2026-10-03 through this transport: about 27 dB of echo removed. A press mid-reply with
 nobody speaking left no word of the reply in 8 holds of 8, where the raw microphone made
 one in every hold. "Stop. What time is it?", said from 50 ms after the press, kept

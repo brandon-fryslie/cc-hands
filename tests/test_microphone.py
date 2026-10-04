@@ -23,7 +23,7 @@ from hands.voice.cues import OPENED, sound
 from hands.voice.coreaudio import DefaultDevices
 from hands.voice.microphone import Devices, Input, KeyedAudioTransport, NoInput, Output, PortAudio, default_input
 from hands.voice.phone import Phone
-from hands.voice.ptt import PushToTalk
+from hands.voice.ptt import KeyedAudio, PushToTalk
 
 LOUD = b"\x7f\x7f" * 320
 QUIET = bytes(len(LOUD))
@@ -65,6 +65,8 @@ class Rig:
         self.key = PushToTalk(lambda _: None)
         self.phone = Phone(self.key, heard_rate=16000, played_rate=16000, record=lambda _: None)
         self.pushed: list[bytes] = []
+        # Each pushed frame's sound as the microphone captured it, before the canceller.
+        self.captured: list[bytes] = []
         self.room = Room()
         params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
         self.transport = KeyedAudioTransport(params, self.key, self.phone, lambda _: None, clock=lambda: self.now, echo=lambda: self.room)
@@ -75,7 +77,9 @@ class Rig:
         self.speaker.attach(cast(PortAudio, SimpleNamespace()), Output(self.stream, "MacBook Pro Speakers", self.room))  # as setup attaches the stream it opened
 
         async def push_audio_frame(frame: InputAudioRawFrame) -> None:
+            assert isinstance(frame, KeyedAudio)
             self.pushed.append(frame.audio)
+            self.captured.append(frame.captured)
 
         self.microphone.push_audio_frame = push_audio_frame
         self.microphone.get_event_loop = asyncio.get_running_loop
@@ -116,6 +120,8 @@ async def test_the_microphone_is_heard_through_the_canceller_and_only_while_the_
     devices.key.move("start", "held key")
     await devices.capture(at=1.02)
     assert devices.pushed == [QUIET, CLEANED]
+    # Each frame carries what the microphone captured too, muted by the same key: a hold's level before the canceller.
+    assert devices.captured == [QUIET, LOUD]
     assert devices.room.hears == [LOUD, LOUD]  # key up too: the canceller learns the room from every buffer
 
 
