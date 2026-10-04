@@ -105,7 +105,7 @@ from hands.voice.tools import Tool, audited, intermediary_tools
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.process import Brain, Launch, NotLoggedIn, Station, Unstartable, account_kept_out, logged_in, start as start_brain, workdir
-from hands.brain.context import EVERY, LINE_SECONDS, Keeper, Kept, Store
+from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.core.session import SessionId
 
@@ -275,7 +275,7 @@ async def mind(
                     # its own: nothing but the user's turns and their stops is ever typed into the brain.
                     asides = Asides(station, record)
                     stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans)
-                    keeper = Keeper(brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_SECONDS), store, EVERY, record)
+                    keeper = Keeper(brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
                     with wire.joined(Kept(stage, keeper, brain, asides)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                         # A summary is as long as its Claude Code makes it: only its time is the summary's own.

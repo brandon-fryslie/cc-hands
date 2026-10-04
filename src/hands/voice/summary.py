@@ -8,7 +8,7 @@ from anthropic.types import TextBlock, ThinkingConfigDisabledParam
 from openai import AsyncOpenAI, OpenAIError
 from pipecat.services.anthropic.llm import _SONNET_THINKS_BY_DEFAULT_FROM, _sonnet_generation  # pyright: ignore[reportPrivateUsage]
 
-from hands.brain.asides import AsideFailed
+from hands.brain.asides import AsideFailed, Deadline, Within
 from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
 
 # A rendered turn in, the spoken summary out.
@@ -52,13 +52,13 @@ def summariser(backend: AnthropicBackend | OpenAICompatibleBackend, instruction:
             return from_anthropic
 
 
-def aside(ask: Callable[[str, float], Awaitable[str]], instruction: str, timeout: float) -> Summariser:
+def aside(ask: Callable[[str, Within], Awaitable[str]], instruction: str, timeout: float) -> Summariser:
     """The summariser under the brain: the turn asked as a side question, with what to make of it, of a Claude Code that
     is asked nothing else, within `timeout`, as the API's are, whatever it waited on."""
 
     async def from_an_aside(turn: str) -> str:
         try:
-            return _spoken([await ask(f"{instruction}\n\nSummarize this:\n\n{turn}", timeout)])
+            return _spoken([await ask(f"{instruction}\n\nSummarize this:\n\n{turn}", Deadline(timeout))])
         except AsideFailed as error:
             raise SummaryFailed(f"the side question had no answer: {error}") from error
 

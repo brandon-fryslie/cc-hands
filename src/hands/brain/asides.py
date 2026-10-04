@@ -18,6 +18,7 @@ opening prompt it went out 0.4s after the start, 6 of 6). Its answer is read fro
 """
 
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass
 from enum import StrEnum
@@ -61,7 +62,7 @@ class Unanswered(StrEnum):
 
     UNSTARTED = "unstarted"  # no Claude Code could be started to ask it
     EXITED = "exited"  # its Claude Code ended before it answered
-    TIMED_OUT = "timed_out"  # no answer by its asker's deadline, waiting its turn, starting, or answering
+    TIMED_OUT = "timed_out"  # no answer within what its asker gave it
     WORDLESS = "wordless"  # the model's reply did not end in words
 
 
@@ -73,14 +74,30 @@ class AsideFailed(Exception):
         self.why = why
 
 
+@dataclass(frozen=True)
+class Deadline:
+    """An asker waiting on the answer: `seconds` from when it is asked, its turn behind the questions before it included."""
+
+    seconds: float
+
+
+@dataclass(frozen=True)
+class TimeLimit:
+    """An asker in no hurry for its turn: `seconds` from when it has it, however long it waited for it."""
+
+    seconds: float
+
+
+# How long a side question's asker waits on its answer, its turn, its Claude Code's start, and its reply all inside it.
+Within = Deadline | TimeLimit
+
+
 @dataclass
 class _Asked:
-    """The question being asked now: the session its Claude Code was started under, when its asker stops waiting, by the
-    event loop's clock, and its answer, or why it has none."""
+    """The question being asked now: the session its Claude Code was started under, and its answer, or why it has none."""
 
     # [LAW:one-source-of-truth] chosen by hands, so the request on the wire that asks the question is known as its own.
     session: SessionId
-    deadline: float
     answer: "asyncio.Future[str | AsideFailed]"
 
 
@@ -94,66 +111,68 @@ class Asides:
         self._one = asyncio.Lock()
         self._asked: _Asked | None = None
 
-    async def ask(self, kind: AsideKind, question: str, within: float) -> str:
+    async def ask(self, kind: AsideKind, question: str, within: Within) -> str:
         """The answer to `question`, from a Claude Code that is asked nothing else; raises AsideFailed when it has none,
-        TIMED_OUT once `within` seconds have passed since it was asked, waiting its turn or answering."""
-        loop = asyncio.get_running_loop()
-        # [LAW:one-source-of-truth] the asker's deadline is the only one: its turn, its Claude Code's start, its answer,
-        # and its Claude Code's end are each waited on to it, and no longer.
-        asked = _Asked(SessionId(str(uuid4())), loop.time() + within, loop.create_future())
+        TIMED_OUT once its asker's time is up."""
+        asked = _Asked(SessionId(str(uuid4())), asyncio.get_running_loop().create_future())
         # [LAW:nothing-unseen] one event for each question, however it ends: answered, failed, or left by its asker, in its
         # turn or still waiting for it. Asked inside another unit of work, it is that one's part.
         with unit("brain.aside", self._record):
             annotate(kind=kind, question=question, aside_session=asked.session)
             try:
-                reply = await self._in_turn(asked, question, time.monotonic())
+                reply = await self._in_turn(asked, question, within)
             except AsideFailed as failure:
                 annotate(unanswered=failure.why)
                 raise
             annotate(reply=reply)
             return reply
 
-    async def _in_turn(self, asked: _Asked, question: str, queued: float) -> str:
-        try:
-            async with asyncio.timeout_at(asked.deadline):
-                await self._one.acquire()
-        except TimeoutError as error:
-            raise AsideFailed(Unanswered.TIMED_OUT, "no turn by its deadline: the questions before it were still being asked") from error
-        try:
-            # queued_ms only once it has its turn: the rest of its duration_ms is its Claude Code answering.
-            annotate(queued_ms=since(queued))
-            self._asked = asked
-            return await self._answer(asked, question)
-        finally:
-            self._asked = None
-            self._one.release()
+    async def _in_turn(self, asked: _Asked, question: str, within: Within) -> str:
+        queued = time.monotonic()
+        # Unwound outside its asker's clock, in reverse: its Claude Code ended, as gracefully as it will end, and only then
+        # the next question's turn; each registered as what it undoes is taken.
+        async with contextlib.AsyncExitStack() as taken:
+            try:
+                # [LAW:single-enforcer] the one clock its asker's time runs on, from asking or from its turn.
+                async with asyncio.timeout(within.seconds if isinstance(within, Deadline) else None) as clock:
+                    await self._one.acquire()
+                    taken.callback(self._one.release)
+                    # queued_ms only once it has its turn: the rest of its duration_ms is its Claude Code answering.
+                    annotate(queued_ms=since(queued))
+                    match within:
+                        case TimeLimit(seconds=seconds):
+                            clock.reschedule(asyncio.get_running_loop().time() + seconds)
+                        case Deadline():
+                            pass
+                    self._asked = asked
+                    taken.callback(self._answered_or_left)
+                    claude = await self._started(asked, question)
+                    taken.push_async_callback(claude.stop)
+                    return await self._answered(claude, asked)
+            except TimeoutError as error:
+                raise AsideFailed(Unanswered.TIMED_OUT, f"no answer within {within}") from error
 
-    async def _answer(self, asked: _Asked, question: str) -> str:
-        loop = asyncio.get_running_loop()
+    def _answered_or_left(self) -> None:
+        self._asked = None
+
+    async def _started(self, asked: _Asked, question: str) -> ClaudeCode:
         try:
             # A Claude Code cut short as it starts is killed by spawn itself.
-            async with asyncio.timeout_at(asked.deadline):
-                claude = await spawn(self._station, aside_command(brain_claude(self._station.inherited), self._station.model, asked.session, question))
-        except TimeoutError as error:
-            # Ahead of OSError, which it is one of.
-            raise AsideFailed(Unanswered.TIMED_OUT, "no answer by its deadline: its Claude Code was still starting") from error
+            return await spawn(self._station, aside_command(brain_claude(self._station.inherited), self._station.model, asked.session, question))
         except (Unstartable, OSError) as error:
             # No claude to run, or a question longer than a command line can be; a claude that cannot be run exits, and says why.
             raise AsideFailed(Unanswered.UNSTARTED, f"no Claude Code to ask: {error}") from error
-        try:
-            return await self._answered(claude, asked)
-        finally:
-            # [LAW:no-silent-failure] answered, failed, or given up on, its Claude Code is ended: none is left running. What
-            # is left of its asker's time is all it has to end in, so one past its deadline is killed at once.
-            await claude.stop(max(0.0, asked.deadline - loop.time()))
 
     async def _answered(self, claude: ClaudeCode, asked: _Asked) -> str:
-        await asyncio.wait({asked.answer, claude.exit}, timeout=asked.deadline - asyncio.get_running_loop().time(), return_when=asyncio.FIRST_COMPLETED)
-        # What its Claude Code showed says why there is no answer: a question it is still answering, or a screen over its input.
-        if not asked.answer.done() and claude.exit.done():
-            raise AsideFailed(Unanswered.EXITED, f"its Claude Code exited ({claude.exit.result()}) before it answered; it showed:\n{claude.shown()}")
+        try:
+            await asyncio.wait({asked.answer, claude.exit}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            # [LAW:nothing-unseen] what it showed as its asker stopped waiting, its time up or hands stopping: a question it
+            # was still answering, or a screen over its input.
+            annotate(shown=claude.shown())
+            raise
         if not asked.answer.done():
-            raise AsideFailed(Unanswered.TIMED_OUT, f"no answer by its deadline; its Claude Code showed:\n{claude.shown()}")
+            raise AsideFailed(Unanswered.EXITED, f"its Claude Code exited ({claude.exit.result()}) before it answered; it showed:\n{claude.shown()}")
         match asked.answer.result():
             case AsideFailed() as failure:
                 raise failure

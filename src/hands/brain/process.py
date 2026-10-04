@@ -337,12 +337,11 @@ class ClaudeCode:
         """The last lines it showed on its terminal."""
         return self._terminal.last()
 
-    async def stop(self, grace: float = STOP_SECONDS) -> None:
-        """Ended: told to end, and killed once `grace` seconds pass without it ending, at once for none."""
+    async def stop(self) -> None:
         if self._process.returncode is None:
             self._process.terminate()
             try:
-                await asyncio.wait_for(self._process.wait(), grace)
+                await asyncio.wait_for(self._process.wait(), STOP_SECONDS)
             except TimeoutError:
                 self._kill()
             except asyncio.CancelledError:

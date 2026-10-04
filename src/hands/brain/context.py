@@ -14,7 +14,7 @@ from typing import Protocol
 
 from loguru import logger
 
-from hands.brain.asides import AsideFailed
+from hands.brain.asides import AsideFailed, TimeLimit
 from hands.core.context import Result, aged, key, line, question, results
 from hands.core.sentences import Digest
 from hands.core.session import SessionId
@@ -42,8 +42,9 @@ from hands.sessions.proxy import Listener
 
 # Turns a long result goes whole before it goes as a line, and how many turns' results go at once.
 EVERY = 5
-# How long the sentence an old result goes as is waited on, from when it is asked: one reply, with thinking.
-LINE_SECONDS = 120.0
+# How long the sentence an old result goes as is waited on, from its turn, however long it waited for it: one reply,
+# with thinking. Nothing waits on a line but the batch it is for.
+LINE_TIME = TimeLimit(120.0)
 
 # What the brain's compaction is asked for instead of Claude Code's summary of a coding session. The first paragraph
 # keeps the form Claude Code reads the summary back in (services/compact/prompt.ts): text only, an <analysis> block,
