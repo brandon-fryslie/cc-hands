@@ -98,9 +98,8 @@ def moments(entries: Iterable[Mapping[str, object]]) -> list[Moment]:
         match entry:
             # A session goes by the title hands gave it, the one it was found with, or the user's own /rename.
             case (
-                {"type": "NameGiven", "session": str(session), "name": str(name)}
+                {"type": "WideEvent", "event": "hook", "facts": {"session": str(session), "name": {"type": "NameGiven", "name": str(name)} | {"type": "NameWithheld", "held": str(name)}}}
                 | {"type": "Named", "session": str(session), "before": str(name)}
-                | {"type": "NameWithheld", "session": str(session), "held": str(name)}
             ):
                 names[session] = name
             # Every event that carries a session's membership says where it works.

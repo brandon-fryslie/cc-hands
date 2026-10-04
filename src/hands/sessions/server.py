@@ -6,17 +6,16 @@ from pathlib import Path
 from uuid import uuid4
 
 from aiohttp import web
-from loguru import logger
-
 from hands.core.events import Attached, PermissionRequested, Prompted, Stopped
 from hands.core.session import Membership, RequestId
 from hands.sessions.home import Home
-from hands.sessions.audit import DisplayListening, NameGiven, NameWithheld, Record
+from hands.sessions.audit import DisplayListening, Record
 from hands.sessions.hooks import hook_output, name_output, parse_display, parse_hook
-from hands.sessions.names import Due, Finished, Names
+from hands.sessions.names import Due, Finished, NameGiven, NameWithheld, Names
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.transcript import session_name
+from hands.sessions.wide import annotate, fail, unit
 
 
 async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Record) -> web.AppRunner:
@@ -26,13 +25,19 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
     """
 
     async def hook(request: web.Request) -> web.Response:
-        body = await request.read()
+        # [LAW:nothing-unseen] one event for each hook posted, held open as long as the hook holds its session: the
+        # event's duration is how long Claude Code waited on hands, and its facts say which branch it was answered by.
+        with unit("hook", record):
+            return await answer(await request.read())
+
+    async def answer(body: bytes) -> web.Response:
         try:
             said = parse_hook(body, home=home, at=sessions.now(), heard=sessions.stamp(), request=RequestId(uuid4().hex))
         except Rejected as error:
             # The shim prints this reply, so the session that sent the hook shows why.
-            logger.error(f"rejected hook: {error}")
+            fail(f"rejected hook: {error}")
             return web.Response(status=400, text=str(error))
+        annotate(hook=said.name, session=said.session)
         match said.joining:
             case Attached() as joining:
                 await sessions.apply(joining)
@@ -41,10 +46,12 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
         match said.happened:
             case PermissionRequested() as asked:
                 # The one hook answered: the response body is the answer Claude Code reads.
-                output = hook_output(await sessions.ask(asked))
+                reply = await sessions.ask(asked)
+                annotate(reply=reply)
+                output = hook_output(reply)
                 return web.Response(status=204) if output is None else web.json_response(output)
             case Stopped() as stopped:
-                await sessions.stop(stopped)
+                annotate(stop=await sessions.stop(stopped))
                 match (stopped.closing, sessions.membership(stopped.session)):
                     case (str() as closing, Membership() as membership):
                         names.finished(Finished(membership, closing))
@@ -59,21 +66,22 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
                 # the soonest one after a name is decided: the name waits here for it.
                 match (names.due(prompted.session), sessions.membership(prompted.session)):
                     case (None, _):
+                        annotate(name=None)
                         return web.Response(status=204)
                     case (Due() as due, Membership(transcript=transcript)):
                         try:
                             held = await asyncio.to_thread(session_name, transcript)
                         except (Rejected, OSError) as error:
                             # [LAW:no-silent-failure] a title hands cannot read may be one the user set: the name is
-                            # not given over it, and the log says why.
-                            logger.error(f"cannot read the name of session {prompted.session} from {transcript}, so {due.name!r} is not given: {error}")
-                            record(NameWithheld(prompted.session, due.name, due.against, None, str(error)))
+                            # not given over it, and the event says why.
+                            annotate(name=NameWithheld(due.name, due.against, None))
+                            fail(f"cannot read the name of session {prompted.session} from {transcript}, so {due.name!r} is not given: {error}")
                             return web.Response(status=204)
                         if held != due.against:
                             # The latest name set wins: one set since this was decided is newer than the decision.
-                            record(NameWithheld(prompted.session, due.name, due.against, held, None))
+                            annotate(name=NameWithheld(due.name, due.against, held))
                             return web.Response(status=204)
-                        record(NameGiven(prompted.session, due.name))
+                        annotate(name=NameGiven(due.name))
                         return web.json_response(name_output(due.name))
                     case (Due(), None):
                         # Unreachable while a name is only decided for a session whose Stop found it joined.
@@ -107,14 +115,17 @@ async def serve_display(sessions: Sessions, host: str, port: int, path: str, rec
     """
 
     async def displayed(request: web.Request) -> web.Response:
-        try:
-            said = parse_display(await request.read(), at=sessions.now())
-        except Rejected as error:
-            # Claude Code logs a hook's failure in its debug log; the daemon's log says what was refused, and why.
-            logger.error(f"rejected display: {error}")
-            return web.Response(status=400, text=str(error))
-        await sessions.apply(said)
-        return web.Response(status=204)
+        # One event for each post, as each hook on the socket is: this route takes MessageDisplay alone.
+        with unit("hook", record):
+            try:
+                said = parse_display(await request.read(), at=sessions.now())
+            except Rejected as error:
+                # Claude Code logs a hook's failure in its debug log; the event says what was refused, and why.
+                fail(f"rejected display: {error}")
+                return web.Response(status=400, text=str(error))
+            annotate(hook="MessageDisplay", session=said.session)
+            await sessions.apply(said)
+            return web.Response(status=204)
 
     app = web.Application()
     app.router.add_post(path, displayed)

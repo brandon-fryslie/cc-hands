@@ -13,6 +13,7 @@ from hands.sessions.hooks import parse_display
 from hands.sessions.audit import DisplayListening, Entry
 from hands.sessions.payload import Rejected
 from hands.sessions.server import serve_display
+from hands.sessions.wide import WideEvent
 
 SID = SessionId("9a07bdf1-5512-402c-a1ea-4b3d10f6a73d")
 
@@ -74,8 +75,11 @@ async def test_the_route_applies_what_was_displayed_and_refuses_anything_else() 
     finally:
         await runner.cleanup()
     assert sessions.applied == [parse_display(json.dumps(DISPLAYED).encode(), at=7.0)]
-    # [LAW:nothing-unseen] where the run took what Claude Code displays.
-    assert recorded == [DisplayListening(url=f"http://127.0.0.1:{port}/hands/display")]
+    # [LAW:nothing-unseen] where the run took what Claude Code displays, and each post, taken or refused.
+    assert recorded[0] == DisplayListening(url=f"http://127.0.0.1:{port}/hands/display")
+    posts = [(entry.event, entry.outcome, entry.error, dict(entry.facts)) for entry in recorded[1:] if isinstance(entry, WideEvent)]
+    refused = "rejected display: hook event 'Stop' is not taken here: only MessageDisplay is posted to this route"
+    assert posts == [("hook", "ok", None, {"hook": "MessageDisplay", "session": SID}), ("hook", "failed", refused, {})] and len(recorded) == 3
 
 
 async def test_a_daemon_that_cannot_take_the_port_does_not_start() -> None:

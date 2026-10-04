@@ -21,6 +21,23 @@ class Finished:
 
 
 @dataclass(frozen=True)
+class NameGiven:
+    """A name handed to Claude Code in the reply to a session's prompt, which sets the session's title."""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class NameWithheld:
+    """A name hands decided and did not give at the session's prompt: its title is no longer the one the name was decided
+    against, but `held`, set since by the user's /rename; or None, when it could not be read."""
+
+    name: str
+    against: str | None
+    held: str | None
+
+
+@dataclass(frozen=True)
 class Due:
     """A name hands decided for a session, waiting for its next prompt, and the name Claude Code held as it was decided."""
 

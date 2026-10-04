@@ -551,7 +551,12 @@ SubagentStop TaskCompleted TaskCreated TeammateIdle UserPromptExpansion
 UserPromptSubmit WorktreeCreate WorktreeRemove
 ```
 
-The daemon subscribes to the events in the table. `MessageDisplay` is the only
+The daemon subscribes to the events in the table. Each hook posted, to the socket or the display route, is one `hook`
+wide event, open as long as the hook holds its session: which hook and session, and the branch it was answered by — a
+Stop `decided` or `let go` at the hold, the reply a permission was given (`cancelled` when its session closed it), the
+name a prompt gave or withheld. One the daemon refuses is a failed event saying why.
+
+`MessageDisplay` is the only
 live source of Claude's text: the transcript writes a text block once, after it
 finishes (checked on 2026-09-14), while `MessageDisplay` fires with each batch of
 finished lines as the text streams. It is dispatched synchronously for every batch,

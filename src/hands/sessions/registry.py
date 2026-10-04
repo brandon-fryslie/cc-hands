@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from loguru import logger
 
@@ -23,6 +24,10 @@ from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import session_name
 from hands.sessions.typing import Untyped, type_into
+
+
+# How a Stop's hook ended: decided inside the hold, or let go at it with Claude Code going on undecided.
+StopHeld = Literal["decided", "let go"]
 
 
 @dataclass(frozen=True)
@@ -126,8 +131,9 @@ class Sessions:
             await asyncio.wait({after})
         await self._perform_all(effects)
 
-    async def stop(self, event: Stopped) -> None:
-        """Apply a Stop, and return once the reducer has decided whose it is, or once the hold has passed without that.
+    async def stop(self, event: Stopped) -> StopHeld:
+        """Apply a Stop, and return once the reducer has decided whose it is, or once the hold has passed without that,
+        saying which.
 
         Claude Code waits on the hook meanwhile, so what deciding it calls for, a comparison and the mark of a turn
         queued behind it, is done before Claude Code goes on [LAW:no-ambient-temporal-coupling]. The hold is the one
@@ -138,10 +144,12 @@ class Sessions:
         try:
             await self.apply(event)
             await asyncio.wait_for(asyncio.shield(waiting), self._stop_hold)
+            # Shutdown lets every waiting hook go undecided, as the hold does.
+            return "let go" if self._released else "decided"
         except TimeoutError:
-            # [LAW:nothing-unseen] the branch taken: Claude Code goes on before the Stop is decided.
-            logger.info(f"the Stop of turn {event.prompt} in session {event.session} is undecided after {self._stop_hold}s, so its hook is let go")
+            # Claude Code goes on before the Stop is decided.
             await self.apply(Abandoned(event.session, event.request, self._clock()))
+            return "let go"
         except asyncio.CancelledError:
             await self.apply(Abandoned(event.session, event.request, self._clock()))
             raise
