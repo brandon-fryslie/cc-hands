@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import IntEnum, StrEnum
 from pathlib import Path
 from secrets import token_hex
 from typing import TYPE_CHECKING, Literal, cast
@@ -36,9 +36,9 @@ Outcome = Literal["ok", "failed", "cancelled"]
 
 # [LAW:types-are-the-program] a fact is a value both the audit log's line (hands.sessions.audit.jsonable) and an OTLP
 # span's attribute can carry, so one neither can is refused by pyright where it is annotated, rather than found as its
-# line is written. Containers are the immutable ones, since an event emitted is never changed. A dataclass's own fields
-# are its type's to admit: pyright cannot follow them here.
-type Fact = None | bool | int | float | str | datetime | Path | Enum | DataclassInstance | tuple[Fact, ...] | frozenset[Fact] | Mapping[str, Fact]
+# line is written. Containers are the immutable ones, since an event emitted is never changed, and an enum is one whose
+# values are strings or integers. A dataclass's own fields are its type's to admit: pyright cannot follow them here.
+type Fact = None | bool | int | float | str | datetime | Path | StrEnum | IntEnum | DataclassInstance | tuple[Fact, ...] | frozenset[Fact]
 
 
 @dataclass(frozen=True)

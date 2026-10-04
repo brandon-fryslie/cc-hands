@@ -6,7 +6,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 import pytest
@@ -165,7 +165,7 @@ def test_an_event_is_an_audit_line_with_its_start_written_as_a_time_and_a_failed
     assert datetime.fromisoformat(written[0]["started_at"]).tzinfo is not None
 
 
-class Reading(Enum):
+class Reading(StrEnum):
     READ = "read"
 
 
@@ -185,16 +185,21 @@ def test_every_kind_of_fact_is_written_on_its_audit_line_and_carried_by_its_otlp
     at = datetime(2026, 10, 3, 1, 2, 3, tzinfo=UTC)
     with unit("job", record):
         annotate(none=None, flag=True, n=3, ms=1.5, word="s1", at=at, path=Path("/x"), reading=Reading.READ, change=Pushed("fix"))
-        annotate(changes=(Pushed("a"), 2), seen=frozenset({"b", "a"}), by={"inner": (1, None)})
+        annotate(changes=(Pushed("a"), 2), seen=frozenset({"b", "a"}))
     [line] = [json.loads(line) for base in segments(tmp_path / "audit") for line in segment(tmp_path / "audit", base).read_text().splitlines()]
     pushed = {"type": "Pushed", "branch": "fix"}
     assert line["facts"] == {
         "none": None, "flag": True, "n": 3, "ms": 1.5, "word": "s1", "at": "2026-10-03T01:02:03.000+00:00", "path": "/x", "reading": "read",
-        "change": pushed, "changes": [{"type": "Pushed", "branch": "a"}, 2], "seen": ["a", "b"], "by": {"inner": [1, None]},
+        "change": pushed, "changes": [{"type": "Pushed", "branch": "a"}, 2], "seen": ["a", "b"],
     }
     [span] = json.loads(json.dumps(spans(emitted)))["resourceSpans"][0]["scopeSpans"][0]["spans"]
     carried = {attribute["key"]: attribute["value"] for attribute in span["attributes"]}
-    assert (carried["facts.n"], carried["facts.word"], json.loads(carried["facts.change"]["stringValue"])) == ({"intValue": "3"}, {"stringValue": "s1"}, pushed)
+    # [LAW:one-source-of-truth] a scalar on the line is the same scalar on the span, and anything else is the line's JSON.
+    assert {key.removeprefix("facts."): value for key, value in carried.items() if key.startswith("facts.")} == {
+        "none": {}, "flag": {"boolValue": True}, "n": {"intValue": "3"}, "ms": {"doubleValue": 1.5}, "word": {"stringValue": "s1"},
+        "at": {"stringValue": "2026-10-03T01:02:03.000+00:00"}, "path": {"stringValue": "/x"}, "reading": {"stringValue": "read"},
+        "change": {"stringValue": json.dumps(pushed)}, "changes": {"stringValue": json.dumps(line["facts"]["changes"])}, "seen": {"stringValue": '["a", "b"]'},
+    }
 
 
 def test_a_fact_neither_the_audit_log_nor_otlp_can_carry_is_refused_by_pyright_where_it_is_annotated(tmp_path: Path) -> None:
@@ -203,12 +208,18 @@ def test_a_fact_neither_the_audit_log_nor_otlp_can_carry_is_refused_by_pyright_w
         "import socket\n"
         "from hands.sessions.wide import annotate, child\n"
         "from datetime import UTC, datetime\n"
-        "annotate(n=1, words=('a', 'b'), by={'a': (None, 1.5)})\n"
+        "annotate(n=1, words=('a', 'b'), pairs=frozenset({(None, 1.5)}))\n"
         "annotate(socket=socket.socket())\n"
         "annotate(listed=[1])\n"
-        "annotate(by={1: 'a'})\n"
+        "annotate(by={'a': 1})\n"
         "child('part', datetime.now(UTC), 1.0, 'ok', handler=print)\n"
+        "from enum import Enum\n"
+        "class Held(Enum):\n"
+        "    SOCKET = socket.socket()\n"
+        "annotate(held=Held.SOCKET)\n"
     )
     checked = subprocess.run([sys.executable, "-m", "pyright", "--outputjson", str(annotated)], capture_output=True, text=True, cwd=Path(__file__).parents[1])
-    refused = sorted(diagnostic["range"]["start"]["line"] + 1 for diagnostic in json.loads(checked.stdout)["generalDiagnostics"])
-    assert refused == [5, 6, 7, 8]
+    assert checked.stdout, checked.stderr
+    diagnostics = json.loads(checked.stdout)["generalDiagnostics"]
+    refused = [(diagnostic["range"]["start"]["line"] + 1, diagnostic["rule"], '"Fact"' in diagnostic["message"]) for diagnostic in diagnostics]
+    assert refused == [(line, "reportArgumentType", True) for line in (5, 6, 7, 8, 12)]
