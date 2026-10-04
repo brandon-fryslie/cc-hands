@@ -42,7 +42,7 @@ from hands.sessions import catchup
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, fail, unit
 from hands.sessions.focus import Unreadable, focused
-from hands.sessions.payload import Payload, Rejected
+from hands.sessions.payload import Rejected
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
@@ -103,26 +103,62 @@ def tool(body: Body, *, then: Literal["reply", "silence"] = "reply", completes: 
     parameters = inspect.signature(body).parameters.values()
     properties = {parameter.name: {**_schema(hints[parameter.name]), "description": lines.get(parameter.name, "")} for parameter in parameters}
     required = tuple(parameter.name for parameter in parameters if parameter.default is inspect.Parameter.empty)
-    return Tool(body.__name__, (docstring.description or "").strip(), properties, required, _closed(body, hints), then, completes)
+    return Tool(body.__name__, (docstring.description or "").strip(), properties, required, _closed(body, properties), then, completes)
 
 
-def _closed(body: Body, hints: Mapping[str, object]) -> Body:
-    """The body, refusing a call whose arguments do not fit its signature or name a value outside an argument's closed
-    set, so the model is told, as a result, and can call again."""
+def _closed(body: Body, properties: Mapping[str, JsonSchema]) -> Body:
+    """The body, refusing a call whose arguments do not fit its signature or the schema the model was shown for them,
+    so the model is told, as a result, and can call again."""
     # [LAW:single-enforcer] every adapter calls the tool's body, so the schema it advertises is held here, once.
+    # [LAW:one-source-of-truth] held against the schema itself, so what is advertised and what is taken cannot differ.
     signature = inspect.signature(body)
-    closed = {name: get_args(hint) for name, hint in hints.items() if get_origin(hint) is Literal}
 
     @functools.wraps(body)
     async def call(**arguments: object) -> Result:
+        # A null is an argument left out, which some models send for one they leave empty: it takes the argument's
+        # default, and is refused where there is none.
+        sent = {name: value for name, value in arguments.items() if value is not None}
         try:
-            signature.bind(**arguments)
+            signature.bind(**sent)
         except TypeError as error:
             return {"error": f"{body.__name__} was called with the wrong arguments: {error}"}
-        refused = [f"{arguments[name]!r} is no {name}; it is one of {', '.join(allowed)}" for name, allowed in closed.items() if name in arguments and arguments[name] not in allowed]
-        return {"error": "; ".join(refused)} if refused else await body(**arguments)
+        refused = [misfit for name, value in sent.items() for misfit in _misfits(properties[name], value, name)]
+        return {"error": "; ".join(refused)} if refused else await body(**sent)
 
     return call
+
+
+def _misfits(schema: JsonSchema, value: object, what: str) -> list[str]:
+    """Each way a value the model sent does not fit a schema `_schema` wrote, in words the model can correct it from.
+
+    A value of the wrong type is named by its type, never echoed: it may be a whole draft.
+    """
+    got = type(value).__name__
+    match schema:
+        case {"enum": enum} if isinstance(value, str):
+            allowed = cast(list[str], enum)
+            return [] if value in allowed else [f"{value!r} is no {what}; it is one of {', '.join(allowed)}"]
+        case {"type": "string"}:
+            return [] if isinstance(value, str) else [f"{what} should be a string, got {got}"]
+        case {"type": "boolean"}:
+            return [] if isinstance(value, bool) else [f"{what} should be true or false, got {got}"]
+        case {"type": "integer"}:
+            # A bool is an int to Python, and no integer to the model.
+            return [] if isinstance(value, int) and not isinstance(value, bool) else [f"{what} should be an integer, got {got}"]
+        case {"type": "array", "items": items}:
+            if not isinstance(value, list):
+                return [f"{what} should be a list, got {got}"]
+            return [misfit for index, item in enumerate(cast(list[object], value)) for misfit in _misfits(cast(JsonSchema, items), item, f"{what}[{index}]")]
+        case {"type": "object", "properties": fields, "required": required}:
+            if not isinstance(value, dict):
+                return [f"{what} should be an object, got {got}"]
+            given = cast(dict[str, object], value)
+            return [
+                *(f"{what} has no {name}" for name in cast(list[str], required) if name not in given),
+                *(misfit for name, field in cast(Mapping[str, JsonSchema], fields).items() if name in given for misfit in _misfits(field, given[name], f"{what}.{name}")),
+            ]
+        case _:
+            raise TypeError(f"a tool argument's schema {schema!r} is none written here")
 
 
 def _schema(hint: object) -> JsonSchema:
@@ -407,7 +443,7 @@ def focus_session_tool(sessions: Sessions, home: Home) -> Tool:
             session: The session's id, from list_sessions. Empty to focus none, when the user says to stop working in one.
         """
         try:
-            to = None if _unnamed(session) else _session_id(session)
+            to = None if session == "" else SessionId(session)
             await move_focus(sessions, home, to)
         except (Rejected, NotRunning, OSError) as error:
             return {"error": str(error)}
@@ -781,10 +817,7 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts, refocus: Refocus) -> 
         Args:
             session: The session's id, from list_sessions.
         """
-        try:
-            id = _session_id(session)
-        except Rejected as error:
-            return {"error": str(error)}
+        id = SessionId(session)
         live = sessions.live_session(id)
         if live is None:
             return {"error": f"no running session has the id {id!r}; take one from list_sessions"}
@@ -819,10 +852,7 @@ def expand_tool(sessions: Sessions, recounts: Recounts) -> Tool:
             session: The id of the session whose turn you just told, from the [hands] message that told it or from list_sessions.
             part: The part the user wants more of, by the name a call with it empty gave, such as "the tests". Empty for the list of parts.
         """
-        try:
-            id = _session_id(session)
-        except Rejected as error:
-            return {"error": str(error)}
+        id = SessionId(session)
         name = spoken_name(sessions, id)
         held = recounts.of(id)
         if held is None or not held.parts:
@@ -920,7 +950,7 @@ def attention_tool(home: Home) -> Tool:
             changes: each kind to set and its level, in the order said; none to hear what is set.
         """
         try:
-            said = [_change(change) for change in _items(changes, "changes")]
+            said = [(change["kind"], change["level"]) for change in changes]
             to = await asyncio.to_thread(settings.asked, home, said)
         except (Rejected, OSError) as error:
             return {"error": str(error)}
@@ -1057,7 +1087,7 @@ def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
             overlay: watched, normal, or muted.
         """
         try:
-            id = _session_id(session)
+            id = SessionId(session)
             # [LAW:single-enforcer] the registry is the one judge of which sessions are running.
             live = sessions.live_session(id)
             if live is None:
@@ -1165,14 +1195,14 @@ def _for_the_model[O](say: Callable[[O, str], str]) -> Callable[[O, str], Result
 
 async def _answer[R, O](
     sessions: Sessions,
-    session: object,
+    session: str,
     request: Callable[[SessionId], R],
     apply: Callable[[R], Awaitable[O]],
     say: Callable[[O, str], Result],
 ) -> Result:
     # [LAW:no-silent-failure] the model hears each failure and says it; the tool's event keeps it.
+    id = SessionId(session)
     try:
-        id = _session_id(session)
         outcome = await apply(request(id))
     except Rejected as error:
         return {"error": str(error)}
@@ -1233,7 +1263,7 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
             request: The request id given with the questions.
             answers: One answer per question, in the order they were asked: the label of the option the user chose, or their own words when no option fits. Where more than one may be chosen, join the labels with ", ". An empty answer when the user chose none.
         """
-        return await _decide(sessions, request, lambda: parse_answers(answers))
+        return await _decide(sessions, request, lambda: Answers(tuple(answers)))
 
     async def answer_plan(request: str, decision: str, message: str = "") -> Result:
         """Answer a session's plan with what the user decided. Call it only after the user has approved the plan or asked for changes.
@@ -1251,7 +1281,7 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
     return [tool(body, completes=True) for body in (answer_permission, answer_question, answer_plan)]
 
 
-async def _decide(sessions: Sessions, request: object, decision: Callable[[], Decision]) -> Result:
+async def _decide(sessions: Sessions, request: str, decision: Callable[[], Decision]) -> Result:
     # [LAW:no-silent-failure] the model hears a refused answer and says it; the tool's event keeps it.
     try:
         outcome = await sessions.answer(_request_id(request), decision())
@@ -1260,60 +1290,41 @@ async def _decide(sessions: Sessions, request: object, decision: Callable[[], De
     return {"readback": answer_readback(outcome, lambda id: spoken_name(sessions, id))}
 
 
-def parse_decision(decision: object, message: object) -> Decision:
+def parse_decision(decision: str, message: str) -> Decision:
     """The model's answer, parsed once into the only two things a person can decide."""
     # [LAW:parse-dont-validate] a Decision is made here and nowhere else, so nothing but "allow" runs a tool.
     match (decision, message):
         case ("allow", ""):
             return Allow()
-        case ("allow", str()):
+        case ("allow", _):
             raise Rejected("a message goes only with deny; an allow carries none, so nothing was answered")
         case ("deny", ""):
             return Deny(DENIED_BY_VOICE)
-        case ("deny", str()):
+        case ("deny", _):
             return Deny(message)
-        case ("allow" | "deny", other):
-            raise Rejected(f"message should be a string, got {type(other).__name__}")
         case (other, _):
             raise Rejected(f"decision should be 'allow' or 'deny', got {other!r}")
 
 
-def parse_plan_decision(decision: object, message: object) -> Approve | KeepPlanning:
+def parse_plan_decision(decision: str, message: str) -> Approve | KeepPlanning:
     """The model's answer to a plan, parsed once into an approval for a mode or a plan sent back."""
     match (decision, message):
         case ("keep planning", ""):
             return KeepPlanning(SENT_BACK_BY_VOICE)
-        case ("keep planning", str()):
+        case ("keep planning", _):
             return KeepPlanning(message)
-        case (str() as choice, "") if choice in _APPROVALS:
+        case (choice, "") if choice in _APPROVALS:
             return Approve(_APPROVALS[choice])
-        case (str() as choice, str()) if choice in _APPROVALS:
+        case (choice, _) if choice in _APPROVALS:
             raise Rejected("a message goes only with keep planning; an approval carries none, so nothing was answered")
-        case (str() as choice, other) if choice in _APPROVALS or choice == "keep planning":
-            raise Rejected(f"message should be a string, got {type(other).__name__}")
         case (other, _):
             raise Rejected(f"decision should be 'approve', 'auto-accept edits', 'manually approve edits', or 'keep planning', got {other!r}")
 
 
-def parse_answers(answers: object) -> Answers:
-    """The model's answers, parsed once. An empty one leaves its question unanswered, as the dialog's own does."""
-    return Answers(tuple(_answer_text(answer) for answer in _items(answers, "answers")))
-
-
-def _answer_text(answer: object) -> str:
-    match answer:
-        case str():
-            return answer
-        case other:
-            raise Rejected(f"each answer should be a string, got {type(other).__name__}")
-
-
-def _request_id(request: object) -> RequestId:
-    match request:
-        case str() if request:
-            return RequestId(request)
-        case other:
-            raise Rejected(f"request should be the request id string, got {other!r}")
+def _request_id(request: str) -> RequestId:
+    if not request:
+        raise Rejected(f"request should be the request id string, got {request!r}")
+    return RequestId(request)
 
 
 def _unnamed(session: object) -> bool:
@@ -1321,87 +1332,42 @@ def _unnamed(session: object) -> bool:
     return session in ("", None)
 
 
-def _session_id(session: object) -> SessionId:
-    match session:
-        case str():
-            return SessionId(session)
-        case other:
-            raise Rejected(f"session should be a session id string, got {type(other).__name__}")
-
-
-def parse_draft(text: object, resolutions: object) -> Staged:
+def parse_draft(text: str, resolutions: list[Resolved]) -> Staged:
     """The model's arguments, parsed once into a draft whose text is safe to type."""
     # [LAW:parse-dont-validate] PromptText is made here and nowhere else.
-    return Staged(_prompt_text(text, "the draft text"), tuple(_resolution(item) for item in _items(resolutions, "resolutions")))
+    return Staged(_prompt_text(text, "the draft text"), tuple(Resolution(heard=item["heard"], meant=item["meant"]) for item in resolutions))
 
 
-def parse_command(name: object, args: object) -> Command:
+def parse_command(name: str, args: str) -> Command:
     """The model's arguments, parsed once into a command whose name and arguments are safe to type after a slash."""
     return Command(_command_name(name), _command_args(args))
 
 
-def _command_name(name: object) -> CommandName:
+def _command_name(name: str) -> CommandName:
     # [LAW:parse-dont-validate] CommandName is made here and nowhere else. A slash the model kept from what the user
     # said is the one the command is typed with, not a second.
-    match name:
-        case str():
-            named = _COMMAND_NAME.fullmatch(name)
-            if named is None:
-                raise Rejected(f"command should be a slash command's name, such as compact, got {name!r}")
-            return CommandName(named.group(1))
-        case other:
-            raise Rejected(f"command should be a string, got {type(other).__name__}")
+    named = _COMMAND_NAME.fullmatch(name)
+    if named is None:
+        raise Rejected(f"command should be a slash command's name, such as compact, got {name!r}")
+    return CommandName(named.group(1))
 
 
-def _command_args(args: object) -> PromptText | None:
-    match args:
-        case str() if not args.strip():
-            return None
-        case str() if "\n" in args:
-            # A command is one line: what a line break does inside one, pasted, is unmeasured.
-            raise Rejected("a command's arguments are one line, and these hold a line break")
-        case _:
-            return _prompt_text(args, "the argument string")
+def _command_args(args: str) -> PromptText | None:
+    if not args.strip():
+        return None
+    if "\n" in args:
+        # A command is one line: what a line break does inside one, pasted, is unmeasured.
+        raise Rejected("a command's arguments are one line, and these hold a line break")
+    return _prompt_text(args, "the argument string")
 
 
-def _prompt_text(text: object, what: str) -> PromptText:
-    match text:
-        case str() if not text.strip():
-            raise Rejected(f"{what} is empty")
-        case str() if KEYSTROKES.search(text):
-            # A tab is one: typed into a session it cycles the mode, and fritter refuses it by name at the socket.
-            # Refusing it here instead means the model is told while it still has the words to fix.
-            raise Rejected(f"{what} holds a control character, which would press a key when it is typed")
-        case str() if text.endswith("\\"):
-            raise Rejected(f"{what} ends with a backslash, which turns the Return that sends it into a newline")
-        case str():
-            return PromptText(text)
-        case other:
-            raise Rejected(f"{what} should be a string, got {type(other).__name__}")
-
-
-def _items(value: object, what: str) -> list[object]:
-    match value:
-        case list():
-            return cast(list[object], value)
-        case other:
-            raise Rejected(f"{what} should be a list, got {type(other).__name__}")
-
-
-def _change(item: object) -> tuple[str, str]:
-    """A change as the model gave it, its kind and level left to `changed`, the one place they are read."""
-    match item:
-        case dict():
-            fields = Payload(cast(dict[str, object], item))
-            return fields.text("kind"), fields.text("level")
-        case other:
-            raise Rejected(f"each change should be an object with kind and level, got {type(other).__name__}")
-
-
-def _resolution(item: object) -> Resolution:
-    match item:
-        case dict():
-            fields = Payload(cast(dict[str, object], item))
-            return Resolution(heard=fields.text("heard"), meant=fields.text("meant"))
-        case other:
-            raise Rejected(f"each resolution should be an object with heard and meant, got {type(other).__name__}")
+def _prompt_text(text: str, what: str) -> PromptText:
+    if not text.strip():
+        raise Rejected(f"{what} is empty")
+    if KEYSTROKES.search(text):
+        # A tab is one: typed into a session it cycles the mode, and fritter refuses it by name at the socket.
+        # Refusing it here instead means the model is told while it still has the words to fix.
+        raise Rejected(f"{what} holds a control character, which would press a key when it is typed")
+    if text.endswith("\\"):
+        raise Rejected(f"{what} ends with a backslash, which turns the Return that sends it into a newline")
+    return PromptText(text)

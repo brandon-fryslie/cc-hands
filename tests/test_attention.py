@@ -248,7 +248,7 @@ async def test_a_change_mends_a_file_that_cannot_be_read_and_asking_what_is_set_
 
 async def test_a_change_missing_its_level_is_refused_to_the_model_with_nothing_set(tmp_path: Path) -> None:
     result = await attention_tool(home := Home(tmp_path)).body(changes=[{"kind": "quiet"}])
-    assert result == {"error": "missing field 'level'"}
+    assert result == {"error": "changes[0] has no level"}
     assert not home.attention.exists()
 
 

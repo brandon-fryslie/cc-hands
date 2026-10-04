@@ -246,7 +246,7 @@ async def test_an_empty_answer_leaves_its_question_unanswered(home: Home, sessio
 
 @pytest.mark.parametrize(
     ("answers", "error"),
-    [("green", "answers should be a list"), ([3], "each answer should be a string")],
+    [("green", "answers should be a list"), ([3], "answers[0] should be a string, got int")],
 )
 async def test_answers_that_do_not_parse_are_refused_out_loud(sessions: Sessions, answers: object, error: str) -> None:
     assert error in str((await call(named(sessions, "answer_question"), request="r", answers=answers))["error"])
