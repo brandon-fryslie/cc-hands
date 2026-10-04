@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -637,13 +638,16 @@ async def test_an_asker_in_no_hurry_for_its_turn_has_its_whole_time_limit_once_i
     patient = asyncio.create_task(asides.ask(AsideKind.LINE, "patient", TimeLimit(0.3)))
     # Longer behind the first than its time limit, which is not yet running.
     await asyncio.sleep(0.5)
+    assert not patient.done()
     asides.hear(answered(typed(tmp_path)[0][2], "One."))
     assert await first == "One."
-    await until(lambda: len(typed(tmp_path)) == 2)
-    asides.hear(answered(typed(tmp_path)[1][2], "Two."))
-    assert await patient == "Two."
+    # Never answered, it is given the whole of its time limit from its turn: every bound here is one a slow machine only
+    # widens, as a timer is never run before its time but by the clock's resolution.
+    with pytest.raises(AsideFailed, match=r"no answer within TimeLimit\(seconds=0.3\)"):
+        await patient
     [_, waited] = events(recorded, "brain.aside")
     assert waited.facts["queued_ms"] >= 500  # pyright: ignore[reportOperatorIssue]
+    assert waited.duration_ms - waited.facts["queued_ms"] >= 300 - time.get_clock_info("monotonic").resolution * 1000  # pyright: ignore[reportOperatorIssue]
 
 
 async def test_an_asker_told_to_leave_again_while_its_claude_code_is_ending_leaves_none_running(tmp_path: Path, fake_claude: Path) -> None:
