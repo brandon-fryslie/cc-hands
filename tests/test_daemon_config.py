@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import subprocess
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -254,7 +255,7 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     monkeypatch.setattr(cli, "to_terminal", kept)
     monkeypatch.setattr(cli.logger, "remove", kept)
 
-    def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _after_crash: bool, _granted: bool) -> cli.Run:
+    def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _after_crash: bool) -> cli.Run:
         sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=record)
 
         async def refused(quit_event: asyncio.Event) -> Ended:
@@ -274,22 +275,25 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
 
-def test_a_settings_file_it_cannot_read_refuses_the_start_after_its_first_heartbeat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    # Past the door the run has taken the heartbeat, so `hands status` says why, as it does for a launcher's start.
+def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_restarts_in_its_heartbeat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Before its first heartbeat a run holds none: the one there, here a crash's, is left for the next run to read.
     from hands.voice import talkkey
 
     home = Home(tmp_path)
     home.config.write_text('[llm]\nbackend = "nonesuch"\n')
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-
-    def kept(*_: object) -> None:
-        pass
-
-    monkeypatch.setattr(cli, "to_terminal", kept)
-    monkeypatch.setattr(cli.logger, "remove", kept)
+    gone = subprocess.Popen(["true"])
+    gone.wait()
+    crashed = heartbeat.Heart(home.status, gone.pid, datetime.now(UTC), heartbeat.HEARTBEAT)
+    crashed.beat("running", None, 0, listening=False, deaf=False)
     assert cli.main(["--home", str(home.root), "run"]) == 1
     reason = capsys.readouterr().err.removeprefix("hands: ").rstrip("\n")
     assert str(home.config) in reason
+    assert [json.loads(line)["reason"] for line in audit.tail(home.audit, 10)[0]] == [reason]
+    assert cli.crashed_before(home)
+    # A restart's run holds the heartbeat from the outset, the run before it having beat starting under its pid.
+    assert cli.main(["--home", str(home.root), "run", "--restarted", "0"]) == 1
+    capsys.readouterr()
     assert cli.main(["--home", str(home.root), "status"]) == 1
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
