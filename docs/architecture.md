@@ -1550,7 +1550,10 @@ and its newlines stay inside the prompt because fritter pastes it.
 voice-activity frames, so the key is the VAD: every microphone frame carries the key
 it was captured under, and Whisper pushes the VAD frames where those keys change,
 numbering each hold, so the turn the strategies see and the audio Whisper transcribes
-are cut at the same frame. The key is also the mute: microphone bytes become silence
+are cut at the same frame. How a turn ended is not a key position: the gate counts the
+turns it has sent and thrown away, every frame carries both counts, and Whisper ends
+its hold as they move. A frame is captured every 20 ms, and a turn can end and the next
+arm between two of them. The key is also the mute: microphone bytes become silence
 of the same length unless the key is pressed. Frames flow at full rate either way;
 only their content changes. The microphone opens on the press, and a hold's audio
 begins there, so words said before the hold means talk are kept; they are thrown
@@ -1634,6 +1637,7 @@ turn's `UserAsked` says it:
 | Edge | Down | Up |
 |---|---|---|
 | `held key` | Right Shift held alone for 600 ms, in any app (`hands.voice.hold`) | released; another key pressed while it is held drops the turn unsent |
+| `engaged conversation` | engaged by one hold of Right Shift; then Silero confirms speech on the desk microphone (`hands.voice.engaged`) | Smart Turn judges the speech complete, or the silence after it runs past its `stop_secs`; another hold disengages |
 | `button` | a HID button or headset button pressed | released |
 | `phone button` | the phone page's talk button pressed | released |
 | `wake word` | the wake word heard | Silero VAD reports silence for the configured gap |
@@ -1646,8 +1650,21 @@ because an open mic in a room with speakers hears the pipeline's own voice.
 The phone's button is there for every call; at the desk, the edge that drives the gate is
 the `Trigger` in use, one value `Triggers` holds while hands runs: the brain's
 `trigger_in_use` says it, and `set_trigger` switches it: the old edge stops and the new
-one starts (`Triggers.drive`), so the next turn opens the new way. Built: the `held key`. A
-trigger not built is refused by the tool's closed set, and the one in use stays.
+one starts (`Triggers.drive`), so the next turn opens the new way. Built: the `held key` and
+`engaged conversation`. A trigger not built is refused by the tool's closed set, and the one
+in use stays.
+
+**An engaged desk listens between turns.** Engaged conversation moves the gate with the
+held key's own moves, plus two of its own: `listen` as it engages and `deafen` as it
+disengages, each cued with two tones. While the desk listens, the key rests at `listening`
+between turns rather than `up`: the microphone's bytes reach Whisper, which keeps the last
+second of them as Pipecat keeps audio nobody is speaking in, so the turn the voice opens
+starts with the words said while Silero made sure of them (about 0.2 s). Listening is the
+desk's alone: at the phone the key rests at `up`, what the desk hears opens no turn there,
+and the desk listens again once hands is back. Both models hear the desk through the echo canceller; measured on MacBook speakers, a
+canceller that has heard one reply lets none of the next trip Silero, where the raw
+microphone tripped it at every phrase, and only the first two seconds of a fresh
+canceller's life let one through.
 
 **The phone is a second place, beside the desk.** The desk is the Mac's own mic and
 speakers; the phone is a page hands serves (`hands.voice.phonepage`) that a phone

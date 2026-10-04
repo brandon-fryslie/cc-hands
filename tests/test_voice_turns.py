@@ -9,7 +9,8 @@ than hoped for. Whisper, the user aggregator, and the stop strategy are the ones
 import asyncio
 from pathlib import Path
 from collections.abc import AsyncGenerator, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import Literal
 
 import mlx_whisper
 import pytest
@@ -28,6 +29,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
 from conftest import running, unprimed
+from hands.core.place import Place
 from hands.sessions.audit import Entry, HoldHeard, Yielded
 from hands.voice import pipeline as built
 from hands.voice.conversation import cue_receipt
@@ -36,7 +38,7 @@ from hands.sessions.registry import Sessions
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus
 from hands.voice.player import Player
-from hands.voice.ptt import Key, KeyedAudio, PushToTalk
+from hands.voice.ptt import Gate, Key, KeyedAudio, PushToTalk
 from hands.core.effects import Asking, Narrate, SessionGone
 from hands.core.pending import Finished, News
 from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
@@ -115,6 +117,10 @@ class Clock:
         return self.now
 
 
+# A key position, or "dropped": the turn open thrown away, and the key at rest.
+Captured = Key | Literal["dropped"]
+
+
 @dataclass
 class Rig:
     worker: PipelineWorker
@@ -131,8 +137,29 @@ class Rig:
     # Each turn hands said it received, as its words were written to the context.
     received: list[None] = field(default_factory=list[None])
 
-    async def hold(self, keys: Sequence[Key], sound: bytes = b"\x00\x00" * 320) -> None:
-        await self.worker.queue_frames([KeyedAudio(audio=sound, sample_rate=16000, num_channels=1, key=key) for key in keys])
+    # The gate the last frame was captured under.
+    gate: Gate = field(default_factory=Gate)
+
+    async def hold(self, keys: Sequence[Captured], sound: bytes = b"\x00\x00" * 320, at: Place = "desk") -> None:
+        """A frame captured under each key, counted as the gate counts them: the key leaving down for a rest sends the
+        turn, and for a press (a key pressed while it was held) or "dropped" throws it away."""
+        frames: list[KeyedAudio] = []
+        for held in keys:
+            match self.gate.key, held:
+                case "down", "up" | "listening":
+                    self.gate = replace(self.gate, sent=self.gate.sent + 1)
+                case "down", "arming" | "dropped":
+                    self.gate = replace(self.gate, dropped=self.gate.dropped + 1)
+                case _:
+                    pass
+            self.gate = replace(self.gate, key="up" if held == "dropped" else held)
+            frames.append(self.gate.framed(sound, 16000, 1, at))
+        await self.worker.queue_frames(frames)
+
+    async def capture(self, gate: Gate, sound: bytes) -> None:
+        """A frame captured under `gate`, as it stands after whatever moves made it."""
+        self.gate = gate
+        await self.worker.queue_frame(gate.framed(sound, 16000, 1, gate.place))
 
     async def until(self, what: Callable[[], bool]) -> None:
         async with asyncio.timeout(PATIENCE_SECS):
@@ -243,6 +270,54 @@ async def test_a_press_that_was_shift_leaves_nothing_behind_for_the_next_hold(ri
     assert await rig.everything_sent(holds=1) == ["what time is it"]
     assert shift not in rig.heard[0]
     assert rig.heard[0].startswith(held * 2)
+
+
+async def test_an_engaged_turn_keeps_the_second_the_desk_heard_before_it_and_listens_on_after(rig: Rig) -> None:
+    # Pipecat keeps the last second of audio nobody is speaking in: 50 frames of 20 ms. The desk listens for 1.6 s
+    # while the room is quiet, then the user's first word comes as the detector makes sure of it.
+    room, onset, said, after = (bytes([n, n]) * 320 for n in (1, 2, 3, 4))
+    listening: list[Key] = ["listening"]
+    await rig.hold(listening * 70, sound=room)
+    await rig.hold(listening * 5, sound=onset)
+    await rig.hold(["arming", "down", "down"], sound=said)
+    await rig.hold(["listening"], sound=after)
+    await rig.texts.put("what time is it")
+    assert await rig.everything_sent(holds=1) == ["what time is it"]
+    assert rig.heard[0].startswith(room * 45 + onset * 5 + said * 3)
+    assert after not in rig.heard[0]
+
+
+async def test_an_engaged_start_that_was_only_noise_opens_no_turn_and_the_desk_listens_on(rig: Rig) -> None:
+    noise, said = (bytes([n, n]) * 320 for n in (1, 3))
+    listening: list[Key] = ["listening"]
+    await rig.hold(["listening", "arming", "arming", "listening"], sound=noise)
+    await rig.hold(listening * 60)
+    await rig.hold(["arming", "down", "listening"], sound=said)
+    await rig.texts.put("what time is it")
+    assert await rig.everything_sent(holds=1) == ["what time is it"]
+    assert noise not in rig.heard[0]
+
+
+async def test_a_phone_turn_opened_while_the_desk_listens_hears_nothing_the_desk_heard(rig: Rig) -> None:
+    room, said = (bytes([n, n]) * 320 for n in (1, 3))
+    listening: list[Key] = ["listening"]
+    await rig.hold(listening * 20, sound=room)
+    await rig.hold(["down", "down", "up"], sound=said, at="phone")
+    await rig.texts.put("what time is it")
+    assert await rig.everything_sent(holds=1) == ["what time is it"]
+    assert room not in rig.heard[0]
+
+
+async def test_a_turn_ended_and_the_next_armed_between_two_frames_is_sent(rig: Rig) -> None:
+    # The verdict ends an engaged turn and the voice arms the next before the microphone captures a frame at rest.
+    said, more = (bytes([n, n]) * 320 for n in (3, 5))
+    turn = Gate().after("listen", "desk").after("arm", "desk").after("start", "desk")
+    for _ in range(3):
+        await rig.capture(turn, said)
+    await rig.capture(turn.after("stop", "desk").after("arm", "desk"), more)
+    await rig.texts.put("what time is it")
+    assert await rig.everything_sent(holds=1) == ["what time is it"]
+    assert rig.heard[0].startswith(said * 3) and more not in rig.heard[0]
 
 
 async def test_a_dropped_hold_ends_its_turn_and_sends_nothing(rig: Rig) -> None:

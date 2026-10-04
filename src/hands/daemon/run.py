@@ -61,7 +61,8 @@ from hands.sessions.attention import attention
 from hands.voice.devices import follow_default_devices
 from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
 from hands.voice.hold import Move
-from hands.voice.keys import drive_quit, drive_talk_key
+from hands.voice.engaged import drive_engaged, loaded
+from hands.voice.keys import drive_quit, drive_talk_key, tapped
 from hands.voice.phonepage import serve_phone
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus
@@ -483,6 +484,10 @@ async def converse(
         match trigger:
             case "held key":
                 await drive_talk_key(lambda move: at_desk(move, "held key"))
+            case "engaged conversation":
+                # Loaded as the trigger is switched to, in about half a second, and let go of as it is switched from.
+                async with loaded(voice.audio.input().sample_rate, record) as ears:
+                    await drive_engaged(tapped, voice.audio.input().overheard, ears, lambda move: at_desk(move, "engaged conversation"), record)
 
     async def answer_the_phone_once_started() -> None:
         # As for the talk key: a call is taken once the pipeline is up to hear it.

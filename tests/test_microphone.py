@@ -127,6 +127,17 @@ async def test_the_canceller_hears_the_desk_microphone_while_hands_is_at_the_pho
     assert devices.room.hears == [LOUD]  # and the canceller takes the speaker's sound in step all the same
 
 
+async def test_an_edge_overhears_the_desk_cleaned_whatever_the_key_says_and_only_while_it_listens() -> None:
+    devices = Rig()
+    async with devices.microphone.overheard() as heard:
+        await devices.capture(at=1.0)  # key up: the pipeline hears silence, the edge hears the room
+        devices.key.go("phone")
+        await devices.capture(at=1.02)  # hands at the phone: the room at the desk is silence to the edge
+        assert [await anext(heard), await anext(heard)] == [CLEANED, bytes(len(CLEANED))]
+    await devices.capture(at=1.04)
+    assert devices.pushed == [QUIET]
+
+
 class Refusing(Room):
     def heard(self, audio: bytes, sample_rate: int, channels: int) -> bytes:
         raise RuntimeError("the audio processing module refused the frame")

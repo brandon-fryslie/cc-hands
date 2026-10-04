@@ -4,8 +4,8 @@ import asyncio
 import sys
 import termios
 import tty
-from collections.abc import Awaitable, Callable, Generator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
+from contextlib import asynccontextmanager, contextmanager
 
 from hands.voice import talkkey
 from hands.voice.hold import HOLD_SECONDS, TURN_LIMIT_SECONDS, Hold, Idle, KeyEvent, Move, Overlong, Pressed, Ripe, step
@@ -15,18 +15,29 @@ QUIT = "q"
 
 async def drive_talk_key(on_move: Callable[[Move], Awaitable[None]]) -> None:
     """Hand every move of the turn to `on_move`, as the talk key makes them, until cancelled."""
-    loop = asyncio.get_running_loop()
     heard: asyncio.Queue[KeyEvent] = asyncio.Queue()
+    hold: Hold = Idle()
+    async with tapped(heard.put_nowait):
+        while True:
+            hold, moves = step(hold, await heard.get())
+            for move in moves:
+                await on_move(move)
+
+
+@asynccontextmanager
+async def tapped(into: Callable[[KeyEvent], None]) -> AsyncGenerator[None]:
+    """Hand every event of the talk key to `into` on the event loop while open, each press's Ripe and Overlong too."""
+    loop = asyncio.get_running_loop()
 
     def arrived(event: KeyEvent) -> None:
-        heard.put_nowait(event)
+        into(event)
         # [LAW:no-ambient-temporal-coupling] every press asks to be told when it has been held for HOLD_SECONDS and
         # for TURN_LIMIT_SECONDS, counted from the press itself on the loop's own clock, the monotonic one; the hold is
         # the one owner of what that means, and ignores the ones a release has made stale.
         match event:
             case Pressed(at=at):
-                loop.call_at(at + HOLD_SECONDS, heard.put_nowait, Ripe(at))
-                loop.call_at(at + TURN_LIMIT_SECONDS, heard.put_nowait, Overlong(at))
+                loop.call_at(at + HOLD_SECONDS, into, Ripe(at))
+                loop.call_at(at + TURN_LIMIT_SECONDS, into, Overlong(at))
             case _:
                 pass
 
@@ -34,12 +45,8 @@ async def drive_talk_key(on_move: Callable[[Move], Awaitable[None]]) -> None:
         loop.call_soon_threadsafe(arrived, event)
 
     stop = talkkey.tap(heard_on_the_tap)
-    hold: Hold = Idle()
     try:
-        while True:
-            hold, moves = step(hold, await heard.get())
-            for move in moves:
-                await on_move(move)
+        yield
     finally:
         stop()
 

@@ -18,7 +18,7 @@ last turn was opened, and that place is where hands is: the pipeline hears that 
 speaker, and the other place's moves cannot touch a turn that is not theirs.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from pipecat.frames.frames import InputAudioRawFrame
@@ -28,29 +28,40 @@ from hands.sessions.audit import Moved, Record
 from hands.voice.hold import Move
 from hands.voice.trigger import Edge, place_of
 
-# [LAW:types-are-the-program] the key is up; arming, pressed but not yet meaning talk, which hears so the words said
-# before it does are kept; down, a hold; or dropped, up with the hold thrown away, which tells Whisper not to transcribe
-# what it recorded. The hold (`hands.voice.hold`) decides every move, so the gate never sees one that is not a
-# transition.
-Key = Literal["up", "arming", "down", "dropped"]
+# [LAW:types-are-the-program] the key is up; listening, the desk heard between turns while engaged, so a turn the voice
+# opens keeps the words said before the detector was sure of them; arming, pressed but not yet meaning talk, which hears
+# so the words said before it does are kept; or down, a hold. The edges decide every move, so the gate never sees one
+# that is not a transition.
+Key = Literal["up", "listening", "arming", "down"]
 
 @dataclass(kw_only=True)
 class KeyedAudio(InputAudioRawFrame):
-    """Microphone audio, and the key position it was captured under.
+    """Microphone audio, the gate as it was when the audio was captured, and the place whose microphone captured it.
 
-    [LAW:no-ambient-temporal-coupling] the key travels with the audio, in capture order, so whatever reads it later
-    reads the key as it was when this sound was recorded, never as it is by the time the frame arrives.
+    [LAW:no-ambient-temporal-coupling] the gate travels with the audio, in capture order, so whatever reads it later
+    reads the gate as it was when this sound was recorded, never as it is by the time the frame arrives.
     """
 
     key: Key
+    # How many turns the gate has sent, and thrown away, by this frame.
+    sent: int
+    dropped: int
+    place: Place
 
 
 @dataclass(frozen=True)
 class Gate:
-    """The pure push-to-talk state: which position the key is in, and the place hands is at."""
+    """The pure push-to-talk state: which position the key is in, the place hands is at, whether the desk listens
+    between turns, and how many turns have ended each way."""
 
     key: Key = "up"
     place: Place = "desk"
+    # [LAW:one-source-of-truth] engaged conversation is the desk's: at the phone, its button alone opens the microphone.
+    listens: bool = False
+    # [LAW:no-ambient-temporal-coupling] how each turn ended is counted, not left in a key position: a frame is captured
+    # every 20 ms and a turn can end and the next arm between two of them, so Whisper ends each turn as these move.
+    sent: int = 0
+    dropped: int = 0
 
     def took(self, move: Move, at: Place) -> Move | None:
         """What a hold at `at` did to the turn, as the gate takes it; None where it does nothing to it.
@@ -59,37 +70,54 @@ class Gate:
         Shift typed at the desk while the user talks on the phone arms nothing and ends nothing of theirs. A turn opened
         at one place while a hold is open at the other is a second hand on a second key, which drops both, as a key
         pressed while the talk key is held drops the turn; and the end of a hold the gate has already thrown away, as a
-        call came or went, ends nothing more.
+        call came or went, ends nothing more. The desk's listening is taken wherever hands is.
         """
         match at == self.place, move, self.key:
-            case True, "stop" | "drop" | "expire", "dropped":
+            case _, "listen" | "deafen", _:
+                return move
+            case True, "stop" | "drop" | "expire", "up" | "listening" | "arming":
                 return None
             case True, _, _:
                 return move
             case False, "start", "arming" | "down":
                 return "drop"
-            case False, "start", "up" | "dropped":
+            case False, "start", "up" | "listening":
                 return "start"
             case False, _, _:
                 return None
 
     def after(self, move: Move, at: Place) -> "Gate":
         """The gate once a hold at `at` has moved the turn."""
+        rest = self._rest(at, self.listens)
         match self.took(move, at):
             case None:
                 return self
-            case taken:
-                return Gate(_key_after(taken), at)
+            case "listen" | "deafen" as listening:
+                # The desk's listening moves only where the key rests: a press or a turn open is left to end as it ends.
+                listens = listening == "listen"
+                resting = self.key in ("up", "listening")
+                return replace(self, key=self._rest(self.place, listens) if resting else self.key, listens=listens)
+            case "arm":
+                return replace(self, key="arming", place=at)
+            case "disarm":
+                return replace(self, key=rest, place=at)
+            case "start":
+                return replace(self, key="down", place=at)
+            case "stop":
+                return replace(self, key=rest, place=at, sent=self.sent + 1)
+            case "drop" | "expire":
+                return replace(self, key=rest, place=at, dropped=self.dropped + (self.key == "down"))
 
     def moved(self, to: Place) -> "Gate":
         """The gate once hands is at `to`: a hold open at the place it leaves is thrown away, not sent."""
-        match to == self.place, self.key:
-            case True, _:
-                return self
-            case False, "arming" | "down":
-                return Gate("dropped", to)
-            case False, "up" | "dropped":
-                return Gate(self.key, to)
+        if to == self.place:
+            return self
+        return replace(self, key=self._rest(to, self.listens), place=to, dropped=self.dropped + (self.key == "down"))
+
+    @staticmethod
+    def _rest(place: Place, listens: bool) -> Key:
+        """The key between turns at `place`."""
+        return "listening" if listens and place == "desk" else "up"
 
     def hears(self, place: Place) -> bool:
         """Whether the pipeline hears the microphone at `place`: only hands' own, so one stream of frames reaches Whisper."""
@@ -101,23 +129,16 @@ class Gate:
         return self.key == "down"
 
     def audible(self, audio: bytes) -> bytes:
-        """The microphone bytes as the pipeline hears them: intact while the key is pressed, silence otherwise."""
+        """The microphone bytes as the pipeline hears them: intact while the key is pressed or the desk listens, silence
+        otherwise."""
         # [LAW:dataflow-not-control-flow] a frame of the same length always
         # goes out, so Whisper sees an unbroken stream; the key
         # only decides its content.
-        return audio if self.key in ("arming", "down") else bytes(len(audio))
+        return audio if self.key in ("listening", "arming", "down") else bytes(len(audio))
 
-
-def _key_after(move: Move) -> Key:
-    match move:
-        case "arm":
-            return "arming"
-        case "disarm" | "stop":
-            return "up"
-        case "start":
-            return "down"
-        case "drop" | "expire":
-            return "dropped"
+    def framed(self, audio: bytes, sample_rate: int, num_channels: int, place: Place) -> KeyedAudio:
+        """Audio captured at `place`, as the pipeline hears it, tagged with this gate."""
+        return KeyedAudio(audio=self.audible(audio), sample_rate=sample_rate, num_channels=num_channels, key=self.key, sent=self.sent, dropped=self.dropped, place=place)
 
 
 class PushToTalk:
@@ -158,7 +179,7 @@ class PushToTalk:
         if gate.place != before.place:
             # [LAW:one-source-of-truth] the way the user talks sets the modality, so a move sets it in the same write.
             self._modality = modality_at(gate.place)
-            self._record(Moved(to=gate.place, by=by, dropped=gate.key == "dropped" and before.key != "dropped"))
+            self._record(Moved(to=gate.place, by=by, dropped=gate.dropped != before.dropped))
 
     @property
     def gate(self) -> Gate:

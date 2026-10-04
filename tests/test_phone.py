@@ -146,7 +146,7 @@ async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was
     call.page.channel.close()
     await call.until(lambda: call.key.gate.place == "desk")
     # The hold open at the phone is thrown away, not sent.
-    assert call.key.gate.key == "dropped"
+    assert (call.key.gate.key, call.key.gate.dropped) == ("up", 1)
     await asyncio.wait_for(playing, 1)
     assert isinstance(call.recorded[-1], PhoneLeft) and call.recorded[-1].reason == "hung up"
 

@@ -47,7 +47,7 @@ from hands.voice.system import (
 )
 from hands.voice.microphone import Devices
 from hands.voice.hold import Move
-from hands.voice.ptt import Key, KeyedAudio
+from hands.voice.ptt import Gate
 from hands.voice.turnstop import TurnResolved
 from hands.voice.whisper import Whisper
 
@@ -81,6 +81,8 @@ def test_each_fact_is_said_from_its_template(fact: SystemFact, said: str) -> Non
     ("move", "devices", "said"),
     [
         ("start", DEAF, (NoMicrophone(),)),
+        ("listen", DEAF, (NoMicrophone(),)),
+        ("listen", BUILT_IN, ()),
         ("stop", DEAF, ()),
         ("drop", DEAF, ()),
         ("start", BUILT_IN, ()),
@@ -356,9 +358,10 @@ async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_
 
     monkeypatch.setattr(whisper, "push_frame", push)
     # Three turns sent, one for each transcription below.
-    keys: list[Key] = ["down", "up"] * 3
-    for key in keys:
-        await whisper.process_audio_frame(KeyedAudio(audio=b"\x00\x00", sample_rate=16000, num_channels=1, key=key), FrameDirection.DOWNSTREAM)
+    gate = Gate()
+    for _ in range(3):
+        for gate in (gate.after("start", "desk"), gate.after("start", "desk").after("stop", "desk")):
+            await whisper.process_audio_frame(gate.framed(b"\x00\x00", 16000, 1, "desk"), FrameDirection.DOWNSTREAM)
     # Every transcription ends with Whisper done with its hold, and one it heard nothing in yields nothing else: no
     # frame that could reach the speaker. (Every frame has an id of its own, so frames made here are told by their kind.)
     said.append(None)

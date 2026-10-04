@@ -78,9 +78,11 @@ class Typing:
 
 Hold = Idle | Arming | Talking | Typing
 
-# What the hold does: opens the microphone on a press, closes it on a press that was Shift after all, and to the turn:
-# opens it, closes it and sends it, closes it and throws it away, or throws it away for being open too long.
-Move = Literal["arm", "disarm", "start", "stop", "drop", "expire"]
+# What an edge does: opens the microphone on a press, closes it on a press that was Shift after all, and to the turn:
+# opens it, closes it and sends it, closes it and throws it away, or throws it away for being open too long. The hold
+# makes only those; engaged conversation (`hands.voice.engaged`) also has the desk listen between turns, and stop.
+TurnMove = Literal["arm", "disarm", "start", "stop", "drop", "expire"]
+Move = TurnMove | Literal["listen", "deafen"]
 
 
 def step(hold: Hold, event: KeyEvent) -> tuple[Hold, tuple[Move, ...]]:

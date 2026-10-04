@@ -14,7 +14,7 @@ async def test_the_trigger_in_use_is_said_and_starts_as_the_held_key() -> None:
 async def test_a_trigger_not_built_is_refused_and_the_one_in_use_stays() -> None:
     triggers = Triggers()
     _, switch = trigger_tools(triggers)
-    assert await switch.body(trigger="wake word") == {"error": "'wake word' is no trigger; it is one of held key"}
+    assert await switch.body(trigger="wake word") == {"error": "'wake word' is no trigger; it is one of held key, engaged conversation"}
     assert triggers.in_use == "held key"
 
 
@@ -57,3 +57,13 @@ async def test_an_edge_that_fails_ends_the_drive_with_its_failure() -> None:
     with pytest.raises(ExceptionGroup) as failed:
         await Triggers().drive(edge)
     assert failed.group_contains(OSError, match="the event tap was refused")
+
+
+async def test_engaged_conversation_is_switched_to_and_says_how_to_talk_under_it() -> None:
+    triggers = Triggers()
+    in_use, switch = trigger_tools(triggers)
+    assert (await switch.body(trigger="engaged conversation"))["was"] == "held key"
+    assert await in_use.body() == {
+        "trigger": "engaged conversation",
+        "readback": "Engaged conversation: hold Right Shift once to engage, then just talk; hands answers when you finish, and listens again. Hold it once more to disengage.",
+    }
