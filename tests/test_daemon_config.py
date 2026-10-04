@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import onboard
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, Anthropic, Claude, Config, OpenAI
 from hands.daemon.starting import CannotStart, Ended, Start, start
@@ -147,19 +148,26 @@ def test_openai_needs_its_key() -> None:
 
 def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
-    home.brain.mkdir(parents=True)
-    (home.brain / "settings.json").write_text('{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false}')
+    onboard(home.brain)
     assert backend(Claude(), home, os.environ) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account="brain@example.com")
     assert backend(Claude(model="claude-other"), home, os.environ).model == "claude-other"
 
 
 def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_switches(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
-    home.brain.mkdir(parents=True)
+    onboard(home.brain)
+    (home.brain / "settings.json").unlink()
     with pytest.raises(Rejected, match="settings could not be read"):
         backend(Claude(), home, os.environ)
     (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}')
     with pytest.raises(Rejected, match='its account\'s syncClaudeAiSkills: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'):
+        backend(Claude(), home, os.environ)
+
+
+def test_a_brain_that_would_start_on_claude_codes_first_screens_stops_the_run_naming_hands_login(fake_claude: Path, tmp_path: Path) -> None:
+    home = Home(tmp_path / ".hands")
+    onboard(home.brain, trusted=False)
+    with pytest.raises(Rejected, match=r"first screens \(.*/cwd untrusted\): `hands login` answers them"):
         backend(Claude(), home, os.environ)
 
 
@@ -171,7 +179,7 @@ def test_the_brain_is_logged_as_reaching_anthropics_api_through_the_proxy_on_its
 
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
-    with pytest.raises(Rejected, match="cd /Users/someone/.hands/brain/cwd && CLAUDE_CONFIG_DIR=/Users/someone/.hands/brain claude"):
+    with pytest.raises(Rejected, match="`hands login` gives it one"):
         backend(Claude(), HOME, os.environ)
 
 

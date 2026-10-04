@@ -96,7 +96,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("check", help="say whether hands is set up to work here: its plugin, the claude shim on PATH, this terminal's Input Monitoring grant, and the running sessions; exits 0 only when every piece is there, 1 when one is missing, 2 when one could not be looked at")
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
-    commands.add_parser("login", help="log the brain (the claude backend of the home's config.toml) in again, or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
+    commands.add_parser("login", help="set the brain (the claude backend of the home's config.toml) up on a home with none, or log it in again or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
@@ -120,7 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             after_crash = arguments.restarted is None and crashed_before(home)
             run_start = Start(restarted=arguments.restarted is not None, after_crash=after_crash)
             heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
-            audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+            audit_log = audit_log_of(home)
             # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
             # or a crash the next run must read. A restart's run holds it already: the run before it beat starting under
             # this pid, which it keeps. Before the settings are read there is no collector: the start ends on the log alone.
@@ -365,21 +365,36 @@ def display(finding: readiness.Finding) -> tuple[str, str]:
             return "unknown", "WARNING"
 
 
+def audit_log_of(home: Home) -> audit.AuditLog:
+    """The audit log of `home`, on the wall clock: every command's events, and a run's, land in the one log."""
+    return audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+
+
 def login(home: Home) -> int:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
-    from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable
+    from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, starting_settings
     from hands.brain.process import login as brain_login
     from hands.core.wire import UPSTREAM
 
-    try:
-        account = brain_login(home.brain, UPSTREAM, os.environ)
-    except (LoginFailed, NotLoggedIn, Unstartable) as error:
-        print(f"hands login: {error}", file=sys.stderr)
-        return 1
-    except KeyboardInterrupt:
-        print("hands login: interrupted", file=sys.stderr)
-        return 1
-    print(f"the brain at {home.brain} is logged in as {account}")
+    audit_log = audit_log_of(home)
+    # [LAW:nothing-unseen] a login is a unit of work: whether it wrote the brain's settings, whether it took Claude Code's
+    # first run, and the account it ended on. Recorded in the audit log alone, as the plugin's render is: logging in never
+    # waits on a collector, or on a config.toml the daemon has yet to accept.
+    with wide.unit("brain.login", audit_log.record):
+        try:
+            # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
+            wide.annotate(settings_written=starting_settings(home.brain))
+            signed = brain_login(home.brain, UPSTREAM, os.environ)
+        except (LoginFailed, NotLoggedIn, Unstartable, OSError) as error:
+            wide.fail(str(error))
+            print(f"hands login: {error}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            wide.fail("interrupted")
+            print("hands login: interrupted", file=sys.stderr)
+            return 1
+        wide.annotate(first_run=signed.first_run, account=signed.account)
+    print(f"the brain at {home.brain} is logged in as {signed.account}")
     print("a hands already running started its brain on the login before: restart it to start the brain on this one")
     return 0
 
@@ -390,7 +405,7 @@ def install_fritter(home: Home) -> int:
     except Rejected as error:
         print(f"hands: {error}", file=sys.stderr)
         return 1
-    audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    audit_log = audit_log_of(home)
     # [LAW:nothing-unseen] an install is a unit of work: the fritter it copied from, where it put it and the claude
     # beside it, and whether PATH finds that claude, through the same export edge as the run's events.
     with exporting(settings.config.collector, audit_log.record) as record, wide.unit("fritter.install", record):
@@ -416,7 +431,7 @@ def install_fritter(home: Home) -> int:
 
 
 def render_plugin(home: Home) -> int:
-    audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    audit_log = audit_log_of(home)
     # [LAW:nothing-unseen] Claude Code runs this once per session: the interpreter the hooks run on, the plugin it
     # printed, and whether that plugin was written now or a session before had. Recorded in the audit log alone: Claude
     # Code waits for this command to exit before the session starts, so, like the shim, it waits on no collector and
@@ -458,7 +473,7 @@ def recall_moments(home: Home, words: Sequence[str], most: int) -> int:
     except Rejected as error:
         print(f"hands: {error}", file=sys.stderr)
         return 1
-    audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    audit_log = audit_log_of(home)
     # [LAW:nothing-unseen] a recall is a unit of work: what it was asked, how much of the log it read, and what it found,
     # zeros included, through the same export edge as the run's events.
     with exporting(settings.config.collector, audit_log.record) as record, wide.unit("memory.recall", record, ("lines", "unreadable", "moments", "matched", "printed")):

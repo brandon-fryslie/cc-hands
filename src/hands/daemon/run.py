@@ -104,7 +104,7 @@ from hands.voice.trigger import Edge, Trigger, Triggers
 from hands.voice.tools import Tool, audited, intermediary_tools
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
-from hands.brain.process import Brain, Launch, NotLoggedIn, Station, Unstartable, account_kept_out, logged_in, start as start_brain, workdir
+from hands.brain.process import Brain, Launch, NotLoggedIn, Station, Unstartable, account_kept_out, answered, logged_in, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.core.session import SessionId
@@ -140,6 +140,7 @@ def backend(llm: LLM, home: Home, environment: Mapping[str, str]) -> LLMBackend:
         case Claude(model=model):
             try:
                 account = logged_in(home.brain, UPSTREAM, environment)
+                answered(home.brain)
                 account_kept_out(home.brain)
             except (NotLoggedIn, Unstartable) as error:
                 raise Rejected(str(error)) from error
