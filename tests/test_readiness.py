@@ -32,6 +32,7 @@ from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.terminals import Terminal, attended, terminal_processes
 from hands.sessions.wrapper import shim_script
+from hands.voice import transcription as transcribing
 from hands.voice.backends import ClaudeCodeBackend
 
 
@@ -681,10 +682,15 @@ def test_nothing_listening_is_missing_and_names_lowtalker() -> None:
     assert isinstance(found, Missing) and "low-talker" in found.said and "Serve Transcription" in found.said
 
 
+def test_an_address_that_does_not_resolve_is_missing_and_points_at_the_config_not_lowtalker() -> None:
+    found = readiness.transcription("http://lowtalker.invalid:8610/v1")
+    assert isinstance(found, Missing) and "cannot be reached" in found.said and "config.toml" in found.said and "Serve Transcription" not in found.said
+
+
 def test_a_server_still_loading_its_model_is_missing_and_says_so() -> None:
     with serving(503, "model not ready") as server:
         found = readiness.transcription(server.url)
-    assert isinstance(found, Missing) and "not ready (503: " in found.said and "model not ready" in found.said
+    assert isinstance(found, Missing) and "answered 503: " in found.said and "model not ready" in found.said and "menu says the model is ready" in found.said
 
 
 def test_a_server_that_refuses_a_hold_is_missing_and_says_its_answer() -> None:
@@ -709,7 +715,7 @@ def test_a_server_answering_with_no_segments_is_missing_as_every_hold_would_fail
 def test_a_server_that_does_not_answer_in_time_is_unknown_not_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     # Accepts the connection and never answers.
     listening = socket.create_server(("127.0.0.1", 0))
-    monkeypatch.setattr(readiness, "TRANSCRIBE_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(transcribing, "PROBE_SECONDS", 0.2)
     with listening:
         found = readiness.transcription(f"http://127.0.0.1:{listening.getsockname()[1]}/v1")
     assert isinstance(found, Unknown) and "did not answer within 0.2 s" in found.said

@@ -56,8 +56,6 @@ Finding = Ready | Missing | Unknown
 LIST_TIMEOUT_SECONDS = 20.0
 # `hands --version` imports hands' CLI, a couple of seconds; one that has not answered in this long is not going to.
 VERSION_TIMEOUT_SECONDS = 30.0
-# LowTalker answers silence at once; one still loading its model answers 503 at once.
-TRANSCRIBE_TIMEOUT_SECONDS = 10.0
 INSTALL_CLAUDE = "`curl -fsSL https://claude.ai/install.sh | bash`"
 
 
@@ -138,21 +136,19 @@ def reaching(reached: backends.LLMBackend) -> Ready:
 def transcription(url: str) -> Finding:
     """Whether the transcription server at `url` transcribes a hold, as the voice uploads one."""
     # [LAW:no-silent-failure] what the server said back is said, so a refusal names its own cause.
-    match asyncio.run(transcribing.probe(url, TRANSCRIBE_TIMEOUT_SECONDS)):
+    match asyncio.run(transcribing.probe(url)):
         case None:
             return Ready(f"the transcription server at {url} transcribes a hold")
-        case transcribing.NotServing(reason=reason):
+        case transcribing.NotServing(reason=reason) as fault:
             return Missing(
-                f"nothing transcribes at {url} ({reason}), so hands cannot hear what is said: install LowTalker's network build "
-                f"(https://github.com/brandon-fryslie/low-talker) and switch Serve Transcription on in its menu"
+                f"nothing transcribes at {url} ({reason}), so hands cannot hear what is said: {transcribing.remedy(fault)} "
+                f"(LowTalker's network build is at https://github.com/brandon-fryslie/low-talker)"
             )
-        case transcribing.Loading(refusal=refusal):
-            return Missing(f"the transcription server at {url} is not ready (503: {refusal}): LowTalker answers once its menu says the model is ready")
-        case transcribing.Broken() as broken:
-            return Missing(f"the transcription server at {url} does not transcribe a hold: it {transcribing.detail(broken)}")
-        case transcribing.Busy() | transcribing.Unanswered() | transcribing.Lost() as passing:
-            # Busy, slow, or cut off: a server that may well transcribe the next hold, not one known to be missing.
-            return Unknown(f"cannot tell whether {url} transcribes: it {transcribing.detail(passing)}")
+        case transcribing.Unreachable() | transcribing.Loading() | transcribing.Broken() as fault:
+            return Missing(f"the transcription server at {url} does not transcribe a hold: it {transcribing.detail(fault)}; {transcribing.remedy(fault)}")
+        case transcribing.Busy() | transcribing.Unanswered() | transcribing.Lost() as fault:
+            # A passing fault: a server that may well transcribe the next hold, not one known to be missing.
+            return Unknown(f"cannot tell whether {url} transcribes: it {transcribing.detail(fault)}")
 
 
 def daemon(home: Home, now: datetime) -> Finding:

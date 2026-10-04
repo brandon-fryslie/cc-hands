@@ -20,11 +20,24 @@ LANGUAGE = "en"
 # The model the upload names. OpenAI's contract requires one; LowTalker transcribes with the one it holds, whatever is named.
 _MODEL = "whisper-1"
 
+# How long the probe waits on its quarter second of silence, which LowTalker with its model loaded answers in
+# milliseconds. A probe that runs out has only found the server slow (`Unanswered`, a passing fault), so a bound well
+# under a hold's own costs no finding, and it is all the start and `hands check` wait on the server.
+PROBE_SECONDS = 10.0
+
 
 @dataclass(frozen=True)
 class NotServing:
     """Nothing listens at the server's address: LowTalker quit, its Serve Transcription is off, or it is the offline build,
     which has no server at all."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class Unreachable:
+    """The server's address leads nowhere a connection can be made: its host does not resolve, or its TLS does not
+    check out. The address is wrong, not LowTalker."""
 
     reason: str
 
@@ -64,7 +77,11 @@ class Broken:
     answer: str
 
 
-Fault = NotServing | Loading | Busy | Unanswered | Lost | Broken
+# [LAW:one-source-of-truth] the one place a fault is judged lasting or not, read by the start and by `hands check` alike.
+# A standing fault fails every hold until something is done about it; a passing one may well spare the next hold.
+Standing = NotServing | Unreachable | Loading | Broken
+Passing = Busy | Unanswered | Lost
+Fault = Standing | Passing
 
 
 class TranscriptionFailed(Exception):
@@ -81,6 +98,8 @@ def detail(fault: Fault) -> str:
     match fault:
         case NotServing(reason=reason):
             return f"is not listening: {reason}"
+        case Unreachable(reason=reason):
+            return f"cannot be reached: {reason}"
         case Loading(refusal=refusal):
             return f"answered 503: {refusal}"
         case Busy(refusal=refusal):
@@ -91,6 +110,25 @@ def detail(fault: Fault) -> str:
             return f"dropped the connection: {reason}"
         case Broken(answer=answer):
             return f"answered {answer}"
+
+
+def remedy(fault: Fault) -> str:
+    """What the user can do about the fault, as both the voice and `hands check` say it."""
+    match fault:
+        case NotServing():
+            return "start LowTalker's network build and switch Serve Transcription on in its menu"
+        case Unreachable():
+            return "check the transcription url in hands' config.toml"
+        case Loading():
+            return "speak again once LowTalker's menu says the model is ready"
+        case Busy():
+            return "say it again in a moment"
+        case Unanswered():
+            return "say it again, and restart LowTalker if it keeps happening"
+        case Lost():
+            return "say it again"
+        case Broken():
+            return "check that the transcription url in hands' config.toml is LowTalker's"
 
 
 async def segments(url: str, wav: bytes, filename: str, prompt: str | None, timeout: float) -> list[Unsaid]:
@@ -110,6 +148,8 @@ async def segments(url: str, wav: bytes, filename: str, prompt: str | None, time
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session, session.post(f"{url}/audio/transcriptions", data=form) as response:
             status, body = response.status, await response.read()
     # Most specific first: a refused connect is an OSError and a ClientError, and a timeout may be a ClientError too.
+    except (aiohttp.ClientConnectorDNSError, aiohttp.ClientSSLError) as error:
+        raise TranscriptionFailed(url, Unreachable(f"{type(error).__name__}: {error}")) from error
     except aiohttp.ClientConnectorError as error:
         raise TranscriptionFailed(url, NotServing(str(error.os_error))) from error
     except TimeoutError as error:
@@ -127,7 +167,7 @@ async def segments(url: str, wav: bytes, filename: str, prompt: str | None, time
             raise TranscriptionFailed(url, Broken(f"{status}: {_refusal(body)}"))
 
 
-async def probe(url: str, timeout: float) -> Fault | None:
+async def probe(url: str) -> Fault | None:
     """The fault a hold uploaded now would meet, or None where the server transcribes: a quarter second of silence,
     uploaded as the voice uploads a hold, which LowTalker answers with no segments."""
     silence = io.BytesIO()
@@ -137,7 +177,7 @@ async def probe(url: str, timeout: float) -> Fault | None:
         written.setframerate(16_000)
         written.writeframes(bytes(8_000))
     try:
-        await segments(url, silence.getvalue(), "silence.wav", None, timeout)
+        await segments(url, silence.getvalue(), "silence.wav", None, PROBE_SECONDS)
     except TranscriptionFailed as failed:
         return failed.fault
     return None

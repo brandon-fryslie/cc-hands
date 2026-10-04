@@ -1818,12 +1818,15 @@ thing that failed `[LAW:no-silent-failure]`:
    API's message, never spoken from it), or "failed: <category>", Whisper's become "that turn was not heard" with the
    transcription server's fault, and a TTS error goes to the screen. The upload names that
    fault once, as `transcription.Fault`: nothing listening (LowTalker quit, Serve
-   Transcription off, or the offline build, which serves nothing), 503 while its model
-   loads, 429 at four uploads in flight, no answer within `ANSWER_SECONDS`, a connection
-   dropped, or an answer that is no transcription; each is said with what to do about it.
-   With MLX Whisper gone there is no second engine to fall to. The start asks the server
-   with a quarter second of silence as the pipeline comes up, so "hands is up" says it
-   cannot hear you, and why, when a hold sent then would fail. Pipecat files an SDK connection error
+   Transcription off, or the offline build, which serves nothing), an address that
+   does not resolve or whose TLS fails, 503 while its model loads, 429 at four uploads
+   in flight, no answer within `ANSWER_SECONDS`, a connection dropped, or an answer that
+   is no transcription; each is said with what to do about it (`transcription.remedy`,
+   which `hands check` says too). With MLX Whisper gone there is no second engine to
+   fall to. Once "hands is up" is said, the start asks the server with a quarter second
+   of silence (the `transcription.probed` event), and a standing fault, one that fails
+   every hold until something is done, is said next: "hands cannot hear you", and why.
+   A passing fault (busy, slow, cut off) is left to the hold it costs. Pipecat files an SDK connection error
    under UNKNOWN, so "unreachable" is recognised from the exception type. A model reply
    with no words and no call in it is the model's failure too, "sent back nothing": the
    API services read it off the frames they push (`EmptyReplyFails`), excusing the reply to a call's result, and

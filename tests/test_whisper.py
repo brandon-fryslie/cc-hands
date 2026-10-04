@@ -6,6 +6,8 @@ import wave
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from io import BytesIO
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from aiohttp import web
@@ -13,9 +15,11 @@ from pipecat.frames.frames import ErrorFrame, Frame, TranscriptionFrame
 from pipecat.processors.frame_processor import FrameProcessor
 
 from hands.sessions.audit import Entry, HoldHeard, Levels, Unsaid
+from hands.sessions.wide import WideEvent
 from hands.voice import system, whisper as whisper_module
 from hands.voice.microphone import Devices
-from hands.voice.transcription import Loading, NotServing
+from hands.voice.pipeline import Voice
+from hands.voice.transcription import Busy, Fault, Loading, Lost, NotServing, Unanswered
 from hands.voice.turnstop import TurnResolved
 from hands.voice.whisper import Whisper
 
@@ -231,8 +235,8 @@ async def test_a_server_that_never_answers_fails_the_hold_rather_than_holding_up
 
 # What is said when LowTalker cannot transcribe: each way it fails a hold, carried from the upload to the sentence.
 
-NOT_SERVING = "LowTalker is not serving transcription. Start its network build and switch Serve Transcription on in its menu"
-LOADING = "LowTalker's model is still loading. Speak again once its menu says it is ready"
+NOT_SERVING = "LowTalker is not serving transcription. Start LowTalker's network build and switch Serve Transcription on in its menu"
+LOADING = "LowTalker's model is still loading. Speak again once LowTalker's menu says the model is ready"
 
 
 def said_of(whisper: Whisper, frames: list[Frame]) -> str:
@@ -251,8 +255,11 @@ def said_of(whisper: Whisper, frames: list[Frame]) -> str:
     [
         ((503, {"error": {"message": "model not ready", "code": "model_not_ready"}}), f"That turn was not heard: {LOADING}."),
         ((429, {"error": {"message": "four transcriptions in flight", "code": "rate_limited"}}), "That turn was not heard: LowTalker is already transcribing four things at once. Say it again in a moment."),
-        ((200, Late()), "That turn was not heard: LowTalker did not answer within 0.2 seconds."),
-        ((404, b"<html>404 Not Found</html>"), "That turn was not heard: LowTalker answered with something that is not a transcription."),
+        ((200, Late()), "That turn was not heard: LowTalker did not answer within 0.2 seconds. Say it again, and restart LowTalker if it keeps happening."),
+        (
+            (404, b"<html>404 Not Found</html>"),
+            "That turn was not heard: LowTalker answered with something that is not a transcription. Check that the transcription url in hands' config.toml is LowTalker's.",
+        ),
     ],
 )
 async def test_each_way_lowtalker_fails_a_hold_is_said_with_what_to_do(lowtalker: LowTalker, monkeypatch: pytest.MonkeyPatch, answer: tuple[int, object], said: str) -> None:
@@ -270,15 +277,80 @@ async def test_lowtalker_not_running_is_said_on_the_hold_it_costs() -> None:
     assert said_of(whisper, await transcribe(whisper, 1, wav(1.0))) == f"That turn was not heard: {NOT_SERVING}."
 
 
-async def test_the_start_is_told_the_fault_a_hold_would_meet_now(lowtalker: LowTalker) -> None:
+async def test_the_start_is_told_the_fault_a_hold_would_meet_now_and_the_probe_is_an_event(lowtalker: LowTalker) -> None:
     lowtalker.answers += [(200, NOTHING), (503, {"error": {"message": "model not ready", "code": "model_not_ready"}})]
-    serving = Whisper(url=lowtalker.url, prompt=primed(), record=lambda _: None)
-    absent = Whisper(url="http://127.0.0.1:9/v1", prompt=primed(), record=lambda _: None)
+    recorded: list[Entry] = []
+    serving = Whisper(url=lowtalker.url, prompt=primed(), record=recorded.append)
+    absent = Whisper(url="http://127.0.0.1:9/v1", prompt=primed(), record=recorded.append)
 
     assert await serving.fault() is None
     assert await serving.fault() == Loading("model_not_ready: model not ready")
     assert isinstance(await absent.fault(), NotServing)
-    # What the start says of each, past "hands is up".
+    # Each probe is one event, carrying the fault whole: the server's refusal and the connect's reason with it.
+    probed = [entry for entry in recorded if isinstance(entry, WideEvent)]
+    assert [(event.event, event.outcome, event.facts["url"]) for event in probed] == [
+        ("transcription.probed", "ok", lowtalker.url),
+        ("transcription.probed", "ok", lowtalker.url),
+        ("transcription.probed", "ok", "http://127.0.0.1:9/v1"),
+    ]
+    assert [event.facts["fault"] for event in probed[:2]] == [None, Loading("model_not_ready: model not ready")]
+    assert isinstance(probed[2].facts["fault"], NotServing)
+
+
+@dataclass
+class Started:
+    """A Voice as far as `system.listen` reads it as the pipeline starts: its handlers, its devices, and its Whisper."""
+
+    fault: Fault | None
+    handlers: dict[str, Callable[..., Awaitable[None]]] = field(default_factory=dict[str, Callable[..., Awaitable[None]]])
+    said: list[system.SystemFact] = field(default_factory=list[system.SystemFact])
+
+    def event_handler(self, name: str) -> Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]]:
+        def register(handler: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
+            self.handlers[name] = handler
+            return handler
+
+        return register
+
+    async def say(self, fact: system.SystemFact) -> None:
+        self.said.append(fact)
+
+    async def start(self) -> list[system.SystemFact]:
+        async def fault() -> Fault | None:
+            return self.fault
+
+        up = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
+        voice = SimpleNamespace(worker=self, audio=SimpleNamespace(devices=up), stt=SimpleNamespace(fault=fault))
+        system.listen(cast("Voice", voice), cast("system.SystemChannel", self), after_crash=False)
+        await self.handlers["on_pipeline_started"](self, None)
+        return self.said
+
+
+@pytest.mark.parametrize(
+    ("fault", "deaf"),
+    [
+        (None, ()),
+        (NotServing("refused"), (system.Deaf(NotServing("refused")),)),
+        (Loading("model not ready"), (system.Deaf(Loading("model not ready")),)),
+        # Passing: the next hold may well be heard, and if it is not, that hold says why.
+        (Busy("too many"), ()),
+        (Unanswered(10.0), ()),
+        (Lost("ServerDisconnectedError"), ()),
+    ],
+)
+async def test_the_start_is_said_first_and_then_only_a_fault_that_fails_every_hold(fault: Fault | None, deaf: tuple[system.SystemFact, ...]) -> None:
     up = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
-    assert system.system_text(system.Started(False, up, NotServing("refused"))) == f"hands is up, but it cannot hear you: {NOT_SERVING}."
-    assert system.system_text(system.Started(False, up, Loading("model not ready"))) == f"hands is up, but it cannot hear you: {LOADING}."
+
+    assert await Started(fault).start() == [system.Started(False, up), *deaf]
+
+
+async def test_a_server_refusing_a_hold_with_a_4xx_leaves_whisper_transcribing_the_next(lowtalker: LowTalker) -> None:
+    # A permanent error would make Whisper unusable, and Pipecat then gives it no hold to transcribe or fail aloud.
+    lowtalker.answers += [(404, b"<html>404 Not Found</html>")]
+    whisper = Whisper(url=lowtalker.url, prompt=primed(None), record=lambda _: None)
+    [error] = [frame for frame in await transcribe(whisper, 1, wav(1.0)) if isinstance(frame, ErrorFrame)]
+
+    await whisper.push_error_frame(error)
+
+    assert error.category is not None and not error.category.is_permanent
+    assert whisper.is_usable

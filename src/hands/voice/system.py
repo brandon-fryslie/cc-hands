@@ -30,12 +30,18 @@ from hands.voice.hold import TURN_LIMIT_SECONDS, Move
 
 @dataclass(frozen=True)
 class Started:
-    """The pipeline is running on these devices; after_crash when the run before this one ended without being stopped,
-    and `fault` the one a hold sent now would meet, None where the transcription server transcribes."""
+    """The pipeline is running on these devices; after_crash when the run before this one ended without being stopped."""
 
     after_crash: bool
     devices: Devices
-    fault: transcription.Fault | None
+
+
+@dataclass(frozen=True)
+class Deaf:
+    """The transcription server has a fault that fails every hold until something is done about it, found as the
+    pipeline started."""
+
+    fault: transcription.Standing
 
 
 @dataclass(frozen=True)
@@ -63,20 +69,16 @@ class AudioMoved:
     devices: Devices
 
 
-SystemFact = Started | ModelUnreachable | ModelFailed | ModelReplyEmpty | UsageLimitReached | TranscriptionFailed | NoMicrophone | TurnExpired | AudioMoved
+SystemFact = Started | Deaf | ModelUnreachable | ModelFailed | ModelReplyEmpty | UsageLimitReached | TranscriptionFailed | NoMicrophone | TurnExpired | AudioMoved
 
 
 def system_text(fact: SystemFact) -> str:
     match fact:
-        case Started(after_crash=after_crash, devices=Devices(input=input_), fault=fault):
+        case Started(after_crash=after_crash, devices=Devices(input=input_)):
             up = "hands is back after a crash" if after_crash else "hands is up"
-            match input_, fault:
-                case None, _:
-                    return f"{up}, but there is no microphone, so it cannot hear you."
-                case _, None:
-                    return f"{up}."
-                case _, fault:
-                    return f"{up}, but it cannot hear you: {_unheard(fault)}."
+            return f"{up}." if input_ is not None else f"{up}, but there is no microphone, so it cannot hear you."
+        case Deaf(fault=fault):
+            return f"hands cannot hear you: {_unheard(fault)}."
         case ModelUnreachable():
             return "The language model is unreachable."
         case ModelFailed(category=category):
@@ -86,7 +88,7 @@ def system_text(fact: SystemFact) -> str:
         case UsageLimitReached() as limit:
             return f"The language model's usage limit is reached{_until(limit.returns)}."
         case TranscriptionFailed(fault=fault):
-            return f"That turn was not heard: {_unheard(fault)}."
+            return f"That turn was not heard: {'speech recognition failed' if fault is None else _unheard(fault)}."
         case NoMicrophone():
             return "There is no microphone, so hands cannot hear you."
         case TurnExpired():
@@ -98,24 +100,29 @@ def system_text(fact: SystemFact) -> str:
             return f"Audio moved: listening on {input_}, speaking on {output}."
 
 
-def _unheard(fault: transcription.Fault | None) -> str:
-    """Why speech is not being heard, and what to do about it where anything can be done: [LAW:no-silent-failure] the
-    server being down is said, never fallen through to another engine."""
+def _unheard(fault: transcription.Fault) -> str:
+    """Why speech is not being heard, and what to do about it: [LAW:no-silent-failure] the server being down is said,
+    never fallen through to another engine."""
+    remedy = transcription.remedy(fault)
+    return f"{_why(fault)}. {remedy[0].upper()}{remedy[1:]}"
+
+
+def _why(fault: transcription.Fault) -> str:
     match fault:
         case transcription.NotServing():
-            return "LowTalker is not serving transcription. Start its network build and switch Serve Transcription on in its menu"
+            return "LowTalker is not serving transcription"
+        case transcription.Unreachable():
+            return "the transcription server's address cannot be reached"
         case transcription.Loading():
-            return "LowTalker's model is still loading. Speak again once its menu says it is ready"
+            return "LowTalker's model is still loading"
         case transcription.Busy():
-            return "LowTalker is already transcribing four things at once. Say it again in a moment"
+            return "LowTalker is already transcribing four things at once"
         case transcription.Unanswered(seconds=seconds):
             return f"LowTalker did not answer within {seconds:g} seconds"
         case transcription.Lost():
             return "LowTalker dropped the connection before it answered"
         case transcription.Broken():
             return "LowTalker answered with something that is not a transcription"
-        case None:
-            return "speech recognition failed"
 
 
 @dataclass(frozen=True)
@@ -314,9 +321,16 @@ def listen(voice: Voice, channel: SystemChannel, after_crash: bool) -> None:
 
     @voice.worker.event_handler("on_pipeline_started")
     async def announce(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
-        # The devices are read once the pipeline has opened its streams on them, and the transcription server is asked
-        # as it is about to be needed, so a model that finished loading during the start is not said to be loading.
-        await channel.say(Started(after_crash, voice.audio.devices, await voice.stt.fault()))
+        # The devices are read once the pipeline has opened its streams on them.
+        await channel.say(Started(after_crash, voice.audio.devices))
+        # [LAW:no-silent-failure] then the transcription server is asked, as it is about to be needed, so a model that
+        # finished loading during the start is not said to be loading; the start is said first, never held on the server.
+        # A passing fault is not said: the next hold may well be heard, and if it is not, that hold says why.
+        match await voice.stt.fault():
+            case transcription.NotServing() | transcription.Unreachable() | transcription.Loading() | transcription.Broken() as standing:
+                await channel.say(Deaf(standing))
+            case transcription.Busy() | transcription.Unanswered() | transcription.Lost() | None:
+                pass
 
     @voice.worker.event_handler("on_pipeline_error")
     async def failed(_worker: PipelineWorker, error: ErrorFrame) -> None:  # pyright: ignore[reportUnusedFunction]

@@ -26,6 +26,7 @@ from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.tracing.service_decorators import traced_stt  # pyright: ignore[reportUnknownVariableType]  (untyped in Pipecat)
 
 from hands.sessions.audit import HoldHeard, Levels, Record, Unsaid
+from hands.sessions.wide import annotate, unit
 from hands.core.place import Place
 from hands.voice import transcription
 from hands.voice.ptt import Key, KeyedAudio
@@ -159,7 +160,12 @@ class Whisper(SegmentedSTTService):
 
     async def fault(self) -> transcription.Fault | None:
         """The fault a hold sent now would meet, or None where the server transcribes."""
-        return await transcription.probe(self._url, ANSWER_SECONDS)
+        # [LAW:nothing-unseen] the fault whole, its reason and the server's refusal with it, where what is said of it
+        # keeps only what to do.
+        with unit("transcription.probed", self._record):
+            fault = await transcription.probe(self._url)
+            annotate(url=self._url, fault=fault)
+        return fault
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         hold, levels = self._transcribing.popleft()

@@ -29,6 +29,7 @@ from hands.voice.system import (
     told,
     AudioMoved,
     BURST_SECONDS,
+    Deaf,
     ModelFailed,
     ModelFault,
     UsageLimitReached,
@@ -46,7 +47,7 @@ from hands.voice.system import (
 )
 from hands.voice import transcription
 from hands.voice.microphone import Devices
-from hands.voice.transcription import Broken, Busy, Loading, Lost, NotServing, Unanswered
+from hands.voice.transcription import Broken, Busy, Loading, Lost, NotServing, Unanswered, Unreachable
 from hands.voice.hold import Move
 from hands.voice.ptt import Gate
 from hands.voice.turnstop import TurnResolved
@@ -54,26 +55,24 @@ from hands.voice.whisper import Whisper
 
 
 BUILT_IN = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
+NOT_SERVING = "LowTalker is not serving transcription. Start LowTalker's network build and switch Serve Transcription on in its menu"
+UNREACHABLE = "the transcription server's address cannot be reached. Check the transcription url in hands' config.toml"
+LOADING = "LowTalker's model is still loading. Speak again once LowTalker's menu says the model is ready"
+BROKEN = "LowTalker answered with something that is not a transcription. Check that the transcription url in hands' config.toml is LowTalker's"
 DEAF = Devices(input=None, output="Mac mini Speakers")
 
 
 @pytest.mark.parametrize(
     ("fact", "said"),
     [
-        (Started(after_crash=False, devices=BUILT_IN, fault=None), "hands is up."),
-        (Started(after_crash=True, devices=BUILT_IN, fault=None), "hands is back after a crash."),
-        (Started(after_crash=False, devices=DEAF, fault=None), "hands is up, but there is no microphone, so it cannot hear you."),
-        (Started(after_crash=True, devices=DEAF, fault=None), "hands is back after a crash, but there is no microphone, so it cannot hear you."),
-        # No microphone is the first thing to fix, so it is the one said.
-        (Started(after_crash=False, devices=DEAF, fault=NotServing("refused")), "hands is up, but there is no microphone, so it cannot hear you."),
-        (
-            Started(after_crash=False, devices=BUILT_IN, fault=NotServing("refused")),
-            "hands is up, but it cannot hear you: LowTalker is not serving transcription. Start its network build and switch Serve Transcription on in its menu.",
-        ),
-        (
-            Started(after_crash=True, devices=BUILT_IN, fault=Loading("model not ready")),
-            "hands is back after a crash, but it cannot hear you: LowTalker's model is still loading. Speak again once its menu says it is ready.",
-        ),
+        (Started(after_crash=False, devices=BUILT_IN), "hands is up."),
+        (Started(after_crash=True, devices=BUILT_IN), "hands is back after a crash."),
+        (Started(after_crash=False, devices=DEAF), "hands is up, but there is no microphone, so it cannot hear you."),
+        (Started(after_crash=True, devices=DEAF), "hands is back after a crash, but there is no microphone, so it cannot hear you."),
+        (Deaf(NotServing("refused")), f"hands cannot hear you: {NOT_SERVING}."),
+        (Deaf(Unreachable("ClientConnectorDNSError: nodename nor servname provided")), f"hands cannot hear you: {UNREACHABLE}."),
+        (Deaf(Loading("model not ready")), f"hands cannot hear you: {LOADING}."),
+        (Deaf(Broken("404: Not Found")), f"hands cannot hear you: {BROKEN}."),
         (AudioMoved(DEAF), "No microphone: hands cannot hear you. Speaking on Mac mini Speakers."),
         (NoMicrophone(), "There is no microphone, so hands cannot hear you."),
         (ModelUnreachable(), "The language model is unreachable."),
@@ -81,15 +80,16 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
         (ModelReplyEmpty(), "The language model sent back nothing."),
         (UsageLimitReached(None), "The language model's usage limit is reached."),
         (TranscriptionFailed(None), "That turn was not heard: speech recognition failed."),
-        (
-            TranscriptionFailed(NotServing("refused")),
-            "That turn was not heard: LowTalker is not serving transcription. Start its network build and switch Serve Transcription on in its menu.",
-        ),
-        (TranscriptionFailed(Loading("model not ready")), "That turn was not heard: LowTalker's model is still loading. Speak again once its menu says it is ready."),
+        (TranscriptionFailed(NotServing("refused")), f"That turn was not heard: {NOT_SERVING}."),
+        (TranscriptionFailed(Unreachable("ClientConnectorCertificateError: certificate verify failed")), f"That turn was not heard: {UNREACHABLE}."),
+        (TranscriptionFailed(Loading("model not ready")), f"That turn was not heard: {LOADING}."),
         (TranscriptionFailed(Busy("too many")), "That turn was not heard: LowTalker is already transcribing four things at once. Say it again in a moment."),
-        (TranscriptionFailed(Unanswered(30.0)), "That turn was not heard: LowTalker did not answer within 30 seconds."),
-        (TranscriptionFailed(Lost("ServerDisconnectedError")), "That turn was not heard: LowTalker dropped the connection before it answered."),
-        (TranscriptionFailed(Broken("404: Not Found")), "That turn was not heard: LowTalker answered with something that is not a transcription."),
+        (
+            TranscriptionFailed(Unanswered(30.0)),
+            "That turn was not heard: LowTalker did not answer within 30 seconds. Say it again, and restart LowTalker if it keeps happening.",
+        ),
+        (TranscriptionFailed(Lost("ServerDisconnectedError")), "That turn was not heard: LowTalker dropped the connection before it answered. Say it again."),
+        (TranscriptionFailed(Broken("404: Not Found")), f"That turn was not heard: {BROKEN}."),
         (TurnExpired(), "That turn was open for 120 seconds, so hands threw it away."),
     ],
 )
