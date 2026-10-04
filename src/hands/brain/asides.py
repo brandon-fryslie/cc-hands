@@ -61,7 +61,7 @@ class Unanswered(StrEnum):
 
     UNSTARTED = "unstarted"  # no Claude Code could be started to ask it
     EXITED = "exited"  # its Claude Code ended before it answered
-    TIMED_OUT = "timed_out"  # no answer by its asker's deadline, waiting its turn or answering
+    TIMED_OUT = "timed_out"  # no answer by its asker's deadline, waiting its turn, starting, or answering
     WORDLESS = "wordless"  # the model's reply did not end in words
 
 
@@ -98,7 +98,8 @@ class Asides:
         """The answer to `question`, from a Claude Code that is asked nothing else; raises AsideFailed when it has none,
         TIMED_OUT once `within` seconds have passed since it was asked, waiting its turn or answering."""
         loop = asyncio.get_running_loop()
-        # [LAW:one-source-of-truth] the asker's deadline is the only one: its turn and its answer are both waited on to it.
+        # [LAW:one-source-of-truth] the asker's deadline is the only one: its turn, its Claude Code's start, its answer,
+        # and its Claude Code's end are each waited on to it, and no longer.
         asked = _Asked(SessionId(str(uuid4())), loop.time() + within, loop.create_future())
         # [LAW:nothing-unseen] one event for each question, however it ends: answered, failed, or left by its asker, in its
         # turn or still waiting for it. Asked inside another unit of work, it is that one's part.
@@ -128,16 +129,23 @@ class Asides:
             self._one.release()
 
     async def _answer(self, asked: _Asked, question: str) -> str:
+        loop = asyncio.get_running_loop()
         try:
-            claude = await spawn(self._station, aside_command(brain_claude(self._station.inherited), self._station.model, asked.session, question))
+            # A Claude Code cut short as it starts is killed by spawn itself.
+            async with asyncio.timeout_at(asked.deadline):
+                claude = await spawn(self._station, aside_command(brain_claude(self._station.inherited), self._station.model, asked.session, question))
+        except TimeoutError as error:
+            # Ahead of OSError, which it is one of.
+            raise AsideFailed(Unanswered.TIMED_OUT, "no answer by its deadline: its Claude Code was still starting") from error
         except (Unstartable, OSError) as error:
             # No claude to run, or a question longer than a command line can be; a claude that cannot be run exits, and says why.
             raise AsideFailed(Unanswered.UNSTARTED, f"no Claude Code to ask: {error}") from error
         try:
             return await self._answered(claude, asked)
         finally:
-            # [LAW:no-silent-failure] answered, failed, or given up on, its Claude Code is ended: none is left running.
-            await claude.stop()
+            # [LAW:no-silent-failure] answered, failed, or given up on, its Claude Code is ended: none is left running. What
+            # is left of its asker's time is all it has to end in, so one past its deadline is killed at once.
+            await claude.stop(max(0.0, asked.deadline - loop.time()))
 
     async def _answered(self, claude: ClaudeCode, asked: _Asked) -> str:
         await asyncio.wait({asked.answer, claude.exit}, timeout=asked.deadline - asyncio.get_running_loop().time(), return_when=asyncio.FIRST_COMPLETED)

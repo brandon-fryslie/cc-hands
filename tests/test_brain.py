@@ -21,7 +21,7 @@ from loguru import logger
 from hands.core.front import FrontUnread, InFront
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Unanswered, aside_command
-from hands.brain.process import NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import NOBODY, SLIM, STOP_SECONDS, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -602,6 +602,16 @@ async def test_a_side_question_with_no_answer_fails_saying_why_and_leaves_no_cla
     assert "queued_ms" not in behind_said.facts and "queued_ms" not in late.facts and late.duration_ms >= 300
     # A question whose asker's deadline passed is an error; one whose asker left, as hands stopping leaves it, is not.
     assert [level(event) for event in (hold, behind_said, late)] == ["error", "info", "error"]
+
+
+async def test_a_side_question_whose_claude_code_will_not_end_still_fails_at_its_deadline(tmp_path: Path, fake_claude: Path) -> None:
+    asides = Asides(station(tmp_path), lambda _entry: None)
+    started = asyncio.get_running_loop().time()
+    # Its Claude Code is told to end as the deadline passes and does not: it is killed then, never waited on.
+    with pytest.raises(AsideFailed, match="no answer by its deadline"):
+        await asides.ask(AsideKind.LINE, "stubborn", 0.5)
+    assert asyncio.get_running_loop().time() - started < STOP_SECONDS
+    await until(lambda: running(tmp_path) == [])
 
 
 async def test_an_asker_told_to_leave_again_while_its_claude_code_is_ending_leaves_none_running(tmp_path: Path, fake_claude: Path) -> None:
