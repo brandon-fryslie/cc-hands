@@ -23,7 +23,6 @@ from hands.daemon import cli
 from hands.sessions import audit
 from hands.sessions.audit import (
     AuditLog,
-    AsideAnswered,
     BacklogUnread,
     Entry,
     Failure,
@@ -152,7 +151,6 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
     log.record(BacklogUnread(project="/code/p", error="lit exited 3", seconds=0.1))
     log.record(Named(session="s1", outcome="kept", before="a b", name=None, reply="a b", error=None, seconds=0.1))
     log.record(Named(session="s1", outcome="failed", before="a b", name=None, reply=None, error="timed out", seconds=0.1))
-    log.record(AsideAnswered("q", "", True, SessionId("s2"), 0.0, 9.0))
     for reply in (
         Reached(200, 0.0, 0.0, 2, Answered({"input_tokens": 3})),
         Reached(429, 0.0, 0.0, 2, Answered({"type": "error", "error": {"type": "rate_limit_error"}})),
@@ -166,7 +164,6 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
         ("BacklogUnread", "error"),
         ("Named", "info"),
         ("Named", "error"),
-        ("AsideAnswered", "error"),
         ("Exchanged", "info"),
         ("Exchanged", "error"),
         ("Exchanged", "error"),

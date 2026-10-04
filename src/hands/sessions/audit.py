@@ -184,21 +184,6 @@ class CopiesLost:
 
 
 @dataclass(frozen=True)
-class AsideAnswered:
-    """A side question hands asked in the background, of a slim Claude Code started for it alone, and its answer from
-    the wire, or why it has none. `session` is that Claude Code's, which its exchanges on the wire carry. `waited` is how
-    long, in seconds, the question waited behind the ones asked before it, and `seconds` how long its Claude Code ran: 0 for a question whose asker left before its turn, which
-    had none."""
-
-    question: str
-    reply: str
-    failed: bool
-    session: SessionId
-    waited: float
-    seconds: float
-
-
-@dataclass(frozen=True)
 class ResultsStubbed:
     """The brain's history crossed a batch boundary: the calls whose results go as a line from now on, and those that
     go whole because no sentence had been said of them by then."""
@@ -456,7 +441,6 @@ Entry = (
     | PhoneRefused
     | CopiesLost
     | Exchanged
-    | AsideAnswered
     | ResultsStubbed
     | Transcribed
     | HoldHeard
@@ -483,7 +467,7 @@ Level = Literal["error", "info"]
 
 def level(entry: Entry) -> Level:
     """Whether a line tells of something that went wrong: a Failure; a start refused; a backlog read or a unit of work that failed; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
-    broke off; or a side question that came to nothing."""
+    broke off."""
     # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
@@ -492,8 +476,6 @@ def level(entry: Entry) -> Level:
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)
-        case AsideAnswered(failed=failed):
-            return "error" if failed else "info"
         case WideEvent(outcome=outcome):
             return "error" if outcome == "failed" else "info"
         case Named(outcome=outcome):

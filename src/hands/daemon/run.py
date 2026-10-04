@@ -103,9 +103,9 @@ from hands.voice.ptt import PushToTalk
 from hands.voice.trigger import Edge, Trigger, Triggers
 from hands.voice.tools import Tool, audited, intermediary_tools
 from hands.brain.mcp import CallSpans, serve_mcp
-from hands.brain.asides import Asides
+from hands.brain.asides import AsideKind, Asides
 from hands.brain.process import Brain, Launch, NotLoggedIn, Station, Unstartable, account_kept_out, logged_in, start as start_brain, workdir
-from hands.brain.context import EVERY, Keeper, Kept, Store
+from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.core.session import SessionId
 
@@ -234,8 +234,8 @@ class Mind:
     llm: FrameProcessor
     watches: Sequence[Watch]
     telling: Telling
-    # A summariser on this model, given its instruction, how many tokens it may answer in, and how long it has.
-    summariser: Callable[[str, int, float], Summariser]
+    # A summariser on this model, given what it is for, its instruction, how many tokens it may answer in, and how long it has.
+    summariser: Callable[[AsideKind, str, int, float], Summariser]
 
 
 async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFront:
@@ -258,7 +258,7 @@ async def mind(
                 build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens),
                 (),
                 Pushed(),
-                lambda instruction, max_tokens, timeout: summariser(backend, instruction, max_tokens, timeout),
+                lambda _kind, instruction, max_tokens, timeout: summariser(backend, instruction, max_tokens, timeout),
             )
         case ClaudeCodeBackend(model=model, config_dir=config_dir, account=account):
             spans = CallSpans()
@@ -275,11 +275,11 @@ async def mind(
                     # its own: nothing but the user's turns and their stops is ever typed into the brain.
                     asides = Asides(station, record)
                     stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans)
-                    keeper = Keeper(brain.session, asides.ask, store, EVERY, record)
+                    keeper = Keeper(brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
                     with wire.joined(Kept(stage, keeper, brain, asides)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                         # A summary is as long as its Claude Code makes it: only its time is the summary's own.
-                        yield Mind(stage, watches, Tailed(), lambda instruction, _max_tokens, timeout: aside(asides.ask, instruction, timeout))
+                        yield Mind(stage, watches, Tailed(), lambda kind, instruction, _max_tokens, timeout: aside(partial(asides.ask, kind), instruction, timeout))
                 finally:
                     await brain.stop()
             finally:
@@ -371,7 +371,7 @@ async def run(
                 floor = Floor(minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, key, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
-                    sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
+                    sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, heart, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
@@ -449,12 +449,12 @@ async def converse(
             name="the session speech relay",
         ),
         asyncio.create_task(
-            keep_playing(playing, sessions.live_session, voice.worker.queue_frame, minded.summariser(EXPLAIN_INSTRUCTION, EXPLAIN_MAX_TOKENS, EXPLAIN_TIMEOUT_SECONDS)),
+            keep_playing(playing, sessions.live_session, voice.worker.queue_frame, minded.summariser(AsideKind.EXPLANATION, EXPLAIN_INSTRUCTION, EXPLAIN_MAX_TOKENS, EXPLAIN_TIMEOUT_SECONDS)),
             name="the progress player",
         ),
         asyncio.create_task(narrate(sessions, utterances, tails, voice.worker.queue_frame, lambda: attention(home), overlays, recounts, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
-        asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),
+        asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),
     ]

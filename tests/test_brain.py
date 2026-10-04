@@ -20,13 +20,13 @@ from loguru import logger
 
 from hands.core.front import FrontUnread, InFront
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
-from hands.brain.asides import AsideFailed, Asides, aside_command
-from hands.brain.process import NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
+from hands.brain.process import NOBODY, SLIM, STOP_SECONDS, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
-from hands.sessions.audit import AsideAnswered, Entry
+from hands.sessions.audit import Entry, level
 from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
@@ -488,12 +488,16 @@ async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_las
     assert pressed[1] - pressed[0] > 0.8
 
 
+# An asker's deadline no question here comes near, but the one that is to pass it.
+WAITED = Deadline(60.0)
+
+
 async def test_a_side_question_is_the_prompt_a_claude_code_of_its_own_opens_with_answered_from_the_wire_and_its_claude_code_ended(
     tmp_path: Path, fake_claude: Path
 ) -> None:
     recorded: list[Entry] = []
     asides = Asides(station(tmp_path), recorded.append)
-    asked = asyncio.create_task(asides.ask("what did\n\tthe read \ud83d say?"))
+    asked = asyncio.create_task(asides.ask(AsideKind.SUMMARY, "what did\n\tthe read \ud83d say?", WAITED))
     await until(lambda: len(typed(tmp_path)) == 1)
     [[_, question, first]] = typed(tmp_path)
     # Another session's side question, and this one's request that failed and is asked again, answer nothing.
@@ -507,7 +511,10 @@ async def test_a_side_question_is_the_prompt_a_claude_code_of_its_own_opens_with
     assert question == "what did\n    the read \\ud83d say?"
     assert running(tmp_path) == []
     # The next question has a Claude Code of its own, under a session of its own, which carries nothing of the first.
-    again = asyncio.create_task(asides.ask("and then?"))
+    # Asked inside another unit of work, as a background pass asks one, it is a part of that unit.
+    with unit("pass", recorded.append):
+        again = asyncio.create_task(asides.ask(AsideKind.NAME, "and then?", WAITED))
+        passing = here()
     await until(lambda: len(typed(tmp_path)) == 2)
     second = typed(tmp_path)[1][2]
     assert second != first
@@ -516,10 +523,16 @@ async def test_a_side_question_is_the_prompt_a_claude_code_of_its_own_opens_with
     asides.hear(answered(second, "Two."))
     assert await again == "Two."
     assert running(tmp_path) == []
-    assert [(entry.question, entry.reply, entry.failed, entry.session) for entry in recorded if isinstance(entry, AsideAnswered)] == [
-        ("what did\n\tthe read \ud83d say?", "It said four.", False, first),
-        ("and then?", "Two.", False, second),
+    # One event for each question, answered: what it was for, what was asked and answered, and under which session.
+    assert [
+        (event.outcome, event.facts["kind"], event.facts["question"], event.facts["reply"], event.facts["aside_session"], "unanswered" in event.facts)
+        for event in events(recorded, "brain.aside")
+    ] == [
+        ("ok", "summary", "what did\n\tthe read \ud83d say?", "It said four.", first, False),
+        ("ok", "name", "and then?", "Two.", second, False),
     ]
+    [alone, within_pass] = events(recorded, "brain.aside")
+    assert alone.parent_id is None and (within_pass.trace_id, within_pass.parent_id) == (passing.trace_id, passing.span_id)
 
 
 async def test_a_side_question_with_no_answer_fails_saying_why_and_leaves_no_claude_code_running(
@@ -531,31 +544,32 @@ async def test_a_side_question_with_no_answer_fails_saying_why_and_leaves_no_cla
     def sessions_asked(question: str) -> list[str]:
         return [session for kind, text, session in typed(tmp_path) if (kind, text) == ("btw", question)]
 
-    # Only the question that is never answered is given half a second: nothing else here races a clock.
-    with monkeypatch.context() as short:
-        short.setattr("hands.brain.asides.ASIDE_SECONDS", 0.5)
-        with pytest.raises(AsideFailed, match="no answer in 0s; its Claude Code showed"):
-            await asides.ask("hold")
+    # Only the questions that are never answered are given less than a second: nothing else here races a clock.
+    with pytest.raises(AsideFailed, match=r"no answer within Deadline\(seconds=0.5\)"):
+        await asides.ask(AsideKind.LINE, "hold", Deadline(0.5))
     # A reply that did not end in words: Claude Code shows words of its own for it, which are never the answer.
-    silent = asyncio.create_task(asides.ask("silent"))
+    silent = asyncio.create_task(asides.ask(AsideKind.LINE, "silent", WAITED))
     await until(lambda: sessions_asked("silent") != [])
     asides.hear(answered(sessions_asked("silent")[0], "", stop="tool_use"))
     with pytest.raises(AsideFailed, match="ended 'tool_use'"):
         await silent
     with pytest.raises(AsideFailed, match=r"exited \(3\) before it answered; it showed:\n(.|\n)*bye"):
-        await asides.ask("die")
-    # An asker that stops waiting ends its Claude Code too; one that leaves before its turn never had one.
-    leaving = asyncio.create_task(asides.ask("stay"))
+        await asides.ask(AsideKind.LINE, "die", WAITED)
+    # An asker that stops waiting ends its Claude Code too; one that leaves before its turn never had one, and one whose
+    # deadline passes before its turn never had one either.
+    leaving = asyncio.create_task(asides.ask(AsideKind.LINE, "stay", WAITED))
     await until(lambda: sessions_asked("stay") != [])
-    behind = asyncio.create_task(asides.ask("behind"))
+    behind = asyncio.create_task(asides.ask(AsideKind.LINE, "behind", WAITED))
     await asyncio.sleep(0.1)
     behind.cancel()
     with pytest.raises(asyncio.CancelledError):
         await behind
+    with pytest.raises(AsideFailed, match=r"no answer within Deadline\(seconds=0.3\)"):
+        await asides.ask(AsideKind.LINE, "late", Deadline(0.3))
     leaving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await leaving
-    assert running(tmp_path) == [] and sessions_asked("behind") == []
+    assert running(tmp_path) == [] and sessions_asked("behind") == sessions_asked("late") == []
     # A fault of hands' own is the line's reason, as itself: never an asker that left.
     async def fault(*_: object) -> None:
         raise RuntimeError("no thread")
@@ -563,31 +577,66 @@ async def test_a_side_question_with_no_answer_fails_saying_why_and_leaves_no_cla
     with monkeypatch.context() as broken:
         broken.setattr("hands.brain.asides.spawn", fault)
         with pytest.raises(RuntimeError, match="no thread"):
-            await asides.ask("broken?")
+            await asides.ask(AsideKind.LINE, "broken?", WAITED)
     # With no claude on the PATH hands was started with there is no Claude Code to ask.
     nowhere = station(tmp_path)
     nowhere = replace(nowhere, inherited={**nowhere.inherited, "PATH": str(tmp_path / "nowhere")})
     with pytest.raises(AsideFailed, match="no claude on PATH"):
-        await Asides(nowhere, recorded.append).ask("anyone?")
-    said = [entry for entry in recorded if isinstance(entry, AsideAnswered)]
-    assert [(entry.question, entry.reply.split(";")[0].split(":")[0], entry.failed) for entry in said] == [
-        ("hold", "no answer in 0s", True),
-        ("silent", "the model's reply ended 'tool_use' with ''", True),
-        ("die", "its Claude Code exited (3) before it answered", True),
-        ("behind", "its asker stopped waiting", True),
-        ("stay", "its asker stopped waiting", True),
-        ("broken?", "RuntimeError('no thread')", True),
-        ("anyone?", "no Claude Code to ask", True),
+        await Asides(nowhere, recorded.append).ask(AsideKind.LINE, "anyone?", WAITED)
+    # One event for each question, however it ended: why it has no answer, typed, beside what was seen of it.
+    said = events(recorded, "brain.aside")
+    assert [(event.facts["question"], event.outcome, event.facts.get("unanswered"), (event.error or "").split(";")[0].split(":\n")[0]) for event in said] == [
+        ("hold", "failed", Unanswered.TIMED_OUT, "AsideFailed: no answer within Deadline(seconds=0.5)"),
+        ("silent", "failed", Unanswered.WORDLESS, "AsideFailed: the model's reply ended 'tool_use' with ''"),
+        ("die", "failed", Unanswered.EXITED, "AsideFailed: its Claude Code exited (3) before it answered"),
+        ("behind", "cancelled", None, ""),
+        ("late", "failed", Unanswered.TIMED_OUT, "AsideFailed: no answer within Deadline(seconds=0.3)"),
+        ("stay", "cancelled", None, ""),
+        ("broken?", "failed", None, "RuntimeError: no thread"),
+        ("anyone?", "failed", Unanswered.UNSTARTED, "AsideFailed: no Claude Code to ask: no claude on PATH but hands' shims, so there is no Claude Code for hands to run as its own"),
     ]
-    # How long each waited its turn, and how long its Claude Code ran.
-    [hold, _, _, behind_said, _, _, _] = said
-    assert hold.waited < 0.5 <= hold.seconds
-    assert behind_said.waited >= 0.1 and behind_said.seconds == 0
+    assert all("reply" not in event.facts for event in said)
+    # How long each waited its turn, the rest of its duration its Claude Code answering; none for one that never had a turn.
+    [hold, _, _, behind_said, late, _, _, _] = said
+    assert hold.facts["queued_ms"] < 500 <= hold.duration_ms  # pyright: ignore[reportOperatorIssue]
+    assert "queued_ms" not in behind_said.facts and "queued_ms" not in late.facts and late.duration_ms >= 300
+    # What its Claude Code showed as its asker stopped waiting: none for one that never had a Claude Code.
+    assert ">" in str(hold.facts["shown"]) and "shown" not in late.facts
+    # A question whose asker's deadline passed is an error; one whose asker left, as hands stopping leaves it, is not.
+    assert [level(event) for event in (hold, behind_said, late)] == ["error", "info", "error"]
+
+
+async def test_a_side_question_whose_claude_code_will_not_end_still_fails_at_its_deadline(tmp_path: Path, fake_claude: Path) -> None:
+    asides = Asides(station(tmp_path), lambda _entry: None)
+    started = asyncio.get_running_loop().time()
+    # Its Claude Code is told to end as the deadline passes and does not: it is given the time any Claude Code is to end
+    # in, never killed as it may be writing the brain's config directory, and then killed.
+    with pytest.raises(AsideFailed, match=r"no answer within Deadline\(seconds=0.5\)"):
+        await asides.ask(AsideKind.LINE, "stubborn", Deadline(0.5))
+    assert asyncio.get_running_loop().time() - started < 0.5 + STOP_SECONDS + 1.5
+    assert running(tmp_path) == []
+
+
+async def test_an_asker_in_no_hurry_for_its_turn_has_its_whole_time_limit_once_it_has_it(tmp_path: Path, fake_claude: Path) -> None:
+    recorded: list[Entry] = []
+    asides = Asides(station(tmp_path), recorded.append)
+    first = asyncio.create_task(asides.ask(AsideKind.SUMMARY, "first", WAITED))
+    await until(lambda: len(typed(tmp_path)) == 1)
+    patient = asyncio.create_task(asides.ask(AsideKind.LINE, "patient", TimeLimit(0.3)))
+    # Longer behind the first than its time limit, which is not yet running.
+    await asyncio.sleep(0.5)
+    asides.hear(answered(typed(tmp_path)[0][2], "One."))
+    assert await first == "One."
+    await until(lambda: len(typed(tmp_path)) == 2)
+    asides.hear(answered(typed(tmp_path)[1][2], "Two."))
+    assert await patient == "Two."
+    [_, waited] = events(recorded, "brain.aside")
+    assert waited.facts["queued_ms"] >= 500  # pyright: ignore[reportOperatorIssue]
 
 
 async def test_an_asker_told_to_leave_again_while_its_claude_code_is_ending_leaves_none_running(tmp_path: Path, fake_claude: Path) -> None:
     asides = Asides(station(tmp_path), lambda _entry: None)
-    leaving = asyncio.create_task(asides.ask("stubborn"))
+    leaving = asyncio.create_task(asides.ask(AsideKind.LINE, "stubborn", WAITED))
     await until(lambda: [line[0] for line in typed(tmp_path)] == ["btw"])
     leaving.cancel()
     # Its Claude Code is told to end and does not. The asker is told to leave again while it waits on that, as a daemon
@@ -606,7 +655,7 @@ async def test_a_turn_is_typed_into_the_brain_at_once_while_a_side_question_wait
     brain = await start(launch(tmp_path, fritter), recorded.append)
     asides = Asides(station(tmp_path), recorded.append)
     try:
-        stuck = asyncio.create_task(asides.ask("hold"))
+        stuck = asyncio.create_task(asides.ask(AsideKind.SUMMARY, "hold", WAITED))
         await until(lambda: any(line[0] == "btw" for line in typed(tmp_path)))
         assert await asyncio.wait_for(brain.ask("are you listening?", unasked), 5) == BrainAnswered("p1", None)
         assert not stuck.done()
@@ -801,25 +850,21 @@ def test_the_brain_config_is_one_line_of_json_naming_only_hands() -> None:
     assert json.loads(server.config()) == {"mcpServers": {"hands": {"type": "http", "url": "http://127.0.0.1:9/mcp", "headers": {"Authorization": "Bearer t"}}}}
 
 
-async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_and_says_a_failed_one() -> None:
-    asked: list[str] = []
+async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_within_its_time_and_says_a_failed_one() -> None:
+    asked: list[tuple[str, Within]] = []
 
-    async def ask(question: str) -> str:
-        asked.append(question)
+    async def ask(question: str, within: Within) -> str:
+        asked.append((question, within))
         if "fail" in question:
-            raise AsideFailed("no answer in 120s")
-        if "slow" in question:
-            await asyncio.sleep(5)
+            raise AsideFailed(Unanswered.TIMED_OUT, "no answer by its deadline")
         return "  The tests ran. "
 
     summarise = aside(ask, "Sum it up.", 0.1)
     assert await summarise("the tests ran") == "The tests ran."
-    assert asked == ["Sum it up.\n\nSummarize this:\n\nthe tests ran"]
-    with pytest.raises(SummaryFailed, match="no answer in 120s"):
+    # The summary's own time is the side question's deadline, over the ones asked before it and its answer alike.
+    assert asked == [("Sum it up.\n\nSummarize this:\n\nthe tests ran", Deadline(0.1))]
+    with pytest.raises(SummaryFailed, match="no answer by its deadline"):
         await summarise("fail")
-    # The summary's own time holds, whatever the side question waited on: the ones asked before it, or its answer.
-    with pytest.raises(SummaryFailed, match="no answer in 0s"):
-        await summarise("slow")
 
 
 async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_variant_alone(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:

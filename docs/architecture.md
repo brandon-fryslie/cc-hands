@@ -1063,6 +1063,13 @@ failed it; a turn whose asker stopped waiting is still heard to its end. Each di
 event: a `brain.permission`, with the tool, the decision, and how long it was held, and a `brain.elicitation`, which
 is always declined. A dialog posted for the turn in flight is a part of that `brain.turn`; any other is a part of the
 launch. A body hands cannot read is answered as its hook asks, and its event fails saying so.
+Each side question (`brain.aside`), asked of a Claude Code of its own, is one event from when it is asked: what it is
+for (`kind`), its Claude Code's session (`aside_session`), the question and its answer, how long it waited behind the
+ones before it (`queued_ms`, absent for a question that never had its turn; the rest of its duration is its Claude Code
+answering), or why it has none (`unanswered`), its asker's time running out among them (a `Deadline` from asking, or for the
+line an old result goes as a `TimeLimit` from its turn), with what its Claude Code showed then (`shown`). Its Claude
+Code is always ended gracefully, after its asker's time if need be: it shares the brain's config directory. An explanation is a part of
+the `utterance` it delays; the rest begin traces of their own.
 
 **What is in front.** Built: as the user's words reach the brain's stage, hands reads once
 what is in front on the Mac's screen (`sessions/front.py`, decided by the pure
