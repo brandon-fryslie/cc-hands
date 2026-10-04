@@ -824,10 +824,12 @@ def logins(home: Path) -> list[tuple[str, dict[str, object]]]:
     return [(event["outcome"], event["facts"]) for event in events if event["type"] == "WideEvent" and event["event"] == "brain.login"]
 
 
-def onboard(brain: Path, settings: bytes) -> None:
-    """A brain home Claude Code has finished its first run on, holding `settings`."""
+def onboard(brain: Path, settings: bytes, trusted: bool = True) -> None:
+    """A brain home Claude Code has been through its onboarding on, holding `settings`; its directory trusted, as Claude
+    Code trusts it, by a directory above it, unless not `trusted`."""
     brain.mkdir()
-    (brain / ".claude.json").write_text('{"hasCompletedOnboarding": true}')
+    projects = {str(brain.resolve().parent): {"hasTrustDialogAccepted": trusted}}
+    (brain / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "projects": projects}))
     (brain / "settings.json").write_bytes(settings)
 
 
@@ -849,8 +851,7 @@ def test_hands_login_sets_a_new_brain_home_up_with_its_settings_then_claude_code
     # the trust of that directory among them, are answered once at this terminal; its settings there before it started,
     # so that it never syncs the account's skills or plugins; with no credential of this shell's beside it.
     assert json.loads((brain / "login.json").read_text()) == {"argv": ["--setting-sources", "user"], "cwd": str(workdir(brain)), "settings": True, "credentials": []}
-    # Nothing to restart: no hands ever started a brain that had not been through its first run.
-    assert capsys.readouterr().out.splitlines() == [f"the brain at {brain} is logged in as brain@example.com"]
+    assert capsys.readouterr().out.splitlines()[0] == f"the brain at {brain} is logged in as brain@example.com"
     assert logins(home) == [("ok", {"settings_written": True, "first_run": True, "account": "brain@example.com"})]
 
 
@@ -876,6 +877,14 @@ def test_hands_login_on_a_brain_home_claude_code_never_finished_its_first_run_on
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     account_kept_out(brain)
     assert logins(tmp_path) == [("ok", {"settings_written": True, "first_run": True, "account": "brain@example.com"})]
+
+
+def test_hands_login_on_a_brain_home_whose_directory_claude_code_was_never_told_to_trust_runs_its_first_run(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOGGED_IN", "0")
+    # Onboarded, then quit at the trust screen: the brain would start on that screen.
+    onboard(tmp_path / "brain", b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false}', trusted=False)
+    assert main(["--home", str(tmp_path), "login"]) == 0
+    assert json.loads((tmp_path / "brain" / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
 
 
 def test_hands_login_after_a_first_run_that_failed_runs_it_again(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:

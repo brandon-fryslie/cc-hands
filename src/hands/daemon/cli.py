@@ -383,9 +383,7 @@ def login(home: Home) -> int:
             return 1
         wide.annotate(first_run=signed.first_run, account=signed.account)
     print(f"the brain at {home.brain} is logged in as {signed.account}")
-    if not signed.first_run:
-        # A brain never through its first run never started, so no hands holds it on an earlier login.
-        print("a hands already running started its brain on the login before: restart it to start the brain on this one")
+    print("a hands already running started its brain on the login before: restart it to start the brain on this one")
     return 0
 
 

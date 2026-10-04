@@ -189,9 +189,13 @@ def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -
 
 def workdir(config_dir: Path) -> Path:
     """The empty directory a slim Claude Code on the login in `config_dir` runs in, made if it is not there: never a project."""
-    cwd = config_dir / "cwd"
+    cwd = _cwd(config_dir)
     cwd.mkdir(parents=True, exist_ok=True)
     return cwd
+
+
+def _cwd(config_dir: Path) -> Path:
+    return config_dir / "cwd"
 
 
 class BrainGone(Exception):
@@ -231,16 +235,20 @@ class Login:
 
 
 def onboarded(config_dir: Path) -> bool:
-    """Whether Claude Code has finished its first run on `config_dir`, its first screens answered: it says so in its own
-    .claude.json (2.1.288). A directory made by anything else, `claude auth status` among them, has not."""
+    """Whether Claude Code has been through its first screens for the brain: its onboarding finished, and the directory the
+    brain runs in trusted, or a directory above it, as Claude Code records both in its own .claude.json (2.1.288). A
+    config directory made by anything else, `claude auth status` among them, has been through neither."""
     state = config_dir / ".claude.json"
+    cwd = _cwd(config_dir).resolve()
     try:
         said = Payload.parse(state.read_bytes())
+        projects = Payload.of(said.fields.get("projects", {}), "its projects").fields
+        known = [Payload.of(projects[place], place) for place in map(str, (cwd, *cwd.parents)) if place in projects]
     except FileNotFoundError:
         return False
     except Rejected as error:
         raise LoginFailed(f"{state} is not Claude Code's state ({error})") from None
-    return said.fields.get("hasCompletedOnboarding") is True
+    return said.fields.get("hasCompletedOnboarding") is True and any(place.fields.get("hasTrustDialogAccepted") is True for place in known)
 
 
 def login(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Login:
