@@ -82,20 +82,33 @@ class _Open:
 _open: ContextVar[_Open | Span | None] = ContextVar("the unit of work open here", default=None)
 
 
+@dataclass(frozen=True)
+class Begun:
+    """A unit of work that began before the body that runs it opened: its span, and when it began, on the wall clock and
+    by time.monotonic(). Work started for it in between is its child all the same, and its event is timed from here."""
+
+    span: Span
+    started_at: datetime
+    began: float
+
+
+def begun() -> Begun:
+    """A unit of work beginning here, now, inside the unit open here, in its trace, or the root of a new one."""
+    return Begun(_minted(), datetime.now(UTC), time.monotonic())
+
+
 @contextmanager
-def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] = (), span: Span | None = None) -> Generator[None]:
+def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] = (), began: Begun | None = None) -> Generator[None]:
     """Run the body as one unit of work named `event`, and emit its event as the body ends, however it ends.
 
-    `span` is the one `minted` for it here before it opened, so work started for it first is its child all the same; by
-    default it is minted as it opens. The body's exception is the body's: it is recorded on the event and raised on, never
-    swallowed here.
+    `began` is the unit `begun` here before the body opened it; by default it begins as it opens. The body's exception is
+    the body's: it is recorded on the event and raised on, never swallowed here.
     """
-    if span is not None and span.parent_id != minted().parent_id:
-        # [LAW:no-silent-failure] a span minted under another unit would be written into a trace it is no part of.
-        raise LookupError(f"{event} was minted under another unit of work than the one open here")
-    opening = span or minted()
-    opened = _Open(opening.trace_id, opening.span_id, opening.parent_id, emit, dict.fromkeys(counts, 0))
-    started_at, began = datetime.now(UTC), time.monotonic()
+    if began is not None and began.span.parent_id != _minted().parent_id:
+        # [LAW:no-silent-failure] a unit begun under another would be written into a trace it is no part of.
+        raise LookupError(f"{event} was begun under another unit of work than the one open here")
+    beginning = began or begun()
+    opened = _Open(beginning.span.trace_id, beginning.span.span_id, beginning.span.parent_id, emit, dict.fromkeys(counts, 0))
     token = _open.set(opened)
     outcome: Outcome = "ok"
     error: str | None = None
@@ -115,7 +128,7 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
         # A task the body started copied this unit along and may outlive it: what it adds now would change an event
         # already emitted and never reach the log, so it is refused instead.
         opened.closed = True
-        emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, started_at, since(began), outcome, error, trace, opened.counts, opened.facts))
+        emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, beginning.started_at, since(beginning.began), outcome, error, trace, opened.counts, opened.facts))
 
 
 @contextmanager
@@ -167,7 +180,7 @@ def here() -> Span:
     return Span(opened.trace_id, opened.span_id, opened.parent_id)
 
 
-def minted() -> Span:
+def _minted() -> Span:
     """The span a unit of work opened here would have: inside the unit open here, in its trace, or the root of a new one."""
     match _open.get():
         case None:

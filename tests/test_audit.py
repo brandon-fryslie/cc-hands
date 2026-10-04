@@ -558,6 +558,8 @@ async def test_what_an_effect_opens_is_the_child_of_the_event_that_called_for_it
     prompted = [event for event in applied(recorded) if isinstance(event.facts["applied"], Prompted)]
     assert [(event.trace_id, event.parent_id) for event in prompted] == [(hook.trace_id, hook.span_id), (prompted[1].trace_id, None)]
     assert [(mark.trace_id, mark.parent_id) for mark in marks] == [(event.trace_id, event.span_id) for event in prompted]
+    # Timed from when it was decided: what its effects did lies inside it.
+    assert all(event.started_at <= mark.started_at for event, mark in zip(prompted, marks, strict=True))
 
 
 async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_performed() -> None:

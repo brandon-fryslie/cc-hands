@@ -18,10 +18,9 @@ from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
 from hands.core.status import Stamp
-from hands.core.trace import Span
 from hands.sessions.audit import Record, Typing, TypingFailed
 from hands.sessions import wide
-from hands.sessions.wide import annotate, continuing, count, here, minted, since, unit
+from hands.sessions.wide import Begun, annotate, begun, continuing, count, here, since, unit
 from hands.sessions.clock import stamp_now
 from hands.sessions.hookconfig import STOP_HOLD_SECONDS
 from hands.sessions.delta import Changes, NoChanges
@@ -125,21 +124,23 @@ class Sessions:
         before = self._registry
         self._registry, effects = reduce(before, event)
         performed = _unperformed(effects)
-        # Minted now, in the context of whatever unit of work applied it: inside a hook post's, it is that post's child.
-        applying = minted()
+        # Begun now, as it is decided, in the context of whatever unit of work applied it: inside a hook post's, it is that
+        # post's child.
+        applying = begun()
         # [LAW:no-ambient-temporal-coupling] the effects are scheduled as they are decided, before the applying opens its
-        # unit, so they are started inside its span: what an effect opens, such as a repository mark, is its child.
-        with continuing(applying):
+        # unit, so they are started inside its span: what an effect opens, such as a repository mark, is its child, and
+        # the applying is timed from before any of them ran.
+        with continuing(applying.span):
             scheduled = self._scheduled(performed)
         if _quiet(before, self._registry, effects):
             return scheduled
         return asyncio.ensure_future(self._applied(event, performed, scheduled, applying))
 
-    async def _applied(self, applied: Event | Answer, performed: list[Performed], performing: Awaitable[None], span: Span) -> None:
+    async def _applied(self, applied: Event | Answer, performed: list[Performed], performing: Awaitable[None], applying: Begun) -> None:
         # [LAW:nothing-unseen] one event for each event or answer the registry applies, open until every effect it
         # called for is performed: what was applied, each effect with its outcome and time, and the effects counted by
         # kind. [LAW:one-source-of-truth] it is the one record of them; no line beside it repeats an effect.
-        with unit("applied", self._record, counts=EFFECT_KINDS, span=span):
+        with unit("applied", self._record, counts=EFFECT_KINDS, began=applying):
             annotate(applied=applied)
             try:
                 await performing
@@ -247,7 +248,7 @@ class Sessions:
         if not _quiet(before, self._registry, effects):
             performed = _unperformed(effects)
             # Performed at once, in no session's order: the session is waiting on this very reply.
-            await self._applied(answered, performed, self._perform_all(performed, list(range(len(performed)))), minted())
+            await self._applied(answered, performed, self._perform_all(performed, list(range(len(performed)))), begun())
         return outcome
 
     async def draft(self, request: DraftRequest) -> DraftOutcome:
