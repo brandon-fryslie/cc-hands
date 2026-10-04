@@ -29,7 +29,6 @@ from hands.sessions.audit import HoldHeard, Levels, Record, Unsaid
 from hands.core.place import Place
 from hands.voice import transcription
 from hands.voice.ptt import Key, KeyedAudio
-from hands.voice.transcription import TranscriptionFailed
 from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved
 
 # What every hold is said in, as Pipecat names it.
@@ -158,6 +157,10 @@ class Whisper(SegmentedSTTService):
     async def _handle_transcription(self, transcript: str, is_final: bool, language: Language | None = None) -> None:
         """Pipecat's span for a transcription, which its tracing decorator opens around this."""
 
+    async def fault(self) -> transcription.Fault | None:
+        """The fault a hold sent now would meet, or None where the server transcribes."""
+        return await transcription.probe(self._url, ANSWER_SECONDS)
+
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         hold, levels = self._transcribing.popleft()
         try:
@@ -188,8 +191,6 @@ class Whisper(SegmentedSTTService):
         await self.start_processing_metrics()
         try:
             scored = await transcription.segments(self._url, audio, f"hold-{hold}.wav", prompt, ANSWER_SECONDS)
-        except TimeoutError as error:
-            raise TranscriptionFailed(f"{self._url} did not answer within {ANSWER_SECONDS:.0f} s") from error
         finally:
             await self.stop_processing_metrics()
         said: list[str] = []

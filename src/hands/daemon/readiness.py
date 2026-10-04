@@ -11,19 +11,15 @@ and a daemon that is up says nothing about any of them, so this is where a missi
 
 import asyncio
 import filecmp
-import io
 import os
 import re
 import shutil
 import subprocess
-import wave
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import version
 from pathlib import Path
-
-import aiohttp
 
 from hands.core.events import Attached
 from hands.core.session import Membership
@@ -140,32 +136,23 @@ def reaching(reached: backends.LLMBackend) -> Ready:
 
 
 def transcription(url: str) -> Finding:
-    """Whether the transcription server at `url` transcribes: a quarter second of silence, uploaded as the voice uploads
-    a hold, comes back as segments, which LowTalker gives none of."""
-    silence = io.BytesIO()
-    with wave.open(silence, "wb") as written:
-        written.setnchannels(1)
-        written.setsampwidth(2)
-        written.setframerate(16_000)
-        written.writeframes(bytes(8_000))
+    """Whether the transcription server at `url` transcribes a hold, as the voice uploads one."""
     # [LAW:no-silent-failure] what the server said back is said, so a refusal names its own cause.
-    try:
-        asyncio.run(transcribing.segments(url, silence.getvalue(), "silence.wav", None, TRANSCRIBE_TIMEOUT_SECONDS))
-    except transcribing.Refused as refused:
-        if refused.status == 503:
-            return Missing(f"the transcription server at {url} is not ready (503: {refused.refusal}): LowTalker answers once its menu says the model is ready")
-        return Missing(f"the transcription server at {url} does not transcribe a hold: {refused}")
-    except transcribing.TranscriptionFailed as failed:
-        return Missing(f"the server at {url} answered a hold with no transcription the voice can read: {failed}")
-    except aiohttp.ClientConnectorError as error:
-        return Missing(
-            f"nothing transcribes at {url} ({error.os_error}), so hands cannot hear what is said: install LowTalker's network build "
-            f"(https://github.com/brandon-fryslie/low-talker) and switch Serve Transcription on in its menu"
-        )
-    except (TimeoutError, aiohttp.ClientError, OSError) as error:
-        # A connect or an answer that timed out is a server that may be there, slow: not one known to be missing.
-        return Unknown(f"cannot tell whether {url} transcribes: {type(error).__name__}: {error}")
-    return Ready(f"the transcription server at {url} transcribes a hold")
+    match asyncio.run(transcribing.probe(url, TRANSCRIBE_TIMEOUT_SECONDS)):
+        case None:
+            return Ready(f"the transcription server at {url} transcribes a hold")
+        case transcribing.NotServing(reason=reason):
+            return Missing(
+                f"nothing transcribes at {url} ({reason}), so hands cannot hear what is said: install LowTalker's network build "
+                f"(https://github.com/brandon-fryslie/low-talker) and switch Serve Transcription on in its menu"
+            )
+        case transcribing.Loading(refusal=refusal):
+            return Missing(f"the transcription server at {url} is not ready (503: {refusal}): LowTalker answers once its menu says the model is ready")
+        case transcribing.Broken() as broken:
+            return Missing(f"the transcription server at {url} does not transcribe a hold: it {transcribing.detail(broken)}")
+        case transcribing.Busy() | transcribing.Unanswered() | transcribing.Lost() as passing:
+            # Busy, slow, or cut off: a server that may well transcribe the next hold, not one known to be missing.
+            return Unknown(f"cannot tell whether {url} transcribes: it {transcribing.detail(passing)}")
 
 
 def daemon(home: Home, now: datetime) -> Finding:

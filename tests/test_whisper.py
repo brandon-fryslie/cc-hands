@@ -10,9 +10,12 @@ from io import BytesIO
 import pytest
 from aiohttp import web
 from pipecat.frames.frames import ErrorFrame, Frame, TranscriptionFrame
+from pipecat.processors.frame_processor import FrameProcessor
 
 from hands.sessions.audit import Entry, HoldHeard, Levels, Unsaid
-from hands.voice import whisper as whisper_module
+from hands.voice import system, whisper as whisper_module
+from hands.voice.microphone import Devices
+from hands.voice.transcription import Loading, NotServing
 from hands.voice.turnstop import TurnResolved
 from hands.voice.whisper import Whisper
 
@@ -224,3 +227,58 @@ async def test_a_server_that_never_answers_fails_the_hold_rather_than_holding_up
     error = stuck[0]
     assert isinstance(error, ErrorFrame) and "did not answer within" in error.error
     assert [frame.text for frame in after if isinstance(frame, TranscriptionFrame)] == ["Okay."]
+
+
+# What is said when LowTalker cannot transcribe: each way it fails a hold, carried from the upload to the sentence.
+
+NOT_SERVING = "LowTalker is not serving transcription. Start its network build and switch Serve Transcription on in its menu"
+LOADING = "LowTalker's model is still loading. Speak again once its menu says it is ready"
+
+
+def said_of(whisper: Whisper, frames: list[Frame]) -> str:
+    """What the system channel says of the ErrorFrame a hold ended in, as the pipeline routes Whisper's errors."""
+    [error] = [frame for frame in frames if isinstance(frame, ErrorFrame)]
+    routed = ErrorFrame(error.error, exception=error.exception, processor=whisper)
+    match system.alarm(routed, stt=whisper, llm=FrameProcessor(), tts=FrameProcessor()):
+        case system.Say(fact=fact):
+            return system.system_text(fact)
+        case other:
+            raise AssertionError(f"a failed hold is said, not {other}")
+
+
+@pytest.mark.parametrize(
+    ("answer", "said"),
+    [
+        ((503, {"error": {"message": "model not ready", "code": "model_not_ready"}}), f"That turn was not heard: {LOADING}."),
+        ((429, {"error": {"message": "four transcriptions in flight", "code": "rate_limited"}}), "That turn was not heard: LowTalker is already transcribing four things at once. Say it again in a moment."),
+        ((200, Late()), "That turn was not heard: LowTalker did not answer within 0.2 seconds."),
+        ((404, b"<html>404 Not Found</html>"), "That turn was not heard: LowTalker answered with something that is not a transcription."),
+    ],
+)
+async def test_each_way_lowtalker_fails_a_hold_is_said_with_what_to_do(lowtalker: LowTalker, monkeypatch: pytest.MonkeyPatch, answer: tuple[int, object], said: str) -> None:
+    monkeypatch.setattr(whisper_module, "ANSWER_SECONDS", 0.2)
+    lowtalker.answers += [answer]
+    whisper = Whisper(url=lowtalker.url, prompt=primed(None), record=lambda _: None)
+
+    assert said_of(whisper, await transcribe(whisper, 1, wav(1.0))) == said
+
+
+async def test_lowtalker_not_running_is_said_on_the_hold_it_costs() -> None:
+    # Nothing listens on the discard port: LowTalker quit, or the offline build, which serves nothing.
+    whisper = Whisper(url="http://127.0.0.1:9/v1", prompt=primed(None), record=lambda _: None)
+
+    assert said_of(whisper, await transcribe(whisper, 1, wav(1.0))) == f"That turn was not heard: {NOT_SERVING}."
+
+
+async def test_the_start_is_told_the_fault_a_hold_would_meet_now(lowtalker: LowTalker) -> None:
+    lowtalker.answers += [(200, NOTHING), (503, {"error": {"message": "model not ready", "code": "model_not_ready"}})]
+    serving = Whisper(url=lowtalker.url, prompt=primed(), record=lambda _: None)
+    absent = Whisper(url="http://127.0.0.1:9/v1", prompt=primed(), record=lambda _: None)
+
+    assert await serving.fault() is None
+    assert await serving.fault() == Loading("model_not_ready: model not ready")
+    assert isinstance(await absent.fault(), NotServing)
+    # What the start says of each, past "hands is up".
+    up = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
+    assert system.system_text(system.Started(False, up, NotServing("refused"))) == f"hands is up, but it cannot hear you: {NOT_SERVING}."
+    assert system.system_text(system.Started(False, up, Loading("model not ready"))) == f"hands is up, but it cannot hear you: {LOADING}."

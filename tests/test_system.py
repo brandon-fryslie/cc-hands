@@ -44,7 +44,9 @@ from hands.voice.system import (
     alarm,
     system_text,
 )
+from hands.voice import transcription
 from hands.voice.microphone import Devices
+from hands.voice.transcription import Broken, Busy, Loading, Lost, NotServing, Unanswered
 from hands.voice.hold import Move
 from hands.voice.ptt import Gate
 from hands.voice.turnstop import TurnResolved
@@ -58,17 +60,36 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
 @pytest.mark.parametrize(
     ("fact", "said"),
     [
-        (Started(after_crash=False, devices=BUILT_IN), "hands is up."),
-        (Started(after_crash=True, devices=BUILT_IN), "hands is back after a crash."),
-        (Started(after_crash=False, devices=DEAF), "hands is up, but there is no microphone, so it cannot hear you."),
-        (Started(after_crash=True, devices=DEAF), "hands is back after a crash, but there is no microphone, so it cannot hear you."),
+        (Started(after_crash=False, devices=BUILT_IN, fault=None), "hands is up."),
+        (Started(after_crash=True, devices=BUILT_IN, fault=None), "hands is back after a crash."),
+        (Started(after_crash=False, devices=DEAF, fault=None), "hands is up, but there is no microphone, so it cannot hear you."),
+        (Started(after_crash=True, devices=DEAF, fault=None), "hands is back after a crash, but there is no microphone, so it cannot hear you."),
+        # No microphone is the first thing to fix, so it is the one said.
+        (Started(after_crash=False, devices=DEAF, fault=NotServing("refused")), "hands is up, but there is no microphone, so it cannot hear you."),
+        (
+            Started(after_crash=False, devices=BUILT_IN, fault=NotServing("refused")),
+            "hands is up, but it cannot hear you: LowTalker is not serving transcription. Start its network build and switch Serve Transcription on in its menu.",
+        ),
+        (
+            Started(after_crash=True, devices=BUILT_IN, fault=Loading("model not ready")),
+            "hands is back after a crash, but it cannot hear you: LowTalker's model is still loading. Speak again once its menu says it is ready.",
+        ),
         (AudioMoved(DEAF), "No microphone: hands cannot hear you. Speaking on Mac mini Speakers."),
         (NoMicrophone(), "There is no microphone, so hands cannot hear you."),
         (ModelUnreachable(), "The language model is unreachable."),
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
         (ModelReplyEmpty(), "The language model sent back nothing."),
         (UsageLimitReached(None), "The language model's usage limit is reached."),
-        (TranscriptionFailed(), "Speech recognition failed for that turn."),
+        (TranscriptionFailed(None), "That turn was not heard: speech recognition failed."),
+        (
+            TranscriptionFailed(NotServing("refused")),
+            "That turn was not heard: LowTalker is not serving transcription. Start its network build and switch Serve Transcription on in its menu.",
+        ),
+        (TranscriptionFailed(Loading("model not ready")), "That turn was not heard: LowTalker's model is still loading. Speak again once its menu says it is ready."),
+        (TranscriptionFailed(Busy("too many")), "That turn was not heard: LowTalker is already transcribing four things at once. Say it again in a moment."),
+        (TranscriptionFailed(Unanswered(30.0)), "That turn was not heard: LowTalker did not answer within 30 seconds."),
+        (TranscriptionFailed(Lost("ServerDisconnectedError")), "That turn was not heard: LowTalker dropped the connection before it answered."),
+        (TranscriptionFailed(Broken("404: Not Found")), "That turn was not heard: LowTalker answered with something that is not a transcription."),
         (TurnExpired(), "That turn was open for 120 seconds, so hands threw it away."),
     ],
 )
@@ -160,7 +181,10 @@ def test_an_error_is_told_by_the_processor_that_raised_it() -> None:
     assert services.alarm(ErrorFrame("Error during completion", exception=REFUSED, processor=services.llm, category=ErrorCategory.UNKNOWN)) == Say(ModelUnreachable())
     assert services.alarm(ErrorFrame("timed out", processor=services.llm, category=ErrorCategory.CONNECTIVITY)) == Say(ModelUnreachable())
     assert services.alarm(ErrorFrame("bad key", processor=services.llm, category=ErrorCategory.AUTHENTICATION)) == Say(ModelFailed(ErrorCategory.AUTHENTICATION))
-    assert services.alarm(ErrorFrame("boom", processor=services.stt)) == Say(TranscriptionFailed())
+    assert services.alarm(ErrorFrame("boom", processor=services.stt)) == Say(TranscriptionFailed(None))
+    # The transcription server's fault is carried to what is said, never read back out of the error's text.
+    loading = transcription.TranscriptionFailed("http://127.0.0.1:8610/v1", Loading("model not ready"))
+    assert services.alarm(ErrorFrame("Whisper could not transcribe hold 1", exception=loading, processor=services.stt)) == Say(TranscriptionFailed(Loading("model not ready")))
     assert services.alarm(ErrorFrame("no voice", processor=services.tts)) == Post("no voice")
     # An error that names no processor is not the model's.
     assert services.alarm(ErrorFrame("lost")) == Unrouted("no processor", "lost")
@@ -192,13 +216,13 @@ async def test_a_fact_goes_to_speech_while_it_works_and_to_the_screen_when_it_do
         (TTSSpeakFrame, "The language model is unreachable.", False)
     ]
     await tts.set_usable(False)
-    await channel.say(TranscriptionFailed())
+    await channel.say(TranscriptionFailed(None))
     await channel.sound(Post("no voice"))
     assert len(tts.frames) == 1
-    assert posted == ["hands cannot speak, so: Speech recognition failed for that turn.", "hands cannot speak: no voice"]
+    assert posted == ["hands cannot speak, so: That turn was not heard: speech recognition failed.", "hands cannot speak: no voice"]
     assert recorded == [
         Announced("The language model is unreachable.", "speech"),
-        Announced("Speech recognition failed for that turn.", "screen"),
+        Announced("That turn was not heard: speech recognition failed.", "screen"),
         Announced("hands cannot speak: no voice", "screen"),
     ]
 
@@ -234,11 +258,11 @@ async def test_a_fact_repeated_through_one_burst_is_said_once() -> None:
     clock = Clock()
     tts, recorded, channel = speaking(clock)
     for _ in range(200):
-        await channel.say(TranscriptionFailed())
+        await channel.say(TranscriptionFailed(None))
         clock.now += 0.43
-    assert said(tts) == ["Speech recognition failed for that turn."] * 9  # 200 turns over 86 s, not 200 sentences
+    assert said(tts) == ["That turn was not heard: speech recognition failed."] * 9  # 200 turns over 86 s, not 200 sentences
     # The audit says a thing was announced only where it was: what a burst costs is the saying, not the knowing.
-    assert recorded == [Announced("Speech recognition failed for that turn.", "speech")] * 9
+    assert recorded == [Announced("That turn was not heard: speech recognition failed.", "speech")] * 9
 
 
 async def test_a_fault_that_is_still_happening_is_said_again_once_its_burst_has_passed() -> None:
@@ -246,13 +270,13 @@ async def test_a_fault_that_is_still_happening_is_said_again_once_its_burst_has_
     something else was said would leave a user pressing a key at a daemon that has gone permanently silent."""
     clock = Clock()
     tts, _, channel = speaking(clock)
-    await channel.say(TranscriptionFailed())
+    await channel.say(TranscriptionFailed(None))
     clock.now += BURST_SECONDS - 0.01
-    await channel.say(TranscriptionFailed())
-    assert said(tts) == ["Speech recognition failed for that turn."]
+    await channel.say(TranscriptionFailed(None))
+    assert said(tts) == ["That turn was not heard: speech recognition failed."]
     clock.now += 0.01
-    await channel.say(TranscriptionFailed())
-    assert said(tts) == ["Speech recognition failed for that turn."] * 2
+    await channel.say(TranscriptionFailed(None))
+    assert said(tts) == ["That turn was not heard: speech recognition failed."] * 2
 
 
 async def test_two_faults_taking_turns_do_not_between_them_defeat_the_burst() -> None:
@@ -260,13 +284,13 @@ async def test_two_faults_taking_turns_do_not_between_them_defeat_the_burst() ->
     wide, each would be news to the other and the pair would speak at the full jammed cadence."""
     clock = Clock()
     tts, _, channel = speaking(clock)
-    for fact in (TranscriptionFailed(), NoMicrophone()) * 20:
+    for fact in (TranscriptionFailed(None), NoMicrophone()) * 20:
         await channel.say(fact)
         clock.now += 0.43
     assert said(tts) == [
-        "Speech recognition failed for that turn.",
+        "That turn was not heard: speech recognition failed.",
         "There is no microphone, so hands cannot hear you.",
-        "Speech recognition failed for that turn.",
+        "That turn was not heard: speech recognition failed.",
         "There is no microphone, so hands cannot hear you.",
     ]
 
@@ -315,9 +339,9 @@ async def test_a_post_the_screen_refused_is_not_taken_for_one_the_user_saw() -> 
     await tts.set_usable(False)
     channel = SystemChannel(tts, notify, recorded.append, clock)
     for _ in range(200):
-        await channel.say(TranscriptionFailed())
+        await channel.say(TranscriptionFailed(None))
         clock.now += 0.43
-    assert attempts == ["hands cannot speak, so: Speech recognition failed for that turn."] * 9
+    assert attempts == ["hands cannot speak, so: That turn was not heard: speech recognition failed."] * 9
     assert recorded == []
 
 
@@ -335,8 +359,8 @@ async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
     channel = SystemChannel(tts, notify, lambda _: None, Clock())
     await asyncio.gather(*(channel.sound(Post(f"TTS context 0000-{turn:04d} completed with no audio")) for turn in range(200)))
     assert posted == ["hands cannot speak: TTS context 0000-0000 completed with no audio"]
-    await asyncio.gather(*(channel.say(TranscriptionFailed()) for _ in range(200)))
-    assert said(tts) == ["Speech recognition failed for that turn."]
+    await asyncio.gather(*(channel.say(TranscriptionFailed(None)) for _ in range(200)))
+    assert said(tts) == ["That turn was not heard: speech recognition failed."]
 
 
 async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_nothing_in(monkeypatch: pytest.MonkeyPatch) -> None:

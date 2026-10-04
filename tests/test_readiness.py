@@ -688,9 +688,16 @@ def test_a_server_still_loading_its_model_is_missing_and_says_so() -> None:
 
 
 def test_a_server_that_refuses_a_hold_is_missing_and_says_its_answer() -> None:
+    with serving(404, "no such route") as server:
+        found = readiness.transcription(server.url)
+    assert isinstance(found, Missing) and "answered 404" in found.said and "no such route" in found.said
+
+
+def test_a_server_busy_with_four_holds_is_unknown_not_missing() -> None:
+    # LowTalker refuses a fifth upload at once; the next may well be transcribed.
     with serving(429, "busy") as server:
         found = readiness.transcription(server.url)
-    assert isinstance(found, Missing) and "answered 429" in found.said and "busy" in found.said
+    assert isinstance(found, Unknown) and "answered 429" in found.said and "busy" in found.said
 
 
 def test_a_server_answering_with_no_segments_is_missing_as_every_hold_would_fail() -> None:
@@ -705,7 +712,7 @@ def test_a_server_that_does_not_answer_in_time_is_unknown_not_missing(monkeypatc
     monkeypatch.setattr(readiness, "TRANSCRIBE_TIMEOUT_SECONDS", 0.2)
     with listening:
         found = readiness.transcription(f"http://127.0.0.1:{listening.getsockname()[1]}/v1")
-    assert isinstance(found, Unknown) and "TimeoutError" in found.said
+    assert isinstance(found, Unknown) and "did not answer within 0.2 s" in found.said
 
 
 # hands running

@@ -1808,15 +1808,22 @@ In an audio system the default output is silence, and silence is what "thinking"
 sounds like too. So every failure has a path to the user that does not depend on the
 thing that failed `[LAW:no-silent-failure]`:
 
-1. **Speech.** The system channel says "the language model is unreachable", "speech
-   recognition failed for that turn", "the session cc-hands is gone". These are
+1. **Speech.** The system channel says "the language model is unreachable", "that turn
+   was not heard: LowTalker's model is still loading", "the session cc-hands is gone". These are
    `Speak` effects and need no model. `hands.voice.system` renders each fact from a
    template and queues it at the TTS processor, past the LLM and out of its context,
    so the model never reads a system line as a reply it gave. The worker's
    `on_pipeline_error` routes every error by the processor that raised it: the LLM's
    become "unreachable", "usage limit reached, until <when it lifts>" (read from the
-   API's message, never spoken from it), or "failed: <category>", Whisper's become "speech recognition
-   failed", and a TTS error goes to the screen. Pipecat files an SDK connection error
+   API's message, never spoken from it), or "failed: <category>", Whisper's become "that turn was not heard" with the
+   transcription server's fault, and a TTS error goes to the screen. The upload names that
+   fault once, as `transcription.Fault`: nothing listening (LowTalker quit, Serve
+   Transcription off, or the offline build, which serves nothing), 503 while its model
+   loads, 429 at four uploads in flight, no answer within `ANSWER_SECONDS`, a connection
+   dropped, or an answer that is no transcription; each is said with what to do about it.
+   With MLX Whisper gone there is no second engine to fall to. The start asks the server
+   with a quarter second of silence as the pipeline comes up, so "hands is up" says it
+   cannot hear you, and why, when a hold sent then would fail. Pipecat files an SDK connection error
    under UNKNOWN, so "unreachable" is recognised from the exception type. A model reply
    with no words and no call in it is the model's failure too, "sent back nothing": the
    API services read it off the frames they push (`EmptyReplyFails`), excusing the reply to a call's result, and
