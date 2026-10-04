@@ -383,7 +383,8 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
             case Configured(voice=voice):
                 reached: readiness.Finding = readiness.reaching(voice.llm)
             case CannotStart() as error:
-                reached = readiness.unreached(str(error))
+                # Refused on its backend or on its kept voice: the reason names which, so the line claims neither.
+                reached = readiness.Missing(f"hands cannot start on its settings: {error}")
         survey(readiness.check(home, path, True, reached, readiness.transcription(settings.config.transcription), running))
 
     return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, quit_event, after_crash, os.environ, run_start)

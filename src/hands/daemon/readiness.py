@@ -123,16 +123,11 @@ def configured(home: Home, environment: Mapping[str, str]) -> tuple[Finding, Fin
     try:
         reached: Finding = reaching(resolve(config.llm, home, environment))
     except Rejected as error:
-        reached = unreached(str(error))
+        reached = Missing(f"hands has no model to talk with: {error}")
     except OSError as error:
         # The keychain or the brain's claude could not be asked, which says nothing of whether they hold a key or a login.
         reached = Unknown(f"cannot tell whether the [llm] backend can reach its model: {error}")
     return reached, transcription(config.transcription)
-
-
-def unreached(why: str) -> Missing:
-    """A backend that cannot reach its model, and why."""
-    return Missing(f"hands has no model to talk with: {why}")
 
 
 def reaching(reached: backends.LLMBackend) -> Ready:
