@@ -199,7 +199,16 @@ def test_an_exception_reaches_the_terminal_with_its_controls_as_escapes_and_its_
 
     from loguru import logger
 
-    terminal = io.StringIO()
+    class Terminal(io.StringIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.writes: list[str] = []
+
+        def write(self, text: str) -> int:
+            self.writes.append(text)
+            return super().write(text)
+
+    terminal = Terminal()
     shown = cli.to_terminal(terminal)
     try:
         try:
@@ -208,6 +217,7 @@ def test_an_exception_reaches_the_terminal_with_its_controls_as_escapes_and_its_
         except ValueError:
             logger.exception("the turn could not be read")
         logger.warning("next")
+        logger.opt(raw=True).warning("raw\n")
     finally:
         for sink in shown:
             logger.remove(sink)
@@ -216,17 +226,20 @@ def test_an_exception_reaches_the_terminal_with_its_controls_as_escapes_and_its_
     assert "ValueError: gone\\u001b[2K\\u0007\\u0008" in written
     # The backtrace marks the frame that caught it, and the diagnosis names a variable's value under the line using it.
     assert "> File " in written and "'gone\\x1b[2K\\x07\\x08'" in written
-    # One write per record, so the line after it follows the trace.
-    assert written.rstrip("\n").endswith(" - next")
+    # Each record is one write, by one sink: the trace whole, then the line after it, then the raw one once.
+    [trace, line, raw] = terminal.writes
+    assert " - the turn could not be read\n" in trace and "ValueError" in trace
+    assert line.endswith(" - next\n")
+    assert raw == "raw\n"
 
 
 def test_the_terminal_shows_hands_from_info_and_everything_else_from_warning() -> None:
     from loguru import logger
 
-    from hands.daemon.cli import TERMINAL_LEVELS
+    from hands.daemon.cli import on_terminal
 
     shown: list[str] = []
-    sink = logger.add(lambda message: shown.append(message.record["message"]), filter=TERMINAL_LEVELS)
+    sink = logger.add(lambda message: shown.append(message.record["message"]), filter=on_terminal)
     try:
         for module in ("hands.sessions.tail", "pipecat.services.anthropic.llm"):
             patched = logger.patch(lambda record, module=module: record.update(name=module))

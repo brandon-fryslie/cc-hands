@@ -211,10 +211,10 @@ async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to
 
 
 async def test_what_was_heard_is_shown_in_the_terminal_in_the_words_heard() -> None:
-    from hands.daemon.cli import TERMINAL_LEVELS
+    from hands.daemon.cli import on_terminal
 
     lines: list[str] = []
-    sink = logger.add(lambda message: lines.append(message.record["message"]), filter=TERMINAL_LEVELS)
+    sink = logger.add(lambda message: lines.append(message.record["message"]), filter=on_terminal)
     pair = LLMContextAggregatorPair(LLMContext())
     user, assistant = pair.user(), pair.assistant()
     record_turns(user, assistant, unrecorded)
