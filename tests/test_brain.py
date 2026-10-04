@@ -257,12 +257,15 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
         "HTTPS_PROXY": "http://127.0.0.1:40000",
         "NODE_EXTRA_CA_CERTS": "/tmp/fritter-1/trusted.pem",
         "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128",
+        "ENABLE_TOOL_SEARCH": "true",
     })
     assert env == {"PATH": "/bin", "HOME": "/home/u", "FIRECRAWL_API_KEY": "fc", "HTTPS_PROXY": "http://corp:3128", **SLIM, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
     # The account's claude.ai connectors stay out of every request, whatever the brain's own setup names.
     assert env["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
     # No turn opens but the ones hands types: no background task and no scheduled prompt opens one of its own.
     assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == env["CLAUDE_CODE_DISABLE_CRON"] == "1"
+    # hands' tools are offered to the model directly, never deferred behind ToolSearch, whatever hands inherited.
+    assert env["ENABLE_TOOL_SEARCH"] == "false"
 
 
 async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_turns_and_run_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
@@ -699,6 +702,7 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
     brain.session = SessionId("b1")
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
+    brain._config_dir = Path("/brain")  # pyright: ignore[reportPrivateUsage]
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
@@ -709,9 +713,16 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
         brain.hear(Sent("x3", SessionId("elsewhere"), MainTurn(None), body))
         assert errors == []
         brain.hear(Sent("x4", SessionId("b1"), MainTurn(None), body))
+        # Deferred, as 2.1.288 offers MCP tools under tool search: the server may be connected, and is not blamed.
+        deferred = {**body, "tools": [{"name": "Read"}, {"name": "ToolSearch"}, {"name": "DeferredToolPlaceholder", "defer_loading": True}]}
+        brain.hear(Sent("x5", SessionId("b1"), MainTurn(None), deferred))
     finally:
         logger.remove(sink)
-    assert errors == ["the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (('Read',))"]
+    assert errors == [
+        "the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (('Read',))",
+        "the brain's turn went to the model with hands' tools deferred behind ToolSearch: /brain/settings.json sets ENABLE_TOOL_SEARCH"
+        " in its env ahead of hands' false (('Read', 'ToolSearch', 'DeferredToolPlaceholder'))",
+    ]
     # What a turn's requests offered is on its brain turn's event.
     assert recorded == []
 

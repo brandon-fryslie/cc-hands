@@ -65,7 +65,14 @@ SLIM = {
     # first (turn 2 grew from 8.7 KB to 112 KB; hands-wire-6ic.eph, 2.1.284). The skills and plugins the account syncs
     # are turned off in the brain's settings.json, the only place Claude Code reads that switch from (2.1.288).
     "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
+    # Tool search defers every MCP tool behind ToolSearch, so hands' tools reach the model only after a round trip of
+    # their own on a spoken turn; it is on unless this is false (2.1.288, measured behind a localhost base URL,
+    # hands-brain-8gb). A settings.json env sets it ahead of this, and the brain's turns then say so.
+    "ENABLE_TOOL_SEARCH": "false",
 }
+
+# The tool Claude Code offers in place of the MCP tools it defers.
+TOOL_SEARCH = "ToolSearch"
 
 # The skills hands gives the brain, as a plugin of its own: shipped with the code that runs the jobs they are for, beside
 # the skills of the brain's own setup and never in it.
@@ -652,9 +659,15 @@ class Brain:
                 tools = tool_names(body)
                 if self._turn is not None:
                     self._turn.offered = tools
+                # [LAW:no-silent-failure] a brain without hands' tools answers every question about the sessions from nothing,
+                # and one with them only behind ToolSearch asks the model for them before it can answer.
                 if not any(name.startswith(f"mcp__{SERVER_NAME}__") for name in tools):
-                    # [LAW:no-silent-failure] a brain without hands' tools answers every question about the sessions from nothing.
-                    logger.error(f"the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server ({tools})")
+                    logger.error(
+                        f"the brain's turn went to the model with hands' tools deferred behind {TOOL_SEARCH}:"
+                        f" {self._config_dir / 'settings.json'} sets ENABLE_TOOL_SEARCH in its env ahead of hands' false ({tools})"
+                        if TOOL_SEARCH in tools
+                        else f"the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server ({tools})"
+                    )
             case _:
                 pass
 
