@@ -168,6 +168,15 @@ def test_a_shim_an_older_hands_wrote_says_to_install_it_again(root: Path, fritte
     assert found == Missing(f"`claude` on this PATH is hands' shim, {home.shim}, but not the one this hands writes: run `hands install-fritter`")
 
 
+def test_another_homes_current_shim_is_ready_by_the_wire_it_names(root: Path, fritter: Path) -> None:
+    # As a probe's temporary home checked while ~/.hands/bin is first on PATH.
+    home, other = Home(root / "home"), Home(root / "other")
+    other.bin.mkdir(parents=True)
+    shutil.copy2(fritter, other.bin / "fritter")
+    executable(other.shim, shim_script(other.bin / "fritter", other.wire))
+    assert isinstance(readiness.shim(home, f"{other.bin}"), Ready)
+
+
 def test_no_shim_installed_says_to_install_it(root: Path) -> None:
     found = readiness.shim(Home(root / "home"), f"{root / 'empty'}")
     assert isinstance(found, Missing)

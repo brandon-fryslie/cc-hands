@@ -75,16 +75,23 @@ class Installed:
     fritter: Path
 
 
-def fritter_of(path: Path) -> Path | None:
-    """The fritter a hands shim at path runs, this home's or another's; None when path is not a hands shim."""
-    assigned = _shim(path) or ""
+@dataclass(frozen=True)
+class Shim:
+    """What a hands shim names, this home's or another's: the fritter it runs and the wire it copies API traffic to."""
+
+    fritter: Path
+    wire: Path
+
+
+def shim_of(path: Path) -> Shim | None:
+    """The fritter and wire a hands shim at path names; None when path is not a hands shim."""
     try:
-        words = shlex.split(assigned.removeprefix("fritter=")) if assigned.startswith("fritter=") else []
+        words = [shlex.split(line.removeprefix(f"{name}=")) if line.startswith(f"{name}=") else [] for name, line in zip(("fritter", "wire"), _shim(path) or ())]
     except ValueError:  # an unclosed quote: not a line shim_script writes
         words = []
     match words:
-        case [fritter]:
-            return Path(fritter)
+        case [[fritter], [wire]]:
+            return Shim(Path(fritter), Path(wire))
         case _:
             return None
 
@@ -101,16 +108,16 @@ def real_claude(search: str) -> Path | None:
     return None
 
 
-def _shim(path: Path) -> str | None:
-    """The line after a hands shim's mark; None when path is not a file marked as a shim."""
+def _shim(path: Path) -> tuple[str, str] | None:
+    """The two lines after a hands shim's mark; None when path is not a file marked as a shim."""
     # [LAW:one-source-of-truth] the one reading of the mark in Python. Read as the shim reads each claude on PATH: a file
     # it cannot read is not a shim to it either.
     try:
         with path.open("rb") as found:
-            lines = [found.readline() for _ in range(3)]
+            lines = [found.readline().rstrip(b"\n").decode(errors="replace") for _ in range(4)]
     except OSError:
         return None
-    return lines[2].rstrip(b"\n").decode(errors="replace") if lines[1].rstrip(b"\n") == MARK.encode() else None
+    return (lines[2], lines[3]) if lines[1] == MARK else None
 
 
 def shim_script(fritter: Path, wire: Path) -> str:

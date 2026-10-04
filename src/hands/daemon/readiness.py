@@ -192,13 +192,13 @@ def shim(home: Home, path: str) -> Finding:
     claude = None if found is None else Path(found)
     # [LAW:dataflow-not-control-flow] what to do is read off what is there: an installed shim wants only the PATH.
     first = f'put {home.bin} first on PATH: export PATH="{home.bin}:$PATH"'
-    fix = first if wrapper.fritter_of(home.shim) is not None else f"run `hands install-fritter`, then {first}"
-    match None if claude is None else (claude, wrapper.fritter_of(claude)):
+    fix = first if wrapper.shim_of(home.shim) is not None else f"run `hands install-fritter`, then {first}"
+    match None if claude is None else (claude, wrapper.shim_of(claude)):
         case None | (_, None):
             return Missing(f"`claude` on this PATH is {found or 'nothing'}, not hands' shim, so no session started from it can be typed into: {fix}")
-        case (_, runs) if not os.access(runs, os.X_OK):
+        case (_, wrapper.Shim(fritter=runs)) if not os.access(runs, os.X_OK):
             return Missing(f"`claude` on this PATH is hands' shim, {found}, but its fritter {runs} is not there to run, so every interactive claude fails to start: run `hands install-fritter`")
-        case (claude, runs):
+        case (claude, wrapper.Shim(fritter=runs, wire=wire)):
             # [LAW:one-source-of-truth] the fritter in a home's bin is a copy of the packaged one, so a copy that has
             # drifted from it, as one does when hands is upgraded or a checkout's fritter rebuilt, is said, never trusted.
             try:
@@ -207,10 +207,11 @@ def shim(home: Home, path: str) -> Finding:
                 return Unknown(f"cannot tell whether {runs} is the fritter this hands carries, {wrapper.PACKAGED}: {error}")
             if not current:
                 return Missing(f"`claude` on this PATH is hands' shim, {found}, but its fritter {runs} is not the one this hands carries, {wrapper.PACKAGED}: run `hands install-fritter`")
-            # [LAW:one-source-of-truth] the shim is shim_script written out, and `hands check` asks run what that script
-            # does, so a shim an older hands wrote is said, never taken to do what this one would.
+            # [LAW:one-source-of-truth] the shim is shim_script written out for the fritter and wire it names, and `hands
+            # check` asks run what that script does, so a shim an older hands wrote is said, never taken to do what this
+            # one would. Any home's shim is current by its own names, as shim_of reads any home's.
             try:
-                written = claude.read_text() == wrapper.shim_script(runs, home.wire)
+                written = claude.read_text() == wrapper.shim_script(runs, wire)
             except OSError as error:
                 return Unknown(f"cannot tell whether {found} is the shim this hands writes: {error}")
             if not written:
