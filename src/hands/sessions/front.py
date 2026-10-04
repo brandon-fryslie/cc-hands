@@ -6,6 +6,7 @@ hands is tied to no one terminal. An app that can say which of its tabs is in fr
 shows every terminal running under it, which names the session in front whenever it holds only one.
 """
 
+import asyncio
 import os
 import re
 import shutil
@@ -60,7 +61,8 @@ async def read_front(sessions: Mapping[SessionId, tuple[int, str]], environment:
         app = await _front_app()
         processes = process_table()
         screen = await _screen(app, processes)
-        panes = dict(await _panes(environment))
+        # A tmux client is on screen only in a terminal the app in front shows.
+        panes = dict(await _panes(environment)) if screen.shown else {}
     except _Unread as unread:
         return FrontUnread(str(unread))
     except (OSError, TimeoutError) as error:
@@ -138,12 +140,9 @@ async def _panes(environment: Mapping[str, str]) -> list[tuple[int, int]]:
     tmux = shutil.which("tmux", path=environment.get("PATH"))
     if tmux is None:
         raise _Unread(f"tmux sockets are in {directory}, and no tmux is on the PATH to ask them which pane each client shows")
-    panes: list[tuple[int, int]] = []
-    for socket in sockets:
-        for line in await _clients(tmux, socket):
-            client, pane = line.split("\t")
-            panes.append((_device(client), _device(pane)))
-    return panes
+    clients = await asyncio.gather(*(_clients(tmux, socket) for socket in sockets))
+    # A client with no terminal, as one in control mode over a pipe, is on no screen.
+    return [(_device(client), _device(pane)) for lines in clients for client, pane in (line.split("\t") for line in lines) if client]
 
 
 async def _clients(tmux: str, socket: Path) -> Sequence[str]:
