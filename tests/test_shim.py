@@ -27,7 +27,7 @@ from hands.sessions.registry import Sessions
 from hands.core.events import StatusReported
 from hands.core.status import Busy, Report, Stamp
 from hands.sessions.audit import Entry
-from hands.sessions.names import NameGiven, NameWithheld, Names
+from hands.sessions.names import NameGiven, NameUnread, NameWithheld, Names
 from hands.sessions.server import serve_hooks
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Fact, WideEvent
@@ -407,6 +407,24 @@ async def test_a_name_set_since_hands_decided_one_is_not_overwritten_by_it(home:
         assert await shim(home, {**PROMPT, **at}) == (0, "", "")
         assert hooks(given)[-1] == ("ok", None, {"hook": "UserPromptSubmit", "name": NameWithheld("naming fix", None, "my thing")})
         assert names.due(SID) is None
+    finally:
+        await runner.cleanup()
+
+
+async def test_a_name_is_not_given_over_a_title_that_cannot_be_read(home: Home, tmp_path: Path) -> None:
+    names = Names()
+    given: list[Entry] = []
+    # A directory where the transcript should be: reading the session's title fails.
+    at = {"transcript_path": str(tmp_path)}
+    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None)
+    runner = await serve_hooks(home, registry, names, given.append)
+    try:
+        await shim(home, {**START, **at})
+        names.rename(SID, "naming fix", None)
+        assert await shim(home, {**PROMPT, **at}) == (0, "", "")
+        [(outcome, error, facts)] = hooks(given)[-1:]
+        assert (outcome, facts) == ("failed", {"hook": "UserPromptSubmit", "name": NameUnread("naming fix", None)})
+        assert error is not None and error.startswith(f"cannot read the name of session {SID} from {tmp_path}, so 'naming fix' is not given:")
     finally:
         await runner.cleanup()
 

@@ -30,11 +30,20 @@ class NameGiven:
 @dataclass(frozen=True)
 class NameWithheld:
     """A name hands decided and did not give at the session's prompt: its title is no longer the one the name was decided
-    against, but `held`, set since by the user's /rename; or None, when it could not be read."""
+    against, but `held`, set since by the user's /rename, or none at all."""
 
     name: str
     against: str | None
     held: str | None
+
+
+@dataclass(frozen=True)
+class NameUnread:
+    """A name hands decided and did not give at the session's prompt, since its title could not be read: it may be one
+    the user set, and the name is never given over that."""
+
+    name: str
+    against: str | None
 
 
 @dataclass(frozen=True)

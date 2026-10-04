@@ -463,6 +463,25 @@ async def test_a_stop_hook_is_answered_only_once_its_stop_is_decided() -> None:
     await asyncio.wait_for(hook, 1.0)
 
 
+async def test_a_stop_hook_says_whether_it_was_decided_or_let_go_by_shutdown_whichever_came_first() -> None:
+    """A Stop decided just before shutdown began was decided, though shutdown has since let every hook go."""
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member(), "startup"))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
+    decided = asyncio.create_task(sessions.stop(Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)))
+    await asyncio.sleep(0)
+    # The reducer's Reply resolves the hold, and shutdown begins before the hook's handler runs again.
+    sessions._reply(member().id, STOP_REQUEST, Withdraw())  # pyright: ignore[reportPrivateUsage]
+    sessions.release_waiting()
+    assert await asyncio.wait_for(decided, 1.0) == "decided"
+    await sessions.apply(Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p3")))
+    let_go = asyncio.create_task(sessions.stop(Stopped(member().id, "done", mode=None, prompt=PromptId("p4"), again=False, heard=Stamp(STOP_HEARD + 2000), request=RequestId("let-go"))))
+    await asyncio.sleep(0)
+    sessions.release_waiting()
+    assert await asyncio.wait_for(let_go, 1.0) == "let go"
+
+
 async def test_a_stop_hook_is_let_go_once_the_hold_passes_and_the_stop_decided_later_answers_no_hook() -> None:
     """The hold bounds how long Claude Code waits, however slowly the transcript is read."""
     recorded: list[Entry] = []

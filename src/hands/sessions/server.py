@@ -11,7 +11,7 @@ from hands.core.session import Membership, RequestId
 from hands.sessions.home import Home
 from hands.sessions.audit import DisplayListening, Record
 from hands.sessions.hooks import hook_output, name_output, parse_display, parse_hook
-from hands.sessions.names import Due, Finished, NameGiven, NameWithheld, Names
+from hands.sessions.names import Due, Finished, NameGiven, NameUnread, NameWithheld, Names
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.transcript import session_name
@@ -74,7 +74,7 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
                         except (Rejected, OSError) as error:
                             # [LAW:no-silent-failure] a title hands cannot read may be one the user set: the name is
                             # not given over it, and the event says why.
-                            annotate(name=NameWithheld(due.name, due.against, None))
+                            annotate(name=NameUnread(due.name, due.against))
                             fail(f"cannot read the name of session {prompted.session} from {transcript}, so {due.name!r} is not given: {error}")
                             return web.Response(status=204)
                         if held != due.against:

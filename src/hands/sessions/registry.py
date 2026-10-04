@@ -67,6 +67,9 @@ class Sessions:
         self._waiting: dict[RequestId, asyncio.Future[HookReply]] = {}
         # Set once, at shutdown: from then on a permission hook is let go as soon as it asks.
         self._released = False
+        # The waiting hooks shutdown let go, each marked as its future is resolved: a Stop decided by the reducer just
+        # before shutdown began was decided, though shutdown has since released everything.
+        self._let_go: set[RequestId] = set()
         self._heard: asyncio.Queue[Heard] = asyncio.Queue()
         # Apart from what is heard: a summary takes seconds of model time, which must not hold up a permission request.
         self._story: asyncio.Queue[Story] = asyncio.Queue()
@@ -144,8 +147,9 @@ class Sessions:
         try:
             await self.apply(event)
             await asyncio.wait_for(asyncio.shield(waiting), self._stop_hold)
-            # Shutdown lets every waiting hook go undecided, as the hold does.
-            return "let go" if self._released else "decided"
+            # [LAW:no-ambient-temporal-coupling] which resolved this hold is read off the hold, not off whether
+            # shutdown has begun by the time this resumes.
+            return "let go" if event.request in self._let_go else "decided"
         except TimeoutError:
             # Claude Code goes on before the Stop is decided.
             await self.apply(Abandoned(event.session, event.request, self._clock()))
@@ -155,6 +159,7 @@ class Sessions:
             raise
         finally:
             del self._waiting[event.request]
+            self._let_go.discard(event.request)
 
     async def ask(self, event: PermissionRequested) -> HookReply:
         """Apply a permission request and wait for its reply: an answer, a withdrawal, or the deny at its deadline."""
@@ -184,6 +189,7 @@ class Sessions:
             raise
         finally:
             del self._waiting[event.request]
+            self._let_go.discard(event.request)
 
     def release_waiting(self) -> None:
         """At shutdown, let every waiting hook go undecided, and every later one as it asks: its session's own dialog stands, and the daemon can exit."""
@@ -192,6 +198,7 @@ class Sessions:
             if not waiting.done():
                 logger.info(f"shutting down: request {request} is left to its session's dialog")
                 waiting.set_result(Withdraw())
+                self._let_go.add(request)
 
     async def answer(self, request: RequestId, decision: Decision) -> Outcome:
         self._registry, outcome, effects = answer(self._registry, Answer(request, decision))
