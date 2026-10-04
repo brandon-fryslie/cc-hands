@@ -726,13 +726,13 @@ async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_en
     assert ran.facts["code"] == 3 and isinstance(shown, str) and "bye" in shown
 
 
-async def test_a_turn_never_taken_fails_naming_the_setup_command_and_the_next_turn_is_its_own(
+async def test_a_turn_never_taken_fails_naming_hands_login_and_the_next_turn_is_its_own(
     tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
     brain = await start(launch(tmp_path, fritter), lambda _entry: None)
     try:
-        with pytest.raises(Untaken, match=f"mkdir -p {tmp_path / 'brain' / 'cwd'} && cd {tmp_path / 'brain' / 'cwd'} && CLAUDE_CONFIG_DIR={tmp_path / 'brain'} claude"):
+        with pytest.raises(Untaken, match="`hands login` answers them"):
             await brain.ask("deaf", unasked)
         assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
     finally:
@@ -814,7 +814,7 @@ async def test_a_brain_with_no_fritter_to_run_under_is_refused_naming_the_instal
 def test_a_brain_with_no_login_is_refused_naming_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ) == "brain@example.com"
     monkeypatch.setenv("LOGGED_IN", "0")
-    with pytest.raises(NotLoggedIn, match=f"CLAUDE_CONFIG_DIR={tmp_path / 'brain'} claude"):
+    with pytest.raises(NotLoggedIn, match="`hands login` gives it one"):
         logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ)
 
 
@@ -822,6 +822,13 @@ def logins(home: Path) -> list[tuple[str, dict[str, object]]]:
     """Each `hands login`'s event in the audit log of `home`, as its outcome and its facts."""
     events = (json.loads(line) for line in segment(home / "audit", 0).read_text().splitlines())
     return [(event["outcome"], event["facts"]) for event in events if event["type"] == "WideEvent" and event["event"] == "brain.login"]
+
+
+def onboard(brain: Path, settings: bytes) -> None:
+    """A brain home Claude Code has finished its first run on, holding `settings`."""
+    brain.mkdir()
+    (brain / ".claude.json").write_text('{"hasCompletedOnboarding": true}')
+    (brain / "settings.json").write_bytes(settings)
 
 
 def test_hands_login_sets_a_new_brain_home_up_with_its_settings_then_claude_codes_first_run_where_the_brain_runs(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -836,34 +843,55 @@ def test_hands_login_sets_a_new_brain_home_up_with_its_settings_then_claude_code
     home = tmp_path / "home"
     assert main(["--home", str(home), "login"]) == 0
     brain = home / "brain"
-    # The settings come first, so that no run of Claude Code on this home ever syncs the account's skills or plugins.
     assert json.loads((brain / "settings.json").read_text()) == {"syncClaudeAiSkills": False, "syncClaudeAiPlugins": False, "permissions": {"defaultMode": "default"}}
     account_kept_out(brain)
-    # Claude Code's own first run, in the directory the brain runs in, where its screens, the trust of that directory
-    # among them, are answered once at this terminal; with no credential of this shell's beside it.
-    assert json.loads((brain / "login.json").read_text()) == {"argv": [], "cwd": str(workdir(brain)), "credentials": []}
-    assert capsys.readouterr().out.splitlines()[0] == f"the brain at {brain} is logged in as brain@example.com"
-    assert logins(home) == [("ok", {"new": True, "settings_written": True, "account": "brain@example.com"})]
+    # Claude Code's own first run, on the brain's settings sources, in the directory the brain runs in, where its screens,
+    # the trust of that directory among them, are answered once at this terminal; its settings there before it started,
+    # so that it never syncs the account's skills or plugins; with no credential of this shell's beside it.
+    assert json.loads((brain / "login.json").read_text()) == {"argv": ["--setting-sources", "user"], "cwd": str(workdir(brain)), "settings": True, "credentials": []}
+    # Nothing to restart: no hands ever started a brain that had not been through its first run.
+    assert capsys.readouterr().out.splitlines() == [f"the brain at {brain} is logged in as brain@example.com"]
+    assert logins(home) == [("ok", {"settings_written": True, "first_run": True, "account": "brain@example.com"})]
 
 
 def test_hands_login_on_a_brain_home_logs_it_in_again_leaving_its_settings_as_they_are(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     brain = tmp_path / "brain"
-    brain.mkdir()
     said = b'{"permissions": {"allow": ["Bash(lit:*)"], "defaultMode": "acceptEdits"},\n "syncClaudeAiSkills": false, "syncClaudeAiPlugins": false}'
-    (brain / "settings.json").write_bytes(said)
+    onboard(brain, said)
     assert main(["--home", str(tmp_path), "login"]) == 0
     assert (brain / "settings.json").read_bytes() == said
     assert json.loads((brain / "login.json").read_text())["argv"] == ["auth", "login", "--claudeai"]
-    assert capsys.readouterr().out.splitlines()[0] == f"the brain at {brain} is logged in as brain@example.com"
-    assert logins(tmp_path) == [("ok", {"new": False, "settings_written": False, "account": "brain@example.com"})]
+    assert capsys.readouterr().out.splitlines() == [f"the brain at {brain} is logged in as brain@example.com", "a hands already running started its brain on the login before: restart it to start the brain on this one"]
+    assert logins(tmp_path) == [("ok", {"settings_written": False, "first_run": False, "account": "brain@example.com"})]
 
 
-def test_hands_login_on_a_brain_home_with_no_settings_writes_its_starting_ones(tmp_path: Path, fake_claude: Path) -> None:
-    (tmp_path / "brain").mkdir()
+def test_hands_login_on_a_brain_home_claude_code_never_finished_its_first_run_on_runs_it(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOGGED_IN", "0")
+    # What `claude auth status` leaves, asked by a `hands run` before any `hands login`: its state, and no onboarding.
+    brain = tmp_path / "brain"
+    brain.mkdir()
+    (brain / ".claude.json").write_text("{}")
     assert main(["--home", str(tmp_path), "login"]) == 0
-    account_kept_out(tmp_path / "brain")
-    assert logins(tmp_path) == [("ok", {"new": False, "settings_written": True, "account": "brain@example.com"})]
+    assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
+    account_kept_out(brain)
+    assert logins(tmp_path) == [("ok", {"settings_written": True, "first_run": True, "account": "brain@example.com"})]
+
+
+def test_hands_login_after_a_first_run_that_failed_runs_it_again(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOGGED_IN", "0")
+    monkeypatch.setenv("LOGIN_EXIT", "130")
+    assert main(["--home", str(tmp_path), "login"]) == 1
+    monkeypatch.delenv("LOGIN_EXIT")
+    assert main(["--home", str(tmp_path), "login"]) == 0
+    assert json.loads((tmp_path / "brain" / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
+    assert [facts.get("first_run") for _, facts in logins(tmp_path)] == [None, True]
+
+
+def test_hands_login_on_a_brain_path_that_is_no_directory_exits_1_saying_so(tmp_path: Path, fake_claude: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "brain").write_text("")
+    assert main(["--home", str(tmp_path), "login"]) == 1
+    assert capsys.readouterr().err.startswith(f"hands login: [Errno 17] File exists: '{tmp_path / 'brain'}'")
 
 
 def test_a_brain_logged_in_off_the_subscription_is_refused_naming_how_it_is(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -872,15 +900,14 @@ def test_a_brain_logged_in_off_the_subscription_is_refused_naming_how_it_is(tmp_
         logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ)
 
 
-@pytest.mark.parametrize(("new", "said"), [(True, "the brain's first run of Claude Code exited 3"), (False, "`claude auth login` for the brain exited 3")], ids=["new", "again"])
-def test_hands_login_that_claude_code_fails_exits_1_saying_so(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], new: bool, said: str) -> None:
+@pytest.mark.parametrize(("onboarded", "said"), [(False, "the brain's first run of Claude Code exited 3"), (True, "`claude auth login` for the brain exited 3")], ids=["first", "again"])
+def test_hands_login_that_claude_code_fails_exits_1_saying_so(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], onboarded: bool, said: str) -> None:
     monkeypatch.setenv("LOGIN_EXIT", "3")
-    if not new:
-        (tmp_path / "brain").mkdir()
+    if onboarded:
+        onboard(tmp_path / "brain", b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false}')
     assert main(["--home", str(tmp_path), "login"]) == 1
     assert capsys.readouterr().err == f"hands login: {said}\n"
-    [(outcome, facts)] = logins(tmp_path)
-    assert (outcome, facts) == ("failed", {"new": new, "settings_written": True})
+    assert logins(tmp_path) == [("failed", {"settings_written": not onboarded})]
 
 
 def test_the_brain_config_is_one_line_of_json_naming_only_hands() -> None:

@@ -189,13 +189,9 @@ def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -
 
 def workdir(config_dir: Path) -> Path:
     """The empty directory a slim Claude Code on the login in `config_dir` runs in, made if it is not there: never a project."""
-    cwd = _cwd(config_dir)
+    cwd = config_dir / "cwd"
     cwd.mkdir(parents=True, exist_ok=True)
     return cwd
-
-
-def _cwd(config_dir: Path) -> Path:
-    return config_dir / "cwd"
 
 
 class BrainGone(Exception):
@@ -226,25 +222,43 @@ def brain_claude(inherited: Mapping[str, str]) -> Path:
     return claude
 
 
-def login(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> str:
-    """Log `config_dir` in to the Claude subscription with Claude Code's own login, at this terminal; the account it holds after."""
-    # [LAW:one-source-of-truth] the brain's own claude and environment, so the login lands in its config directory,
-    # which the daemon reads, and no credential of this shell's stands in for the one being made.
-    signed = subprocess.run([brain_claude(inherited), "auth", "login", "--claudeai"], env=environment(config_dir, base_url, inherited))
+@dataclass(frozen=True)
+class Login:
+    """What `hands login` left the brain holding: the subscription account, and whether that took Claude Code's first run."""
+
+    account: str
+    first_run: bool
+
+
+def onboarded(config_dir: Path) -> bool:
+    """Whether Claude Code has finished its first run on `config_dir`, its first screens answered: it says so in its own
+    .claude.json (2.1.288). A directory made by anything else, `claude auth status` among them, has not."""
+    state = config_dir / ".claude.json"
+    try:
+        said = Payload.parse(state.read_bytes())
+    except FileNotFoundError:
+        return False
+    except Rejected as error:
+        raise LoginFailed(f"{state} is not Claude Code's state ({error})") from None
+    return said.fields.get("hasCompletedOnboarding") is True
+
+
+def login(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Login:
+    """Log `config_dir` in to the Claude subscription with Claude Code's own login, at this terminal, in the directory the
+    brain runs in; the account it holds after.
+
+    A config directory Claude Code has never finished its first run on gets that first run, its screens, its login among
+    them, answered once here: `claude auth login` alone leaves them for the brain's first start, where nobody is at its
+    keyboard."""
+    first_run = not onboarded(config_dir)
+    # [LAW:one-source-of-truth] the brain's own claude, environment, and settings sources, so the login lands in its config
+    # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
+    # run's screens are answered under the settings the brain starts with.
+    argv, ran = (["--setting-sources", "user"], "the brain's first run of Claude Code") if first_run else (["auth", "login", "--claudeai"], "`claude auth login` for the brain")
+    signed = subprocess.run([brain_claude(inherited), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
     if signed.returncode != 0:
-        raise LoginFailed(f"`claude auth login` for the brain exited {signed.returncode}")
-    return logged_in(config_dir, base_url, inherited)
-
-
-def set_up(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> str:
-    """Claude Code's own first run for the brain, at this terminal, in the directory the brain runs in: its first
-    screens, its login among them, answered once as any Claude Code's are; the account it holds after.
-
-    `claude auth login` alone leaves those screens for the brain's first start, where nobody is at its keyboard."""
-    ran = subprocess.run([brain_claude(inherited)], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
-    if ran.returncode != 0:
-        raise LoginFailed(f"the brain's first run of Claude Code exited {ran.returncode}")
-    return logged_in(config_dir, base_url, inherited)
+        raise LoginFailed(f"{ran} exited {signed.returncode}")
+    return Login(logged_in(config_dir, base_url, inherited), first_run)
 
 
 # Each is on unless settings.json says false: they sync the login's account's skills and plugins, which are Brandon's.
@@ -256,6 +270,7 @@ def starting_settings(config_dir: Path) -> bool:
     left as it is: the brain's settings are its directory's to say."""
     # [LAW:one-source-of-truth] what account_kept_out requires, and the mode the README says the brain runs in.
     starting = {**dict.fromkeys(KEPT_OUT, False), "permissions": {"defaultMode": "default"}}
+    config_dir.mkdir(parents=True, exist_ok=True)
     try:
         with (config_dir / "settings.json").open("x") as made:
             json.dump(starting, made, indent=2)
@@ -296,7 +311,7 @@ def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> 
     try:
         status = Payload.parse(asked.stdout)
         if not status.flag("loggedIn"):
-            raise NotLoggedIn(f"the brain has no login; run: {setup(config_dir)}")
+            raise NotLoggedIn("the brain has no login: `hands login` gives it one")
         # [LAW:no-silent-failure] a key the config directory resolves would answer every turn, billed to the API.
         if (method := status.text("authMethod")) != "claude.ai":
             raise NotLoggedIn(
@@ -306,12 +321,6 @@ def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> 
         return status.text("email")
     except Rejected as error:
         raise NotLoggedIn(f"`claude auth status` for the brain answered {asked.stdout[:200]!r} {asked.stderr[:200]!r}, not its status: {error}") from None
-
-
-def setup(config_dir: Path) -> str:
-    """The command that sets the brain up as any Claude Code is set up: run once, where it runs."""
-    # The directory is made here too: it is asked for before hands has ever run the brain, and so before workdir made it.
-    return f"mkdir -p {_cwd(config_dir)} && cd {_cwd(config_dir)} && CLAUDE_CONFIG_DIR={config_dir} claude"
 
 
 class _Terminal:
@@ -573,7 +582,7 @@ class Brain:
                     await self._type(lambda typist: typist.type(Text(pasted(text)).typed))
                     await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
                 if not (turn.taken.done() or turn.answered.done()):
-                    raise Untaken(f"the brain did not take the turn typed into it in {TAKE_SECONDS:.0f}s; if it is on a setup screen, run: {setup(self._config_dir)}")
+                    raise Untaken(f"the brain did not take the turn typed into it in {TAKE_SECONDS:.0f}s; if it is on one of Claude Code's first screens, `hands login` answers them")
             except (BrainGone, Untaken) as error:
                 self._over(turn, error)
             await asyncio.wait({turn.answered})

@@ -165,7 +165,7 @@ def test_the_brain_is_logged_as_reaching_anthropics_api_through_the_proxy_on_its
 
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
-    with pytest.raises(Rejected, match="cd /Users/someone/.hands/brain/cwd && CLAUDE_CONFIG_DIR=/Users/someone/.hands/brain claude"):
+    with pytest.raises(Rejected, match="`hands login` gives it one"):
         backend(Claude(), HOME, os.environ)
 
 

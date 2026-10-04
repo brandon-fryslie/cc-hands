@@ -360,22 +360,20 @@ def display(finding: readiness.Finding) -> tuple[str, str]:
 
 def login(home: Home) -> int:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
-    from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, set_up, starting_settings, workdir
+    from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, starting_settings
     from hands.brain.process import login as brain_login
     from hands.core.wire import UPSTREAM
 
     audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
-    # [LAW:nothing-unseen] a login is a unit of work: whether the home was new, whether it wrote the brain's settings,
-    # and the account it ended on. Recorded in the audit log alone, as the plugin's render is: logging in never waits on
-    # a collector, or on a config.toml the daemon has yet to accept.
+    # [LAW:nothing-unseen] a login is a unit of work: whether it wrote the brain's settings, whether it took Claude Code's
+    # first run, and the account it ended on. Recorded in the audit log alone, as the plugin's render is: logging in never
+    # waits on a collector, or on a config.toml the daemon has yet to accept.
     with wide.unit("brain.login", audit_log.record):
-        # A home with no brain has never been through Claude Code's first screens, and its login is one of them.
-        new = not home.brain.exists()
-        workdir(home.brain)
-        wide.annotate(new=new, settings_written=starting_settings(home.brain))
         try:
-            account = (set_up if new else brain_login)(home.brain, UPSTREAM, os.environ)
-        except (LoginFailed, NotLoggedIn, Unstartable) as error:
+            # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
+            wide.annotate(settings_written=starting_settings(home.brain))
+            signed = brain_login(home.brain, UPSTREAM, os.environ)
+        except (LoginFailed, NotLoggedIn, Unstartable, OSError) as error:
             wide.fail(str(error))
             print(f"hands login: {error}", file=sys.stderr)
             return 1
@@ -383,9 +381,11 @@ def login(home: Home) -> int:
             wide.fail("interrupted")
             print("hands login: interrupted", file=sys.stderr)
             return 1
-        wide.annotate(account=account)
-    print(f"the brain at {home.brain} is logged in as {account}")
-    print("a hands already running started its brain on the login before: restart it to start the brain on this one")
+        wide.annotate(first_run=signed.first_run, account=signed.account)
+    print(f"the brain at {home.brain} is logged in as {signed.account}")
+    if not signed.first_run:
+        # A brain never through its first run never started, so no hands holds it on an earlier login.
+        print("a hands already running started its brain on the login before: restart it to start the brain on this one")
     return 0
 
 

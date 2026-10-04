@@ -104,10 +104,10 @@ Anthropic `tool_use` but drops OpenAI-shape tool calls (2026-09-25), so it is re
 `claude` is the brain: one long-lived Claude Code of hands' own, on the Claude subscription,
 whose requests go through hands' proxy and which reaches the sessions through hands' tools over MCP
 (`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, and it does not start without one.
-`hands login` sets it up: on a home with no brain it writes the brain's starting `settings.json`, then runs its Claude
-Code once in the directory the brain runs in, where you answer its first screens, its login among them, and `/exit`.
-On a home that has one it logs the brain in again, or onto another account. Either way it says which account the brain
-holds after, and it never changes a `settings.json` that is there.
+`hands login` sets it up: it writes the brain's starting `settings.json` if it has none, never changing one that is
+there; then, on a brain Claude Code has not finished its first run on, it runs that first run in the directory the brain
+runs in, where you answer its first screens, its login among them, and `/exit`. On a brain that has been through it,
+it logs the brain in again, or onto another account. Either way it says which account the brain holds after.
 Its tools, its permission rules and mode, and its MCP servers are that directory's, as for any Claude Code:
 `~/.hands/brain/settings.json`, and `CLAUDE_CONFIG_DIR=~/.hands/brain claude mcp add -s user ...`; hands adds only its
 own MCP server, which it may use without asking, and its hooks, and it keeps the account's claude.ai connectors out.
