@@ -135,7 +135,7 @@ def _misfits(schema: JsonSchema, value: object, what: str) -> list[str]:
     """
     got = type(value).__name__
     match schema:
-        case {"enum": enum}:
+        case {"enum": enum} if isinstance(value, str):
             allowed = cast(list[str], enum)
             return [] if value in allowed else [f"{value!r} is no {what}; it is one of {', '.join(allowed)}"]
         case {"type": "string"}:

@@ -113,7 +113,8 @@ FITTING: dict[str, object] = {"text": "hi", "loud": False, "times": 2, "tone": "
         # A null is an argument left out, and this one has no default.
         ({"text": None}, "typed was called with the wrong arguments: missing a required argument: 'text'"),
         ({"tone": "dull"}, "'dull' is no tone; it is one of flat, bright"),
-        ({"lines": "more"}, "lines should be a list, got str"),
+        ({"tone": ["flat"]}, "tone should be a string, got list"),
+        ({"lines": "more"},"lines should be a list, got str"),
         ({"lines": ["more"]}, "lines[0] should be an object, got str"),
         ({"lines": [{"text": "more"}]}, "lines[0] has no loud"),
         ({"lines": [{"text": "more", "loud": "yes"}]}, "lines[0].loud should be true or false, got str"),
