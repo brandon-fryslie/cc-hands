@@ -1,6 +1,8 @@
 """`hands check`: each piece hands needs, found or named as missing, through the same edges a user's machine has."""
 
 import contextlib
+import ctypes
+import errno
 import fcntl
 import json
 import os
@@ -11,6 +13,7 @@ import subprocess
 import tempfile
 import termios
 import sys
+from collections import Counter
 from collections.abc import Callable, Generator, Iterator, Sequence
 from datetime import UTC, datetime
 from importlib.metadata import version
@@ -22,12 +25,12 @@ from hands.core.session import Membership, SessionId
 from hands.daemon import readiness
 from hands.daemon.cli import main
 from hands.daemon.readiness import Missing, Ready, Unknown
-from hands.sessions import audit, heartbeat, liveness, wrapper
+from hands.sessions import audit, heartbeat, liveness, terminals, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
-from hands.sessions.terminals import Terminal, attended, terminal_processes
+from hands.sessions.terminals import Terminal, Terminals, Undescribed, attended, terminal_processes
 from hands.sessions.wrapper import shim_script
 from hands.voice.backends import ClaudeCodeBackend
 
@@ -38,6 +41,19 @@ def root() -> Iterator[Path]:
     root = Path(tempfile.mkdtemp(prefix="ready-", dir="/tmp")).resolve()
     yield root
     shutil.rmtree(root)
+
+
+@pytest.fixture(autouse=True)
+def only_this_tests_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A check scans this machine's real processes, and any other at a terminal, a shell in another pane among them,
+    may be caught mid-exec while it does: only a refusal of a process a test started is the test's."""
+    scan = readiness.terminal_processes
+
+    def own() -> Terminals:
+        found = scan()
+        return Terminals(found.found, [each for each in found.unread if each.parent == os.getpid()])
+
+    monkeypatch.setattr(readiness, "terminal_processes", own)
 
 
 def executable(path: Path, text: str) -> Path:
@@ -329,7 +345,7 @@ def test_a_check_run_from_a_removed_directory_says_its_own_config_cannot_be_told
 
 def test_the_kernel_says_what_a_process_at_a_terminal_was_started_with_and_whether_it_reads_and_writes_it(root: Path) -> None:
     with at_a_terminal(Path("/bin/sleep"), root) as reading, at_a_terminal(Path("/bin/sleep"), root, ["31"], piped=True) as piped:
-        found = {process.pid: process for process in terminal_processes()}
+        found = {process.pid: process for process in terminal_processes().found}
         said = {pid: (found[pid].arguments, attended(found[pid])) for pid in (reading, piped)}
     assert said == {reading: (("30",), True), piped: (("31",), False)}
 
@@ -344,13 +360,66 @@ def test_a_process_reading_its_terminal_as_dev_tty_reads_its_terminal(root: Path
 
     process = subprocess.Popen(["/bin/sleep", "30"], cwd=root, stdin=subprocess.DEVNULL, stdout=terminal, stderr=terminal, start_new_session=True, preexec_fn=reopened)
     try:
-        found = next(found for found in terminal_processes() if found.pid == process.pid)
+        found = next(found for found in terminal_processes().found if found.pid == process.pid)
         assert attended(found)
     finally:
         process.kill()
         process.wait()
         os.close(controller)
         os.close(terminal)
+
+
+def test_a_process_the_kernel_will_not_describe_is_named_and_hides_no_other(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    started_as = terminals._started_as  # pyright: ignore[reportPrivateUsage]
+
+    # As kern.procargs2 answers a process caught mid-exec, or on its way out.
+    def refusing(pid: int) -> tuple[Path, tuple[str, ...], dict[str, str]]:
+        if pid == refused:
+            ctypes.set_errno(errno.EIO)
+            terminals._raise_unless_exited(pid, "kern.procargs2")  # pyright: ignore[reportPrivateUsage]
+        return started_as(pid)
+
+    monkeypatch.setattr(terminals, "_started_as", refusing)
+    with at_a_terminal(Path("/bin/sleep"), root) as refused, at_a_terminal(Path("/bin/sleep"), root) as described:
+        scan = terminal_processes()
+        # Only this test's own: any other process at a terminal on this machine may be caught mid-exec too.
+        unread = [each for each in scan.unread if each.pid in (refused, described)]
+    assert (unread, described in {process.pid for process in scan.found}) == ([Undescribed(refused, os.getpid(), "kern.procargs2", errno.EIO)], True)
+
+
+def test_a_process_that_has_ended_is_no_process_the_kernel_would_not_describe() -> None:
+    process = subprocess.Popen(["/usr/bin/true"])
+    process.wait()
+    ctypes.set_errno(errno.EIO)
+    with pytest.raises(terminals._Exited):  # pyright: ignore[reportPrivateUsage]
+        terminals._raise_unless_exited(process.pid, "kern.procargs2")  # pyright: ignore[reportPrivateUsage]
+
+
+def test_processes_that_could_not_be_looked_at_leave_unknown_whether_any_is_a_session() -> None:
+    unread = [Undescribed(29648, 1, "kern.procargs2", errno.EIO), Undescribed(29649, 1, "proc_pidfdinfo of fd 0", errno.EIO)]
+    assert readiness.sessions_found([], set(), [], readiness.Unrecorded([], Counter(), unread)) == Unknown(
+        "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and each can be typed into, but the kernel "
+        "would not describe these processes at a terminal, so whether any is a session hands has no record of is unknown: "
+        "pid 29648 (kern.procargs2: Input/output error), pid 29649 (proc_pidfdinfo of fd 0: Input/output error)"
+    )
+
+
+def test_a_process_not_described_is_unknown_unless_hands_knows_it_or_it_is_a_runs_helper() -> None:
+    run = terminal(1, "/v/2.1.288")
+    stranger, member, helper = (Undescribed(pid, parent, "kern.procargs2", errno.EIO) for pid, parent in ((7, 0), (8, 0), (9, 1)))
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), CHECKED, Terminals([run], [stranger, member, helper]), {1, 8}, reads_its_terminal)
+    assert found.unread == [stranger]
+
+
+def test_a_run_of_claude_whose_terminal_the_kernel_will_not_say_is_unknown_not_a_failed_scan() -> None:
+    told, piped = terminal(1, "/v/2.1.288"), terminal(2, "/v/2.1.288", tty=PIPED)
+    refusal = Undescribed(1, 0, "proc_pidfdinfo of fd 0", errno.EIO)
+
+    def refusing(process: Terminal) -> bool | Undescribed:
+        return refusal if process is told else reads_its_terminal(process)
+
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), CHECKED, Terminals([told, piped], []), set(), refusing)
+    assert (found.sessions, found.others, found.unread) == ([], {"piped": 1}, [refusal])
 
 
 def test_a_reused_pid_of_an_ended_session_hides_no_session_hands_has_no_record_of(root: Path) -> None:
@@ -386,7 +455,7 @@ def test_a_program_started_by_a_relative_path_is_named_where_it_is_after_it_chan
             # Only the program can say so now: one that ends without moving is read as nothing, not waited on.
             said.close()
             assert moved.read(1) == b"."
-            [process] = [process for process in terminal_processes() if process.pid == pid]
+            [process] = [process for process in terminal_processes().found if process.pid == pid]
     assert (process.executable, process.cwd) == (Path("/bin/bash"), root)
 
 
@@ -423,7 +492,7 @@ def reads_its_terminal(process: Terminal) -> bool:
 
 
 def unjoined(claude: str, terminals: list[Terminal], members: set[int] | None = None, home: Home = Home(Path("/h"))) -> list[Terminal]:
-    return [session.process for session in readiness.unjoined(home, Path(claude), CHECKED, terminals, members or set(), reads_its_terminal).sessions]
+    return [session.process for session in readiness.unjoined(home, Path(claude), CHECKED, Terminals(terminals, []), members or set(), reads_its_terminal).sessions]
 
 
 def test_a_session_is_a_terminal_process_of_any_version_of_the_real_claudes_install() -> None:
@@ -462,7 +531,7 @@ def test_a_session_under_the_same_config_by_way_of_a_link_is_named(tmp_path: Pat
     (tmp_path / ".claude").symlink_to(tmp_path / "dotfiles" / "claude")
     session = terminal(1, "/v/2.1.288", config=tmp_path / started)
     config = readiness.config_dir({"CLAUDE_CONFIG_DIR": str(tmp_path / checked)}, Path("/"))
-    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), config, [session], set(), reads_its_terminal)
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), config, Terminals([session], []), set(), reads_its_terminal)
     assert [joined.process for joined in found.sessions] == [session]
 
 
@@ -489,7 +558,9 @@ def test_a_claude_the_shim_would_not_have_run_as_a_session_is_not_named() -> Non
     prompted = terminal(3, "/v/2.1.288", arguments=("--", "-p"))
     controlling = terminal(4, "/v/2.1.288", arguments=("remote-control", "--spawn", "worktree"))
     asked = terminal(5, "/v/2.1.288", arguments=("fix the readme",))
-    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), CHECKED, [printing, piped, prompted, controlling, asked], set(), reads_its_terminal)
+    found = readiness.unjoined(
+        Home(Path("/h")), Path("/v/2.1.288"), CHECKED, Terminals([printing, piped, prompted, controlling, asked], []), set(), reads_its_terminal
+    )
     assert [session.process for session in found.sessions] == [prompted, asked]
     assert found.others == {"print": 1, "piped": 1, "subcommand": 1}
 
@@ -503,7 +574,7 @@ def test_a_session_started_outside_fritter_is_told_to_restart_and_one_inside_to_
     home = Home(root / "home")
     fritter = terminal(5, str(home.fritter))
     inside, outside = terminal(10, "/v/2.1.288", "/code/in", parent=5), terminal(11, "/v/2.1.288", "/code/out", parent=6)
-    found = readiness.sessions_found([], set(), [], readiness.unjoined(home, Path("/v/2.1.288"), CHECKED, [fritter, inside, outside], set(), reads_its_terminal))
+    found = readiness.sessions_found([], set(), [], readiness.unjoined(home, Path("/v/2.1.288"), CHECKED, Terminals([fritter, inside, outside], []), set(), reads_its_terminal))
     assert isinstance(found, Missing)
     assert "/code/in (pid 10) is a session hands has no record of, so it cannot be reached: /reload-plugins in it" in found.said
     assert "/code/out (pid 11) is a session hands has no record of, started outside fritter, so it cannot be typed into: restart it" in found.said

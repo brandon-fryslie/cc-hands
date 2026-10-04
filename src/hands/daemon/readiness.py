@@ -31,7 +31,7 @@ from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import process_starts
-from hands.sessions.terminals import Terminal, attended, terminal_processes
+from hands.sessions.terminals import Terminal, Terminals, Undescribed, attended, terminal_processes
 from hands.voice import backends
 
 
@@ -253,10 +253,12 @@ class Unjoined:
 
 @dataclass(frozen=True)
 class Unrecorded:
-    """The sessions at a terminal hands has no record of, and how many runs of claude beside them are no session, by why."""
+    """The sessions at a terminal hands has no record of, how many runs of claude beside them are no session, by why, and
+    the processes at a terminal the kernel would not describe, any of which may be one."""
 
     sessions: list[Unjoined]
     others: Counter[wrapper.NotASession]
+    unread: list[Undescribed]
 
 
 def unrecorded(home: Home, path: str, members: Collection[int]) -> Unrecorded | Unfindable:
@@ -299,7 +301,7 @@ def config_dir(environment: Mapping[str, str], cwd: Path) -> Path:
 
 
 def unjoined(
-    home: Home, claude: Path, config: Path, terminals: Sequence[Terminal], members: Collection[int], attended: Callable[[Terminal], bool]
+    home: Home, claude: Path, config: Path, terminals: Terminals, members: Collection[int], attended: Callable[[Terminal], bool | Undescribed]
 ) -> Unrecorded:
     """The sessions at a terminal under `config` that no running membership names: started before the plugin, and not
     reloaded since.
@@ -310,9 +312,10 @@ def unjoined(
     hook records that same process, so it is matched by pid. One under another config, as the brain is, has other
     plugins, and is no session of the plugin this check looks at; one under the same directory by another path, through
     a link, is, since `config` and each process's are both as `config_dir` reads them. `attended` says whether a process
-    reads and writes its terminal; it is asked only of a run of claude, the one process it matters for.
+    reads and writes its terminal; it is asked only of a run of claude, the one process it matters for. A process the
+    kernel would not describe may be a session, unless it is one hands knows or a run's own helper.
     """
-    by_pid = {process.pid: process for process in terminals}
+    by_pid = {process.pid: process for process in terminals.found}
     install = _unversioned(claude)
 
     def runs_claude(pid: int) -> bool:
@@ -321,14 +324,20 @@ def unjoined(
     fritter = home.fritter.resolve()
     runs = [
         process
-        for process in terminals
+        for process in terminals.found
         if runs_claude(process.pid) and not runs_claude(process.parent) and config_dir(process.environment, process.cwd) == config and process.pid not in members
     ]
+    told = [(process, attended(process)) for process in runs]
+    described = [(process, reads) for process, reads in told if isinstance(reads, bool)]
     # [LAW:one-source-of-truth] a session is what the shim would run as one, by the shim's own test.
-    ran: list[tuple[Terminal, wrapper.Run]] = [(process, wrapper.run(process.arguments, attended(process))) for process in runs]
+    ran: list[tuple[Terminal, wrapper.Run]] = [(process, wrapper.run(process.arguments, reads)) for process, reads in described]
     return Unrecorded(
         [Unjoined(process, process.parent in by_pid and by_pid[process.parent].executable == fritter) for process, why in ran if why == "session"],
         Counter(why for _, why in ran if why != "session"),
+        [
+            *(each for each in terminals.unread if each.pid not in members and not runs_claude(each.parent)),
+            *(reads for _, reads in told if isinstance(reads, Undescribed)),
+        ],
     )
 
 
@@ -353,10 +362,13 @@ def sessions_found(
     match unrecorded:
         case Unfindable(said):
             unknown, unseen, beside = [], [f"a session hands has no record of cannot be found: {said}"], ""
-        case Unrecorded(sessions, others):
-            # [LAW:nothing-unseen] a claude at a terminal set aside as no session is counted by why, so none goes unseen.
+        case Unrecorded(sessions, others, unread):
+            # [LAW:nothing-unseen] a claude at a terminal set aside as no session is counted by why, so none goes unseen;
+            # nor does a process the kernel would not describe, which may be a session.
             counts = ", ".join(f"{why} {others[why]}" for why in get_args(wrapper.NotASession))
-            unknown, unseen, beside = [_unjoined(session) for session in sessions], [], f", runs of claude at a terminal that are none: {counts}"
+            unknown, beside = [_unjoined(session) for session in sessions], f", runs of claude at a terminal that are none: {counts}"
+            said = ", ".join(f"pid {each.pid} ({each.call}: {os.strerror(each.errno)})" for each in unread)
+            unseen = [f"the kernel would not describe these processes at a terminal, so whether any is a session hands has no record of is unknown: {said}"] if unread else []
     unreached = [
         *(line for member in running for line in _untypable(member, listening)),
         *(f"{file.path} names no session hands can read ({file.error}): hands run removes it" for file in unreadable),

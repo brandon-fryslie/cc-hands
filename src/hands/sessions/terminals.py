@@ -32,21 +32,45 @@ class Terminal:
     tty: int
 
 
-def terminal_processes() -> list[Terminal]:
+@dataclass(frozen=True)
+class Undescribed:
+    """A process of this user's the kernel would not describe while it runs: one caught mid-exec, or with its memory
+    torn down on the way out, is answered EIO by kern.procargs2."""
+
+    pid: int
+    parent: int
+    # The question the kernel refused, and its errno.
+    call: str
+    errno: int
+
+
+@dataclass(frozen=True)
+class Terminals:
+    """This user's processes at a terminal, and those of them the kernel would not say what they run."""
+
+    found: list[Terminal]
+    unread: list[Undescribed]
+
+
+def terminal_processes() -> Terminals:
     """Every process of this user's that has a controlling terminal: interactive programs, never daemons or apps."""
     own = os.geteuid()
-    return [terminal for process in process_table().values() if process.uid == own and process.tty is not None and (terminal := _terminal(process, process.tty)) is not None]
+    read = [_terminal(process, process.tty) for process in process_table().values() if process.uid == own and process.tty is not None]
+    # [LAW:no-silent-failure] one process the kernel will not describe is named, and hides none of the others.
+    return Terminals([each for each in read if isinstance(each, Terminal)], [each for each in read if isinstance(each, Undescribed)])
 
 
-def attended(process: Terminal) -> bool:
+def attended(process: Terminal) -> bool | Undescribed:
     """Whether its stdin and stdout are both its terminal, as `[ -t 0 ] && [ -t 1 ]` finds them at a terminal: its
     controlling terminal's device, or /dev/tty, which is that terminal under the name each process has for its own.
-    False for one that has exited since it was listed, which reads nothing."""
+    False for one that has exited since it was listed, which reads nothing; the refusal if the kernel would not say."""
     terminal = {process.tty, os.stat("/dev/tty").st_rdev}
     try:
         return all(_device(process.pid, fd) in terminal for fd in (0, 1))
     except _Exited:
         return False
+    except _Refused as refused:
+        return Undescribed(process.pid, process.parent, refused.call, refused.errno)
 
 
 @dataclass(frozen=True)
@@ -110,13 +134,16 @@ def _raise_errno(what: str) -> NoReturn:
     raise OSError(failure, f"{what} could not be read: {os.strerror(failure)}")
 
 
-def _terminal(process: Process, tty: int) -> Terminal | None:
-    """The process at a terminal, with where it runs and what it was started as; None if it has exited since it was listed."""
+def _terminal(process: Process, tty: int) -> Terminal | Undescribed | None:
+    """The process at a terminal, with where it runs and what it was started as; None if it has exited since it was
+    listed, and the refusal if the kernel would not say."""
     try:
         cwd = Path(os.fsdecode(_string(_pidinfo(process.pid, _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE).raw[_CWD_PATH_AT : _CWD_PATH_AT + _MAXPATHLEN])))
         executable, arguments, environment = _started_as(process.pid)
     except _Exited:
         return None
+    except _Refused as refused:
+        return Undescribed(process.pid, process.parent, refused.call, refused.errno)
     # A path exec'd relative to the directory the process was started in, which a session leaves for a worktree and
     # the kernel keeps no record of. [LAW:one-source-of-truth] The PWD its shell started it with names that directory,
     # in the one record the path itself is read from; a program started with none, or one that is no absolute path, is
@@ -169,6 +196,13 @@ class _Exited(Exception):
     pass
 
 
+class _Refused(Exception):
+    def __init__(self, call: str, errno: int) -> None:
+        super().__init__(call, errno)
+        self.call = call
+        self.errno = errno
+
+
 def _pidinfo(pid: int, flavor: int, size: int) -> ctypes.Array[ctypes.c_char]:
     record = ctypes.create_string_buffer(size)
     filled = _libproc.proc_pidinfo(pid, flavor, 0, record, size)
@@ -181,7 +215,7 @@ def _pidinfo(pid: int, flavor: int, size: int) -> ctypes.Array[ctypes.c_char]:
 
 
 def _raise_unless_exited(pid: int, call: str) -> NoReturn:
-    """Raised after `call` failed for pid: _Exited when the process is gone, or a zombie, and OSError when it runs."""
+    """Raised after `call` failed for pid: _Exited when the process is gone, or a zombie, and _Refused when it runs."""
     failure = ctypes.get_errno()
     # [LAW:single-enforcer] the one test for an exit, whichever call failed: libproc has nothing on a process that
     # exited, or is a zombie waiting on its parent.
@@ -189,4 +223,4 @@ def _raise_unless_exited(pid: int, call: str) -> NoReturn:
     if _libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, probe, _BSDINFO_SIZE) <= 0 and ctypes.get_errno() == errno.ESRCH:
         raise _Exited
     # [LAW:no-silent-failure] anything else is the kernel refusing a question about one of this user's own processes.
-    raise OSError(failure, f"{call} could not look at pid {pid}: {os.strerror(failure)}")
+    raise _Refused(call, failure)
