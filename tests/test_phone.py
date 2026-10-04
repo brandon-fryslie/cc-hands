@@ -27,7 +27,9 @@ from hands.voice import phone as phone_module
 from hands.voice.phone import Offer, Phone
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
-from hands.voice.phonepage import RENEW_DAYS, own_certificate, phone_app, phone_key
+from hands.sessions.wide import WideEvent
+from hands.voice import phonepage
+from hands.voice.phonepage import RENEW_DAYS, Tailnet, Untailed, own_certificate, phone_app, phone_key
 from hands.voice.ptt import KeyedAudio, PushToTalk
 
 KEY = "the-phone-key"
@@ -290,6 +292,45 @@ async def test_a_page_that_goes_quiet_is_hung_up_and_hands_is_at_the_desk_again(
     await call.until(lambda: call.key.gate.place == "desk")
     left = call.recorded[-1]
     assert isinstance(left, PhoneLeft) and left.reason == "went quiet"
+
+
+async def _served(home: Home, net: Tailnet | Untailed, monkeypatch: pytest.MonkeyPatch) -> list[Entry]:
+    """What serving the page records, on a loopback port the system picks, with Tailscale answering `net`."""
+
+    async def asked(_home: Home) -> Tailnet | Untailed:
+        return net
+
+    monkeypatch.setattr(phonepage, "PHONE_HOST", "127.0.0.1")
+    monkeypatch.setattr(phonepage, "PHONE_PORT", 0)
+    monkeypatch.setattr(phonepage, "tailnet", asked)
+    recorded: list[Entry] = []
+    phone = Phone(PushToTalk(lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
+    serving = asyncio.create_task(phonepage.serve_phone(phone, home, recorded.append))
+    async with asyncio.timeout(5):
+        while not recorded:
+            await asyncio.sleep(0.01)
+    serving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await serving
+    await phone.stop()
+    return recorded
+
+
+async def test_the_page_served_under_the_tailnet_name_is_one_event_naming_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    cert, key = own_certificate(home, datetime.datetime.now(datetime.UTC))
+    [event] = await _served(home, Tailnet("hands.example.ts.net", cert, key), monkeypatch)
+    assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("phone.served", "ok")
+    # The port the system bound, not the 0 it was asked for.
+    port = event.facts["port"]
+    assert dict(event.facts) == {"port": port, "tailnet": "hands.example.ts.net"} and isinstance(port, int) and port > 0
+
+
+async def test_the_page_served_on_the_lan_alone_is_one_event_saying_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    [event] = await _served(Home(tmp_path), Untailed("the tailscale command is not on the PATH"), monkeypatch)
+    assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("phone.served", "ok")
+    port = event.facts["port"]
+    assert dict(event.facts) == {"port": port, "untailed": "the tailscale command is not on the PATH"} and isinstance(port, int) and port > 0
 
 
 def test_the_phone_key_is_made_once_readable_by_the_user_alone(tmp_path: Path) -> None:

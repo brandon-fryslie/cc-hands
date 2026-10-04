@@ -17,7 +17,7 @@ from loguru import logger
 
 from hands.daemon import readiness
 from hands.daemon.config import Config, Settings, edited, load
-from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, again, invocation, refuse, start
+from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
 from hands.sessions import audit, heartbeat, marketplace, recall, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.otlp import exporting
@@ -118,26 +118,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Read before this run's first heartbeat replaces it. A restart's run before it was told to stop, which is
             # no crash, however long the start took that its last heartbeat may read as gone quiet.
             after_crash = arguments.restarted is None and crashed_before(home)
+            run_start = Start(restarted=arguments.restarted is not None, after_crash=after_crash)
             heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
             audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
             # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
             # or a crash the next run must read. A restart's run holds it already: the run before it beat starting under
-            # this pid, which it keeps.
-            try:
-                settings = door(home)
-            except CannotStart as cannot:
-                refuse(cannot, None if arguments.restarted is None else heart, audit_log.record)
-                return 1
-            try:
-                ending, shown = run_here(home, arguments.restarted, after_crash, settings, heart, audit_log)
-            except CannotStart as cannot:
-                refuse(cannot, heart, audit_log.record)
-                return 1
-            match ending:
-                case "quit":
-                    return 0
-                case "restart":
-                    again(invocation(home, "run", "--restarted", str(shown)), audit_log.record)
+            # this pid, which it keeps. Before the settings are read there is no collector: the start ends on the log alone.
+            # [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
+            with run_start.ending(audit_log.record):
+                try:
+                    settings = door(home)
+                except CannotStart as cannot:
+                    run_start.ended(audit_log.record, cannot)
+                    refuse(cannot, None if arguments.restarted is None else heart)
+                    return 1
+                try:
+                    ending, shown = run_here(home, arguments.restarted, after_crash, settings, heart, audit_log, run_start)
+                except CannotStart as cannot:
+                    # The run's launch ended the start, failed with this reason, on the edge the settings chose.
+                    refuse(cannot, heart)
+                    return 1
+                match ending:
+                    case "quit":
+                        return 0
+                    case "restart":
+                        again(invocation(home, "run", "--restarted", str(shown)))
         case "status":
             return report(home)
         case "check":
@@ -192,7 +197,7 @@ def door(home: Home) -> Settings:
         raise CannotStart(str(error)) from error
 
 
-def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog) -> tuple[Ending, int]:
+def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
     """hands run in this process until it is told to stop: how it was, and the pid of the menu-bar indicator beside it.
     Raises CannotStart where it cannot start, once its heartbeat says starting."""
     # In place of loguru's DEBUG default, so a run's terminal is hands' to read.
@@ -205,7 +210,7 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Set
     shown = start_indicator(home) if kept is None else kept
     threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
     with exporting(settings.config.collector, audit_log.record) as record:
-        ending = asyncio.run(launch(lambda: loaded(home, settings, heart, record, after_crash), heart, lambda: edited(home, record, partial(reachable, home), settings), record))
+        ending = asyncio.run(launch(lambda: loaded(home, settings, heart, record, after_crash, run_start), heart, lambda: edited(home, record, partial(reachable, home), settings), record, run_start))
     return ending, shown
 
 
@@ -214,9 +219,10 @@ type Run = Callable[[asyncio.Event], Coroutine[object, object, Ended]]
 
 
 async def launch(
-    load: Callable[[], Run], heart: heartbeat.Heart, edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record
+    load: Callable[[], Run], heart: heartbeat.Heart, edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record, run_start: Start
 ) -> Ending:
     """The run `load` makes, with that load, which imports Pipecat, as the first step of its start; then how it was told to end.
+    A run that ends before it was ready ends its start here: failed with what it raised, or cancelled, told to stop first.
 
     [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the restart signal, the q key,
     a failed background task, and an edit to the settings (`edited` returning one that parses) all set this one event, and it is
@@ -255,11 +261,12 @@ async def launch(
     for signal_number, how in STOP_SIGNALS.items():
         loop.add_signal_handler(signal_number, stop, how)
     try:
-        # No session has joined before the hooks are served, which is after the import.
-        run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, quit_event)
-        last = Ended(None, 0) if run is None else await run(quit_event)
-        if failed:
-            raise failed[0]
+        with run_start.ending(record):
+            # No session has joined before the hooks are served, which is after the import.
+            run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, quit_event)
+            last = Ended(None, 0) if run is None else await run(quit_event)
+            if failed:
+                raise failed[0]
         # Written only by a run told to stop: a refused start's last is refuse's, and any other run that raised leaves
         # its last heartbeat naming a pid that is gone, or, as it restarts, one that stops beating, and neither reads as stopped. [LAW:no-ambient-temporal-coupling] it
         # goes out while the handlers are in, so a restart is never asked once they are out: the heartbeat no longer
@@ -283,13 +290,13 @@ def reachable(home: Home, settings: Config) -> None:
     backend(settings.llm, home, os.environ)
 
 
-def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, after_crash: bool) -> Run:
+def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, after_crash: bool, run_start: Start) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import configured_from, run
 
     path = os.environ.get("PATH", "")
-    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), lambda: survey(readiness.check(home, path, granted=True)), home, heart, record, quit_event, after_crash, os.environ)
+    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), lambda: survey(readiness.check(home, path, granted=True)), home, heart, record, quit_event, after_crash, os.environ, run_start)
 
 
 def start_indicator(home: Home) -> int:

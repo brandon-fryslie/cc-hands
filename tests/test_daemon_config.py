@@ -3,9 +3,13 @@
 import asyncio
 import json
 import os
+import re
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -14,13 +18,15 @@ import pytest
 
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, Anthropic, Claude, Config, OpenAI
-from hands.daemon.starting import CannotStart, Ended, start
+from hands.daemon.starting import CannotStart, Ended, Start, start
 from hands.daemon.run import backend
 from hands.sessions import audit, heartbeat
-from hands.sessions.audit import Entry, LLMChosen, SettingsEdited, SettingsRead, VoiceChosen, encoded
+from hands.sessions.audit import Entry, SettingsEdited, encoded
+from hands.sessions.hookconfig import DISPLAY_PATH
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
+from hands.sessions.wide import WideEvent
 from hands.core.wire import UPSTREAM
 from hands.voice import voices
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
@@ -194,8 +200,8 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         answered.wait()
         return run.Configured(config, run.Settings(b"", Config(collector="http://otel.example:4318")))
 
-    recorded: list[Entry] = []
-    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda: None, home, sessions, recorded.append), heart, sessions.live_count, asyncio.Event()))
+    run_start = Start(restarted=False, after_crash=False)
+    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda: None, home, sessions, run_start), heart, sessions.live_count, asyncio.Event()))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -205,10 +211,18 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         await asyncio.sleep(0.005)
     answered.set()
     assert await starting == config
-    # The log says which file the settings came from, the Whisper model and collector they name, which server and model the run
-    # reaches, and never with what key, and the voice it speaks in.
-    assert recorded == [SettingsRead(path=str(home.config), whisper_model="w", collector="http://otel.example:4318"), LLMChosen(backend="AnthropicBackend", base_url=ANTHROPIC_URL, model=ANTHROPIC_MODEL, account=None), VoiceChosen(voice=voices.DEFAULT)]
-    assert "sk-secret" not in str([encoded(entry) for entry in recorded])
+    # The start's event says which file the settings came from, the Whisper model and collector they name, which server and
+    # model the run reaches, and never with what key, and the voice it speaks in.
+    recorded: list[Entry] = []
+    run_start.ended(recorded.append, None)
+    [event] = recorded
+    assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("hands.start", "ok")
+    chosen = {name: event.facts[name] for name in ("settings", "whisper_model", "collector", "backend", "base_url", "model", "account", "voice")}
+    assert chosen == {
+        "settings": home.config, "whisper_model": "w", "collector": "http://otel.example:4318",
+        "backend": "AnthropicBackend", "base_url": ANTHROPIC_URL, "model": ANTHROPIC_MODEL, "account": None, "voice": voices.DEFAULT,
+    }
+    assert "sk-secret" not in str(encoded(event))
 
 
 async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Path) -> None:
@@ -221,7 +235,7 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
 
     quit_event = asyncio.Event()
     quit_event.set()
-    assert await start(lambda: run.configured(prompted, lambda: None, home, sessions, lambda _event: None), heart, sessions.live_count, quit_event) is None
+    assert await start(lambda: run.configured(prompted, lambda: None, home, sessions, Start(restarted=False, after_crash=False)), heart, sessions.live_count, quit_event) is None
     never.set()
 
 
@@ -233,7 +247,34 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
         raise CannotStart("no key")
 
     with pytest.raises(CannotStart, match="no key"):
-        asyncio.run(start(lambda: run.configured(refused, lambda: None, home, sessions, lambda _event: None), heart, sessions.live_count, asyncio.Event()))
+        asyncio.run(start(lambda: run.configured(refused, lambda: None, home, sessions, Start(restarted=False, after_crash=False)), heart, sessions.live_count, asyncio.Event()))
+
+
+async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A unix socket path is capped near 104 bytes on macOS, so not under pytest's long tmp_path.
+    root = Path(tempfile.mkdtemp(prefix="hands-"))
+    home = Home(root)
+    # The system picks the display's port, so a hands running on this machine keeps its own.
+    monkeypatch.setattr(run, "DISPLAY_PORT", 0)
+    heart = heartbeat.Heart(root / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01))
+
+    def refused(_environment: Mapping[str, str]) -> run.Configured:
+        raise CannotStart("no key")
+
+    run_start = Start(restarted=False, after_crash=False)
+    recorded: list[Entry] = []
+    try:
+        with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
+            await run.run(refused, lambda: None, home, heart, recorded.append, asyncio.Event(), False, {}, run_start)
+    finally:
+        shutil.rmtree(root)
+    # Refused at its settings, after every server was up: the start says where each listened.
+    [event] = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "hands.start"]
+    proxy, display = event.facts["proxy"], event.facts["display"]
+    assert (event.outcome, event.facts["hooks"], event.facts["upstream"], event.facts["tap"]) == ("failed", home.socket, UPSTREAM, home.wire)
+    assert isinstance(proxy, str) and re.fullmatch(r"http://127\.0\.0\.1:[1-9]\d*", proxy)
+    # The port the display was bound on, not the 0 it was asked for.
+    assert isinstance(display, str) and re.fullmatch(rf"http://127\.0\.0\.1:[1-9]\d*{DISPLAY_PATH}", display)
 
 
 def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -255,12 +296,12 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     monkeypatch.setattr(cli, "to_terminal", kept)
     monkeypatch.setattr(cli.logger, "remove", kept)
 
-    def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _after_crash: bool) -> cli.Run:
+    def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _after_crash: bool, run_start: Start) -> cli.Run:
         sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=record)
 
         async def refused(quit_event: asyncio.Event) -> Ended:
             configure = partial(run.configured_from, home, settings, {"ANTHROPIC_API_KEY": "k", "HANDS_LLM": "claude"})
-            await start(lambda: run.configured(configure, lambda: None, home, sessions, record), heart, sessions.live_count, quit_event)
+            await start(lambda: run.configured(configure, lambda: None, home, sessions, run_start), heart, sessions.live_count, quit_event)
             raise AssertionError("a start with HANDS_LLM set went on")
 
         return refused
@@ -269,10 +310,34 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     assert cli.main(["--home", str(home.root), "run"]) == 1
     reason = f"HANDS_LLM set, and hands reads no setting from the environment; settings go in {home.config}"
     assert capsys.readouterr().err == f"hands: {reason}\n"
-    lines = [json.loads(line) for line in audit.tail(home.audit, 100)[0]]
-    assert [line for line in lines if line["type"] == "StartRefused"] == [{"at": lines[-1]["at"], "level": "error", "type": "StartRefused", "reason": reason}]
+    # The start's one event is failed with the reason, and says which run it was.
+    [refused] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
+    assert (refused["level"], refused["outcome"], refused["error"]) == ("error", "failed", f"CannotStart: {reason}")
+    assert (refused["facts"]["pid"], refused["facts"]["restarted"], refused["facts"]["after_crash"]) == (os.getpid(), False, False)
     assert cli.main(["--home", str(home.root), "status"]) == 1
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
+
+
+def test_a_start_that_fails_before_its_launch_is_still_one_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Past the door, before the run's launch: the indicator cannot be started.
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+
+    def unshown(_home: Home) -> int:
+        raise OSError("no indicator")
+
+    def kept(*_: object) -> None:
+        pass
+
+    monkeypatch.setattr(cli, "start_indicator", unshown)
+    monkeypatch.setattr(cli, "to_terminal", kept)
+    monkeypatch.setattr(cli.logger, "remove", kept)
+    with pytest.raises(OSError, match="no indicator"):
+        cli.main(["--home", str(home.root), "run"])
+    [failed] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
+    assert (failed["outcome"], failed["error"]) == ("failed", "OSError: no indicator")
 
 
 def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_restarts_in_its_heartbeat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -289,7 +354,8 @@ def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_rest
     assert cli.main(["--home", str(home.root), "run"]) == 1
     reason = capsys.readouterr().err.removeprefix("hands: ").rstrip("\n")
     assert str(home.config) in reason
-    assert [json.loads(line)["reason"] for line in audit.tail(home.audit, 10)[0]] == [reason]
+    # Refused at the door, before the settings name a collector: the start's event is on the log alone.
+    assert [(line["event"], line["error"]) for line in map(json.loads, audit.tail(home.audit, 10)[0])] == [("hands.start", f"CannotStart: {reason}")]
     assert cli.crashed_before(home)
     # A restart's run holds the heartbeat from the outset, the run before it having beat starting under its pid.
     assert cli.main(["--home", str(home.root), "run", "--restarted", "0"]) == 1

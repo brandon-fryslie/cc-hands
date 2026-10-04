@@ -110,25 +110,38 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
     beginning = began or begun()
     opened = _Open(beginning.span.trace_id, beginning.span.span_id, beginning.span.parent_id, emit, dict.fromkeys(counts, 0))
     token = _open.set(opened)
-    outcome: Outcome = "ok"
-    error: str | None = None
-    trace: tuple[str, ...] = ()
+    raised: BaseException | None = None
     try:
         yield
-        if opened.failure is not None:
-            outcome, error = "failed", opened.failure
-    except asyncio.CancelledError:
-        outcome = "cancelled"
-        raise
-    except BaseException as raised:
-        outcome, error, trace = "failed", f"{type(raised).__name__}: {raised}", chain(raised)
+    except BaseException as error:
+        raised = error
         raise
     finally:
         _open.reset(token)
         # A task the body started copied this unit along and may outlive it: what it adds now would change an event
         # already emitted and never reach the log, so it is refused instead.
         opened.closed = True
+        outcome, error, trace = _how(raised, opened.failure)
         emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, beginning.started_at, since(beginning.began), outcome, error, trace, opened.counts, opened.facts))
+
+
+def ended(event: str, emit: Callable[[WideEvent], None], began: Begun, raised: BaseException | None, **facts: Fact) -> None:
+    """Emit the event of a unit of work `began` elsewhere that no one body runs, as it ends: ok where nothing `raised`,
+    cancelled where a CancelledError did, failed with what did otherwise. What raised is only written down, never raised
+    again here, so its traceback stays the one it came up through."""
+    outcome, error, trace = _how(raised, None)
+    emit(WideEvent(event, began.span.trace_id, began.span.span_id, began.span.parent_id, began.started_at, since(began.began), outcome, error, trace, {}, facts))
+
+
+def _how(raised: BaseException | None, failure: str | None) -> tuple[Outcome, str | None, tuple[str, ...]]:
+    """How a run ended, the error it is written with, and what raised it: by what `raised`, or by the `failure` it said."""
+    match raised:
+        case None:
+            return ("ok", None, ()) if failure is None else ("failed", failure, ())
+        case asyncio.CancelledError():
+            return "cancelled", None, ()
+        case _:
+            return "failed", f"{type(raised).__name__}: {raised}", chain(raised)
 
 
 @contextmanager

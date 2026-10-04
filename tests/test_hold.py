@@ -152,7 +152,8 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
     # Refused before its first heartbeat: the one there is left to whatever wrote it, a running hands or a crash, and
     # the reason is in the audit log.
     assert not (tmp_path / "status.json").exists()
-    assert [json.loads(line)["type"] for line in audit.tail(Home(tmp_path).audit, 10)[0]] == ["StartRefused"]
+    [refused] = [json.loads(line) for line in audit.tail(Home(tmp_path).audit, 10)[0]]
+    assert (refused["event"], refused["outcome"]) == ("hands.start", "failed") and "has no Input Monitoring grant" in refused["error"]
 
 
 def test_the_terminal_shows_hands_from_info_and_everything_else_from_warning() -> None:

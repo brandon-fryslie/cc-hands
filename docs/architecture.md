@@ -1768,7 +1768,9 @@ A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts
 as it is; under a LAN address it shows a self-signed one, which the phone is asked
 once to accept, and which hands makes again at a start within 30 days of its end;
-the tailnet's is asked of Tailscale again daily while the page is served. The page is open to anyone who reaches the port; a call is not: an
+the tailnet's is asked of Tailscale again daily while the page is served. Serving it is one
+`phone.served` event, naming the tailnet name it is served under, or why it is served on
+the LAN alone; it follows the pipeline's start, so it is no part of `hands.start`. The page is open to anyone who reaches the port; a call is not: an
 offer must carry the phone's key, a secret in the home that travels in the page
 address's fragment, which a browser never sends with the page request. `hands phone`
 prints the addresses with the key, the first as a QR code. aiortc never notices a
@@ -1899,8 +1901,20 @@ in under a second. After the socket is released, a stop writes a last heartbeat 
 says `stopped`, and a stopped daemon reads as stopped even if its pid is later reused.
 A crash writes nothing more, so its last heartbeat names a pid that is gone, and it
 reads as down. A background task that failed or a pipeline that ended on its own
-counts as a crash: the run raises, exits nonzero, and reads as down until it is run again. A start that
-cannot be made says why on its terminal and as `StartRefused` in the audit log. Refused at
+counts as a crash: the run raises, exits nonzero, and reads as down until it is run again.
+
+A start is one `hands.start` event (`hands.daemon.starting.Start`), timed from the moment
+`hands run` began to the moment the pipeline reported started, so its duration is how
+long hands took to be ready. It says which run it is (`pid`, `restarted`, `after_crash`),
+which settings won (the file, the Whisper model, the collector, the backend, server,
+model, and account, the voice), and what the run listens on (the hook socket, the proxy
+and its upstream, the tap, the display route), each added as the step that learns it is
+taken, so a start that ended first says how far it got; the display's is the address it
+was bound on. No one body runs a start, so its event is emitted as it ends (`wide.ended`)
+rather than held open as a unit over the run: held open, every server and task the start
+makes would be inside it, and every unit they ran part of the start's trace. A start told
+to stop first is cancelled. A start that cannot be made is failed, with the reason, and
+says why on its terminal too; one that anything else ends first is failed with what raised. Refused at
 the door (the talk key's grant, `config.toml`), a run holds no heartbeat yet and writes
 none, so the one there, a running hands' or a crash's, stands; a restart's run holds the
 heartbeat from the outset, its predecessor having beat starting under the same pid.
@@ -1938,7 +1952,7 @@ depends on the network. Events are sent in batches from a thread of their own, s
 or absent collector costs a unit of work nothing. Each batch is an `Exported` line naming
 each event by its span id, how long the send took, and, where the collector did not take
 it, why `[LAW:nothing-unseen]`; a stop waits on the batches still queued for one timeout
-in all, and records those it leaves unsent. `SettingsRead` names the collector. `hands plugin` alone reads no config and exports nothing: Claude Code
+in all, and records those it leaves unsent. The `hands.start` event names the collector. `hands plugin` alone reads no config and exports nothing: Claude Code
 waits for it to exit before a session starts, so its `plugin.render` is in the log alone. hands
 names only the collector; which stores sit behind it is the homelab's.
 
@@ -1967,8 +1981,8 @@ transcripts governs the intermediary's own past.
 its first heartbeat, and parsed into a frozen `Config` (`hands.daemon.config`). An edit is taken up the way
 everything else on disk is, by the run starting again on it: the watch weighs the
 file against the bytes the start read, and an edit that parses ends the run as the
-restart signal does `[LAW:single-enforcer]`, said as `SettingsEdited` before
-`Restarting`. One that does not parse, or names a backend whose key or login the
+restart signal does `[LAW:single-enforcer]`, said as `SettingsEdited` before the
+next `hands.start`, which says it was `restarted`. One that does not parse, or names a backend whose key or login the
 start's own `backend` check refuses, is said as a `SettingsEdited` that was refused,
 and the run keeps what it has. It is in the home, beside
 everything else one hands keeps, so a second home is a second hands with settings of

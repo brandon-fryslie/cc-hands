@@ -9,7 +9,7 @@ from aiohttp import web
 from hands.core.events import Attached, PermissionRequested, Prompted, Stopped
 from hands.core.session import Membership, RequestId
 from hands.sessions.home import Home
-from hands.sessions.audit import DisplayListening, Record
+from hands.sessions.audit import Record
 from hands.sessions.hooks import hook_output, name_output, parse_display, parse_hook
 from hands.sessions.names import Due, Finished, NameGiven, NameUnread, NameWithheld, Names
 from hands.sessions.payload import Rejected
@@ -136,7 +136,6 @@ async def serve_display(sessions: Sessions, host: str, port: int, path: str, rec
     except OSError as error:
         await runner.cleanup()
         raise RuntimeError(f"cannot listen for the text Claude Code displays on {host}:{port}: {error}") from error
-    record(DisplayListening(url=f"http://{host}:{port}{path}"))
     return runner
 
 

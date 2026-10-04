@@ -18,7 +18,9 @@ import os
 import secrets
 import shutil
 import ssl
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from functools import partial
 from importlib import resources
 from pathlib import Path
 from typing import Never
@@ -31,9 +33,10 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from loguru import logger
 
-from hands.sessions.audit import PhoneRefused, PhoneServing, PhoneUntailed, Record
+from hands.sessions.audit import PhoneRefused, Record
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+from hands.sessions.wide import annotate, unit
 from hands.voice.phone import Offer, Phone
 
 # All of this machine's IPv4 addresses, the LAN's and the tailnet's alike.
@@ -239,42 +242,58 @@ def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
 
 async def serve_phone(phone: Phone, home: Home, record: Record) -> Never:
     """Serve the page and take its calls on every address this machine has, until cancelled; under the tailnet's name,
-    with the certificate Tailscale renews, asked for again every RENEW_SECONDS."""
-    net = await tailnet(home)
-    own = _context(*own_certificate(home, datetime.datetime.now(datetime.UTC)))
+    with the certificate Tailscale renews, asked for again every RENEW_SECONDS.
+
+    [LAW:nothing-unseen] serving it is one unit of work, `phone.served`: the port, and the tailnet name it is served
+    under, or, served on the LAN alone, why Tailscale gave it none.
+    """
     runner = web.AppRunner(phone_app(phone, phone_key(home), record), access_log=None)
     await runner.setup()
     try:
-        match net:
-            case Tailnet(name=name, cert=cert, key=key):
-                tailed = _context(cert, key)
+        with unit("phone.served", record):
+            own = _context(*own_certificate(home, datetime.datetime.now(datetime.UTC)))
+            kept: Callable[[], Coroutine[object, object, Never]]
+            match await tailnet(home):
+                case Tailnet(name=name, cert=cert, key=key):
+                    tailed = _context(cert, key)
 
-                def chosen(connection: ssl.SSLObject, server_name: str | None, _context: ssl.SSLContext) -> None:
-                    # [LAW:single-enforcer] the one place a name picks its certificate: the name the phone asked for.
-                    if server_name == name:
-                        connection.context = tailed
+                    def chosen(connection: ssl.SSLObject, server_name: str | None, _context: ssl.SSLContext) -> None:
+                        # [LAW:single-enforcer] the one place a name picks its certificate: the name the phone asked for.
+                        if server_name == name:
+                            connection.context = tailed
 
-                own.sni_callback = chosen  # pyright: ignore[reportAttributeAccessIssue]  (typeshed types the callback for SSLSocket alone)
-                await _site(runner, own)
-                record(PhoneServing(port=PHONE_PORT, tailnet=name))
-                while True:
-                    await asyncio.sleep(RENEW_SECONDS)
-                    match await tailnet(home):
-                        case Tailnet(cert=cert, key=key):
-                            # A context's chain, loaded again, is the one every handshake after it shows.
-                            tailed.load_cert_chain(cert, key)
-                        case Untailed(reason=reason):
-                            logger.warning(f"the tailnet's certificate for the phone's page was not renewed: {reason}")
-            case Untailed(reason=reason):
-                await _site(runner, own)
-                # [LAW:no-silent-failure] the page is still served on the LAN; why the tailnet name is not, is said.
-                logger.warning(f"the phone's page is served on the LAN alone: {reason}")
-                record(PhoneUntailed(port=PHONE_PORT, reason=reason))
-                while True:
-                    # Served until cancelled: there is no certificate of Tailscale's to renew.
-                    await asyncio.sleep(RENEW_SECONDS)
+                    own.sni_callback = chosen  # pyright: ignore[reportAttributeAccessIssue]  (typeshed types the callback for SSLSocket alone)
+                    annotate(tailnet=name)
+                    kept = partial(_keep_renewed, tailed, home)
+                case Untailed(reason=reason):
+                    # [LAW:no-silent-failure] the page is still served on the LAN; why the tailnet name is not, is said.
+                    logger.warning(f"the phone's page is served on the LAN alone: {reason}")
+                    annotate(untailed=reason)
+                    kept = _keep_served
+            await _site(runner, own)
+            # The port the page was bound on, which a phone's address names.
+            [(_host, port, *_)] = runner.addresses
+            annotate(port=port)
+        await kept()
     finally:
         await runner.cleanup()
+
+
+async def _keep_renewed(tailed: ssl.SSLContext, home: Home) -> Never:
+    while True:
+        await asyncio.sleep(RENEW_SECONDS)
+        match await tailnet(home):
+            case Tailnet(cert=cert, key=key):
+                # A context's chain, loaded again, is the one every handshake after it shows.
+                tailed.load_cert_chain(cert, key)
+            case Untailed(reason=reason):
+                logger.warning(f"the tailnet's certificate for the phone's page was not renewed: {reason}")
+
+
+async def _keep_served() -> Never:
+    while True:
+        # Served until cancelled: there is no certificate of Tailscale's to renew.
+        await asyncio.sleep(RENEW_SECONDS)
 
 
 def _context(cert: Path, key: Path) -> ssl.SSLContext:
