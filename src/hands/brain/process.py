@@ -65,10 +65,6 @@ SLIM = {
     # first (turn 2 grew from 8.7 KB to 112 KB; hands-wire-6ic.eph, 2.1.284). The skills and plugins the account syncs
     # are turned off in the brain's settings.json, the only place Claude Code reads that switch from (2.1.288).
     "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
-    # Tool search defers every MCP tool behind ToolSearch, so hands' tools reach the model only after a round trip of
-    # their own on a spoken turn; it is on unless this is false (2.1.288, measured behind a localhost base URL,
-    # hands-brain-8gb). A settings.json env sets it ahead of this, and the brain's turns then say so.
-    "ENABLE_TOOL_SEARCH": "false",
 }
 
 # The tool Claude Code offers in place of the MCP tools it defers.
@@ -178,9 +174,15 @@ def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
         # in its own setup still outranks this.
         "--allowedTools", f"mcp__{SERVER_NAME}", *PLUGIN_SKILLS,
         "--plugin-dir", str(PLUGIN),
-        # [LAW:single-enforcer] each hook declared as the plugin declares it: a held permission's lives as long as a working
-        # session's, and is denied by the same deadline.
-        "--settings", json.dumps({"hooks": {event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}", **declared(event)}]}] for event in HOOKS}}),
+        "--settings", json.dumps({
+            # [LAW:single-enforcer] each hook declared as the plugin declares it: a held permission's lives as long as a
+            # working session's, and is denied by the same deadline.
+            "hooks": {event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}", **declared(event)}]}] for event in HOOKS},
+            # Tool search defers MCP tools behind ToolSearch, so hands' tools would reach the model only after a round trip
+            # of their own on a spoken turn. Set here, it outranks the brain's settings.json env and hands' environment,
+            # which a process environment does not (2.1.288, measured behind a localhost base URL, hands-brain-8gb).
+            "env": {"ENABLE_TOOL_SEARCH": "false"},
+        }),
     ]
 
 
@@ -664,7 +666,7 @@ class Brain:
                 if not any(name.startswith(f"mcp__{SERVER_NAME}__") for name in tools):
                     logger.error(
                         f"the brain's turn went to the model with hands' tools deferred behind {TOOL_SEARCH}:"
-                        f" {self._config_dir / 'settings.json'} sets ENABLE_TOOL_SEARCH in its env ahead of hands' false ({tools})"
+                        f" a setting ranked above hands' --settings turned tool search on ({tools})"
                         if TOOL_SEARCH in tools
                         else f"the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server ({tools})"
                     )

@@ -231,7 +231,11 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     for skill in ("chat", "prompt"):
         assert (plugin / "skills" / skill / "SKILL.md").read_text().startswith(f"---\nname: {skill}\n")
     assert [argv[argv.index(flag) + 1] for flag in ("--setting-sources", "--append-system-prompt", "--session-id")] == ["user", "You are hands.", "b1"]
-    hooks = json.loads(argv[argv.index("--settings") + 1])["hooks"]
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    # hands' tools are offered to the model directly, never deferred behind ToolSearch: set where neither the brain's
+    # settings.json env nor hands' environment outranks it.
+    assert settings["env"] == {"ENABLE_TOOL_SEARCH": "false"}
+    hooks = settings["hooks"]
     assert {event: hooks.pop(event) for event in ("UserPromptSubmit", "Stop", "StopFailure", "Elicitation")} == {
         event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}"}]}] for event in ("UserPromptSubmit", "Stop", "StopFailure", "Elicitation")
     }
@@ -257,15 +261,12 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
         "HTTPS_PROXY": "http://127.0.0.1:40000",
         "NODE_EXTRA_CA_CERTS": "/tmp/fritter-1/trusted.pem",
         "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128",
-        "ENABLE_TOOL_SEARCH": "true",
     })
     assert env == {"PATH": "/bin", "HOME": "/home/u", "FIRECRAWL_API_KEY": "fc", "HTTPS_PROXY": "http://corp:3128", **SLIM, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
     # The account's claude.ai connectors stay out of every request, whatever the brain's own setup names.
     assert env["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
     # No turn opens but the ones hands types: no background task and no scheduled prompt opens one of its own.
     assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == env["CLAUDE_CODE_DISABLE_CRON"] == "1"
-    # hands' tools are offered to the model directly, never deferred behind ToolSearch, whatever hands inherited.
-    assert env["ENABLE_TOOL_SEARCH"] == "false"
 
 
 async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_turns_and_run_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
@@ -702,7 +703,6 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
     brain.session = SessionId("b1")
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
-    brain._config_dir = Path("/brain")  # pyright: ignore[reportPrivateUsage]
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
@@ -720,8 +720,8 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
         logger.remove(sink)
     assert errors == [
         "the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (('Read',))",
-        "the brain's turn went to the model with hands' tools deferred behind ToolSearch: /brain/settings.json sets ENABLE_TOOL_SEARCH"
-        " in its env ahead of hands' false (('Read', 'ToolSearch', 'DeferredToolPlaceholder'))",
+        "the brain's turn went to the model with hands' tools deferred behind ToolSearch: a setting ranked above hands' --settings"
+        " turned tool search on (('Read', 'ToolSearch', 'DeferredToolPlaceholder'))",
     ]
     # What a turn's requests offered is on its brain turn's event.
     assert recorded == []
