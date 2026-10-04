@@ -19,7 +19,7 @@ from hands.sessions.wide import WideEvent
 from hands.voice import system, whisper as whisper_module
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
-from hands.voice.transcription import Busy, Fault, Loading, Lost, NotServing, Unanswered
+from hands.voice.transcription import Busy, Fault, Loading, Lost, NotServing, ServerError, Unanswered
 from hands.voice.turnstop import TurnResolved
 from hands.voice.whisper import Whisper
 
@@ -256,6 +256,7 @@ def said_of(whisper: Whisper, frames: list[Frame]) -> str:
         ((503, {"error": {"message": "model not ready", "code": "model_not_ready"}}), f"That turn was not heard: {LOADING}."),
         ((429, {"error": {"message": "four transcriptions in flight", "code": "rate_limited"}}), "That turn was not heard: LowTalker is already transcribing four things at once. Say it again in a moment."),
         ((200, Late()), "That turn was not heard: LowTalker did not answer within 0.2 seconds. Say it again, and restart LowTalker if it keeps happening."),
+        ((500, b"decode failed"), "That turn was not heard: LowTalker failed on its side. Say it again, and restart LowTalker if it keeps happening."),
         (
             (404, b"<html>404 Not Found</html>"),
             "That turn was not heard: LowTalker answered with something that is not a transcription. Check that the transcription url in hands' config.toml is LowTalker's.",
@@ -336,6 +337,7 @@ class Started:
         (Busy("too many"), ()),
         (Unanswered(10.0), ()),
         (Lost("ServerDisconnectedError"), ()),
+        (ServerError("500: decode failed"), ()),
     ],
 )
 async def test_the_start_is_said_first_and_then_only_a_fault_that_fails_every_hold(fault: Fault | None, deaf: tuple[system.SystemFact, ...]) -> None:

@@ -47,7 +47,7 @@ from hands.voice.system import (
 )
 from hands.voice import transcription
 from hands.voice.microphone import Devices
-from hands.voice.transcription import Broken, Busy, Loading, Lost, NotServing, Unanswered, Unreachable
+from hands.voice.transcription import Broken, Busy, Loading, Lost, NotServing, ServerError, Unanswered, Unreachable
 from hands.voice.hold import Move
 from hands.voice.ptt import Gate
 from hands.voice.turnstop import TurnResolved
@@ -90,6 +90,10 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
         ),
         (TranscriptionFailed(Lost("ServerDisconnectedError")), "That turn was not heard: LowTalker dropped the connection before it answered. Say it again."),
         (TranscriptionFailed(Broken("404: Not Found")), f"That turn was not heard: {BROKEN}."),
+        (
+            TranscriptionFailed(ServerError("500: decode failed")),
+            "That turn was not heard: LowTalker failed on its side. Say it again, and restart LowTalker if it keeps happening.",
+        ),
         (TurnExpired(), "That turn was open for 120 seconds, so hands threw it away."),
     ],
 )

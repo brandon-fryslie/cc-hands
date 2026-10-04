@@ -121,6 +121,8 @@ def _why(fault: transcription.Fault) -> str:
             return f"LowTalker did not answer within {seconds:g} seconds"
         case transcription.Lost():
             return "LowTalker dropped the connection before it answered"
+        case transcription.ServerError():
+            return "LowTalker failed on its side"
         case transcription.Broken():
             return "LowTalker answered with something that is not a transcription"
 
@@ -329,7 +331,7 @@ def listen(voice: Voice, channel: SystemChannel, after_crash: bool) -> None:
         match await voice.stt.fault():
             case transcription.NotServing() | transcription.Unreachable() | transcription.Loading() | transcription.Broken() as standing:
                 await channel.say(Deaf(standing))
-            case transcription.Busy() | transcription.Unanswered() | transcription.Lost() | None:
+            case transcription.Busy() | transcription.Unanswered() | transcription.Lost() | transcription.ServerError() | None:
                 pass
 
     @voice.worker.event_handler("on_pipeline_error")

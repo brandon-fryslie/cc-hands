@@ -71,8 +71,17 @@ class Lost:
 
 
 @dataclass(frozen=True)
+class ServerError:
+    """The server answered with a 5xx other than 503: it failed on its own side, as a hold it could not decode; the
+    next hold may well be transcribed."""
+
+    answer: str
+
+
+@dataclass(frozen=True)
 class Broken:
-    """The server answered, and not with a transcription: `answer` is its status and what was wrong with what came with it."""
+    """The server answered, and not with a transcription, in a way that says the address is not a transcription server's:
+    a 4xx, or a 200 that is no verbose_json. `answer` is its status and what was wrong with what came with it."""
 
     answer: str
 
@@ -80,7 +89,7 @@ class Broken:
 # [LAW:one-source-of-truth] the one place a fault is judged lasting or not, read by the start and by `hands check` alike.
 # A standing fault fails every hold until something is done about it; a passing one may well spare the next hold.
 Standing = NotServing | Unreachable | Loading | Broken
-Passing = Busy | Unanswered | Lost
+Passing = Busy | Unanswered | Lost | ServerError
 Fault = Standing | Passing
 
 
@@ -108,7 +117,7 @@ def detail(fault: Fault) -> str:
             return f"did not answer within {seconds:g} s"
         case Lost(reason=reason):
             return f"dropped the connection: {reason}"
-        case Broken(answer=answer):
+        case ServerError(answer=answer) | Broken(answer=answer):
             return f"answered {answer}"
 
 
@@ -123,7 +132,7 @@ def remedy(fault: Fault) -> str:
             return "speak again once LowTalker's menu says the model is ready"
         case Busy():
             return "say it again in a moment"
-        case Unanswered():
+        case Unanswered() | ServerError():
             return "say it again, and restart LowTalker if it keeps happening"
         case Lost():
             return "say it again"
@@ -163,6 +172,8 @@ async def segments(url: str, wav: bytes, filename: str, prompt: str | None, time
             raise TranscriptionFailed(url, Loading(_refusal(body)))
         case 429:
             raise TranscriptionFailed(url, Busy(_refusal(body)))
+        case _ if 500 <= status < 600:
+            raise TranscriptionFailed(url, ServerError(f"{status}: {_refusal(body)}"))
         case _:
             raise TranscriptionFailed(url, Broken(f"{status}: {_refusal(body)}"))
 

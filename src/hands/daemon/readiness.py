@@ -146,7 +146,7 @@ def transcription(url: str) -> Finding:
             )
         case transcribing.Unreachable() | transcribing.Loading() | transcribing.Broken() as fault:
             return Missing(f"the transcription server at {url} does not transcribe a hold: it {transcribing.detail(fault)}; {transcribing.remedy(fault)}")
-        case transcribing.Busy() | transcribing.Unanswered() | transcribing.Lost() as fault:
+        case transcribing.Busy() | transcribing.Unanswered() | transcribing.Lost() | transcribing.ServerError() as fault:
             # A passing fault: a server that may well transcribe the next hold, not one known to be missing.
             return Unknown(f"cannot tell whether {url} transcribes: it {transcribing.detail(fault)}")
 

@@ -699,6 +699,13 @@ def test_a_server_that_refuses_a_hold_is_missing_and_says_its_answer() -> None:
     assert isinstance(found, Missing) and "answered 404" in found.said and "no such route" in found.said
 
 
+def test_a_server_failing_on_its_own_side_is_unknown_not_missing() -> None:
+    # A 500 is a hold LowTalker could not decode, not an address that is no transcription server's.
+    with serving(500, "decode failed") as server:
+        found = readiness.transcription(server.url)
+    assert isinstance(found, Unknown) and "answered 500" in found.said and "config.toml" not in found.said
+
+
 def test_a_server_busy_with_four_holds_is_unknown_not_missing() -> None:
     # LowTalker refuses a fifth upload at once; the next may well be transcribed.
     with serving(429, "busy") as server:
