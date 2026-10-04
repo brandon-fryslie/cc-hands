@@ -419,11 +419,19 @@ def jsonable(value: object) -> object:
             raise TypeError(f"the audit log cannot encode a {type(value).__name__}: {value!r}")
 
 
+# The extra a logged line is bound with when it says a line the audit log already holds, as the terminal is told of a
+# unit of work that failed.
+AUDITED = "audited"
+
+
 def failures_to(record: Record) -> "Callable[[Message], None]":
-    """A loguru sink that writes every error it is given as a Failure line."""
+    """A loguru sink that writes every error it is given as a Failure line, but one that says a line already written."""
 
     def sink(message: "Message") -> None:
         logged = message.record
+        # [LAW:one-source-of-truth] the error is the line it says, never a Failure line beside it.
+        if AUDITED in logged["extra"]:
+            return
         exception = logged["exception"]
         detail = "" if exception is None or exception.value is None else f": {type(exception.value).__name__}: {exception.value}"
         record(

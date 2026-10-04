@@ -58,6 +58,24 @@ def to_terminal(stream: TextIO) -> int:
     return logger.add(stream, filter=TERMINAL_LEVELS, format=terminal_line)
 
 
+def said_failed(record: audit.Record) -> audit.Record:
+    """`record`, and each unit of work it records that failed also said on the terminal, by its name and its error.
+
+    [LAW:nothing-unseen] the one layer every event of a run passes through: a failure a unit reports on its event, rather
+    than logs, still reaches the terminal its run is read on, as a logged error does.
+    """
+
+    def both(entry: audit.Entry) -> None:
+        record(entry)
+        match entry:
+            case wide.WideEvent(outcome="failed", event=event, error=error):
+                logger.bind(**{audit.AUDITED: True}).error(f"{event} failed: {error}")
+            case _:
+                pass
+
+    return both
+
+
 def show_phone(home: Home) -> int:
     """Print every address the phone's page opens at, and the first as a QR code a phone's camera opens."""
     import segno
@@ -269,7 +287,8 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Set
     kept = None if restarted is None else still_shown(restarted)
     shown = start_indicator(home) if kept is None else kept
     threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
-    with exporting(settings.config.collector, audit_log.record) as record:
+    with exporting(settings.config.collector, audit_log.record) as exported:
+        record = said_failed(exported)
         ending = asyncio.run(launch(lambda: loaded(home, settings, heart, record, after_crash, run_start), heart, lambda: edited(home, record, partial(reachable, home), settings), record, run_start))
     return ending, shown
 
