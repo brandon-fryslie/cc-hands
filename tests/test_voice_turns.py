@@ -26,6 +26,7 @@ from pipecat.frames.frames import (
     TTSSpeakFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
 from pipecat.pipeline.worker import PipelineWorker
@@ -43,6 +44,8 @@ from hands.voice.conversation import cue_receipt
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.floor import Floor
+from hands.voice.latency import LatencyObserver
+from hands.voice.mark import Mark
 from hands.voice.refocus import Refocus
 from hands.voice.player import Player
 from hands.voice.ptt import Gate, Key, KeyedAudio, PushToTalk
@@ -73,6 +76,8 @@ class Recorded(FrameProcessor):
         self.stopped = 0
         self.holds: list[int] = []
         self.resolved: list[int] = []
+        # How many holds have ended, sent or thrown away.
+        self.released = 0
         # The user's turn and what hands said around it, in the order the model's stage would take them.
         self.order: list[str] = []
         # Every message in the model's context as the last frame of it passed: appends that land together share one.
@@ -102,6 +107,8 @@ class Recorded(FrameProcessor):
                 self.resolved.append(hold)
             case TurnOpened(hold=hold):
                 self.holds.append(hold)
+            case VADUserStoppedSpeakingFrame():
+                self.released += 1
             case _:
                 pass
         await self.push_frame(frame, direction)
@@ -145,6 +152,8 @@ class Rig:
     heard: list[bytes] = field(default_factory=list[bytes])
     # Each turn hands said it received, as its words were written to the context.
     received: list[None] = field(default_factory=list[None])
+    # Each mark the latency observer told of the turns, as the phone's page would be told.
+    told: list[Mark] = field(default_factory=list[Mark])
 
     # The gate the last frame was captured under.
     gate: Gate = field(default_factory=Gate)
@@ -230,8 +239,9 @@ async def rigged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProc
     # The floor sits where build_voice puts it, between Whisper and the user aggregator.
     received: list[None] = []
     cue_receipt(voice.user_turns, lambda: received.append(None))
-    async with running([voice.stt, Floor(Pushed(), lambda id: id, lambda: live, clock), *noting, voice.user_turns, out, *behind]) as run:
-        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received)
+    told: list[Mark] = []
+    async with running([voice.stt, Floor(Pushed(), lambda id: id, lambda: live, clock), *noting, voice.user_turns, out, *behind], [LatencyObserver(told.append)]) as run:
+        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told)
 
 
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
@@ -410,6 +420,48 @@ async def test_a_hold_that_heard_nothing_does_not_end_the_hold_pressed_after_it(
     await rig.hold(["up"])
     await rig.texts.put("how many sessions are running")
     assert await rig.everything_sent(holds=2) == ["how many sessions are running"]
+
+
+async def held(rig: Rig, hold: int) -> None:
+    """A hold as a hand makes it: the key down until its press has crossed the pipeline, then up until its release has.
+
+    The latency observer takes a press and a release by the user going from one to the other, so a release queued in
+    the same burst as its press, as the other tests here queue them, reaches it between two pushes of that press and
+    reads as a second hold."""
+    await rig.hold(["down"])
+    await rig.until(lambda: rig.out.holds[-1:] == [hold])
+    await rig.hold(["up"])
+    await rig.until(lambda: rig.out.released == hold)
+
+
+async def test_a_turn_with_no_words_is_told_as_that_once_it_ends(rig: Rig) -> None:
+    await held(rig, 1)
+    await rig.texts.put("")
+    await rig.until(lambda: rig.out.stopped == 1)
+    assert rig.told == ["released", "no words"]
+
+
+async def test_a_silent_hold_in_a_turn_that_has_words_is_not_told_as_no_words(rig: Rig) -> None:
+    await held(rig, 1)
+    await rig.hold(["down"])
+    await rig.until(lambda: rig.out.holds == [1, 2])
+    # The first hold's words arrive while the second is still held, so both are one turn.
+    await rig.texts.put("what time is it")
+    await rig.until(lambda: rig.out.resolved == [1])
+    await rig.hold(["up"])
+    await rig.texts.put("")
+    await rig.until(lambda: rig.out.sent == ["what time is it"])
+    assert rig.told == ["released", "transcript", "released"]
+
+
+async def test_a_hold_whisper_could_not_transcribe_is_told_as_failed_and_not_as_no_words(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def refused(_self: Whisper, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
+        raise ConnectionError("LowTalker is not serving")
+
+    monkeypatch.setattr(Whisper, "_heard", refused)
+    await held(rig, 1)
+    await rig.until(lambda: rig.out.stopped == 1)
+    assert rig.told == ["released", "failed"]
 
 
 API, WEB = SessionId("api"), SessionId("web")

@@ -1798,13 +1798,25 @@ button alone.
 The same channel carries, the other way, what became of each hold. The latency
 observer (`hands.voice.latency`) tells the phone each mark of a turn as it logs it
 (`hands.voice.mark`): `released` or `discarded`, `transcript` or `no words`,
-`first LLM token`, `first audio`. The page shows the last one under its button, with
-the time since the button was let go counting while a reply is waited on, and the
-time to the first sound once it comes. Every time shown is the page's own clock,
-from the button let go to the mark arriving, so it is the wait as felt at the
-phone, the network included. `no words` is a hold Whisper found nothing said in:
-it ends the turn's latency window too, so what hands says next unasked is not
-timed as its answer. A call's `phone.call` event counts the marks its page was told.
+`first LLM token`, `first audio`, and `failed` where a stage failed first. The page
+shows the last one under its button, with the time since the button was let go
+counting while a reply is waited on, and the time to the first sound once it
+comes. Every time shown is the page's own clock, from the button let go to the
+mark arriving, so it is the wait as felt at the phone, the network included.
+
+`no words` is a fact of the turn and not of a hold: the user aggregator says the
+turn ended, and no hold it took in had words, so nothing is sent to the model. A
+silent hold released after one whose words are in is answered with the rest of its
+turn. `failed` is a pipeline error while a release waits on its reply. Both end
+the turn's latency window, so what hands says next, the failure itself included,
+is not timed as the answer. `first audio` is the first sound after the release,
+whatever hands said with it, and the page says only that hands spoke.
+
+A mark carries no hold's number, so the page places it by where it falls: each
+mark names the marks it may come after, and until hands says it took the hold
+shown or threw it away, nothing else told is of that hold. A mark of a hold the
+page has let go of is not shown. A call's `phone.call` event counts the marks its
+page was told.
 
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts

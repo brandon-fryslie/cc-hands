@@ -30,13 +30,19 @@
   }
   #talk:disabled { opacity: .35; cursor: default; }
   #talk.held { background: var(--live); transform: scale(.96); }
-  #state { color: var(--muted); min-height: 1.4em; text-align: center; max-width: 30ch; }
+  #told { color: var(--muted); text-align: center; max-width: 30ch; }
+  #told p { margin: 0; min-height: 1.4em; }
   #state.bad { color: var(--bad); }
+  #count { font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
 <button id="talk" type="button">Connect</button>
-<p id="state" role="status" aria-live="polite"></p>
+<!-- The count changes ten times a second, so it sits outside the live region: a screen reader says each line once. -->
+<div id="told">
+  <p id="state" role="status" aria-live="polite"></p>
+  <p id="count" aria-hidden="true"></p>
+</div>
 <audio id="out" autoplay playsinline></audio>
 <script>
 "use strict";
@@ -44,6 +50,7 @@
 const key = decodeURIComponent(location.hash.slice(1));
 const talk = document.getElementById("talk");
 const state = document.getElementById("state");
+const count = document.getElementById("count");
 const out = document.getElementById("out");
 
 // Every render quantum of the microphone goes to the page as it is captured; a "mark" sent in comes back out after
@@ -59,49 +66,55 @@ let held = false;
 
 function say(text, bad = false) { state.textContent = text; state.classList.toggle("bad", bad); }
 
-// What the page says of the turn it is waiting on, by the last mark hands told of it (hands.voice.mark), "sent" being
-// the page's own: the button let go, and hands yet to say it took the hold. A turn that is `over` is waited on no
-// longer: its line stands as it is, where a turn still waited on counts the time since the button was let go.
-const TOLD = {
-  "sent": {text: () => "Sent. Waiting for hands…"},
-  "released": {text: () => "Received. Transcribing…"},
-  "discarded": {text: () => "Not sent: hands threw that hold away.", over: true, bad: true},
-  "transcript": {text: () => "Heard. Thinking…"},
-  "no words": {text: (turn) => `No words heard, after ${secs(turn.at - turn.released)}.`, over: true, bad: true},
-  "first LLM token": {text: () => "Answering…"},
-  "first audio": {text: (turn) => `Answered in ${secs(turn.at - turn.released)}${turn.heard === null ? "" : `, heard in ${secs(turn.heard - turn.released)}`}.`, over: true},
+// What the page says of the hold it shows, by the last mark of it. Two marks are the page's own: `held`, the button
+// down, and `sent`, the button let go with hands yet to say it took the hold. A mark that `counts` is waited on: the
+// time since the button was let go counts beside its line.
+const OWN = {
+  "held": {text: () => "Listening…"},
+  "sent": {text: () => "Sent. Waiting for hands…", counts: true},
 };
-// The turn waited on: when its button was let go, when its words were heard, and its last mark and when that came.
-let turn = null;
+// The marks hands tells (hands.voice.mark), each naming the marks it may come after. Nothing a mark carries says which
+// hold it is of, so what places it is where it falls: a mark that cannot come after the shown hold's last is of a hold
+// the page has let go of, and until hands says it took this hold or threw it away, nothing else told is of it.
+const TOLD = {
+  "released": {after: ["sent"], text: () => "Received. Transcribing…", counts: true},
+  "discarded": {after: ["held", "sent"], text: () => "Not sent: hands threw that hold away.", bad: true},
+  "transcript": {after: ["released"], text: () => "Heard. Waiting for a reply…", counts: true},
+  "no words": {after: ["released"], text: (hold) => `No words heard, after ${secs(hold.at - hold.released)}.`, bad: true},
+  "failed": {after: ["released", "transcript", "first LLM token"], text: (hold) => `hands failed, after ${secs(hold.at - hold.released)}.`, bad: true},
+  "first LLM token": {after: ["released", "transcript"], text: () => "Replying…", counts: true},
+  // The first sound after the button was let go, whatever hands said with it.
+  "first audio": {after: ["released", "transcript", "first LLM token"], text: (hold) => `hands spoke after ${secs(hold.at - hold.released)}${hold.heard === null ? "" : `, your words heard at ${secs(hold.heard - hold.released)}`}.`},
+};
+// The hold shown: its last mark and when that came, when its button was let go, and when its words were heard.
+let hold = null;
+// The one timer the count runs on, while the hold shown is waited on.
 let ticking = null;
 
 function secs(ms) { return `${(ms / 1000).toFixed(1)} s`; }
 
-function shown() {
-  const told = TOLD[turn.mark];
-  say(told.over ? told.text(turn) : `${told.text(turn)} ${secs(performance.now() - turn.released)}`, told.bad);
+function tick() { count.textContent = secs(performance.now() - hold.released); }
+
+// Shows `next` as the hold: its line said once, and its count running while it is waited on.
+function show(next) {
+  letGo();
+  hold = next;
+  const line = OWN[hold.mark] ?? TOLD[hold.mark];
+  say(line.text(hold), line.bad);
+  if (line.counts) { ticking = setInterval(tick, 100); tick(); }
 }
 
 // Every time is the page's own, from the button let go to the mark arriving: the wait as it is felt at the phone.
 function mark(name) {
-  // The turn is let go of with it, so the count of its wait does not write over what is said here.
-  if (!(name in TOLD)) { letGo(); turn = null; say(`hands said "${name}", which this page does not know.`, true); return; }
-  // A mark of a turn the page has let go of, for a newer hold or a call ended, is of nothing it shows.
-  if (turn === null || TOLD[turn.mark].over) return;
+  // [LAW:no-silent-failure] the page and hands disagree about what hands tells: said on its face, not guessed at.
+  if (!Object.hasOwn(TOLD, name)) { letGo(); say(`hands said "${name}", which this page does not know.`, true); return; }
+  if (hold === null || !TOLD[name].after.includes(hold.mark)) return;
   const at = performance.now();
-  turn = {...turn, mark: name, at, heard: name === "transcript" ? at : turn.heard};
-  if (TOLD[name].over) letGo();
-  shown();
+  show({...hold, mark: name, at, heard: name === "transcript" ? at : hold.heard});
 }
 
-function wait() {
-  letGo();
-  turn = {released: performance.now(), heard: null, mark: "sent", at: null};
-  ticking = setInterval(shown, 100);
-  shown();
-}
-
-function letGo() { clearInterval(ticking); ticking = null; }
+// Lets go of the hold shown: no mark told from here is of it, and its count stops.
+function letGo() { clearInterval(ticking); ticking = null; hold = null; count.textContent = ""; }
 
 function pcm(blocks) {
   const length = blocks.reduce((n, b) => n + b.length, 0);
@@ -176,7 +189,7 @@ function hungUp(why) {
   call.audio.close();
   call.pc.close();
   call = null; held = false;
-  letGo(); turn = null;
+  letGo();
   talk.classList.remove("held");
   talk.disabled = false;
   talk.textContent = "Connect";
@@ -193,9 +206,8 @@ async function down(event) {
   talk.setPointerCapture(event.pointerId);
   held = true;
   talk.classList.add("held");
-  // A new hold lets go of the turn waited on: what is shown from here is this hold's.
-  letGo(); turn = null;
-  say("Listening…");
+  // A new hold takes the place of the one shown: what is shown from here is this hold's.
+  show({mark: "held", at: null, released: null, heard: null});
   call.press();
 }
 
@@ -203,7 +215,8 @@ function up() {
   if (!held) return;
   held = false;
   talk.classList.remove("held");
-  wait();
+  // A hold hands threw away while the button was down stays said as that: nothing of it was sent to be waited on.
+  if (hold?.mark === "held") show({...hold, mark: "sent", released: performance.now()});
   call.release();
 }
 

@@ -10,8 +10,8 @@ let go before it connected, or left after hands was at it, and why; its duration
 
 The page sends its microphone as plain 16-bit audio over the call's data channel, in order with its button, and hands
 plays to it over an audio track. Over the same channel hands tells the page each mark of the turn it is waiting on
-(`hands.voice.mark`): the hold taken or thrown away, its words heard or none found, the reply begun, and its first
-sound, which the page shows with how long each took. Earbuds keep hands' voice out of the phone's microphone, and the page asks the browser
+(`hands.voice.mark`): the hold taken or thrown away, its words heard or none found, a stage failing, the reply begun,
+and the first sound, which the page shows with how long each took. Earbuds keep hands' voice out of the phone's microphone, and the page asks the browser
 for its echo cancellation as well; so the phone's audio is gated by its button alone, with none of the desk
 microphone's wait for the room to go quiet.
 """
