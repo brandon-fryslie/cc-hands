@@ -1,6 +1,7 @@
 #!/bin/sh
 # verify-wheel.sh WHEEL VERSION: install the wheel as a stranger would, with no Go and a fresh uv tool directory, and
-# check that the hands it gives prints VERSION and the fritter inside its package runs a program.
+# check that the hands it gives prints VERSION and the fritter inside its package runs a program. The stranger has
+# Homebrew's portaudio, which PyAudio builds against.
 set -eu
 [ $# -eq 2 ] || { echo "verify-wheel: usage: verify-wheel.sh WHEEL VERSION (given: $*)" >&2; exit 2; }
 wheel=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")

@@ -28,6 +28,9 @@ jobs:
           echo "$GITHUB_REF_NAME" | grep -Eqx 'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)' || { echo "release: $GITHUB_REF_NAME is not vX.Y.Z" >&2; exit 1; }
       - name: Build the wheel
         run: uv build --wheel
+      # A stranger's one prerequisite: PyAudio ships wheels only for Windows, so on a Mac it builds against Homebrew's PortAudio.
+      - name: Give the stranger PortAudio
+        run: brew install portaudio
       # [LAW:one-source-of-truth] the wheel's name, platform tag included, is hatch_build.py's; dist holds the one wheel.
       - name: Install it as a stranger would, and run it
         run: scripts/verify-wheel.sh dist/*.whl "${GITHUB_REF_NAME#v}"
