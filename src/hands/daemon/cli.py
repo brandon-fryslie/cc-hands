@@ -30,12 +30,14 @@ from hands.threads import off_loop
 if TYPE_CHECKING:
     from loguru import Message, Record
 
-# Every C0 and C1 control, DEL, and bidi embedding, override, and isolate, written as its JSON escape: a line's text
+# Every C0 and C1 control, DEL, the line and paragraph separators, and bidi embedding, override, and isolate, written as
+# its JSON escape: a line's text
 # comes from transcripts, replies, and session names, and a raw ESC, BEL, or BS in it would move the cursor, ring the
-# bell, or rewrite the line, and a raw RLO would show it reversed. A line break and a tab are layout, and pass.
+# bell, or rewrite the line, a raw RLO would show it reversed, and a raw U+2028 is a line's end to some readers. A line
+# break and a tab are layout, and pass.
 VISIBLE = {
     code: f"\\u{code:04x}"
-    for code in (*range(0x20), *range(0x7F, 0xA0), *range(0x202A, 0x202F), *range(0x2066, 0x206A))
+    for code in (*range(0x20), *range(0x7F, 0xA0), *range(0x2028, 0x202F), *range(0x2066, 0x206A))
     if chr(code) not in "\n\t"
 }
 # loguru's default line, with the message in its visible form.
@@ -571,8 +573,11 @@ LOG_POLL_SECONDS = 0.25
 
 def tail_log(home: Home, lines: int) -> int:
     newest, offset = audit.tail(home.audit, lines)
+    # [LAW:nothing-unseen] how many lines the log had to print first, and the log offset following began at.
+    wide.annotate(tailed=len(newest), followed_from=offset)
     try:
-        # json.dumps escapes C0 controls but writes DEL, C1, and bidi controls raw; their escapes keep each line JSON.
+        # json.dumps escapes C0 controls but writes DEL, C1, U+2028, U+2029, and bidi controls raw; their escapes keep each
+        # line JSON, and one line to any reader.
         for line in newest:
             print(line.translate(VISIBLE), flush=True)
         for line in audit.follow(home.audit, offset, lambda: time.sleep(LOG_POLL_SECONDS)):

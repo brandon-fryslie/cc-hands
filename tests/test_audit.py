@@ -5,6 +5,7 @@ import inspect
 import json
 import shutil
 import threading
+import tracemalloc
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -351,6 +352,105 @@ def test_the_tail_reaches_into_the_older_segment_when_the_active_one_is_short(tm
     segment(log, 0).write_text("one\ntwo\n")
     segment(log, 8).write_text("three\n")
     assert tail(log, 2) == (["two", "three"], 14)
+
+
+def test_the_tail_of_a_full_segment_is_read_without_reading_the_segment(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    log.mkdir()
+    size = 64 * 1024 * 1024
+    with segment(log, 0).open("wb") as full:
+        # One line as long as a full segment, then the newest lines.
+        full.truncate(size)
+        full.seek(size)
+        full.write(b"\none\ntwo\nthree\npart")
+    tracemalloc.start()
+    try:
+        found = tail(log, 2)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert found == (["two", "three"], size + 15)
+    assert peak < 1024 * 1024
+
+
+def test_the_tail_of_a_log_whose_active_segment_holds_no_complete_line_is_the_older_segments_and_following_begins_at_the_active_one(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    log.mkdir()
+    segment(log, 0).write_text("one\ntwo\n")
+    segment(log, 8).write_text("part")
+    assert tail(log, 5) == (["one", "two"], 8)
+    assert tail(log, 0) == ([], 8)
+    with segment(log, 8).open("a") as active:
+        active.write("ial\n")
+    assert next(follow(log, 8, lambda: None)) == "partial"
+
+
+def test_a_line_separator_json_leaves_raw_is_inside_its_line_however_the_log_is_read(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    writer = AuditLog(log, clock=lambda: AT)
+    for text in ("first", "a\u2028b\x85c", "last"):
+        writer.record(Transcribed(text))
+    said = ["first", "a\u2028b\x85c", "last"]
+    newest, offset = tail(log, 3)
+    assert [json.loads(line)["text"] for line in newest] == said
+    assert offset == segment(log, 0).stat().st_size
+    assert [json.loads(line)["text"] for line in audit.forwards(log)] == said
+    assert [json.loads(line)["text"] for line in audit.backwards(log)] == said[::-1]
+    followed = follow(log, 0, lambda: None)
+    assert [json.loads(next(followed))["text"] for _ in said] == said
+
+
+def test_hands_log_says_how_many_lines_it_had_to_print_first_and_where_following_began(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    home.audit.mkdir()
+    segment(home.audit, 0).write_text('{"n":1}\n{"n":2}\n{"n":3}\n')
+
+    def interrupted(_: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.time, "sleep", interrupted)
+    assert cli.main(["--home", str(tmp_path), "log", "-n", "2"]) == 0
+    [command] = [line for line in lines(home.audit) if line.get("event") == "hands.command"]
+    assert (command["facts"]["tailed"], command["facts"]["followed_from"]) == (2, 24)
+
+
+def test_hands_log_prints_a_line_holding_a_line_separator_as_one_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = Home(tmp_path)
+    AuditLog(home.audit, clock=lambda: AT).record(Transcribed("a\u2028b\u2029c\x85d"))
+
+    def interrupted(_: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.time, "sleep", interrupted)
+    assert cli.main(["--home", str(tmp_path), "log", "-n", "1"]) == 0
+    [printed] = capsys.readouterr().out.splitlines()
+    assert json.loads(printed)["text"] == "a\u2028b\u2029c\x85d"
+
+
+def test_a_line_longer_than_a_block_and_lines_that_end_where_a_block_does_are_read_back_whole(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    log.mkdir()
+    # Lines far longer than is read at once, of lengths that put a line's end and the middle of a two-byte character
+    # at a power of two from the log's end, and a blank line before them.
+    block = 64 * 1024
+    said = ["first", "", "é" * block, "x" * (3 * block), "y" * (block - 1)]
+    segment(log, 0).write_text("".join(f"{line}\n" for line in said) + "part")
+    assert tail(log, len(said))[0] == said
+    assert list(audit.backwards(log)) == said[::-1]
+    assert list(audit.forwards(log)) == said
+
+
+def test_a_segment_deleted_as_it_is_read_back_holds_no_line(tmp_path: Path) -> None:
+    log = tmp_path / "audit"
+    log.mkdir()
+    segment(log, 0).write_text("one\n")
+    segment(log, 4).write_text("two\n")
+    newest = audit.backwards(log)
+    assert next(newest) == "two"
+    segment(log, 0).unlink()
+    assert list(newest) == []
 
 
 def test_a_line_that_rolls_the_log_is_stamped_with_the_rolled_line_in_front_of_it(tmp_path: Path) -> None:
