@@ -59,73 +59,6 @@ class TypingFailed:
     reason: str
 
 
-@dataclass(frozen=True)
-class LLMChosen:
-    """The model a run reaches and the server it reaches it on, from the configuration it started with, and the brain's
-    subscription account (None for a keyed variant); never its key."""
-
-    backend: str
-    base_url: str
-    model: str
-    account: str | None
-
-
-@dataclass(frozen=True)
-class SettingsRead:
-    """Where a run's settings came from: the home's config.toml, or None where it has none and every setting is its
-    default; the Whisper model they name; and the collector each wide event is also sent to, None where it is sent
-    nowhere but this log. The backend they name is LLMChosen."""
-
-    path: str | None
-    whisper_model: str
-    collector: str | None
-
-
-@dataclass(frozen=True)
-class VoiceChosen:
-    """The voice a run starts speaking in: the one the user kept, or the default where they kept none."""
-
-    voice: str
-
-
-@dataclass(frozen=True)
-class ProxyListening:
-    """Where the wire proxy took requests for this run: the url a Claude Code process's ANTHROPIC_BASE_URL is set to."""
-
-    url: str
-    upstream: str
-
-
-@dataclass(frozen=True)
-class TapListening:
-    """Where hands took the copies of wrapped sessions' exchanges for this run: the socket each session's fritter dials."""
-
-    path: Path
-
-
-@dataclass(frozen=True)
-class DisplayListening:
-    """Where hands took the text Claude Code displays for this run: the URL the plugin's MessageDisplay hook posts to."""
-
-    url: str
-
-
-@dataclass(frozen=True)
-class PhoneServing:
-    """The phone's page was served for this run on this port, on the LAN and under this tailnet name."""
-
-    port: int
-    tailnet: str
-
-
-@dataclass(frozen=True)
-class PhoneUntailed:
-    """The phone's page was served for this run on this port on the LAN alone, and why Tailscale gave it no name."""
-
-    port: int
-    reason: str
-
-
 # Why a call ended: a newer call took its place, the page hung up, the connection failed, the page stopped sending
 # (closed outright, or the phone asleep), or hands stopped.
 PhoneGone = Literal["replaced", "hung up", "failed", "went quiet", "stopped"]
@@ -291,21 +224,6 @@ class SettingsEdited:
 
 
 @dataclass(frozen=True)
-class StartRefused:
-    """A start of hands that ended before it ran, and why: a setting, a key, or a grant it could not start without."""
-
-    reason: str
-
-
-@dataclass(frozen=True)
-class Restarting:
-    """The daemon was asked to restart, or its settings were edited (SettingsEdited): it has stopped, and starts again
-    as pid `pid`, the same process, from the code and configuration on disk now."""
-
-    pid: int
-
-
-@dataclass(frozen=True)
 class Exported:
     """A batch of wide events sent to the collector, each named by its span id; how long the send took; and why the
     collector did not take it, None where it took every span: it could not be reached, it refused the request, it
@@ -342,16 +260,8 @@ class Failure:
 Entry = (
     Typing
     | TypingFailed
-    | LLMChosen
-    | SettingsRead
     | SettingsEdited
-    | VoiceChosen
-    | ProxyListening
-    | TapListening
-    | DisplayListening
-    | PhoneServing
     | Moved
-    | PhoneUntailed
     | PhoneArrived
     | PhoneLeft
     | PhoneUnreached
@@ -366,8 +276,6 @@ Entry = (
     | Announced
     | Cued
     | Refocused
-    | StartRefused
-    | Restarting
     | Rolled
     | Failure
     | WideEvent
@@ -378,13 +286,13 @@ Level = Literal["error", "info"]
 
 
 def level(entry: Entry) -> Level:
-    """Whether a line tells of something that went wrong: a Failure; a start refused; a unit of work that failed; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
+    """Whether a line tells of something that went wrong: a Failure; a unit of work that failed, a start refused among them; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
     broke off."""
     # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | TypingFailed() | Exported(error=str()) | StartRefused() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
+        case Failure() | TypingFailed() | Exported(error=str()) | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)
@@ -395,8 +303,8 @@ def level(entry: Entry) -> Level:
         case Primed(failed=failed) | SettingsEdited(refused=failed):
             return "info" if failed is None else "error"
         case (
-            Typing() | LLMChosen() | SettingsRead() | Exported() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
-            | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Cued() | Restarting() | Rolled()
+            Typing() | Exported() | Moved() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
+            | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Cued() | Rolled()
         ):
             return "info"
         case _:

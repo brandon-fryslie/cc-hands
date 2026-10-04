@@ -7,15 +7,16 @@ import asyncio
 import os
 import signal
 import sys
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, NoReturn
 
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.sessions import heartbeat
-from hands.sessions.audit import Record, Restarting, StartRefused
 from hands.sessions.home import Home
+from hands.sessions.wide import Fact, WideEvent, annotate, begun, unit
 
 # The signals that stop a run as the q key does: closing its terminal is how a run in a terminal is most often ended.
 QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -33,17 +34,73 @@ class CannotStart(Exception):
     """A start hands will not make: a setting, a key, or a grant it cannot start without. The message is the reason."""
 
 
-def refuse(cannot: CannotStart, held: heartbeat.Heart | None, record: Record) -> None:
-    """End a start that cannot be made, saying why where it was started, in the audit log, and, where the run holds the
-    heartbeat, as its last; one refused before it holds one leaves the heartbeat to whatever wrote it.
+class Start:
+    """A start of hands, from `hands run` beginning to its pipeline reported started, or to what ended it first.
+
+    Its one event, `hands.start`, is timed from the start's first moment, so its duration is how long hands took to be
+    ready. Its facts say which run it is (`pid`, `restarted`, `after_crash`), which settings won, and what the run listens
+    on, each added as the step that learns it is taken, so a start that ended first says how far it got. It ends ok when
+    ready, failed with what raised (a CannotStart's reason, where it was refused), or cancelled, told to stop first.
+
+    [LAW:nothing-unseen] no one body runs a start: it begins at the door, before the run's loop exists, and ends in the
+    middle of the run. Its unit is opened as it ends, from the moment it began: held open over the run instead, every
+    server and task the start makes would be inside it, and every unit of work they ran a part of the start's trace.
+    """
+
+    def __init__(self, restarted: bool, after_crash: bool) -> None:
+        self._began = begun()
+        self._facts: dict[str, Fact] = {"pid": os.getpid(), "restarted": restarted, "after_crash": after_crash}
+        self._ended = False
+
+    def heard(self, **facts: Fact) -> None:
+        """Add what a step of the start learned to its event."""
+        if self._ended:
+            # [LAW:no-silent-failure] a fact learned after the event was emitted would never reach the log.
+            raise LookupError(f"the start has ended; {sorted(facts)} came too late for its event")
+        self._facts.update(facts)
+
+    def ended(self, emit: Callable[[WideEvent], None], raised: BaseException | None) -> None:
+        """Emit the start's event: ready where nothing `raised`, cancelled where a CancelledError did, failed otherwise.
+
+        [LAW:single-enforcer] the one place the start's event is emitted, and only once: a second end is a bug, refused.
+        """
+        if self._ended:
+            raise RuntimeError("the start has already ended")
+        self._ended = True
+        try:
+            with unit("hands.start", emit, began=self._began):
+                annotate(**self._facts)
+                if raised is not None:
+                    raise raised
+        except BaseException as error:
+            # What raised is the caller's to raise on; the unit only wrote it down.
+            if error is not raised:
+                raise
+
+    @contextmanager
+    def ending(self, emit: Callable[[WideEvent], None]) -> Generator[None]:
+        """Run the body, and end the start here where the body ends before it was ready: failed with what it raised, or
+        cancelled where it returned, told to stop first. A start already ended is left as it ended."""
+        try:
+            yield
+        except BaseException as error:
+            if not self._ended:
+                self.ended(emit, error)
+            raise
+        if not self._ended:
+            self.ended(emit, asyncio.CancelledError())
+
+
+def refuse(cannot: CannotStart, held: heartbeat.Heart | None) -> None:
+    """Say why a start cannot be made where it was started, and, where the run holds the heartbeat, as its last; one
+    refused before it holds one leaves the heartbeat to whatever wrote it. Its Start ends failed with the reason.
 
     [LAW:nothing-unseen] a start from a launcher whose terminal nobody watches is otherwise only gone: `hands status`, and
     the menu-bar indicator of a start refused after it was shown, read the reason from the heartbeat, and the log keeps
-    it after the next run replaces that. Said first, so a heartbeat that cannot be written loses no reason.
+    it, as the start's event, after the next run replaces that.
     """
     reason = str(cannot)
     print(f"hands: {reason}", file=sys.stderr)
-    record(StartRefused(reason))
     match held:
         case heartbeat.Heart():
             held.beat(heartbeat.Refusal(reason), None, 0, listening=False, deaf=False)
@@ -65,13 +122,13 @@ def invocation(home: Home, *arguments: str) -> list[str]:
     return [sys.executable, "-P", "-m", "hands.daemon", "--home", str(home.root), *arguments]
 
 
-def again(argv: list[str], record: Record) -> NoReturn:
+def again(argv: list[str]) -> NoReturn:
     """Start the run again as `argv`, in this process: the same pid, terminal, and children, with the code on disk now.
+    The start after it says it was restarted.
 
     [LAW:one-source-of-truth] the pid stays the run's, so the menu-bar indicator watching it carries on, and the
     sessions a run lists are read again from the home, where they outlive any one run.
     """
-    record(Restarting(os.getpid()))
     # exec replaces the process without running Python's exit: what is buffered for the terminal is written first.
     sys.stdout.flush()
     sys.stderr.flush()

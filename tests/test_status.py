@@ -17,7 +17,7 @@ from conftest import unedited
 from hands.daemon import indicator
 from hands.sessions import heartbeat
 from hands.daemon.cli import Run, launch, main
-from hands.daemon.starting import Ended, keep_beating
+from hands.daemon.starting import Ended, Start, keep_beating
 from hands.threads import off_loop
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -96,7 +96,7 @@ async def test_a_start_still_importing_pipecat_beats_starting_until_the_run_it_l
         imported.wait()
         return run
 
-    launched = asyncio.create_task(launch(load, heart, unedited, lambda _entry: None))
+    launched = asyncio.create_task(launch(load, heart, unedited, lambda _entry: None, Start(restarted=False, after_crash=False)))
     # The import finishes only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -117,7 +117,7 @@ async def test_a_stop_during_the_pipecat_import_ends_the_run_as_stopped(tmp_path
         never.wait()
         raise AssertionError("the import never finished")
 
-    launched = asyncio.create_task(launch(load, heart, unedited, lambda _entry: None))
+    launched = asyncio.create_task(launch(load, heart, unedited, lambda _entry: None, Start(restarted=False, after_crash=False)))
     while heartbeat.read(heart.path) is None:
         await asyncio.sleep(0.005)
     os.kill(os.getpid(), signal.SIGTERM)

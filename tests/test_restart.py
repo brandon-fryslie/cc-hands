@@ -9,6 +9,7 @@ import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,15 +17,25 @@ from conftest import NO_PYTHON, unedited
 from hands.core.session import Membership, SessionId
 from hands.daemon.cli import launch, still_shown
 from hands.daemon.restart import RESTART_SIGNAL
-from hands.daemon.starting import Ended
+from hands.daemon.starting import Ended, Start
 from hands.sessions import audit, heartbeat
 from hands.sessions.hookconfig import LAUNCHER
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
+from hands.sessions.wide import WideEvent
 
 STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
 NOW = datetime(2026, 10, 3, 12, 0, 0, tzinfo=UTC)
 EDITED = audit.SettingsEdited(path="/home/config.toml", refused=None)
+
+
+def started(home: Home) -> list[dict[str, Any]]:
+    """Each start's event in the home's audit log, oldest first."""
+    return [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line.get("event") == "hands.start"]
+
+
+def start_outcomes(recorded: list[audit.Entry]) -> list[str]:
+    return [entry.outcome for entry in recorded if isinstance(entry, WideEvent) and entry.event == "hands.start"]
 
 
 def restart(plugin: Path, home: Home, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -74,8 +85,9 @@ def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sess
         assert after.started_at > before.started_at
         assert done.stdout.startswith(f"hands restarted: pid {daemon.pid} is running again after ")
         assert done.stdout.endswith(", with 1 live session.\n")
-        restarts = [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line["type"] == "Restarting"]
-        assert restarts == [{"at": restarts[0]["at"], "level": "info", "type": "Restarting", "pid": daemon.pid}]
+        # Each start is one event: the first, and the restart's, in the same process, ready.
+        starts = started(home)
+        assert [(line["outcome"], line["facts"]["pid"], line["facts"]["restarted"]) for line in starts] == [("ok", daemon.pid, False), ("ok", daemon.pid, True)]
     finally:
         daemon.terminate()
         daemon.wait(timeout=10)
@@ -98,8 +110,8 @@ def test_an_edit_to_the_settings_brings_the_daemon_back_on_them_with_its_session
         # Started again, in the same process, with nothing asked of it but the edit.
         assert daemon.poll() is None
         assert (after.pid, after.live_sessions) == (daemon.pid, 1) and after.started_at > before.started_at
-        said = [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line["type"] in ("SettingsEdited", "Restarting")]
-        assert [(line["type"], line.get("refused")) for line in said] == [("SettingsEdited", None), ("Restarting", None)]
+        said = [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line["type"] == "SettingsEdited" or line.get("event") == "hands.start"]
+        assert [(line["type"], line.get("refused"), line.get("facts", {}).get("restarted")) for line in said] == [("WideEvent", None, False), ("SettingsEdited", None, None), ("WideEvent", None, True)]
     finally:
         daemon.terminate()
         daemon.wait(timeout=10)
@@ -119,8 +131,9 @@ async def test_settings_edited_end_a_run_as_a_restart(tmp_path: Path) -> None:
         return EDITED
 
     recorded: list[audit.Entry] = []
-    assert await launch(lambda: run, heart, edited, recorded.append) == "restart"
-    assert recorded == [EDITED]
+    assert await launch(lambda: run, heart, edited, recorded.append, Start(restarted=False, after_crash=False)) == "restart"
+    # Told to stop before it was ready, the start ends cancelled.
+    assert recorded[0] == EDITED and start_outcomes(recorded) == ["cancelled"] and len(recorded) == 2
 
 
 async def test_settings_edited_as_a_run_ends_are_taken_up_by_the_next_start_and_not_said(tmp_path: Path) -> None:
@@ -139,8 +152,8 @@ async def test_settings_edited_as_a_run_ends_are_taken_up_by_the_next_start_and_
         return EDITED
 
     recorded: list[audit.Entry] = []
-    assert await launch(lambda: run, heart, edited, recorded.append) == "quit"
-    assert recorded == []
+    assert await launch(lambda: run, heart, edited, recorded.append, Start(restarted=False, after_crash=False)) == "quit"
+    assert start_outcomes(recorded) == ["cancelled"] and len(recorded) == 1
 
 
 async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: Path) -> None:
@@ -153,8 +166,11 @@ async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: 
     async def edited() -> audit.SettingsEdited:
         raise PermissionError("config.toml")
 
+    recorded: list[audit.Entry] = []
     with pytest.raises(PermissionError, match="config.toml"):
-        await launch(lambda: run, heart, edited, lambda _entry: None)
+        await launch(lambda: run, heart, edited, recorded.append, Start(restarted=False, after_crash=False))
+    # A start that ends raising is failed, with what it raised.
+    assert [(entry.outcome, entry.error) for entry in recorded if isinstance(entry, WideEvent)] == [("failed", "PermissionError: config.toml")]
     # As a run whose background task failed: its last heartbeat does not read as stopped.
     status = heartbeat.read(heart.path)
     assert status is None or status.pipeline != "stopped"
@@ -186,7 +202,7 @@ async def test_the_restart_signal_ends_a_run_as_a_restart_whose_last_heartbeat_s
         await quit_event.wait()
         return Ended(NOW, 3)
 
-    launched = asyncio.create_task(launch(lambda: run, heart, unedited, lambda _entry: None))
+    launched = asyncio.create_task(launch(lambda: run, heart, unedited, lambda _entry: None, Start(restarted=False, after_crash=False)))
     while not told:
         await asyncio.sleep(0.005)
     os.kill(os.getpid(), RESTART_SIGNAL)
@@ -207,7 +223,7 @@ async def test_a_restart_asked_while_a_quit_winds_the_run_down_does_not_start_it
         await asyncio.sleep(0.05)
         return Ended(None, 0)
 
-    launched = asyncio.create_task(launch(lambda: run, heart, unedited, lambda _entry: None))
+    launched = asyncio.create_task(launch(lambda: run, heart, unedited, lambda _entry: None, Start(restarted=False, after_crash=False)))
     await winding_down.wait()
     os.kill(os.getpid(), RESTART_SIGNAL)
     assert await launched == "quit"

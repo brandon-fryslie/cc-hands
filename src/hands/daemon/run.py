@@ -43,8 +43,8 @@ from hands.sessions.home import Home
 from hands.core.front import InFront
 from hands.core.place import Modality
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
-from hands.sessions.audit import LLMChosen, ProxyListening, Record, SettingsRead, TapListening, VoiceChosen, failures_to
-from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT, PERMISSION_DEADLINE_SECONDS
+from hands.sessions.audit import Record, failures_to
+from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT, DISPLAY_URL, PERMISSION_DEADLINE_SECONDS
 from hands.sessions.front import read_front
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.statusfile import keep_reading_statuses
@@ -94,7 +94,7 @@ from hands.voice.briefing import as_sent, brief
 from hands.voice.conversation import cue_receipt, record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
-from hands.daemon.starting import CannotStart, Ended, invocation, keep_beating, start
+from hands.daemon.starting import CannotStart, Ended, Start, invocation, keep_beating, start
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain_instruction
 from hands.voice.player import Player
 from hands.voice import voices
@@ -313,6 +313,7 @@ async def outlived(brain: Brain) -> None:
 async def run(
     configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, record: Record, quit_event: asyncio.Event, after_crash: bool,
     environment: Mapping[str, str],
+    run_start: Start,
 ) -> Ended:
     voice: Voice | None = None
     # [LAW:single-enforcer] one owner lets go of all the run took, in reverse, whichever step of taking it raised: a run
@@ -328,10 +329,12 @@ async def run(
         names = Names()
         hooks = await serve_hooks(home, sessions, names, record)
         held.push_async_callback(hooks.cleanup)
+        run_start.heard(hooks=home.socket)
         wire = Wire(wire_to(record))
         proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=time.time)
         held.push_async_callback(proxy.close)
-        record(ProxyListening(url=proxy.url, upstream=UPSTREAM))
+        # The url a Claude Code process's ANTHROPIC_BASE_URL is set to.
+        run_start.heard(proxy=proxy.url, upstream=UPSTREAM)
         # [LAW:one-source-of-truth] the working sessions' exchanges reach the same observer as the brain's, so the log and
         # whatever listens hear one wire; and what they say of a turn reaches the registry as it is heard, as a hook does.
         def tapped(observed: Observed) -> None:
@@ -341,9 +344,10 @@ async def run(
 
         tap = await serve_tap(home.wire, tapped, record, clock=time.time)
         held.callback(tap.close)
-        record(TapListening(path=home.wire))
+        run_start.heard(tap=home.wire)
         display = await serve_display(sessions, DISPLAY_HOST, DISPLAY_PORT, DISPLAY_PATH, record)
         held.push_async_callback(display.cleanup)
+        run_start.heard(display=DISPLAY_URL)
         store = SummaryStore(Sentences(home.sentences))
         # [LAW:one-source-of-truth] one holder of each session's last turn: the narrator fills it, tell_turn reads it.
         recounts = Recounts()
@@ -362,7 +366,7 @@ async def run(
         quiet_cues = QuietCues()
         tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, lambda: quiet_cues.owe(WORKING))]
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, record), heart, sessions.live_count, quit_event)
+        config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
             async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.fritter, home.audit, shlex.join(invocation(home, "recall")), record, environment) as minded:
@@ -372,23 +376,26 @@ async def run(
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, key, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, heart, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers)
+                    await converse(voice, home, sessions, heart, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, run_start)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[], Configured], survey: Callable[[], None], home: Home, sessions: Sessions, record: Record) -> VoiceConfig:
+async def configured(configure: Callable[[], Configured], survey: Callable[[], None], home: Home, sessions: Sessions, run_start: Start) -> VoiceConfig:
     """The configuration, once what hands is missing has been said and the sessions already running are listed."""
     await off_loop(survey, "the readiness check")
     # A restart is back where it was before the models load: every session with a file and a running process is listed.
     await sweep(home, sessions, frozenset())
     read = await off_loop(configure, "the configuration read")
     config = read.voice
-    # [LAW:nothing-unseen] which file the settings came from, and the server, model, and collector they chose, is read from the log,
-    # not re-derived from a shell.
+    # [LAW:nothing-unseen] which settings won is read from the start's event, not re-derived from a shell: the file they came
+    # from (None where the home has none and every setting is its default), the Whisper model and collector they name, the
+    # server and model the run reaches and the brain's account (None for a keyed variant), never its key, and the voice it
+    # starts speaking in, the one the user kept or the default.
     read_from = read.settings.path(home)
-    record(SettingsRead(path=None if read_from is None else str(read_from), whisper_model=config.whisper_model, collector=read.settings.config.collector))
-    record(LLMChosen(backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model, account=_account(config.llm)))
-    record(VoiceChosen(voice=config.voice))
+    run_start.heard(
+        settings=read_from, whisper_model=config.whisper_model, collector=read.settings.config.collector,
+        backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model, account=_account(config.llm), voice=config.voice,
+    )
     return config
 
 
@@ -408,8 +415,10 @@ async def converse(
     recounts: Recounts,
     quiet_cues: QuietCues,
     triggers: Triggers,
+    run_start: Start,
 ) -> None:
-    """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
+    """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did. The start is
+    ready, and ends, once the pipeline has started."""
     pipeline = PipelineWatch(voice.worker)
     tails = Tails(sessions)
     channel = SystemChannel(voice.tts, post_notification, record)
@@ -523,6 +532,13 @@ async def converse(
         await pipeline.started.wait()
         await quiet_cues.keep_playing(voice.audio.output(), record)
 
+    async def ready_once_started() -> None:
+        await pipeline.started.wait()
+        run_start.ended(record, None)
+
+    readying = asyncio.create_task(ready_once_started(), name="the start's end")
+    readying.add_done_callback(stop_if_failed)
+    background.append(readying)
     cueing = asyncio.create_task(cue_silence_once_started(), name="the cues for silence")
     cueing.add_done_callback(stop_if_failed)
     background.append(cueing)
