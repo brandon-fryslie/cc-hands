@@ -541,6 +541,8 @@ LOG_POLL_SECONDS = 0.25
 
 def tail_log(home: Home, lines: int) -> int:
     newest, offset = audit.tail(home.audit, lines)
+    # [LAW:nothing-unseen] how many lines the log had to print first, and the log offset following began at.
+    wide.annotate(tailed=len(newest), followed_from=offset)
     try:
         # json.dumps escapes C0 controls but writes DEL, C1, and bidi controls raw; their escapes keep each line JSON.
         for line in newest:

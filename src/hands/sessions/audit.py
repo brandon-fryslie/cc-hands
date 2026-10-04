@@ -17,12 +17,14 @@ to it again.
 """
 
 import fcntl
+import itertools
 import json
+import mmap
 import os
 import re
 from bisect import bisect_right
 from collections.abc import Callable, Generator, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -457,12 +459,13 @@ def tail(directory: Path, count: int) -> tuple[list[str], int]:
     bases = segments(directory)
     if not bases:
         return [], 0
-    lines, end = _lines(segment(directory, bases[-1]), 0)
-    for base in reversed(bases[:-1]):
-        if len(lines) >= count:
-            break
-        lines = _lines(segment(directory, base), 0)[0] + lines
-    return (lines[-count:] if count > 0 else []), bases[-1] + end
+    *closed, active = bases
+    # [LAW:no-ambient-temporal-coupling] the end is found once, and the lines are read back from it: a line written
+    # while they are read is past the offset, and is following's to tell.
+    end = _complete(segment(directory, active))
+    older = (line for base in reversed(closed) for line in _newest_first(segment(directory, base)))
+    newest = list(itertools.islice(itertools.chain(_before(segment(directory, active), end), older), max(count, 0)))
+    return newest[::-1], active + end
 
 
 def forwards(directory: Path) -> Iterator[str]:
@@ -472,9 +475,9 @@ def forwards(directory: Path) -> Iterator[str]:
 
 
 def backwards(directory: Path) -> Iterator[str]:
-    """Every complete line of the log, newest first, reading an older segment only once the caller asks past the newer."""
+    """Every complete line of the log, newest first, reading no further back than the caller asks."""
     for base in reversed(segments(directory)):
-        yield from reversed(_lines(segment(directory, base), 0)[0])
+        yield from _newest_first(segment(directory, base))
 
 
 def follow(directory: Path, offset: int, poll: Callable[[], None]) -> Iterator[str]:
@@ -525,6 +528,50 @@ def _lines(path: Path, start: int) -> tuple[list[str], int]:
     except FileNotFoundError:
         return [], start
     end = data.rfind(b"\n") + 1
-    # A write that failed partway can cut a character in two; its torn line reads with U+FFFD in place of the half, and
-    # is then no JSON, as every torn line is, rather than taking every other line of the segment down with it.
-    return data[:end].decode("utf-8", errors="replace").splitlines(), start + end
+    return [_text(line) for line in data[:end].split(b"\n")[:-1]], start + end
+
+
+def _newest_first(path: Path) -> Iterator[str]:
+    """The complete lines of path, newest first."""
+    return _before(path, _complete(path))
+
+
+def _complete(path: Path) -> int:
+    """How many bytes of path are complete lines: a line still being written is not among them."""
+    with _mapped(path) as held:
+        return held.rfind(b"\n") + 1
+
+
+def _before(path: Path, end: int) -> Iterator[str]:
+    """The lines of path that end at byte end, where one does, and each before it, newest first."""
+    with _mapped(path) as held:
+        # The newline that ends the line being read: the one before it is where the line begins.
+        ending = end - 1
+        while ending >= 0:
+            start = held.rfind(b"\n", 0, ending) + 1
+            yield _text(held[start:ending])
+            ending = start - 1
+
+
+@contextmanager
+def _mapped(path: Path) -> Generator[mmap.mmap | bytes]:
+    """The bytes of path as it stands, memory-mapped: only the pages a reader looks at are read from disk, so reading back
+    from the end costs what is read and not the segment's size. A segment that is empty, or that retention has deleted,
+    holds none."""
+    try:
+        log = path.open("rb")
+    except FileNotFoundError:
+        yield b""
+        return
+    with log:
+        size = os.fstat(log.fileno()).st_size
+        # An empty file cannot be mapped.
+        with mmap.mmap(log.fileno(), size, access=mmap.ACCESS_READ) if size > 0 else nullcontext(b"") as held:
+            yield held
+
+
+def _text(line: bytes) -> str:
+    # [LAW:one-source-of-truth] a line ends at the newline its writer ended it with, and nowhere else: U+2028 and U+0085
+    # are written raw inside a line's JSON. A write that failed partway can cut a character in two; its torn line reads
+    # with U+FFFD in place of the half, and is then no JSON, as every torn line is.
+    return line.decode("utf-8", errors="replace")
