@@ -191,10 +191,21 @@ WRONG: the user asks whether a repository's tests pass, and you start by searchi
 RIGHT: you load hands:chat, then search for the repository."""
 
 
-def brain_instruction(log: Path, setup: Path) -> str:
-    """The brain's system prompt: the intermediary's, with how to read hands' log at `log`, how to work a backlog,
-    where its own setup is, and the skill it talks with, before its closing words."""
-    return f"{_BODY}\n\n{_reading(log)}\n\n{_TRACKING}\n\n{_own(setup)}\n\n{_TALKING}\n\n{_ABOVE_ALL}"
+def brain_instruction(log: Path, setup: Path, recall: str) -> str:
+    """The brain's system prompt: the intermediary's, with how to read hands' log at `log`, how to recall from it with the
+    shell command `recall`, how to work a backlog, where its own setup is, and the skill it talks with, before its closing words."""
+    return f"{_BODY}\n\n{_reading(log)}\n\n{_recalling(recall)}\n\n{_TRACKING}\n\n{_own(setup)}\n\n{_TALKING}\n\n{_ABOVE_ALL}"
+
+
+def _recalling(recall: str) -> str:
+    return f"""\
+# What was said and sent earlier
+
+When the user asks about anything from earlier - what was decided, said, sent to a session, or allowed - load \
+hands:recall and search before you answer. The recall command is: {recall}
+
+What you remember of this conversation is only part of what was said, so "I don't remember" and an answer from memory \
+are the two replies to catch yourself reaching for: the moment itself is one quick search away."""
 
 
 def _own(setup: Path) -> str:

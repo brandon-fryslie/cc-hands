@@ -22,7 +22,7 @@ from hands.core.events import Ended, Joined, StatusReported
 from hands.core.session import CommandName, Membership, PromptText, SessionId
 from hands.core.status import Busy, Idle, Report, Stamp, Waiting
 from hands.sessions.typing import Untyped
-from hands.sessions.audit import AuditLog, Record, tail
+from hands.sessions.audit import AuditLog, Entry, Record, Typing, TypingFailed, tail
 from hands.sessions.registry import Sessions
 from hands.voice.conversation import record_turns
 from hands.voice.tools import Replies, Tool, audited, draft_tools, keyboard_tools, pipecat_function
@@ -257,13 +257,17 @@ async def test_a_send_fritter_could_not_type_is_said_with_the_draft_it_was(tmp_p
     def refused(_: Type[Input]) -> None:
         raise Untyped("fritter did not type into session s1: cannot write to the session")
 
-    sessions, id = await wrapped(tmp_path, refused)
+    recorded: list[Entry] = []
+    sessions, id = await wrapped(tmp_path, refused, recorded.append)
     tools = draft_tools(sessions)
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     assert await call(tools, "send_draft", session=id) == {
         "readback": "The draft for cc-hands was not sent, and is no longer staged: "
         "fritter did not type into session s1: cannot write to the session. It said: run the tests"
     }
+    # The log pairs the send with its failure, which is how recall tells a send that never arrived.
+    [typing] = [entry for entry in recorded if isinstance(entry, Typing)]
+    assert [entry for entry in recorded if isinstance(entry, TypingFailed)] == [TypingFailed(typing.effect, "fritter did not type into session s1: cannot write to the session")]
 
 
 async def test_a_session_nobody_wrapped_is_refused_by_name_and_its_draft_survives(tmp_path: Path) -> None:
