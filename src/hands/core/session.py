@@ -56,6 +56,11 @@ Keystroke = Literal["escape", "enter", "ctrl_c", "ctrl_u", "up", "down", "tab", 
 CommandName = NewType("CommandName", str)
 
 
+def identifier(cwd: Path, name: str | None) -> str:
+    """A session as it is spoken and addressed: its project, then its name, as one identifier; its project alone before it has a name."""
+    return cwd.name if name is None else f"{cwd.name}, {name}"
+
+
 @dataclass(frozen=True)
 class Membership:
     """Which process a session is, and where it works, as the shim recorded it at SessionStart or at the first hook of a session that fired none."""

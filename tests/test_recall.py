@@ -9,8 +9,8 @@ from typing import get_args
 import pytest
 
 from hands.core.effects import Allow, AllowWith, Approve, Command, Deny, HookReply, Input, Key, Reply, Text, Type, Withdraw
-from hands.core.events import PermissionRequested
-from hands.core.session import AskedQuestion, Blocker, CommandName, Option, Permission, Plan, PromptText, Question, RequestId, SessionId
+from hands.core.events import Attached, PermissionRequested
+from hands.core.session import AskedQuestion, Blocker, CommandName, Membership, Option, Permission, Plan, PromptText, Question, RequestId, SessionId
 from hands.daemon import cli
 from hands.sessions.audit import Applied, AuditLog, Entry, NameGiven, NameWithheld, Performed, Replied, Transcribed, Typing, TypingFailed, segment
 from hands.sessions.home import Home
@@ -184,3 +184,18 @@ def test_recall_reads_every_input_request_and_reply_the_log_can_hold(tmp_path: P
     )
     # The Withdraw decided nothing, so it is the one reply with no moment.
     assert len(recall(home.audit, [], 20).moments) == len(INPUTS) + len(REPLIES) - 1
+
+
+def test_a_session_hands_saw_join_goes_by_its_project_as_hands_speaks_it_and_a_silent_reply_is_no_moment(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    times = written(
+        home,
+        [
+            Applied(Attached(Membership(BILLING, 42, Path("/code/home-infra"), Path("/t.jsonl")))),
+            typed("plan the atlantis wait"),
+            Replied("", interrupted=False),
+            NameGiven(BILLING, "atlantis plan wait"),
+        ],
+    )
+    assert recall(home.audit, ["home-infra"], 20).moments == (Moment(times[1], "sent to home-infra, atlantis plan wait", "plan the atlantis wait"),)
+    assert recall(home.audit, [], 20).found == 1

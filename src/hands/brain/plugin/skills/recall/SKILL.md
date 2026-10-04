@@ -26,9 +26,9 @@ The first line says how far back the log reaches; nothing older can be found. Ea
   plan was answered; `answered` says what the user chose.
 
 A decision is usually the latest `sent to` or `user` line on it; a later line overrides an earlier one. Answer from the
-lines, the answer first, with when and where it came from, in one or two sentences. Say the session's name; a session shown
-by its id has no name, so say "a session with no name" rather than read the id. When nothing turns up after widening, say you found nothing about it since the time the first line gives.
+lines, the answer first, with when and where it came from, in one or two sentences. Say the session as the line gives it, its project
+and name; a session shown by its id is one hands never saw join, so say "a session hands didn't know" rather than read the id. When nothing turns up after widening, say you found nothing about it since the time the first line gives.
 
 The user asked: "what did we decide about the token helper?"
 WRONG: "I don't have that in my context anymore." Or: "You sent 4b2e9c1 drop the token helper."
-RIGHT: "Drop it. At 9:15 this morning you sent billing: drop the token helper and read the token from the keychain."
+RIGHT: "Drop it. At 9:15 this morning you sent cc-hands, billing: drop the token helper and read the token from the keychain."

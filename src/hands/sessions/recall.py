@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
+from hands.core.session import identifier
 from hands.sessions.audit import forwards
 
 # How much of a permission's tool input a moment shows: enough to know the command, never a whole file being written.
@@ -85,7 +86,9 @@ class _Reading:
 
 
 def moments(entries: Iterable[Mapping[str, object]]) -> list[Moment]:
-    """The moments in a run of the log's lines, oldest first, each session under the last name the run gave it."""
+    """The moments in a run of the log's lines, oldest first, each session as hands speaks it, by its project and the last
+    name the run gave it; by its id when the run never saw it join."""
+    projects: dict[str, Path] = {}
     names: dict[str, str] = {}
     asked: dict[str, str] = {}
     said: list[_Said] = []
@@ -100,9 +103,13 @@ def moments(entries: Iterable[Mapping[str, object]]) -> list[Moment]:
                 | {"type": "NameWithheld", "session": str(session), "held": str(name)}
             ):
                 names[session] = name
+            # Every event that carries a session's membership says where it works.
+            case {"type": "Applied", "event": {"membership": {"id": str(session), "cwd": str(cwd)}}}:
+                projects[session] = Path(cwd)
             case {"type": "Transcribed", "at": str(at), "text": str(text)}:
                 said.append(_Said(datetime.fromisoformat(at), "user", None, text))
-            case {"type": "Replied", "at": str(at), "text": str(text)}:
+            # A turn hands ended without a word said nothing.
+            case {"type": "Replied", "at": str(at), "text": str(text)} if text.strip():
                 said.append(_Said(datetime.fromisoformat(at), "you", None, text))
             case {"type": "Typing", "at": str(at), "effect": {"session": str(session), "input": object() as typed} as effect}:
                 sending[json.dumps(effect, sort_keys=True)] = len(said)
@@ -119,7 +126,15 @@ def moments(entries: Iterable[Mapping[str, object]]) -> list[Moment]:
                     said.append(_Said(datetime.fromisoformat(at), f"{verb} in", session, f"{asked.pop(request)}{told}"))
             case _:
                 pass
-    return [Moment(each.at, each.verb if each.session is None else f"{each.verb} {names.get(each.session, each.session)}", each.text) for each in said]
+    return [Moment(each.at, each.verb if each.session is None else f"{each.verb} {_spoken(each.session, projects, names)}", each.text) for each in said]
+
+
+def _spoken(session: str, projects: Mapping[str, Path], names: Mapping[str, str]) -> str:
+    match projects.get(session):
+        case None:
+            return names.get(session, session)
+        case cwd:
+            return identifier(cwd, names.get(session))
 
 
 def _typed(typed: object) -> str:

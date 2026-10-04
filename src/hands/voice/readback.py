@@ -13,6 +13,7 @@ from hands.core.drafts import DraftAmended, DraftDiscarded, DraftOutcome, DraftS
 from hands.core.effects import Command, Key, NotTyped, Text, Typed
 from hands.core.keyboard import KeyboardOutcome, NothingRunning
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
+from hands.core import session
 from hands.core.session import Known, Mode, PermissionMode, Resolution, SessionId, UnknownMode
 from hands.core.spoken import spelled
 from hands.sessions.registry import Listing, Sessions
@@ -77,9 +78,8 @@ def _spoken_input(input: Command | Key) -> str:
 
 
 def identifier(listing: Listing[Known]) -> str:
-    """A session as it is spoken and addressed: its project, then its name, as one identifier; its project alone before it has a name."""
-    project = listing.session.membership.cwd.name
-    return project if listing.name is None else f"{project}, {listing.name}"
+    """A listed session as it is spoken and addressed."""
+    return session.identifier(listing.session.membership.cwd, listing.name)
 
 
 # Each mode as the footer of a session's own screen names it, so what is heard is what the user would read there:
