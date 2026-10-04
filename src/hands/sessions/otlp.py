@@ -29,7 +29,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from hands.core.trace import Span
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
 from hands.sessions.audit import Entry, Exported, Record, jsonable, level
-from hands.sessions.wide import Outcome, WideEvent
+from hands.sessions.wide import Fact, Outcome, WideEvent
 
 # OpenTelemetry's service.name, which every span carries on its resource.
 SERVICE = "hands"
@@ -90,7 +90,7 @@ def traced(entry: Entry) -> WideEvent | None:
             return None
 
 
-def _reply_end(sent_at: float, reply: Reached | Unreached | Held | Uncopied) -> tuple[float, str | None, Mapping[str, object]]:
+def _reply_end(sent_at: float, reply: Reached | Unreached | Held | Uncopied) -> tuple[float, str | None, Mapping[str, Fact]]:
     """When a request's reply ended, what it failed of where it did, and what it says of the reply."""
     match reply:
         case Unreached(error=error, failed_at=at) | Uncopied(reason=error, lost_at=at):
@@ -256,7 +256,7 @@ def spans(events: Sequence[WideEvent]) -> dict[str, object]:
 
 def _span(event: WideEvent) -> dict[str, object]:
     # [LAW:one-source-of-truth] the attributes are the event's own fields under the names its audit line gives them, so
-    # one query reads either; a mapping's entries are flattened under its name, as OTLP attributes are spelled.
+    # one query reads either; counts and facts are flattened under their names, as OTLP attributes are spelled.
     started = (event.started_at - _EPOCH) // timedelta(microseconds=1) * 1000
     failed: dict[str, object] = {} if event.error is None else {"error": event.error, "trace": "\n".join(event.trace)}
     return {
@@ -283,20 +283,24 @@ AnyValue = Literal["boolValue", "intValue", "doubleValue", "stringValue"]
 
 
 def _value(value: object) -> dict[AnyValue, object]:
-    # OTLP's AnyValue, whose 64-bit integers JSON carries as strings; anything not a scalar is its audit-line JSON.
-    match value:
+    # [LAW:one-source-of-truth] OTLP's AnyValue of the value as its audit line writes it, whose 64-bit integers JSON
+    # carries as strings; anything not a scalar is that line's JSON.
+    match written := jsonable(value):
+        case None:
+            # OTLP's empty AnyValue: the attribute is there, holding nothing, as null is on the line.
+            return {}
         case bool():
-            return {"boolValue": value}
+            return {"boolValue": written}
         case int():
-            return {"intValue": str(value)}
-        case float() if math.isnan(value):
+            return {"intValue": str(written)}
+        case float() if math.isnan(written):
             # proto3 JSON's spellings of the doubles JSON has no number for.
             return {"doubleValue": "NaN"}
-        case float() if math.isinf(value):
-            return {"doubleValue": "Infinity" if value > 0 else "-Infinity"}
+        case float() if math.isinf(written):
+            return {"doubleValue": "Infinity" if written > 0 else "-Infinity"}
         case float():
-            return {"doubleValue": value}
+            return {"doubleValue": written}
         case str():
-            return {"stringValue": value}
+            return {"stringValue": written}
         case _:
-            return {"stringValue": json.dumps(jsonable(value), ensure_ascii=False)}
+            return {"stringValue": json.dumps(written, ensure_ascii=False)}
