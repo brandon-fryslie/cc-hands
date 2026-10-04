@@ -799,6 +799,58 @@ async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing
         shutil.rmtree(temp)
 
 
+# A loop that ends as the brain starts: asyncio.run cancels every task at once, the launch's included, wherever it is.
+# Ended a tick later each time, so one ends in the tick the brain is spawned in, which no step in time is sure to hit. Run
+# in a process of its own, since a loop that never closes would take the test run down with it.
+SHUT_DOWN = """
+import asyncio, os, pickle, sys, time
+from hands.brain.process import start
+
+launch = pickle.load(sys.stdin.buffer)
+
+async def ends(ticks: int) -> None:
+    asyncio.create_task(start(launch, lambda _entry: None))
+    for _ in range(ticks):
+        await asyncio.sleep(0)
+    raise RuntimeError(time.monotonic())
+
+slowest = 0.0
+for ticks in range(40):
+    try:
+        asyncio.run(ends(ticks))
+    except RuntimeError as ended:
+        slowest = max(slowest, time.monotonic() - ended.args[0])
+    try:
+        os.waitpid(-1, os.WNOHANG)
+        sys.exit(f"a fritter was left unreaped when the loop ended {ticks} ticks into the launch")
+    except ChildProcessError:
+        pass
+print(slowest)
+"""
+
+
+async def test_a_loop_ended_as_the_brain_starts_closes_and_leaves_nothing_it_started_running(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    """The daemon's shutdown cancels the brain's launch wherever it is, and must not then wait for ever on what it spawned.
+
+    Python 3.12's asyncio subprocesses did: cancelled before the transport's own task first ran, they waited for an exit
+    nothing would deliver."""
+    temp = Path(tempfile.mkdtemp(dir="/tmp"))  # short: the sockets in it are held to the unix socket path limit
+    hands = await asyncio.create_subprocess_exec(sys.executable, "-c", SHUT_DOWN, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
+    try:
+        out, err = await asyncio.wait_for(hands.communicate(pickle.dumps(launch(tmp_path, fritter))), 60)
+    except TimeoutError:
+        raise AssertionError("a loop ended as the brain started never finished closing") from None
+    finally:
+        if hands.returncode is None:
+            hands.kill()
+            await hands.wait()
+        shutil.rmtree(temp)
+    assert hands.returncode == 0, err.decode()[-2000:]
+    assert float(out) < 1.0, f"the slowest loop took {out.decode().strip()}s to close"
+    # The claude each fritter started ends with the terminal its fritter's end hangs up.
+    await until(lambda: not running(tmp_path))
+
+
 async def test_a_fritter_that_cannot_be_run_is_refused_with_what_its_terminal_showed(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     unrunnable = tmp_path / "fritter"
     shutil.copy(fritter, unrunnable)

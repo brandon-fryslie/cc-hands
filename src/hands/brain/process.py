@@ -47,6 +47,7 @@ from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, fail, here, unit
 from hands.sessions.wrapper import real_claude
+from hands.threads import settles_off_loop
 
 # What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu, 2.1.284).
 # LSP needs no switch: it comes only from plugins, the brain's own setup installs none, and hands' own declares none.
@@ -382,8 +383,9 @@ class _Terminal:
 class ClaudeCode:
     """A slim Claude Code of hands' own, running on a terminal hands holds, until it ends or is stopped."""
 
-    def __init__(self, process: asyncio.subprocess.Process, terminal: _Terminal) -> None:
+    def __init__(self, process: subprocess.Popen[bytes], ended: asyncio.Future[int], terminal: _Terminal) -> None:
         self._process = process
+        self._ended = ended
         self._terminal = terminal
         # Its exit code, once it has ended and what it showed last is read.
         self.exit = asyncio.ensure_future(self._run_out())
@@ -397,25 +399,20 @@ class ClaudeCode:
         return self._terminal.last()
 
     async def stop(self) -> None:
-        if self._process.returncode is None:
-            self._process.terminate()
-            try:
-                await asyncio.wait_for(self._process.wait(), STOP_SECONDS)
-            except TimeoutError:
-                self._kill()
-            except asyncio.CancelledError:
-                # [LAW:no-silent-failure] a stopper told to leave waits no longer, and leaves nothing running behind it.
-                self._kill()
-                raise
+        # Signalled only while it has not been reaped: Popen sends nothing to a child whose exit it has taken.
+        self._process.terminate()
+        try:
+            await asyncio.wait({self._ended}, timeout=STOP_SECONDS)
+        except asyncio.CancelledError:
+            # [LAW:no-silent-failure] a stopper told to leave waits no longer, and leaves nothing running behind it.
+            self._process.kill()
+            raise
+        if not self._ended.done():
+            self._process.kill()
         await asyncio.shield(self.exit)
 
-    def _kill(self) -> None:
-        # One that ended as it was about to be killed is what killing it is for.
-        with contextlib.suppress(ProcessLookupError):
-            self._process.kill()
-
     async def _run_out(self) -> int:
-        code = await self._process.wait()
+        code = await asyncio.shield(self._ended)
         try:
             # What it showed last, read to its end; a terminal some child of it still holds is not waited on for long.
             await asyncio.wait_for(asyncio.shield(self._terminal.closed), 1.0)
@@ -429,8 +426,11 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
     master, slave = pty.openpty()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-        process = await asyncio.create_subprocess_exec(
-            *_holding_terminal(os.ttyname(slave), argv),
+        # Not asyncio's subprocesses, for the reason `hands.sessions.child.run` gives: on Python 3.12 a loop that ends as
+        # one starts waits for ever on an exit its transport queues behind a task the shutdown cancelled. The child is
+        # started here, and a daemon thread of its own reaps it.
+        process = subprocess.Popen(
+            _holding_terminal(os.ttyname(slave), argv),
             cwd=station.cwd,
             env={**environment(station.config_dir, station.proxy_url, station.inherited), "TERM": "xterm-256color"},
             stdin=slave,
@@ -443,22 +443,24 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
         raise
     finally:
         os.close(slave)
+    ended = settles_off_loop(process.wait, name=f"a Claude Code {process.pid}")
     try:
-        await _held(master, process)
+        await _held(master, process.pid, ended)
     except BaseException:
-        with contextlib.suppress(ProcessLookupError):
-            process.kill()
+        process.kill()
         os.close(master)
+        # Reaped by its thread before the error leaves, so a loop ending as it starts ends with nothing of it left.
+        await asyncio.wait((ended,))
         raise
-    return ClaudeCode(process, _Terminal(master))
+    return ClaudeCode(process, ended, _Terminal(master))
 
 
-async def _held(terminal: int, process: asyncio.subprocess.Process) -> None:
-    """Until `process` holds `terminal` as its session's, or has ended without taking it.
+async def _held(terminal: int, pid: int, ended: asyncio.Future[int]) -> None:
+    """Until the child `pid` holds `terminal` as its session's, or has ended without taking it.
 
     [LAW:no-ambient-temporal-coupling] what is spawned is ended by hands' end only once it holds its terminal: a hands
     that died before then would hang up nothing, and leave the child opening a terminal with no other end, for good."""
-    while process.returncode is None and os.tcgetpgrp(terminal) != process.pid:
+    while not ended.done() and os.tcgetpgrp(terminal) != pid:
         await asyncio.sleep(0.002)
 
 
