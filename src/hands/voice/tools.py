@@ -115,41 +115,47 @@ def _closed(body: Body, properties: Mapping[str, JsonSchema]) -> Body:
 
     @functools.wraps(body)
     async def call(**arguments: object) -> Result:
+        # A null is an argument left out, which some models send for one they leave empty: it takes the argument's
+        # default, and is refused where there is none.
+        sent = {name: value for name, value in arguments.items() if value is not None}
         try:
-            signature.bind(**arguments)
+            signature.bind(**sent)
         except TypeError as error:
             return {"error": f"{body.__name__} was called with the wrong arguments: {error}"}
-        refused = [misfit for name, value in arguments.items() for misfit in _misfits(properties[name], value, name)]
-        return {"error": "; ".join(refused)} if refused else await body(**arguments)
+        refused = [misfit for name, value in sent.items() for misfit in _misfits(properties[name], value, name)]
+        return {"error": "; ".join(refused)} if refused else await body(**sent)
 
     return call
 
 
 def _misfits(schema: JsonSchema, value: object, what: str) -> list[str]:
-    """Each way a value the model sent does not fit a schema `_schema` wrote, in words the model can correct it from."""
+    """Each way a value the model sent does not fit a schema `_schema` wrote, in words the model can correct it from.
+
+    A value of the wrong type is named by its type, never echoed: it may be a whole draft.
+    """
+    got = type(value).__name__
     match schema:
         case {"enum": enum}:
             allowed = cast(list[str], enum)
             return [] if value in allowed else [f"{value!r} is no {what}; it is one of {', '.join(allowed)}"]
         case {"type": "string"}:
-            return [] if isinstance(value, str) else [f"{what} should be a string, got {value!r}"]
+            return [] if isinstance(value, str) else [f"{what} should be a string, got {got}"]
         case {"type": "boolean"}:
-            return [] if isinstance(value, bool) else [f"{what} should be true or false, got {value!r}"]
+            return [] if isinstance(value, bool) else [f"{what} should be true or false, got {got}"]
         case {"type": "integer"}:
             # A bool is an int to Python, and no integer to the model.
-            return [] if isinstance(value, int) and not isinstance(value, bool) else [f"{what} should be an integer, got {value!r}"]
+            return [] if isinstance(value, int) and not isinstance(value, bool) else [f"{what} should be an integer, got {got}"]
         case {"type": "array", "items": items}:
             if not isinstance(value, list):
-                return [f"{what} should be a list, got {value!r}"]
+                return [f"{what} should be a list, got {got}"]
             return [misfit for index, item in enumerate(cast(list[object], value)) for misfit in _misfits(cast(JsonSchema, items), item, f"{what}[{index}]")]
-        case {"type": "object", "properties": fields}:
+        case {"type": "object", "properties": fields, "required": required}:
             if not isinstance(value, dict):
-                return [f"{what} should be an object, got {value!r}"]
+                return [f"{what} should be an object, got {got}"]
             given = cast(dict[str, object], value)
             return [
-                misfit
-                for name, field in cast(Mapping[str, JsonSchema], fields).items()
-                for misfit in (_misfits(field, given[name], f"{what}.{name}") if name in given else [f"{what} has no {name}"])
+                *(f"{what} has no {name}" for name in cast(list[str], required) if name not in given),
+                *(misfit for name, field in cast(Mapping[str, JsonSchema], fields).items() if name in given for misfit in _misfits(field, given[name], f"{what}.{name}")),
             ]
         case _:
             raise TypeError(f"a tool argument's schema {schema!r} is none written here")
@@ -1347,25 +1353,21 @@ def _command_name(name: str) -> CommandName:
 
 
 def _command_args(args: str) -> PromptText | None:
-    match args:
-        case _ if not args.strip():
-            return None
-        case _ if "\n" in args:
-            # A command is one line: what a line break does inside one, pasted, is unmeasured.
-            raise Rejected("a command's arguments are one line, and these hold a line break")
-        case _:
-            return _prompt_text(args, "the argument string")
+    if not args.strip():
+        return None
+    if "\n" in args:
+        # A command is one line: what a line break does inside one, pasted, is unmeasured.
+        raise Rejected("a command's arguments are one line, and these hold a line break")
+    return _prompt_text(args, "the argument string")
 
 
 def _prompt_text(text: str, what: str) -> PromptText:
-    match text:
-        case _ if not text.strip():
-            raise Rejected(f"{what} is empty")
-        case _ if KEYSTROKES.search(text):
-            # A tab is one: typed into a session it cycles the mode, and fritter refuses it by name at the socket.
-            # Refusing it here instead means the model is told while it still has the words to fix.
-            raise Rejected(f"{what} holds a control character, which would press a key when it is typed")
-        case _ if text.endswith("\\"):
-            raise Rejected(f"{what} ends with a backslash, which turns the Return that sends it into a newline")
-        case _:
-            return PromptText(text)
+    if not text.strip():
+        raise Rejected(f"{what} is empty")
+    if KEYSTROKES.search(text):
+        # A tab is one: typed into a session it cycles the mode, and fritter refuses it by name at the socket.
+        # Refusing it here instead means the model is told while it still has the words to fix.
+        raise Rejected(f"{what} holds a control character, which would press a key when it is typed")
+    if text.endswith("\\"):
+        raise Rejected(f"{what} ends with a backslash, which turns the Return that sends it into a newline")
+    return PromptText(text)
