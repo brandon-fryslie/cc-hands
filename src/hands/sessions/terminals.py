@@ -1,4 +1,5 @@
-"""Which of this user's processes run at a terminal: what each was started as, under what environment, and where.
+"""Which of this user's processes run at a terminal: what each was started as, with what arguments, under what
+environment, where, and whether it reads and writes that terminal.
 
 Read from the kernel through libproc and sysctl, the sources ps and lsof read.
 """
@@ -25,6 +26,10 @@ class Terminal:
     executable: Path
     cwd: Path
     environment: Mapping[str, str]
+    # Its arguments after the program, as it was started with them.
+    arguments: tuple[str, ...]
+    # Its stdin and stdout are both its controlling terminal, as `[ -t 0 ] && [ -t 1 ]` finds them when it starts at one.
+    terminal_stdio: bool
 
 
 def terminal_processes() -> list[Terminal]:
@@ -75,11 +80,14 @@ _KERN_PROC_ALL = (1, 14, 0)  # CTL_KERN, KERN_PROC, KERN_PROC_ALL
 _KINFO_PROC = struct.Struct("=32xi4xi376xI136xi8xi72x")
 _KINFO_PROC_SIZE = _KINFO_PROC.size
 _P_CONTROLT = 0x2
-# libproc: struct proc_bsdinfo (136 bytes), asked only whether a process still exists, and struct proc_vnodepathinfo
-# (two vnode_info_path of 1176 bytes, the cwd's first, its path after a 152-byte vnode_info).
+# libproc: struct proc_bsdinfo (136 bytes), asked only whether a process still exists, struct proc_vnodepathinfo
+# (two vnode_info_path of 1176 bytes, the cwd's first, its path after a 152-byte vnode_info), and struct
+# vnode_fdinfowithpath (a 24-byte proc_fileinfo, then a vnode_info_path), whose vnode's vinfo_stat has st_rdev at 116.
 _libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
 _PROC_PIDTBSDINFO, _BSDINFO_SIZE = 3, 136
 _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE, _CWD_PATH_AT, _MAXPATHLEN = 9, 2352, 152, 1024
+_PROC_PIDFDVNODEPATHINFO, _FDVNODEPATHINFO_SIZE = 2, 1200
+_FD_RDEV = struct.Struct("=140xI1056x")
 # kern.procargs2.<pid>: argc, the path the process was exec'd by as execve was given it, padding, its arguments, and
 # its environment, each string ending in a NUL.
 _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
@@ -95,15 +103,33 @@ def _terminal(process: Process) -> Terminal | None:
     """The process at a terminal, with where it runs and what it was started as; None if it has exited since it was listed."""
     try:
         cwd = Path(os.fsdecode(_string(_pidinfo(process.pid, _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE).raw[_CWD_PATH_AT : _CWD_PATH_AT + _MAXPATHLEN])))
-        executable, environment = _started_as(process.pid)
+        executable, arguments, environment = _started_as(process.pid)
+        terminal_stdio = all(_device(process.pid, fd) == process.tty for fd in (0, 1))
     except _Exited:
         return None
     # A path exec'd relative to the directory the process was started in; a session keeps that directory.
-    return Terminal(process.pid, process.parent, (cwd / executable).resolve(), cwd, environment)
+    return Terminal(process.pid, process.parent, (cwd / executable).resolve(), cwd, environment, arguments, terminal_stdio)
 
 
-def _started_as(pid: int) -> tuple[Path, dict[str, str]]:
-    """The path pid was exec'd by, and its environment."""
+def _device(pid: int, fd: int) -> int | None:
+    """The device a file pid has open as fd is, as `st_rdev`; None for a pipe, a socket, or an fd it has not open."""
+    record = ctypes.create_string_buffer(_FDVNODEPATHINFO_SIZE)
+    filled = _libproc.proc_pidfdinfo(pid, fd, _PROC_PIDFDVNODEPATHINFO, record, _FDVNODEPATHINFO_SIZE)
+    if filled <= 0:
+        failure = ctypes.get_errno()
+        # EBADF is an fd that is no file, or no fd at all: nothing a terminal is.
+        if failure == errno.EBADF:
+            return None
+        _raise_unless_exited(pid, f"proc_pidfdinfo of fd {fd}")
+    if filled != _FDVNODEPATHINFO_SIZE:
+        raise OSError(f"proc_pidfdinfo gave {filled} bytes for fd {fd} of pid {pid}, where this kernel's struct was taken to be {_FDVNODEPATHINFO_SIZE}")
+    # A regular file's st_rdev is 0, never a terminal's device.
+    (device,) = _FD_RDEV.unpack(record.raw)
+    return device
+
+
+def _started_as(pid: int) -> tuple[Path, tuple[str, ...], dict[str, str]]:
+    """The path pid was exec'd by, its arguments after the program, and its environment."""
     mib = (ctypes.c_int * 3)(*_KERN_PROCARGS2, pid)
     size = ctypes.c_size_t(0)
     if _libc.sysctl(mib, len(mib), None, ctypes.byref(size), None, 0) != 0:
@@ -114,10 +140,12 @@ def _started_as(pid: int) -> tuple[Path, dict[str, str]]:
     raw = record.raw[: size.value]
     argc = ctypes.c_int.from_buffer_copy(raw, 0).value
     path, rest = raw[ctypes.sizeof(ctypes.c_int) :].split(b"\0", 1)
+    strings = rest.lstrip(b"\0").split(b"\0")
     # The environment runs from after the arguments to the first empty string.
-    after = rest.lstrip(b"\0").split(b"\0")[argc:]
+    after = strings[argc:]
     entries = after[: after.index(b"")] if b"" in after else after
-    return Path(os.fsdecode(path)), {name: value for name, _, value in (os.fsdecode(entry).partition("=") for entry in entries)}
+    arguments = tuple(os.fsdecode(argument) for argument in strings[1:argc])
+    return Path(os.fsdecode(path)), arguments, {name: value for name, _, value in (os.fsdecode(entry).partition("=") for entry in entries)}
 
 
 def _string(raw: bytes) -> bytes:

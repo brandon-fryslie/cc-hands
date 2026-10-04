@@ -11,7 +11,10 @@ import os
 import shlex
 import shutil
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
+from itertools import takewhile
 from pathlib import Path
 
 from hands.core.wire import UPSTREAM
@@ -25,6 +28,18 @@ PACKAGED = Path(__file__).resolve().parents[1] / "bin" / "fritter"
 
 # Every shim's second line, by which a shim knows another hands shim on PATH for what it is.
 MARK = "# A hands claude shim, written whole by `hands install-fritter`: change hands.sessions.wrapper, not this."
+
+# [LAW:one-source-of-truth] the options that make a run print, not a session: the shim's case matches them, and
+# is_session matches them for a claude already running. -c is the one flag that takes no value and leaves a run going,
+# so `-cp` is print too.
+PRINT = ("--print", "-p*", "-cp*")
+
+
+def is_session(arguments: Sequence[str], terminal_stdio: bool) -> bool:
+    """Whether the shim runs claude with these arguments as a session under fritter: a terminal on both ends, and no
+    print among the options before `--`."""
+    options = takewhile(lambda argument: argument != "--", arguments)
+    return terminal_stdio and not any(fnmatchcase(option, pattern) for option in options for pattern in PRINT)
 
 
 class Uninstallable(Exception):
@@ -86,8 +101,8 @@ def shim_script(fritter: Path, wire: Path) -> str:
     # added before splitting keeps a trailing one, which splitting on IFS would drop.
     # A session is a terminal on both ends and no print. A pipe, a script, and `claude -p` are not sessions to
     # drive, and on a pty they would not be what they are; they run the real claude, without the address of any
-    # session they were started from, so none of them claims a fritter that does not type into it. -c is the one
-    # flag that takes no value and leaves a run going, so `-cp` is print too.
+    # session they were started from, so none of them claims a fritter that does not type into it. is_session is this
+    # same test, asked of a claude already running.
     # A session reaches its API as it would without the shim, ANTHROPIC_BASE_URL unchanged, so Claude Code keeps all it
     # keeps for Anthropic's own API: fritter is its proxy instead, and opens only the connections to that API's host. What
     # the tap replaced is given back first, so a claude run from inside a session is tapped once, by its own fritter, and
@@ -122,7 +137,7 @@ session=yes
 for arg; do
   case $arg in
     --) break ;;
-    --print|-p*|-cp*) session=no ;;
+    {'|'.join(PRINT)}) session=no ;;
   esac
 done
 case $session in

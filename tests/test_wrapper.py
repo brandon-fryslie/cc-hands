@@ -258,3 +258,14 @@ def test_a_session_is_tapped_toward_the_api_it_was_given_and_still_names_it(root
     shim = executable(bin / "claude", shim_script(bin / "fritter", WIRE))
     printed = on_a_terminal([str(shim)], f"{bin}:{root / 'real'}:/usr/bin:/bin", given)
     assert printed == f"--tap {tapped} --tap-ca NODE_EXTRA_CA_CERTS --tap-to {WIRE} -- {root / 'real' / 'claude'} api={given.get('ANTHROPIC_BASE_URL', 'unset')}\n"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [[], ["--resume", "abc"], ["-p", "hi"], ["--print"], ["--model", "opus", "-p", "hi"], ["-cp", "hi"], ["-pc"], ["-dp"], ["-rp"], ["--", "-p"], ["mcp", "serve"]],
+)
+def test_a_claude_already_running_is_a_session_by_the_shims_own_test(root: Path, args: list[str]) -> None:
+    shim = installed_shim(root)
+    printed = on_a_terminal([str(shim), *args], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin")
+    assert printed.startswith("fritter ") == wrapper.is_session(args, True)
+    assert not wrapper.is_session(args, False)

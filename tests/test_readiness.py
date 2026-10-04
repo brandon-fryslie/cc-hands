@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import termios
 import sys
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterator, Sequence
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -30,7 +30,7 @@ from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
-from hands.sessions.terminals import Terminal
+from hands.sessions.terminals import Terminal, terminal_processes
 from hands.sessions.wrapper import shim_script
 from hands.voice.backends import ClaudeCodeBackend
 
@@ -197,18 +197,19 @@ def installed(root: Path) -> str:
 
 
 @contextlib.contextmanager
-def at_a_terminal(executable: Path, cwd: Path) -> Generator[int]:
-    """A process running executable in cwd with a terminal of its own, as a session runs; its pid, once it runs executable."""
+def at_a_terminal(executable: Path, cwd: Path, arguments: Sequence[str] = ("30",), piped: bool = False) -> Generator[int]:
+    """A process running executable in cwd with a terminal of its own, as a session runs, its stdin a pipe if piped; its
+    pid, once it runs executable."""
     controller, terminal = pty.openpty()
     # Popen returns only once the child has exec'd, so the process is executable from the first look at it.
     process = subprocess.Popen(
-        [executable, "30"],
+        [executable, *arguments],
         cwd=cwd,
-        stdin=terminal,
+        stdin=subprocess.PIPE if piped else terminal,
         stdout=terminal,
         stderr=terminal,
         start_new_session=True,
-        preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0),
+        preexec_fn=lambda: fcntl.ioctl(1, termios.TIOCSCTTY, 0),
     )
     try:
         yield process.pid
@@ -275,6 +276,24 @@ def test_a_session_that_never_ran_a_hook_is_named_by_cwd_and_pid_with_the_fix(ro
     assert isinstance(found, Missing) and f"{project} (pid {pid}) is a session hands has no record of" in found.said
 
 
+def test_a_claude_printing_or_piped_into_at_a_terminal_is_no_session(root: Path) -> None:
+    home = Home(root / "home")
+    path = installed(root)
+    shell = root / "install" / "9.9.7"
+    shutil.copy("/bin/sh", shell)
+    # The shell waits on its sleep, so it is still the process its -p was given to.
+    with at_a_terminal(shell, root, ["-c", "sleep 30; :", "-p", "hello"]), at_a_terminal(root / "install" / "9.9.9", root, piped=True):
+        found = readiness.sessions(home, path)
+    assert found == Ready("running sessions hands knows of: 0, and each can be typed into")
+
+
+def test_the_kernel_says_what_a_process_at_a_terminal_was_started_with_and_whether_it_reads_and_writes_it(root: Path) -> None:
+    with at_a_terminal(Path("/bin/sleep"), root) as attended, at_a_terminal(Path("/bin/sleep"), root, ["31"], piped=True) as piped:
+        found = {process.pid: process for process in terminal_processes()}
+    assert (found[attended].arguments, found[attended].terminal_stdio) == (("30",), True)
+    assert (found[piped].arguments, found[piped].terminal_stdio) == (("31",), False)
+
+
 def test_a_reused_pid_of_an_ended_session_hides_no_session_hands_has_no_record_of(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
@@ -314,8 +333,10 @@ def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
 CONFIG = Path("/home/.claude")
 
 
-def terminal(pid: int, executable: str, cwd: str = "/code", parent: int = 0, config: Path = CONFIG) -> Terminal:
-    return Terminal(pid, parent, Path(executable), Path(cwd), {"CLAUDE_CONFIG_DIR": str(config)})
+def terminal(
+    pid: int, executable: str, cwd: str = "/code", parent: int = 0, config: Path = CONFIG, arguments: tuple[str, ...] = (), terminal_stdio: bool = True
+) -> Terminal:
+    return Terminal(pid, parent, Path(executable), Path(cwd), {"CLAUDE_CONFIG_DIR": str(config)}, arguments, terminal_stdio)
 
 
 def unjoined(claude: str, terminals: list[Terminal], members: set[int] | None = None, home: Home = Home(Path("/h"))) -> list[Terminal]:
@@ -355,6 +376,17 @@ def test_a_session_under_another_config_as_the_brain_is_has_other_plugins_and_is
 def test_a_sessions_own_helper_run_from_its_executable_is_not_a_session() -> None:
     session, helper = terminal(10, "/v/2.1.288"), terminal(11, "/v/2.1.288", parent=10)
     assert unjoined("/v/2.1.288", [session, helper], {10}) == []
+
+
+def test_a_claude_the_shim_would_not_have_run_as_a_session_is_not_named() -> None:
+    printing, piped = terminal(1, "/v/2.1.288", arguments=("-p", "hello")), terminal(2, "/v/2.1.288", terminal_stdio=False)
+    prompted = terminal(3, "/v/2.1.288", arguments=("--", "-p"))
+    assert unjoined("/v/2.1.288", [printing, piped, prompted]) == [prompted]
+
+
+def test_the_helper_of_a_claude_that_is_no_session_is_no_session_either() -> None:
+    printing, helper = terminal(10, "/v/2.1.288", arguments=("-p", "hello")), terminal(11, "/v/2.1.288", parent=10)
+    assert unjoined("/v/2.1.288", [printing, helper]) == []
 
 
 def test_a_session_started_outside_fritter_is_told_to_restart_and_one_inside_to_reload(root: Path) -> None:

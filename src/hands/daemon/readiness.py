@@ -324,9 +324,10 @@ def unjoined(home: Home, claude: Path, config: Path, terminals: Sequence[Termina
     reloaded since.
 
     A session is a process at a terminal running `claude`, the Claude Code executable, or any other version of it, since
-    an update leaves running sessions on the version they started on; one whose parent is one is that session's own
-    helper. The hook records that same process, so it is matched by pid. One under another config, as the brain is,
-    has other plugins, and is no session of the plugin this check looks at.
+    an update leaves running sessions on the version they started on, that the shim would have run as a session: a
+    `claude -p`, or a claude piped into, is none. One whose parent runs claude is that run's own helper. The hook records that same
+    process, so it is matched by pid. One under another config, as the brain is, has other plugins, and is no session
+    of the plugin this check looks at.
     """
     by_pid = {process.pid: process for process in terminals}
     install = _unversioned(claude)
@@ -338,7 +339,12 @@ def unjoined(home: Home, claude: Path, config: Path, terminals: Sequence[Termina
     return [
         Unjoined(process, process.parent in by_pid and by_pid[process.parent].executable == fritter)
         for process in terminals
-        if runs_claude(process.pid) and not runs_claude(process.parent) and config_dir(process.environment) == config and process.pid not in members
+        # [LAW:one-source-of-truth] a session is what the shim would run as one, by the shim's own test.
+        if runs_claude(process.pid)
+        and wrapper.is_session(process.arguments, process.terminal_stdio)
+        and not runs_claude(process.parent)
+        and config_dir(process.environment) == config
+        and process.pid not in members
     ]
 
 
