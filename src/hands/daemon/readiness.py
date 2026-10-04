@@ -301,7 +301,7 @@ def unrecorded(home: Home, path: str, members: Collection[int]) -> Unrecorded | 
             return unfindable
         case executable:
             try:
-                return unjoined(home, executable, config_dir(os.environ), terminal_processes(), members, attended)
+                return unjoined(home, executable, config_dir(os.environ, Path.cwd()), terminal_processes(), members, attended)
             except OSError as error:
                 return Unfindable(f"cannot look at this user's processes at a terminal: {error}")
 
@@ -321,9 +321,12 @@ def claude_code(claude: Path | None) -> Path | Unfindable:
     return executable
 
 
-def config_dir(environment: Mapping[str, str]) -> Path:
-    """The Claude Code config a process with this environment runs under: its plugins, and so whether hands' is one."""
-    return Path(environment.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+def config_dir(environment: Mapping[str, str], cwd: Path) -> Path:
+    """The Claude Code config a process with this environment, working in `cwd`, runs under: its plugins, and so whether
+    hands' is one. It is the directory itself, by whatever path or link it was named, read as that process reads it."""
+    named = environment.get("CLAUDE_CONFIG_DIR") or Path(environment.get("HOME") or Path.home()) / ".claude"
+    # realpath, not Path.resolve: on Python 3.12 resolve raises RuntimeError on a link loop, where realpath stops.
+    return Path(os.path.realpath(cwd / named))
 
 
 def unjoined(
@@ -336,7 +339,8 @@ def unjoined(
     an update leaves running sessions on the version they started on, that the shim would have run as a session: a
     `claude -p`, or a claude piped into, is none. One whose parent runs claude is that run's own helper. The hook records that same
     process, so it is matched by pid. One under another config, as the brain is, has other plugins, and is no session
-    of the plugin this check looks at; one under the same directory by another path, through a link, is. `attended`
+    of the plugin this check looks at; one under the same directory by another path, through a link, is, since `config`
+    and each process's are both as `config_dir` reads them. `attended`
     says whether a process reads and writes its terminal; it is asked only of a run of claude, the one process it
     matters for.
     """
@@ -347,11 +351,10 @@ def unjoined(
         return pid in by_pid and _unversioned(by_pid[pid].executable) == install
 
     fritter = home.fritter.resolve()
-    config = config.resolve()
     runs = [
         process
         for process in terminals
-        if runs_claude(process.pid) and not runs_claude(process.parent) and config_dir(process.environment).resolve() == config and process.pid not in members
+        if runs_claude(process.pid) and not runs_claude(process.parent) and config_dir(process.environment, process.cwd) == config and process.pid not in members
     ]
     # [LAW:one-source-of-truth] a session is what the shim would run as one, by the shim's own test.
     sessions = [process for process in runs if wrapper.is_session(process.arguments, attended(process))]

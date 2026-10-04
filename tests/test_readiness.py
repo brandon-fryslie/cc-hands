@@ -352,6 +352,7 @@ def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
 
 
 CONFIG = Path("/home/.claude")
+CHECKED = readiness.config_dir({"CLAUDE_CONFIG_DIR": str(CONFIG)}, Path("/"))
 # The terminal a process made by `terminal` reads and writes, unless it is made with another, as a piped one is.
 ATTENDED, PIPED = 1, 2
 
@@ -368,7 +369,7 @@ def reads_its_terminal(process: Terminal) -> bool:
 
 
 def unjoined(claude: str, terminals: list[Terminal], members: set[int] | None = None, home: Home = Home(Path("/h"))) -> list[Terminal]:
-    return [session.process for session in readiness.unjoined(home, Path(claude), CONFIG, terminals, members or set(), reads_its_terminal).sessions]
+    return [session.process for session in readiness.unjoined(home, Path(claude), CHECKED, terminals, members or set(), reads_its_terminal).sessions]
 
 
 def test_a_session_is_a_terminal_process_of_any_version_of_the_real_claudes_install() -> None:
@@ -401,13 +402,27 @@ def test_a_session_under_another_config_as_the_brain_is_has_other_plugins_and_is
     assert unjoined("/v/2.1.288", [brain]) == []
 
 
-def test_a_session_under_the_same_config_by_way_of_a_link_is_named(tmp_path: Path) -> None:
-    target = tmp_path / "dotfiles" / "claude"
-    target.mkdir(parents=True)
-    (tmp_path / ".claude").symlink_to(target)
-    session = terminal(1, "/v/2.1.288", config=target)
-    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), tmp_path / ".claude", [session], set(), reads_its_terminal)
+@pytest.mark.parametrize("checked, started", [(".claude", "dotfiles/claude"), ("dotfiles/claude", ".claude")])
+def test_a_session_under_the_same_config_by_way_of_a_link_is_named(tmp_path: Path, checked: str, started: str) -> None:
+    (tmp_path / "dotfiles" / "claude").mkdir(parents=True)
+    (tmp_path / ".claude").symlink_to(tmp_path / "dotfiles" / "claude")
+    session = terminal(1, "/v/2.1.288", config=tmp_path / started)
+    config = readiness.config_dir({"CLAUDE_CONFIG_DIR": str(tmp_path / checked)}, Path("/"))
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), config, [session], set(), reads_its_terminal)
     assert [joined.process for joined in found.sessions] == [session]
+
+
+def test_a_relative_config_is_read_from_the_working_directory_of_the_process_that_names_it(tmp_path: Path) -> None:
+    assert readiness.config_dir({"CLAUDE_CONFIG_DIR": "alt"}, tmp_path) == readiness.config_dir({"CLAUDE_CONFIG_DIR": str(tmp_path / "alt")}, Path("/"))
+
+
+def test_with_no_config_named_a_process_runs_under_the_claude_in_its_own_home(tmp_path: Path) -> None:
+    assert readiness.config_dir({"HOME": str(tmp_path)}, Path("/")) == readiness.config_dir({"CLAUDE_CONFIG_DIR": str(tmp_path / ".claude")}, Path("/"))
+
+
+def test_a_config_named_through_a_link_loop_is_a_config_no_session_runs_under(tmp_path: Path) -> None:
+    (tmp_path / "loop").symlink_to(tmp_path / "loop")
+    assert readiness.config_dir({"CLAUDE_CONFIG_DIR": str(tmp_path / "loop")}, Path("/")) != readiness.config_dir({"HOME": str(tmp_path)}, Path("/"))
 
 
 def test_a_sessions_own_helper_run_from_its_executable_is_not_a_session() -> None:
@@ -418,7 +433,7 @@ def test_a_sessions_own_helper_run_from_its_executable_is_not_a_session() -> Non
 def test_a_claude_the_shim_would_not_have_run_as_a_session_is_not_named() -> None:
     printing, piped = terminal(1, "/v/2.1.288", arguments=("-p", "hello")), terminal(2, "/v/2.1.288", tty=PIPED)
     prompted = terminal(3, "/v/2.1.288", arguments=("--", "-p"))
-    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), CONFIG, [printing, piped, prompted], set(), reads_its_terminal)
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), CHECKED, [printing, piped, prompted], set(), reads_its_terminal)
     assert ([session.process for session in found.sessions], found.runs) == ([prompted], 2)
 
 
@@ -431,7 +446,7 @@ def test_a_session_started_outside_fritter_is_told_to_restart_and_one_inside_to_
     home = Home(root / "home")
     fritter = terminal(5, str(home.fritter))
     inside, outside = terminal(10, "/v/2.1.288", "/code/in", parent=5), terminal(11, "/v/2.1.288", "/code/out", parent=6)
-    found = readiness.sessions_found([], set(), [], readiness.unjoined(home, Path("/v/2.1.288"), CONFIG, [fritter, inside, outside], set(), reads_its_terminal))
+    found = readiness.sessions_found([], set(), [], readiness.unjoined(home, Path("/v/2.1.288"), CHECKED, [fritter, inside, outside], set(), reads_its_terminal))
     assert isinstance(found, Missing)
     assert "/code/in (pid 10) is a session hands has no record of, so it cannot be reached: /reload-plugins in it" in found.said
     assert "/code/out (pid 11) is a session hands has no record of, started outside fritter, so it cannot be typed into: restart it" in found.said
