@@ -1,5 +1,5 @@
 """Which of this user's processes run at a terminal: what each was started as, with what arguments, under what
-environment, where, and whether it reads and writes that terminal.
+environment, where, and on which terminal; and whether one reads and writes its terminal.
 
 Read from the kernel through libproc and sysctl, the sources ps and lsof read.
 """
@@ -28,14 +28,25 @@ class Terminal:
     environment: Mapping[str, str]
     # Its arguments after the program, as it was started with them.
     arguments: tuple[str, ...]
-    # Its stdin and stdout are both its controlling terminal, as `[ -t 0 ] && [ -t 1 ]` finds them when it starts at one.
-    terminal_stdio: bool
+    # The device of its controlling terminal, as Process.tty.
+    tty: int
 
 
 def terminal_processes() -> list[Terminal]:
     """Every process of this user's that has a controlling terminal: interactive programs, never daemons or apps."""
     own = os.geteuid()
-    return [terminal for process in process_table().values() if process.uid == own and process.tty is not None and (terminal := _terminal(process)) is not None]
+    return [terminal for process in process_table().values() if process.uid == own and process.tty is not None and (terminal := _terminal(process, process.tty)) is not None]
+
+
+def attended(process: Terminal) -> bool:
+    """Whether its stdin and stdout are both its terminal, as `[ -t 0 ] && [ -t 1 ]` finds them at a terminal: its
+    controlling terminal's device, or /dev/tty, which is that terminal under the name each process has for its own.
+    False for one that has exited since it was listed, which reads nothing."""
+    terminal = {process.tty, os.stat("/dev/tty").st_rdev}
+    try:
+        return all(_device(process.pid, fd) in terminal for fd in (0, 1))
+    except _Exited:
+        return False
 
 
 @dataclass(frozen=True)
@@ -82,12 +93,12 @@ _KINFO_PROC_SIZE = _KINFO_PROC.size
 _P_CONTROLT = 0x2
 # libproc: struct proc_bsdinfo (136 bytes), asked only whether a process still exists, struct proc_vnodepathinfo
 # (two vnode_info_path of 1176 bytes, the cwd's first, its path after a 152-byte vnode_info), and struct
-# vnode_fdinfowithpath (a 24-byte proc_fileinfo, then a vnode_info_path), whose vnode's vinfo_stat has st_rdev at 116.
+# vnode_fdinfowithpath (a 24-byte proc_fileinfo, then a vnode_info_path), whose vnode's vinfo_stat has st_rdev at 116, a dev_t as e_tdev is.
 _libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
 _PROC_PIDTBSDINFO, _BSDINFO_SIZE = 3, 136
 _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE, _CWD_PATH_AT, _MAXPATHLEN = 9, 2352, 152, 1024
 _PROC_PIDFDVNODEPATHINFO, _FDVNODEPATHINFO_SIZE = 2, 1200
-_FD_RDEV = struct.Struct("=140xI1056x")
+_FD_RDEV = struct.Struct("=140xi1056x")
 # kern.procargs2.<pid>: argc, the path the process was exec'd by as execve was given it, padding, its arguments, and
 # its environment, each string ending in a NUL.
 _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
@@ -99,16 +110,15 @@ def _raise_errno(what: str) -> NoReturn:
     raise OSError(failure, f"{what} could not be read: {os.strerror(failure)}")
 
 
-def _terminal(process: Process) -> Terminal | None:
+def _terminal(process: Process, tty: int) -> Terminal | None:
     """The process at a terminal, with where it runs and what it was started as; None if it has exited since it was listed."""
     try:
         cwd = Path(os.fsdecode(_string(_pidinfo(process.pid, _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE).raw[_CWD_PATH_AT : _CWD_PATH_AT + _MAXPATHLEN])))
         executable, arguments, environment = _started_as(process.pid)
-        terminal_stdio = all(_device(process.pid, fd) == process.tty for fd in (0, 1))
     except _Exited:
         return None
     # A path exec'd relative to the directory the process was started in; a session keeps that directory.
-    return Terminal(process.pid, process.parent, (cwd / executable).resolve(), cwd, environment, arguments, terminal_stdio)
+    return Terminal(process.pid, process.parent, (cwd / executable).resolve(), cwd, environment, arguments, tty)
 
 
 def _device(pid: int, fd: int) -> int | None:

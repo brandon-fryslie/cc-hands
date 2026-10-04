@@ -17,7 +17,7 @@ import re
 import shutil
 import subprocess
 import wave
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import version
@@ -34,7 +34,7 @@ from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import process_starts
-from hands.sessions.terminals import Terminal, terminal_processes
+from hands.sessions.terminals import Terminal, attended, terminal_processes
 from hands.voice import backends
 from hands.voice import transcription as transcribing
 
@@ -286,17 +286,24 @@ class Unjoined:
     under_fritter: bool
 
 
-def unrecorded(home: Home, path: str, members: Collection[int]) -> list[Unjoined] | Unfindable:
+@dataclass(frozen=True)
+class Unrecorded:
+    """The sessions at a terminal hands has no record of, and how many runs of claude beside them are no session."""
+
+    sessions: list[Unjoined]
+    runs: int
+
+
+def unrecorded(home: Home, path: str, members: Collection[int]) -> Unrecorded | Unfindable:
     """The sessions running at a terminal that hands has no record of, among this user's processes now."""
     match claude_code(wrapper.real_claude(path)):
         case Unfindable() as unfindable:
             return unfindable
         case executable:
             try:
-                terminals = terminal_processes()
+                return unjoined(home, executable, config_dir(os.environ), terminal_processes(), members, attended)
             except OSError as error:
                 return Unfindable(f"cannot look at this user's processes at a terminal: {error}")
-            return unjoined(home, executable, config_dir(os.environ), terminals, members)
 
 
 def claude_code(claude: Path | None) -> Path | Unfindable:
@@ -319,7 +326,9 @@ def config_dir(environment: Mapping[str, str]) -> Path:
     return Path(environment.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 
 
-def unjoined(home: Home, claude: Path, config: Path, terminals: Sequence[Terminal], members: Collection[int]) -> list[Unjoined]:
+def unjoined(
+    home: Home, claude: Path, config: Path, terminals: Sequence[Terminal], members: Collection[int], attended: Callable[[Terminal], bool]
+) -> Unrecorded:
     """The sessions at a terminal under `config` that no running membership names: started before the plugin, and not
     reloaded since.
 
@@ -327,7 +336,8 @@ def unjoined(home: Home, claude: Path, config: Path, terminals: Sequence[Termina
     an update leaves running sessions on the version they started on, that the shim would have run as a session: a
     `claude -p`, or a claude piped into, is none. One whose parent runs claude is that run's own helper. The hook records that same
     process, so it is matched by pid. One under another config, as the brain is, has other plugins, and is no session
-    of the plugin this check looks at.
+    of the plugin this check looks at. `attended` says whether a process reads and writes its terminal; it is asked only
+    of a run of claude, the one process it matters for.
     """
     by_pid = {process.pid: process for process in terminals}
     install = _unversioned(claude)
@@ -336,16 +346,17 @@ def unjoined(home: Home, claude: Path, config: Path, terminals: Sequence[Termina
         return pid in by_pid and _unversioned(by_pid[pid].executable) == install
 
     fritter = home.fritter.resolve()
-    return [
-        Unjoined(process, process.parent in by_pid and by_pid[process.parent].executable == fritter)
+    runs = [
+        process
         for process in terminals
-        # [LAW:one-source-of-truth] a session is what the shim would run as one, by the shim's own test.
-        if runs_claude(process.pid)
-        and wrapper.is_session(process.arguments, process.terminal_stdio)
-        and not runs_claude(process.parent)
-        and config_dir(process.environment) == config
-        and process.pid not in members
+        if runs_claude(process.pid) and not runs_claude(process.parent) and config_dir(process.environment) == config and process.pid not in members
     ]
+    # [LAW:one-source-of-truth] a session is what the shim would run as one, by the shim's own test.
+    sessions = [process for process in runs if wrapper.is_session(process.arguments, attended(process))]
+    return Unrecorded(
+        [Unjoined(process, process.parent in by_pid and by_pid[process.parent].executable == fritter) for process in sessions],
+        len(runs) - len(sessions),
+    )
 
 
 # Claude Code keeps each version under a name that is the version: a file in the native installer's versions
@@ -362,21 +373,22 @@ def sessions_found(
     running: Sequence[Membership],
     listening: Collection[Path],
     unreadable: Sequence[liveness.Unreadable],
-    unrecorded: Sequence[Unjoined] | Unfindable,
+    unrecorded: Unrecorded | Unfindable,
 ) -> Finding:
     """What the running sessions are to hands, given which fritter sockets are there, which files did not parse, and
     which sessions at a terminal hands has no record of."""
     match unrecorded:
         case Unfindable(said):
-            unknown, unseen = [], [f"a session hands has no record of cannot be found: {said}"]
-        case sessions:
-            unknown, unseen = [_unjoined(session) for session in sessions], []
+            unknown, unseen, beside = [], [f"a session hands has no record of cannot be found: {said}"], ""
+        case Unrecorded(sessions, runs):
+            # [LAW:nothing-unseen] a claude at a terminal set aside as no session is counted, so none goes unseen.
+            unknown, unseen, beside = [_unjoined(session) for session in sessions], [], f", runs of claude at a terminal that are none: {runs}"
     unreached = [
         *(line for member in running for line in _untypable(member, listening)),
         *(f"{file.path} names no session hands can read ({file.error}): hands run removes it" for file in unreadable),
         *unknown,
     ]
-    known = f"running sessions hands knows of: {len(running)}"
+    known = f"running sessions hands knows of: {len(running)}{beside}"
     # [LAW:no-silent-failure] sessions that could not be looked for are said, never taken for none.
     if unreached:
         return Missing(f"{known}, and hands cannot reach these:" + "".join(f"\n    {line}" for line in [*unreached, *unseen]))
