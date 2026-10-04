@@ -119,8 +119,9 @@ def _terminal(process: Process, tty: int) -> Terminal | None:
         return None
     # A path exec'd relative to the directory the process was started in, which a session leaves for a worktree and
     # the kernel keeps no record of. [LAW:one-source-of-truth] The PWD its shell started it with names that directory,
-    # in the one record the path itself is read from; a program started with no PWD is taken to be where it started.
-    return Terminal(process.pid, process.parent, (Path(environment.get("PWD", cwd)) / executable).resolve(), cwd, environment, arguments, tty)
+    # in the one record the path itself is read from; a program started with none, or one that is no absolute path, is
+    # taken to be where it started.
+    return Terminal(process.pid, process.parent, (cwd / environment.get("PWD", "") / executable).resolve(), cwd, environment, arguments, tty)
 
 
 def _device(pid: int, fd: int) -> int | None:
