@@ -1,7 +1,6 @@
 """The summariser: one stateless call on the configured model, apart from the intermediary's conversation, or under
 the brain, a side question asked of a Claude Code of its own."""
 
-import asyncio
 from collections.abc import Awaitable, Callable
 
 from anthropic import AnthropicError, AsyncAnthropic, Omit, omit
@@ -53,15 +52,13 @@ def summariser(backend: AnthropicBackend | OpenAICompatibleBackend, instruction:
             return from_anthropic
 
 
-def aside(ask: Callable[[str], Awaitable[str]], instruction: str, timeout: float) -> Summariser:
+def aside(ask: Callable[[str, float], Awaitable[str]], instruction: str, timeout: float) -> Summariser:
     """The summariser under the brain: the turn asked as a side question, with what to make of it, of a Claude Code that
-    is asked nothing else. It fails, as the API's do, once `timeout` has passed, whatever it waited on."""
+    is asked nothing else, within `timeout`, as the API's are, whatever it waited on."""
 
     async def from_an_aside(turn: str) -> str:
         try:
-            return _spoken([await asyncio.wait_for(ask(f"{instruction}\n\nSummarize this:\n\n{turn}"), timeout)])
-        except TimeoutError as error:
-            raise SummaryFailed(f"the side question had no answer in {timeout:.0f}s") from error
+            return _spoken([await ask(f"{instruction}\n\nSummarize this:\n\n{turn}", timeout)])
         except AsideFailed as error:
             raise SummaryFailed(f"the side question had no answer: {error}") from error
 

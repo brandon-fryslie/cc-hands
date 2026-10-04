@@ -20,7 +20,7 @@ from hands.core import status
 from hands.core.status import Busy, Report, Stamp
 from hands.core.turn import AgentId, AgentTask
 from hands.sessions.audit import Entry, jsonable
-from hands.sessions.wide import WideEvent
+from hands.sessions.wide import WideEvent, unit
 from hands.sessions.tail import Tails
 from hands.voice.speech import Aloud, Pushed, Tailed, Unprompted, relay
 from hands.voice.utterance import Fate, Utterance, Utterances
@@ -430,12 +430,19 @@ WRITTEN = "First, how DNS works.\n1. The OS asks its resolver.\n"
 
 
 async def test_briefly_the_focus_is_heard_saying_what_it_is_doing_without_its_calls() -> None:
+    asked: list[WideEvent] = []
+
     async def explain(_text: str) -> str:
-        return "Explain how DNS resolution works."
+        # As the side question it is asked as opens its unit of work.
+        with unit("brain.aside", asked.append):
+            return "Explain how DNS resolution works."
 
     queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), WRITTEN), lambda: Opened(TURN), explain, "brief")
     assert queued == [Working(SID, IN_TURN, (explained("explain how DNS resolution works"),))]
     assert handed_on(told, "explain how DNS resolution works")
+    # The explanation is a part of the utterance it delays.
+    [aside] = asked
+    assert (aside.trace_id, aside.parent_id) == (told.begun.span.trace_id, told.begun.span.span_id)
 
 
 async def test_briefly_a_burst_of_calls_alone_is_not_said_and_its_utterance_says_so() -> None:

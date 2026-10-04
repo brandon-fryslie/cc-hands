@@ -12,6 +12,7 @@ from hands.core.effects import Progress
 from hands.core.pending import Working, current
 from hands.core.progress import WRITING, Doing, explained
 from hands.core.session import Session, SessionId
+from hands.sessions.wide import continuing
 from hands.voice.speech import Unprompted
 from hands.voice.summary import SUMMARY_FAILURES, Summariser
 from hands.voice.utterance import Utterance
@@ -37,7 +38,7 @@ async def keep_playing(
     async def begin(group: asyncio.TaskGroup) -> None:
         while True:
             progress, amount, utterance = await playing.get()
-            summarising.put_nowait((progress, amount, utterance, group.create_task(_explained(progress, explain))))
+            summarising.put_nowait((progress, amount, utterance, group.create_task(_explained(progress, explain, utterance))))
 
     async with asyncio.TaskGroup() as group:
         group.create_task(begin(group))
@@ -72,7 +73,7 @@ def _said(amount: Amount, explaining: Doing | None, calls: tuple[Doing, ...]) ->
             return told
 
 
-async def _explained(progress: Progress, explain: Summariser) -> tuple[Doing | None, str | None]:
+async def _explained(progress: Progress, explain: Summariser, utterance: Utterance) -> tuple[Doing | None, str | None]:
     """What the text in a burst is said as, ahead of its calls, since Claude says what it will do before it does it:
     None for a burst with no text. And why it could not be summarised, when it could not; it is then said to have been
     written, and never read out."""
@@ -81,7 +82,9 @@ async def _explained(progress: Progress, explain: Summariser) -> tuple[Doing | N
             return None, None
         case text:
             try:
-                return explained(await explain(text)), None
+                # [LAW:nothing-unseen] the side question it is asked as is a part of the utterance it delays.
+                with continuing(utterance.begun.span):
+                    return explained(await explain(text)), None
             except SUMMARY_FAILURES as error:
                 # [LAW:no-silent-failure] the burst is still said, its text as written and never as what it says.
                 logger.error(f"the text session {progress.session} wrote could not be summarised, so it is said to have been written: {type(error).__name__}: {error}")
