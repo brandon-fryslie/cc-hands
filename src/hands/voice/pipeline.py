@@ -224,7 +224,7 @@ class Voice:
 
 
 def build_voice(
-    config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, player: Player, floor: Floor, refocus: Refocus, prompt: Callable[[], Awaitable[str | None]], record: Record
+    config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, key: PushToTalk, player: Player, floor: Floor, refocus: Refocus, prompt: Callable[[], Awaitable[str | None]], record: Record
 ) -> Voice:
     """Wire mic, push-to-talk, Whisper on MLX, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
@@ -233,7 +233,6 @@ def build_voice(
     # aggregator runs no VAD of its own. The turn opens on the press and closes
     # on the release; the release is final, so there is no wait for the user to
     # "say more".
-    key = PushToTalk(record)
     params = PipelineParams(enable_metrics=True)
     # [LAW:one-source-of-truth] the phone's audio is at the pipeline's own rates, as the desk's devices are opened at.
     phone = Phone(key, heard_rate=params.audio_in_sample_rate, played_rate=params.audio_out_sample_rate, record=record)

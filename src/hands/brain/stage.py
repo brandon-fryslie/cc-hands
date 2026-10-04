@@ -40,6 +40,8 @@ from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 from hands.brain.mcp import SERVER_NAME
 from hands.brain.process import NOBODY, SPOKEN_OVER, Asked
 from hands.core.effects import Deny
+from hands.core import place
+from hands.core.place import Modality
 from hands.core.permissions import heard
 from hands.core.front import InFront, told
 from hands.core.session import SessionId
@@ -86,9 +88,10 @@ class Asking(Protocol):
 
 @dataclass(frozen=True)
 class UserAsked:
-    """The user's words: what was in front on the Mac's screen as they were submitted, and how long reading it took, in
-    milliseconds."""
+    """The user's words: whether they could see a screen and what was in front on the Mac's as they were submitted, and
+    how long reading it took, in milliseconds."""
 
+    modality: Modality
     front: InFront
     read_ms: float
 
@@ -194,6 +197,7 @@ class BrainStage(FrameProcessor):
         tail: Callable[[], str],
         refocus: Callable[[SessionId], Awaitable[None]],
         front: Callable[[], Awaitable[InFront]],
+        modality: Callable[[], Modality],
         record: Record,
         clock: Callable[[], Seconds] = time.monotonic,
     ) -> None:
@@ -201,6 +205,8 @@ class BrainStage(FrameProcessor):
         self._brain = brain
         # What is in front on the Mac's screen, read as the user's words arrive.
         self._front = front
+        # Whether the user can see a screen, read as their words arrive.
+        self._modality = modality
         # Moves the focus to a session whose telling the brain takes.
         self._refocus = refocus
         # What hands appends to each request of a turn, composed as that request leaves.
@@ -242,10 +248,10 @@ class BrainStage(FrameProcessor):
                 # never words of the user's still waiting to be asked. A context frame is a call to answer, not a message:
                 # one that gained the brain nothing asks nothing.
                 # [LAW:no-ambient-temporal-coupling] the screen is read from as the words arrive, not as their turn is
-                # taken: the user may look elsewhere while it waits.
+                # taken: the user may look elsewhere, or switch to audio-only, while it waits.
                 released, self._released = self._released, None
                 if news := self._news(context):
-                    self._contexts.append((news, self._now(), released, asyncio.ensure_future(self._read_front())))
+                    self._contexts.append((news, self._now(), released, asyncio.ensure_future(self._read_front(self._modality()))))
                     self._waiting.set()
             case HoldDiscarded():
                 await self.push_frame(frame, direction)
@@ -276,7 +282,7 @@ class BrainStage(FrameProcessor):
             match waiting:
                 case (str() as text, reading):
                     asker = await reading
-                    await self._ask("\n\n".join(part for part in (text, told(asker.front)) if part), asker, (), arrived, released, taken)
+                    await self._ask("\n\n".join(part for part in (text, told(asker.front), place.told(asker.modality)) if part), asker, (), arrived, released, taken)
                 case Narrated(text=text, unsaid=unsaid, session=session):
                     # [LAW:no-ambient-temporal-coupling] moved as the telling is taken, with the user's last turn ended and
                     # none waiting, since they go first, and before the brain is asked, so its request reads the new focus.
@@ -285,10 +291,10 @@ class BrainStage(FrameProcessor):
                 case Aloud(spoken=spoken):
                     await self.push_frame(spoken)
 
-    async def _read_front(self) -> UserAsked:
+    async def _read_front(self, modality: Modality) -> UserAsked:
         began = self._now()
         front = await self._front()
-        return UserAsked(front, (self._now() - began) * 1000)
+        return UserAsked(modality, front, (self._now() - began) * 1000)
 
     async def _upcoming(self) -> tuple[tuple[str, asyncio.Task[UserAsked]] | Narrated | Aloud, Seconds, Seconds | None]:
         """What is next: the user's words while any wait, since what they said goes ahead of what hands has to tell, all

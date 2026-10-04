@@ -23,7 +23,7 @@ from typing import Literal
 
 from pipecat.frames.frames import InputAudioRawFrame
 
-from hands.core.place import Place
+from hands.core.place import Modality, Place, modality_at
 from hands.sessions.audit import Moved, Record
 from hands.voice.hold import Move
 
@@ -120,12 +120,15 @@ def _key_after(move: Move) -> Key:
 
 
 class PushToTalk:
-    """The one owner of the key position; the talk key's edge writes, the microphone reads and tags every frame with it."""
+    """The one owner of the key position and of where the user is: the talk key's edge writes, the microphone reads and
+    tags every frame with it; and whether the user can see a screen there, which the place they talk from sets and they
+    can switch by voice."""
 
     # [LAW:no-shared-mutable-globals] the event loop writes the key and the capture thread reads it,
     # so it lives here once with one writer.
     def __init__(self, record: Record) -> None:
         self._gate = Gate()
+        self._modality: Modality = modality_at(self._gate.place)
         self._record = record
 
     def move(self, move: Move, at: Place) -> Move | None:
@@ -139,14 +142,24 @@ class PushToTalk:
         """Report that hands is at `to` now: the phone came, or went."""
         self._become(self._gate.moved(to), "call")
 
+    def switch(self, to: Modality) -> None:
+        """Report that the user asked to be taken as `to` from now on, until hands next moves between the desk and the phone."""
+        self._modality = to
+
     def _become(self, gate: Gate, by: Literal["turn", "call"]) -> None:
         before, self._gate = self._gate, gate
         # [LAW:nothing-unseen] the one writer of the gate says each move of the place, whichever edge made it.
         if gate.place != before.place:
+            # [LAW:one-source-of-truth] the way the user talks sets the modality, so a move sets it in the same write.
+            self._modality = modality_at(gate.place)
             self._record(Moved(to=gate.place, by=by, dropped=gate.key == "dropped" and before.key != "dropped"))
 
     @property
     def gate(self) -> Gate:
         # Read from the audio callback thread too: one attribute load of a frozen value, whole either way.
         return self._gate
+
+    @property
+    def modality(self) -> Modality:
+        return self._modality
 
