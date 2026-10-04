@@ -24,7 +24,8 @@ from hands.voice.refocus import Refocus
 from hands.voice.sentences import SummaryStore
 from hands.voice.ptt import PushToTalk
 from hands.voice.trigger import Triggers
-from hands.voice.tools import Tool, audited, defaulting_to_focus, intermediary_tools, stay_silent_tool
+from hands.voice.tool import Tool
+from hands.voice.tools import audited, defaulting_to_focus, intermediary_tools, stay_silent_tool
 
 HANDS = SessionId("s-hands")
 LAWS = SessionId("s-laws")

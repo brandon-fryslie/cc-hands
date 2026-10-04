@@ -26,7 +26,8 @@ from hands.sessions.audit import AuditLog, Entry, Record, Typing, TypingFailed, 
 from hands.sessions.wide import unit
 from hands.sessions.registry import Sessions
 from hands.voice.conversation import record_turns
-from hands.voice.tools import audited, cued, draft_tools, keyboard_tools, pipecat_function, Replies, Result, Tool, tool
+from hands.voice.tool import Result, Tool, tool
+from hands.voice.tools import audited, cued, draft_tools, keyboard_tools, pipecat_function, Replies
 
 
 def unrecorded(_: object) -> None:

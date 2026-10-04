@@ -33,7 +33,8 @@ from hands.voice.utterance import Utterances
 
 from test_shim import STARTED
 from test_narrator import rendered
-from hands.voice.tools import DENIED_BY_VOICE, SENT_BACK_BY_VOICE, Tool, permission_tools
+from hands.voice.tool import Tool
+from hands.voice.tools import DENIED_BY_VOICE, SENT_BACK_BY_VOICE, permission_tools
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000002")
 COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/code/cc-hands"}

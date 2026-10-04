@@ -70,7 +70,7 @@ from hands.voice.speech import Aloud, Narrated
 from hands.voice.utterance import Uttered, Uttering
 
 from test_narrator import heard as unasked
-from hands.voice.tools import Result, Tool, tool
+from hands.voice.tool import Result, Tool, tool
 
 BRAIN = SessionId("brain-session")
 PATIENCE_SECS = 2.0

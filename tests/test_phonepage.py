@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from hands.sessions.home import Home
-from hands.voice import phonepage
-from hands.voice.phonepage import Tailnet, Untailed, tailnet, tailnet_name
+from hands.voice import phoneaddress
+from hands.voice.phoneaddress import Tailnet, Untailed, tailnet, tailnet_name
 
 NAMED = """#!/bin/sh
 case "$1" in
@@ -49,7 +49,7 @@ async def test_a_tailscale_that_never_answers_is_untailed_and_killed(tmp_path: P
     pid = tmp_path / "pid"
     monkeypatch.setenv("PATH", command(tmp_path, f"#!/bin/sh\necho $$ > {pid}\nexec sleep 30\n"))
     # Long enough that the command has said its pid before it is killed, however loaded the machine.
-    monkeypatch.setattr(phonepage, "TAILSCALE_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(phoneaddress, "TAILSCALE_TIMEOUT_SECONDS", 1.0)
     assert await tailnet_name() == Untailed("tailscale status took over 1s")
     # Gone, not merely dead: a killed child nobody reaped would still take the signal.
     with pytest.raises(ProcessLookupError):
@@ -73,7 +73,7 @@ SHUT_DOWN = """
 import asyncio, os, sys, time
 from pathlib import Path
 from hands.sessions.home import Home
-from hands.voice.phonepage import tailnet
+from hands.voice.phoneaddress import tailnet
 
 home = Home(Path(sys.argv[1]))
 
