@@ -59,17 +59,20 @@ def to_terminal(stream: TextIO) -> int:
 
 
 def said_failed(record: audit.Record) -> audit.Record:
-    """`record`, and each unit of work it records that failed also said on the terminal, by its name and its error.
+    """`record`, and each unit of work it records that said it failed, rather than raised, also said on the terminal, by
+    its name and its error.
 
     [LAW:nothing-unseen] the one layer every event of a run passes through: a failure a unit reports on its event, rather
-    than logs, still reaches the terminal its run is read on, as a logged error does.
+    than logs, still reaches the terminal its run is read on, as a logged error does. A unit that failed by raising has a
+    trace, and [LAW:one-source-of-truth] is said by what catches the exception, once, never again by each unit it passed.
     """
 
     def both(entry: audit.Entry) -> None:
         record(entry)
         match entry:
-            case wide.WideEvent(outcome="failed", event=event, error=error):
-                logger.bind(**{audit.AUDITED: True}).error(f"{event} failed: {error}")
+            case wide.WideEvent(outcome="failed", trace=(), event=event, error=error):
+                # A part timed elsewhere, as a tool call whose result was an error, can fail with no error to say.
+                logger.bind(**{audit.AUDITED: True}).error(f"{event} failed" if error is None else f"{event} failed: {error}")
             case _:
                 pass
 
