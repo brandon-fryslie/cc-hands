@@ -1,6 +1,6 @@
 [project]
 name = "hands"
-version = "0.0.1"
+dynamic = ["version"]
 description = "Hands-free control of Claude Code: a voice intermediary in one daemon"
 requires-python = ">=3.12"
 dependencies = [
@@ -27,11 +27,18 @@ hands = "hands.daemon.cli:main"
 dev = ["pyright>=1.1", "pytest>=8", "pytest-asyncio>=0.24"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+# [LAW:one-source-of-truth] the version is the release's tag, vX.Y.Z; a commit past the last tag reads as a dev version.
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hands"]
+
+# hatch_build.py: the wheel carries fritter, built for macOS arm64.
+[tool.hatch.build.targets.wheel.hooks.custom]
 
 [tool.pyright]
 include = ["src", "tests"]
@@ -50,3 +57,5 @@ testpaths = ["tests"]
 # hands is a Mac app (CoreAudio, Quartz event taps), so the lock is resolved for macOS alone: openWakeWord's Linux-only
 # tflite-runtime has no wheel for the Python hands runs on.
 environments = ["sys_platform == 'darwin'"]
+# A new commit or tag rebuilds the checkout's own install, so `hands --version` there is the checkout's.
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]

@@ -1,0 +1,2 @@
+# [LAW:one-source-of-truth] a GitHub source archive has no .git; git writes its tag here so hatch-vcs still reads the version.
+.git_archival.txt export-subst
