@@ -37,7 +37,7 @@ from hands.sessions.audit import Record
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, begun, continuing, unit
-from hands.voice.phone import CallRefused, Offer, Phone, call_ended
+from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
 
 # All of this machine's IPv4 addresses, the LAN's and the tailnet's alike.
 PHONE_HOST = "0.0.0.0"
@@ -207,10 +207,10 @@ def page_urls(name: str | Untailed, lan: list[str], key: str) -> list[str]:
 def parse_offer(body: object) -> Offer:
     """A page's offer as hands takes it; raises Rejected naming what is wrong with it."""
     match body:
-        case {"sdp": str(sdp), "type": "offer", "rate": int(rate)} if rate > 0:
-            return Offer(sdp, "offer", rate)
+        case {"sdp": str(sdp), "type": "offer", "rate": int(rate), "page": str(page), "claim": str(claim)} if rate > 0 and page and claim in ("take", "resume"):
+            return Offer(sdp, "offer", rate, Asked(page, claim))
         case _:
-            raise Rejected("an offer is {sdp, type: offer, rate}")
+            raise Rejected("an offer is {sdp, type: offer, rate, page, claim: take or resume}")
 
 
 def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
@@ -226,19 +226,22 @@ def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
         given = request.headers.get("Authorization", "").removeprefix("Bearer ")
         # [LAW:single-enforcer] the one check of the key, compared in constant time.
         if not hmac.compare_digest(given.encode(), key.encode()):
-            call_ended(record, began, remote, CallRefused("offered without the phone's key"))
+            call_ended(record, began, remote, None, CallRefused("offered without the phone's key"))
             return web.Response(status=401, text="this page's address is missing the phone's key; open it from `hands phone`")
         try:
             offer = parse_offer(await request.json())
         except (Rejected, json.JSONDecodeError) as error:
-            call_ended(record, began, remote, CallRefused(str(error)))
+            call_ended(record, began, remote, None, CallRefused(str(error)))
             return web.Response(status=400, text=str(error))
         except BaseException as error:
             # The body could not be read at all, or the request went as it was.
-            call_ended(record, began, remote, error)
+            call_ended(record, began, remote, None, error)
             raise
-        answer = await phone.answer(offer, remote, began)
-        return web.json_response({"sdp": answer.sdp, "type": answer.type})
+        match await phone.answer(offer, remote, began):
+            case CallDeclined():
+                return web.Response(status=409, text="another page has hands' phone; press Connect to take it")
+            case answer:
+                return web.json_response({"sdp": answer.sdp, "type": answer.type})
 
     app = web.Application()
     app.router.add_get("/", shown)

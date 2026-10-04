@@ -1831,10 +1831,24 @@ offer must carry the phone's key, a secret in the home that travels in the page
 address's fragment, which a browser never sends with the page request. `hands phone`
 prints the addresses with the key, the first as a QR code. aiortc never notices a
 browser closed outright, so a page that sends nothing for `QUIET_SECS` is hung up:
-it sends its microphone every 20 ms for as long as it is open. Each call is one
+it sends its microphone every 20 ms for as long as it is open. The page does the same the
+other way: hands sends its voice every 20 ms, silence and all, so a page that has received
+none for 3 s, or whose channel closes or connection fails, takes its call as dropped and
+calls again on its own, after 1 s, then doubling to every 8 s, at once when the page is
+brought back to the front. A press whose call never opens is said and not made again: the
+user is there to press once more. It keeps the microphone open between calls, because a
+browser opens one for a press, not for a page calling on its own, and ends when the
+microphone is taken away, since no call over it would be heard. Every offer names
+the page, by a name it makes itself as it opens, and what it asks: a press of Connect
+`take`s the phone from any page, and a page calling again `resume`s it, which hands
+declines with a 409 while another page has the call or an offer in. Then that page
+keeps the phone and this one stops calling until Connect is pressed. So two pages left
+open never take the phone back and forth, and a page whose old call hands has not yet
+hung up replaces it. Each call is one
 `phone.call` event, the root of a trace of its own, from its offer to its end, written
-as it ends: refused at the page, for no key or no offer; let go before it connected;
-or left after hands was at it, with how long after its offer it arrived; and why. One whose
+as it ends: refused at the page, for no key or no offer; declined, as a resume; let go
+before it connected; or left after hands was at it, with how long after its offer it
+arrived; and why. Each one read names the page and what it asked (`asked`). One whose
 body could not be read, or that hands could not answer, is failed with what raised.
 
 **One audio owner.** Pipecat's output transport is the only thing that plays sound.

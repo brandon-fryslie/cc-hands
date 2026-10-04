@@ -14,6 +14,10 @@ plays to it over an audio track. Over the same channel hands tells the page each
 and the first sound, which the page shows with how long each took. Earbuds keep hands' voice out of the phone's microphone, and the page asks the browser
 for its echo cancellation as well; so the phone's audio is gated by its button alone, with none of the desk
 microphone's wait for the room to go quiet.
+
+A page whose call drops calls again on its own, and says so in its offer: it resumes the phone, where a press of its
+Connect takes it. A resume is declined while another page has the call or an offer in, so two pages left open never take
+the phone back and forth between them; only a press takes it from another page.
 """
 
 import asyncio
@@ -31,7 +35,7 @@ from loguru import logger
 
 from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
-from hands.sessions.wide import Begun, continuing, ended, since
+from hands.sessions.wide import Begun, Fact, continuing, ended, since
 from hands.voice.hold import Move
 from hands.voice.mark import Mark
 from hands.voice.ptt import KeyedAudio, PushToTalk
@@ -47,6 +51,18 @@ QUIET_SECS = 3.0
 # Why a call ended: a newer call took its place, the page hung up, the connection failed, the page stopped sending
 # (closed outright, or the phone asleep), or hands stopped.
 PhoneGone = Literal["replaced", "hung up", "failed", "went quiet", "stopped"]
+
+# What an offer asks of the phone: to take it from whatever page has it, as a press of the page's Connect asks, or to
+# resume it, as a page whose call dropped asks on its own, which no other page's call or offer gives way to.
+Claim = Literal["take", "resume"]
+
+
+@dataclass(frozen=True)
+class Asked:
+    """Which page an offer came from, by the name it made itself as it opened, and what it asked of the phone."""
+
+    page: str
+    claim: Claim
 
 
 @dataclass(frozen=True)
@@ -73,21 +89,30 @@ class CallLeft:
     told: int
 
 
+@dataclass(frozen=True)
+class CallDeclined:
+    """A resume offered while another page had the call or an offer in: not answered, and that page keeps the phone."""
+
+
 # How a call ended; or what raised as hands answered it.
-CallEnd = CallRefused | CallUnreached | CallLeft | BaseException
+CallEnd = CallRefused | CallDeclined | CallUnreached | CallLeft | BaseException
 
 
-def call_ended(record: Record, began: Begun, remote: str, end: CallEnd) -> None:
+def call_ended(record: Record, began: Begun, remote: str, asked: Asked | None, end: CallEnd) -> None:
     """[LAW:single-enforcer] the one place a call's event is written, as it ends, however it ends: failed where it was
-    refused, where its connection failed, or where answering it raised."""
+    refused, where its connection failed, or where answering it raised. `asked` is None for an offer refused before it
+    was read."""
+    facts: dict[str, Fact] = {"remote": remote} if asked is None else {"remote": remote, "asked": asked}
     match end:
         case BaseException():
-            ended("phone.call", record, began, end, remote=remote)
+            ended("phone.call", record, began, end, **facts)
         case CallRefused(why=why):
-            ended("phone.call", record, began, None, why, remote=remote, ended=end)
+            ended("phone.call", record, began, None, why, **facts, ended=end)
+        case CallDeclined():
+            ended("phone.call", record, began, None, **facts, ended=end)
         case CallUnreached(reason=reason) | CallLeft(reason=reason):
             failure = "the call's connection failed" if reason == "failed" else None
-            ended("phone.call", record, began, None, failure, remote=remote, ended=end)
+            ended("phone.call", record, began, None, failure, **facts, ended=end)
 
 
 class Outbound(MediaStreamTrack):
@@ -152,12 +177,13 @@ class Outbound(MediaStreamTrack):
 
 @dataclass(frozen=True)
 class Offer:
-    """A page's session description, as its browser made it, every candidate gathered; and the rate its microphone's
-    audio comes at, which is the browser's own."""
+    """A page's session description, as its browser made it, every candidate gathered; the rate its microphone's audio
+    comes at, which is the browser's own; and which page it is, asking what."""
 
     sdp: str
     type: Literal["offer"]
     rate: int
+    asked: Asked
 
 
 # What the page sends over the call's data channel: its microphone, and its button.
@@ -185,6 +211,7 @@ class _Call:
     resampler: AudioResampler
     rate: int
     remote: str
+    asked: Asked
     began: Begun
     # Set by every message the page sends; the watch hangs up a call that goes QUIET_SECS without one.
     heard: asyncio.Event
@@ -201,7 +228,9 @@ class Phone:
 
     A call is offered once its page's offer is answered, and is where hands is once its channel opens, the page's
     first word: hands never moves to a call that cannot yet hear it, and an offer that never connects leaves the call
-    that is up as it was. The newest offer is the page in the user's hand, so it lets go of any older one not yet up.
+    that is up as it was. The newest offer is the page in the user's hand, so it lets go of any older one not yet up;
+    but a resume is a page calling again on its own, not the user's hand, so it gives way to any other page's call or
+    offer.
 
     [LAW:no-ambient-temporal-coupling] the microphone and the button come over one ordered channel, and each message is
     acted on as it arrives: a press moves the gate before the audio sent after it is keyed, and a release after the
@@ -223,15 +252,15 @@ class Phone:
         # The moves the page's button has made, as the gate took them, for what follows a move: its tone and its words.
         self.moves: asyncio.Queue[Move] = asyncio.Queue()
 
-    async def answer(self, offer: Offer, remote: str, began: Begun) -> RTCSessionDescription:
+    async def answer(self, offer: Offer, remote: str, began: Begun) -> RTCSessionDescription | CallDeclined:
         """Answer the call a page offers, `began` as it was offered, with every candidate hands has; it is taken once it
-        connects."""
+        connects. A resume while another page has the call or an offer in is declined, and nothing changes."""
         # [LAW:one-source-of-truth] no ICE server: the phone reaches hands at an address it already has, on the LAN or
         # the tailnet, so hands' own addresses are every candidate there is.
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         outbound = Outbound(self._played_rate)
         resampler = AudioResampler(format="s16", layout="mono", rate=self._heard_rate)
-        call = _Call(peer, outbound, resampler, offer.rate, remote, began, asyncio.Event())
+        call = _Call(peer, outbound, resampler, offer.rate, remote, offer.asked, began, asyncio.Event())
         peer.addTrack(outbound)
 
         @peer.on("datachannel")
@@ -271,9 +300,15 @@ class Phone:
             await peer.setLocalDescription(await peer.createAnswer())
         except BaseException as error:
             # Never offered, so nothing else ends its call or holds the peer to close it.
-            call_ended(self._record, began, remote, error)
+            call_ended(self._record, began, remote, offer.asked, error)
             await peer.close()
             raise
+        # [LAW:single-enforcer] checked where the offer is put in, after every await of its answering: a press put in
+        # while a resume was being answered is the page in the user's hand.
+        if offer.asked.claim == "resume" and any(held.asked.page != offer.asked.page for held in (self._call, self._offered) if held is not None):
+            call_ended(self._record, began, remote, offer.asked, CallDeclined())
+            await peer.close()
+            return CallDeclined()
         older, self._offered = self._offered, call
         await self._let_go(older, "replaced")
         return peer.localDescription
@@ -301,7 +336,7 @@ class Phone:
             case None:
                 pass
             case _Call():
-                call_ended(self._record, offered.began, offered.remote, CallUnreached(reason))
+                call_ended(self._record, offered.began, offered.remote, offered.asked, CallUnreached(reason))
                 await offered.peer.close()
 
     async def _watch(self, call: _Call) -> None:
@@ -345,7 +380,7 @@ class Phone:
                 call.outbound.stop()
                 if call.watch is not None and call.watch is not asyncio.current_task():
                     call.watch.cancel()
-                call_ended(self._record, call.began, call.remote, CallLeft(reason, call.arrived_ms, call.told))
+                call_ended(self._record, call.began, call.remote, call.asked, CallLeft(reason, call.arrived_ms, call.told))
                 return call
 
     async def hang_up(self, reason: PhoneGone) -> None:
