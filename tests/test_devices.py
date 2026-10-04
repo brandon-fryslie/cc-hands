@@ -161,6 +161,8 @@ async def test_a_follower_stopped_during_a_reopen_waits_for_it_to_finish() -> No
     await follower.until(follower.reopening)
     follower.task.cancel()
     await asyncio.sleep(0.01)
+    follower.task.cancel()  # told again, as a run stopped while it stops tells it
+    await asyncio.sleep(0.01)
     assert not follower.task.done()  # the reopen holds the streams, so the stop waits for it
     follower.release.set()
     await asyncio.wait({follower.task})
@@ -178,6 +180,8 @@ async def test_a_reopen_that_fails_while_the_follower_is_stopped_fails_its_move(
     await follower.settled()
     follower.notice(DefaultDevices(input=2, output=2))
     await follower.until(follower.reopening)
+    follower.task.cancel()
+    await asyncio.sleep(0.01)
     follower.task.cancel()
     follower.release.set()
     await asyncio.wait({follower.task})

@@ -58,14 +58,19 @@ async def finished[T](work: Awaitable[T]) -> T:
     # [LAW:no-ambient-temporal-coupling] a reopen holds the streams, part of it on a thread that cancelling cannot
     # stop. A follower stopped during one waits for it, within its deadline, so the pipeline's cleanup that comes next
     # finds the streams attached and closes them itself, instead of racing a reopen for them.
+    # Waited on rather than awaited, since a wait never cancels what it waits on, however often it is cancelled itself.
     running = asyncio.ensure_future(work)
-    try:
-        return await asyncio.shield(running)
-    except asyncio.CancelledError:
-        await asyncio.wait({running})
-        # [LAW:no-silent-failure] a reopen that failed while the follower was being stopped fails the move.
-        running.result()
-        raise
+    cancelled: asyncio.CancelledError | None = None
+    while not running.done():
+        try:
+            await asyncio.wait({running})
+        except asyncio.CancelledError as cancel:
+            cancelled = cancel
+    # [LAW:no-silent-failure] a reopen that failed while the follower was being stopped fails the move.
+    result = running.result()
+    if cancelled is not None:
+        raise cancelled
+    return result
 
 
 async def moved(changes: asyncio.Event, current: Callable[[], Awaitable[DefaultDevices]], opened: DefaultDevices) -> DefaultDevices:
