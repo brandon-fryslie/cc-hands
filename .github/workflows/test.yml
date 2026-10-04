@@ -1,0 +1,36 @@
+# Every PR into master runs the suite and strict pyright on the macOS a release builds on; the check named `test` is
+# required on master, so a red one cannot merge. release.yml publishes whatever commit a tag names, so this is its gate.
+name: test
+
+on:
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: test-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # hatch-vcs reads the version from the history's tags when `uv sync` installs the checkout.
+          fetch-depth: 0
+      # hatch_build.py builds fritter with Go when `uv sync` installs the checkout.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: fritter/go.mod
+          cache-dependency-path: fritter/go.sum
+      - uses: astral-sh/setup-uv@v6
+      # PyAudio ships wheels only for Windows, so on a Mac it builds against Homebrew's PortAudio.
+      - name: Give PyAudio PortAudio
+        run: brew install portaudio
+      # [LAW:one-source-of-truth] the versions the suite runs on are uv.lock's; a lock out of step with pyproject fails here.
+      - name: Install the locked environment
+        run: uv sync --locked
+      - name: pytest
+        run: uv run pytest
+      - name: pyright
+        run: uv run pyright
