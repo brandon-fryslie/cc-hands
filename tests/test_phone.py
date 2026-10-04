@@ -7,8 +7,9 @@ import ssl
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from importlib import resources
 from types import SimpleNamespace
-from typing import cast
+from typing import cast, get_args
 
 import numpy as np
 import pytest
@@ -24,6 +25,7 @@ from hands.sessions.audit import Entry
 from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
+from hands.voice.mark import Mark
 from hands.voice.phone import CallLeft, CallRefused, CallUnreached, Offer, Phone
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -46,6 +48,7 @@ class Page:
     peer: RTCPeerConnection
     channel: RTCDataChannel
     played: list[AudioFrame]
+    told: list[object]
     opened: asyncio.Event
 
     def send(self, said: bytes | str) -> None:
@@ -56,8 +59,9 @@ async def a_page() -> tuple[Page, Offer]:
     peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     peer.addTransceiver("audio", direction="recvonly")
     channel = peer.createDataChannel("talk", ordered=True)
-    page = Page(peer, channel, [], asyncio.Event())
+    page = Page(peer, channel, [], [], asyncio.Event())
     channel.on("open", page.opened.set)
+    channel.on("message", page.told.append)
 
     @peer.on("track")
     def heard(track: MediaStreamTrack) -> None:  # pyright: ignore[reportUnusedFunction]
@@ -174,6 +178,29 @@ async def test_what_hands_says_is_played_on_the_phone(call: Call) -> None:
     await call.until(lambda: any(np.abs(frame.to_ndarray()).max() > 1000 for frame in call.page.played))
 
 
+async def test_the_page_is_told_each_mark_of_its_turn_and_the_call_counts_them(call: Call) -> None:
+    for mark in get_args(Mark):
+        call.phone.tell(mark)
+    await call.until(lambda: len(call.page.told) == len(get_args(Mark)))
+    assert call.page.told == list(get_args(Mark))
+    await call.phone.hang_up("stopped")
+    [event] = calls(call.recorded)
+    assert left(event).told == len(get_args(Mark))
+
+
+async def test_a_mark_with_no_call_up_is_told_to_nobody() -> None:
+    """A turn taken at the desk passes the same marks, and no page is waiting on it."""
+    phone = Phone(PushToTalk(lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None)
+    phone.tell("released")
+
+
+def test_the_page_knows_every_mark_hands_tells_it() -> None:
+    """The page says what each mark means by name, and names one it does not know as an error on its face."""
+    page = resources.files("hands.voice").joinpath("phone.html").read_text()
+    table = page[page.index("const TOLD = {") : page.index("};", page.index("const TOLD = {"))]
+    assert [mark for mark in get_args(Mark) if f'"{mark}": ' not in table] == []
+
+
 async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was_playing(call: Call) -> None:
     call.page.send("press")
     await call.until(lambda: call.key.gate.key == "down")
@@ -187,6 +214,8 @@ async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was
     assert (event.outcome, event.parent_id, event.facts["remote"]) == ("ok", None, "192.168.7.20")
     ended = left(event)
     assert ended.reason == "hung up" and 0 < ended.arrived_ms <= event.duration_ms
+    # A call whose page was told nothing says so: zero, written down.
+    assert ended.told == 0
 
 
 async def test_a_newer_call_replaces_the_one_before_it_once_it_connects(call: Call) -> None:

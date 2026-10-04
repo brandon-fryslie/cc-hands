@@ -1795,6 +1795,17 @@ travels with the audio, as `KeyedAudio` makes it travel at the desk. Earbuds kee
 hands' voice out of the phone's microphone, so the phone's audio is gated by its
 button alone.
 
+The same channel carries, the other way, what became of each hold. The latency
+observer (`hands.voice.latency`) tells the phone each mark of a turn as it logs it
+(`hands.voice.mark`): `released` or `discarded`, `transcript` or `no words`,
+`first LLM token`, `first audio`. The page shows the last one under its button, with
+the time since the button was let go counting while a reply is waited on, and the
+time to the first sound once it comes. Every time shown is the page's own clock,
+from the button let go to the mark arriving, so it is the wait as felt at the
+phone, the network included. `no words` is a hold Whisper found nothing said in:
+it ends the turn's latency window too, so what hands says next unasked is not
+timed as its answer. A call's `phone.call` event counts the marks its page was told.
+
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts
 as it is; under a LAN address it shows a self-signed one, which the phone is asked

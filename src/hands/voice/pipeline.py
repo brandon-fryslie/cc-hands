@@ -238,7 +238,8 @@ def build_voice(
     worker = PipelineWorker(
         pipeline,
         params=params,
-        observers=[LatencyObserver(), player.watching(tts, output), Audible(output)],
+        # The phone's page is told each mark of a turn as the latency log is: at the desk there is no page to tell.
+        observers=[LatencyObserver(phone.tell),player.watching(tts, output), Audible(output)],
         idle_timeout_secs=None,
     )
     return Voice(
