@@ -89,7 +89,7 @@ def plugin_listed(raw: str) -> Finding:
         return Missing(f"the plugin {PLUGIN_ID} is disabled, so no session joins hands: `claude plugin enable --scope user {PLUGIN_ID}`, then /reload-plugins in each running session")
     return Missing(
         f"the plugin {PLUGIN_ID} is not installed for every session, so only the sessions of a project it is installed in "
-        f"join hands: `claude plugin install {PLUGIN_ID}` (after `claude plugin marketplace add` of this checkout), then "
+        f"join hands: `claude plugin install {PLUGIN_ID}` (after `claude plugin marketplace add brandon-fryslie/cc-hands`), then "
         f"/reload-plugins in each running session"
     )
 

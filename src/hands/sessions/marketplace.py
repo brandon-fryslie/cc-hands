@@ -11,6 +11,7 @@ import hashlib
 import shlex
 import shutil
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,17 +47,24 @@ def launcher(interpreter: str) -> str:
 
 def render(home: Home, interpreter: str) -> Rendered:
     """Write the plugin, its launcher running `interpreter`, under the home, in a directory named by its content."""
+    # [LAW:one-source-of-truth] the plugin's every file by its path within it, the package's and the launcher: what the
+    # directory is named by and what is written into it.
+    files = {path.relative_to(PACKAGED).as_posix(): path.read_bytes() for path in PACKAGED.rglob("*") if path.is_file()}
+    files[LAUNCHER] = launcher(interpreter).encode()
+    plugin = home.plugins / digest(files)
+    # Claude Code runs this before every session: once a session has written these files, the rest only name them.
+    if plugin.is_dir():
+        return Rendered(plugin, written=False)
     home.plugins.mkdir(parents=True, exist_ok=True)
     staged = Path(tempfile.mkdtemp(prefix=".staged-", dir=home.plugins))
     try:
-        shutil.copytree(PACKAGED, staged, dirs_exist_ok=True)
-        script = staged / LAUNCHER
-        script.write_text(launcher(interpreter), encoding="utf-8")
-        script.chmod(0o755)
+        for name, content in files.items():
+            (staged / name).parent.mkdir(parents=True, exist_ok=True)
+            (staged / name).write_bytes(content)
+        (staged / LAUNCHER).chmod(0o755)
         staged.chmod(0o755)
         # [LAW:no-ambient-temporal-coupling] sessions start together, each running this: a directory is staged whole and
         # renamed into place, so Claude Code never copies one half written, and one already there has these same files.
-        plugin = home.plugins / digest(staged)
         try:
             staged.rename(plugin)
         except OSError:
@@ -69,9 +77,10 @@ def render(home: Home, interpreter: str) -> Rendered:
         if staged.exists():
             shutil.rmtree(staged)
 
-def digest(root: Path) -> str:
-    """A name for the directory's files: each one's path within it and its bytes."""
+
+def digest(files: Mapping[str, bytes]) -> str:
+    """A name for a directory's files: each one's path within it and its bytes."""
     hashed = hashlib.sha256()
-    for path in sorted(entry for entry in root.rglob("*") if entry.is_file()):
-        hashed.update(f"{path.relative_to(root)}\0".encode() + path.read_bytes() + b"\0")
+    for name in sorted(files):
+        hashed.update(f"{name}\0".encode() + files[name] + b"\0")
     return hashed.hexdigest()[:16]

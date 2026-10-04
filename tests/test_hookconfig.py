@@ -73,7 +73,7 @@ def test_a_reply_is_printed_in_the_shape_claude_code_reads() -> None:
     assert hook_output(AllowWith(answered)) == {"hookSpecificOutput": {**decided, "decision": {"behavior": "allow", "updatedInput": answered}}}
 
 
-def test_the_plugin_id_is_the_plugin_s_name_at_the_marketplace_s_and_the_installed_hands_prints_the_plugin() -> None:
+def test_the_plugin_id_is_the_plugin_s_name_at_the_marketplace_s_whose_entry_runs_hands_plugin() -> None:
     marketplace = json.loads((REPOSITORY / ".claude-plugin" / "marketplace.json").read_text())
     plugin = json.loads((PACKAGED / ".claude-plugin" / "plugin.json").read_text())
     assert f"{plugin['name']}@{marketplace['name']}" == PLUGIN_ID
