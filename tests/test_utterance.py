@@ -111,6 +111,14 @@ async def test_a_note_for_the_model_s_context_is_sent_bare_and_is_silent_as_it_i
     assert (await rig.event()).facts["fate"] == "silent"
 
 
+async def test_audio_that_played_after_a_barge_in_cut_an_utterance_is_not_its_first(rig: Rig) -> None:
+    utterance = rig.utterances.heard(API, EXPIRED)
+    lead, _, close = said(utterance)
+    await rig.played([lead, InterruptionFrame(), AUDIO, close])
+    event = await rig.event()
+    assert event.facts["fate"] == "cut" and "first_audio_ms" not in event.facts
+
+
 async def test_audio_that_played_before_an_utterance_was_led_on_is_not_its_first(rig: Rig) -> None:
     utterance = rig.utterances.heard(API, EXPIRED)
     lead, _, close = said(utterance)

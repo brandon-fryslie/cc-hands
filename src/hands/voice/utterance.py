@@ -139,7 +139,8 @@ class Audible(BaseObserver):
             case Uttering(utterances=utterances):
                 self._on.update(dict.fromkeys(utterances, False))
             case OutputAudioRawFrame():
-                for utterance in self._on:
+                # What plays after a barge-in cut one off is not its own: a turn that goes on leads it on again.
+                for utterance in (each for each, cut in self._on.items() if not cut):
                     if utterance.first_audio is None:
                         utterance.first_audio = self._now()
             case InterruptionFrame():
