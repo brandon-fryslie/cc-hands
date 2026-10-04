@@ -1,5 +1,6 @@
 """The focus: the session the user's words go to when they name none, set in one call, held in the home, and never a lock."""
 
+from collections.abc import Callable
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,10 +36,19 @@ async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
     return sessions
 
 
-def tools(sessions: Sessions, home: Home) -> dict[str, Tool]:
+def tools(sessions: Sessions, home: Home, acting: Callable[[], None] = lambda: None) -> dict[str, Tool]:
     """The tools as the daemon gives them, focus defaulting and all."""
-    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(lambda _entry: None).switch)
+    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(lambda _entry: None).switch, acting)
     return {tool.name: tool for tool in given}
+
+
+async def test_every_call_is_heard_acting_but_staying_silent(tmp_path: Path) -> None:
+    acted: list[None] = []
+    given = tools(await two_sessions(tmp_path, []), Home(tmp_path / "home"), lambda: acted.append(None))
+    await given["list_sessions"].body()
+    await given["focus_session"].body(session=HANDS)
+    await given["stay_silent"].body()
+    assert len(acted) == 2
 
 
 async def say(given: dict[str, Tool], text: str, **session: str) -> dict[str, object]:

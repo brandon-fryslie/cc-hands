@@ -447,7 +447,7 @@ async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the
     shim, _ = await asked(home, sessions)
     async def unfocused(_session: SessionId) -> tuple[Attention, bool, Overlay]:
         return Attention(), False, "normal"
-    relaying = asyncio.create_task(relay(sessions, queue_frame, lambda _: None, unfocused, lambda _progress, _amount: None))
+    relaying = asyncio.create_task(relay(sessions, queue_frame, lambda _: None, unfocused, lambda _progress, _amount: None, lambda: None))
     await sessions.apply(Tick(DEADLINE - 10.0))
     await sessions.apply(Tick(DEADLINE))
     await asyncio.wait_for(shim.finished(), WAIT_SECONDS)

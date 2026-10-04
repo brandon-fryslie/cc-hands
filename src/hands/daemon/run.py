@@ -59,7 +59,7 @@ from hands.sessions.tap import moves, serve_tap
 from hands.sessions.overlays import Overlays
 from hands.sessions.attention import attention
 from hands.voice.devices import follow_default_devices
-from hands.voice.cues import cues
+from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
 from hands.voice.hold import Move
 from hands.voice.keys import drive_quit, drive_talk_key
 from hands.voice.phonepage import serve_phone
@@ -87,7 +87,7 @@ from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
 from hands.voice.summarising import SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS, keep_summarising
 from hands.voice.sentences import SummaryStore
 from hands.voice.briefing import as_sent, brief
-from hands.voice.conversation import record_turns
+from hands.voice.conversation import cue_receipt, record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
 from hands.daemon.starting import CannotStart, Ended, invocation, keep_beating, start
@@ -348,7 +348,10 @@ async def run(
         # [LAW:one-source-of-truth] one owner of where the user is: the voice's edges move it, set_modality switches it,
         # and the brain's stage reads it.
         key = PushToTalk(record)
-        tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch)]
+        # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
+        # them, and the run plays them once its speaker is up and quiet.
+        quiet_cues = QuietCues()
+        tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, lambda: quiet_cues.owe(WORKING))]
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, record), heart, sessions.live_count, quit_event)
         if config is not None:
@@ -360,7 +363,7 @@ async def run(
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, key, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, heart, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts)
+                    await converse(voice, home, sessions, heart, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
@@ -394,6 +397,7 @@ async def converse(
     sentences: Summariser,
     names: Names,
     recounts: Recounts,
+    quiet_cues: QuietCues,
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did."""
     pipeline = PipelineWatch(voice.worker)
@@ -401,6 +405,7 @@ async def converse(
     channel = SystemChannel(voice.tts, post_notification, record)
     listen(voice, channel, after_crash)
     record_turns(voice.user_turns, voice.assistant_turns, record)
+    cue_receipt(voice.user_turns, lambda: quiet_cues.owe(RECEIVED))
     failures: list[BaseException] = []
 
     def beat() -> None:
@@ -409,7 +414,7 @@ async def converse(
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
         # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
-        # nothing is asked aloud, without the progress player the focus is not heard working, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
+        # nothing is asked aloud, without the progress player the focus is not heard working, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the cue player a turn received and hands acting are never heard, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
         # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
@@ -427,7 +432,7 @@ async def converse(
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
-        asyncio.create_task(relay(sessions, voice.worker.queue_frame, record, partial(attending, home, overlays, lambda: attention(home)), lambda progress, amount: playing.put_nowait((progress, amount))), name="the session speech relay"),
+        asyncio.create_task(relay(sessions, voice.worker.queue_frame, record, partial(attending, home, overlays, lambda: attention(home)), lambda progress, amount: playing.put_nowait((progress, amount)), lambda: quiet_cues.owe(WORKING)), name="the session speech relay"),
         asyncio.create_task(
             keep_playing(playing, sessions.live_session, voice.worker.queue_frame, record, minded.summariser(EXPLAIN_INSTRUCTION, EXPLAIN_MAX_TOKENS, EXPLAIN_TIMEOUT_SECONDS)),
             name="the progress player",
@@ -483,6 +488,14 @@ async def converse(
         finally:
             await voice.phone.stop()
 
+    async def cue_silence_once_started() -> None:
+        # As for the talk key: a cue is played on a stream the pipeline has opened, so what is owed before then waits.
+        await pipeline.started.wait()
+        await quiet_cues.keep_playing(voice.audio.output(), record)
+
+    cueing = asyncio.create_task(cue_silence_once_started(), name="the cues for silence")
+    cueing.add_done_callback(stop_if_failed)
+    background.append(cueing)
     talk_key = asyncio.create_task(drive_talk_key_once_started(), name="the talk key")
     talk_key.add_done_callback(stop_if_failed)
     background.append(talk_key)

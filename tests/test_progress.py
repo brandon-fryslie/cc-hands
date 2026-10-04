@@ -29,6 +29,7 @@ from hands.sessions.registry import Listing
 
 SID = SessionId("bf411065-dc5c-4ec9-8302-61b84bdb5c53")
 OTHER = SessionId("other")
+MUTED = SessionId("muted")
 TURN = PromptId("p1")
 IN_TURN = frozenset({TURN})
 IN_NEXT = frozenset({PromptId("p2")})
@@ -272,10 +273,11 @@ async def test_the_calls_a_turn_made_before_hands_followed_it_are_history(tmp_pa
     assert [event for event in await Tails(Known(transcript)).catch_up() if isinstance(event, Progressed)] == []
 
 
-async def test_the_relay_hands_the_focus_on_to_be_played_leaves_any_other_to_the_listing_and_says_why() -> None:
+async def test_the_relay_hands_the_focus_on_to_be_played_and_cued_leaves_any_other_to_the_listing_and_says_why() -> None:
     queued: list[Frame] = []
     played: list[Progress] = []
     recorded: list[Entry] = []
+    working: list[None] = []
 
     class Heard:
         def __init__(self) -> None:
@@ -288,20 +290,23 @@ async def test_the_relay_hands_the_focus_on_to_be_played_leaves_any_other_to_the
         queued.append(frame)
 
     async def attending(session: SessionId) -> tuple[Attention, bool, Overlay]:
-        return Attention(progress="brief"), session == SID, "normal"
+        return Attention(progress="brief"), session in (SID, MUTED), "muted" if session == MUTED else "normal"
 
     sessions = Heard()
-    for session in (SID, OTHER):
+    for session in (SID, OTHER, MUTED):
         sessions.waiting.put_nowait(Progress(session, frozenset({TURN}), (TESTS,), ""))
-    relaying = asyncio.create_task(relay(sessions, queue_frame, recorded.append, attending, lambda progress, amount: played.append((progress, amount))))  # pyright: ignore[reportArgumentType]  (only heard() is asked)
-    while len([entry for entry in recorded if isinstance(entry, Routed)]) < 2:
+    relaying = asyncio.create_task(relay(sessions, queue_frame, recorded.append, attending, lambda progress, amount: played.append((progress, amount)), lambda: working.append(None)))  # pyright: ignore[reportArgumentType]  (only heard() is asked)
+    while len([entry for entry in recorded if isinstance(entry, Routed)]) < 3:
         await asyncio.sleep(0.01)
     relaying.cancel()
     assert queued == []
     assert played == [(Progress(SID, frozenset({TURN}), (TESTS,), ""), "brief")]
+    # Only progress that is heard sounds: another session's burst made none, nor a muted focus's.
+    assert working == [None]
     assert [entry for entry in recorded if not isinstance(entry, Relayed)] == [
         Routed(SID, Attention(progress="brief"), True, "normal", "brief"),
         Routed(OTHER, Attention(progress="brief"), False, "normal", "note"),
+        Routed(MUTED, Attention(progress="brief"), True, "muted", "note"),
     ]
 
 

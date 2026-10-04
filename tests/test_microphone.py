@@ -13,7 +13,7 @@ from pipecat.clocks.system_clock import SystemClock
 from pipecat.processors.frame_processor import FrameProcessorSetup
 from pipecat.utils.asyncio.task_manager import TaskManager
 
-from pipecat.frames.frames import EndWorkerFrame, Frame, InputAudioRawFrame, OutputAudioRawFrame
+from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, InputAudioRawFrame, OutputAudioRawFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
@@ -419,9 +419,9 @@ async def test_a_cue_never_holds_the_talk_key_on_the_speaker() -> None:
     devices = Rig()
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     devices.stream.blocking = True  # a write stuck on a device that is going
-    devices.speaker.cue(OPENED)
+    assert devices.speaker.cue(OPENED) == "desk"
     devices.speaker.detach()  # a reopen under way
-    devices.speaker.cue(OPENED)
+    assert devices.speaker.cue(OPENED) == "unattached"  # said, so a cue for silence is never recorded as heard
     devices.stream.blocking = False
     await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
     assert devices.stream.written == [sound(OPENED, 16000, 1)]
@@ -453,3 +453,28 @@ async def test_the_canceller_hears_a_chunk_queued_behind_a_cue_after_the_cue() -
     devices.stream.blocking = False
     await writing
     assert [audio for audio, _, _ in devices.room.plays] == [sound(OPENED, 16000, 1), LOUD]  # in the order the room hears them
+
+
+async def test_the_speaker_is_quiet_while_neither_hands_nor_the_user_is_speaking(monkeypatch: pytest.MonkeyPatch) -> None:
+    devices = Rig()
+    pushed: list[Frame] = []
+
+    async def passed(_self: object, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+        pushed.append(frame)
+
+    # Pipecat's sender pushes each edge of hands' speech through the transport, downstream and up.
+    monkeypatch.setattr(LocalAudioOutputTransport, "push_frame", passed)
+    assert devices.speaker.quiet.is_set()
+    await devices.speaker.push_frame(BotStartedSpeakingFrame())
+    assert not devices.speaker.quiet.is_set()
+    await devices.speaker.push_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    await devices.speaker.push_frame(BotStoppedSpeakingFrame())
+    assert devices.speaker.quiet.is_set()
+    # The user's turn is speech too: quiet waits for both sides, whichever stops last.
+    await devices.speaker.push_frame(UserStartedSpeakingFrame())
+    await devices.speaker.push_frame(BotStartedSpeakingFrame())
+    await devices.speaker.push_frame(BotStoppedSpeakingFrame())
+    assert not devices.speaker.quiet.is_set()
+    await devices.speaker.push_frame(UserStoppedSpeakingFrame())
+    assert devices.speaker.quiet.is_set()
+    assert len(pushed) == 7  # each passed on

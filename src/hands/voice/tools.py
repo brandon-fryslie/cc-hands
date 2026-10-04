@@ -255,8 +255,22 @@ def audited(tool: Tool, record: Record) -> Tool:
     return replace(tool, body=call)
 
 
-def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None]) -> list[Tool]:
-    """Every tool the intermediary is given, in the order its schema lists them.
+def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
+    """The tool, saying by `acting` that hands is acting each time the model calls it, before its body runs."""
+
+    @functools.wraps(tool.body)
+    async def call(**arguments: object) -> Result:
+        acting()
+        return await tool.body(**arguments)
+
+    return replace(tool, body=call)
+
+
+def intermediary_tools(
+    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], acting: Callable[[], None]
+) -> list[Tool]:
+    """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
+    but staying silent, whose call is the choice not to act.
 
     [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
     tool added here is one the eval's model is offered too.
@@ -272,7 +286,7 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
         *keyboard_tools(sessions),
         set_overlay_tool(sessions, overlays),
     ]
-    return [
+    acts = [
         list_sessions_tool(sessions, overlays, home),
         focus_session_tool(sessions, home),
         *(defaulting_to_focus(tool, home) for tool in on_a_session),
@@ -282,8 +296,8 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
         modality_tool(switch),
         *voice_tools(Voices(home, player.lines, fetched)),
         *playback_tools(player),
-        stay_silent_tool(),
     ]
+    return [*(cued(tool, acting) for tool in acts), stay_silent_tool()]
 
 
 def playback_tools(player: Player) -> list[Tool]:

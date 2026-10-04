@@ -25,7 +25,7 @@ from hands.sessions.typing import Untyped
 from hands.sessions.audit import AuditLog, Entry, Record, Typing, TypingFailed, tail
 from hands.sessions.registry import Sessions
 from hands.voice.conversation import record_turns
-from hands.voice.tools import Replies, Tool, audited, draft_tools, keyboard_tools, pipecat_function
+from hands.voice.tools import audited, cued, draft_tools, keyboard_tools, pipecat_function, Replies, Result, Tool, tool
 
 
 def unrecorded(_: object) -> None:
@@ -387,3 +387,21 @@ async def test_a_command_is_in_the_audit_log_before_the_readback(tmp_path: Path)
     written = [json.loads(line) for line in tail(path, 1000)[0]]
     assert [line["type"] for line in written][-2:] == ["Typing", "Called"]
     assert written[-2]["effect"]["input"] == {"type": "Command", "name": "compact", "args": None}
+
+
+async def test_a_cued_tool_says_hands_is_acting_as_it_is_called_and_answers_as_before() -> None:
+    happened: list[str] = []
+
+    async def look(where: str) -> Result:
+        """Look somewhere.
+
+        Args:
+            where: where to look.
+        """
+        happened.append(f"looked {where}")
+        return {"saw": where}
+
+    looking = cued(tool(look), lambda: happened.append("acting"))
+    assert await looking.body(where="up") == {"saw": "up"}
+    assert happened == ["acting", "looked up"]
+    assert looking.name == "look"
