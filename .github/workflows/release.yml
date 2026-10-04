@@ -1,0 +1,33 @@
+# A tag vX.Y.Z is a release: one macOS arm64 wheel of hands, carrying fritter, attached to the GitHub release vX.Y.Z.
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  wheel:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # hatch-vcs reads the version from the tag, so the history and its tags come too.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: fritter/go.mod
+          cache-dependency-path: fritter/go.sum
+      - uses: astral-sh/setup-uv@v6
+      - name: Build the wheel
+        run: uv build --wheel
+      - name: Install it as a stranger would, and run it
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          scripts/verify-wheel.sh "dist/hands-${version}-py3-none-macosx_12_0_arm64.whl" "$version"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.whl --title "$GITHUB_REF_NAME" --generate-notes --verify-tag

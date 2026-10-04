@@ -481,7 +481,6 @@ wheels = [
 
 [[package]]
 name = "hands"
-version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp", marker = "sys_platform == 'darwin'" },
@@ -517,7 +516,7 @@ requires-dist = [
     { name = "livekit", specifier = ">=1.1.20,<2" },
     { name = "loguru", specifier = ">=0.7" },
     { name = "openwakeword", specifier = ">=0.6,<0.7" },
-    { name = "pipecat-ai", extras = ["anthropic", "local", "mlx-whisper", "whisper", "pocket-tts"], specifier = ">=1.9.0,<2" },
+    { name = "pipecat-ai", extras = ["anthropic", "local", "mlx-whisper", "pocket-tts", "whisper"], specifier = ">=1.9.0,<2" },
     { name = "pyobjc-framework-cocoa", specifier = ">=11" },
     { name = "pyobjc-framework-coreaudio", specifier = ">=11" },
     { name = "pyobjc-framework-quartz", specifier = ">=12.2.2" },

@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Coroutine, Sequence
 from datetime import UTC, datetime
 from functools import partial
+from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 
@@ -86,6 +87,7 @@ def show_phone(home: Home) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hands")
+    parser.add_argument("--version", action="version", version=f"hands {version('hands')}", help="print the version of hands installed, which is its release's tag, and exit")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
     commands = parser.add_subparsers(dest="command", required=True)
     running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
