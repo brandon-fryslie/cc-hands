@@ -106,12 +106,18 @@ def tool(body: Body, *, then: Literal["reply", "silence"] = "reply", completes: 
 
 
 def _closed(body: Body, hints: Mapping[str, object]) -> Body:
-    """The body, refusing a call that names a value outside an argument's closed set, so the body's Literal holds."""
-    # [LAW:single-enforcer] every adapter calls the tool's body, so the set its schema advertises is held here, once.
+    """The body, refusing a call whose arguments do not fit its signature or name a value outside an argument's closed
+    set, so the model is told, as a result, and can call again."""
+    # [LAW:single-enforcer] every adapter calls the tool's body, so the schema it advertises is held here, once.
+    signature = inspect.signature(body)
     closed = {name: get_args(hint) for name, hint in hints.items() if get_origin(hint) is Literal}
 
     @functools.wraps(body)
     async def call(**arguments: object) -> Result:
+        try:
+            signature.bind(**arguments)
+        except TypeError as error:
+            return {"error": f"{body.__name__} was called with the wrong arguments: {error}"}
         refused = [f"{arguments[name]!r} is no {name}; it is one of {', '.join(allowed)}" for name, allowed in closed.items() if name in arguments and arguments[name] not in allowed]
         return {"error": "; ".join(refused)} if refused else await body(**arguments)
 
@@ -249,21 +255,14 @@ _COMMAND_NAME = re.compile(r"/?([A-Za-z0-9][A-Za-z0-9_:-]*)")
 
 def audited(tool: Tool, record: Record) -> Tool:
     """The tool, each call one wide event: the tool's name, what it was given, and what the model was handed back, ending
-    failed where the body raised or the result refuses the call, as one whose arguments do not fit the body is refused."""
-    signature = inspect.signature(tool.body)
+    failed where the body raised or the result refuses the call."""
 
     # [LAW:single-enforcer] one unit on every body, whichever adapter calls it, so no call goes unseen [LAW:nothing-unseen].
     @functools.wraps(tool.body)
     async def call(**arguments: object) -> Result:
         with unit("tool.run", record):
             annotate(tool=tool.name, called=Called(arguments, None))
-            try:
-                signature.bind(**arguments)
-            except TypeError as error:
-                # The model is told, as a result, and can call again.
-                result: Result = {"error": f"{tool.name} was called with the wrong arguments: {error}"}
-            else:
-                result = await tool.body(**arguments)
+            result = await tool.body(**arguments)
             annotate(called=Called(arguments, result))
             match result:
                 case {"error": refused}:
@@ -386,14 +385,6 @@ def defaulting_to_focus(tool: Tool, home: Home) -> Tool:
                 # [LAW:nothing-unseen] the session the focus stood in for rides on the result, so its event says where the call went.
                 return {**await tool.body(session=focus, **arguments), "focused_session": focus}
 
-    # The body's own signature with session optional, so a call whose other arguments do not fit is refused as the body would refuse it.
-    signature = inspect.signature(tool.body)
-    call.__signature__ = signature.replace(  # type: ignore[attr-defined]
-        parameters=[
-            parameter.replace(kind=inspect.Parameter.KEYWORD_ONLY, default="" if parameter.name == "session" else parameter.default)
-            for parameter in signature.parameters.values()
-        ]
-    )
     return replace(
         tool,
         properties={**tool.properties, "session": {**line, "description": f"{line['description']} Empty for the focused session."}},

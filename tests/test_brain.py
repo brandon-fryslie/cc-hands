@@ -108,21 +108,34 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
     try:
         _, wrong = await rpc(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"words": "hi"}}})
         refusal = "echo was called with the wrong arguments: missing a required argument: 'text'"
-        assert wrong == {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": json.dumps({"error": refusal})}], "isError": True}}
+        # A refusal is a result, as Claude Code hands it to the model unwrapped; its event is what ends failed.
+        assert wrong == {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": json.dumps({"error": refusal})}], "isError": False}}
         _, failed = await rpc(server, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "broken"}})
         assert failed == {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": "broken failed: RuntimeError: the transcript went away"}], "isError": True}}
         _, unknown = await rpc(server, {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "resume"}})
-        assert unknown == {"jsonrpc": "2.0", "id": 3, "error": {"code": -32602, "message": "no tool resume"}}
-        _, unasked = await rpc(server, {"jsonrpc": "2.0", "id": 4, "method": "resources/list"})
-        assert unasked == {"jsonrpc": "2.0", "id": 4, "error": {"code": -32601, "message": "no method resources/list"}}
+        assert unknown == {"jsonrpc": "2.0", "id": 3, "error": {"code": -32602, "message": "no tool resume taking arguments None"}}
+        _, unshaped = await rpc(server, {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "echo", "arguments": '{"text": "hi"}'}})
+        assert unshaped == {"jsonrpc": "2.0", "id": 4, "error": {"code": -32602, "message": """no tool echo taking arguments '{"text": "hi"}'"""}}
+        _, unasked = await rpc(server, {"jsonrpc": "2.0", "id": 5, "method": "resources/list"})
+        assert unasked == {"jsonrpc": "2.0", "id": 5, "error": {"code": -32601, "message": "no method resources/list"}}
+        # Claude Code asks it of every server it opens: the known no is no failure.
+        _, discovered = await rpc(server, {"jsonrpc": "2.0", "id": 6, "method": "server/discover"})
+        assert discovered == {"jsonrpc": "2.0", "id": 6, "error": {"code": -32601, "message": "no method server/discover"}}
+        async with aiohttp.ClientSession() as client, client.post(server.url, data=b"{not json", headers={"Authorization": f"Bearer {server.token}"}) as garbled:
+            assert (await garbled.json())["error"]["code"] == -32700
         async with aiohttp.ClientSession() as client, client.get(server.url, headers={"Authorization": f"Bearer {server.token}"}) as stream:
             assert stream.status == 405
         assert [(event, outcome, facts.get("tool", facts.get("method"))) for event, outcome, facts in ran(recorded)] == [
             ("tool.run", "failed", "echo"),
             ("tool.run", "failed", "broken"),
             ("mcp.request", "failed", "tools/call"),
+            ("mcp.request", "failed", "tools/call"),
             ("mcp.request", "failed", "resources/list"),
+            ("mcp.request", "ok", "server/discover"),
+            ("mcp.request", "failed", None),
         ]
+        [garbled_event] = [entry for entry in recorded if isinstance(entry, WideEvent)][-1:]
+        assert garbled_event.error is not None and garbled_event.error.startswith("not JSON: ")
     finally:
         await server.close()
 

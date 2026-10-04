@@ -181,7 +181,6 @@ async def test_a_call_with_arguments_the_tool_does_not_take_is_refused_as_the_to
         call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "stage_draft", "arguments": {"prompt": "run the tests"}}}
         async with aiohttp.ClientSession() as client, client.post(server.url, json=call, headers={"Authorization": f"Bearer {server.token}"}) as reply:
             refused = await reply.json()
-        assert refused["result"]["isError"] is True
         assert json.loads(refused["result"]["content"][0]["text"])["error"].startswith("stage_draft was called with the wrong arguments: ")
     finally:
         await server.close()

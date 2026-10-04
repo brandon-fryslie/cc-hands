@@ -155,7 +155,11 @@ def child(event: str, span: Span, started_at: datetime, duration_ms: float, outc
     """Emit a part of the unit of work open here that was timed where it happened rather than run inside it, such as a
     request another process made on its behalf: its own event, as `span`, which `within` made inside the unit's, minted
     as the part began so that work done for it elsewhere can be its child."""
-    _current().emit(WideEvent(event, span.trace_id, span.span_id, span.parent_id, started_at, duration_ms, outcome, error, (), {}, facts))
+    opened = _current()
+    if (span.trace_id, span.parent_id) != (opened.trace_id, opened.span_id):
+        # [LAW:no-silent-failure] a span minted under another unit would be written into a trace it is no part of.
+        raise LookupError(f"{event} is no part of the unit of work open here")
+    opened.emit(WideEvent(event, span.trace_id, span.span_id, span.parent_id, started_at, duration_ms, outcome, error, (), {}, facts))
 
 
 def here() -> Span:

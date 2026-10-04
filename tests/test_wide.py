@@ -134,6 +134,15 @@ def test_a_part_timed_elsewhere_is_its_own_event_under_the_unit_in_its_trace() -
     assert (part.trace_id, part.span_id, part.parent_id) == (turn.trace_id, span.span_id, turn.span_id) and part.span_id != turn.span_id
 
 
+def test_a_part_minted_under_another_unit_is_refused_rather_than_written_into_a_trace_it_is_no_part_of() -> None:
+    emitted: list[WideEvent] = []
+    with unit("turn", emitted.append):
+        earlier = within(here())
+    with unit("turn", emitted.append), pytest.raises(LookupError, match="tool.call is no part of the unit of work open here"):
+        child("tool.call", earlier, datetime.now(UTC), 1.0, "ok")
+    assert [event.event for event in emitted] == ["turn", "turn"]
+
+
 def test_a_unit_opened_for_a_span_begun_elsewhere_continues_its_trace_and_one_for_none_is_a_root() -> None:
     emitted: list[WideEvent] = []
     with unit("turn", emitted.append):

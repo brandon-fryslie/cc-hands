@@ -94,18 +94,13 @@ async def serve_mcp(tools: Sequence[Tool], record: Record, spans: CallSpans) -> 
                 fail(f"not JSON: {error}")
             return web.json_response(_error(None, PARSE_ERROR, f"not JSON: {error}"))
         match message:
-            case {"method": "tools/call", "id": str() | int() as id, "params": {"name": str(name)}} if name in by_name:
-                return web.json_response(await call(id, by_name[name], _params(message)))
+            case {"method": "tools/call", "id": str() | int() as id, "params": {"name": str(name)} as params} if name in by_name and (arguments := _arguments(params)) is not None:
+                return web.json_response(await call(id, by_name[name], arguments, _text(_object(params.get("_meta")).get(TOOL_USE_ID))))
             case {"method": str(method), "id": str() | int() as id}:
                 # [LAW:nothing-unseen] every request but a tool's run, which is the tool's own event, is one event.
                 with unit("mcp.request", record):
                     annotate(method=method)
                     answered = answer(id, method, _params(message))
-                    match answered:
-                        case {"error": {"message": str(why)}}:
-                            fail(why)
-                        case _:
-                            pass
                 return web.json_response(answered)
             case _:
                 # A notification, or the client's answer to a request this server never makes: nothing to say back.
@@ -124,21 +119,32 @@ async def serve_mcp(tools: Sequence[Tool], record: Record, spans: CallSpans) -> 
             case "tools/list":
                 return _result(id, {"tools": [{"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema} for tool in tools]})
             case "tools/call":
-                # A call naming no tool of this server's, or none at all.
-                return _error(id, INVALID_PARAMS, f"no tool {params.get('name')}")
+                # A call naming no tool of this server's, or none at all, or with arguments that are no object.
+                why = f"no tool {params.get('name')} taking arguments {params.get('arguments')!r}"
+                fail(why)
+                return _error(id, INVALID_PARAMS, why)
+            case "server/discover":
+                # Claude Code 2.1.284 asks for it first and, refused, opens with initialize: a known question with a known no.
+                return _error(id, METHOD_NOT_FOUND, f"no method {method}")
             case _:
-                # Claude Code 2.1.284 asks for server/discover first and, refused, opens with initialize: a known no.
+                fail(f"no method {method}")
                 return _error(id, METHOD_NOT_FOUND, f"no method {method}")
 
-    async def call(id: str | int, tool: Tool, params: Mapping[str, object]) -> Mapping[str, object]:
+    async def call(id: str | int, tool: Tool, arguments: Mapping[str, object], used: str | None) -> Mapping[str, object]:
+        if used is None:
+            # [LAW:no-silent-failure] Claude Code 2.1.288 names the tool_use block each call runs: a call naming none is
+            # run as a trace of its own, cut off from the turn that made it.
+            logger.warning(f"the brain called {tool.name} naming no tool_use in {TOOL_USE_ID}; its run is not joined to its turn")
         try:
             # The run is a part of the turn's call to the tool, where a turn is running it.
-            with continuing(spans.span(_text(_object(params.get("_meta")).get(TOOL_USE_ID)))):
-                result = await tool.body(**_object(params.get("arguments")))
+            with continuing(spans.span(used)):
+                result = await tool.body(**arguments)
         except Exception as error:
             # The tool's event holds what it raised; the model hears that the tool failed.
             return _result(id, {"content": [{"type": "text", "text": f"{tool.name} failed: {type(error).__name__}: {error}"}], "isError": True})
-        return _result(id, {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": "error" in result})
+        # A refusal is a result like any other: Claude Code turns an isError result into an error of its own wording, out
+        # of which the brain's stage could not read the refusal back.
+        return _result(id, {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False})
 
     async def refused(_request: web.Request) -> web.Response:
         return web.Response(status=405, headers={"Allow": "POST"})
@@ -166,6 +172,15 @@ def _object(value: object) -> Mapping[str, object]:
             return cast(dict[str, object], value)
         case _:
             return {}
+
+
+def _arguments(params: Mapping[str, object]) -> Mapping[str, object] | None:
+    """A call's arguments, none given being none at all; None for arguments that are no object."""
+    match arguments := params.get("arguments", {}):
+        case dict():
+            return cast(dict[str, object], arguments)
+        case _:
+            return None
 
 
 def _text(value: object) -> str | None:
