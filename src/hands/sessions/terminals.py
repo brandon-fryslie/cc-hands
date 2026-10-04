@@ -117,8 +117,10 @@ def _terminal(process: Process, tty: int) -> Terminal | None:
         executable, arguments, environment = _started_as(process.pid)
     except _Exited:
         return None
-    # A path exec'd relative to the directory the process was started in; a session keeps that directory.
-    return Terminal(process.pid, process.parent, (cwd / executable).resolve(), cwd, environment, arguments, tty)
+    # A path exec'd relative to the directory the process was started in, which a session leaves for a worktree and
+    # the kernel keeps no record of. [LAW:one-source-of-truth] The PWD its shell started it with names that directory,
+    # in the one record the path itself is read from; a program started with no PWD is taken to be where it started.
+    return Terminal(process.pid, process.parent, (Path(environment.get("PWD", cwd)) / executable).resolve(), cwd, environment, arguments, tty)
 
 
 def _device(pid: int, fd: int) -> int | None:
@@ -177,7 +179,7 @@ def _pidinfo(pid: int, flavor: int, size: int) -> ctypes.Array[ctypes.c_char]:
     return record
 
 
-def _raise_unless_exited(pid: int, call: str) -> None:
+def _raise_unless_exited(pid: int, call: str) -> NoReturn:
     """Raised after `call` failed for pid: _Exited when the process is gone, or a zombie, and OSError when it runs."""
     failure = ctypes.get_errno()
     # [LAW:single-enforcer] the one test for an exit, whichever call failed: libproc has nothing on a process that
