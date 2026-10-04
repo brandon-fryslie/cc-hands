@@ -486,7 +486,28 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
     home.root.mkdir(parents=True)
     home.config.write_text("[llm\n")
     reached, heard = readiness.configured(home, {})
-    assert isinstance(reached, Missing) and str(home.config) in reached.said and heard == reached
+    assert isinstance(reached, Missing) and str(home.config) in reached.said
+    # Where the server is was never read: the step is not known missing, and is not said twice.
+    assert heard == Unknown("which server transcribes is in the settings hands cannot read")
+
+
+def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path) -> None:
+    home = Home(root / "home")
+    keyed(home)
+    found, _ = readiness.configured(home, {"OPENAI_API_KEY": "k", "HANDS_DEBUG": "1"})
+    assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
+
+
+def test_a_backend_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(root / "home")
+    keyed(home)
+
+    def unspawnable(*_: object) -> object:
+        raise PermissionError("claude is not executable")
+
+    monkeypatch.setattr(readiness, "resolve", unspawnable)
+    found, _ = readiness.configured(home, {})
+    assert isinstance(found, Unknown) and "claude is not executable" in found.said
 
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:
@@ -525,7 +546,7 @@ class Answering(http.server.ThreadingHTTPServer):
 
 
 @contextlib.contextmanager
-def serving(status: int = 200, text: str = '{"text": ""}') -> Generator[Answering]:
+def serving(status: int = 200, text: str = '{"text": "", "segments": []}') -> Generator[Answering]:
     server = Answering(status, text)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -550,13 +571,28 @@ def test_nothing_listening_is_missing_and_names_lowtalker() -> None:
 def test_a_server_still_loading_its_model_is_missing_and_says_so() -> None:
     with serving(503, "model not ready") as server:
         found = readiness.transcription(server.url)
-    assert isinstance(found, Missing) and "not ready (503: model not ready)" in found.said
+    assert isinstance(found, Missing) and "not ready (503: " in found.said and "model not ready" in found.said
 
 
 def test_a_server_that_refuses_a_hold_is_missing_and_says_its_answer() -> None:
     with serving(429, "busy") as server:
         found = readiness.transcription(server.url)
     assert isinstance(found, Missing) and "answered 429" in found.said and "busy" in found.said
+
+
+def test_a_server_answering_with_no_segments_is_missing_as_every_hold_would_fail() -> None:
+    with serving(200, '{"text": ""}') as server:
+        found = readiness.transcription(server.url)
+    assert isinstance(found, Missing) and "not verbose_json" in found.said
+
+
+def test_a_server_that_does_not_answer_in_time_is_unknown_not_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Accepts the connection and never answers.
+    listening = socket.create_server(("127.0.0.1", 0))
+    monkeypatch.setattr(readiness, "TRANSCRIBE_TIMEOUT_SECONDS", 0.2)
+    with listening:
+        found = readiness.transcription(f"http://127.0.0.1:{listening.getsockname()[1]}/v1")
+    assert isinstance(found, Unknown) and "TimeoutError" in found.said
 
 
 # hands running

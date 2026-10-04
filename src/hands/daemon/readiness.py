@@ -9,20 +9,21 @@ Monitoring grant that lets hands hear the talk key; hands running; and the runni
 and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
 """
 
+import asyncio
 import filecmp
 import io
 import os
 import re
 import shutil
 import subprocess
-import urllib.error
-import urllib.request
 import wave
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import version
 from pathlib import Path
+
+import aiohttp
 
 from hands.core.events import Attached
 from hands.core.session import Membership
@@ -35,6 +36,7 @@ from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import process_starts
 from hands.sessions.terminals import Terminal, terminal_processes
 from hands.voice import backends
+from hands.voice import transcription as transcribing
 
 
 @dataclass(frozen=True)
@@ -117,13 +119,20 @@ def configured(home: Home, environment: Mapping[str, str]) -> tuple[Finding, Fin
     try:
         config = load(home).config
     except Rejected as error:
-        unread = Missing(f"hands cannot read its settings: {error}")
-        return unread, unread
+        return Missing(f"hands cannot read its settings: {error}"), Unknown("which server transcribes is in the settings hands cannot read")
     try:
-        reached = reaching(resolve(config.llm, home, environment))
+        reached: Finding = reaching(resolve(config.llm, home, environment))
     except Rejected as error:
-        reached = Missing(f"hands has no model to talk with: {error}")
+        reached = unreached(str(error))
+    except OSError as error:
+        # The keychain or the brain's claude could not be asked, which says nothing of whether they hold a key or a login.
+        reached = Unknown(f"cannot tell whether the [llm] backend can reach its model: {error}")
     return reached, transcription(config.transcription)
+
+
+def unreached(why: str) -> Missing:
+    """A backend that cannot reach its model, and why."""
+    return Missing(f"hands has no model to talk with: {why}")
 
 
 def reaching(reached: backends.LLMBackend) -> Ready:
@@ -136,40 +145,31 @@ def reaching(reached: backends.LLMBackend) -> Ready:
 
 
 def transcription(url: str) -> Finding:
-    """Whether the transcription server at `url` transcribes: a quarter second of silence uploaded as a hold is, which
-    LowTalker answers with no words."""
+    """Whether the transcription server at `url` transcribes: a quarter second of silence, uploaded as the voice uploads
+    a hold, comes back as segments, which LowTalker gives none of."""
     silence = io.BytesIO()
     with wave.open(silence, "wb") as written:
         written.setnchannels(1)
         written.setsampwidth(2)
         written.setframerate(16_000)
         written.writeframes(bytes(8_000))
-    boundary = "hands-check"
-    body = b"".join(
-        [
-            f'--{boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n'.encode(),
-            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="silence.wav"\r\nContent-Type: audio/wav\r\n\r\n'.encode(),
-            silence.getvalue(),
-            f"\r\n--{boundary}--\r\n".encode(),
-        ]
-    )
-    upload = urllib.request.Request(f"{url}/audio/transcriptions", body, {"Content-Type": f"multipart/form-data; boundary={boundary}"})
     # [LAW:no-silent-failure] what the server said back is said, so a refusal names its own cause.
     try:
-        with urllib.request.urlopen(upload, timeout=TRANSCRIBE_TIMEOUT_SECONDS) as answered:
-            answered.read()
-    except urllib.error.HTTPError as error:
-        said = error.read().decode(errors="replace").strip()
-        if error.code == 503:
-            return Missing(f"the transcription server at {url} is not ready (503: {said}): LowTalker answers once its menu says the model is ready")
-        return Missing(f"the transcription server at {url} answered {error.code} to a hold: {said}")
-    except urllib.error.URLError as error:
+        asyncio.run(transcribing.segments(url, silence.getvalue(), "silence.wav", None, TRANSCRIBE_TIMEOUT_SECONDS))
+    except transcribing.Refused as refused:
+        if refused.status == 503:
+            return Missing(f"the transcription server at {url} is not ready (503: {refused.refusal}): LowTalker answers once its menu says the model is ready")
+        return Missing(f"the transcription server at {url} does not transcribe a hold: {refused}")
+    except transcribing.TranscriptionFailed as failed:
+        return Missing(f"the server at {url} answered a hold with no transcription the voice can read: {failed}")
+    except aiohttp.ClientConnectorError as error:
         return Missing(
-            f"nothing transcribes at {url} ({error.reason}), so hands cannot hear what is said: install LowTalker's network build "
+            f"nothing transcribes at {url} ({error.os_error}), so hands cannot hear what is said: install LowTalker's network build "
             f"(https://github.com/brandon-fryslie/low-talker) and switch Serve Transcription on in its menu"
         )
-    except (OSError, TimeoutError) as error:
-        return Unknown(f"cannot tell whether {url} transcribes: {error}")
+    except (TimeoutError, aiohttp.ClientError, OSError) as error:
+        # A connect or an answer that timed out is a server that may be there, slow: not one known to be missing.
+        return Unknown(f"cannot tell whether {url} transcribes: {type(error).__name__}: {error}")
     return Ready(f"the transcription server at {url} transcribes a hold")
 
 

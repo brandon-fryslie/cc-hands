@@ -123,15 +123,19 @@ class Configured:
 def configured_from(home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
     """The process boundary: the settings the run started on and the environment's secrets in, typed configuration out;
     CannotStart where hands cannot run on them."""
-    # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
-    # config.toml, and HANDS_HOME, where that is, is the one variable of hands' own it reads.
-    if stray := sorted(name for name in environment if name.startswith("HANDS_") and name != "HANDS_HOME"):
-        raise CannotStart(f"{', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
     try:
         llm = backend(settings.config.llm, home, environment)
     except Rejected as error:
         raise CannotStart(str(error)) from error
     return Configured(VoiceConfig(llm=llm, transcription=settings.config.transcription, voice=_voice(home)), settings)
+
+
+def _attempted(configure: Callable[[], Configured]) -> Configured | CannotStart:
+    """The configuration, or why hands cannot start on the settings, as a value the readiness check can say."""
+    try:
+        return configure()
+    except CannotStart as error:
+        return error
 
 
 def _voice(home: Home) -> voices.Voice:
@@ -216,7 +220,7 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[VoiceConfig], None], home: Home, heart: heartbeat.Heart, record: Record, quit_event: asyncio.Event, after_crash: bool,
+    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, heart: heartbeat.Heart, record: Record, quit_event: asyncio.Event, after_crash: bool,
     environment: Mapping[str, str],
     run_start: Start,
 ) -> Ended:
@@ -287,14 +291,19 @@ async def run(
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[], Configured], survey: Callable[[VoiceConfig], None], home: Home, sessions: Sessions, run_start: Start) -> VoiceConfig:
-    """The configuration, once what hands is missing has been said and the sessions already running are listed."""
-    read = await off_loop(configure, "the configuration read")
-    config = read.voice
-    # [LAW:single-enforcer] the backend is said as the configuration reached it, never its key or login read twice.
-    await off_loop(lambda: survey(config), "the readiness check")
-    # A restart is back where it was before the models load: every session with a file and a running process is listed.
+async def configured(configure: Callable[[], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, sessions: Sessions, run_start: Start) -> VoiceConfig:
+    """The configuration, once the sessions already running are listed and what hands is missing has been said;
+    CannotStart once it has been said, where hands cannot run on the settings."""
+    # A restart is back where it was before anything slow: every session with a file and a running process is listed.
     await sweep(home, sessions, frozenset())
+    read = await off_loop(lambda: _attempted(configure), "the configuration read")
+    # [LAW:single-enforcer] the backend is said as the configuration reached it, never its key or login read twice; and
+    # [LAW:dataflow-not-control-flow] every step is said whether or not hands can start, so a start refused on its
+    # settings still names each other step it is missing.
+    await off_loop(lambda: survey(read), "the readiness check")
+    if isinstance(read, CannotStart):
+        raise read
+    config = read.voice
     # [LAW:nothing-unseen] which settings won is read from the start's event, not re-derived from a shell: the file they came
     # from (None where the home has none and every setting is its default), the transcription server and collector they name, the
     # server and model the run reaches and the brain's account (None for a keyed variant), never its key, and the voice it

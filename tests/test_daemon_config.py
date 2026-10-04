@@ -266,8 +266,28 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
     def refused() -> run.Configured:
         raise CannotStart("no key")
 
+    surveyed: list[run.Configured | CannotStart] = []
     with pytest.raises(CannotStart, match="no key"):
-        asyncio.run(start(lambda: run.configured(refused, lambda _: None, home, sessions, Start(restarted=False, after_crash=False)), heart, sessions.live_count, asyncio.Event()))
+        asyncio.run(start(lambda: run.configured(refused, surveyed.append, home, sessions, Start(restarted=False, after_crash=False)), heart, sessions.live_count, asyncio.Event()))
+    # Every other step is still said: the readiness check is given the refusal, as the backend's step.
+    [refusal] = surveyed
+    assert isinstance(refusal, CannotStart) and str(refusal) == "no key"
+
+
+def test_a_restart_lists_its_running_sessions_before_the_configuration_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home, sessions, heart, config = _starting(tmp_path)
+    order: list[str] = []
+
+    async def swept(*_: object) -> None:
+        order.append("sweep")
+
+    def configure() -> run.Configured:
+        order.append("configure")
+        return run.Configured(config, run.Settings(b"", Config()))
+
+    monkeypatch.setattr(run, "sweep", swept)
+    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), home, sessions, Start(restarted=False, after_crash=False)), heart, sessions.live_count, asyncio.Event()))
+    assert order == ["sweep", "configure", "survey"]
 
 
 async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch: pytest.MonkeyPatch) -> None:

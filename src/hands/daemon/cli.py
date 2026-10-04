@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, TextIO, cast
 from loguru import logger
 
 from hands.daemon import readiness
+from hands.daemon.backend import backend
 from hands.daemon.config import Config, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
@@ -365,26 +366,27 @@ async def launch(
 def reachable(home: Home, settings: Config) -> None:
     """Raises Rejected where a start on `settings` could not reach its model: the start's own check, made before the
     restart an edit asks for, so an edit naming a key or a login hands lacks is refused and outlived, not restarted on."""
-    # Imported here, as in loaded, so that `hands status` answers without loading Pipecat; an edit weighed while the
-    # start imports it waits on that import.
-    from hands.daemon.backend import backend
-
     backend(settings.llm, home, os.environ)
 
 
 def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, after_crash: bool, run_start: Start) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
-    from hands.daemon.run import configured_from, run
+    from hands.daemon.run import Configured, configured_from, run
 
     path = os.environ.get("PATH", "")
     # This run is hands running, and the backend it reaches is the one it was configured on.
     running = readiness.Ready(f"hands is running here: pid {os.getpid()}")
-    return lambda quit_event: run(
-        lambda environment: configured_from(home, settings, environment),
-        lambda reached: survey(readiness.check(home, path, True, readiness.reaching(reached.llm), readiness.transcription(reached.transcription), running)),
-        home, heart, record, quit_event, after_crash, os.environ, run_start,
-    )
+
+    def surveyed(read: Configured | CannotStart) -> None:
+        match read:
+            case Configured(voice=voice):
+                reached: readiness.Finding = readiness.reaching(voice.llm)
+            case CannotStart() as error:
+                reached = readiness.unreached(str(error))
+        survey(readiness.check(home, path, True, reached, readiness.transcription(settings.config.transcription), running))
+
+    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, quit_event, after_crash, os.environ, run_start)
 
 
 def start_indicator(home: Home) -> int:

@@ -1,4 +1,5 @@
-"""Where a setting meets its secret: the backend config.toml names, with the key or the login it reaches its model on.
+"""Where a setting meets its secret: the backend config.toml names, with the key or the login it reaches its model on,
+in an environment that names no setting.
 
 Read by `hands run` before the voice loads, by an edit to the settings before it is restarted on, and by `hands check`,
 which loads the voice's pipeline for none of them.
@@ -24,6 +25,10 @@ def backend(llm: LLM, home: Home, environment: Mapping[str, str]) -> LLMBackend:
     """The backend the settings name, given the key or the login it reaches its model with; raises Rejected naming what it cannot have."""
     # [LAW:single-enforcer] where a setting meets its secret: the key from the environment, or the keychain, or the
     # brain's login, is checked here, once, before the voice loads, rather than once every turn has failed.
+    # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
+    # config.toml, and HANDS_HOME, where that is, is the one variable of hands' own it reads.
+    if stray := sorted(name for name in environment if name.startswith("HANDS_") and name != "HANDS_HOME"):
+        raise Rejected(f"{', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
     match llm:
         case OpenAI(url=url, model=model):
             return OpenAICompatibleBackend(base_url=url, api_key=_key(environment, "OPENAI_API_KEY"), model=model)
