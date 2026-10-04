@@ -362,6 +362,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         ),
         tools=[],
         llm=FrameProcessor(),
+        noting=(),
         key=PushToTalk(lambda _: None),
         player=(player := Player(lambda _: None)),
         floor=Floor(Pushed(), lambda id: id, dict),

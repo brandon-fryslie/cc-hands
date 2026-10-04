@@ -188,7 +188,7 @@ class Voice:
 
 
 def build_voice(
-    config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, key: PushToTalk, player: Player, floor: Floor, refocus: Refocus, prompt: Callable[[], Awaitable[str | None]], record: Record
+    config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, noting: Sequence[FrameProcessor], key: PushToTalk, player: Player, floor: Floor, refocus: Refocus, prompt: Callable[[], Awaitable[str | None]], record: Record
 ) -> Voice:
     """Wire mic, push-to-talk, Whisper as LowTalker serves it, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
@@ -226,13 +226,15 @@ def build_voice(
     )
     user_aggregator, assistant_aggregator = pair.user(), pair.assistant()
 
-    # Ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
+    # The floor ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
     # context or the model's stage takes it, and follows the user's words when given back.
+    # `noting` between the floor and the user aggregator, so a note of the user's words is in the context before the
+    # turn that writes them ends, and before anything the floor held.
     # Right behind the model's stage, so the focus moves to a session told of in order with the user's words to the model.
     # What the player says again enters just ahead of the speaker, and it reads what is played off the speaker's pushes.
     # Right behind the output transport, which passes a mark on only once what was said ahead of it has played.
     output = transport.output()
-    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, Refocusing(refocus), pieces, player.lines, tts, output, Marks(), assistant_aggregator])
+    pipeline = Pipeline([transport.input(), stt, floor, *noting, user_aggregator, llm, Refocusing(refocus), pieces, player.lines, tts, output, Marks(), assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=params,
