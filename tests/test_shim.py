@@ -18,7 +18,7 @@ import pytest
 from hands.core.effects import Summarise
 from hands.core.session import Membership, Opened, PromptId, Session, SessionId, Unreported
 from hands.sessions import heartbeat
-from hands.sessions.hookconfig import LAUNCHER, PLUGIN_DIR, SHIM_MODULE
+from hands.sessions.hookconfig import LAUNCHER, SHIM_MODULE
 from hands.sessions.shim import OVERVIEW
 from hands.sessions.home import Home
 from hands.sessions.liveness import sweep
@@ -31,6 +31,7 @@ from hands.sessions.names import NameGiven, NameUnread, NameWithheld, Names
 from hands.sessions.server import serve_hooks
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Fact, WideEvent
+from conftest import NO_PYTHON
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
 COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/code/a"}
@@ -39,7 +40,6 @@ PROMPT = {**COMMON, "hook_event_name": "UserPromptSubmit", "prompt": "hi", "prom
 STOP = {**COMMON, "hook_event_name": "Stop", "stop_hook_active": False, "last_assistant_message": "done", "prompt_id": "p1"}
 END = {**COMMON, "hook_event_name": "SessionEnd", "reason": "other"}
 ASK = {**COMMON, "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "ls"}}
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent / PLUGIN_DIR
 # What a start prints for Claude Code, whatever the daemon answers.
 STARTED = json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": OVERVIEW}})
 
@@ -165,32 +165,27 @@ async def test_a_hands_that_says_it_is_up_but_does_not_answer_is_reported(home: 
     assert "cannot reach the hands daemon" in stderr and "hands is up" in stderr
 
 
-def launch(home: Home, cwd: Path, path: str) -> subprocess.CompletedProcess[bytes]:
-    """The plugin's hook as Claude Code spawns it: its launcher, run directly in the session's directory, with no venv."""
-    environment = {"HANDS_HOME": str(home.root), "PATH": path, "HOME": str(cwd)}
-    return subprocess.run([PLUGIN_ROOT / LAUNCHER, "-m", SHIM_MODULE], input=json.dumps(START).encode(), env=environment, cwd=cwd, capture_output=True)
+def launch(plugin: Path, home: Home, cwd: Path, **environment: str) -> subprocess.CompletedProcess[bytes]:
+    """The plugin's hook as Claude Code spawns it: its launcher, run directly in the session's directory."""
+    environment = {"HANDS_HOME": str(home.root), "PATH": NO_PYTHON, "HOME": str(cwd), **environment}
+    return subprocess.run([plugin / LAUNCHER, "-m", SHIM_MODULE], input=json.dumps(START).encode(), env=environment, cwd=cwd, capture_output=True)
 
 
-def test_the_plugin_launcher_runs_the_shim_from_the_plugin_as_the_process_claude_code_spawned(home: Home, tmp_path: Path, python312: str) -> None:
-    ran = launch(home, tmp_path, python312)
+def test_the_plugin_launcher_runs_the_shim_on_hands_own_python_as_the_process_claude_code_spawned(plugin: Path, home: Home, tmp_path: Path) -> None:
+    ran = launch(plugin, home, tmp_path)
     assert (ran.returncode, ran.stdout, ran.stderr) == (0, STARTED.encode(), b"")
     # Spawned directly, as Claude Code spawns an exec-form hook, so the pid recorded must be this process's.
     assert read_membership(home, SID).pid == os.getpid()
 
 
-def test_a_project_s_own_modules_cannot_stand_in_for_the_shim_s(home: Home, tmp_path: Path, python312: str) -> None:
+def test_a_project_s_own_modules_cannot_stand_in_for_the_shim_s(plugin: Path, home: Home, tmp_path: Path) -> None:
     project = tmp_path / "project"
     (project / "hands").mkdir(parents=True)
     (project / "json.py").write_text("raise SystemExit('shadowed json')\n")
     (project / "hands" / "__init__.py").write_text("raise SystemExit('shadowed hands')\n")
-    ran = launch(home, project, python312)
+    # Neither from the session's directory nor from a PYTHONPATH the user's shell set.
+    ran = launch(plugin, home, project, PYTHONPATH=str(project))
     assert (ran.returncode, ran.stdout, ran.stderr) == (0, STARTED.encode(), b"")
-
-
-def test_with_no_python_new_enough_the_launcher_says_so(home: Home, tmp_path: Path) -> None:
-    ran = launch(home, tmp_path, "/usr/bin:/bin")
-    assert ran.returncode == 1
-    assert ran.stderr.startswith(b"hands: no Python 3.12 or newer on PATH")
 
 
 async def test_a_start_records_membership_and_joins_the_registry(home: Home, sessions: Sessions) -> None:

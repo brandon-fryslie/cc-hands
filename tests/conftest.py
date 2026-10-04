@@ -21,6 +21,8 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.sessions.audit import SettingsEdited
+from hands.sessions.home import Home
+from hands.sessions.marketplace import render
 from hands.sessions.wrapper import PACKAGED
 
 # How long a pipeline may take to start before a test fails on it.
@@ -54,12 +56,14 @@ def dead_pid() -> Callable[[], int]:
 
 
 @pytest.fixture
-def python312(tmp_path: Path) -> str:
-    """A PATH whose only Python new enough is a python3.12 outside any venv, as the plugin's launcher finds one; /usr/bin's python3 on macOS is 3.9."""
-    interpreters = tmp_path / "bin"
-    interpreters.mkdir()
-    (interpreters / "python3.12").symlink_to(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
-    return f"/usr/bin:/bin:{interpreters}"
+def plugin(tmp_path: Path) -> Path:
+    """hands' plugin as `hands plugin` writes it for the hands under test: its launcher runs this interpreter."""
+    return render(Home(tmp_path / "rendering"), sys.executable).plugin
+
+
+# Where the plugin's hooks and skills run: a PATH with no Python new enough for hands, since /usr/bin's python3 on macOS
+# is 3.9, so the launcher can only be running the interpreter it names.
+NO_PYTHON = "/usr/bin:/bin"
 
 
 @dataclass(frozen=True)

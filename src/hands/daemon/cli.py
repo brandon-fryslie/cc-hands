@@ -18,7 +18,7 @@ from loguru import logger
 from hands.daemon import readiness
 from hands.daemon.config import Config, Settings, edited, load
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, again, invocation, refuse, start
-from hands.sessions import audit, heartbeat, recall, wide, wrapper
+from hands.sessions import audit, heartbeat, marketplace, recall, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.otlp import exporting
 from hands.sessions.payload import Rejected
@@ -98,6 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
     commands.add_parser("login", help="log the brain (the claude backend of the home's config.toml) in again, or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
+    commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
@@ -153,6 +154,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return login(home)
         case "install-fritter":
             return install_fritter(home)
+        case "plugin":
+            return render_plugin(home)
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
             # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits
@@ -403,6 +406,21 @@ def install_fritter(home: Home) -> int:
             case readiness.Missing(said=said) | readiness.Unknown(said=said):
                 print(said, file=sys.stderr)
                 return 1
+
+
+def render_plugin(home: Home) -> int:
+    audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    # [LAW:nothing-unseen] Claude Code runs this once per session: the interpreter the hooks run on, the plugin it
+    # printed, and whether that plugin was written now or a session before had. Recorded in the audit log alone: Claude
+    # Code waits for this command to exit before the session starts, so, like the shim, it waits on no collector and
+    # reads no config.toml, whose rejection is the daemon's to report and never costs a session its hooks.
+    with wide.unit("plugin.render", audit_log.record):
+        wide.annotate(interpreter=sys.executable, packaged=marketplace.PACKAGED)
+        rendered = marketplace.render(home, sys.executable)
+        wide.annotate(plugin=rendered.plugin, written=rendered.written)
+    # [LAW:no-silent-failure] stdout is the path alone, which Claude Code takes as the plugin's directory.
+    print(rendered.plugin)
+    return 0
 
 
 # How often `hands log` looks for new lines.

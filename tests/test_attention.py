@@ -13,12 +13,14 @@ import pytest
 from loguru import logger
 from pipecat.frames.frames import Frame, LLMMessagesAppendFrame
 
+from conftest import NO_PYTHON
+
 from hands.core.attention import Attention, Delivery, Level, Overlay, Spoken, Switch, Withheld
 from hands.core.delta import Delta
 from hands.core.events import Joined, Prompted, StatusReported, Stopped
 from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.status import Idle, Report, Stamp
-from hands.sessions.hookconfig import LAUNCHER, PLUGIN_DIR
+from hands.sessions.hookconfig import LAUNCHER
 from hands.sessions.audit import Entry, Failure, Refocused, failures_to
 from hands.sessions.wide import WideEvent
 from hands.sessions.focus import focused, set_focus
@@ -394,20 +396,17 @@ async def test_a_session_that_is_not_running_cannot_have_its_overlay_set(tmp_pat
     assert not (tmp_path / "overlays").exists()
 
 
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent / PLUGIN_DIR
+def skill(plugin: Path, home: Home, cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    """`/hands:attention` as the skill runs it: the plugin's launcher, in the session's directory."""
+    environment = {"HANDS_HOME": str(home.root), "PATH": NO_PYTHON, "HOME": str(cwd)}
+    return subprocess.run([plugin / LAUNCHER, "-m", "hands.sessions.attention", *arguments], env=environment, cwd=cwd, capture_output=True, text=True)
 
 
-def skill(home: Home, cwd: Path, path: str, *arguments: str) -> subprocess.CompletedProcess[str]:
-    """`/hands:attention` as the skill runs it: the plugin's launcher, in the session's directory, with no venv."""
-    environment = {"HANDS_HOME": str(home.root), "PATH": path, "HOME": str(cwd)}
-    return subprocess.run([PLUGIN_ROOT / LAUNCHER, "-m", "hands.sessions.attention", *arguments], env=environment, cwd=cwd, capture_output=True, text=True)
-
-
-def test_the_skill_sets_what_is_said_unprompted_and_says_what_is_set(tmp_path: Path, python312: str) -> None:
+def test_the_skill_sets_what_is_said_unprompted_and_says_what_is_set(tmp_path: Path, plugin: Path) -> None:
     home = Home(tmp_path / "home")
-    asked = skill(home, tmp_path, python312)
+    asked = skill(plugin, home, tmp_path)
     assert (asked.returncode, asked.stderr) == (0, "") and asked.stdout.startswith("Finished turns wait until you ask")
-    quiet = skill(home, tmp_path, python312, "Quiet", "On", "progress", "brief")
+    quiet = skill(plugin, home, tmp_path, "Quiet", "On", "progress", "brief")
     assert (quiet.returncode, quiet.stderr) == (0, "") and "I'm keeping quiet for now" in quiet.stdout
     assert attention(home) == Attention(progress="brief", quiet="on")
 
@@ -419,9 +418,9 @@ def test_the_skill_sets_what_is_said_unprompted_and_says_what_is_set(tmp_path: P
         (("volume", "up"), "hands attention: 'volume' is no kind of thing hands says unprompted; it is one of finished, progress, ended, quiet\n"),
     ],
 )
-def test_the_skill_refuses_what_is_no_setting_and_leaves_what_is_set_alone(tmp_path: Path, python312: str, arguments: tuple[str, ...], refused: str) -> None:
+def test_the_skill_refuses_what_is_no_setting_and_leaves_what_is_set_alone(tmp_path: Path, plugin: Path, arguments: tuple[str, ...], refused: str) -> None:
     home = Home(tmp_path / "home")
     set_attention(home, Attention(finished="full"))
-    result = skill(home, tmp_path, python312, *arguments)
+    result = skill(plugin, home, tmp_path, *arguments)
     assert (result.returncode != 0, result.stdout, result.stderr) == (True, "", refused)
     assert attention(home) == Attention(finished="full")

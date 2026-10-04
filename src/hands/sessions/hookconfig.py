@@ -1,6 +1,6 @@
 """The hooks hands' Claude Code plugin installs, and the one number every permission time comes from.
 
-    <hands python> -m hands.sessions.hookconfig > plugin/hooks/hooks.json     # regenerates the plugin's hook file
+    <hands python> -m hands.sessions.hookconfig > src/hands/sessions/plugin/hooks/hooks.json     # regenerates the plugin's hook file
 
 It is imported by the shim, so it holds only the standard library and hands' data modules.
 """
@@ -25,16 +25,13 @@ POST_TIMEOUT_SECONDS = 2.0
 STOP_HOLD_SECONDS = 1.5
 STOP_POST_TIMEOUT_SECONDS = POST_TIMEOUT_SECONDS + STOP_HOLD_SECONDS
 
-# [LAW:one-source-of-truth] the module every hook runs, and the launcher, inside the plugin, that runs it under a
-# Python new enough for hands. The plugin has no venv, so the launcher puts the plugin's own src on the path.
+# [LAW:one-source-of-truth] the module every hook runs, and the launcher, inside the plugin, that runs it on the
+# installed hands' own interpreter, which `hands plugin` writes (hands.sessions.marketplace).
 SHIM_MODULE = "hands.sessions.shim"
 LAUNCHER = "hooks/python"
 # Where the plugin's hook file lives, relative to the plugin root; Claude Code loads it from there unasked.
 HOOKS_FILE = "hooks/hooks.json"
-# The plugin, relative to the repository, which is its marketplace. A directory of its own, so an install copies the
-# hooks and a link to src, never the repository's venv.
-PLUGIN_DIR = "plugin"
-# The plugin as Claude Code names it: its name in plugin/.claude-plugin/plugin.json, at the marketplace's name in
+# The plugin as Claude Code names it: its name in its .claude-plugin/plugin.json, at the marketplace's name in
 # .claude-plugin/marketplace.json.
 PLUGIN_ID = "hands@cc-hands"
 

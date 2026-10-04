@@ -1,7 +1,7 @@
 """`/hands:restart`: start the running daemon again, so it runs the code, prompt, and brain setup on disk now.
 
-The plugin's skill runs this module under the plugin's own Python, which has no venv, so it imports only the standard
-library and hands' data modules:
+The plugin's skill runs this module through the plugin's launcher, on the installed hands' own interpreter, and it
+imports only the standard library and hands' data modules:
 
     hooks/python -m hands.daemon.restart
 

@@ -83,6 +83,12 @@ class Home:
         return self.bin / "claude"
 
     @property
+    def plugins(self) -> Path:
+        """hands' Claude Code plugin, one directory for each plugin rendered, named by its content, written by `hands plugin`
+        alone (hands.sessions.marketplace)."""
+        return self.root / "plugins"
+
+    @property
     def brain(self) -> Path:
         """The brain's CLAUDE_CONFIG_DIR: its login, settings, and skills, and under it the empty directory it runs in."""
         return self.root / "brain"

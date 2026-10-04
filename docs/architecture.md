@@ -298,7 +298,7 @@ period only bounds how late a deadline is heard; no correctness property depends
 a `sleep`.
 
 The deadline itself comes from one number. `hands.sessions.hookconfig` declares the
-`PermissionRequest` hook's timeout (90 seconds) in the plugin's `plugin/hooks/hooks.json`; the shim
+`PermissionRequest` hook's timeout (90 seconds) in the plugin's `hooks/hooks.json`; the shim
 waits on the daemon that long for that hook alone, and the daemon denies 5 seconds
 earlier, so the deny reaches Claude Code before Claude Code kills the hook
 `[LAW:single-enforcer]`.
@@ -602,30 +602,31 @@ at the keyboard. They are declared `async`, so the shim they spawn on every tool
 never holds the agent up.
 
 **Installing the hooks.** The repository is a Claude Code marketplace
-(`.claude-plugin/marketplace.json`) holding one plugin, `plugin/`:
-`plugin/.claude-plugin/plugin.json`, `plugin/hooks/hooks.json`, the launcher
-`plugin/hooks/python`, the `/hands:attention` skill in `plugin/skills/attention`, and
-`plugin/src`, a link to the repository's `src`. The plugin is
-a directory of its own so that an install copies those and not the repository's venv.
-Installing the plugin installs the hooks; disabling or uninstalling it removes them,
-and no settings file is edited by hands. `hooks.json` is generated from `hookconfig`
-(`python -m hands.sessions.hookconfig > plugin/hooks/hooks.json`), and a test fails
-when the checked-in file differs from what `hookconfig` declares. `MessageDisplay` is an HTTP
+(`.claude-plugin/marketplace.json`) whose one entry, `hands@cc-hands`, has a `command`
+source: Claude Code runs `hands plugin` and copies the directory it prints into its
+plugin cache, at install and again once per session, so the hooks are always the
+installed hands' own. The plugin's files are package data, in
+`src/hands/sessions/plugin`: `.claude-plugin/plugin.json`, `hooks/hooks.json`, and the
+skills. What a package cannot carry is which interpreter runs it, so `hands plugin`
+(`hands.sessions.marketplace`) copies them and writes beside them the launcher
+`hooks/python`, which execs the interpreter that ran `hands plugin` with `-I`: the
+session's directory, where Claude Code runs the hook, and the user's `PYTHON*`
+variables stay off the path, so a project's own `json.py` or `hands/` cannot stand in
+for hands' modules. It writes them under the home, in `plugins/<digest>`, a directory
+named by its content: staged whole and renamed into place, so sessions starting together
+never hand Claude Code a half-written one. Installing the plugin installs the hooks;
+disabling or uninstalling it removes them, and no settings file is edited by hands.
+`hooks.json` is generated from `hookconfig` (`python -m hands.sessions.hookconfig >
+src/hands/sessions/plugin/hooks/hooks.json`), and a test fails when the checked-in file
+differs from what `hookconfig` declares. `MessageDisplay` is an HTTP
 hook to `hookconfig.DISPLAY_URL`, a fixed loopback port, since Claude Code puts no variable in a hook's URL
 (2.1.288); the daemon serves that route alone there, and does not start when the port is taken. Every other hook is exec
 form: `${CLAUDE_PLUGIN_ROOT}/hooks/python -m hands.sessions.shim`, spawned by Claude
-Code with no shell between. The plugin has no venv, so the launcher takes the first of
-`python3.14`, `python3.13`, `python3.12` on `PATH` (the name says the version, so none
-is started to ask), then a `python3` that says it is 3.12 or newer. It puts the
-plugin's `src` on `PYTHONPATH` and execs it with `-P`, so the session's directory,
-where Claude Code runs the hook, is never on the path and a project's own `json.py`
-cannot stand in for the standard library's. The shim runs as the process Claude Code
-spawned, so its parent is the claude process. A launcher that ran Python as its child,
-as `uv run` does, would record its own pid instead. The shim's home is `HANDS_HOME`,
-or `~/.hands`, found the way the `hands` CLI finds it; a relative `HANDS_HOME` is
-refused, since a hook runs in its session's directory. With no Python new enough, every
-hook fails saying so: the plugin cannot run at all, which is not the same as hands
-being off.
+Code with no shell between, and the launcher execs, so the shim runs as the process
+Claude Code spawned and its parent is the claude process. A launcher that ran Python as
+its child, as `uv run` does, would record its own pid instead. The shim's home is
+`HANDS_HOME`, or `~/.hands`, found the way the `hands` CLI finds it; a relative
+`HANDS_HOME` is refused, since a hook runs in its session's directory.
 
 **The shims.** Each is one process per hook: POST stdin to the daemon socket, exit.
 At `SessionStart` the shim also writes
@@ -1937,7 +1938,8 @@ depends on the network. Events are sent in batches from a thread of their own, s
 or absent collector costs a unit of work nothing. Each batch is an `Exported` line naming
 each event by its span id, how long the send took, and, where the collector did not take
 it, why `[LAW:nothing-unseen]`; a stop waits on the batches still queued for one timeout
-in all, and records those it leaves unsent. `SettingsRead` names the collector. hands
+in all, and records those it leaves unsent. `SettingsRead` names the collector. `hands plugin` alone reads no config and exports nothing: Claude Code
+waits for it to exit before a session starts, so its `plugin.render` is in the log alone. hands
 names only the collector; which stores sit behind it is the homelab's.
 
 ## Endurance
