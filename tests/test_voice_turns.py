@@ -62,7 +62,7 @@ from hands.voice import voices
 
 CLOSING = "that is all"
 
-# Well inside the 5 s after which Pipecat ends a turn on its own, so a turn left open fails here instead of ending late.
+# Nothing but the key's holds ends a turn, so a turn left open fails here instead of ending late.
 PATIENCE_SECS = 2.0
 
 
@@ -452,6 +452,17 @@ async def test_a_silent_hold_in_a_turn_that_has_words_is_not_told_as_no_words(ri
     await rig.texts.put("")
     await rig.until(lambda: rig.out.sent == ["what time is it"])
     assert rig.told == ["released", "transcript", "released"]
+
+
+async def test_a_hold_whisper_is_slow_to_transcribe_is_sent_with_its_own_turn(rig: Rig) -> None:
+    await held(rig, 1)
+    # Longer than the 5 s after which Pipecat's user aggregator, left to its default, ends a turn on its own.
+    await asyncio.sleep(5.6)
+    assert rig.out.stopped == 0
+    await rig.texts.put("what time is it")
+    await rig.until(lambda: rig.out.sent == ["what time is it"])
+    assert rig.out.stopped == 1
+    assert rig.told == ["released", "transcript"]
 
 
 async def test_a_hold_whisper_could_not_transcribe_is_told_as_failed_and_not_as_no_words(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1624,7 +1624,10 @@ away if the press turns out to be Shift. The hold opens the turn, the release en
 it and is final, and a hold opened during playback broadcasts the interruption that
 flushes queued audio. That is barge-in. A turn ends once Whisper is done with every
 hold it took in (`KeyTurnStop`): a press while the last hold is still being
-transcribed joins that turn, so no hold's words are left out of it.
+transcribed joins that turn, so no hold's words are left out of it. Nothing else ends
+one: Pipecat's user aggregator would end a turn itself after 5 s with no speech and no
+transcript, which a slow or queued transcription outlasts, so that timeout is set to
+never (`user_turn_stop_timeout` in `build_voice`).
 
 **The mute is decided where sound is captured, and the speaker's echo is cancelled.**
 Measured on 2026-09-14 with MacBook Pro speakers and microphone: the interruption stops
