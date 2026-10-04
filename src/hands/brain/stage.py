@@ -73,7 +73,7 @@ from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
 from hands.voice.speech import Aloud, Narrated, as_a_turn, brain_asks
 from hands.voice.utterance import Resumed, Utterance, Uttered, Uttering, uttering
-from hands.voice.tools import Result, Tool, silent, whole
+from hands.voice.tool import Result, Tool, silent, whole
 
 
 class Asking(Protocol):

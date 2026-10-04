@@ -108,7 +108,7 @@ def show_phone(home: Home) -> int:
     """Print every address the phone's page opens at, and the first as a QR code a phone's camera opens."""
     import segno
 
-    from hands.voice.phonepage import Untailed, lan_addresses, page_urls, phone_key, tailnet_name
+    from hands.voice.phoneaddress import Untailed, lan_addresses, page_urls, phone_key, tailnet_name
 
     # The name alone: the certificate is the daemon's to ask Tailscale for, as it serves the page.
     name = asyncio.run(tailnet_name())

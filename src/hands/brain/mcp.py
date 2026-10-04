@@ -23,7 +23,7 @@ from loguru import logger
 from hands.core.trace import Span
 from hands.sessions.audit import Record, said
 from hands.sessions.wide import annotate, continuing, fail, unit
-from hands.voice.tools import Tool
+from hands.voice.tool import Tool
 
 # What the brain's --mcp-config names this server; its tools reach the model as mcp__hands__<tool>.
 SERVER_NAME = "hands"

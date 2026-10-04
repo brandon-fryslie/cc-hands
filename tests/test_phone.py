@@ -32,7 +32,8 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent, begun
 from hands.voice import phonepage
-from hands.voice.phonepage import RENEW_DAYS, Tailnet, Untailed, own_certificate, phone_app, phone_key
+from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, own_certificate, phone_key
+from hands.voice.phonepage import phone_app
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from conftest import events
 

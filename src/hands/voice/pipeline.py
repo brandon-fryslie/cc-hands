@@ -56,7 +56,8 @@ from hands.sessions.audit import Record
 from hands.voice.player import Marks, Player
 from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
-from hands.voice.tools import RunsReplies, Tool, context_tools
+from hands.voice.tool import Tool
+from hands.voice.tools import RunsReplies, context_tools
 from hands.voice.turnstop import KeyTurnStop
 from hands.voice import voices
 from hands.voice.whisper import Whisper

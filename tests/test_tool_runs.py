@@ -6,7 +6,8 @@ import pytest
 
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
-from hands.voice.tools import Called, Result, Tool, audited, tool
+from hands.voice.tool import Result, Tool, tool
+from hands.voice.tools import Called, audited
 
 
 async def echo(text: str) -> Result:

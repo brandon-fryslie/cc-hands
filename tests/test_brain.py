@@ -52,7 +52,8 @@ from hands.voice.beside import Noting
 from hands.voice.pipeline import VoiceConfig
 from hands.voice.summary import SummaryFailed, aside
 from hands.sessions.wide import Fact, WideEvent, begun, continuing, here, root, unit, within
-from hands.voice.tools import Called, Result, audited, tool
+from hands.voice.tool import Result, tool
+from hands.voice.tools import Called, audited
 from hands.voice import voices
 
 

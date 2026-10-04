@@ -94,7 +94,8 @@ from hands.voice import voices
 from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
 from hands.voice.trigger import Edge, Trigger, Triggers
-from hands.voice.tools import Tool, audited, intermediary_tools
+from hands.voice.tool import Tool
+from hands.voice.tools import audited, intermediary_tools
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.process import Brain, Launch, Station, Unstartable, start as start_brain, workdir

@@ -10,7 +10,8 @@ from hands.core.turn import CUT, Asked, Edited, Said, Step, Tested, Turn
 from hands.sessions.registry import Sessions
 from hands.core.pending import News
 from hands.voice.narrator import Recounts
-from hands.voice.tools import Body, Result, expand_tool
+from hands.voice.tool import Body, Result
+from hands.voice.tools import expand_tool
 
 SID = SessionId("s1")
 WHY = "test_splits_on_commas\nAssertionError: assert ['a,b'] == ['a', 'b']"

@@ -15,7 +15,8 @@ from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
 from hands.voice.sentences import SummaryStore, Turns
 from hands.voice.summarising import summarise_turns
-from hands.voice.tools import READBACK_COUNT, TURNS_PAGE, Tool, session_tools
+from hands.voice.tool import Tool
+from hands.voice.tools import READBACK_COUNT, TURNS_PAGE, session_tools
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
 SID = SessionId("s1")

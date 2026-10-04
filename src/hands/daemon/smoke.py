@@ -46,7 +46,7 @@ from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.untap import untapped
 from hands.sessions.wide import annotate
 from hands.voice import transcription
-from hands.voice.phonepage import PHONE_PORT, phone_key
+from hands.voice.phoneaddress import PHONE_PORT, phone_key
 
 # Each stage of the pipeline, in the order the turns reach it: hands running; a session started from the `claude` on
 # PATH joined to hands under fritter; the call up; the user's words heard as text; hands answering aloud about the
