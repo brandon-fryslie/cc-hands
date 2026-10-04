@@ -105,6 +105,8 @@ async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_
 async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_server_cannot_is_an_error() -> None:
     recorded: list[Entry] = []
     server = await serve_mcp([audited(tool(echo), recorded.append), audited(tool(broken), recorded.append)], recorded.append, CallSpans())
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
         _, wrong = await rpc(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"words": "hi"}}})
         refusal = "echo was called with the wrong arguments: missing a required argument: 'text'"
@@ -112,6 +114,8 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
         assert wrong == {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": json.dumps({"error": refusal})}], "isError": False}}
         _, failed = await rpc(server, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "broken"}})
         assert failed == {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": "broken failed: RuntimeError: the transcript went away"}], "isError": True}}
+        # What the tool raised ends where the model is told, so it is said there, on the terminal, once.
+        assert errors == ["broken failed: RuntimeError: the transcript went away"]
         _, unknown = await rpc(server, {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "resume"}})
         assert unknown == {"jsonrpc": "2.0", "id": 3, "error": {"code": -32602, "message": "no tool resume taking arguments None"}}
         _, unshaped = await rpc(server, {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "echo", "arguments": '{"text": "hi"}'}})
@@ -137,6 +141,7 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
         [garbled_event] = [entry for entry in recorded if isinstance(entry, WideEvent)][-1:]
         assert garbled_event.error is not None and garbled_event.error.startswith("not JSON: ")
     finally:
+        logger.remove(sink)
         await server.close()
 
 

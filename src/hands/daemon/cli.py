@@ -58,6 +58,27 @@ def to_terminal(stream: TextIO) -> int:
     return logger.add(stream, filter=TERMINAL_LEVELS, format=terminal_line)
 
 
+def said_failed(record: audit.Record) -> audit.Record:
+    """`record`, and each unit of work it records that said it failed, rather than raised, also said on the terminal, by
+    its name and its error.
+
+    [LAW:nothing-unseen] the one layer every event of a run passes through: a failure a unit reports on its event, rather
+    than logs, still reaches the terminal its run is read on, as a logged error does. A unit that failed by raising has a
+    trace, and [LAW:one-source-of-truth] is said by what catches the exception, once, never again by each unit it passed.
+    """
+
+    def both(entry: audit.Entry) -> None:
+        record(entry)
+        match entry:
+            case wide.WideEvent(outcome="failed", trace=(), event=event, error=error):
+                # A part timed elsewhere, as a tool call whose result was an error, can fail with no error to say.
+                audit.said(f"{event} failed" if error is None else f"{event} failed: {error}")
+            case _:
+                pass
+
+    return both
+
+
 def show_phone(home: Home) -> int:
     """Print every address the phone's page opens at, and the first as a QR code a phone's camera opens."""
     import segno
@@ -269,7 +290,8 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Set
     kept = None if restarted is None else still_shown(restarted)
     shown = start_indicator(home) if kept is None else kept
     threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
-    with exporting(settings.config.collector, audit_log.record) as record:
+    with exporting(settings.config.collector, audit_log.record) as exported:
+        record = said_failed(exported)
         ending = asyncio.run(launch(lambda: loaded(home, settings, heart, record, after_crash, run_start), heart, lambda: edited(home, record, partial(reachable, home), settings), record, run_start))
     return ending, shown
 

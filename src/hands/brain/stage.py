@@ -396,10 +396,9 @@ class BrainStage(FrameProcessor):
         annotate(failed=None if failure is None else failure.fact)
         if (error := asked.exception()) is not None:
             failed = f"the brain failed a turn: {error}"
-            fail(failed)
             # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
             # from its own watch, but one that never took the turn, or could not be typed into, is still running.
-            logger.opt(exception=error).error("the brain failed a turn")
+            fail(failed)
             # A turn the brain never took did not tell it what the user heard: the turn after it does.
             self._broken_off = note
             await self._unsaid(unsaid)

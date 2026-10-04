@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from loguru import logger
 
 from hands.core.delta import Branched, Delta, PullRequested, Pushed
 from hands.core.effects import SessionGone, Summarise
@@ -893,10 +894,18 @@ async def test_a_reading_that_raises_is_one_failed_audit_line(tmp_path: Path) ->
     root = repo(tmp_path)
     record: list[Entry] = []
     deltas = Exploding(record=record.append, inherited=os.environ)
-    await deltas.snapshot(SID, root)
-    await deltas.compare(SID, again=False)
-    assert not await deltas.taken(SID)
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
+    try:
+        await deltas.snapshot(SID, root)
+        await deltas.compare(SID, again=False)
+        assert not await deltas.taken(SID)
+    finally:
+        logger.remove(sink)
     assert [event.outcome for event in readings(record)] == ["failed"]
+    # The reading's exception ends where the turn goes on without it, so it is said there, once.
+    [said] = errors
+    assert said.startswith("what a turn changed could not be read: ")
 
 
 async def test_a_reading_whose_one_side_raises_ends_the_other_with_it_and_says_what_was_raised(tmp_path: Path) -> None:

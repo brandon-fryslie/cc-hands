@@ -156,6 +156,44 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
     assert (refused["event"], refused["outcome"]) == ("hands.start", "failed") and "has no Input Monitoring grant" in refused["error"]
 
 
+def test_a_unit_of_work_that_failed_is_said_on_the_terminal_and_is_one_line_in_the_log() -> None:
+    import io
+    from datetime import UTC, datetime
+
+    from loguru import logger
+
+    from hands.sessions import wide
+
+    recorded: list[audit.Entry] = []
+    record = cli.said_failed(recorded.append)
+    terminal = io.StringIO()
+    shown = cli.to_terminal(terminal)
+    failures = logger.add(audit.failures_to(record), level="ERROR", filter="hands")
+    try:
+        with wide.unit("naming.pass", record):
+            wide.fail("the naming model timed out\x1b[2J")
+        with wide.unit("summary.pass", record):
+            pass
+        with wide.unit("brain.turn", record):
+            wide.child("tool.call", wide.within(wide.here()), datetime.now(UTC), 1.0, "failed")
+        # Raised through two units, it is said by what catches it, never by each unit it passed.
+        with pytest.raises(OSError), wide.unit("hook", record), wide.unit("applied", record):
+            raise OSError("the session is gone")
+    finally:
+        logger.remove(shown)
+        logger.remove(failures)
+    # The failed ones are said by name and error, controls made visible. The one that ended ok is not said, and
+    # neither are the ones that raised.
+    said = terminal.getvalue().splitlines()
+    assert [line.split(" - ", 1)[1] for line in said] == ["naming.pass failed: the naming model timed out\\u001b[2J", "tool.call failed"]
+    assert all("| ERROR    |" in line for line in said)
+    # Every event is written, and no Failure line beside the ones it says.
+    assert [(entry.event, entry.outcome) for entry in recorded if isinstance(entry, wide.WideEvent)] == [
+        ("naming.pass", "failed"), ("summary.pass", "ok"), ("tool.call", "failed"), ("brain.turn", "ok"), ("applied", "failed"), ("hook", "failed"),
+    ]
+    assert len(recorded) == 6
+
+
 def test_the_terminal_shows_hands_from_info_and_everything_else_from_warning() -> None:
     from loguru import logger
 
