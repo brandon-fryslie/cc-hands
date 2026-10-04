@@ -49,6 +49,12 @@ def test_a_heartbeat_reads_back_as_it_was_written(tmp_path: Path) -> None:
     assert [path.name for path in tmp_path.iterdir()] == ["status.json"]  # nothing left of the replacement
 
 
+def test_a_refused_start_reads_back_with_its_reason(tmp_path: Path) -> None:
+    written = beat(pipeline=heartbeat.Refusal("OPENAI_API_KEY is not set"), last_audio_out=None, live_sessions=0)
+    heartbeat.write(tmp_path / "status.json", written)
+    assert heartbeat.read(tmp_path / "status.json") == written
+
+
 def test_a_heartbeat_from_before_turns_were_written_reads_as_no_turn_open(tmp_path: Path) -> None:
     written = beat(listening=False)
     old = {key: value for key, value in json.loads(heartbeat.encode(written)).items() if key != "listening"}
@@ -139,6 +145,8 @@ def test_no_file_is_a_daemon_that_never_ran(tmp_path: Path) -> None:
         (heartbeat.encode(beat(pid=-1)).encode(), "not a process id"),
         (heartbeat.encode(beat()).replace('"heartbeat_ms": 2000', '"heartbeat_ms": 100000000000000000000').encode(), "not a heartbeat period"),
         (heartbeat.encode(beat(heartbeat=timedelta(0))).encode(), "not a heartbeat period"),
+        (heartbeat.encode(beat(pipeline=heartbeat.Refusal("OPENAI_API_KEY is not set"))).replace('"refusal"', '"reason"').encode(), "says why"),
+        (heartbeat.encode(beat(pipeline=heartbeat.Refusal("OPENAI_API_KEY is not set"))).replace('"refused"', '"stopped"').encode(), "only of a refused pipeline"),
     ],
 )
 def test_a_heartbeat_that_does_not_parse_is_refused(raw: bytes, error: str) -> None:
@@ -153,6 +161,12 @@ def test_the_verdict_follows_the_pid_and_the_heartbeat_age(tmp_path: Path) -> No
     assert heartbeat.judge(path, beat(), NOW, alive=False) == heartbeat.Down(beat())
     late = beat(written_at=NOW - BEAT * heartbeat.MISSED_BEATS - timedelta(seconds=1))
     assert heartbeat.judge(path, late, NOW, alive=True) == heartbeat.Unresponsive(late)
+
+
+@pytest.mark.parametrize("alive", [False, True])
+def test_a_daemon_whose_last_heartbeat_said_it_refused_to_start_is_refused_whoever_holds_its_pid_now(alive: bool, tmp_path: Path) -> None:
+    refused = beat(pipeline=heartbeat.Refusal("OPENAI_API_KEY is not set"))
+    assert heartbeat.judge(tmp_path, refused, NOW, alive=alive) == heartbeat.Refused(refused, heartbeat.Refusal("OPENAI_API_KEY is not set"))
 
 
 @pytest.mark.parametrize("alive", [False, True])
@@ -174,6 +188,7 @@ def test_each_verdict_is_said_plainly(tmp_path: Path) -> None:
         "hands is not responding: pid 4242 is running, pipeline running, but its last heartbeat was 3m 0s ago"
     )
     assert heartbeat.describe(heartbeat.Stopped(beat(pipeline="stopped")), NOW) == "hands is stopped: pid 4242 finished its pipeline 1s ago"
+    assert heartbeat.describe(heartbeat.Refused(beat(pipeline=heartbeat.Refusal("OPENAI_API_KEY is not set")), heartbeat.Refusal("OPENAI_API_KEY is not set")), NOW) == "hands refused to start 1s ago: OPENAI_API_KEY is not set"
     assert heartbeat.describe(heartbeat.NeverRan(tmp_path), NOW) == f"hands has not run: there is no heartbeat at {tmp_path}"
     assert heartbeat.describe(heartbeat.Unreadable(tmp_path, "not JSON"), NOW) == (
         f"hands is unknown: its heartbeat at {tmp_path} cannot be read: not JSON"
@@ -289,13 +304,14 @@ def test_each_verdict_has_its_own_light_and_the_broken_ones_warn(tmp_path: Path)
         heartbeat.Up(beat(deaf=True)),
         heartbeat.Unresponsive(beat()),
         heartbeat.Down(beat()),
+        heartbeat.Refused(beat(pipeline=heartbeat.Refusal("OPENAI_API_KEY is not set")), heartbeat.Refusal("OPENAI_API_KEY is not set")),
         heartbeat.NeverRan(tmp_path),
         heartbeat.Unreadable(tmp_path, "not JSON"),
     ]
     shown = [indicator.show(None, verdict, NOW) for verdict in verdicts]
-    assert [seen.light for seen in shown] == ["up", "deaf", "not responding", "down", "off", "unreadable"]
+    assert [seen.light for seen in shown] == ["up", "deaf", "not responding", "down", "refused", "off", "unreadable"]
     assert len({seen.title for seen in shown}) == len(shown)
-    assert [seen.title.startswith("⚠︎") for seen in shown] == [False, True, True, True, False, True]
+    assert [seen.title.startswith("⚠︎") for seen in shown] == [False, True, True, True, True, False, True]
     assert indicator.show(None, heartbeat.Stopped(beat(pipeline="stopped")), NOW).light == "off"
     assert [seen.text for seen in shown] == [heartbeat.describe(verdict, NOW) for verdict in verdicts]
 
@@ -321,6 +337,13 @@ def test_losing_the_microphone_is_announced_and_so_is_a_deaf_daemon_going_down()
     at = [NOW + timedelta(seconds=seconds) for seconds in (0, 100, 110, 200, 300, 400)]
     looks = list(zip([up, deaf, deaf, up, deaf, down], at))
     assert shown_over(looks) == [(), (heartbeat.describe(deaf, at[1]),), (), (), (heartbeat.describe(deaf, at[4]),), (heartbeat.describe(down, at[5]),)]
+
+
+def test_a_start_refused_after_it_beat_starting_is_announced_with_its_reason() -> None:
+    # Started from a launcher whose terminal nobody watches, the notice is where the reason reaches the user.
+    starting, refused = heartbeat.Up(beat(pipeline="starting")), heartbeat.Refused(beat(pipeline=heartbeat.Refusal("OPENAI_API_KEY is not set")), heartbeat.Refusal("OPENAI_API_KEY is not set"))
+    at = [NOW, NOW + timedelta(seconds=5)]
+    assert shown_over(list(zip([starting, refused], at))) == [(), (heartbeat.describe(refused, at[1]),)]
 
 
 def test_a_stuck_daemon_that_recovers_unable_to_hear_says_so() -> None:

@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from hands.sessions.heartbeat import Down, NeverRan, Status, Stopped, Unreadable, Unresponsive, Up, Verdict, describe
+from hands.sessions.heartbeat import Down, NeverRan, Refused, Status, Stopped, Unreadable, Unresponsive, Up, Verdict, describe
 
 # Stopped and never ran are one light: in both, nothing is running and nothing went wrong on the way to that.
-Light = Literal["up", "deaf", "not responding", "down", "off", "unreadable"]
+Light = Literal["up", "deaf", "not responding", "down", "refused", "off", "unreadable"]
 # The lights of a running daemon: leaving one for a worse light is news, and up is the only one that is not a warning.
 RUNNING: frozenset[Light] = frozenset({"up", "deaf"})
 
@@ -17,6 +17,7 @@ TITLES: dict[Light, str] = {
     "deaf": "⚠︎ hands can't hear",
     "not responding": "⚠︎ hands stuck",
     "down": "⚠︎ hands down",
+    "refused": "⚠︎ hands refused to start",
     "unreadable": "⚠︎ hands unreadable",
     "off": "✋ off",
 }
@@ -49,6 +50,8 @@ def light(verdict: Verdict) -> Light:
             return "not responding"
         case Down():
             return "down"
+        case Refused():
+            return "refused"
         case NeverRan() | Stopped():
             return "off"
         case Unreadable():

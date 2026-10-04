@@ -1,6 +1,7 @@
 """The process boundary: the settings file, parsed once, and the secret each backend it names reaches its model with."""
 
 import asyncio
+import json
 import os
 import threading
 import time
@@ -12,7 +13,7 @@ import pytest
 
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, Anthropic, Claude, Config, OpenAI
-from hands.daemon.starting import start
+from hands.daemon.starting import CannotStart, Ended, start
 from hands.daemon.run import backend
 from hands.sessions import audit, heartbeat
 from hands.sessions.audit import Entry, LLMChosen, SettingsEdited, SettingsRead, VoiceChosen, encoded
@@ -92,14 +93,14 @@ def test_the_collector_is_an_http_address_spelled_without_a_trailing_slash() -> 
 def test_a_backend_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text('[llm]\nbackend = "openai"\n')
-    with pytest.raises(SystemExit, match="hands: OPENAI_API_KEY is not set"):
+    with pytest.raises(CannotStart, match="^OPENAI_API_KEY is not set"):
         run.configured_from(home, config.load(home), {})
 
 
 def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
     # The variables settings used to be: one still exported would run hands on the default backend, silently.
     home = Home(tmp_path)
-    with pytest.raises(SystemExit, match=f"HANDS_LLM, HANDS_WHISPER_MODEL set, .* settings go in {home.config}"):
+    with pytest.raises(CannotStart, match=f"^HANDS_LLM, HANDS_WHISPER_MODEL set, .* settings go in {home.config}"):
         run.configured_from(home, config.load(home), {"ANTHROPIC_API_KEY": "k", "HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"})
 
 
@@ -224,14 +225,53 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
 
 
 def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
-    # Run as the CLI runs it: a SystemExit from a task leaves the event loop itself, so only asyncio.run's caller sees it.
+    # Run as the CLI runs it, so only asyncio.run's caller sees it.
     home, sessions, heart, _config = _starting(tmp_path)
 
     def refused() -> run.Configured:
-        raise SystemExit("no key")
+        raise CannotStart("no key")
 
-    with pytest.raises(SystemExit, match="no key"):
+    with pytest.raises(CannotStart, match="no key"):
         asyncio.run(start(lambda: run.configured(refused, lambda: None, home, sessions, lambda _event: None), heart, sessions.live_count, asyncio.Event()))
+
+
+def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Started from a launcher whose terminal nobody watches, the reason is still on record: the run's first read of its
+    # configuration, through the CLI's start, refusing a setting left in the environment.
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+    # No indicator is shown, and the test's own log sinks are kept.
+    def unshown(_home: Home) -> int:
+        return 0
+
+    def kept(*_: object) -> None:
+        pass
+
+    monkeypatch.setattr(cli, "start_indicator", unshown)
+    monkeypatch.setattr(cli, "reap", kept)
+    monkeypatch.setattr(cli, "to_terminal", kept)
+    monkeypatch.setattr(cli.logger, "remove", kept)
+
+    def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _after_crash: bool, _granted: bool) -> cli.Run:
+        sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=record)
+
+        async def refused(quit_event: asyncio.Event) -> Ended:
+            configure = partial(run.configured_from, home, settings, {"ANTHROPIC_API_KEY": "k", "HANDS_LLM": "claude"})
+            await start(lambda: run.configured(configure, lambda: None, home, sessions, record), heart, sessions.live_count, quit_event)
+            raise AssertionError("a start with HANDS_LLM set went on")
+
+        return refused
+
+    monkeypatch.setattr(cli, "loaded", loaded)
+    assert cli.main(["--home", str(home.root), "run"]) == 1
+    reason = f"HANDS_LLM set, and hands reads no setting from the environment; settings go in {home.config}"
+    assert capsys.readouterr().err == f"hands: {reason}\n"
+    lines = [json.loads(line) for line in audit.tail(home.audit, 100)[0]]
+    assert [line for line in lines if line["type"] == "StartRefused"] == [{"at": lines[-1]["at"], "level": "error", "type": "StartRefused", "reason": reason}]
+    assert cli.main(["--home", str(home.root), "status"]) == 1
+    assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
 
 def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(tmp_path: Path) -> None:
@@ -252,12 +292,12 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     assert run.configured_from(home, config.load(home), keyed).voice.voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
     home.voice.write_text("zed\n")
-    with pytest.raises(SystemExit, match=f"{home.voice} says 'zed'"):
+    with pytest.raises(CannotStart, match=f"{home.voice} says 'zed'"):
         run.configured_from(home, config.load(home), keyed)
     # One it cannot read stops it the same way, naming the file.
     home.voice.unlink()
     home.voice.mkdir()
-    with pytest.raises(SystemExit, match=str(home.voice)):
+    with pytest.raises(CannotStart, match=str(home.voice)):
         run.configured_from(home, config.load(home), keyed)
 
 

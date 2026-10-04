@@ -79,7 +79,7 @@ def restart(home: Home, now: Callable[[], datetime], wait: Callable[[], None], w
             case heartbeat.Up(status=status) if status.started_at > before.started_at and status.pipeline == "running":
                 return Restarted(status, at - asked)
             # Gone, or stopped, or unreadable: nothing more is coming, so it is said now rather than at the deadline.
-            case heartbeat.Down() | heartbeat.Stopped() | heartbeat.Unreadable() | heartbeat.NeverRan() as verdict:
+            case heartbeat.Down() | heartbeat.Stopped() | heartbeat.Refused() | heartbeat.Unreadable() | heartbeat.NeverRan() as verdict:
                 return NotBack(verdict, at - asked)
             # The old run stopping, the new one starting, or a moment unheard between the two.
             case verdict if at - asked >= within:

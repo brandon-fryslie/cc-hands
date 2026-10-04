@@ -14,7 +14,7 @@ from typing import Literal, NoReturn
 
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.sessions import heartbeat
-from hands.sessions.audit import Record, Restarting
+from hands.sessions.audit import Record, Restarting, StartRefused
 
 # The signals that stop a run as the q key does: closing its terminal is how a run in a terminal is most often ended.
 QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -26,6 +26,22 @@ STOP_SIGNALS: dict[signal.Signals, Ending] = {**{number: "quit" for number in QU
 # What the last heartbeat of a run says its pipeline is, by how the run ended: a restart is the next run starting, so
 # the indicator never reads the moment between the two as hands having stopped, and posts nothing.
 LAST_BEAT: dict[Ending, heartbeat.PipelineState] = {"quit": "stopped", "restart": "starting"}
+
+
+class CannotStart(Exception):
+    """A start hands will not make: a setting, a key, or a grant it cannot start without. The message is the reason."""
+
+
+def refuse(cannot: CannotStart, heart: heartbeat.Heart, record: Record) -> None:
+    """End a start that cannot be made, saying why where it was started, in the audit log, and in its last heartbeat.
+
+    [LAW:nothing-unseen] a start from a launcher whose terminal nobody watches is otherwise only gone: `hands status` and
+    the menu-bar indicator read the reason from the heartbeat, and the log keeps it after the next run replaces that.
+    """
+    reason = str(cannot)
+    record(StartRefused(reason))
+    heart.beat(heartbeat.Refusal(reason), None, 0, listening=False, deaf=False)
+    print(f"hands: {reason}", file=sys.stderr)
 
 
 @dataclass(frozen=True)
