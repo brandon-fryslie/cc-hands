@@ -48,8 +48,9 @@ async def test_a_certificate_tailscale_refuses_is_untailed_in_its_words(tmp_path
 async def test_a_tailscale_that_never_answers_is_untailed_and_killed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pid = tmp_path / "pid"
     monkeypatch.setenv("PATH", command(tmp_path, f"#!/bin/sh\necho $$ > {pid}\nexec sleep 30\n"))
-    monkeypatch.setattr(phonepage, "TAILSCALE_TIMEOUT_SECONDS", 0.2)
-    assert await tailnet_name() == Untailed("tailscale status took over 0s")
+    # Long enough that the command has said its pid before it is killed, however loaded the machine.
+    monkeypatch.setattr(phonepage, "TAILSCALE_TIMEOUT_SECONDS", 1.0)
+    assert await tailnet_name() == Untailed("tailscale status took over 1s")
     # Gone, not merely dead: a killed child nobody reaped would still take the signal.
     with pytest.raises(ProcessLookupError):
         os.kill(int(pid.read_text()), 0)
