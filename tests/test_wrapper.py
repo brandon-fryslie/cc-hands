@@ -133,19 +133,24 @@ def test_an_empty_path_entry_is_the_current_directory(root: Path, entries: str) 
     assert ran.stdout == "claude  socket=unset\n"
 
 
-def test_any_home_s_shim_names_the_fritter_and_wire_it_runs_and_nothing_else_names_one(root: Path) -> None:
+def test_any_home_s_shim_names_the_fritter_and_wire_it_runs_and_nothing_else_is_one(root: Path) -> None:
     shim = installed_shim(root)
     other = executable(root / "it's other" / "claude", shim_script(root / "it's other" / "fritter", root / "it's other" / "wire.sock"))
     assert wrapper.shim_of(shim) == wrapper.Shim(root / "bin" / "fritter", WIRE)
     assert wrapper.shim_of(other) == wrapper.Shim(root / "it's other" / "fritter", root / "it's other" / "wire.sock")
     unreadable = executable(root / "locked" / "claude", "#!/bin/sh\n")
     unreadable.chmod(0o111)
-    damaged = [
-        executable(root / f"damaged{n}" / "claude", f"#!/bin/sh\n{wrapper.MARK}\n{lines}\n")
-        for n, lines in enumerate(["fritter=\nwire=w", "fritter='x\nwire=w", "fritter=a b\nwire=w", "fritter=f", "fritter=f\nwire='w", "wire=w\nfritter=f"])
-    ]
-    for path in (root / "real" / "claude", root / "nowhere" / "claude", unreadable, root / "bin", *damaged):
+    for path in (root / "real" / "claude", root / "nowhere" / "claude", unreadable, root / "bin"):
         assert wrapper.shim_of(path) is None
+
+
+@pytest.mark.parametrize(
+    "lines",
+    # The first is a shim as hands wrote it before the wire: a fritter and no wire.
+    ["fritter=f\n\nexec f", "fritter=\nwire=w", "fritter='x\nwire=w", "fritter=a b\nwire=w", "fritter=f\nwire='w", "wire=w\nfritter=f"],
+)
+def test_a_marked_file_that_is_not_the_shim_this_hands_writes_is_stale(root: Path, lines: str) -> None:
+    assert wrapper.shim_of(executable(root / "claude", f"#!/bin/sh\n{wrapper.MARK}\n{lines}\n")) == wrapper.Stale()
 
 
 def test_no_real_claude_on_path_is_said_and_runs_nothing(root: Path) -> None:

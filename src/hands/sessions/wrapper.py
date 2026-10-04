@@ -77,23 +77,34 @@ class Installed:
 
 @dataclass(frozen=True)
 class Shim:
-    """What a hands shim names, this home's or another's: the fritter it runs and the wire it copies API traffic to."""
+    """A hands shim, this home's or another's, that is the one this hands writes: the fritter it runs and the wire it
+    copies API traffic to."""
 
     fritter: Path
     wire: Path
 
 
-def shim_of(path: Path) -> Shim | None:
-    """The fritter and wire a hands shim at path names; None when path is not a hands shim."""
+@dataclass(frozen=True)
+class Stale:
+    """A hands shim, by its mark, that is not the one this hands writes for any fritter and wire: an older hands wrote it."""
+
+
+def shim_of(path: Path) -> Shim | Stale | None:
+    """What the file at path is as a hands shim; None when it is not one."""
+    text = _shim(path)
+    if text is None:
+        return None
     try:
-        words = [shlex.split(line.removeprefix(f"{name}=")) if line.startswith(f"{name}=") else [] for name, line in zip(("fritter", "wire"), _shim(path) or ())]
+        words = [shlex.split(line.removeprefix(f"{name}=")) if line.startswith(f"{name}=") else [] for name, line in zip(("fritter", "wire"), text.splitlines()[2:4])]
     except ValueError:  # an unclosed quote: not a line shim_script writes
         words = []
+    # [LAW:one-source-of-truth] the shim is shim_script written out for the fritter and wire it names, and `hands check`
+    # asks run what that script does, so one an older hands wrote is Stale, never taken to do what this one would.
     match words:
-        case [[fritter], [wire]]:
+        case [[fritter], [wire]] if text == shim_script(Path(fritter), Path(wire)):
             return Shim(Path(fritter), Path(wire))
         case _:
-            return None
+            return Stale()
 
 
 def real_claude(search: str) -> Path | None:
@@ -108,16 +119,18 @@ def real_claude(search: str) -> Path | None:
     return None
 
 
-def _shim(path: Path) -> tuple[str, str] | None:
-    """The two lines after a hands shim's mark; None when path is not a file marked as a shim."""
+def _shim(path: Path) -> str | None:
+    """The whole text of a hands shim; None when path is not a file marked as a shim."""
     # [LAW:one-source-of-truth] the one reading of the mark in Python. Read as the shim reads each claude on PATH: a file
-    # it cannot read is not a shim to it either.
+    # it cannot read is not a shim to it either. Only a marked file is read past its mark: the real claude is large.
     try:
         with path.open("rb") as found:
-            lines = [found.readline().rstrip(b"\n").decode(errors="replace") for _ in range(4)]
+            head = found.readline() + found.readline()
+            if head.splitlines()[1:] != [MARK.encode()]:
+                return None
+            return (head + found.read()).decode(errors="replace")
     except OSError:
         return None
-    return (lines[2], lines[3]) if lines[1] == MARK else None
 
 
 def shim_script(fritter: Path, wire: Path) -> str:

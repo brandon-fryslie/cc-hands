@@ -158,12 +158,22 @@ def test_a_shim_whose_fritter_is_not_the_one_hands_carries_says_to_install_it_ag
     assert f"its fritter {home.bin / 'fritter'} is not the one this hands carries, {wrapper.PACKAGED}: run `hands install-fritter`" in found.said
 
 
-def test_a_shim_an_older_hands_wrote_says_to_install_it_again(root: Path, fritter: Path) -> None:
-    # As after hands is upgraded: the shim is not the script this hands writes, so it may not run what `run` says it does.
+def runs_subcommands_as_sessions(text: str) -> str:
+    return text.replace("session=no ;;", ";;")
+
+
+def before_the_wire(text: str) -> str:
+    return "\n".join(text.splitlines()[:3])
+
+
+@pytest.mark.parametrize("older", [runs_subcommands_as_sessions, before_the_wire])
+def test_a_shim_an_older_hands_wrote_says_to_install_it_again(root: Path, fritter: Path, older: Callable[[str], str]) -> None:
+    # As after hands is upgraded: the shim is not the script this hands writes, so it may not run what `run` says it does;
+    # the second is one written before the wire, with no wire line.
     home = Home(root / "home")
     home.bin.mkdir(parents=True)
     shutil.copy2(fritter, home.bin / "fritter")
-    executable(home.shim, shim_script(home.bin / "fritter", home.wire).replace("session=no ;;", ";;"))
+    executable(home.shim, older(shim_script(home.bin / "fritter", home.wire)))
     found = readiness.shim(home, f"{home.bin}")
     assert found == Missing(f"`claude` on this PATH is hands' shim, {home.shim}, but not the one this hands writes: run `hands install-fritter`")
 
