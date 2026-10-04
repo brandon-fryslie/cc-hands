@@ -9,7 +9,13 @@ words ends it as promptly as one with.
 
 from dataclasses import dataclass
 
-from pipecat.frames.frames import DataFrame, Frame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
+from pipecat.frames.frames import (
+    DataFrame,
+    Frame,
+    UninterruptibleFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
+)
 from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_stop import BaseUserTurnStopStrategy
 
@@ -26,8 +32,12 @@ class HoldDiscarded(VADUserStoppedSpeakingFrame):
 
 
 @dataclass(kw_only=True)
-class TurnResolved(DataFrame):
-    """Whisper is done with the hold with this number: whatever text it had has been pushed ahead of this."""
+class TurnResolved(DataFrame, UninterruptibleFrame):
+    """Whisper is done with the hold with this number: whatever text it had has been pushed ahead of this.
+
+    Nothing else ends a turn, so the interruption a turn's start broadcasts cannot drop it on its way: a hold dropped at
+    once resolves right behind its own start.
+    """
 
     hold: int
 

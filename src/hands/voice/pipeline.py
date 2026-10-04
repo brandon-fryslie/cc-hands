@@ -224,7 +224,7 @@ def build_voice(
         # [LAW:single-enforcer] the key's holds alone end a user turn. Pipecat's aggregator also ends one itself after
         # this long with no speech and no transcript, which a slow or queued transcription outlasts: the turn would end
         # empty and the hold's words go out with the next one. Whisper resolves every hold it opens, heard or not or
-        # failed, so a turn ends when its transcriptions return.
+        # failed, and fails one it cannot transcribe within TRANSCRIBING_SECONDS, so every turn ends.
         user_params=LLMUserAggregatorParams(user_turn_strategies=turns, user_turn_stop_timeout=math.inf),
     )
     user_aggregator, assistant_aggregator = pair.user(), pair.assistant()

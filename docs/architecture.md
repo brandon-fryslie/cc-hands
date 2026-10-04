@@ -1627,7 +1627,9 @@ hold it took in (`KeyTurnStop`): a press while the last hold is still being
 transcribed joins that turn, so no hold's words are left out of it. Nothing else ends
 one: Pipecat's user aggregator would end a turn itself after 5 s with no speech and no
 transcript, which a slow or queued transcription outlasts, so that timeout is set to
-never (`user_turn_stop_timeout` in `build_voice`).
+never (`user_turn_stop_timeout` in `build_voice`). What bounds a turn instead is Whisper:
+a transcription that has not returned in a minute fails, said aloud like any other
+failure, and that resolves its hold (`TRANSCRIBING_SECONDS`).
 
 **The mute is decided where sound is captured, and the speaker's echo is cancelled.**
 Measured on 2026-09-14 with MacBook Pro speakers and microphone: the interruption stops

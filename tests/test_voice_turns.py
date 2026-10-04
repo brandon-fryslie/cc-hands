@@ -55,6 +55,7 @@ from hands.core.session import Held, Membership, Permission, RequestId, Running,
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Pushed, Unprompted
 from hands.voice.turnstop import TurnOpened, TurnResolved
+from hands.voice import whisper
 from hands.voice.whisper import Whisper
 from test_llm import Shape, anthropic_stream, openai_stream
 from test_narrator import heard
@@ -470,6 +471,18 @@ async def test_a_hold_whisper_could_not_transcribe_is_told_as_failed_and_not_as_
         raise ConnectionError("LowTalker is not serving")
 
     monkeypatch.setattr(Whisper, "_heard", refused)
+    await held(rig, 1)
+    await rig.until(lambda: rig.out.stopped == 1)
+    assert rig.told == ["released", "failed"]
+
+
+async def test_a_hold_whisper_never_finishes_transcribing_fails_and_ends_its_turn(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def hung(_self: Whisper, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
+        await asyncio.Event().wait()
+        raise AssertionError("a transcription that never returns returned")
+
+    monkeypatch.setattr(Whisper, "_heard", hung)
+    monkeypatch.setattr(whisper, "TRANSCRIBING_SECONDS", 0.2)
     await held(rig, 1)
     await rig.until(lambda: rig.out.stopped == 1)
     assert rig.told == ["released", "failed"]

@@ -44,6 +44,11 @@ _REPEATING = 2.4
 # -0.89 to -1.11 (hands-dictation-d7i).
 _GUESSED = -1.5
 
+# The longest a hold's transcription may take before it fails. The model takes about a third of a second a hold, and the
+# longest hold the key keeps open (TURN_LIMIT_SECONDS) is a few seconds' work, so a minute is a transcription that is
+# not coming back.
+TRANSCRIBING_SECONDS = 60.0
+
 
 class Whisper(SegmentedSTTService):
     """The pipeline's voice activity detector as well as its transcriber.
@@ -157,19 +162,23 @@ class Whisper(SegmentedSTTService):
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         hold, levels = self._transcribing.popleft()
         try:
-            heard = await self._heard(hold, levels, audio)
+            # [LAW:no-silent-failure] a transcription that never returns would hold its turn open for ever, since nothing
+            # but Whisper resolving its holds ends one: it fails instead. The thread it runs on cannot be stopped, and
+            # goes on until the model returns.
+            heard = await asyncio.wait_for(self._heard(hold, levels, audio), TRANSCRIBING_SECONDS)
+            # Recorded, so "I spoke and nothing happened" can be looked into.
+            self._record(heard)
+            if heard.said is not None:
+                await self._handle_transcription(heard.said, True, LANGUAGE)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's tracing decorator is untyped)
         except Exception as error:
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from Whisper aloud.
             yield ErrorFrame(error=f"Whisper could not transcribe hold {hold}: {type(error).__name__}: {error}", exception=error)
         else:
-            # Recorded, so "I spoke and nothing happened" can be looked into.
-            self._record(heard)
             match heard.said:
                 case None:
                     # Not said: Brandon does not need to hear it (2026-09-27).
                     pass
                 case said:
-                    await self._handle_transcription(said, True, LANGUAGE)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's tracing decorator is untyped)
                     yield TranscriptionFrame(said, self._user_id, time_now_iso8601(), LANGUAGE)
         # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
         yield TurnResolved(hold=hold)
