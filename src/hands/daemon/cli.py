@@ -124,23 +124,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
             # or a crash the next run must read. A restart's run holds it already: the run before it beat starting under
             # this pid, which it keeps. Before the settings are read there is no collector: the start ends on the log alone.
-            try:
-                settings = door(home)
-            except CannotStart as cannot:
-                run_start.ended(audit_log.record, cannot)
-                refuse(cannot, None if arguments.restarted is None else heart)
-                return 1
-            try:
-                ending, shown = run_here(home, arguments.restarted, after_crash, settings, heart, audit_log, run_start)
-            except CannotStart as cannot:
-                # The run's launch ended the start, failed with this reason, on the edge the settings chose.
-                refuse(cannot, heart)
-                return 1
-            match ending:
-                case "quit":
-                    return 0
-                case "restart":
-                    again(invocation(home, "run", "--restarted", str(shown)))
+            # [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
+            with run_start.ending(audit_log.record):
+                try:
+                    settings = door(home)
+                except CannotStart as cannot:
+                    run_start.ended(audit_log.record, cannot)
+                    refuse(cannot, None if arguments.restarted is None else heart)
+                    return 1
+                try:
+                    ending, shown = run_here(home, arguments.restarted, after_crash, settings, heart, audit_log, run_start)
+                except CannotStart as cannot:
+                    # The run's launch ended the start, failed with this reason, on the edge the settings chose.
+                    refuse(cannot, heart)
+                    return 1
+                match ending:
+                    case "quit":
+                        return 0
+                    case "restart":
+                        again(invocation(home, "run", "--restarted", str(shown)))
         case "status":
             return report(home)
         case "check":

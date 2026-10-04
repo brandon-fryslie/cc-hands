@@ -44,7 +44,7 @@ from hands.core.front import InFront
 from hands.core.place import Modality
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
 from hands.sessions.audit import Record, failures_to
-from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT, DISPLAY_URL, PERMISSION_DEADLINE_SECONDS
+from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT, PERMISSION_DEADLINE_SECONDS
 from hands.sessions.front import read_front
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.statusfile import keep_reading_statuses
@@ -347,7 +347,9 @@ async def run(
         run_start.heard(tap=home.wire)
         display = await serve_display(sessions, DISPLAY_HOST, DISPLAY_PORT, DISPLAY_PATH, record)
         held.push_async_callback(display.cleanup)
-        run_start.heard(display=DISPLAY_URL)
+        # [LAW:one-source-of-truth] the address the server bound, which the hooks' DISPLAY_URL must name.
+        [(display_host, display_port, *_)] = display.addresses
+        run_start.heard(display=f"http://{display_host}:{display_port}{DISPLAY_PATH}")
         store = SummaryStore(Sentences(home.sentences))
         # [LAW:one-source-of-truth] one holder of each session's last turn: the narrator fills it, tell_turn reads it.
         recounts = Recounts()

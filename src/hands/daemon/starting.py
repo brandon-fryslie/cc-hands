@@ -16,7 +16,8 @@ from typing import Literal, NoReturn
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.sessions import heartbeat
 from hands.sessions.home import Home
-from hands.sessions.wide import Fact, WideEvent, annotate, begun, unit
+from hands.sessions import wide
+from hands.sessions.wide import Fact, WideEvent, begun
 
 # The signals that stop a run as the q key does: closing its terminal is how a run in a terminal is most often ended.
 QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -43,8 +44,9 @@ class Start:
     ready, failed with what raised (a CannotStart's reason, where it was refused), or cancelled, told to stop first.
 
     [LAW:nothing-unseen] no one body runs a start: it begins at the door, before the run's loop exists, and ends in the
-    middle of the run. Its unit is opened as it ends, from the moment it began: held open over the run instead, every
-    server and task the start makes would be inside it, and every unit of work they ran a part of the start's trace.
+    middle of the run. Its event is emitted as it ends, timed from the moment it began: held open as a unit over the run
+    instead, every server and task the start makes would be inside it, and every unit of work they ran a part of the
+    start's trace.
     """
 
     def __init__(self, restarted: bool, after_crash: bool) -> None:
@@ -67,15 +69,8 @@ class Start:
         if self._ended:
             raise RuntimeError("the start has already ended")
         self._ended = True
-        try:
-            with unit("hands.start", emit, began=self._began):
-                annotate(**self._facts)
-                if raised is not None:
-                    raise raised
-        except BaseException as error:
-            # What raised is the caller's to raise on; the unit only wrote it down.
-            if error is not raised:
-                raise
+        # What raised is the caller's to raise on; the event only writes it down.
+        wide.ended("hands.start", emit, self._began, raised, **self._facts)
 
     @contextmanager
     def ending(self, emit: Callable[[WideEvent], None]) -> Generator[None]:

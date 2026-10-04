@@ -251,7 +251,6 @@ async def serve_phone(phone: Phone, home: Home, record: Record) -> Never:
     await runner.setup()
     try:
         with unit("phone.served", record):
-            annotate(port=PHONE_PORT)
             own = _context(*own_certificate(home, datetime.datetime.now(datetime.UTC)))
             kept: Callable[[], Coroutine[object, object, Never]]
             match await tailnet(home):
@@ -272,6 +271,9 @@ async def serve_phone(phone: Phone, home: Home, record: Record) -> Never:
                     annotate(untailed=reason)
                     kept = _keep_served
             await _site(runner, own)
+            # The port the page was bound on, which a phone's address names.
+            [(_host, port, *_)] = runner.addresses
+            annotate(port=port)
         await kept()
     finally:
         await runner.cleanup()

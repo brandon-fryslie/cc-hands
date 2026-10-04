@@ -3,9 +3,13 @@
 import asyncio
 import json
 import os
+import re
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -18,6 +22,7 @@ from hands.daemon.starting import CannotStart, Ended, Start, start
 from hands.daemon.run import backend
 from hands.sessions import audit, heartbeat
 from hands.sessions.audit import Entry, SettingsEdited, encoded
+from hands.sessions.hookconfig import DISPLAY_PATH
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
@@ -245,6 +250,33 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
         asyncio.run(start(lambda: run.configured(refused, lambda: None, home, sessions, Start(restarted=False, after_crash=False)), heart, sessions.live_count, asyncio.Event()))
 
 
+async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A unix socket path is capped near 104 bytes on macOS, so not under pytest's long tmp_path.
+    root = Path(tempfile.mkdtemp(prefix="hands-"))
+    home = Home(root)
+    # The system picks the display's port, so a hands running on this machine keeps its own.
+    monkeypatch.setattr(run, "DISPLAY_PORT", 0)
+    heart = heartbeat.Heart(root / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01))
+
+    def refused(_environment: Mapping[str, str]) -> run.Configured:
+        raise CannotStart("no key")
+
+    run_start = Start(restarted=False, after_crash=False)
+    recorded: list[Entry] = []
+    try:
+        with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
+            await run.run(refused, lambda: None, home, heart, recorded.append, asyncio.Event(), False, {}, run_start)
+    finally:
+        shutil.rmtree(root)
+    # Refused at its settings, after every server was up: the start says where each listened.
+    [event] = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "hands.start"]
+    proxy, display = event.facts["proxy"], event.facts["display"]
+    assert (event.outcome, event.facts["hooks"], event.facts["upstream"], event.facts["tap"]) == ("failed", home.socket, UPSTREAM, home.wire)
+    assert isinstance(proxy, str) and re.fullmatch(r"http://127\.0\.0\.1:[1-9]\d*", proxy)
+    # The port the display was bound on, not the 0 it was asked for.
+    assert isinstance(display, str) and re.fullmatch(rf"http://127\.0\.0\.1:[1-9]\d*{DISPLAY_PATH}", display)
+
+
 def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     # Started from a launcher whose terminal nobody watches, the reason is still on record: the run's first read of its
     # configuration, through the CLI's start, refusing a setting left in the environment.
@@ -284,6 +316,28 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     assert (refused["facts"]["pid"], refused["facts"]["restarted"], refused["facts"]["after_crash"]) == (os.getpid(), False, False)
     assert cli.main(["--home", str(home.root), "status"]) == 1
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
+
+
+def test_a_start_that_fails_before_its_launch_is_still_one_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Past the door, before the run's launch: the indicator cannot be started.
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+
+    def unshown(_home: Home) -> int:
+        raise OSError("no indicator")
+
+    def kept(*_: object) -> None:
+        pass
+
+    monkeypatch.setattr(cli, "start_indicator", unshown)
+    monkeypatch.setattr(cli, "to_terminal", kept)
+    monkeypatch.setattr(cli.logger, "remove", kept)
+    with pytest.raises(OSError, match="no indicator"):
+        cli.main(["--home", str(home.root), "run"])
+    [failed] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
+    assert (failed["outcome"], failed["error"]) == ("failed", "OSError: no indicator")
 
 
 def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_restarts_in_its_heartbeat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

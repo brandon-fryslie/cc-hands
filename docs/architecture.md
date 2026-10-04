@@ -1909,11 +1909,12 @@ long hands took to be ready. It says which run it is (`pid`, `restarted`, `after
 which settings won (the file, the Whisper model, the collector, the backend, server,
 model, and account, the voice), and what the run listens on (the hook socket, the proxy
 and its upstream, the tap, the display route), each added as the step that learns it is
-taken, so a start that ended first says how far it got. No one body runs a start, so its
-unit is opened as it ends rather than held open over the run: held open, every server and
-task the start makes would be inside it, and every unit they ran part of the start's
-trace. A start told to stop first is cancelled. A start that cannot be made is failed,
-with the reason, and says why on its terminal too. Refused at
+taken, so a start that ended first says how far it got; the display's is the address it
+was bound on. No one body runs a start, so its event is emitted as it ends (`wide.ended`)
+rather than held open as a unit over the run: held open, every server and task the start
+makes would be inside it, and every unit they ran part of the start's trace. A start told
+to stop first is cancelled. A start that cannot be made is failed, with the reason, and
+says why on its terminal too; one that anything else ends first is failed with what raised. Refused at
 the door (the talk key's grant, `config.toml`), a run holds no heartbeat yet and writes
 none, so the one there, a running hands' or a crash's, stands; a restart's run holds the
 heartbeat from the outset, its predecessor having beat starting under the same pid.

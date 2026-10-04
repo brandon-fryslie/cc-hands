@@ -38,6 +38,17 @@ def test_a_refused_start_is_failed_with_its_reason_and_says_how_far_it_got() -> 
     assert event.facts["proxy"] == "http://127.0.0.1:5000" and "voice" not in event.facts
 
 
+def test_a_failed_start_traces_only_the_frames_its_error_came_up_through() -> None:
+    # Written down, never raised again to be written: no frame of the event's own making is in its trace.
+    run_start = Start(restarted=False, after_crash=False)
+    recorded: list[Entry] = []
+    with pytest.raises(ValueError, match="x"), run_start.ending(recorded.append):
+        raise ValueError("x")
+    [event] = events(recorded)
+    assert event.trace[0] == "ValueError: x"
+    assert not [line for line in event.trace if "wide.py" in line or line.endswith(" in ended")]
+
+
 def test_a_start_told_to_stop_before_it_was_ready_is_cancelled() -> None:
     run_start = Start(restarted=False, after_crash=False)
     recorded: list[Entry] = []
