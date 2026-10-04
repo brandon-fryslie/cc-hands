@@ -31,7 +31,7 @@ from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
 from hands.core.session import SessionId, pasted
-from hands.core.wire import Exchanged, Fork, Garbled, MainTurn, Message, Reached, Sent, Streamed
+from hands.core.wire import Exchanged, Fork, Garbled, MainTurn, Message, Reached, Send, Sent, Streamed
 from hands.core.wire import Text as Said
 from hands.daemon.cli import main
 from hands.daemon.run import mind
@@ -505,6 +505,10 @@ async def test_a_side_question_is_the_prompt_a_claude_code_of_its_own_opens_with
     asides.hear(replace(answered(first, "x"), reply=Reached(529, 0.0, 0.0, 10, Garbled("overloaded"))))
     await asyncio.sleep(0.1)
     assert not asked.done()
+    # The question's own request is inside its unit of work; another session's goes as it was routed.
+    routed = Send(span=root())
+    own = asides.adopted(Sent("x1", SessionId(first), Fork(), None), routed)
+    assert asides.adopted(Sent("x2", SessionId("elsewhere"), Fork(), None), routed) == routed
     asides.hear(answered(first, "It said four."))
     assert await asked == "It said four."
     # The command and its question whole, newline and all, with a tab as its spaces and half an emoji spelled out.
@@ -533,6 +537,7 @@ async def test_a_side_question_is_the_prompt_a_claude_code_of_its_own_opens_with
     ]
     [alone, within_pass] = events(recorded, "brain.aside")
     assert alone.parent_id is None and (within_pass.trace_id, within_pass.parent_id) == (passing.trace_id, passing.span_id)
+    assert (own.span.trace_id, own.span.parent_id) == (alone.trace_id, alone.span_id)
 
 
 async def test_a_side_question_with_no_answer_fails_saying_why_and_leaves_no_claude_code_running(

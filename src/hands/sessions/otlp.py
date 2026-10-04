@@ -84,7 +84,7 @@ def traced(entry: Entry) -> WideEvent | None:
             ended, error, facts = _reply_end(sent_at, reply)
             return WideEvent(
                 "proxy.exchange", span.trace_id, span.span_id, span.parent_id, datetime.fromtimestamp(sent_at, UTC), round((ended - sent_at) * 1000, 3),
-                "failed" if failed else "ok", error if failed else None, (), {}, {"exchange": entry.exchange, "session": entry.session, "final": entry.final, **facts},
+                "failed" if failed else "ok", error if failed else None, (), {}, {"exchange": entry.exchange, "session": entry.session, "kind": entry.kind, "path": entry.path, "final": entry.final, **facts},
             )
         case _:
             return None

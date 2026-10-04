@@ -154,8 +154,10 @@ def test_a_request_made_for_a_unit_of_work_reaches_the_collector_as_a_span_under
     span, rooted = collector.spans()
     assert (span["traceId"], span["spanId"], span["parentSpanId"], span["name"]) == (TURN.trace_id, "1111111111111111", TURN.span_id, "proxy.exchange")
     assert (rooted["traceId"], rooted["spanId"], rooted["parentSpanId"], rooted["name"]) == (alone.trace_id, alone.span_id, "", "proxy.exchange")
-    # Which session made it, as nothing else in a trace of its own says.
-    assert {"key": "facts.session", "value": {"stringValue": "brain"}} in rooted["attributes"]
+    # Which session made it, and what it asked where, as nothing else in a trace of its own says.
+    rooted_facts = {attribute["key"]: attribute["value"] for attribute in rooted["attributes"]}
+    assert (rooted_facts["facts.session"], rooted_facts["facts.path"]) == ({"stringValue": "brain"}, {"stringValue": "/v1/messages"})
+    assert json.loads(rooted_facts["facts.kind"]["stringValue"]) == {"type": "MainTurn", "prompt": None}
     # From the request leaving to the reply's last byte, its first byte half a second in.
     assert int(span["endTimeUnixNano"]) - int(span["startTimeUnixNano"]) == 1_750_000_000
     attributes = {attribute["key"]: attribute["value"] for attribute in span["attributes"]}

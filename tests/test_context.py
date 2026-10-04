@@ -25,6 +25,7 @@ from hands.core.wire import (
     Kind,
     MainTurn,
     Message,
+    Observed,
     Reached,
     Route,
     Send,
@@ -41,6 +42,8 @@ from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
 
 BRAIN = SessionId("brain")
+# The span the stages here route with: which trace a request is in is the stage's, not the keeper's.
+SPAN = root()
 MARKED = {"type": "ephemeral"}
 
 
@@ -137,11 +140,21 @@ class Store:
         self.said.update(said)
 
 
+class NoAsides:
+    """No side question asked: every request goes as the stage routed it."""
+
+    def adopted(self, sent: Sent, routed: Route) -> Route:
+        return routed
+
+    def hear(self, observed: Observed) -> None:
+        pass
+
+
 class Stage:
     """A stage that sends every request of the brain's with a tail."""
 
     def route(self, sent: Sent) -> Route:
-        return Send((Tail("[hands] tail"),)) if isinstance(sent.kind, MainTurn) else Send()
+        return Send((Tail("[hands] tail"),), span=SPAN) if isinstance(sent.kind, MainTurn) else Send(span=SPAN)
 
     def hear(self, observed: object) -> None:
         pass
@@ -162,7 +175,7 @@ class Rig:
         self.store = Store()
         self.recorded: list[Entry] = []
         self.keeper = Keeper(BRAIN, self.asked.ask, self.store, every, self.recorded.append)
-        self.kept = Kept(Stage(), self.keeper)
+        self.kept = Kept(Stage(), self.keeper, NoAsides())
 
     async def turn(self, finished: int) -> Route:
         """The brain's main turn after `finished` turns: routed, heard, and ended, and its results asked about."""
@@ -198,7 +211,7 @@ async def test_each_result_is_asked_about_once_after_its_turn_ends_and_goes_as_i
     assert all(stubs[finished] == [] for finished in range(0, 6))
     assert stubs[6] == stubs[7] == [Stub(f"call{n}", f"Read: file /{n} holds its digit.") for n in range(3)]
     # The stubs go before the stage's own tail.
-    assert routes[7] == Send((*stubs[7], Tail("[hands] tail")))
+    assert routes[7] == Send((*stubs[7], Tail("[hands] tail")), span=SPAN)
     assert stubbings(rig.recorded) == [({"stubbed": ("call0", "call1", "call2"), "whole": ()}, {"stubbed": 3, "whole": 0})]
 
 
@@ -233,12 +246,12 @@ async def test_forks_and_compaction_share_the_stubs_and_only_main_turns_move_the
     # Past the next boundary by its own count, the side question still goes with the main turn's stubs and no more.
     side = history(9)
     side["messages"] = [*side["messages"], prompt(question)]  # pyright: ignore
-    assert rig.kept.route(sent(side)) == Send(tuple(stubs))
+    assert rig.kept.route(sent(side)) == Send(tuple(stubs), span=SPAN)
     compacting = history(9)
     kept = COMPACTION_INSTRUCTIONS + "keep the draft" + COMPACTION_REMINDER + " Respond with plain text only."
     compacting["messages"] = [*compacting["messages"][:-1], prompt(COMPACTION_OPENING + " summarise the code" + kept)]  # pyright: ignore
     compaction = rig.kept.route(sent(compacting))
-    assert compaction == Send((*stubs, Steer(VOICE_COMPACTION)))
+    assert compaction == Send((*stubs, Steer(VOICE_COMPACTION)), span=SPAN)
     assert isinstance(sent(compacting).kind, Compaction) and isinstance(sent(side).kind, Fork)
     # The steered prompt is what goes, with what Claude Code wrote after its own, and the request is still a compaction.
     assert isinstance(compaction, Send)
@@ -256,20 +269,20 @@ async def test_another_sessions_requests_and_count_tokens_go_unchanged(rig: Rig)
 async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> None:
     class Holding(Stage):
         def route(self, sent: Sent) -> Route:
-            return Hold("(stayed silent)")
+            return Hold("(stayed silent)", SPAN)
 
     keeper = Keeper(BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
-    assert Kept(Holding(), keeper).route(sent(history(6))) == Hold("(stayed silent)")
+    assert Kept(Holding(), keeper, NoAsides()).route(sent(history(6))) == Hold("(stayed silent)", SPAN)
 
 
 async def test_the_stages_send_goes_on_whole_with_the_keepers_changes_first() -> None:
     class Final(Stage):
         def route(self, sent: Sent) -> Route:
-            return Send((Tail("standing"),), refusal="final")
+            return Send((Tail("standing"),), refusal="final", span=SPAN)
 
     store = Store()
     store.said.update({key(result): "said" for result in aged(history(6), 3)})
     keeper = Keeper(BRAIN, Asked().ask, store, 3, lambda _entry: None)
-    routed = Kept(Final(), keeper).route(sent(history(6)))
+    routed = Kept(Final(), keeper, NoAsides()).route(sent(history(6)))
     assert isinstance(routed, Send) and routed.refusal == "final"
     assert routed.changes[-1] == Tail("standing") and len(routed.changes) > 1

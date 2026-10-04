@@ -168,19 +168,27 @@ class Hearing(Protocol):
     def hear(self, observed: Observed) -> None: ...
 
 
-class Kept:
-    """The brain's listener on the wire: the stage's route, with the keeper's changes made before the stage's own, and
-    everything heard too by whatever else reads the wire: the brain, and what answers hands' side questions."""
+class Asking(Hearing, Protocol):
+    """What answers hands' side questions, as the wire sees it: a question's own request is its part."""
 
-    def __init__(self, stage: Listener, keeper: Keeper, *others: Hearing) -> None:
+    def adopted(self, sent: Sent, routed: Route) -> Route: ...
+
+
+class Kept:
+    """The brain's listener on the wire: the stage's route, with the keeper's changes made before the stage's own and a
+    side question's own request inside the question, and everything heard too by whatever else reads the wire: the
+    brain, and what answers hands' side questions."""
+
+    def __init__(self, stage: Listener, keeper: Keeper, asides: Asking, *others: Hearing) -> None:
         self._stage = stage
         self._keeper = keeper
-        self._others = others
+        self._asides = asides
+        self._others = (*others, asides)
 
     def route(self, sent: Sent) -> Route:
         # The keeper's first: a history it cannot read fails the whole route before the stage has counted the request.
         kept = self._keeper.changes(sent)
-        match self._stage.route(sent):
+        match self._asides.adopted(sent, self._stage.route(sent)):
             # [LAW:one-source-of-truth] the stage's Send as it routed it, every field carried, with the keeper's changes first.
             case Send() as send:
                 return replace(send, changes=(*kept, *send.changes))

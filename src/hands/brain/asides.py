@@ -20,7 +20,7 @@ opening prompt it went out 0.4s after the start, 6 of 6). Its answer is read fro
 import asyncio
 import contextlib
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
@@ -30,10 +30,11 @@ from loguru import logger
 from hands.brain.process import ClaudeCode, Station, Unstartable, brain_claude, slim, spawn
 from hands.core.effects import Command
 from hands.core.session import CommandName, SessionId, pasted
-from hands.core.wire import Exchanged, Fork, Observed, Reached, Streamed
+from hands.core.trace import Span
+from hands.core.wire import Exchanged, Fork, Observed, Reached, Route, Sent, Streamed
 from hands.core.wire import Text as Said
 from hands.sessions.audit import Record
-from hands.sessions.wide import annotate, since, unit
+from hands.sessions.wide import annotate, here, since, unit, within
 
 # The side question Claude Code asks of a fork of its session, which here holds nothing but the question.
 ASIDE = CommandName("btw")
@@ -94,10 +95,12 @@ Within = Deadline | TimeLimit
 
 @dataclass
 class _Asked:
-    """The question being asked now: the session its Claude Code was started under, and its answer, or why it has none."""
+    """The question being asked now: the session its Claude Code was started under, its unit of work's span, and its
+    answer, or why it has none."""
 
     # [LAW:one-source-of-truth] chosen by hands, so the request on the wire that asks the question is known as its own.
     session: SessionId
+    span: Span
     answer: "asyncio.Future[str | AsideFailed]"
 
 
@@ -114,10 +117,10 @@ class Asides:
     async def ask(self, kind: AsideKind, question: str, within: Within) -> str:
         """The answer to `question`, from a Claude Code that is asked nothing else; raises AsideFailed when it has none,
         TIMED_OUT once its asker's time is up."""
-        asked = _Asked(SessionId(str(uuid4())), asyncio.get_running_loop().create_future())
         # [LAW:nothing-unseen] one event for each question, however it ends: answered, failed, or left by its asker, in its
         # turn or still waiting for it. Asked inside another unit of work, it is that one's part.
         with unit("brain.aside", self._record):
+            asked = _Asked(SessionId(str(uuid4())), here(), asyncio.get_running_loop().create_future())
             annotate(kind=kind, question=question, aside_session=asked.session)
             try:
                 reply = await self._in_turn(asked, question, within)
@@ -178,6 +181,11 @@ class Asides:
                 raise failure
             case said:
                 return said
+
+    def adopted(self, sent: Sent, routed: Route) -> Route:
+        """`routed` as the question being asked now has it: its own request, inside the question's unit of work."""
+        asked = self._asked
+        return replace(routed, span=within(asked.span)) if asked is not None and sent.session == asked.session else routed
 
     def hear(self, observed: Observed) -> None:
         """A side question's answer, read from the wire: the reply to its own Claude Code's request."""
