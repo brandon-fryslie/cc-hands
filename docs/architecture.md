@@ -615,7 +615,7 @@ stopped or never ran is off, not broken: the shim exits 0 and prints nothing, an
 permission request falls through to Claude Code's own dialog. So is one still
 starting: `hands run` writes its first heartbeat before it imports Pipecat and serves
 the socket, and it reads the session files once it does. A hands whose heartbeat
-says it died, hung, or is up but not answering, or whose heartbeat cannot be read,
+says it died, refused to start, hung, or is up but not answering, or whose heartbeat cannot be read,
 makes the shim exit 1 with the socket error and the verdict on stderr, so Claude Code
 shows the failure in the session where it happened rather than letting a dead daemon
 look like a quiet one `[LAW:no-silent-failure]`.
@@ -1737,8 +1737,8 @@ thing that failed `[LAW:no-silent-failure]`:
    terminal's Ctrl-C takes it down first. It lives while the process that started it does,
    and once that is gone, until the light leaves up: it posts that notice and exits. Once a second it judges the heartbeat through `heartbeat.look`, the one
    read-and-judge that `hands status`, the crash check at start, and the hook shim also use. Its title
-   shows one of six lights: up, deaf (up, with no microphone to hear through), not
-   responding, down, off (stopped or never ran), and unreadable. An unreadable heartbeat
+   shows one of seven lights: up, deaf (up, with no microphone to hear through), not
+   responding, down, refused (a start that ended before it ran, with its reason), off (stopped or never ran), and unreadable. An unreadable heartbeat
    is warned of as loudly as a dead daemon. It posts a notification when the light
    changes into deaf or out of a running light (up or deaf) into a warning, at most once a minute, so a loop that
    stalls and recovers over and over is not announced every time. A departure inside that

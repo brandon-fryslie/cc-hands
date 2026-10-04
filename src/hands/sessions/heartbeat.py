@@ -141,10 +141,11 @@ class Stopped:
 
 @dataclass(frozen=True)
 class Refused:
-    """The daemon's last heartbeat said it refused to start, and why: it ended before it ran, rather than died or hung."""
+    """The daemon's last heartbeat, written at `written_at`, said it refused to start, and why: it ended before it ran,
+    rather than died or hung."""
 
-    status: Status
     refusal: Refusal
+    written_at: datetime
 
 
 @dataclass(frozen=True)
@@ -184,8 +185,8 @@ def judge(path: Path, status: Status | None, now: datetime, alive: bool) -> Verd
         # Checked before the pid: once stopped, a running pid is a daemon still cleaning up, or a stranger reusing the number.
         case Status(pipeline="stopped"):
             return Stopped(status)
-        case Status(pipeline=Refusal() as refusal):
-            return Refused(status, refusal)
+        case Status(pipeline=Refusal() as refusal, written_at=written_at):
+            return Refused(refusal, written_at)
         case Status() if not alive:
             return Down(status)
         case Status() if now - status.written_at > status.heartbeat * MISSED_BEATS:
@@ -209,8 +210,8 @@ def describe(verdict: Verdict, now: datetime) -> str:
             )
         case Stopped(status=status):
             return f"hands is stopped: pid {status.pid} finished its pipeline {_span(now - status.written_at)} ago"
-        case Refused(status=status, refusal=Refusal(reason=reason)):
-            return f"hands refused to start {_span(now - status.written_at)} ago: {reason}"
+        case Refused(refusal=Refusal(reason=reason), written_at=written_at):
+            return f"hands refused to start {_span(now - written_at)} ago: {reason}"
         case Up(status=status):
             heard = "never" if status.last_audio_out is None else f"{_span(now - status.last_audio_out)} ago"
             state = "up but cannot hear, as there is no microphone" if status.deaf else "up"

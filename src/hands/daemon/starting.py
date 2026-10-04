@@ -35,13 +35,14 @@ class CannotStart(Exception):
 def refuse(cannot: CannotStart, heart: heartbeat.Heart, record: Record) -> None:
     """End a start that cannot be made, saying why where it was started, in the audit log, and in its last heartbeat.
 
-    [LAW:nothing-unseen] a start from a launcher whose terminal nobody watches is otherwise only gone: `hands status` and
-    the menu-bar indicator read the reason from the heartbeat, and the log keeps it after the next run replaces that.
+    [LAW:nothing-unseen] a start from a launcher whose terminal nobody watches is otherwise only gone: `hands status`, and
+    the menu-bar indicator of a start refused after it was shown, read the reason from the heartbeat, and the log keeps
+    it after the next run replaces that. Said on the terminal first, so a heartbeat that cannot be written loses no reason.
     """
     reason = str(cannot)
+    print(f"hands: {reason}", file=sys.stderr)
     record(StartRefused(reason))
     heart.beat(heartbeat.Refusal(reason), None, 0, listening=False, deaf=False)
-    print(f"hands: {reason}", file=sys.stderr)
 
 
 @dataclass(frozen=True)
