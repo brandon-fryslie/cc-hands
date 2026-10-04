@@ -4,8 +4,11 @@ outside any session starts one, and a run that stops short naming the stage on i
 The whole run, against a running hands, a LowTalker, and a working session, is what the command is for: it is run by
 hand on an installed Mac, not here."""
 
+import asyncio
 import json
 import os
+from aiortc import RTCPeerConnection
+from aiortc.exceptions import InvalidStateError
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,7 +18,7 @@ import pytest
 
 from hands.core.session import SessionId
 from hands.daemon.cli import main
-from hands.daemon.smoke import FOLDER, QUIET_SECS, SESSION_GIVEN, WORDS, Ear, Line, NotReached, as_from_a_terminal, joined, parsed, proof
+from hands.daemon.smoke import FOLDER, QUIET_SECS, SESSION_GIVEN, WORDS, Caller, Ear, Line, NotReached, as_from_a_terminal, joined, parsed, proof
 from hands.sessions import heartbeat
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
@@ -59,13 +62,17 @@ def utterance(session: SessionId, delivered: Line, outcome: str = "ok", error: s
     return {"type": "WideEvent", "event": "utterance", "outcome": outcome, "error": error, "facts": {"session": session, "heard": heard, "delivered": delivered}}
 
 
-def test_the_session_s_turn_told_unasked_is_told_once_the_focus_moved_to_it() -> None:
+def test_the_session_s_turn_told_unasked_is_told_once_the_reply_after_its_refocus_was_said() -> None:
     def refocused(session: SessionId) -> Line:
         return {"type": "Refocused", "session": session, "outcome": "moved", "failed": None}
 
+    replied: Line = {"type": "Replied", "text": "It said falcon.", "interrupted": False}
     spoken = utterance(SESSION, {"type": "Spoken", "amount": "full", "why": "finished"})
-    assert proof("told", [stop(SESSION), spoken, refocused(OTHER)], SESSION) is None
-    assert proof("told", [spoken, refocused(SESSION)], SESSION) == f"hands told the user of session {SESSION}'s turn"
+    # Said before the telling was taken, or the telling of another session: not this telling.
+    assert proof("told", [replied, stop(SESSION), spoken, refocused(OTHER), replied], SESSION) is None
+    # Refocused is written as the telling is taken, before it is said.
+    assert proof("told", [spoken, refocused(SESSION)], SESSION) is None
+    assert proof("told", [spoken, refocused(SESSION), replied], SESSION) == f"hands told the user of session {SESSION}'s turn: 'It said falcon.'"
 
 
 def test_the_session_s_turn_held_until_asked_needs_no_telling_waited_for() -> None:
@@ -132,6 +139,25 @@ def test_hands_has_finished_speaking_once_it_spoke_after_the_release_and_went_qu
     assert ear.finished_speaking(2.0, 3.0 + QUIET_SECS / 2) is None
     assert ear.finished_speaking(2.0, 3.0 + QUIET_SECS) == 3.0
     assert ear.since(2.0) == frame(0) + frame(3000)
+
+
+class Dropped:
+    """A call's channel once the call has dropped, which refuses what is sent on it."""
+
+    def send(self, data: bytes | str) -> None:
+        raise InvalidStateError("RTCDataChannel is not open")
+
+
+async def test_a_call_that_drops_stops_the_stage_being_said_and_says_why() -> None:
+    peer = RTCPeerConnection()
+    caller = Caller(peer, Dropped())  # pyright: ignore[reportArgumentType]  (the channel's send is all the caller uses)
+    caller.tasks.append(asyncio.create_task(caller.keep_sending(), name="the smoke test's voice"))
+    try:
+        with pytest.raises(NotReached) as raised:
+            await asyncio.wait_for(caller.say("typed", frame(3000)), 5)
+        assert (raised.value.stage, raised.value.why) == ("typed", "the smoke test's voice stopped: InvalidStateError('RTCDataChannel is not open')")
+    finally:
+        await peer.close()
 
 
 def test_the_smoke_session_is_the_one_that_joined_from_its_folder_since_the_test_began(tmp_path: Path) -> None:

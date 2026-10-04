@@ -130,8 +130,10 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
     line shows it never will be."""
     # [LAW:dataflow-not-control-flow] one reading per stage, of the records the daemon writes as it reaches it, in order.
     # A send's Typing line is written before it is typed: it was typed once the unit of work that typed it has ended
-    # with no TypingFailed line for it.
+    # with no TypingFailed line for it. A telling's Refocused line is written as it is taken, before it is said: it was
+    # said once the reply that follows it is, which is recorded once it has been played.
     sending: tuple[str, str] | None = None
+    telling = False
     for line in lines:
         match stage, line:
             case "heard", {"type": "HoldHeard", "said": str(said)}:
@@ -146,14 +148,15 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
                 return f"typed {sending[1]!r} into session {session}"
             case "finished", {"type": "WideEvent", "event": "hook", "facts": {"hook": "Stop", "session": str(stopped)}} if stopped == session:
                 return f"session {session} finished its turn"
-            # How the finished turn reaches the user, which hands decides at once: held until asked, or told unasked,
-            # which has been said once the focus moves to the session told of.
+            # How the finished turn reaches the user, which hands decides at once: held until asked, or told unasked.
             case "told", {"type": "WideEvent", "event": "utterance", "outcome": "failed", "error": str(error), "facts": {"session": str(told), "heard": {"type": "Summarise"}}} if told == session:
                 raise NotReached("told", f"hands could not tell session {session}'s turn: {error}")
             case "told", {"type": "WideEvent", "event": "utterance", "facts": {"session": str(told), "heard": {"type": "Summarise"}, "delivered": {"type": "Withheld", "why": str(why)}}} if told == session:
                 return f"hands holds session {session}'s turn until asked ({why})"
             case "told", {"type": "Refocused", "session": str(told)} if told == session:
-                return f"hands told the user of session {session}'s turn"
+                telling = True
+            case "told", {"type": "Replied", "text": str(text)} if telling:
+                return f"hands told the user of session {session}'s turn: {text!r}"
             case _:
                 pass
     return None
@@ -233,6 +236,16 @@ class Caller:
     # release follows every frame said before it, as the page's does.
     pending: deque[bytes | str] = field(default_factory=deque[bytes | str])
     drained: asyncio.Event = field(default_factory=asyncio.Event)
+    # Its voice and its ear, each running for as long as the call is up.
+    tasks: list[asyncio.Task[None]] = field(default_factory=list[asyncio.Task[None]])
+
+    def up(self, stage: Stage) -> None:
+        """Raises NotReached at `stage` once the call's voice or ear has stopped: the call dropped, or broke."""
+        # [LAW:no-silent-failure] what stopped either one is why `stage`, which needs the call, was not reached.
+        for task in self.tasks:
+            if task.done():
+                stopped = None if task.cancelled() else task.exception()
+                raise NotReached(stage, f"{task.get_name()} stopped: {stopped!r}" if stopped else f"{task.get_name()} stopped: the call dropped")
 
     async def keep_sending(self) -> None:
         """A frame every FRAME_SECS for as long as the call is up, silence where nothing is being said: hands hangs up a
@@ -254,11 +267,17 @@ class Caller:
                     # A press or a release goes out with the frame after it, as the page's button does.
                     pass
 
-    async def say(self, audio: bytes) -> float:
-        """Hold the button, say `audio`, and let go once it has all gone; when it was let go of, by the loop's clock."""
+    async def say(self, stage: Stage, audio: bytes) -> float:
+        """Hold the button, say `audio`, and let go once it has all gone; when it was let go of, by the loop's clock.
+        Raises NotReached at `stage` where the call stops before it has."""
         self.drained.clear()
         self.pending.extend(["press", *(audio[at : at + FRAME_BYTES] for at in range(0, len(audio), FRAME_BYTES)), "release"])
-        await self.drained.wait()
+        drained = asyncio.create_task(self.drained.wait())
+        try:
+            await asyncio.wait([drained, *self.tasks], return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            drained.cancel()
+        self.up(stage)
         return asyncio.get_running_loop().time()
 
     async def keep_hearing(self, track: MediaStreamTrack) -> None:
@@ -363,16 +382,15 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
         member = await _joined(smoked, folder, before, claude, session)
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         caller = Caller(peer, peer.createDataChannel("talk", ordered=True))
-        tasks: list[asyncio.Task[None]] = []
         try:
-            await _called(home, caller, tasks)
+            await _called(home, caller)
             smoked.reached("called", f"hands answered a call at https://127.0.0.1:{PHONE_PORT}")
             await _turns(smoked, caller, member.id, said)
         except NotReached as missed:
             # [LAW:nothing-unseen] what the session showed is part of why a stage it took part in was not reached.
             raise NotReached(missed.stage, f"{missed.why}\nthe smoke session showed:\n{session.shown()}") from missed
         finally:
-            for task in tasks:
+            for task in caller.tasks:
                 task.cancel()
             await peer.close()
     finally:
@@ -396,7 +414,7 @@ async def _joined(smoked: Run, folder: Path, before: frozenset[str], claude: str
     return member
 
 
-async def _called(home: Home, caller: Caller, tasks: list[asyncio.Task[None]]) -> None:
+async def _called(home: Home, caller: Caller) -> None:
     """The call up, as the page puts it up: its offer answered with the phone's key, and its channel open."""
     opened = asyncio.Event()
     caller.channel.on("open", opened.set)
@@ -404,7 +422,7 @@ async def _called(home: Home, caller: Caller, tasks: list[asyncio.Task[None]]) -
 
     @caller.peer.on("track")
     def heard(track: MediaStreamTrack) -> None:  # pyright: ignore[reportUnusedFunction]
-        tasks.append(asyncio.create_task(caller.keep_hearing(track), name="the smoke test's ear"))
+        caller.tasks.append(asyncio.create_task(caller.keep_hearing(track), name="the smoke test's ear"))
 
     await caller.peer.setLocalDescription(await caller.peer.createOffer())
     try:
@@ -431,7 +449,7 @@ async def _called(home: Home, caller: Caller, tasks: list[asyncio.Task[None]]) -
             await opened.wait()
     except TimeoutError:
         raise NotReached("called", f"the call's channel did not open within {CALL_SECONDS:.0f}s; the connection is {caller.peer.connectionState}") from None
-    tasks.append(asyncio.create_task(caller.keep_sending(), name="the smoke test's voice"))
+    caller.tasks.append(asyncio.create_task(caller.keep_sending(), name="the smoke test's voice"))
 
 
 async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence[bytes]) -> None:
@@ -451,6 +469,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
         transcribed_to: list[float] = []
 
         async def found() -> str | None:
+            caller.up(stage)
             last = caller.ear.finished_speaking(released, loop.time())
             if last is None or last in transcribed_to:
                 return None
@@ -462,13 +481,13 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
 
     # The request: heard, and hands answering aloud about the session.
     since = smoked.mark()
-    released = await caller.say(asking)
+    released = await caller.say("heard", asking)
     smoked.reached("heard", await logged("heard", since, "transcription of the hold (HoldHeard)")())
     smoked.reached("answered", await told_back("answered", released, FOLDER))
 
     # The go-ahead: the draft typed into the session, and the session's turn run to its end.
     since = smoked.mark()
-    released = await caller.say(sending)
+    released = await caller.say("typed", sending)
     smoked.reached("typed", await logged("typed", since, f"send to session {session} (Typing)")())
     smoked.reached("finished", await logged("finished", since, f"Stop hook from session {session}")())
 
@@ -483,7 +502,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
     await until("told", TURN_SECONDS, quiet, lambda: "hands never stopped speaking after telling of the session's turn")
 
     # The question: what the session said, told back aloud.
-    released = await caller.say(questioning)
+    released = await caller.say("told", questioning)
     smoked.reached("told", await told_back("told", released, smoked.word))
 
 
