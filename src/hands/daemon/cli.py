@@ -118,7 +118,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
     running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID, if it is still running, is kept rather than another started")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
-    commands.add_parser("check", help="say whether hands is set up to work here: its plugin, the claude shim on PATH, this terminal's Input Monitoring grant, and the running sessions; exits 0 only when every piece is there, 1 when one is missing, 2 when one could not be looked at")
+    commands.add_parser("check", help="say of each step of the README's install whether it is done here: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the backend's key or login, LowTalker transcribing, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
     commands.add_parser("login", help="set the brain (the claude backend of the home's config.toml) up on a home with none, or log it in again or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
@@ -367,7 +367,7 @@ def reachable(home: Home, settings: Config) -> None:
     restart an edit asks for, so an edit naming a key or a login hands lacks is refused and outlived, not restarted on."""
     # Imported here, as in loaded, so that `hands status` answers without loading Pipecat; an edit weighed while the
     # start imports it waits on that import.
-    from hands.daemon.run import backend
+    from hands.daemon.backend import backend
 
     backend(settings.llm, home, os.environ)
 
@@ -378,7 +378,13 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
     from hands.daemon.run import configured_from, run
 
     path = os.environ.get("PATH", "")
-    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), lambda: survey(readiness.check(home, path, granted=True)), home, heart, record, quit_event, after_crash, os.environ, run_start)
+    # This run is hands running, and the backend it reaches is the one it was configured on.
+    running = readiness.Ready(f"hands is running here: pid {os.getpid()}")
+    return lambda quit_event: run(
+        lambda environment: configured_from(home, settings, environment),
+        lambda reached: survey(readiness.check(home, path, True, readiness.reaching(reached.llm), readiness.transcription(reached.transcription), running)),
+        home, heart, record, quit_event, after_crash, os.environ, run_start,
+    )
 
 
 def start_indicator(home: Home) -> int:
@@ -424,7 +430,8 @@ def report(home: Home) -> int:
 
 
 def check(home: Home, granted: bool) -> int:
-    findings = readiness.check(home, os.environ.get("PATH", ""), granted)
+    reached, heard = readiness.configured(home, os.environ)
+    findings = readiness.check(home, os.environ.get("PATH", ""), granted, reached, heard, readiness.daemon(home, datetime.now(UTC)))
     wide.annotate(findings=tuple(findings))
     for finding in findings:
         print(f"{display(finding)[0]:<8} {finding.said}")

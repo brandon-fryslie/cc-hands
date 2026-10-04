@@ -9,7 +9,7 @@ from openai import AsyncOpenAI, OpenAIError
 from pipecat.services.anthropic.llm import _SONNET_THINKS_BY_DEFAULT_FROM, _sonnet_generation  # pyright: ignore[reportPrivateUsage]
 
 from hands.brain.asides import AsideFailed, Deadline, Within
-from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
+from hands.voice.backends import AnthropicBackend, OpenAICompatibleBackend
 
 # A rendered turn in, the spoken summary out.
 Summariser = Callable[[str], Awaitable[str]]

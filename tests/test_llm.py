@@ -19,7 +19,8 @@ from pipecat.services.openai.llm import OpenAILLMService
 
 from conftest import Api, ServeApi, ServeChat, running
 from hands.sessions.model_facts import ModelFault, ModelReplyEmpty, ModelUnreachable
-from hands.voice.pipeline import AnthropicBackend, AnthropicService, OpenAICompatibleBackend, build_llm
+from hands.voice.backends import AnthropicBackend, OpenAICompatibleBackend
+from hands.voice.pipeline import AnthropicService, build_llm
 from hands.voice.system import model_fact
 from hands.voice.tools import context_tools, stay_silent_tool
 

@@ -20,7 +20,7 @@ from conftest import onboard
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, Anthropic, Claude, Config, OpenAI
 from hands.daemon.starting import CannotStart, Ended, Start, start
-from hands.daemon.run import backend
+from hands.daemon.backend import backend
 from hands.sessions import audit, heartbeat
 from hands.sessions.audit import Entry, SettingsEdited, encoded
 from hands.sessions.hookconfig import DISPLAY_PATH
@@ -30,7 +30,8 @@ from hands.sessions.registry import Sessions
 from hands.sessions.wide import WideEvent
 from hands.core.wire import UPSTREAM
 from hands.voice import voices
-from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
+from hands.voice import backends
+from hands.voice.backends import AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
 
 HOME = Home(Path("/Users/someone/.hands"))
 
@@ -129,7 +130,7 @@ def test_anthropic_on_its_own_url_spelled_with_a_slash_is_its_own_api() -> None:
 
 def test_anthropic_on_its_own_api_is_keyed_by_the_environment_else_the_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
     kept: dict[str, str] = {}
-    monkeypatch.setattr(run, "keychain_password", kept.get)
+    monkeypatch.setattr("hands.daemon.backend.keychain_password", kept.get)
     with pytest.raises(Rejected, match="ANTHROPIC_API_KEY is not set and the keychain holds no HANDS_LLM_ANT_KEY"):
         backend(Anthropic(), HOME, {})
     kept["HANDS_LLM_ANT_KEY"] = "from-keychain"
@@ -138,7 +139,7 @@ def test_anthropic_on_its_own_api_is_keyed_by_the_environment_else_the_keychain(
 
 
 def test_the_keychain_key_never_leaves_for_another_server(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(run, "keychain_password", {"HANDS_LLM_ANT_KEY": "anthropic-own"}.get)
+    monkeypatch.setattr("hands.daemon.backend.keychain_password", {"HANDS_LLM_ANT_KEY": "anthropic-own"}.get)
     other = Anthropic(url="https://api-chicago.codexapi.pro", model="claude-other")
     with pytest.raises(Rejected, match="ANTHROPIC_API_KEY is not set"):
         backend(other, HOME, {})
@@ -184,8 +185,8 @@ def test_a_brain_that_would_start_on_claude_codes_first_screens_stops_the_run_na
 
 def test_the_brain_is_logged_as_reaching_anthropics_api_through_the_proxy_on_its_account() -> None:
     brain = ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=HOME.brain, account="brain@example.com")
-    assert run._server(brain) == UPSTREAM  # pyright: ignore[reportPrivateUsage]
-    assert run._account(brain) == "brain@example.com"  # pyright: ignore[reportPrivateUsage]
+    assert backends.server(brain) == UPSTREAM
+    assert backends.account(brain) == "brain@example.com"
 
 
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
@@ -220,7 +221,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         return run.Configured(config, run.Settings(b"", Config(collector="http://otel.example:4318")))
 
     run_start = Start(restarted=False, after_crash=False)
-    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda: None, home, sessions, run_start), heart, sessions.live_count, asyncio.Event()))
+    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, home, sessions, run_start), heart, sessions.live_count, asyncio.Event()))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -254,7 +255,7 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
 
     quit_event = asyncio.Event()
     quit_event.set()
-    assert await start(lambda: run.configured(prompted, lambda: None, home, sessions, Start(restarted=False, after_crash=False)), heart, sessions.live_count, quit_event) is None
+    assert await start(lambda: run.configured(prompted, lambda _: None, home, sessions, Start(restarted=False, after_crash=False)), heart, sessions.live_count, quit_event) is None
     never.set()
 
 
@@ -266,7 +267,7 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
         raise CannotStart("no key")
 
     with pytest.raises(CannotStart, match="no key"):
-        asyncio.run(start(lambda: run.configured(refused, lambda: None, home, sessions, Start(restarted=False, after_crash=False)), heart, sessions.live_count, asyncio.Event()))
+        asyncio.run(start(lambda: run.configured(refused, lambda _: None, home, sessions, Start(restarted=False, after_crash=False)), heart, sessions.live_count, asyncio.Event()))
 
 
 async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -284,7 +285,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     recorded: list[Entry] = []
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda: None, home, heart, recorded.append, asyncio.Event(), False, {}, run_start)
+            await run.run(refused, lambda _: None, home, heart, recorded.append, asyncio.Event(), False, {}, run_start)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -320,7 +321,7 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
 
         async def refused(quit_event: asyncio.Event) -> Ended:
             configure = partial(run.configured_from, home, settings, {"ANTHROPIC_API_KEY": "k", "HANDS_LLM": "claude"})
-            await start(lambda: run.configured(configure, lambda: None, home, sessions, run_start), heart, sessions.live_count, quit_event)
+            await start(lambda: run.configured(configure, lambda _: None, home, sessions, run_start), heart, sessions.live_count, quit_event)
             raise AssertionError("a start with HANDS_LLM set went on")
 
         return refused

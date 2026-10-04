@@ -9,8 +9,7 @@ the whole variability of the pipeline as data.
 import asyncio
 from itertools import takewhile
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -59,43 +58,7 @@ from hands.voice.tools import RunsReplies, Tool, context_tools
 from hands.voice.turnstop import KeyTurnStop
 from hands.voice import voices
 from hands.voice.whisper import Whisper
-
-# [LAW:types-are-the-program] the two ways to reach a model differ in what
-# they need, not in what they do, so each is a variant with exactly its own
-# fields; there is no bag of optional keys and URLs to guard downstream.
-@dataclass(frozen=True)
-class AnthropicBackend:
-    """Claude over the Anthropic API, or any server that speaks it."""
-
-    base_url: str
-    # Kept out of the repr, so a backend printed or logged does not print its key.
-    api_key: str = field(repr=False)
-    model: str
-
-
-@dataclass(frozen=True)
-class OpenAICompatibleBackend:
-    """Any OpenAI chat completions server: OpenAI's own API, or one that speaks it."""
-
-    base_url: str
-    # Sent as the bearer token on every call, whatever the server does with it; kept out of the repr like Claude's.
-    api_key: str = field(repr=False)
-    model: str
-
-
-@dataclass(frozen=True)
-class ClaudeCodeBackend:
-    """Claude through a slim Claude Code of hands' own, on the Claude subscription and the login in `config_dir` (hands.brain)."""
-
-    # No URL of its own: its requests go through hands' proxy, whose address is known only once the run has it listening.
-    model: str
-    config_dir: Path
-    # The account its login held when the run started.
-    account: str
-
-
-LLMBackend = AnthropicBackend | OpenAICompatibleBackend | ClaudeCodeBackend
-
+from hands.voice.backends import AnthropicBackend, LLMBackend, OpenAICompatibleBackend
 
 @dataclass(frozen=True)
 class VoiceConfig:

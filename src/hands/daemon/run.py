@@ -16,9 +16,7 @@ Latency from key release to the first audio out is logged for every turn.
 """
 
 import asyncio
-import atexit
 import shlex
-import subprocess
 import sys
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
@@ -36,7 +34,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
-from hands.daemon.config import ANTHROPIC_URL, LLM, Anthropic, Claude, OpenAI, Settings
+from hands.daemon.config import Settings
 from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
@@ -70,16 +68,10 @@ from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus
 from hands.voice.vocabulary import Lexicon
 from hands.voice.readback import identifier, spoken_name
-from hands.voice.pipeline import (
-    AnthropicBackend,
-    ClaudeCodeBackend,
-    LLMBackend,
-    OpenAICompatibleBackend,
-    Voice,
-    VoiceConfig,
-    build_llm,
-    build_voice,
-)
+from hands.voice import backends
+from hands.voice.backends import AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
+from hands.voice.pipeline import Voice, VoiceConfig, build_llm, build_voice
+from hands.daemon.backend import backend
 from hands.voice.naming import NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS, keep_naming
 from hands.voice.narrator import Recounts, attending, narrate
 from hands.voice.utterance import Utterances
@@ -104,15 +96,11 @@ from hands.voice.trigger import Edge, Trigger, Triggers
 from hands.voice.tools import Tool, audited, intermediary_tools
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
-from hands.brain.process import Brain, Launch, NotLoggedIn, Station, Unstartable, account_kept_out, answered, logged_in, start as start_brain, workdir
+from hands.brain.process import Brain, Launch, Station, Unstartable, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.core.session import SessionId
 
-# Where the Anthropic key lives when ANTHROPIC_API_KEY is not set: a generic password in the keychain.
-# A prompt to allow access that nobody answers is a failed read, not a daemon that never starts.
-KEYCHAIN_TIMEOUT_SECONDS = 30.0
-ANTHROPIC_KEYCHAIN_SERVICE = "HANDS_LLM_ANT_KEY"
 # How late a permission deadline can be heard.
 TICK_SECONDS = 1.0
 # How late a session whose process died, or one that started unheard, is noticed.
@@ -122,72 +110,6 @@ SWEEP_SECONDS = 2.0
 TAIL_SECONDS = 0.1
 # How late Claude Code setting a session's status is heard: the file it rewrites is a few hundred bytes a session.
 STATUS_SECONDS = 0.1
-
-
-def backend(llm: LLM, home: Home, environment: Mapping[str, str]) -> LLMBackend:
-    """The backend the settings name, given the key or the login it reaches its model with; raises Rejected naming what it cannot have."""
-    # [LAW:single-enforcer] where a setting meets its secret: the key from the environment, or the keychain, or the
-    # brain's login, is checked here, once, before the voice loads, rather than once every turn has failed.
-    match llm:
-        case OpenAI(url=url, model=model):
-            return OpenAICompatibleBackend(base_url=url, api_key=_key(environment, "OPENAI_API_KEY"), model=model)
-        case Anthropic(url=url, model=model) if url == ANTHROPIC_URL:
-            key = _environment_key(environment, "ANTHROPIC_API_KEY") or _keychain_key(ANTHROPIC_KEYCHAIN_SERVICE, "ANTHROPIC_API_KEY")
-            return AnthropicBackend(base_url=url, api_key=key, model=model)
-        case Anthropic(url=url, model=model):
-            # The keychain's key is Anthropic's own, so it is never sent to another server: that server's key is named in the environment.
-            return AnthropicBackend(base_url=url, api_key=_key(environment, "ANTHROPIC_API_KEY"), model=model)
-        case Claude(model=model):
-            try:
-                account = logged_in(home.brain, UPSTREAM, environment)
-                answered(home.brain)
-                account_kept_out(home.brain)
-            except (NotLoggedIn, Unstartable) as error:
-                raise Rejected(str(error)) from error
-            return ClaudeCodeBackend(model=model, config_dir=home.brain, account=account)
-
-
-def _key(environment: Mapping[str, str], var: str) -> str:
-    """The API key a keyed backend cannot run without; raises Rejected naming the variable."""
-    key = _environment_key(environment, var)
-    if not key:
-        raise Rejected(f"{var} is not set; the [llm] backend hands is set to run on needs it to reach its model.")
-    return key
-
-
-def _environment_key(environment: Mapping[str, str], var: str) -> str:
-    # A key has no whitespace in it: space around one in a .env is dropped, and a blank one is no key.
-    return environment.get(var, "").strip()
-
-
-def _keychain_key(service: str, var: str) -> str:
-    """The key the keychain holds under `service`; when it holds none, raises Rejected naming both places a key can be."""
-    key = keychain_password(service)
-    if not key:
-        raise Rejected(f"{var} is not set and the keychain holds no {service}; the [llm] backend hands is set to run on needs one to reach its model.")
-    return key
-
-
-def keychain_password(service: str) -> str | None:
-    """The generic password the keychains on the search list hold for `service`, or None when they hold none."""
-    bypass = "set ANTHROPIC_API_KEY to start without the keychain"
-    with subprocess.Popen(["security", "find-generic-password", "-s", service, "-w"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as found:
-        # The read runs on a daemon thread, which a stop mid-prompt exits without: the prompt goes with the process
-        # that asked, not left on screen for a daemon that is gone.
-        atexit.register(found.kill)
-        try:
-            out, err = found.communicate(timeout=KEYCHAIN_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            found.kill()
-            raise Rejected(f"reading {service} from the keychain waited {KEYCHAIN_TIMEOUT_SECONDS:.0f}s, likely on a prompt to allow access; {bypass}.")
-        finally:
-            atexit.unregister(found.kill)
-    # [LAW:no-silent-failure] 44 is `security`'s "not found"; any other failure, a locked keychain or a denied prompt, is not an absence.
-    if found.returncode == 44:
-        return None
-    if found.returncode != 0:
-        raise Rejected(f"reading {service} from the keychain failed: {err.strip()}; {bypass}.")
-    return out.strip() or None
 
 
 @dataclass(frozen=True)
@@ -287,24 +209,6 @@ async def mind(
                 await server.close()
 
 
-def _server(backend: LLMBackend) -> str:
-    """The server a backend's model answers on: the brain's is Anthropic's, reached through hands' proxy."""
-    match backend:
-        case AnthropicBackend(base_url=base_url) | OpenAICompatibleBackend(base_url=base_url):
-            return base_url
-        case ClaudeCodeBackend():
-            return UPSTREAM
-
-
-def _account(backend: LLMBackend) -> str | None:
-    """The subscription account the brain runs on, as it was when the run started; None for a keyed variant, whose key is never said."""
-    match backend:
-        case AnthropicBackend() | OpenAICompatibleBackend():
-            return None
-        case ClaudeCodeBackend(account=account):
-            return account
-
-
 async def outlived(brain: Brain) -> None:
     # [LAW:no-silent-failure] a brain that ends while hands runs leaves every question unanswered, so it stops the run.
     code = await brain.exited()
@@ -312,7 +216,7 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[], None], home: Home, heart: heartbeat.Heart, record: Record, quit_event: asyncio.Event, after_crash: bool,
+    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[VoiceConfig], None], home: Home, heart: heartbeat.Heart, record: Record, quit_event: asyncio.Event, after_crash: bool,
     environment: Mapping[str, str],
     run_start: Start,
 ) -> Ended:
@@ -383,13 +287,14 @@ async def run(
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[], Configured], survey: Callable[[], None], home: Home, sessions: Sessions, run_start: Start) -> VoiceConfig:
+async def configured(configure: Callable[[], Configured], survey: Callable[[VoiceConfig], None], home: Home, sessions: Sessions, run_start: Start) -> VoiceConfig:
     """The configuration, once what hands is missing has been said and the sessions already running are listed."""
-    await off_loop(survey, "the readiness check")
-    # A restart is back where it was before the models load: every session with a file and a running process is listed.
-    await sweep(home, sessions, frozenset())
     read = await off_loop(configure, "the configuration read")
     config = read.voice
+    # [LAW:single-enforcer] the backend is said as the configuration reached it, never its key or login read twice.
+    await off_loop(lambda: survey(config), "the readiness check")
+    # A restart is back where it was before the models load: every session with a file and a running process is listed.
+    await sweep(home, sessions, frozenset())
     # [LAW:nothing-unseen] which settings won is read from the start's event, not re-derived from a shell: the file they came
     # from (None where the home has none and every setting is its default), the transcription server and collector they name, the
     # server and model the run reaches and the brain's account (None for a keyed variant), never its key, and the voice it
@@ -397,7 +302,7 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[], N
     read_from = read.settings.path(home)
     run_start.heard(
         settings=read_from, transcription=config.transcription, collector=read.settings.config.collector,
-        backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model, account=_account(config.llm), voice=config.voice,
+        backend=type(config.llm).__name__, base_url=backends.server(config.llm), model=config.llm.model, account=backends.account(config.llm), voice=config.voice,
     )
     return config
 

@@ -1,12 +1,13 @@
 #!/bin/sh
-# verify-wheel.sh WHEEL VERSION: install the wheel as a stranger would, with no Go and a fresh uv tool directory, and
-# check that the hands it gives prints VERSION, the fritter inside its package runs a program, and install-fritter puts
+# verify-wheel.sh WHEEL CONSTRAINTS VERSION: install the wheel as a stranger would, within the locked versions
+# CONSTRAINTS names, with no Go and a fresh uv tool directory, and check that the hands it gives prints VERSION, the fritter inside its package runs a program, and install-fritter puts
 # that fritter and its claude in the stranger's hands home, and hands plugin renders a plugin whose launcher runs
 # hands. The stranger has Homebrew's portaudio, which PyAudio builds against.
 set -eu
-[ $# -eq 2 ] || { echo "verify-wheel: usage: verify-wheel.sh WHEEL VERSION (given: $*)" >&2; exit 2; }
+[ $# -eq 3 ] || { echo "verify-wheel: usage: verify-wheel.sh WHEEL CONSTRAINTS VERSION (given: $*)" >&2; exit 2; }
 wheel=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
-expected=$2
+constraints=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
+expected=$3
 uv=$(command -v uv)
 fresh=$(mktemp -d)
 trap 'rm -rf "$fresh"' EXIT
@@ -22,7 +23,7 @@ stranger() {
 mkdir -p "$fresh/home"
 stranger sh -c '! command -v go' >/dev/null || { echo "verify-wheel: go is still on the stranger's PATH" >&2; exit 1; }
 # A Mac has its own Python, 3.9, which uv would otherwise take; hands needs 3.12, which uv fetches.
-stranger "$uv" tool install --quiet --python 3.12 "$wheel"
+stranger "$uv" tool install --quiet --python 3.12 --constraints "$constraints" "$wheel"
 said=$(stranger hands --version)
 [ "$said" = "hands $expected" ] || { echo "verify-wheel: hands --version said '$said', not 'hands $expected'" >&2; exit 1; }
 # Where install-fritter copies from, as hands itself names it, so the check is of the path hands uses.
