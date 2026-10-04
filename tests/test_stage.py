@@ -31,6 +31,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from conftest import running
 from hands.brain.process import NOBODY, SPOKEN_OVER, Asked, Untaken
 from hands.core.effects import Allow, Deny
+from hands.core.front import FrontUnread, InFront, NoSessionInFront, SessionInFront, told
 from hands.core.session import Permission
 from hands.brain.stage import INTERRUPTED, SILENT, BrainStage
 from hands.core.session import SessionId
@@ -54,7 +55,7 @@ from hands.core.wire import (
     UsageLimitReached,
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
-from hands.sessions.audit import BrainAnswered, BrainInterrupted, BrainSpoke, Entry
+from hands.sessions.audit import BrainAnswered, BrainInterrupted, BrainSpoke, Entry, HandsAsked, UserAsked
 from hands.voice.player import Mark
 from hands.voice.speech import Aloud, Narrated
 from hands.voice.tools import Result, Tool, tool
@@ -63,6 +64,9 @@ BRAIN = SessionId("brain-session")
 PATIENCE_SECS = 2.0
 ANSWERED = BrainAnswered("p1", None)
 TAIL = "[hands] The Claude Code sessions running now: none of note."
+UNREAD = FrontUnread("not read in this test")
+# A user's turn as the rig records it: the screen left unread, read in no time on the rig's clock.
+ASKED = UserAsked(UNREAD, 0.0)
 
 
 async def stage_draft(session: str, text: str) -> Result:
@@ -171,6 +175,8 @@ class Rig:
     now: list[float]
     # Each session the stage moved the focus to, with how many turns the brain had been asked as it moved.
     refocused: list[tuple[SessionId, int]]
+    # What is in front on the Mac's screen as a user's turn is submitted: the last of these, read when it is asked.
+    fronts: list[InFront]
     context: LLMContext = field(default_factory=LLMContext)
     exchanges: int = 0
 
@@ -217,17 +223,22 @@ async def rig() -> AsyncGenerator[Rig, None]:
     standing = [TAIL]
     now = [0.0]
     refocused: list[tuple[SessionId, int]] = []
+    # A screen left unread by default: its note is nothing, so the user's words reach the brain as they were said.
+    fronts: list[InFront] = [UNREAD]
 
     async def refocus(session: SessionId) -> None:
         refocused.append((session, len(brain.asked)))
 
-    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, recorded.append, clock=lambda: now[0])
+    async def front() -> InFront:
+        return fronts[-1]
+
+    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, recorded.append, clock=lambda: now[0])
     out = Spoken()
     async with running([stage, out]) as run:
         # As the daemon runs it: a watch beside the pipeline.
         asking = asyncio.create_task(stage.ask_each())
         try:
-            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused)
+            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused, fronts)
         finally:
             asking.cancel()
 
@@ -254,7 +265,7 @@ async def test_a_finished_turn_hands_narrates_reaches_the_brain_as_a_typed_turn_
     rig.brain.end()
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
     assert rig.out.said() == ["api opened pull request 68."]
-    assert BrainSpoke((exchange,), "api opened pull request 68.", (), False, "hands", 0.0, None) in rig.recorded
+    assert BrainSpoke((exchange,), "api opened pull request 68.", (), False, HandsAsked(), 0.0, None) in rig.recorded
     # Never in Pipecat's context, where it would ride along with whatever the user says next.
     assert rig.context.get_messages() == []
 
@@ -303,8 +314,8 @@ async def test_a_narration_records_how_long_it_waited_behind_the_users_turn(rig:
     exchange, _ = rig.request()
     rig.stream(exchange, "api finished.")
     rig.brain.end()
-    await rig.until(lambda: any(isinstance(entry, BrainSpoke) and entry.asker == "hands" for entry in rig.recorded))
-    assert BrainSpoke((exchange,), "api finished.", (), False, "hands", 2.5, None) in rig.recorded
+    await rig.until(lambda: any(isinstance(entry, BrainSpoke) and entry.asker == HandsAsked() for entry in rig.recorded))
+    assert BrainSpoke((exchange,), "api finished.", (), False, HandsAsked(), 2.5, None) in rig.recorded
 
 
 async def test_what_hands_says_as_written_is_heard_after_the_narration_ahead_of_it(rig: Rig) -> None:
@@ -353,7 +364,51 @@ async def test_a_turn_goes_to_the_brain_and_its_words_come_off_the_wire(rig: Rig
     assert rig.out.shape() == ["LLMFullResponseStartFrame", "LLMTextFrame", "LLMTextFrame", "LLMFullResponseEndFrame"]
     assert rig.out.said() == ["Two sessions ", "are running."]
     # The audit log ties what was spoken to the exchange on the wire it came from.
-    assert BrainSpoke((exchange,), "Two sessions are running.", (), False, "user", 0.0, None) in rig.recorded
+    assert BrainSpoke((exchange,), "Two sessions are running.", (), False, ASKED, 0.0, None) in rig.recorded
+
+
+async def test_a_users_turn_carries_what_was_in_front_as_it_was_submitted_and_its_record_says_what_was_read(rig: Rig) -> None:
+    front = SessionInFront("iTerm2", SessionId("s1"), "hands, docs")
+    rig.fronts.append(front)
+    await rig.say({"role": "user", "content": "what am I looking at?"})
+    assert rig.brain.asked == [f"what am I looking at?\n\n{told(front)}"]
+    exchange, _ = rig.request()
+    rig.stream(exchange, "The docs session.")
+    rig.brain.end()
+    await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
+    assert BrainSpoke((exchange,), "The docs session.", (), False, UserAsked(front, 0.0), 0.0, None) in rig.recorded
+    # Read again for the next turn, not kept: the screen has changed since.
+    rig.fronts.append(NoSessionInFront("Safari"))
+    await rig.say({"role": "user", "content": "and now?"})
+    assert rig.brain.asked[-1] == f"and now?\n\n{told(NoSessionInFront('Safari'))}"
+
+
+async def test_words_that_wait_behind_a_turn_carry_what_was_in_front_as_they_arrived_and_the_wait_leaves_out_the_read(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "what is running?"})
+    spoken_at = SessionInFront("iTerm2", SessionId("s1"), "hands, docs")
+    rig.fronts.append(spoken_at)
+    rig.context.add_message({"role": "user", "content": "what's this one doing?"})
+    await rig.worker.queue_frame(LLMContextFrame(rig.context))
+    await rig.worker.queue_frame(TTSSpeakFrame("marker"))
+    await rig.until(lambda: "marker" in rig.out.said())
+    # The user looked elsewhere while the first turn was still being answered.
+    rig.fronts.append(NoSessionInFront("Safari"))
+    rig.now[0] = 2.5
+    rig.brain.end()
+    await rig.until(lambda: len(rig.brain.asked) == 2)
+    assert rig.brain.asked[-1] == f"what's this one doing?\n\n{told(spoken_at)}"
+    exchange, _ = rig.request()
+    rig.stream(exchange, "Writing docs.")
+    rig.brain.end()
+    await rig.until(lambda: any(isinstance(entry, BrainSpoke) and entry.text == "Writing docs." for entry in rig.recorded))
+    assert BrainSpoke((exchange,), "Writing docs.", (), False, UserAsked(spoken_at, 0.0), 2.5, None) in rig.recorded
+
+
+async def test_a_turn_hands_narrates_is_not_read_against_the_screen(rig: Rig) -> None:
+    rig.fronts.append(SessionInFront("iTerm2", SessionId("s1"), "hands, docs"))
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api")))
+    await rig.until(lambda: len(rig.brain.asked) == 1)
+    assert rig.brain.asked == ["[hands] api finished a turn."]
 
 
 async def test_each_request_of_a_turn_carries_how_the_sessions_stand_as_it_leaves(rig: Rig) -> None:
@@ -450,7 +505,7 @@ async def test_a_barge_in_mid_reply_stops_the_brain_and_nothing_more_of_the_turn
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
     assert rig.out.said() == ["First, "]
     assert rig.brain.interrupts == 1
-    assert BrainSpoke((exchange,), "First, ", (), True, "user", 0.0, None) in rig.recorded
+    assert BrainSpoke((exchange,), "First, ", (), True, ASKED, 0.0, None) in rig.recorded
 
 
 async def test_a_barge_in_while_a_draft_lands_lets_it_finish_and_speaks_its_readback(rig: Rig) -> None:
@@ -469,7 +524,7 @@ async def test_a_barge_in_while_a_draft_lands_lets_it_finish_and_speaks_its_read
     # Said once the turn is over, after anything the model had begun to say.
     await rig.until(lambda: rig.out.said()[-1:] == ["staged for api: add tests"])
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
-    assert BrainSpoke((exchange,), "Staging it.", ("staged for api: add tests",), True, "user", 0.0, None) in rig.recorded
+    assert BrainSpoke((exchange,), "Staging it.", ("staged for api: add tests",), True, ASKED, 0.0, None) in rig.recorded
 
 
 async def test_a_readback_a_call_hands_hands_ends_the_turn_and_is_said_by_hands_as_written(rig: Rig) -> None:
@@ -493,7 +548,7 @@ async def test_a_barge_in_while_a_draft_hands_reads_back_lands_lets_it_finish_an
     rig.brain.end()
     await rig.until(lambda: any(isinstance(entry, BrainSpoke) for entry in rig.recorded))
     # Said after the barge-in, never cut off by it: the draft changed, so the user hears how.
-    assert BrainSpoke((exchange,), "", ("amended for api: add tests too",), True, "user", 0.0, None) in rig.recorded
+    assert BrainSpoke((exchange,), "", ("amended for api: add tests too",), True, ASKED, 0.0, None) in rig.recorded
 
 
 async def test_a_refused_call_to_a_silence_tool_is_the_models_to_answer(rig: Rig) -> None:
@@ -679,7 +734,7 @@ async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_
     assert rig.out.said() == ["1. Lighthouses stand ", "on rocky coasts and h"]
     assert rig.errors[0].processor is rig.stage
     assert "Connection lost mid-response" in rig.errors[0].error
-    assert BrainSpoke((exchange,), "1. Lighthouses stand on rocky coasts and h", (), False, "user", 0.0, ModelFailed(ErrorCategory.UNKNOWN)) in rig.recorded
+    assert BrainSpoke((exchange,), "1. Lighthouses stand on rocky coasts and h", (), False, ASKED, 0.0, ModelFailed(ErrorCategory.UNKNOWN)) in rig.recorded
     # The broken reply is not in the brain's history, so its next turn tells it what the user heard, and only that one.
     await rig.say({"role": "user", "content": "what were you saying?"})
     rig.brain.end()
