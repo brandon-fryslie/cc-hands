@@ -1443,7 +1443,8 @@ A draft is staged, amended, discarded, and sent with `send_draft`, as the Type e
 `Key` (`hands.core.keyboard`). fritter holds the session's
 pseudo-terminal and `Typist` types into it over a unix socket, so there is no window to
 find, no focus to steal and no macOS permission to ask for. A send appends a `Typing`
-audit record before it types, so "did it send something I didn't approve" is answered by
+audit record before it types, and a `TypingFailed` with the same effect when the typing
+fails, so "did it send something I didn't approve", and "did it arrive", are answered by
 one file.
 
 ## The summary store
@@ -1848,8 +1849,12 @@ Pipecat's context summariser, configured with `LLMAutoContextSummarizationConfig
 compacts the conversation when it crosses a token threshold, keeping the recent
 turns verbatim. That is the eviction story. And because every narration, every tool
 call, and every user transcript is also a line in the audit log, nothing that was
-evicted is lost: `recall(query, since)` searches the log and `catch_up(minutes)`
-replays what was said while you were away. The log is the long memory; the context
+evicted is lost: `catch_up(minutes)` replays what was said while you were away, and
+the brain recalls the rest with its own Bash and its `hands:recall` skill, running
+`hands recall WORDS...` (`hands.sessions.recall`). That prints, one line each, what you
+said, what hands said, what was typed into a session, and how a session's permission was
+answered, keeping the newest that hold every word; hands adds no tool for it. Each recall
+is a `memory.recall` event on the log, with how many lines it read and moments it matched. The log is the long memory; the context
 window is the working memory; the same pull-not-push rule that governs session
 transcripts governs the intermediary's own past.
 

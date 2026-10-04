@@ -17,6 +17,7 @@ Latency from key release to the first audio out is logged for every turn.
 
 import asyncio
 import atexit
+import shlex
 import subprocess
 import sys
 import time
@@ -89,7 +90,7 @@ from hands.voice.briefing import as_sent, brief
 from hands.voice.conversation import record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
-from hands.daemon.starting import CannotStart, Ended, keep_beating, start
+from hands.daemon.starting import CannotStart, Ended, invocation, keep_beating, start
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain_instruction
 from hands.voice.player import Player
 from hands.voice import voices
@@ -241,7 +242,7 @@ async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFro
 @asynccontextmanager
 async def mind(
     config: VoiceConfig, tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
-    fritter: Path, log: Path, record: Record, environment: Mapping[str, str],
+    fritter: Path, log: Path, recall: str, record: Record, environment: Mapping[str, str],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
     through, the stage that speaks for it from the wire, the keeper of its context, and what answers hands' side questions."""
@@ -259,7 +260,7 @@ async def mind(
             try:
                 station = Station(config_dir, workdir(config_dir), model, proxy_url, environment)
                 try:
-                    brain = await start_brain(Launch(station, brain_instruction(log, config_dir), server.config(), SessionId(str(uuid4())), fritter), record)
+                    brain = await start_brain(Launch(station, brain_instruction(log, config_dir, recall), server.config(), SessionId(str(uuid4())), fritter), record)
                 except Unstartable as error:
                     # hands runs on no brain it could not start: its start is refused, saying why.
                     raise CannotStart(str(error)) from error
@@ -352,7 +353,7 @@ async def run(
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, refocus, proxy.url, wire, store, home.fritter, home.audit, record, environment) as minded:
+            async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, refocus, proxy.url, wire, store, home.fritter, home.audit, shlex.join(invocation(home, "recall")), record, environment) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(record, minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)

@@ -16,8 +16,8 @@ from loguru import logger
 
 from hands.daemon import readiness
 from hands.daemon.config import Config, Settings, edited, load
-from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, again, refuse, start
-from hands.sessions import audit, heartbeat, wrapper
+from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, again, invocation, refuse, start
+from hands.sessions import audit, heartbeat, recall, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.otlp import exporting
 from hands.sessions.payload import Rejected
@@ -99,6 +99,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
+    recalling = commands.add_parser("recall", help="print what was said, sent to a session, and answered for one, oldest first, from the audit log: the newest moments that hold every word given, or the newest of all with none")
+    recalling.add_argument("words", nargs="*", help="words every moment printed holds, in any case")
+    recalling.add_argument("-n", "--most", type=int, default=20, help="how many of the newest matching moments to print")
     arguments = parser.parse_args(argv)
     try:
         # HANDS_HOME is read only when --home is not given, so a bad one never stands in the way of an explicit home.
@@ -131,8 +134,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 case "quit":
                     return 0
                 case "restart":
-                    # -P, as the plugin's launcher runs Python: the terminal's directory is kept off the path.
-                    again([sys.executable, "-P", "-m", "hands.daemon", "--home", str(home.root), "run", "--restarted", str(shown)], audit_log.record)
+                    again(invocation(home, "run", "--restarted", str(shown)), audit_log.record)
         case "status":
             return report(home)
         case "check":
@@ -141,6 +143,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return check(home, talkkey.granted())
         case "log":
             return tail_log(home, arguments.lines)
+        case "recall":
+            return recall_moments(home, arguments.words, arguments.most)
         case "phone":
             return show_phone(home)
         case "login":
@@ -289,7 +293,7 @@ def start_indicator(home: Home) -> int:
     # run ended; a session of its own keeps the terminal's Ctrl-C and hangup from ending it first, before it has said so.
     # Its output shares this terminal, so an indicator that fails is seen where the daemon's own failures are. A restart
     # keeps the pid, so the indicator carries on into the run after it, which reaps it by that pid.
-    argv = [sys.executable, "-m", "hands.daemon", "--home", str(home.root), "indicator", "--parent", str(os.getpid())]
+    argv = invocation(home, "indicator", "--parent", str(os.getpid()))
     return os.posix_spawn(sys.executable, argv, os.environ, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)], setsid=True)
 
 
@@ -404,6 +408,29 @@ def tail_log(home: Home, lines: int) -> int:
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
     raise AssertionError("following the audit log ends only when interrupted")
+
+
+def recall_moments(home: Home, words: Sequence[str], most: int) -> int:
+    """Print the moments `hands recall` found, one a line, each at the time it happened here."""
+    try:
+        settings = load(home)
+    except Rejected as error:
+        print(f"hands: {error}", file=sys.stderr)
+        return 1
+    audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    # [LAW:nothing-unseen] a recall is a unit of work: what it was asked, how much of the log it read, and what it found,
+    # zeros included, through the same export edge as the run's events.
+    with exporting(settings.config.collector, audit_log.record) as record, wide.unit("memory.recall", record, ("lines", "unreadable", "moments", "matched", "printed")):
+        wide.annotate(words=tuple(words), most=most)
+        found = recall.recall(home.audit, words, most)
+        wide.annotate(since=found.since)
+        wide.count(lines=found.lines, unreadable=found.unreadable, moments=found.found, matched=found.matched, printed=len(found.moments))
+        # Retention keeps the log by size, so how far back it reaches is said, and an empty answer is bounded by it.
+        print("The log is empty." if found.since is None else f"The log reaches back to {found.since.astimezone():%a %d %b %H:%M}.")
+        for moment in found.moments:
+            # One line a moment, so a reader can grep it again; the time is this Mac's, as the user says it.
+            print(f"{moment.at.astimezone():%a %d %b %H:%M} {moment.heading}: {' '.join(moment.text.split())}".translate(VISIBLE))
+    return 0
 
 
 def crashed_before(home: Home) -> bool:

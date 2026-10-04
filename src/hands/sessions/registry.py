@@ -15,7 +15,7 @@ from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
 from hands.core.status import Stamp
-from hands.sessions.audit import Applied, EffectFailed, Performed, Record, Typing
+from hands.sessions.audit import Applied, EffectFailed, Performed, Record, Typing, TypingFailed
 from hands.sessions.clock import stamp_now
 from hands.sessions.hookconfig import STOP_HOLD_SECONDS
 from hands.sessions.delta import Changes, NoChanges
@@ -212,8 +212,8 @@ class Sessions:
         try:
             await asyncio.to_thread(self._typist, effect)
         except Untyped as error:
-            # [LAW:no-silent-failure] said, with what was to be typed, which is nowhere else now.
-            logger.error(f"{effect.input} was not typed into session {effect.session}: {error}")
+            # [LAW:no-silent-failure] said, with what was to be typed, on the line that pairs with the Typing before it.
+            self._record(TypingFailed(effect, str(error)))
             return NotTyped(effect.session, effect.input, str(error))
         return Typed(effect.session, effect.input)
 
