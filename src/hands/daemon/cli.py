@@ -421,9 +421,10 @@ def render_plugin(home: Home) -> int:
         wide.annotate(interpreter=sys.executable, packaged=marketplace.PACKAGED)
         rendered = marketplace.render(home, sys.executable)
         wide.annotate(plugin=rendered.plugin, written=rendered.written)
-    # [LAW:no-silent-failure] stdout is the path alone, which Claude Code takes as the plugin's directory.
-    print(rendered.plugin)
-    return 0
+        # [LAW:no-silent-failure] stdout is the path alone, which Claude Code takes as the plugin's directory. Printed
+        # and flushed before the export edge closes, so a slow collector never holds a session's start behind it.
+        print(rendered.plugin, flush=True)
+        return 0
 
 
 # How often `hands log` looks for new lines.

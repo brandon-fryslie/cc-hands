@@ -3,6 +3,7 @@ interpreter of the hands that ran it."""
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import pytest
 from hands.daemon.cli import main
 from hands.sessions.audit import segment
 from hands.sessions.hookconfig import LAUNCHER
+from hands.sessions import marketplace
 from hands.sessions.home import Home
 from hands.sessions.marketplace import PACKAGED, launcher, render
 
@@ -49,7 +51,27 @@ def test_another_interpreter_is_another_plugin(tmp_path: Path) -> None:
     here = render(home, sys.executable)
     there = render(home, "/Users/someone else/.local/share/uv/tools/hands/bin/python")
     assert here.plugin != there.plugin and there.written
-    assert (there.plugin / LAUNCHER).read_text() == "#!/bin/sh\nexec '/Users/someone else/.local/share/uv/tools/hands/bin/python' -I \"$@\"\n"
+    assert (there.plugin / LAUNCHER).read_text() == launcher("/Users/someone else/.local/share/uv/tools/hands/bin/python")
+
+
+def test_a_launcher_whose_interpreter_is_gone_says_which_and_how_to_bring_the_plugin_back(tmp_path: Path) -> None:
+    gone = tmp_path / "uninstalled hands" / "bin" / "python"
+    plugin = render(Home(tmp_path / "home"), str(gone)).plugin
+    ran = subprocess.run([plugin / LAUNCHER, "-m", "hands.sessions.shim"], capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"}, check=False)
+    assert (ran.returncode, ran.stdout) == (1, "")
+    assert ran.stderr == f"hands: the plugin runs {gone}, which is gone; install hands, then run `claude plugin update hands@cc-hands`\n"
+
+
+def test_a_render_that_fails_leaves_nothing_staged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+
+    def full_disk(root: Path) -> str:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(marketplace, "digest", full_disk)
+    with pytest.raises(OSError, match="No space left"):
+        render(home, sys.executable)
+    assert list(home.plugins.iterdir()) == []
 
 
 def test_a_plugin_another_session_rendered_first_is_the_one_printed(tmp_path: Path) -> None:

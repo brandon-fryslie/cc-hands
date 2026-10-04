@@ -197,7 +197,7 @@ Tell it which one to use, and what it says next is in that voice. The choice is 
 
 The shim finds hands' home as the CLI does: `HANDS_HOME`, which must be absolute, or
 `~/.hands`. `hands plugin` writes the plugin there, in `plugins/`, one directory for each
-version and interpreter.
+interpreter and each change to the plugin's files.
 
 ## Wrapping every session
 

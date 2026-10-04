@@ -1,8 +1,8 @@
 #!/bin/sh
 # verify-wheel.sh WHEEL VERSION: install the wheel as a stranger would, with no Go and a fresh uv tool directory, and
 # check that the hands it gives prints VERSION, the fritter inside its package runs a program, and install-fritter puts
-# that fritter and its claude in the stranger's hands home. The stranger has Homebrew's portaudio, which PyAudio builds
-# against.
+# that fritter and its claude in the stranger's hands home, and hands plugin renders a plugin whose launcher runs
+# hands. The stranger has Homebrew's portaudio, which PyAudio builds against.
 set -eu
 [ $# -eq 2 ] || { echo "verify-wheel: usage: verify-wheel.sh WHEEL VERSION (given: $*)" >&2; exit 2; }
 wheel=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
@@ -38,4 +38,11 @@ set -e
 # A later PATH= in env's arguments wins over stranger's own.
 stranger PATH="$fresh/home/.hands/bin:$fresh/bin:/usr/bin:/bin" hands install-fritter >/dev/null
 cmp -s "$fritter" "$fresh/home/.hands/bin/fritter" || { echo "verify-wheel: install-fritter did not copy the packaged fritter to the home's bin" >&2; exit 1; }
-echo "verify-wheel: $(basename "$wheel") installs without go, prints hands $expected, its fritter runs, and install-fritter installs it"
+# The plugin the marketplace entry installs, as Claude Code gets it: hands plugin prints its directory, which holds the
+# manifest and hooks, and its launcher runs the stranger's hands on the shim the hooks name.
+plugin=$(stranger hands plugin)
+for file in .claude-plugin/plugin.json hooks/hooks.json; do
+  [ -f "$plugin/$file" ] || { echo "verify-wheel: the plugin hands plugin printed, $plugin, has no $file" >&2; exit 1; }
+done
+stranger "$plugin/hooks/python" -c 'import hands.sessions.shim' || { echo "verify-wheel: the plugin's launcher at $plugin/hooks/python cannot import the shim" >&2; exit 1; }
+echo "verify-wheel: $(basename "$wheel") installs without go, prints hands $expected, its fritter runs, install-fritter installs it, and hands plugin renders a plugin whose launcher runs it"

@@ -5,7 +5,7 @@
 
 Sessions join through the hook socket at ~/.hands/hands.sock (the home is
 HANDS_HOME when that is set). A Claude Code session is registered when the hands
-plugin is installed and enabled; its hooks are plugin/hooks/hooks.json.
+plugin is installed and enabled; its hooks are src/hands/sessions/plugin/hooks/hooks.json.
 
 Every heartbeat rewrites ~/.hands/status.json, which `hands status` and the
 menu-bar indicator read. Right Shift held by itself, in any app, is the talk
