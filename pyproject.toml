@@ -5,7 +5,7 @@ description = "Hands-free control of Claude Code: a voice intermediary in one da
 requires-python = ">=3.12"
 dependencies = [
     "pipecat-ai[anthropic,local,pocket-tts]>=1.9.0,<2",
-    "aiohttp>=3.10",
+    "aiohttp>=3.11",  # ClientConnectorDNSError
     "tiktoken>=0.7",
     "loguru>=0.7",
     "pyobjc-framework-cocoa>=11",
