@@ -800,29 +800,36 @@ async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing
 
 
 # A loop that ends as the brain starts: asyncio.run cancels every task at once, the launch's included, wherever it is.
-# Ended a tick later each time, so one ends in the tick the brain is spawned in, which no step in time is sure to hit. Run
-# in a process of its own, since a loop that never closes would take the test run down with it.
+# Ended a tick later each time, so one ends in the tick the brain is spawned in, which no step in time is sure to hit;
+# then a tenth of a second later each time, so others end past the spawn: in the launch's own stop of what it spawned, or
+# in the stop of the brain it started, as the daemon stops the brain it holds.
+# Run in a process of its own, since a loop that never closes would take the test run down with it.
 SHUT_DOWN = """
 import asyncio, os, pickle, sys, time
 from hands.brain.process import start
 
 launch = pickle.load(sys.stdin.buffer)
 
-async def ends(ticks: int) -> None:
-    asyncio.create_task(start(launch, lambda _entry: None))
+async def run() -> None:
+    brain = await start(launch, lambda _entry: None)
+    await brain.stop()
+
+async def ends(ticks: int, seconds: float) -> None:
+    asyncio.create_task(run())
     for _ in range(ticks):
         await asyncio.sleep(0)
+    await asyncio.sleep(seconds)
     raise RuntimeError(time.monotonic())
 
 slowest = 0.0
-for ticks in range(40):
+for ticks, seconds in [*((ticks, 0.0) for ticks in range(40)), *((0, tenths / 10) for tenths in range(1, 16))]:
     try:
-        asyncio.run(ends(ticks))
+        asyncio.run(ends(ticks, seconds))
     except RuntimeError as ended:
         slowest = max(slowest, time.monotonic() - ended.args[0])
     try:
         os.waitpid(-1, os.WNOHANG)
-        sys.exit(f"a fritter was left unreaped when the loop ended {ticks} ticks into the launch")
+        sys.exit(f"a fritter was left unreaped when the loop ended {ticks} ticks and {seconds}s into the launch")
     except ChildProcessError:
         pass
 print(slowest)

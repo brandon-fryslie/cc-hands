@@ -40,6 +40,7 @@ from hands.core.session import ESCAPES, Permission, SessionId, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.sessions.audit import Record
+from hands.sessions.child import Child, reaped
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS, declared
 from hands.sessions.hooks import called, hook_output
 from hands.sessions.payload import Payload, Rejected
@@ -47,7 +48,6 @@ from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, fail, here, unit
 from hands.sessions.wrapper import real_claude
-from hands.threads import settles_off_loop
 
 # What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu, 2.1.284).
 # LSP needs no switch: it comes only from plugins, the brain's own setup installs none, and hands' own declares none.
@@ -383,36 +383,26 @@ class _Terminal:
 class ClaudeCode:
     """A slim Claude Code of hands' own, running on a terminal hands holds, until it ends or is stopped."""
 
-    def __init__(self, process: subprocess.Popen[bytes], ended: asyncio.Future[int], terminal: _Terminal) -> None:
-        self._process = process
-        self._ended = ended
+    def __init__(self, child: Child[int], terminal: _Terminal) -> None:
+        self._child = child
         self._terminal = terminal
         # Its exit code, once it has ended and what it showed last is read.
         self.exit = asyncio.ensure_future(self._run_out())
 
     @property
     def pid(self) -> int:
-        return self._process.pid
+        return self._child.process.pid
 
     def shown(self) -> str:
         """The last lines it showed on its terminal."""
         return self._terminal.last()
 
     async def stop(self) -> None:
-        # Signalled only while it has not been reaped: Popen sends nothing to a child whose exit it has taken.
-        self._process.terminate()
-        try:
-            await asyncio.wait({self._ended}, timeout=STOP_SECONDS)
-        except asyncio.CancelledError:
-            # [LAW:no-silent-failure] a stopper told to leave waits no longer, and leaves nothing running behind it.
-            self._process.kill()
-            raise
-        if not self._ended.done():
-            self._process.kill()
+        await self._child.stopped(STOP_SECONDS)
         await asyncio.shield(self.exit)
 
     async def _run_out(self) -> int:
-        code = await asyncio.shield(self._ended)
+        code = await asyncio.shield(self._child.ended)
         try:
             # What it showed last, read to its end; a terminal some child of it still holds is not waited on for long.
             await asyncio.wait_for(asyncio.shield(self._terminal.closed), 1.0)
@@ -426,9 +416,7 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
     master, slave = pty.openpty()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-        # Not asyncio's subprocesses, for the reason `hands.sessions.child.run` gives: on Python 3.12 a loop that ends as
-        # one starts waits for ever on an exit its transport queues behind a task the shutdown cancelled. The child is
-        # started here, and a daemon thread of its own reaps it.
+        # Not asyncio's subprocesses, for the reason `hands.sessions.child.Child` gives.
         process = subprocess.Popen(
             _holding_terminal(os.ttyname(slave), argv),
             cwd=station.cwd,
@@ -443,24 +431,22 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
         raise
     finally:
         os.close(slave)
-    ended = settles_off_loop(process.wait, name=f"a Claude Code {process.pid}")
+    child = reaped("a Claude Code", process, process.wait)
     try:
-        await _held(master, process.pid, ended)
+        await _held(master, child)
     except BaseException:
-        process.kill()
         os.close(master)
-        # Reaped by its thread before the error leaves, so a loop ending as it starts ends with nothing of it left.
-        await asyncio.wait((ended,))
+        await child.killed("its start failed or was cut short")
         raise
-    return ClaudeCode(process, ended, _Terminal(master))
+    return ClaudeCode(child, _Terminal(master))
 
 
-async def _held(terminal: int, pid: int, ended: asyncio.Future[int]) -> None:
-    """Until the child `pid` holds `terminal` as its session's, or has ended without taking it.
+async def _held(terminal: int, child: Child[int]) -> None:
+    """Until `child` holds `terminal` as its session's, or has ended without taking it.
 
     [LAW:no-ambient-temporal-coupling] what is spawned is ended by hands' end only once it holds its terminal: a hands
     that died before then would hang up nothing, and leave the child opening a terminal with no other end, for good."""
-    while not ended.done() and os.tcgetpgrp(terminal) != pid:
+    while not child.ended.done() and os.tcgetpgrp(terminal) != child.process.pid:
         await asyncio.sleep(0.002)
 
 
