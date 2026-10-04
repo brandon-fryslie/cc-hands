@@ -728,7 +728,7 @@ def _spoken_state(state: SessionState, dialog: Dialog | None, turn: Turn) -> str
             # Said by what it asks, though the status saying it waits may not have been read yet.
             return _waiting_on(on)
         case (LetGo(on=on), _, _):
-            return f"{_waiting_on(on)} at the keyboard, too late to answer by voice"
+            return f"{_waiting_on(on)} on its screen, a dialog hands let go of and its answer tools no longer reach"
         case (None, Running(status=Busy()), Opened(latest=Doing() as latest)):
             # [LAW:one-source-of-truth] the progress a session that is not the focus is noted with, for the brain, whose
             # notes are this listing at the tail of its every request.

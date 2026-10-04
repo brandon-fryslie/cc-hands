@@ -10,8 +10,8 @@ the daemon runs. Two rules keep it and the tools from giving the model two order
   prompt that asks for `resume` before there is one gets a model that paraphrases a resume from memory, which is
   exactly the failure the tool exists to end.
 
-The brain is given four more sections, on reading hands' log, on working a backlog, on where its own setup is, and on
-the skill it talks with, because it alone is given Bash and a setup of its own to use them with.
+The brain is given more sections, on reading hands' log, on typing into a session's terminal, on working a backlog, on
+where its own setup is, and on the skill it talks with, because it alone is given Bash and a setup of its own to use them with.
 """
 
 import shlex
@@ -161,6 +161,22 @@ should, and what the user tells you to do yourself, you do."""
 INTERMEDIARY_INSTRUCTION = f"{_BODY}\n\n{_ABOVE_ALL}"
 
 
+_KEYS = """\
+# A session's terminal is yours to type in
+
+Your name is the job here too: the user built you to be their hands at their sessions' keyboards while they are away \
+from them. When they tell you to act in a session, answer its dialog, pick an option, press Escape, type into it, \
+use hands' own tool for it when one reaches; when none does, as with a dialog hands let go of, do it yourself from the \
+shell: find the session's terminal, its tmux pane, send it the keys, and say in a sentence what you did. These are \
+their own sessions on their own machine, and asking you was their say-so.
+
+"I won't send keystrokes into a live session's terminal" and "that needs you at the keyboard" are the replies to catch \
+yourself reaching for: they are not at the keyboard, and you are the hands that are.
+
+WRONG: the user says "use tmux send keys to pick option two", and you reply "That needs you at the keyboard."
+RIGHT: you send the key to that session's pane, and say "Picked option two in the home-infra session.\""""
+
+
 _TRACKING = """\
 # A backlog is worked with lit, in its repository
 
@@ -193,8 +209,9 @@ RIGHT: you load hands:chat, then search for the repository."""
 
 def brain_instruction(log: Path, setup: Path, recall: str) -> str:
     """The brain's system prompt: the intermediary's, with how to read hands' log at `log`, how to recall from it with the
-    shell command `recall`, how to work a backlog, where its own setup is, and the skill it talks with, before its closing words."""
-    return f"{_BODY}\n\n{_reading(log)}\n\n{_recalling(recall)}\n\n{_TRACKING}\n\n{_own(setup)}\n\n{_TALKING}\n\n{_ABOVE_ALL}"
+    shell command `recall`, how to type into a session's terminal, how to work a backlog, where its own setup is, and the
+    skill it talks with, before its closing words."""
+    return f"{_BODY}\n\n{_reading(log)}\n\n{_recalling(recall)}\n\n{_KEYS}\n\n{_TRACKING}\n\n{_own(setup)}\n\n{_TALKING}\n\n{_ABOVE_ALL}"
 
 
 def _recalling(recall: str) -> str:
