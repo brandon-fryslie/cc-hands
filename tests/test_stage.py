@@ -61,7 +61,7 @@ from hands.core.wire import (
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Entry
-from hands.sessions.wide import WideEvent
+from hands.sessions.wide import WideEvent, root
 from hands.voice.player import Mark
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
@@ -75,6 +75,8 @@ BRAIN = SessionId("brain-session")
 PATIENCE_SECS = 2.0
 ANSWERED = BrainAnswered("p1", None)
 TAIL = "[hands] The Claude Code sessions running now: none of note."
+# The span a routed request is compared with, its own kept apart in the rig's spans.
+APART = Span("", "", None)
 UNREAD = FrontUnread("not read in this test")
 # A user's turn as the rig records it: the screen left unread, read in no time on the rig's clock.
 ASKED = UserAsked("screen", "held key", UNREAD, 0.0)
@@ -217,7 +219,7 @@ class Rig:
     context: LLMContext = field(default_factory=LLMContext)
     exchanges: int = 0
     # The span each request sent on carries, in the order they left.
-    spans: list[Span | None] = field(default_factory=list[Span | None])
+    spans: list[Span] = field(default_factory=list[Span])
 
     async def until(self, what: Callable[[], bool]) -> None:
         async with asyncio.timeout(PATIENCE_SECS):
@@ -238,13 +240,10 @@ class Rig:
         exchange = f"x{self.exchanges}"
         sent = Sent(exchange, session, kind, body or {"messages": [{"role": "user", "content": "hi"}]})
         self.stage.hear(sent)
-        match self.stage.route(sent):
-            case Send(span=span) as route:
-                # The span apart: where the request goes is what each test asserts, and what trace it is in is one's.
-                self.spans.append(span)
-                return exchange, replace(route, span=None)
-            case route:
-                return exchange, route
+        route = self.stage.route(sent)
+        # The span apart: where the request goes is what each test asserts, and what trace it is in is a few tests' own.
+        self.spans.append(route.span)
+        return exchange, replace(route, span=APART)
 
     def stream(self, exchange: str, *texts: str) -> None:
         for text in texts:
@@ -491,7 +490,7 @@ async def test_a_turn_goes_to_the_brain_and_its_words_come_off_the_wire(rig: Rig
     await rig.say({"role": "user", "content": "what is running?"})
     assert rig.brain.asked == [heard("what is running?")]
     exchange, route = rig.request()
-    assert route == Send((Tail(TAIL),), refusal="final")
+    assert route == Send((Tail(TAIL),), refusal="final", span=APART)
     rig.stream(exchange, "Two sessions ", "are running.")
     await rig.until(lambda: len(rig.out.said()) == 2)
     rig.brain.end()
@@ -616,9 +615,8 @@ async def test_a_turn_is_one_event_saying_how_long_the_user_waited_and_where_the
     assert running is not None and (call.trace_id, call.span_id, call.parent_id) == (running.trace_id, running.span_id, running.parent_id)
     assert rig.call_spans.span("t1") is None
     # Each round trip is the proxy's record of its request, which carries a span of its own inside the turn's.
-    spans = [span for span in rig.spans if span is not None]
-    assert [(span.trace_id, span.parent_id) for span in spans] == [(turn.trace_id, turn.span_id)] * 2
-    assert len({span.span_id for span in spans}) == 2
+    assert [(span.trace_id, span.parent_id) for span in rig.spans] == [(turn.trace_id, turn.span_id)] * 2
+    assert len({span.span_id for span in rig.spans}) == 2
     # One trace: each part is the turn's child.
     assert {(event.trace_id, event.parent_id) for event in events if event is not turn} == {(turn.trace_id, turn.span_id)}
 
@@ -711,7 +709,7 @@ async def test_each_request_of_a_turn_carries_how_the_sessions_stand_as_it_leave
     rig.standing.append("[hands] The Claude Code sessions running now: auth, working.")
     _, second = rig.request(answering("mcp__hands__stage_draft", {"readback": "staged"}))
     # Composed as each request leaves, never kept from the one before.
-    assert (first, second) == (Send((Tail(TAIL),), refusal="final"), Send((Tail("[hands] The Claude Code sessions running now: auth, working."),), refusal="final"))
+    assert (first, second) == (Send((Tail(TAIL),), refusal="final", span=APART), Send((Tail("[hands] The Claude Code sessions running now: auth, working."),), refusal="final", span=APART))
     rig.brain.end()
 
 
@@ -719,7 +717,11 @@ async def test_only_the_brains_own_main_turns_are_spoken(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "hello"})
     others = [rig.request(kind=Fork()), rig.request(kind=Unknown("a messages request with no tools")), rig.request(session=SessionId("a summary"))]
     # Every request of the brain's is final, said or not; another session's goes as it came (hands-wire-zi2).
-    assert [route for _, route in others] == [Send(refusal="final"), Send(refusal="final"), Send()]
+    assert [route for _, route in others] == [Send(refusal="final", span=APART), Send(refusal="final", span=APART), Send(span=APART)]
+    # The brain's are its turn's, in one trace under one parent; another session's is the root of a trace of its own.
+    fork, unknown, summary = rig.spans
+    assert (fork.trace_id, fork.parent_id) == (unknown.trace_id, unknown.parent_id) and fork.parent_id is not None
+    assert summary.parent_id is None and summary.trace_id != fork.trace_id
     for exchange, _ in others:
         rig.stream(exchange, "not for the user")
     exchange, _ = rig.request()
@@ -733,7 +735,9 @@ async def test_only_the_brains_own_main_turns_are_spoken(rig: Rig) -> None:
 async def test_a_main_turn_no_turn_asked_of_is_final_so_a_spent_limit_is_never_continued(rig: Rig) -> None:
     # Asked again at the reset, it would run the brain's tools with nobody there (hands-wire-zi2).
     _, route = rig.request()
-    assert route == Send(refusal="final")
+    assert route == Send(refusal="final", span=APART)
+    # Made for no turn: the root of a trace of its own.
+    assert rig.spans[0].parent_id is None
 
 
 async def test_the_brain_hears_what_the_context_gained_and_never_its_own_words_again(rig: Rig) -> None:
@@ -762,7 +766,10 @@ async def test_stay_silent_holds_the_next_request_so_nothing_follows_it(rig: Rig
     exchange, _ = rig.request()
     rig.calls(exchange, ("t1", "mcp__hands__stay_silent"))
     _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}))
-    assert route == Hold(SILENT)
+    assert route == Hold(SILENT, APART)
+    # Held, it is still the turn's round trip, in the turn's trace beside the one before it.
+    sent, held = rig.spans
+    assert (held.trace_id, held.parent_id) == (sent.trace_id, sent.parent_id) and held.span_id != sent.span_id
     rig.brain.end()
     await rig.until(lambda: "LLMFullResponseEndFrame" in rig.out.shape())
     assert rig.out.said() == []
@@ -774,7 +781,7 @@ async def test_stay_silent_holds_the_next_request_so_nothing_follows_it(rig: Rig
     closed = answering("mcp__hands__stay_silent", {"silent": True})
     closed["messages"] = [*closed["messages"], {"role": "assistant", "content": [{"type": "text", "text": SILENT}]}, {"role": "user", "content": "are you there?"}]  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType]
     exchange, route = rig.request(closed)
-    assert route == Send((Tail(TAIL),), refusal="final")
+    assert route == Send((Tail(TAIL),), refusal="final", span=APART)
     rig.stream(exchange, "I am.")
     await rig.until(lambda: rig.out.said() == ["I am."])
     rig.brain.end()
@@ -790,7 +797,7 @@ async def test_a_barge_in_mid_reply_stops_the_brain_and_nothing_more_of_the_turn
     # What the wire carries after the barge-in is dropped, and a request that raced the stop is not asked either.
     rig.stream(exchange, "second, ", "third.")
     _, route = rig.request()
-    assert route == Hold(INTERRUPTED)
+    assert route == Hold(INTERRUPTED, APART)
     # A second press on the same turn does not tell the brain twice.
     await rig.worker.queue_frame(InterruptionFrame())
     rig.brain.end()
@@ -811,7 +818,7 @@ async def test_a_barge_in_while_a_draft_lands_lets_it_finish_and_speaks_its_read
     # Stopped by the harness, the draft would land and be written into history as refused; it is let run instead.
     assert rig.brain.interrupts == 0
     _, route = rig.request(answering("mcp__hands__stage_draft", {"readback": "staged for api: add tests"}))
-    assert route == Hold(INTERRUPTED)
+    assert route == Hold(INTERRUPTED, APART)
     rig.brain.end()
     # Said once the turn is over, after anything the model had begun to say.
     await rig.until(lambda: rig.out.said()[-1:] == ["staged for api: add tests"])
@@ -825,7 +832,7 @@ async def test_a_readback_a_call_hands_hands_ends_the_turn_and_is_said_by_hands_
     exchange, _ = rig.request()
     rig.calls(exchange, ("t1", "mcp__hands__amend_draft"))
     _, route = rig.request(answering("mcp__hands__amend_draft", {"says": "amended for api: add tests too"}))
-    assert route == Hold(SILENT)
+    assert route == Hold(SILENT, APART)
     rig.brain.end()
     await rig.until(lambda: rig.out.said() == ["amended for api: add tests too"])
 
@@ -837,7 +844,7 @@ async def test_a_barge_in_while_a_draft_hands_reads_back_lands_lets_it_finish_an
     await rig.interrupt()
     assert rig.brain.interrupts == 0
     _, route = rig.request(answering("mcp__hands__amend_draft", {"says": "amended for api: add tests too"}))
-    assert route == Hold(INTERRUPTED)
+    assert route == Hold(INTERRUPTED, APART)
     rig.brain.end()
     await rig.until(lambda: bool(turns(rig.recorded)))
     # Said after the barge-in, never cut off by it: the draft changed, so the user hears how.
@@ -850,7 +857,7 @@ async def test_a_refused_call_to_a_silence_tool_is_the_models_to_answer(rig: Rig
     rig.calls(exchange, ("t1", "mcp__hands__amend_draft"))
     refused, route = rig.request(answering("mcp__hands__amend_draft", {"error": "the draft text is empty"}))
     # Nothing was said and nothing changed: the model is asked to go on, to retry or to say what went wrong.
-    assert route == Send((Tail(TAIL),), refusal="final")
+    assert route == Send((Tail(TAIL),), refusal="final", span=APART)
     rig.stream(refused, "I couldn't change it.")
     await rig.until(lambda: rig.out.said() == ["I couldn't change it."])
     rig.brain.end()
@@ -869,7 +876,7 @@ async def test_a_reply_with_one_draft_said_and_one_refused_is_the_models_to_answ
         ]
     }
     _, route = rig.request(body)
-    assert route == Send((Tail(TAIL),), refusal="final")
+    assert route == Send((Tail(TAIL),), refusal="final", span=APART)
     rig.brain.end()
 
 
@@ -979,7 +986,7 @@ RESETS = datetime(2026, 9, 30, 18, 0, tzinfo=UTC).timestamp()
 
 def unreached(exchange: str) -> Exchanged:
     """The proxy's record of a request it could not get to the API, told before it answers the brain 502."""
-    return Exchanged(exchange, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("ClientConnectorError: no route", 0.0), True, None)
+    return Exchanged(exchange, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("ClientConnectorError: no route", 0.0), True, root())
 
 
 @pytest.mark.parametrize(
@@ -1080,7 +1087,7 @@ async def test_a_stay_silent_answered_in_an_earlier_turn_does_not_hold_the_next(
     body = answering("mcp__hands__stay_silent", {"silent": True})
     body["messages"] = [*body["messages"], {"role": "user", "content": "are you there?"}]  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType]
     _, route = rig.request(body)
-    assert route == Send((Tail(TAIL),), refusal="final")
+    assert route == Send((Tail(TAIL),), refusal="final", span=APART)
     rig.brain.end()
 
 
@@ -1090,7 +1097,7 @@ async def test_a_draft_that_failed_under_a_held_request_says_why(rig: Rig) -> No
     rig.calls(exchange, ("t1", "mcp__hands__stage_draft"))
     await rig.interrupt()
     _, route = rig.request(answering("mcp__hands__stage_draft", {"error": "there is no session api"}))
-    assert route == Hold(INTERRUPTED)
+    assert route == Hold(INTERRUPTED, APART)
     rig.brain.end()
     await rig.until(lambda: rig.out.said() == ["there is no session api"])
 
@@ -1126,7 +1133,7 @@ async def test_a_barge_in_before_the_brain_has_sent_the_turn_stops_nothing_and_t
     await rig.interrupt()
     assert rig.brain.interrupts == 0
     _, route = rig.request()
-    assert route == Send((Tail(TAIL),), refusal="final")
+    assert route == Send((Tail(TAIL),), refusal="final", span=APART)
     rig.brain.end()
     await rig.until(lambda: bool(turns(rig.recorded)))
     assert interruptions(rig.recorded) == []

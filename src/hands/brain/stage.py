@@ -67,7 +67,7 @@ from hands.core.wire import (
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Record
-from hands.sessions.wide import annotate, child, continuing, count, fail, here, unit, within
+from hands.sessions.wide import annotate, child, continuing, count, fail, here, root, unit, within
 from hands.voice.player import Mark
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
@@ -515,18 +515,20 @@ class BrainStage(FrameProcessor):
     def route(self, sent: Sent) -> Route:
         """Where a request on the wire goes: each of a turn's own requests with hands' tail on it, and the next one after
         stay_silent or a barge-in held."""
+        # Another session's request is made for no unit of the stage's: the root of a trace of its own.
         if sent.session != self._brain.session:
-            return Send()
+            return Send(span=root())
         # [LAW:single-enforcer] every request of the brain's is final, whatever its kind and whether a turn asked it: asked
         # again, Claude Code would keep the user waiting minutes on its retries, and a spent limit it would wait out to
         # continue the task on its own at the reset, hours on, with nobody asking (hands-wire-zi2).
-        if not isinstance(sent.kind, MainTurn):
-            return Send(refusal="final")
         turn = self._turn
+        # A request the brain makes while a turn is asked of it, a subagent's or a fork's among them, is that turn's part.
+        if not isinstance(sent.kind, MainTurn):
+            return Send(refusal="final", span=root() if turn is None else within(turn.span))
         if turn is None:
             # [LAW:no-silent-failure] the brain asked the model something with no turn written to it: heard, never spoken.
             logger.warning(f"the brain sent a main turn (exchange {sent.exchange}) with no turn asked of it; nothing it says will be spoken")
-            return Send(refusal="final")
+            return Send(refusal="final", span=root())
         now = self._now()
         carried = tool_answers(sent.body)
         # A call's result leaving is the end of its run, whether the request carrying it goes on or is held.
@@ -544,7 +546,7 @@ class BrainStage(FrameProcessor):
             # record of the request is the turn's round trip to the model: a span inside the turn's.
             return Send((Tail(self._tail()),), refusal="final", span=within(turn.span))
         turn.readbacks.extend(said for tool, text, result in answers if tool is not None and tool.completes and (said := _owed(text, result)) is not None)
-        return Hold(INTERRUPTED if turn.interrupted else SILENT)
+        return Hold(INTERRUPTED if turn.interrupted else SILENT, within(turn.span))
 
     def _completes(self, name: str) -> bool:
         """Whether a barge-in lets the call finish, as hands' tools say: a call to a tool not hands' never does."""

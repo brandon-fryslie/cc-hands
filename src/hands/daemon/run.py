@@ -277,7 +277,7 @@ async def mind(
                     asides = Asides(station, record)
                     stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans)
                     keeper = Keeper(brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
-                    with wire.joined(Kept(stage, keeper, brain, asides)):
+                    with wire.joined(Kept(stage, keeper, asides, brain)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                         # A summary is as long as its Claude Code makes it: only its time is the summary's own.
                         yield Mind(stage, watches, Tailed(), lambda kind, instruction, _max_tokens, timeout: aside(partial(asides.ask, kind), instruction, timeout))

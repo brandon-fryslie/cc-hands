@@ -47,6 +47,7 @@ from hands.daemon.run import wire_to
 from hands.sessions.audit import Entry
 from hands.sessions.proxy import Proxy, serve_proxy
 from hands.sessions.replies import spent
+from hands.sessions.wide import root
 
 REQUEST = (
     b'{"model": "claude-opus-5-5", "tools": [{"name": "Read"}], "stream": true, "messages": '
@@ -79,7 +80,7 @@ class Upstream:
 
 
 def forward(_sent: Sent) -> Route:
-    return Send()
+    return Send(span=root())
 
 
 @dataclass
@@ -310,7 +311,7 @@ async def test_a_refusal_routed_final_is_the_proxys_own_502_the_client_does_not_
         return web.Response(status=status, body=said, headers={"Content-Type": "application/json", "request-id": "req_9", **told})
 
     _, wire = await serve(answered)
-    wire.route = lambda _sent: Send(refusal=refusal)
+    wire.route = lambda _sent: Send(refusal=refusal, span=root())
     got, headers, body = await post(wire.proxy.url)
     told = {name.lower(): value for name, value in headers.items()}.get("x-should-retry")
     if final:
@@ -345,7 +346,7 @@ async def test_a_spent_usage_limit_routed_final_reaches_the_client_as_nothing_it
         return web.Response(status=429, body=SPENT, headers={"Content-Type": "application/json", **limited, **told})
 
     _, wire = await serve(answered)
-    wire.route = lambda _sent: Send(refusal=refusal)
+    wire.route = lambda _sent: Send(refusal=refusal, span=root())
     got, headers, body = await post(wire.proxy.url)
     named = {name.lower(): value for name, value in headers.items()}
     if final:
@@ -366,7 +367,7 @@ async def test_an_api_that_cannot_be_reached_is_final_when_routed_so(refusal: Li
     await web.TCPSite(probe, "127.0.0.1", 0).start()
     dead = f"http://127.0.0.1:{probe.addresses[0][1]}"
     await probe.cleanup()
-    proxy = await serve_proxy(dead, seen.append, lambda _sent: Send(refusal=refusal), clock=lambda: 7.0)
+    proxy = await serve_proxy(dead, seen.append, lambda _sent: Send(refusal=refusal, span=root()), clock=lambda: 7.0)
     try:
         status, headers, _ = await post(proxy.url)
     finally:
@@ -504,7 +505,7 @@ async def test_a_spent_usage_limit_is_heard_from_the_answers_head_before_the_cli
 
 async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_routes_words(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Hold("(stayed silent)")
+    wire.route = lambda _sent: Hold("(stayed silent)", root())
     status, headers, body = await post(wire.proxy.url)
     assert upstream.asked == []
     assert status == 200 and headers["Content-Type"].startswith("text/event-stream")
@@ -521,7 +522,7 @@ async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_rou
 
 async def test_an_appended_request_reaches_the_api_with_the_tail_after_its_newest_block_and_says_so(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Send((Tail("[hands] how they stand"),))
+    wire.route = lambda _sent: Send((Tail("[hands] how they stand"),), span=root())
     status, _, body = await post(wire.proxy.url)
     assert (status, body) == (200, b"".join(STREAM))
     [(_, _, asked_body)] = upstream.asked
@@ -533,17 +534,20 @@ async def test_an_appended_request_reaches_the_api_with_the_tail_after_its_newes
     assert (exchange.changes, exchange.request_bytes) == ((Tail("[hands] how they stand"),), len(REQUEST))
 
 
-async def test_a_request_made_as_part_of_a_unit_of_work_is_recorded_with_its_span_in_that_units_trace(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+UNIT = Span("4bf92f3577b34da6a3ce929d0e0e4736", "1111111111111111", "00f067aa0ba902b7")
+
+
+@pytest.mark.parametrize("route", [Send(span=UNIT), Hold("(stayed silent)", UNIT)], ids=["sent", "held"])
+async def test_a_request_is_recorded_with_the_span_its_route_chose_sent_or_held(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], route: Route) -> None:
     _, wire = await serve(streamed)
-    span = Span("4bf92f3577b34da6a3ce929d0e0e4736", "1111111111111111", "00f067aa0ba902b7")
-    wire.route = lambda _sent: Send(span=span)
+    wire.route = lambda _sent: route
     await post(wire.proxy.url)
-    assert only_exchange(wire).span == span
+    assert only_exchange(wire).span == UNIT
 
 
 async def test_a_request_the_tail_cannot_be_appended_to_goes_on_as_it_came(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Send((Tail("tail"),))
+    wire.route = lambda _sent: Send((Tail("tail"),), span=root())
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
@@ -557,7 +561,7 @@ async def test_a_request_the_tail_cannot_be_appended_to_goes_on_as_it_came(serve
 
 async def test_a_request_holding_a_string_cut_mid_emoji_still_goes_on_with_the_tail(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Send((Tail("tail"),))
+    wire.route = lambda _sent: Send((Tail("tail"),), span=root())
     # JSON.stringify writes half a surrogate pair as its escape; parsed, it is a lone surrogate UTF-8 cannot encode.
     cut = REQUEST.replace(b'"text": "hi"', b'"text": "hi \\ud83d"')
     status, _, _ = await post(wire.proxy.url, body=cut)
@@ -568,7 +572,7 @@ async def test_a_request_holding_a_string_cut_mid_emoji_still_goes_on_with_the_t
 
 async def test_a_held_request_that_did_not_ask_for_a_stream_is_answered_whole(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Hold("(interrupted)")
+    wire.route = lambda _sent: Hold("(interrupted)", root())
     status, headers, body = await post(wire.proxy.url, REQUEST.replace(b'"stream": true', b'"stream": false'))
     assert upstream.asked == [] and status == 200 and headers["Content-Type"].startswith("application/json")
     answer = json.loads(body)
@@ -590,12 +594,15 @@ async def test_a_route_that_raises_is_logged_and_the_request_goes_on_as_it_came(
         logger.remove(sink)
     assert (status, body) == (200, b"".join(STREAM)) and len(upstream.asked) == 1
     assert [error.startswith("the proxy's route failed") for error in errors] == [True]
+    # Routed by nobody, it is made for no unit of work: the root of a trace of its own, at the sizes OTLP carries.
+    span = only_exchange(wire).span
+    assert span.parent_id is None and (len(span.trace_id), len(span.span_id)) == (32, 16)
 
 
 def test_the_daemon_keeps_one_audit_line_per_exchange_and_nothing_per_event() -> None:
     lines: list[Entry] = []
     observe = wire_to(lines.append)
-    exchange = Exchanged("e1", None, MainTurn(None), "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0), False, None)
+    exchange = Exchanged("e1", None, MainTurn(None), "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0), False, root())
     observe(Sent("e1", None, MainTurn(None), None))
     observe(Heard("e1", TextDelta(0, "hi")))
     observe(exchange)

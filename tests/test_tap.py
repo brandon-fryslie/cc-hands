@@ -17,6 +17,7 @@ from hands.core.session import PromptId, SessionId
 from hands.core.wire import Block, Elsewhere, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Streamed, Subagent, Text, TextDelta, ToolUse, Uncopied, Unkept, Unreached
 from hands.sessions.audit import CopiesLost, Entry
 from hands.sessions.tap import moves, serve_tap
+from hands.sessions.wide import root
 
 REQUEST = (
     b'{"model": "claude-opus-5-5", "tools": [{"name": "Read"}], "stream": true, "messages": '
@@ -110,6 +111,8 @@ async def test_a_copied_exchange_is_the_wire_s_values_with_the_session_s_id(tap:
         case other:
             pytest.fail(f"the reply was read as {other!r}")
     assert tap.entries == []
+    # A wrapped session's exchange is made for no unit of hands' work: the root of a trace of its own.
+    assert exchanged.span.parent_id is None and (len(exchanged.span.trace_id), len(exchanged.span.span_id)) == (32, 16)
 
 
 async def test_a_reply_from_elsewhere_than_the_model_s_endpoint_is_kept_as_its_size_alone(tap: Heard_, socket_path: Path) -> None:
@@ -249,7 +252,7 @@ TURN = PromptId("p1")
 
 def replied(kind: Kind, stop_reason: str, *content: Block) -> Exchanged:
     message = Message("m1", "claude-opus-5-5", content, stop_reason, {})
-    return Exchanged("e1", SessionId("s1"), kind, "POST", "/v1/messages", 1, (), 1.0, 1.0, Reached(200, 2.0, 3.0, 10, Streamed(message)), False, None)
+    return Exchanged("e1", SessionId("s1"), kind, "POST", "/v1/messages", 1, (), 1.0, 1.0, Reached(200, 2.0, 3.0, 10, Streamed(message)), False, root())
 
 
 def test_a_reply_that_ends_the_turn_with_text_closes_it_with_its_last_text_as_its_stop_carries_it() -> None:

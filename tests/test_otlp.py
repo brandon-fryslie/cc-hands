@@ -19,7 +19,7 @@ from hands.core.wire import Answered, Exchanged, Garbled, Held, MainTurn, Reache
 from hands.sessions.audit import AuditLog, Entry, Exported, segment, segments
 from hands.sessions import otlp
 from hands.sessions.otlp import BATCH_SPANS, STOPPED, Exporter, exporting, rejected, spans, traced
-from hands.sessions.wide import WideEvent, annotate, count, unit
+from hands.sessions.wide import WideEvent, annotate, count, root, unit
 
 STARTED = datetime(2026, 10, 3, 12, 0, 0, 250_000, tzinfo=UTC)
 
@@ -140,18 +140,24 @@ def test_with_a_collector_each_event_is_in_the_log_and_reaches_the_collector_and
 TURN = _event(event="voice.turn")
 
 
-def _exchanged(reply: Reached | Unreached | Held, span: Span | None = Span(TURN.trace_id, "1111111111111111", TURN.span_id)) -> Exchanged:
+def _exchanged(reply: Reached | Unreached | Held, span: Span = Span(TURN.trace_id, "1111111111111111", TURN.span_id)) -> Exchanged:
     return Exchanged("x1", SessionId("brain"), MainTurn(None), "POST", "/v1/messages", 2, (), 1000.0, 1000.5, reply, True, span)
 
 
-def test_a_request_made_for_a_unit_of_work_reaches_the_collector_as_a_span_under_it(collector: Collector, tmp_path: Path) -> None:
+def test_a_request_made_for_a_unit_of_work_reaches_the_collector_as_a_span_under_it_and_one_made_for_none_as_a_root(collector: Collector, tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit", clock=datetime.now)
+    alone = root()
     with exporting(collector.url, log.record) as record:
         record(_exchanged(Reached(200, 1001.0, 1002.25, 10, Garbled("the stream ended mid-frame"))))
-        # One made for no unit of work, and one hands answered itself, are in no trace.
-        record(_exchanged(Reached(200, 1001.0, 1002.0, 10, Answered({})), span=None))
-    [span] = collector.spans()
+        # A wrapped session's, or the brain's outside a turn: the root of a trace of its own.
+        record(_exchanged(Reached(200, 1001.0, 1002.0, 10, Answered({})), span=alone))
+    span, rooted = collector.spans()
     assert (span["traceId"], span["spanId"], span["parentSpanId"], span["name"]) == (TURN.trace_id, "1111111111111111", TURN.span_id, "proxy.exchange")
+    assert (rooted["traceId"], rooted["spanId"], rooted["parentSpanId"], rooted["name"]) == (alone.trace_id, alone.span_id, "", "proxy.exchange")
+    # Which session made it, and what it asked where, as nothing else in a trace of its own says.
+    rooted_facts = {attribute["key"]: attribute["value"] for attribute in rooted["attributes"]}
+    assert (rooted_facts["facts.session"], rooted_facts["facts.path"]) == ({"stringValue": "brain"}, {"stringValue": "/v1/messages"})
+    assert json.loads(rooted_facts["facts.kind"]["stringValue"]) == {"type": "MainTurn", "prompt": None}
     # From the request leaving to the reply's last byte, its first byte half a second in.
     assert int(span["endTimeUnixNano"]) - int(span["startTimeUnixNano"]) == 1_750_000_000
     attributes = {attribute["key"]: attribute["value"] for attribute in span["attributes"]}
@@ -168,7 +174,9 @@ def test_a_request_the_api_refused_or_never_heard_is_a_failed_span_and_one_answe
     assert refused is not None and (refused.outcome, refused.error) == ("failed", "the API answered 529")
     assert unreached is not None and (unreached.outcome, unreached.error, unreached.duration_ms) == ("failed", "ClientConnectorError: no route", 250.0)
     assert answered is not None and (answered.outcome, answered.error) == ("ok", None)
-    assert traced(_exchanged(Held("(stayed silent)", 1000.5), span=None)) is None
+    # One hands answered itself is answered whole, as the API never saw it.
+    held = traced(_exchanged(Held("(stayed silent)", 1000.75)))
+    assert held is not None and (held.outcome, held.error, held.duration_ms) == ("ok", None, 250.0)
 
 
 def test_with_the_collector_stopped_each_event_is_in_the_log_and_said_unexported_by_span_id(tmp_path: Path) -> None:

@@ -9,7 +9,7 @@ one change of rule: nothing it cannot read is defaulted into something it can. A
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal, cast
 
 from hands.core.session import PromptId, SessionId
@@ -709,8 +709,9 @@ class Send:
     # What the client makes of the API refusing it: asks again on its own schedule, or, told the refusal is final, ends
     # there, so the refusal is heard the moment it comes.
     refusal: Literal["retried", "final"] = "retried"
-    # The span the exchange is in a unit of work's trace, for a request made as part of one: its record carries it.
-    span: Span | None = None
+    # [LAW:types-are-the-program] the exchange's span, which its record carries, as the router chose it: inside the unit
+    # of work the request was made for, or the root of a trace of its own for one made for none.
+    span: Span = field(kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -723,6 +724,8 @@ class Hold:
     """
 
     said: str
+    # The exchange's span, as Send's is: a request hands holds is still the part of the unit it was made for.
+    span: Span
 
 
 Route = Send | Hold
@@ -900,9 +903,10 @@ class Exchanged:
     reply: Reached | Unreached | Held | Uncopied
     # The client was answered the proxy's own refusal, told final (x-should-retry: false), in place of the API's answer.
     final: bool
-    # [LAW:one-source-of-truth] the exchange's own span in the trace of the unit of work it was made for, so this record
-    # is that unit's part and no second one is kept of it; None for a request made as part of none.
-    span: Span | None
+    # [LAW:one-source-of-truth] the exchange's own span: in the trace of the unit of work it was made for, so this record
+    # is that unit's part and no second one is kept of it, or the root of a trace of its own for a request made as part of
+    # none, so every exchange is in the trace record.
+    span: Span
 
 
 Observed = Sent | Heard | Answering | Exchanged

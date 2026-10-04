@@ -41,6 +41,7 @@ from hands.core.wire import (
     edited,
 )
 from hands.sessions.replies import reply_reader, sent_of, shielded, spent
+from hands.sessions.wide import root
 
 # Headers that describe one hop's connection rather than the request or reply, so each hop sets its own.
 HOP_BY_HOP = frozenset({"connection", "content-length", "host", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"})
@@ -61,7 +62,7 @@ class Listener(Protocol):
 
 class _NoOne:
     def route(self, sent: Sent) -> Route:
-        return Send()
+        return Send(span=root())
 
     def hear(self, observed: Observed) -> None:
         pass
@@ -129,15 +130,13 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
             # [LAW:no-silent-failure] a route that raises is logged with its trace, and the request goes on as it came:
             # the conversation is not broken by hands failing to decide about it.
             logger.exception(f"the proxy's route failed on exchange {exchange}; forwarding it")
-            routed = Send()
+            routed = Send(span=root())
 
         sent_at = clock()
 
         def exchanged(changes: tuple[Change, ...], reply: Reached | Unreached | Held, final: bool) -> Exchanged:
-            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply, final, span)
+            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply, final, routed.span)
 
-        # A held request is no part of any unit's trace: the API never saw it.
-        span = routed.span if isinstance(routed, Send) else None
         match routed:
             case Hold(said=said):
                 content_type, answer = _held(parsed, said)

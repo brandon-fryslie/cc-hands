@@ -26,7 +26,6 @@ from typing import Literal
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from hands.core.trace import Span
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
 from hands.sessions.audit import Entry, Exported, Record, jsonable, level
 from hands.sessions.wide import Fact, Outcome, WideEvent
@@ -72,19 +71,20 @@ def exporting(collector: str | None, record: Record) -> Generator[Record]:
 
 
 def traced(entry: Entry) -> WideEvent | None:
-    """The span a line of the audit log is in a trace: a wide event as it is, and the proxy's record of a request a unit of
-    work made, such as a voice turn's round trip to the model, read as that unit's part; None for a line in no trace."""
+    """The span a line of the audit log is in a trace: a wide event as it is, and the record of an exchange the proxy or
+    tap handled, as the part of the unit of work it was made for, such as a voice turn's round trip to the model, or as
+    the root of a trace of its own; None for a line in no trace."""
     match entry:
         case WideEvent():
             return entry
-        case Exchanged(span=Span() as span, sent_at=sent_at, reply=reply):
+        case Exchanged(span=span, sent_at=sent_at, reply=reply):
             # [LAW:one-source-of-truth] a view of the record, under its own names, never a second record kept of it; and
             # [LAW:single-enforcer] failed where the audit log judges the line an error.
             failed = level(entry) == "error"
             ended, error, facts = _reply_end(sent_at, reply)
             return WideEvent(
                 "proxy.exchange", span.trace_id, span.span_id, span.parent_id, datetime.fromtimestamp(sent_at, UTC), round((ended - sent_at) * 1000, 3),
-                "failed" if failed else "ok", error if failed else None, (), {}, {"exchange": entry.exchange, "final": entry.final, **facts},
+                "failed" if failed else "ok", error if failed else None, (), {}, {"exchange": entry.exchange, "session": entry.session, "kind": entry.kind, "path": entry.path, "final": entry.final, **facts},
             )
         case _:
             return None
