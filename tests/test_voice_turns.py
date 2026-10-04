@@ -8,6 +8,7 @@ than hoped for. Whisper, the user aggregator, and the stop strategy are the ones
 
 import asyncio
 import struct
+import threading
 import wave
 from pathlib import Path
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
@@ -37,7 +38,8 @@ from hands.core.front import FrontUnread, InFront, SessionInFront
 from hands.core.place import Place
 from hands.voice.backends import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.beside import Noting
-from hands.sessions.audit import Entry, HoldHeard, Levels
+from hands.sessions.audit import Entry, HoldHeard, Levels, Unsaid
+from hands.voice import transcription
 from hands.sessions.wide import Fact
 from hands.voice import pipeline as built
 from hands.voice.conversation import cue_receipt
@@ -62,6 +64,9 @@ from test_narrator import heard
 from hands.voice import voices
 
 CLOSING = "that is all"
+
+# Whisper's own transcribing of a hold, which the rig stands in for.
+WHISPER_HEARD: object = vars(Whisper)["_heard"]
 
 # Nothing but the key's holds ends a turn, so a turn left open fails here instead of ending late.
 PATIENCE_SECS = 2.0
@@ -486,6 +491,30 @@ async def test_a_hold_whisper_never_finishes_transcribing_fails_and_ends_its_tur
     await held(rig, 1)
     await rig.until(lambda: rig.out.stopped == 1)
     assert rig.told == ["released", "failed"]
+
+
+async def test_a_transcription_given_up_on_is_not_run_beside_the_next(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    returns, begun = threading.Event(), list[None]()
+
+    def stuck(samples: bytes, prompt: str | None) -> list[Unsaid]:
+        begun.append(None)
+        returns.wait()
+        return []
+
+    # Whisper as it is, down to the model: the rig's stand-in is put aside.
+    monkeypatch.setattr(Whisper, "_heard", WHISPER_HEARD)
+    monkeypatch.setattr(transcription, "segments", stuck)
+    monkeypatch.setattr(whisper, "TRANSCRIBING_SECONDS", 0.2)
+    try:
+        await held(rig, 1)
+        await rig.until(lambda: rig.out.stopped == 1)
+        await held(rig, 2)
+        await rig.until(lambda: rig.out.stopped == 2)
+        assert rig.told == ["released", "failed", "released", "failed"]
+        # The second hold's turn failed in its own time without the model being run on it beside the first.
+        assert len(begun) == 1
+    finally:
+        returns.set()
 
 
 API, WEB = SessionId("api"), SessionId("web")
