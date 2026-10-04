@@ -130,9 +130,12 @@ def bounded(text: str, limit: int) -> str:
 Attending = Callable[[SessionId], Awaitable[tuple[Attention, bool, Overlay]]]
 
 
-async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]], record: Record, attending: Attending, play: Callable[[Progress, Amount], None]) -> None:
+async def relay(
+    sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]], record: Record, attending: Attending, play: Callable[[Progress, Amount], None], working: Callable[[], None]
+) -> None:
     """Hand what the sessions say to the floor, in the order it was decided, until cancelled; progress to be played is
-    handed to `play`, since text in it waits on a summary, and what a session asks never waits behind that."""
+    handed to `play`, since text in it waits on a summary, and what a session asks never waits behind that. Progress of
+    the session in focus is told to `working` as it comes, whatever is said of it: another session's makes no sound."""
     while True:
         heard = await sessions.heard()
         record(Relayed(heard))
@@ -142,6 +145,8 @@ async def relay(sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[Non
                 route = progress_route(attention, focused, overlay)
                 # [LAW:nothing-unseen] which way progress went, and what decided it.
                 record(Routed(session, attention, focused, overlay, route))
+                if focused:
+                    working()
                 _routed(route, heard, play)
             case Speak() | Narrate() | Note():
                 await queue_frame(Unprompted(heard))

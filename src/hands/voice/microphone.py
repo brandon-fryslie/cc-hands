@@ -33,7 +33,7 @@ from typing import Protocol, cast
 
 import pyaudio
 from loguru import logger
-from pipecat.frames.frames import EndWorkerFrame, OutputAudioRawFrame, StartFrame
+from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, OutputAudioRawFrame, StartFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
@@ -148,6 +148,9 @@ class Speaker(LocalAudioOutputTransport):
         self.opened: Output | None = None
         # Set while a stream is attached; a write waits on it through a reopen.
         self._attached = asyncio.Event()
+        # Set while hands is not speaking, as Pipecat's own sender says it started and stopped: a cue for silence waits on it.
+        self.quiet = asyncio.Event()
+        self.quiet.set()
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         # [LAW:one-source-of-truth] Pipecat's local setup is only the base's and an open; the open is open_stream's, so
@@ -200,6 +203,17 @@ class Speaker(LocalAudioOutputTransport):
         # the stream is let go of here the one way a reopen does it, off the loop.
         await BaseOutputTransport.cleanup(self)
         await _let_go_at_cleanup(self._out_stream, self.let_go, self._attached.clear)
+
+    async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+        # [LAW:one-source-of-truth] the sender pushes both edges of hands' speech through here, and an interruption stops it.
+        match frame:
+            case BotStartedSpeakingFrame():
+                self.quiet.clear()
+            case BotStoppedSpeakingFrame():
+                self.quiet.set()
+            case _:
+                pass
+        await super().push_frame(frame, direction)
 
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
         # [LAW:one-source-of-truth] the gate says where hands is, read as each frame is written: a reply carries on at

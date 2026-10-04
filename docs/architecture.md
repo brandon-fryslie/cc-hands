@@ -1655,6 +1655,16 @@ turn opening moves hands, never a press still arming, which may be Shift: so a h
 at the place hands is not at keeps none of the words said before it opened a turn,
 and typing at the desk never takes a call's replies off the phone.
 
+**Cues say what hands is doing while it is silent** (`hands.voice.cues`). The talk
+key's edges are cued as the key moves, whether or not anything downstream takes the
+turn. Two more cues are for silence: a high rising pair when a turn's words are written
+to the model's context, which a hold that heard nothing or was dropped never reaches,
+and one steady tone when hands acts, at each call of one of its tools and at each burst
+of progress from the session in focus, never from another session. They are owed into
+one queue and played once the speaker is quiet, as Pipecat's own started and stopped
+speaking frames say, each kind once however often it was owed meanwhile; each play is
+a `Cued` line in the audit log, with how many it folded and how long speech held it.
+
 The call (`hands.voice.phone`) is one WebRTC connection made with aiortc directly.
 hands' speech goes to the phone on an audio track. The phone's microphone does not:
 the page sends it as plain 16-bit audio over the call's ordered data channel, in

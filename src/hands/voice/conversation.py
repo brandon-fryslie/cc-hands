@@ -1,5 +1,7 @@
 """The conversation with the intermediary, written to the audit log turn by turn as it enters the model's context."""
 
+from collections.abc import Callable
+
 from loguru import logger
 from pipecat.processors.aggregators.llm_response_universal import (
     AssistantTurnStoppedMessage,
@@ -30,3 +32,11 @@ def record_turns(user_turns: LLMUserAggregator, assistant_turns: LLMAssistantAgg
                 pass
             case _:
                 record(Replied(message.content, message.interrupted))
+
+
+def cue_receipt(user_turns: LLMUserAggregator, received: Callable[[], None]) -> None:
+    """Tell `received` of each user turn as its words are written to the context: a turn that heard nothing writes none."""
+
+    @user_turns.event_handler("on_user_turn_message_added")
+    async def written(_aggregator: LLMUserAggregator, _message: UserTurnMessageAddedMessage) -> None:  # pyright: ignore[reportUnusedFunction]
+        received()

@@ -255,6 +255,17 @@ def audited(tool: Tool, record: Record) -> Tool:
     return replace(tool, body=call)
 
 
+def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
+    """The tool, saying by `acting` that hands is acting each time the model calls it, before its body runs."""
+
+    @functools.wraps(tool.body)
+    async def call(**arguments: object) -> Result:
+        acting()
+        return await tool.body(**arguments)
+
+    return replace(tool, body=call)
+
+
 def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None]) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them.
 

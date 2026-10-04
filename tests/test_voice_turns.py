@@ -30,6 +30,7 @@ from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 from conftest import running, unprimed
 from hands.sessions.audit import Entry, HoldHeard, Yielded
 from hands.voice import pipeline as built
+from hands.voice.conversation import cue_receipt
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.floor import Floor
@@ -127,6 +128,8 @@ class Rig:
     texts: asyncio.Queue[str] = field(default_factory=asyncio.Queue[str])
     # The audio each transcription was given.
     heard: list[bytes] = field(default_factory=list[bytes])
+    # Each turn hands said it received, as its words were written to the context.
+    received: list[None] = field(default_factory=list[None])
 
     async def hold(self, keys: Sequence[Key], sound: bytes = b"\x00\x00" * 320) -> None:
         await self.worker.queue_frames([KeyedAudio(audio=sound, sample_rate=16000, num_channels=1, key=key) for key in keys])
@@ -178,14 +181,31 @@ async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
     # The floor sits where build_voice puts it, between Whisper and the user aggregator.
+    received: list[None] = []
+    cue_receipt(voice.user_turns, lambda: received.append(None))
     async with running([voice.stt, Floor(recorded.append, Pushed(), lambda id: id, lambda: live, clock), voice.user_turns, out]) as run:
-        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard)
+        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received)
 
 
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
     await rig.hold(["down", "down", "up"])
     await rig.texts.put("what time is it")
     assert await rig.everything_sent(holds=1) == ["what time is it"]
+
+
+async def test_a_turn_is_received_once_its_words_are_written_and_a_turn_with_none_is_not(rig: Rig) -> None:
+    await rig.hold(["down", "up"])
+    await rig.texts.put("what time is it")
+    await rig.until(lambda: rig.out.sent == ["what time is it"])
+    await rig.until(lambda: len(rig.received) == 1)
+    # Heard nothing, then dropped: the key ended both, and neither reached the model.
+    await rig.hold(["down", "up"])
+    await rig.texts.put("")
+    await rig.hold(["down", "down", "dropped"])
+    assert await rig.everything_sent(holds=3) == ["what time is it"]
+    await rig.until(lambda: len(rig.received) == 2)  # the closing hold's
+    await asyncio.sleep(0.05)
+    assert len(rig.received) == 2
 
 
 async def test_a_hold_hears_from_its_press_and_nothing_before_it(rig: Rig) -> None:

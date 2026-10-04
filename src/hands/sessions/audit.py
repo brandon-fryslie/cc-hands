@@ -390,6 +390,16 @@ class Yielded:
 
 
 @dataclass(frozen=True)
+class Cued:
+    """A cue for silence played: its line, how many cues like it were folded into this one playing, and how long the
+    first of them waited, for hands to stop speaking among other things, from being owed to being played."""
+
+    line: str
+    folded: int
+    waited: float
+
+
+@dataclass(frozen=True)
 class Relayed:
     """Something a session said to the user, passed on to the pipeline."""
 
@@ -662,6 +672,7 @@ Entry = (
     | Called
     | Announced
     | Yielded
+    | Cued
     | Relayed
     | Routed
     | EndedRouted
@@ -716,7 +727,7 @@ def level(entry: Entry) -> Level:
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
             | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | Exported() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
             | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
-            | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Yielded() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
+            | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Yielded() | Cued() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()
         ):
             return "info"
