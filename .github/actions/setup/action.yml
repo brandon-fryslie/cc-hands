@@ -1,0 +1,20 @@
+# [LAW:one-source-of-truth] the environment test.yml gates on and release.yml builds in: Go for fritter, uv on the
+# Python floor requires-python names, and Homebrew's PortAudio, which PyAudio builds against on a Mac.
+name: setup
+description: Go, uv on Python 3.12, and PortAudio, for a checkout that has its history and tags
+runs:
+  using: composite
+  steps:
+    # hatch_build.py builds fritter with Go when the checkout is installed or built.
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: fritter/go.mod
+        cache-dependency-path: fritter/go.sum
+    # Without a pin uv takes the newest Python on the runner; 3.12 is the oldest hands supports.
+    - uses: astral-sh/setup-uv@v6
+      with:
+        python-version: "3.12"
+    # PyAudio ships wheels only for Windows, so on a Mac it builds against Homebrew's PortAudio.
+    - name: PortAudio
+      shell: bash
+      run: brew install portaudio

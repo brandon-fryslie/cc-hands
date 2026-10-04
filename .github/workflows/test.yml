@@ -1,5 +1,5 @@
-# Every PR into master runs the suite and strict pyright on the macOS a release builds on; the check named `test` is
-# required on master, so a red one cannot merge. release.yml publishes whatever commit a tag names, so this is its gate.
+# Every PR into master runs `make check` on the macOS a release builds on; the check named `test` is required on
+# master, so a red one cannot merge, and release.yml publishes only commits on master, so this is its gate.
 name: test
 
 on:
@@ -13,24 +13,23 @@ concurrency:
 jobs:
   test:
     runs-on: macos-14
+    # The suite takes ~4 minutes here; a hung test fails the check instead of holding it for GitHub's 6 hours.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           # hatch-vcs reads the version from the history's tags when `uv sync` installs the checkout.
           fetch-depth: 0
-      # hatch_build.py builds fritter with Go when `uv sync` installs the checkout.
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/setup
+      # The wake word tests fetch openWakeWord's models into pytest's cache; kept across runs, a download outage
+      # cannot fail a PR that never touched the wake word.
+      - uses: actions/cache@v4
         with:
-          go-version-file: fritter/go.mod
-          cache-dependency-path: fritter/go.sum
-      - uses: astral-sh/setup-uv@v6
-      # PyAudio ships wheels only for Windows, so on a Mac it builds against Homebrew's PortAudio.
-      - name: Give PyAudio PortAudio
-        run: brew install portaudio
+          path: .pytest_cache/d/wake-word
+          key: wake-word-${{ hashFiles('src/hands/voice/wake.py') }}
       # [LAW:one-source-of-truth] the versions the suite runs on are uv.lock's; a lock out of step with pyproject fails here.
       - name: Install the locked environment
         run: uv sync --locked
-      - name: pytest
-        run: uv run pytest
-      - name: pyright
-        run: uv run pyright
+      # [LAW:one-source-of-truth] the suite is the Makefile's: pytest, pyright and fritter's go tests.
+      - name: make check
+        run: make check
