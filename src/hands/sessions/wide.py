@@ -125,11 +125,11 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
         emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, beginning.started_at, since(beginning.began), outcome, error, trace, opened.counts, opened.facts))
 
 
-def ended(event: str, emit: Callable[[WideEvent], None], began: Begun, raised: BaseException | None, **facts: Fact) -> None:
+def ended(event: str, emit: Callable[[WideEvent], None], began: Begun, raised: BaseException | None, failure: str | None = None, /, **facts: Fact) -> None:
     """Emit the event of a unit of work `began` elsewhere that no one body runs, as it ends: ok where nothing `raised`,
-    cancelled where a CancelledError did, failed with what did otherwise. What raised is only written down, never raised
-    again here, so its traceback stays the one it came up through."""
-    outcome, error, trace = _how(raised, None)
+    cancelled where a CancelledError did, failed with what did otherwise, or with the `failure` it said, as `fail` says
+    one. What raised is only written down, never raised again here, so its traceback stays the one it came up through."""
+    outcome, error, trace = _how(raised, failure)
     emit(WideEvent(event, began.span.trace_id, began.span.span_id, began.span.parent_id, began.started_at, since(began.began), outcome, error, trace, {}, facts))
 
 

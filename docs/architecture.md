@@ -1779,7 +1779,10 @@ offer must carry the phone's key, a secret in the home that travels in the page
 address's fragment, which a browser never sends with the page request. `hands phone`
 prints the addresses with the key, the first as a QR code. aiortc never notices a
 browser closed outright, so a page that sends nothing for `QUIET_SECS` is hung up:
-it sends its microphone every 20 ms for as long as it is open.
+it sends its microphone every 20 ms for as long as it is open. Each call is one
+`phone.call` event, the root of a trace of its own, from its offer to its end, written
+as it ends: refused at the page, for no key or no offer; let go before it connected;
+or left after hands was at it, with how long after its offer it arrived; and why.
 
 **One audio owner.** Pipecat's output transport is the only thing that plays sound.
 When two sessions finish at once, their utterances line up behind it instead of

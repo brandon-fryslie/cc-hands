@@ -33,11 +33,11 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from loguru import logger
 
-from hands.sessions.audit import PhoneRefused, Record
+from hands.sessions.audit import Record
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
-from hands.sessions.wide import annotate, unit
-from hands.voice.phone import Offer, Phone
+from hands.sessions.wide import annotate, begun, continuing, unit
+from hands.voice.phone import Offer, Phone, Refused, call_ended
 
 # All of this machine's IPv4 addresses, the LAN's and the tailnet's alike.
 PHONE_HOST = "0.0.0.0"
@@ -222,16 +222,21 @@ def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
 
     async def offered(request: web.Request) -> web.Response:
         remote = request.remote or "unknown"
+        # A call is the root of a trace of its own: the request's task copied the context the site was started in,
+        # inside `phone.served`, which ended as the page came up.
+        with continuing(None):
+            began = begun()
         given = request.headers.get("Authorization", "").removeprefix("Bearer ")
         # [LAW:single-enforcer] the one check of the key, compared in constant time.
         if not hmac.compare_digest(given.encode(), key.encode()):
-            record(PhoneRefused(remote=remote))
+            call_ended(record, began, remote, Refused("offered without the phone's key"))
             return web.Response(status=401, text="this page's address is missing the phone's key; open it from `hands phone`")
         try:
             offer = parse_offer(await request.json())
         except (Rejected, json.JSONDecodeError) as error:
+            call_ended(record, began, remote, Refused(str(error)))
             return web.Response(status=400, text=str(error))
-        answer = await phone.answer(offer, remote)
+        answer = await phone.answer(offer, remote, began)
         return web.json_response({"sdp": answer.sdp, "type": answer.type})
 
     app = web.Application()
