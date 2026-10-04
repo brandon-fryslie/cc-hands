@@ -27,6 +27,11 @@ class Home:
         return self.root / "status.json"
 
     @property
+    def lock(self) -> Path:
+        """Locked by the daemon for its whole run: the one test of whether a daemon already runs on this home."""
+        return self.root / "hands.lock"
+
+    @property
     def audit(self) -> Path:
         """Everything the daemon did, heard, said, and failed at, one JSON line each, written by the daemon alone: a
         segmented log, the directory of its segments."""

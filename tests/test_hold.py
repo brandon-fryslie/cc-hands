@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -154,6 +156,58 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
     assert not (tmp_path / "status.json").exists()
     [refused] = [json.loads(line) for line in audit.tail(Home(tmp_path).audit, 10)[0]]
     assert (refused["event"], refused["outcome"]) == ("hands.start", "failed") and "has no Input Monitoring grant" in refused["error"]
+
+
+def holds(home: Path, said: str) -> str:
+    """Python that holds `home` as a running daemon does, then prints `said`."""
+    return f"from pathlib import Path\nfrom hands.daemon import cli\nfrom hands.sessions.home import Home\ncli.hold(Home(Path({str(home)!r})))\nprint({said!r}, flush=True)\n"
+
+
+def holding(home: Path, then: str) -> subprocess.Popen[str]:
+    """A process that holds `home` as a running daemon does, then runs the Python `then`; returned once it holds it."""
+    holder = subprocess.Popen([sys.executable, "-c", holds(home, "held") + then], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    assert holder.stdout is not None and holder.stdout.readline() == "held\n"
+    return holder
+
+
+def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbeat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from hands.sessions import heartbeat
+
+    home = Home(tmp_path)
+    holder = holding(tmp_path, "import sys; sys.stdin.read()")
+    try:
+        heartbeat.Heart(home.status, holder.pid, datetime.now(UTC), timedelta(seconds=2)).beat("running", None, 1, listening=True, deaf=False)
+        live = home.status.read_bytes()
+        # The ticket's repro: the second run is in a terminal without the grant, and is told the daemon runs, not
+        # asked for a grant it does not need.
+        asked: list[None] = []
+        monkeypatch.setattr(talkkey, "granted", lambda: False)
+        monkeypatch.setattr(talkkey, "ask", lambda: asked.append(None))
+        assert cli.main(["--home", str(tmp_path), "run"]) == 1
+        assert f"hands is already running on {tmp_path}; hands is up: pid {holder.pid}" in capsys.readouterr().err
+        assert asked == []
+        assert home.status.read_bytes() == live
+        [refused] = [json.loads(line) for line in audit.tail(home.audit, 10)[0]]
+        assert (refused["event"], refused["outcome"]) == ("hands.start", "failed") and "already running" in refused["error"]
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_restart_execd_in_the_running_daemons_process_keeps_its_home(tmp_path: Path) -> None:
+    # Held, the process execs into hands again, as a restart's run does, and holds the home there too.
+    restarted = holds(tmp_path, "again") + "import sys; sys.stdin.read()"
+    holder = holding(tmp_path, f"import sys\nfrom hands.daemon.starting import again\nagain([sys.executable, '-c', {restarted!r}])")
+    try:
+        assert holder.stdout is not None and holder.stdout.readline() == "again\n"
+        # And still holds it against every other process.
+        other = subprocess.run([sys.executable, "-c", holds(tmp_path, "held")], capture_output=True, text=True)
+        assert other.returncode != 0 and f"hands is already running on {tmp_path}" in other.stderr
+    finally:
+        holder.kill()
+        holder.wait()
 
 
 def test_a_unit_of_work_that_failed_is_said_on_the_terminal_and_is_one_line_in_the_log() -> None:

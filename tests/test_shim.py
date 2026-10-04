@@ -298,13 +298,6 @@ async def test_each_hook_posted_is_one_event_saying_how_it_was_answered(home: Ho
     assert let_go.duration_ms >= 200 and let_go.facts["session"] == SID
 
 
-async def test_a_second_daemon_will_not_take_a_live_socket(home: Home, sessions: Sessions) -> None:
-    with pytest.raises(RuntimeError, match="already listening"):
-        await serve_hooks(home, Sessions(60.0, clock=lambda: 0.0, record=lambda _: None), Names(), lambda _: None)
-    await shim(home, START)
-    assert [listing.session.state for listing in sessions.live()] == [Unreported()]
-
-
 async def test_a_socket_left_by_a_dead_daemon_is_reclaimed(home: Home) -> None:
     # A daemon that died without cleaning up leaves a socket file nothing listens on.
     dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

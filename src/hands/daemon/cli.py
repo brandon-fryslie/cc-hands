@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import fcntl
 import os
 import sys
 import threading
@@ -288,11 +289,12 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
 
 
 def door(home: Home) -> Settings:
-    """What a run checks before its first heartbeat, each in a moment: the talk key's grant, and the settings it starts
-    on. CannotStart where either is missing."""
+    """What a run checks before its first heartbeat, each in a moment: that no other daemon runs on the home, the talk
+    key's grant, and the settings it starts on. CannotStart where any is missing."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
     from hands.voice import talkkey
 
+    hold(home)
     # [LAW:no-silent-failure] no run without its talk key: a missing grant is named at the door, and macOS is asked to
     # show the prompt that adds the terminal to the list.
     granted = talkkey.granted()
@@ -305,6 +307,26 @@ def door(home: Home) -> Settings:
         return load(home)
     except Rejected as error:
         raise CannotStart(str(error)) from error
+
+
+def hold(home: Home) -> None:
+    """Lock the home for the rest of this process, or CannotStart, naming the daemon that holds it.
+
+    [LAW:single-enforcer] the one test of whether a daemon runs on the home, made before anything of the home is
+    written: a second run refused here leaves the heartbeat, the socket, and the indicator to the daemon running.
+    A POSIX record lock is the process's, kept across a restart's exec through the inheritable descriptor, so the same
+    pid takes it again; the kernel lets it go when the process ends, however it ends, so a crash leaves no stale lock.
+    """
+    home.root.mkdir(parents=True, exist_ok=True)
+    # Never closed: closing any descriptor of the file would let the process's lock go.
+    descriptor = os.open(home.lock, os.O_RDWR | os.O_CREAT, 0o600)
+    os.set_inheritable(descriptor, True)
+    try:
+        fcntl.lockf(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        os.close(descriptor)
+        now = datetime.now(UTC)
+        raise CannotStart(f"hands is already running on {home.root}; {heartbeat.describe(heartbeat.look(home.status, now), now)}") from error
 
 
 def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
