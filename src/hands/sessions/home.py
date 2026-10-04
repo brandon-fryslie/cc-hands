@@ -74,7 +74,7 @@ class Home:
 
     @property
     def fritter(self) -> Path:
-        """The fritter every interactive session runs under, the brain's included, built by `hands install-fritter`."""
+        """The fritter every interactive session runs under, the brain's included, copied there by `hands install-fritter` from hands' package."""
         return self.bin / "fritter"
 
     @property

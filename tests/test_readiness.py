@@ -19,7 +19,7 @@ from hands.core.session import Membership, SessionId
 from hands.daemon import readiness
 from hands.daemon.cli import main
 from hands.daemon.readiness import Missing, Ready, Unknown
-from hands.sessions import liveness
+from hands.sessions import liveness, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
@@ -118,9 +118,10 @@ def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -
 # The shim
 
 
-def test_the_shim_first_on_path_is_ready(root: Path) -> None:
+def test_the_shim_first_on_path_is_ready(root: Path, fritter: Path) -> None:
     home = Home(root / "home")
-    executable(home.bin / "fritter", "#!/bin/sh\n")
+    home.bin.mkdir(parents=True)
+    shutil.copy2(fritter, home.bin / "fritter")
     executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     executable(root / "real" / "claude", "#!/bin/sh\n")
     assert isinstance(readiness.shim(home, f"{home.bin}:{root / 'real'}"), Ready)
@@ -141,6 +142,16 @@ def test_a_shim_whose_fritter_is_gone_is_missing(root: Path) -> None:
     executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     found = readiness.shim(home, f"{home.bin}")
     assert isinstance(found, Missing) and f"its fritter {home.bin / 'fritter'} is not there to run" in found.said
+
+
+def test_a_shim_whose_fritter_is_not_the_one_hands_carries_says_to_install_it_again(root: Path) -> None:
+    # As after hands is upgraded: the home's copy is the old hands' fritter.
+    home = Home(root / "home")
+    executable(home.bin / "fritter", "#!/bin/sh\n")
+    executable(home.shim, shim_script(home.bin / "fritter", home.wire))
+    found = readiness.shim(home, f"{home.bin}")
+    assert isinstance(found, Missing)
+    assert f"its fritter {home.bin / 'fritter'} is not the one this hands carries, {wrapper.PACKAGED}: run `hands install-fritter`" in found.said
 
 
 def test_no_shim_installed_says_to_install_it(root: Path) -> None:
@@ -391,10 +402,11 @@ def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: 
     ids=["ready", "missing", "unknown", "missing-outranks-unknown"],
 )
 def test_check_says_every_piece_and_exits_by_the_worst(
-    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], granted: bool, plugins: object, code: int, marks: list[str]
+    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], granted: bool, plugins: object, code: int, marks: list[str]
 ) -> None:
     home = Home(root / "home")
-    executable(home.bin / "fritter", "#!/bin/sh\n")
+    home.bin.mkdir(parents=True)
+    shutil.copy2(fritter, home.bin / "fritter")
     executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     monkeypatch.setenv("PATH", f"{home.bin}:{claude_listing(root, plugins)}")
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: granted)

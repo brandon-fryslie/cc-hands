@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import shutil
 import stat
 import subprocess
 import sys
@@ -22,7 +21,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.sessions.audit import SettingsEdited
-from hands.sessions.wrapper import FRITTER_SOURCE
+from hands.sessions.wrapper import PACKAGED
 
 # How long a pipeline may take to start before a test fails on it.
 STARTUP_SECS = 5.0
@@ -180,13 +179,9 @@ async def running(processors: list[FrameProcessor], observers: Sequence[BaseObse
 
 
 @pytest.fixture(scope="session")
-def fritter(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """fritter, built from this checkout once for the run."""
-    if shutil.which("go") is None:
-        pytest.skip("needs go to build fritter")
-    built = tmp_path_factory.mktemp("fritter") / "fritter"
-    subprocess.run(["go", "build", "-o", str(built), "."], cwd=FRITTER_SOURCE, check=True, capture_output=True)
-    return built
+def fritter() -> Path:
+    """The fritter this checkout's hands package carries, which its editable install built."""
+    return PACKAGED
 
 
 @pytest.fixture

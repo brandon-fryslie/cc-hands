@@ -97,7 +97,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
     commands.add_parser("login", help="log the brain (the claude backend of the home's config.toml) in again, or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
-    commands.add_parser("install-fritter", help="build fritter and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
+    commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
@@ -376,19 +376,33 @@ def login(home: Home) -> int:
 
 def install_fritter(home: Home) -> int:
     try:
-        installed = wrapper.install(home)
-    except wrapper.Uninstallable as error:
-        print(f"hands install-fritter: {error}", file=sys.stderr)
+        settings = load(home)
+    except Rejected as error:
+        print(f"hands: {error}", file=sys.stderr)
         return 1
-    print(f"built {installed.fritter}")
-    print(f"wrote {installed.shim}")
-    match readiness.shim(home, os.environ.get("PATH", "")):
-        case readiness.Ready(said=said):
-            print(said)
-            return 0
-        case readiness.Missing(said=said):
-            print(said, file=sys.stderr)
+    audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    # [LAW:nothing-unseen] an install is a unit of work: the fritter it copied from, where it put it and the claude
+    # beside it, and whether PATH finds that claude, through the same export edge as the run's events.
+    with exporting(settings.config.collector, audit_log.record) as record, wide.unit("fritter.install", record):
+        wide.annotate(packaged=wrapper.PACKAGED)
+        try:
+            installed = wrapper.install(home)
+        except wrapper.Uninstallable as error:
+            wide.fail(str(error))
+            print(f"hands install-fritter: {error}", file=sys.stderr)
             return 1
+        wide.annotate(fritter=installed.fritter, shim=installed.shim)
+        print(f"copied {wrapper.PACKAGED} to {installed.fritter}")
+        print(f"wrote {installed.shim}")
+        found = readiness.shim(home, os.environ.get("PATH", ""))
+        wide.annotate(path_finds_it=isinstance(found, readiness.Ready))
+        match found:
+            case readiness.Ready(said=said):
+                print(said)
+                return 0
+            case readiness.Missing(said=said) | readiness.Unknown(said=said):
+                print(said, file=sys.stderr)
+                return 1
 
 
 # How often `hands log` looks for new lines.
