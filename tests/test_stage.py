@@ -62,6 +62,7 @@ from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, Model
 from hands.sessions.audit import BrainAnswered, BrainInterrupted, Entry
 from hands.sessions.wide import WideEvent
 from hands.voice.player import Mark
+from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
 from hands.voice.speech import Aloud, Narrated
 from hands.voice.tools import Result, Tool, tool
@@ -197,6 +198,8 @@ class Rig:
     asking: asyncio.Task[None]
     # Whether the user can see a screen as their turn is submitted: the last of these.
     modalities: list[Modality]
+    # The edge that opened the gate's last turn: the last of these.
+    edges: list[Edge]
     context: LLMContext = field(default_factory=LLMContext)
     exchanges: int = 0
     # The span each request sent on carries, in the order they left.
@@ -267,13 +270,14 @@ async def rig() -> AsyncGenerator[Rig, None]:
         return fronts[-1]
 
     modalities: list[Modality] = ["screen"]
-    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: "held key", recorded.append, clock=lambda: now[0])
+    edges: list[Edge] = ["held key"]
+    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: edges[-1], recorded.append, clock=lambda: now[0])
     out = Spoken()
     async with running([stage, out]) as run:
         # As the daemon runs it: a watch beside the pipeline.
         asking = asyncio.create_task(stage.ask_each())
         try:
-            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused, fronts, asking, modalities)
+            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused, fronts, asking, modalities, edges)
         finally:
             asking.cancel()
 
@@ -470,6 +474,18 @@ async def test_a_users_turn_carries_whether_they_could_see_a_screen_as_their_wor
     rig.brain.end()
     await rig.until(lambda: len(turns(rig.recorded)) == 3)
     assert ((exchange,), "Nothing.", (), False, UserAsked("audio-only", "held key", UNREAD, 0.0), 0.0, None) in spoke(rig.recorded)
+
+
+async def test_a_users_turn_carries_the_edge_that_opened_it_though_another_opens_before_its_words_arrive(rig: Rig) -> None:
+    await rig.release()
+    # The phone's button pressed while the desk's words are still transcribed.
+    rig.edges.append("phone button")
+    await rig.say({"role": "user", "content": "what is running?"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "Nothing.")
+    rig.brain.end()
+    await rig.until(lambda: len(turns(rig.recorded)) == 1)
+    assert spoke(rig.recorded)[0][4] == UserAsked("screen", "held key", UNREAD, 0.0)
 
 
 async def test_a_turn_hands_narrates_is_not_read_against_the_screen(rig: Rig) -> None:

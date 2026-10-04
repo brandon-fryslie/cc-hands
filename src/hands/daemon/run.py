@@ -475,8 +475,11 @@ async def converse(
         # [LAW:no-ambient-temporal-coupling] a move reads the devices, which are known once the pipeline has opened
         # its streams; the desk is driven from then on.
         await pipeline.started.wait()
+        await triggers.drive(drive_desk)
+
+    async def drive_desk(trigger: Trigger) -> None:
         # [LAW:one-type-per-behavior] the trigger in use picks the edge that drives the desk: each trigger is one arm.
-        match triggers.in_use:
+        match trigger:
             case "held key":
                 await drive_talk_key(lambda move: at_desk(move, "held key"))
 

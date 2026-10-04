@@ -1640,8 +1640,9 @@ because an open mic in a room with speakers hears the pipeline's own voice.
 **The trigger is the desk's edge, one choice switched by voice** (`hands.voice.trigger`).
 The phone's button is there for every call; at the desk, the edge that drives the gate is
 the `Trigger` in use, one value `Triggers` holds while hands runs: the brain's
-`trigger_in_use` says it, and `set_trigger` switches it. Built: the `held key`. A trigger
-not built is refused by the tool's closed set, and the one in use stays.
+`trigger_in_use` says it, and `set_trigger` switches it: the old edge stops and the new
+one starts (`Triggers.drive`), so the next turn opens the new way. Built: the `held key`. A
+trigger not built is refused by the tool's closed set, and the one in use stays.
 
 **The phone is a second place, beside the desk.** The desk is the Mac's own mic and
 speakers; the phone is a page hands serves (`hands.voice.phonepage`) that a phone

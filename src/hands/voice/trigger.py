@@ -4,6 +4,8 @@
 built later is one more value here, one more arm wherever a trigger is matched, and nothing else.
 """
 
+import asyncio
+from collections.abc import Callable, Coroutine
 from typing import Literal
 
 from hands.core.place import Place
@@ -30,11 +32,28 @@ class Triggers:
     # [LAW:no-shared-mutable-globals] the brain's tool writes and the desk's driver reads, both on the event loop.
     def __init__(self) -> None:
         self._in_use: Trigger = "held key"
+        # Set once the trigger in use is replaced by another; the driver of the desk waits on it.
+        self._switched = asyncio.Event()
 
     def choose(self, trigger: Trigger) -> Trigger:
         """Put `trigger` in use, and get back the one it replaced."""
         was, self._in_use = self._in_use, trigger
+        if trigger != was:
+            self._switched.set()
         return was
+
+    async def drive(self, edge: Callable[[Trigger], Coroutine[object, object, None]]) -> None:
+        """Run `edge` for the trigger in use until it is switched, then for the new one in its place, until cancelled.
+
+        [LAW:no-ambient-temporal-coupling] the old edge is stopped before the new one starts, so the next turn opens the
+        new way and no key or word is read by both. An edge that fails ends the drive with its failure.
+        """
+        while True:
+            self._switched = switched = asyncio.Event()
+            async with asyncio.TaskGroup() as group:
+                running = group.create_task(edge(self._in_use))
+                await switched.wait()
+                running.cancel()
 
     @property
     def in_use(self) -> Trigger:

@@ -210,7 +210,7 @@ class BrainStage(FrameProcessor):
         self._front = front
         # Whether the user can see a screen, read as their words arrive.
         self._modality = modality
-        # The edge that opened the user's turn, as the gate took it when it opened.
+        # The edge that opened the gate's last turn.
         self._opened = opened
         # Moves the focus to a session whose telling the brain takes.
         self._refocus = refocus
@@ -231,8 +231,9 @@ class BrainStage(FrameProcessor):
         self._hands: deque[tuple[Narrated | Aloud, Seconds]] = deque()
         # When the user last let go of the key on words not yet handed to the brain: what their wait is timed from. One, not
         # one per hold: a hold let go of while an earlier one is still transcribed joins that hold's turn (KeyTurnStop), and
-        # the turn's one context follows the last release of the holds it took in.
-        self._released: Seconds | None = None
+        # the turn's one context follows the last release of the holds it took in. Kept with the edge that opened that
+        # hold, read from the gate as it is let go of, before any later hold can open.
+        self._released: tuple[Seconds, Edge] | None = None
         self._waiting = asyncio.Event()
         self._turn: _Turn | None = None
         # What the user heard of the last turn before the API broke it off, told to the brain with its next turn: Claude
@@ -255,14 +256,19 @@ class BrainStage(FrameProcessor):
                 # [LAW:no-ambient-temporal-coupling] the screen is read from as the words arrive, not as their turn is
                 # taken: the user may look elsewhere, or switch to audio-only, while it waits.
                 released, self._released = self._released, None
+                match released:
+                    case None:
+                        let_go, opened = None, self._opened()
+                    case (let_go, opened):
+                        pass
                 if news := self._news(context):
-                    self._contexts.append((news, self._now(), released, asyncio.ensure_future(self._read_front(self._modality(), self._opened()))))
+                    self._contexts.append((news, self._now(), let_go, asyncio.ensure_future(self._read_front(self._modality(), opened))))
                     self._waiting.set()
             case HoldDiscarded():
                 await self.push_frame(frame, direction)
             case VADUserStoppedSpeakingFrame():
                 # The key let go on words to be transcribed: the end of the user's words, and the start of their wait.
-                self._released = self._now()
+                self._released = (self._now(), self._opened())
                 await self.push_frame(frame, direction)
             case Narrated() | Aloud():
                 self._hands.append((frame, self._now()))
