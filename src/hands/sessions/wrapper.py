@@ -141,7 +141,14 @@ def install(home: Home) -> Installed:
         # executable is rewritten in place, and every session under fritter is one.
         home.bin.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=home.bin, prefix=".fritter.") as staging:
-            shutil.copy2(PACKAGED, Path(staging) / "fritter")
+            try:
+                shutil.copy2(PACKAGED, Path(staging) / "fritter")
+            except FileNotFoundError as error:
+                # Its build put it there, so a package without it is a hands built without it: build hands again.
+                raise Uninstallable(
+                    f"hands' package carries no fritter at {PACKAGED}: install hands again, or in a checkout, "
+                    f"`uv sync --reinstall-package hands`"
+                ) from error
             os.replace(Path(staging) / "fritter", fritter)
         replace_whole(shim, shim_script(fritter, home.wire), 0o755)
     except OSError as error:

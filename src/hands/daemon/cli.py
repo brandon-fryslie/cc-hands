@@ -376,19 +376,33 @@ def login(home: Home) -> int:
 
 def install_fritter(home: Home) -> int:
     try:
-        installed = wrapper.install(home)
-    except wrapper.Uninstallable as error:
-        print(f"hands install-fritter: {error}", file=sys.stderr)
+        settings = load(home)
+    except Rejected as error:
+        print(f"hands: {error}", file=sys.stderr)
         return 1
-    print(f"copied {wrapper.PACKAGED} to {installed.fritter}")
-    print(f"wrote {installed.shim}")
-    match readiness.shim(home, os.environ.get("PATH", "")):
-        case readiness.Ready(said=said):
-            print(said)
-            return 0
-        case readiness.Missing(said=said):
-            print(said, file=sys.stderr)
+    audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    # [LAW:nothing-unseen] an install is a unit of work: the fritter it copied from, where it put it and the claude
+    # beside it, and whether PATH finds that claude, through the same export edge as the run's events.
+    with exporting(settings.config.collector, audit_log.record) as record, wide.unit("fritter.install", record):
+        wide.annotate(packaged=wrapper.PACKAGED)
+        try:
+            installed = wrapper.install(home)
+        except wrapper.Uninstallable as error:
+            wide.fail(str(error))
+            print(f"hands install-fritter: {error}", file=sys.stderr)
             return 1
+        wide.annotate(fritter=installed.fritter, shim=installed.shim)
+        print(f"copied {wrapper.PACKAGED} to {installed.fritter}")
+        print(f"wrote {installed.shim}")
+        found = readiness.shim(home, os.environ.get("PATH", ""))
+        wide.annotate(path_finds_it=isinstance(found, readiness.Ready))
+        match found:
+            case readiness.Ready(said=said):
+                print(said)
+                return 0
+            case readiness.Missing(said=said) | readiness.Unknown(said=said):
+                print(said, file=sys.stderr)
+                return 1
 
 
 # How often `hands log` looks for new lines.

@@ -7,6 +7,7 @@ Monitoring grant that lets hands hear the talk key, and the running sessions the
 lines as it starts, and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
 """
 
+import filecmp
 import os
 import re
 import shutil
@@ -93,8 +94,9 @@ def plugin_listed(raw: str) -> Finding:
     )
 
 
-def shim(home: Home, path: str) -> Ready | Missing:
-    """Whether `claude` on this PATH is a hands shim whose fritter is there, so it starts every interactive session under fritter."""
+def shim(home: Home, path: str) -> Finding:
+    """Whether `claude` on this PATH is a hands shim whose fritter is the one this hands carries, so it starts every
+    interactive session under fritter."""
     found = shutil.which("claude", path=path)
     fritter = None if found is None else wrapper.fritter_of(Path(found))
     # [LAW:dataflow-not-control-flow] what to do is read off what is there: an installed shim wants only the PATH.
@@ -105,7 +107,15 @@ def shim(home: Home, path: str) -> Ready | Missing:
             return Missing(f"`claude` on this PATH is {found or 'nothing'}, not hands' shim, so no session started from it can be typed into: {fix}")
         case runs if not os.access(runs, os.X_OK):
             return Missing(f"`claude` on this PATH is hands' shim, {found}, but its fritter {runs} is not there to run, so every interactive claude fails to start: run `hands install-fritter`")
-        case _:
+        case runs:
+            # [LAW:one-source-of-truth] the fritter in a home's bin is a copy of the packaged one, so a copy that has
+            # drifted from it, as one does when hands is upgraded or a checkout's fritter rebuilt, is said, never trusted.
+            try:
+                current = filecmp.cmp(runs, wrapper.PACKAGED, shallow=False)
+            except OSError as error:
+                return Unknown(f"cannot tell whether {runs} is the fritter this hands carries, {wrapper.PACKAGED}: {error}")
+            if not current:
+                return Missing(f"`claude` on this PATH is hands' shim, {found}, but its fritter {runs} is not the one this hands carries, {wrapper.PACKAGED}: run `hands install-fritter`")
             return Ready(f"`claude` on this PATH is hands' shim, {found}: every interactive session started from it can be typed into")
 
 

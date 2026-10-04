@@ -1,5 +1,6 @@
 """The claude shim: a session on a terminal runs under fritter, anything else runs the real claude as it is."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -10,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from hands.daemon.cli import main
+from hands.sessions.audit import segment
 from hands.sessions.home import Home
 from hands.sessions import wrapper
 from hands.sessions.wrapper import shim_script
@@ -182,14 +184,24 @@ def test_install_copies_the_packaged_fritter_with_no_go_and_says_whether_path_fi
 
     printed = on_a_terminal(["claude", "hi"], f"{home.bin}:{tools}")
     assert printed.startswith("claude hi socket=/tmp/fritter-")
+    # [LAW:nothing-unseen] each install's event: where it copied from and to, and whether PATH found its claude.
+    events = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line["type"] == "WideEvent"]
+    facts = {"packaged": str(wrapper.PACKAGED), "fritter": str(home.fritter), "shim": str(home.shim)}
+    assert [(event["event"], event["outcome"], event["facts"]) for event in events] == [
+        ("fritter.install", "ok", {**facts, "path_finds_it": False}),
+        ("fritter.install", "ok", {**facts, "path_finds_it": True}),
+    ]
 
 
 def test_install_without_a_packaged_fritter_fails_naming_where_it_looked(root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
     monkeypatch.setattr(wrapper, "PACKAGED", root / "package" / "bin" / "fritter")
     assert main(["--home", str(home.root), "install-fritter"]) == 1
-    assert f"hands install-fritter: cannot install {root / 'package' / 'bin' / 'fritter'} into {home.bin}" in capsys.readouterr().err
+    assert f"hands install-fritter: hands' package carries no fritter at {root / 'package' / 'bin' / 'fritter'}: install hands again" in capsys.readouterr().err
     assert not home.fritter.exists() and not home.shim.exists()
+    [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line["type"] == "WideEvent"]
+    assert (event["event"], event["outcome"], event["facts"]) == ("fritter.install", "failed", {"packaged": str(root / "package" / "bin" / "fritter")})
+    assert event["error"].startswith("hands' package carries no fritter at")
 
 
 def test_a_relative_home_is_this_directory_s(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:

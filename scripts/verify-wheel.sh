@@ -25,7 +25,8 @@ stranger sh -c '! command -v go' >/dev/null || { echo "verify-wheel: go is still
 stranger "$uv" tool install --quiet --python 3.12 "$wheel"
 said=$(stranger hands --version)
 [ "$said" = "hands $expected" ] || { echo "verify-wheel: hands --version said '$said', not 'hands $expected'" >&2; exit 1; }
-fritter=$(stranger "$fresh/tools/hands/bin/python" -c 'import hands, pathlib; print(pathlib.Path(hands.__file__).parent / "bin" / "fritter")')
+# Where install-fritter copies from, as hands itself names it, so the check is of the path hands uses.
+fritter=$(stranger "$fresh/tools/hands/bin/python" -c 'from hands.sessions.wrapper import PACKAGED; print(PACKAGED)')
 # fritter puts its own terminal into raw mode, so it runs under script's pseudo-terminal. The program checks that
 # fritter published its socket, and exits 7 so that fritter is seen handing the program's own exit code back.
 set +e
