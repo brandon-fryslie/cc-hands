@@ -108,8 +108,7 @@ async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_
 async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_server_cannot_is_an_error() -> None:
     recorded: list[Entry] = []
     server = await serve_mcp([audited(tool(echo), recorded.append), audited(tool(broken), recorded.append)], recorded.append, CallSpans())
-    errors: list[str] = []
-    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
+    errors, sink = failures()
     try:
         _, wrong = await rpc(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"words": "hi"}}})
         refusal = "echo was called with the wrong arguments: missing a required argument: 'text'"
@@ -705,8 +704,7 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
     brain.session = SessionId("b1")
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
-    errors: list[str] = []
-    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
+    errors, sink = failures()
     try:
         body = {"messages": [{"role": "user", "content": "hi"}], "tools": [{"name": "Read"}]}
         with_hands = {**body, "tools": [{"name": "Read"}, {"name": "mcp__hands__read_session"}]}
@@ -823,6 +821,30 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_an
     [permission] = events(recorded, "brain.permission")
     assert (permission.outcome, permission.error, permission.facts["decision"]) == ("failed", "RuntimeError: no voice", Deny(BROKEN))
     assert not (tmp_path / "notes.txt").exists()
+
+
+async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_and_is_never_pressed_again(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    pressed: list[object] = []
+
+    class Jammed(_Jammed):
+        def press(self, key: object) -> None:
+            pressed.append(key)
+            raise OSError("jammed")
+
+    said, sink = failures()
+    try:
+        waiting = asyncio.create_task(brain.ask("wait", unasked))
+        await until(lambda: [" wait"] == [line[1] for line in typed(tmp_path) if line[0] == "prompt"])
+        brain._typist = Jammed()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+        brain.interrupt()
+        with pytest.raises(OSError, match="jammed"):
+            await asyncio.wait_for(waiting, 5)
+    finally:
+        logger.remove(sink)
+        await brain.stop()
+    # A second stop would press Escape again, and its Ctrl-C would land inside Claude Code's exit window.
+    assert (pressed, said) == (["escape"], ["the brain's own work failed: OSError('jammed')"])
 
 
 async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hooks_after_it_are_still_heard() -> None:

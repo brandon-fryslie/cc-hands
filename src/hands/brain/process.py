@@ -521,6 +521,12 @@ class Brain:
     async def _stop(self, turn: _Turn) -> None:
         try:
             await self._escape(turn)
+        except Exception as error:
+            # A stop that breaks is never pressed again: its keys may have gone, and a second Ctrl-C within Claude Code's
+            # exit window ends it. The turn ends with what broke it, and `_broke` says it.
+            if turn.broken is None:
+                turn.broken = error
+            raise
         finally:
             # A broken turn ends with what broke it however its stop went, even unstopped: nothing else is left to end it,
             # and what it holds is refused first, so no dialog of it is left open for the next turn's Return. Unanswered,

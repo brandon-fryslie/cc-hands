@@ -401,8 +401,9 @@ class BrainStage(FrameProcessor):
             # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
             # from its own watch, but one that never took the turn, or could not be typed into, is still running.
             fail(failed)
-            # A turn the brain never took did not tell it what the user heard: the turn after it does.
-            self._broken_off = note
+            # A turn the brain never took did not tell it what the user heard: the turn after it does. One it spoke in took
+            # that, and was cut where the user stopped hearing it.
+            self._broken_off = _broken_off("".join(spoken)) if spoken else note
             await self._unsaid(unsaid)
             await self.push_error(failed)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
             return failed
@@ -628,8 +629,8 @@ def _failed(turn: _Turn, error: str | None) -> _Failure | None:
 
 
 def _broken_off(spoken: str) -> str:
-    """The note that tells the brain what the user heard of a turn the API broke off; none when nothing of it was said."""
-    return f'[hands] The API broke off your last turn. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.' if spoken else ""
+    """The note that tells the brain what the user heard of a turn broken off before its end; none when nothing of it was said."""
+    return f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.' if spoken else ""
 
 
 def _result(answer: ToolAnswer) -> Result | None:

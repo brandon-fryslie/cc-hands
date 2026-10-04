@@ -1046,7 +1046,7 @@ async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_
     await rig.say({"role": "user", "content": "thanks"})
     assert rig.brain.asked[1:] == [
         heard(
-            '[hands] The API broke off your last turn. The user heard you say "1. Lighthouses stand on rocky coasts and h", then that it failed. '
+            '[hands] Your last turn was broken off. The user heard you say "1. Lighthouses stand on rocky coasts and h", then that it failed. '
             "Say nothing about this unless the user asks.\n\nwhat were you saying?"
         ),
         heard("thanks"),
@@ -1063,8 +1063,21 @@ async def test_what_the_user_heard_of_a_broken_turn_is_told_with_the_first_turn_
     rig.brain.fail(Untaken("the brain did not take the turn typed into it in 30s"))
     await rig.until(lambda: len(rig.errors) == 2)
     await rig.say({"role": "user", "content": "again"})
-    note = '[hands] The API broke off your last turn. The user heard you say "Lighthouses stand", then that it failed. Say nothing about this unless the user asks.'
+    note = '[hands] Your last turn was broken off. The user heard you say "Lighthouses stand", then that it failed. Say nothing about this unless the user asks.'
     assert rig.brain.asked[1:] == [heard(f"{note}\n\nwhat were you saying?"), heard(f"{note}\n\nagain")]
+    rig.brain.end()
+
+
+async def test_a_turn_that_breaks_after_the_brain_spoke_tells_the_next_where_the_user_stopped_hearing_it(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "tell me about lighthouses"})
+    rig.stream(rig.request()[0], "Lighthouses stand")
+    await rig.until(lambda: len(rig.out.said()) == 1)
+    # Broken in hands' own work, after the brain took the turn: its asker hears the failure, not an answer.
+    rig.brain.fail(RuntimeError("no voice"))
+    await rig.until(lambda: len(rig.errors) == 1)
+    await rig.say({"role": "user", "content": "what were you saying?"})
+    note = '[hands] Your last turn was broken off. The user heard you say "Lighthouses stand", then that it failed. Say nothing about this unless the user asks.'
+    assert rig.brain.asked[1:] == [heard(f"{note}\n\nwhat were you saying?")]
     rig.brain.end()
 
 
