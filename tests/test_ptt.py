@@ -41,6 +41,34 @@ def test_only_a_dropped_turn_leaves_the_key_dropped_and_the_next_turn_clears_it(
     assert dropped.after("arm", "desk").after("start", "desk").key == "down"
 
 
+def test_an_engaged_desk_is_heard_between_turns_and_each_turn_ends_back_to_listening() -> None:
+    engaged = Gate().after("listen", "desk")
+    assert (engaged.key, engaged.listens, engaged.turn_open) == ("listening", True, False)
+    assert engaged.audible(LOUD) == LOUD
+    turn = engaged.after("arm", "desk").after("start", "desk")
+    assert turn.turn_open
+    assert turn.after("stop", "desk").key == "listening"
+    assert engaged.after("arm", "desk").after("disarm", "desk").key == "listening"
+    assert turn.after("expire", "desk").key == "dropped"  # thrown away, and the next turn's press clears it
+
+
+@pytest.mark.parametrize(("before", "after"), [("listening", "up"), ("arming", "up"), ("down", "up"), ("dropped", "dropped")])
+def test_disengaging_stops_the_desk_listening_and_sends_a_turn_open(before: Key, after: Key) -> None:
+    gate = Gate(before, "desk", listens=True).after("deafen", "desk")
+    assert (gate.key, gate.listens) == (after, False)
+
+
+def test_the_phone_never_listens_between_turns_and_the_desk_does_again_once_hands_is_back() -> None:
+    at_the_phone = Gate().after("listen", "desk").moved("phone")
+    assert (at_the_phone.key, at_the_phone.audible(LOUD)) == ("up", QUIET)
+    assert at_the_phone.after("start", "phone").after("stop", "phone").key == "up"
+    assert at_the_phone.moved("desk").key == "listening"
+    # Engaged while hands is at the phone: the desk listens once hands is back, and the call hears nothing meanwhile.
+    engaged_away = Gate().moved("phone").after("listen", "desk")
+    assert (engaged_away.key, engaged_away.place, engaged_away.listens) == ("up", "phone", True)
+    assert engaged_away.moved("desk").key == "listening"
+
+
 def test_a_turn_opened_at_the_other_place_moves_the_gate_there() -> None:
     gate = Gate().after("start", "phone")
     assert (gate.key, gate.place) == ("down", "phone")

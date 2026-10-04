@@ -279,6 +279,13 @@ Need 8. Where the microphone is.
   as `Edge` (`hands.voice.trigger`); the desk's is the trigger the user switches by
   voice. The `held key` edge is a macOS event tap that reports real key-down and
   key-up. Done when holding the key in another app drives a turn and releasing ends it.
+- **Engaged conversation.** One hold of Right Shift engages, and from then on the
+  user's voice opens each turn and end-of-turn detection closes it: Silero says where
+  speech starts and stops on the echo-cancelled desk microphone, and Smart Turn v3
+  judges whether a stop ends the turn or is a pause inside it. Another hold
+  disengages; each is cued. Done when one press is followed by three turns with no
+  key touched, a pause mid-sentence does not send half of it, and room talk after
+  disengaging opens no turn.
 - **Phone over WebRTC.** A hold-to-talk page served over HTTPS on the LAN and the
   tailnet, beside the desk for the whole run; the place the last turn opened at is
   where hands hears and speaks. Done when a full turn round-trips from a phone with

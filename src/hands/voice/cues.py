@@ -38,6 +38,10 @@ OPENED = Cue("turn: started", ((660.0, 990.0),))
 SENT = Cue("turn: ended", ((990.0, 660.0),))
 DROPPED = Cue("turn: dropped", ((330.0, 330.0), (330.0, 330.0)))
 EXPIRED = Cue(f"turn: dropped, open {TURN_LIMIT_SECONDS:.0f}s", DROPPED.glides)
+# Engaged conversation's edges: two rising tones as hands starts listening for every turn, two falling as it stops. Two
+# tones, so neither is taken for a turn opening or ending.
+ENGAGED = Cue("engaged: listening", ((660.0, 990.0), (660.0, 990.0)))
+DISENGAGED = Cue("disengaged: not listening", ((990.0, 660.0), (990.0, 660.0)))
 
 
 @dataclass(frozen=True)
@@ -57,7 +61,8 @@ WORKING = QuietCue(Cue("working", ((880.0, 880.0),)), 2.0)
 
 
 def cues(move: Move) -> tuple[Cue, ...]:
-    """What a move shows and plays: the turn's edges, and nothing of the microphone arming, which every Shift does."""
+    """What a move shows and plays: the turn's edges, and the desk starting and stopping listening for every turn; and
+    nothing of the microphone arming, which every Shift does."""
     match move:
         case "start":
             return (OPENED,)
@@ -69,6 +74,10 @@ def cues(move: Move) -> tuple[Cue, ...]:
             return (EXPIRED,)
         case "arm" | "disarm":
             return ()
+        case "listen":
+            return (ENGAGED,)
+        case "deafen":
+            return (DISENGAGED,)
 
 
 @cache

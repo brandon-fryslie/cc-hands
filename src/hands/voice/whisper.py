@@ -108,18 +108,22 @@ class Whisper(WhisperSTTServiceMLX):
                 # The press was Shift after all: what it heard is no part of any turn.
                 self._user_speaking = False
                 self._audio_buffer.clear()
-            case "up" | "arming" | "dropped", "down":
+            case "arming", "listening":
+                # A start that was only a noise: the desk listens on, and its last second is kept as Pipecat keeps it.
+                self._user_speaking = False
+            case "up" | "listening" | "arming" | "dropped", "down":
                 self._opened += 1
                 opened = TurnOpened(hold=self._opened)
                 await super()._handle_user_started_speaking(opened)
                 await self.push_frame(opened)
-            case "down", "up" if self.is_usable:
-                # The key was let go: the hold's audio is queued, to be transcribed and sent.
+            case "down", "up" | "listening" if self.is_usable:
+                # The key was let go, or the voice finished its turn: the hold's audio is queued, to be transcribed and
+                # sent.
                 stopped = VADUserStoppedSpeakingFrame()
                 self._transcribing.append(self._opened)
                 await super()._handle_user_stopped_speaking(stopped)
                 await self.push_frame(stopped)
-            case "down", "up" | "arming" | "dropped":
+            case "down", "up" | "listening" | "arming" | "dropped":
                 # Another key was pressed, so the hold was typing, not speech (and the key may already be pressed
                 # again); or the key was let go of a Whisper that can no longer transcribe, which Pipecat would give
                 # nothing to. What the hold recorded is thrown away, so nothing is transcribed or sent, and Whisper is
@@ -129,6 +133,7 @@ class Whisper(WhisperSTTServiceMLX):
                 await self.push_frame(HoldDiscarded())
                 await self.push_frame(TurnResolved(hold=self._opened))
             case _:
+                # From listening to arming, the second the desk heard before it is kept: the turn's first words.
                 pass
         self._captured = frame.key
         if frame.key == "arming":

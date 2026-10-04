@@ -245,6 +245,32 @@ async def test_a_press_that_was_shift_leaves_nothing_behind_for_the_next_hold(ri
     assert rig.heard[0].startswith(held * 2)
 
 
+async def test_an_engaged_turn_keeps_the_second_the_desk_heard_before_it_and_listens_on_after(rig: Rig) -> None:
+    # Pipecat keeps the last second of audio nobody is speaking in: 50 frames of 20 ms. The desk listens for 1.6 s
+    # while the room is quiet, then the user's first word comes as the detector makes sure of it.
+    room, onset, said, after = (bytes([n, n]) * 320 for n in (1, 2, 3, 4))
+    listening: list[Key] = ["listening"]
+    await rig.hold(listening * 70, sound=room)
+    await rig.hold(listening * 5, sound=onset)
+    await rig.hold(["arming", "down", "down"], sound=said)
+    await rig.hold(["listening"], sound=after)
+    await rig.texts.put("what time is it")
+    assert await rig.everything_sent(holds=1) == ["what time is it"]
+    assert rig.heard[0].startswith(room * 45 + onset * 5 + said * 3)
+    assert after not in rig.heard[0]
+
+
+async def test_an_engaged_start_that_was_only_noise_opens_no_turn_and_the_desk_listens_on(rig: Rig) -> None:
+    noise, said = (bytes([n, n]) * 320 for n in (1, 3))
+    listening: list[Key] = ["listening"]
+    await rig.hold(["listening", "arming", "arming", "listening"], sound=noise)
+    await rig.hold(listening * 60)
+    await rig.hold(["arming", "down", "listening"], sound=said)
+    await rig.texts.put("what time is it")
+    assert await rig.everything_sent(holds=1) == ["what time is it"]
+    assert noise not in rig.heard[0]
+
+
 async def test_a_dropped_hold_ends_its_turn_and_sends_nothing(rig: Rig) -> None:
     await rig.hold(["down", "down", "dropped"])
     assert await rig.everything_sent(holds=1) == []

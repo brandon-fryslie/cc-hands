@@ -25,7 +25,8 @@ where the user is.
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from functools import partial
 from dataclasses import dataclass
 from datetime import timedelta
@@ -304,6 +305,9 @@ class KeyedMicrophone(LocalAudioInputTransport):
         self._listening: asyncio.Task[None] | None = None
         # What the attached stream was opened on; None until setup opens the first.
         self.opened: Input | None = None
+        # [LAW:no-shared-mutable-globals] who hears the desk whatever the gate says, each with the loop it hears on:
+        # replaced whole on the event loop, read whole on the capture thread.
+        self._overhearing: tuple[asyncio.Queue[bytes], ...] = ()
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         # As for the speaker: the base's setup, then the one way the stream is opened.
@@ -365,6 +369,22 @@ class KeyedMicrophone(LocalAudioInputTransport):
             finally:
                 count(**opened.echo.counts())
 
+    @asynccontextmanager
+    async def overheard(self) -> AsyncGenerator[AsyncIterator[bytes]]:
+        """Every buffer the desk's microphone captures while open, heard through the echo canceller, whatever the gate
+        says and wherever hands is: what an edge listens to for when to open and close the turn."""
+        heard: asyncio.Queue[bytes] = asyncio.Queue()
+        self._overhearing = (*self._overhearing, heard)
+
+        async def buffers() -> AsyncIterator[bytes]:
+            while True:
+                yield await heard.get()
+
+        try:
+            yield buffers()
+        finally:
+            self._overhearing = tuple(each for each in self._overhearing if each is not heard)
+
     async def start(self, frame: StartFrame) -> None:
         await super().start(frame)
         self._listening = self.create_task(self._hear_the_phone(), "the phone's microphone")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
@@ -392,6 +412,9 @@ class KeyedMicrophone(LocalAudioInputTransport):
             # hands running deaf; the pipeline is ended instead, and the run with it.
             asyncio.run_coroutine_threadsafe(self._fail(error), self.get_event_loop())
             return None, pyaudio.paAbort
+        loop = self.get_event_loop()
+        for overhearing in self._overhearing:
+            loop.call_soon_threadsafe(overhearing.put_nowait, cleaned)
         # One read of the gate: what the frame holds and the key it says it was captured under always agree.
         gate = self._key.gate
         # [LAW:single-enforcer] the gate alone says which place's microphone reaches Whisper; while hands is at the
@@ -404,7 +427,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
             num_channels=self._params.audio_in_channels,
             key=gate.key,
         )
-        asyncio.run_coroutine_threadsafe(self.push_audio_frame(frame), self.get_event_loop())
+        asyncio.run_coroutine_threadsafe(self.push_audio_frame(frame), loop)
         return None, pyaudio.paContinue
 
     async def _fail(self, error: Exception) -> None:

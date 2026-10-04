@@ -25,14 +25,14 @@ from pipecat.frames.frames import InputAudioRawFrame
 
 from hands.core.place import Modality, Place, modality_at
 from hands.sessions.audit import Moved, Record
-from hands.voice.hold import Move
+from hands.voice.hold import Move, TurnMove
 from hands.voice.trigger import Edge, place_of
 
-# [LAW:types-are-the-program] the key is up; arming, pressed but not yet meaning talk, which hears so the words said
-# before it does are kept; down, a hold; or dropped, up with the hold thrown away, which tells Whisper not to transcribe
-# what it recorded. The hold (`hands.voice.hold`) decides every move, so the gate never sees one that is not a
-# transition.
-Key = Literal["up", "arming", "down", "dropped"]
+# [LAW:types-are-the-program] the key is up; listening, the desk heard between turns while engaged, so a turn the voice
+# opens keeps the words said before the detector was sure of them; arming, pressed but not yet meaning talk, which hears
+# so the words said before it does are kept; down, a hold; or dropped, up with the hold thrown away, which tells Whisper
+# not to transcribe what it recorded. The edges decide every move, so the gate never sees one that is not a transition.
+Key = Literal["up", "listening", "arming", "down", "dropped"]
 
 @dataclass(kw_only=True)
 class KeyedAudio(InputAudioRawFrame):
@@ -47,10 +47,13 @@ class KeyedAudio(InputAudioRawFrame):
 
 @dataclass(frozen=True)
 class Gate:
-    """The pure push-to-talk state: which position the key is in, and the place hands is at."""
+    """The pure push-to-talk state: which position the key is in, the place hands is at, and whether the desk listens
+    between turns."""
 
     key: Key = "up"
     place: Place = "desk"
+    # [LAW:one-source-of-truth] engaged conversation is the desk's: at the phone, its button alone opens the microphone.
+    listens: bool = False
 
     def took(self, move: Move, at: Place) -> Move | None:
         """What a hold at `at` did to the turn, as the gate takes it; None where it does nothing to it.
@@ -59,16 +62,18 @@ class Gate:
         Shift typed at the desk while the user talks on the phone arms nothing and ends nothing of theirs. A turn opened
         at one place while a hold is open at the other is a second hand on a second key, which drops both, as a key
         pressed while the talk key is held drops the turn; and the end of a hold the gate has already thrown away, as a
-        call came or went, ends nothing more.
+        call came or went, ends nothing more. The desk's listening is taken wherever hands is.
         """
         match at == self.place, move, self.key:
+            case _, "listen" | "deafen", _:
+                return move
             case True, "stop" | "drop" | "expire", "dropped":
                 return None
             case True, _, _:
                 return move
             case False, "start", "arming" | "down":
                 return "drop"
-            case False, "start", "up" | "dropped":
+            case False, "start", "up" | "listening" | "dropped":
                 return "start"
             case False, _, _:
                 return None
@@ -78,8 +83,11 @@ class Gate:
         match self.took(move, at):
             case None:
                 return self
+            case "listen" | "deafen" as listening:
+                listens = listening == "listen"
+                return Gate(self._resting(self.place, listens), self.place, listens)
             case taken:
-                return Gate(_key_after(taken), at)
+                return Gate(_key_after(taken, self._rest(at, self.listens)), at, self.listens)
 
     def moved(self, to: Place) -> "Gate":
         """The gate once hands is at `to`: a hold open at the place it leaves is thrown away, not sent."""
@@ -87,9 +95,27 @@ class Gate:
             case True, _:
                 return self
             case False, "arming" | "down":
-                return Gate("dropped", to)
-            case False, "up" | "dropped":
-                return Gate(self.key, to)
+                return Gate("dropped", to, self.listens)
+            case False, "dropped":
+                return Gate("dropped", to, self.listens)
+            case False, "up" | "listening":
+                return Gate(self._rest(to, self.listens), to, self.listens)
+
+    def _resting(self, place: Place, listens: bool) -> Key:
+        """The key once the desk starts or stops listening: a turn open is sent, a press arming is let go of, and one
+        thrown away stays thrown away until the next opens."""
+        match place, self.key:
+            case "phone", _:
+                return self.key
+            case "desk", "dropped":
+                return "dropped"
+            case "desk", _:
+                return self._rest(place, listens)
+
+    @staticmethod
+    def _rest(place: Place, listens: bool) -> Key:
+        """The key between turns at `place`."""
+        return "listening" if listens and place == "desk" else "up"
 
     def hears(self, place: Place) -> bool:
         """Whether the pipeline hears the microphone at `place`: only hands' own, so one stream of frames reaches Whisper."""
@@ -101,19 +127,20 @@ class Gate:
         return self.key == "down"
 
     def audible(self, audio: bytes) -> bytes:
-        """The microphone bytes as the pipeline hears them: intact while the key is pressed, silence otherwise."""
+        """The microphone bytes as the pipeline hears them: intact while the key is pressed or the desk listens, silence
+        otherwise."""
         # [LAW:dataflow-not-control-flow] a frame of the same length always
         # goes out, so Whisper sees an unbroken stream; the key
         # only decides its content.
-        return audio if self.key in ("arming", "down") else bytes(len(audio))
+        return audio if self.key in ("listening", "arming", "down") else bytes(len(audio))
 
 
-def _key_after(move: Move) -> Key:
+def _key_after(move: TurnMove, rest: Key) -> Key:
     match move:
         case "arm":
             return "arming"
         case "disarm" | "stop":
-            return "up"
+            return rest
         case "start":
             return "down"
         case "drop" | "expire":
