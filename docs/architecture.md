@@ -1024,9 +1024,11 @@ was answering is asked only once no words of the user's are waiting. What the na
 says as written waits in the same lane (`Aloud`), so a session's end is heard after its
 last turn. Each turn is one `voice.turn` wide event, and its `queued_ms` is how long it waited in its lane.
 Its `waited_ms` is how long the user waited from letting go of the key to the turn's first word on the wire,
-`transcribed_ms` and `queued_ms` are where that wait went before the brain was written to, and each model round
-trip (`model.round_trip`) and each call the brain's replies made (`tool.call`) is a child event under it, timed as the
-stage heard it on the wire.
+`transcribed_ms` and `queued_ms` are where that wait went before the brain was written to; words that waited behind a
+turn together are timed from the last of them. Each call the brain's replies made (`tool.call`) is a child event under
+it, timed as the stage heard it on the wire. Each model round trip is the proxy's own `Exchanged` line, which carries a
+span inside the turn's (`span`), and reaches the collector as a `proxy.exchange` span under it: no second record of a
+round trip is kept. A turn hands stopped mid-way still emits its event, cancelled, with what it had done.
 
 The rest of this section is planned: step summaries built as steps arrive, and streaming.
 

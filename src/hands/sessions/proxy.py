@@ -134,8 +134,10 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
         sent_at = clock()
 
         def exchanged(changes: tuple[Change, ...], reply: Reached | Unreached | Held, final: bool) -> Exchanged:
-            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply, final)
+            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply, final, span)
 
+        # A held request is no part of any unit's trace: the API never saw it.
+        span = routed.span if isinstance(routed, Send) else None
         match routed:
             case Hold(said=said):
                 content_type, answer = _held(parsed, said)

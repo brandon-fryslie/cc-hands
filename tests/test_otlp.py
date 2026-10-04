@@ -13,9 +13,12 @@ from typing import Any, cast
 
 import pytest
 
+from hands.core.session import SessionId
+from hands.core.trace import Span
+from hands.core.wire import Answered, Exchanged, Garbled, Held, MainTurn, Reached, Unreached
 from hands.sessions.audit import AuditLog, Entry, Exported, segment, segments
 from hands.sessions import otlp
-from hands.sessions.otlp import BATCH_SPANS, STOPPED, Exporter, exporting, rejected, spans
+from hands.sessions.otlp import BATCH_SPANS, STOPPED, Exporter, exporting, rejected, spans, traced
 from hands.sessions.wide import WideEvent, annotate, count, unit
 
 STARTED = datetime(2026, 10, 3, 12, 0, 0, 250_000, tzinfo=UTC)
@@ -132,6 +135,40 @@ def test_with_a_collector_each_event_is_in_the_log_and_reaches_the_collector_and
     assert set(sent) == {inner["span_id"], outer["span_id"]}
     assert sent[inner["span_id"]]["parentSpanId"] == outer["span_id"] and sent[outer["span_id"]]["parentSpanId"] == ""
     assert {sent[line["span_id"]]["traceId"] for line in (inner, outer)} == {outer["trace_id"]}
+
+
+TURN = _event(event="voice.turn")
+
+
+def _exchanged(reply: Reached | Unreached | Held, span: Span | None = Span(TURN.trace_id, "1111111111111111", TURN.span_id)) -> Exchanged:
+    return Exchanged("x1", SessionId("brain"), MainTurn(None), "POST", "/v1/messages", 2, (), 1000.0, 1000.5, reply, True, span)
+
+
+def test_a_request_made_for_a_unit_of_work_reaches_the_collector_as_a_span_under_it(collector: Collector, tmp_path: Path) -> None:
+    log = AuditLog(tmp_path / "audit", clock=datetime.now)
+    with exporting(collector.url, log.record) as record:
+        record(_exchanged(Reached(200, 1001.0, 1002.25, 10, Garbled("the stream ended mid-frame"))))
+        # One made for no unit of work, and one hands answered itself, are in no trace.
+        record(_exchanged(Reached(200, 1001.0, 1002.0, 10, Answered({})), span=None))
+    [span] = collector.spans()
+    assert (span["traceId"], span["spanId"], span["parentSpanId"], span["name"]) == (TURN.trace_id, "1111111111111111", TURN.span_id, "proxy.exchange")
+    # From the request leaving to the reply's last byte, its first byte half a second in.
+    assert int(span["endTimeUnixNano"]) - int(span["startTimeUnixNano"]) == 1_750_000_000
+    attributes = {attribute["key"]: attribute["value"] for attribute in span["attributes"]}
+    assert (attributes["facts.exchange"], attributes["facts.status"], attributes["facts.first_byte_ms"]) == ({"stringValue": "x1"}, {"intValue": "200"}, {"doubleValue": 500.0})
+    # A 200 whose stream broke is failed, as the audit log judges its line an error.
+    assert span["status"] == {"code": 2, "message": "the stream ended mid-frame"}
+
+
+def test_a_request_the_api_refused_or_never_heard_is_a_failed_span_and_one_answered_whole_is_ok() -> None:
+    refused, unreached, answered = (
+        traced(_exchanged(reply))
+        for reply in (Reached(529, 1001.0, 1001.0, 10, Answered({})), Unreached("ClientConnectorError: no route", 1000.75), Reached(200, 1001.0, 1001.0, 10, Answered({})))
+    )
+    assert refused is not None and (refused.outcome, refused.error) == ("failed", "the API answered 529")
+    assert unreached is not None and (unreached.outcome, unreached.error, unreached.duration_ms) == ("failed", "ClientConnectorError: no route", 250.0)
+    assert answered is not None and (answered.outcome, answered.error) == ("ok", None)
+    assert traced(_exchanged(Held("(stayed silent)", 1000.5), span=None)) is None
 
 
 def test_with_the_collector_stopped_each_event_is_in_the_log_and_said_unexported_by_span_id(tmp_path: Path) -> None:

@@ -24,6 +24,8 @@ from secrets import token_hex
 from typing import Literal, cast
 from uuid import uuid4
 
+from hands.core.trace import Span
+
 Outcome = Literal["ok", "failed", "cancelled"]
 
 
@@ -53,6 +55,7 @@ class _Open:
 
     trace_id: str
     span_id: str
+    parent_id: str | None
     emit: Callable[[WideEvent], None]
     counts: dict[str, int]
     facts: dict[str, object] = field(default_factory=dict[str, object])
@@ -74,7 +77,7 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
     """
     enclosing = _open.get()
     # The W3C Trace Context size of a trace id, as OTLP carries it: 16 bytes, in hex.
-    opened = _Open(uuid4().hex if enclosing is None else enclosing.trace_id, _span_id(), emit, dict.fromkeys(counts, 0))
+    opened = _Open(uuid4().hex if enclosing is None else enclosing.trace_id, _span_id(), None if enclosing is None else enclosing.span_id, emit, dict.fromkeys(counts, 0))
     started_at, began = datetime.now(UTC), time.monotonic()
     token = _open.set(opened)
     outcome: Outcome = "ok"
@@ -96,7 +99,7 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
         # already emitted and never reach the log, so it is refused instead.
         opened.closed = True
         duration_ms = round((time.monotonic() - began) * 1000, 3)
-        emit(WideEvent(event, opened.trace_id, opened.span_id, None if enclosing is None else enclosing.span_id, started_at, duration_ms, outcome, error, trace, opened.counts, opened.facts))
+        emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, started_at, duration_ms, outcome, error, trace, opened.counts, opened.facts))
 
 
 def annotate(**facts: object) -> None:
@@ -125,6 +128,17 @@ def child(event: str, started_at: datetime, duration_ms: float, outcome: Outcome
     request another process made on its behalf: its own event, in the unit's trace, naming the unit as its parent."""
     opened = _current()
     opened.emit(WideEvent(event, opened.trace_id, _span_id(), opened.span_id, started_at, duration_ms, outcome, error, (), {}, facts))
+
+
+def here() -> Span:
+    """The span of the unit of work open here, for a part of it that runs where the unit is not open."""
+    opened = _current()
+    return Span(opened.trace_id, opened.span_id, opened.parent_id)
+
+
+def within(parent: Span) -> Span:
+    """A new span inside `parent`, in its trace."""
+    return Span(parent.trace_id, _span_id(), parent.span_id)
 
 
 def _span_id() -> str:

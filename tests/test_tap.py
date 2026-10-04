@@ -253,7 +253,7 @@ TURN = PromptId("p1")
 
 def replied(kind: Kind, stop_reason: str, *content: Block) -> Exchanged:
     message = Message("m1", "claude-opus-5-5", content, stop_reason, {})
-    return Exchanged("e1", SessionId("s1"), kind, "POST", "/v1/messages", 1, (), 1.0, 1.0, Reached(200, 2.0, 3.0, 10, Streamed(message)), False)
+    return Exchanged("e1", SessionId("s1"), kind, "POST", "/v1/messages", 1, (), 1.0, 1.0, Reached(200, 2.0, 3.0, 10, Streamed(message)), False, None)
 
 
 def test_a_reply_that_ends_the_turn_with_text_closes_it_with_its_last_text_as_its_stop_carries_it() -> None:

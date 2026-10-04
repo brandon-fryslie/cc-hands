@@ -7,9 +7,8 @@ set up on purpose, not waited for.
 
 import asyncio
 import json
-from datetime import UTC, datetime
 from collections.abc import AsyncGenerator, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 import pytest
@@ -36,6 +35,7 @@ from hands.core.effects import Allow, Deny
 from hands.core.session import Permission
 from hands.brain.stage import INTERRUPTED, SILENT, BrainStage
 from hands.core.session import SessionId
+from hands.core.trace import Span
 from hands.core.wire import (
     Answering,
     BlockStarted,
@@ -180,8 +180,12 @@ class Rig:
     now: list[float]
     # Each session the stage moved the focus to, with how many turns the brain had been asked as it moved.
     refocused: list[tuple[SessionId, int]]
+    # The stage asking the brain each turn, as the daemon runs it beside the pipeline.
+    asking: asyncio.Task[None]
     context: LLMContext = field(default_factory=LLMContext)
     exchanges: int = 0
+    # The span each request sent on carries, in the order they left.
+    spans: list[Span | None] = field(default_factory=list[Span | None])
 
     async def until(self, what: Callable[[], bool]) -> None:
         async with asyncio.timeout(PATIENCE_SECS):
@@ -202,7 +206,13 @@ class Rig:
         exchange = f"x{self.exchanges}"
         sent = Sent(exchange, session, kind, body or {"messages": [{"role": "user", "content": "hi"}]})
         self.stage.hear(sent)
-        return exchange, self.stage.route(sent)
+        match self.stage.route(sent):
+            case Send(span=span) as route:
+                # The span apart: where the request goes is what each test asserts, and what trace it is in is one's.
+                self.spans.append(span)
+                return exchange, replace(route, span=None)
+            case route:
+                return exchange, route
 
     def stream(self, exchange: str, *texts: str) -> None:
         for text in texts:
@@ -242,7 +252,7 @@ async def rig() -> AsyncGenerator[Rig, None]:
         # As the daemon runs it: a watch beside the pipeline.
         asking = asyncio.create_task(stage.ask_each())
         try:
-            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused)
+            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused, asking)
         finally:
             asking.cancel()
 
@@ -412,12 +422,12 @@ async def test_a_turn_is_one_event_saying_how_long_the_user_waited_and_where_the
     # Two seconds from letting go to the first word: 0.4 transcribing, none waiting behind another turn, and the rest
     # the model's and its tool's, as the parts show.
     assert {fact: turn.facts[fact] for fact in ("asker", "waited_ms", "transcribed_ms", "queued_ms")} == {"asker": "user", "waited_ms": 2000.0, "transcribed_ms": 400.0, "queued_ms": 0.0}
-    parts = [(event.event, event.started_at, event.duration_ms, event.outcome, event.facts) for event in events if event is not turn]
-    assert parts == [
-        ("model.round_trip", datetime.fromtimestamp(1000.5, UTC), 700.0, "ok", {"exchange": first, "status": 200, "first_byte_ms": 500.0}),
-        ("model.round_trip", datetime.fromtimestamp(1001.5, UTC), 500.0, "ok", {"exchange": second, "status": 200, "first_byte_ms": 400.0}),
-        ("tool.call", datetime.fromtimestamp(1001.2, UTC), 300.0, "ok", {"call": "t1", "tool": "mcp__hands__read_session"}),
-    ]
+    [call] = [(event.event, event.duration_ms, event.outcome, event.facts) for event in events if event is not turn]
+    assert call == ("tool.call", 300.0, "ok", {"call": "t1", "tool": "mcp__hands__read_session"})
+    # Each round trip is the proxy's record of its request, which carries a span of its own inside the turn's.
+    spans = [span for span in rig.spans if span is not None]
+    assert [(span.trace_id, span.parent_id) for span in spans] == [(turn.trace_id, turn.span_id)] * 2
+    assert len({span.span_id for span in spans}) == 2
     # One trace: each part is the turn's child.
     assert {(event.trace_id, event.parent_id) for event in events if event is not turn} == {(turn.trace_id, turn.span_id)}
 
@@ -436,6 +446,45 @@ async def test_a_turn_spoken_over_before_its_answer_and_its_call_came_back_count
     assert call.outcome == "cancelled" and turn.facts["interrupted"] is True
     # A turn nobody asked aloud has no transcription to time.
     assert turn.facts["transcribed_ms"] is None
+
+
+async def test_a_turn_stopped_mid_way_still_says_what_it_did(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "what is api doing?"})
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "mcp__hands__read_session"))
+    # hands stopping while the brain is still answering.
+    rig.asking.cancel()
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    [turn] = turns(rig.recorded)
+    assert (turn.outcome, turn.counts, turn.facts["exchanges"]) == ("cancelled", {"round_trips": 1, "tools": 1}, (exchange,))
+    [call] = [entry for entry in rig.recorded if isinstance(entry, WideEvent) and entry.event == "tool.call"]
+    assert (call.outcome, call.parent_id) == ("cancelled", turn.span_id)
+
+
+async def test_words_that_waited_behind_a_turn_together_are_timed_from_the_last_of_them(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "what is api doing?"})
+    # Two holds said while the brain answers, each let go of and transcribed in its turn.
+    for released, arrived, words in ((1000.0, 1000.4, "and auth?"), (1002.0, 1002.4, "and web?")):
+        rig.now[0] = released
+        await rig.release()
+        rig.now[0] = arrived
+        rig.context.add_message({"role": "user", "content": words})
+        await rig.worker.queue_frame(LLMContextFrame(rig.context))
+        # Frames pass the stage in order, so once this is out, the words before it are waiting in the stage.
+        await rig.worker.queue_frame(TTSSpeakFrame(words))
+        await rig.until(lambda: words in rig.out.said())
+    rig.now[0] = 1003.0
+    rig.brain.end()
+    await rig.until(lambda: len(rig.brain.asked) == 2)
+    exchange, _ = rig.request()
+    rig.now[0] = 1004.0
+    rig.stream(exchange, "Both are idle.")
+    rig.brain.end()
+    await rig.until(lambda: len(turns(rig.recorded)) == 2)
+    assert rig.brain.asked[1] == "and auth?\n\nand web?"
+    # Two seconds from the last let-go: 0.4 transcribing it, 0.6 behind the turn before, and 1.0 to the first word.
+    timed = {fact: turns(rig.recorded)[1].facts[fact] for fact in ("waited_ms", "transcribed_ms", "queued_ms")}
+    assert timed == {"waited_ms": 2000.0, "transcribed_ms": 400.0, "queued_ms": 600.0}
 
 
 async def test_a_hold_thrown_away_is_no_release_to_time_a_wait_from(rig: Rig) -> None:
@@ -738,7 +787,7 @@ RESETS = datetime(2026, 9, 30, 18, 0, tzinfo=UTC).timestamp()
 
 def unreached(exchange: str) -> Exchanged:
     """The proxy's record of a request it could not get to the API, told before it answers the brain 502."""
-    return Exchanged(exchange, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("ClientConnectorError: no route", 0.0), True)
+    return Exchanged(exchange, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("ClientConnectorError: no route", 0.0), True, None)
 
 
 @pytest.mark.parametrize(

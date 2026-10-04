@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from hands.sessions.audit import AuditLog, segment, segments
-from hands.sessions.wide import WideEvent, annotate, child, count, fail, unit
+from hands.sessions.wide import WideEvent, annotate, child, count, fail, here, unit, within
 
 
 def test_a_unit_that_ends_well_is_one_event_with_its_facts_and_its_counts_zeros_included() -> None:
@@ -121,10 +121,23 @@ def test_a_part_timed_elsewhere_is_its_own_event_under_the_unit_in_its_trace() -
     emitted: list[WideEvent] = []
     at = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
     with unit("turn", emitted.append):
-        child("model.round_trip", at, 700.0, "ok", exchange="x1")
+        child("tool.call", at, 700.0, "ok", call="t1")
     part, turn = emitted
-    assert (part.event, part.started_at, part.duration_ms, part.outcome, part.facts) == ("model.round_trip", at, 700.0, "ok", {"exchange": "x1"})
+    assert (part.event, part.started_at, part.duration_ms, part.outcome, part.facts) == ("tool.call", at, 700.0, "ok", {"call": "t1"})
     assert (part.trace_id, part.parent_id) == (turn.trace_id, turn.span_id) and part.span_id != turn.span_id
+
+
+def test_a_unit_hands_its_span_to_a_part_of_it_that_runs_where_it_is_not_open() -> None:
+    emitted: list[WideEvent] = []
+    with unit("turn", emitted.append):
+        with unit("step", emitted.append):
+            step = here()
+        turn = here()
+    inside = within(turn)
+    stepped, turned = emitted
+    assert (step.trace_id, step.span_id, step.parent_id) == (stepped.trace_id, stepped.span_id, turned.span_id)
+    assert (turn.span_id, turn.parent_id) == (turned.span_id, None)
+    assert (inside.trace_id, inside.parent_id) == (turned.trace_id, turned.span_id) and inside.span_id not in (turned.span_id, stepped.span_id)
 
 
 def test_a_fact_with_no_unit_open_to_land_on_is_refused() -> None:

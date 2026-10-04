@@ -125,7 +125,7 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
         Unreached("ClientConnectorError: no route", 0.0),
         Uncopied("the copy broke off", 0.0),
     ):
-        log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False))
+        log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False, None))
     assert [(line["type"], line["level"]) for line in lines(path)] == [
         ("Failure", "error"),
         ("BacklogUnread", "error"),
