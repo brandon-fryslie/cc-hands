@@ -86,8 +86,7 @@ model = "mlx-community/whisper-large-v3-turbo"
 collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address
 ```
 
-With a collector set, each wide event hands writes to its audit log, but the `plugin.render` a
-session's start waits on, is also sent there as a span, straight to that address and past any proxy, so it can be found in whatever stores and Grafana sit behind the collector. The log stays
+With a collector set, each wide event `hands run` writes to its audit log is also sent there as a span, straight to that address and past any proxy, so it can be found in whatever stores and Grafana sit behind the collector. The log stays
 the whole record either way, and each batch sent is an `Exported` line in it, naming its spans and, where the
 collector did not take them, why.
 
@@ -255,6 +254,7 @@ uv run hands run                        # the backend ~/.hands/config.toml names
 uv run --env-file .env hands run        # its key in .env: ANTHROPIC_API_KEY (else the keychain's HANDS_LLM_ANT_KEY) or OPENAI_API_KEY
 uv run hands status                     # up, stopped, refused to start (and why), not responding, down, or never ran; exits 0 only when up
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
+uv run hands restart                    # start the running hands again on what is on disk now, as /hands:restart does; exits 0 once it is back
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands recall token helper        # what was said, sent to a session, and answered there that holds every word; the brain recalls with it
 uv run hands phone                      # the addresses a phone opens the talk page at, the first as a QR code; served while `hands run` is up

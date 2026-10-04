@@ -1,4 +1,5 @@
-"""The audit log: one JSON line for everything the daemon did, heard, said, and failed at, appended by the daemon alone.
+"""The audit log: one JSON line for everything hands did, heard, said, and failed at, appended by the daemon and by each
+`hands` command, one line at a time under one lock.
 
     uv run hands log        # the newest lines, then each new one as it is written
 
@@ -23,7 +24,7 @@ from bisect import bisect_right
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, is_dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Literal, assert_never, cast
@@ -386,7 +387,7 @@ def encoded(value: object) -> dict[str, object]:
 
 
 def jsonable(value: object) -> object:
-    """value as JSON holds it: a dataclass encoded, a time in ISO 8601, a set sorted."""
+    """value as JSON holds it: a dataclass encoded, a time in ISO 8601, a duration in seconds, a set sorted."""
     match value:
         case None | bool() | int() | float() | str():
             return value
@@ -394,6 +395,9 @@ def jsonable(value: object) -> object:
             return str(value)
         case datetime():
             return value.isoformat(timespec="milliseconds")
+        case timedelta():
+            # In seconds, as a number a query can compare and sum.
+            return value.total_seconds()
         case Enum():
             return jsonable(value.value)
         case Mapping():

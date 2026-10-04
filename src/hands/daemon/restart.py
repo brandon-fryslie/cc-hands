@@ -1,9 +1,8 @@
-"""`/hands:restart`: start the running daemon again, so it runs the code, prompt, and brain setup on disk now.
+"""`hands restart`: start the running daemon again, so it runs the code, prompt, and brain setup on disk now.
 
-The plugin's skill runs this module through the plugin's launcher, on the installed hands' own interpreter, and it
-imports only the standard library and hands' data modules:
+The plugin's /hands:restart skill runs it through the plugin's launcher, on the installed hands' own interpreter:
 
-    hooks/python -m hands.daemon.restart
+    hooks/python -m hands.daemon restart
 
 A change to hands is never taken up live: the brain's prompt is hands' source, given to the brain when it launches; the
 brain's setup in its config directory is read by the brain's Claude Code when it launches; and a skill in the plugin is
@@ -14,15 +13,12 @@ heartbeat says the new run's pipeline is running.
 
 import os
 import signal
-import sys
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from hands.sessions import heartbeat
-from hands.sessions.home import Home, default_home
-from hands.sessions.payload import Rejected
+from hands.sessions.home import Home
 
 # [LAW:one-source-of-truth] the one signal both ends mean "restart" by: the daemon's handler and this sender.
 RESTART_SIGNAL = signal.SIGUSR1
@@ -96,23 +92,3 @@ def said(outcome: Outcome, now: datetime) -> str:
             return f"hands was not restarted: {heartbeat.describe(verdict, now)}."
         case NotBack(verdict=verdict, waited=waited):
             return f"hands was asked to restart {waited.total_seconds():.0f}s ago and is not running again: {heartbeat.describe(verdict, now)}."
-
-
-def main() -> int:
-    try:
-        home = default_home(os.environ)
-    except Rejected as error:
-        print(f"hands restart: {error}", file=sys.stderr)
-        return 2
-    outcome = restart(home, lambda: datetime.now(UTC), lambda: time.sleep(LOOK_SECONDS))
-    match outcome:
-        case Restarted():
-            out, code = sys.stdout, 0
-        case NotRunning() | NotBack():
-            out, code = sys.stderr, 1
-    print(said(outcome, datetime.now(UTC)), file=out)
-    return code
-
-
-if __name__ == "__main__":
-    sys.exit(main())

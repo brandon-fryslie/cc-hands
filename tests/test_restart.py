@@ -41,7 +41,7 @@ def start_outcomes(recorded: list[audit.Entry]) -> list[str]:
 def restart(plugin: Path, home: Home, cwd: Path) -> subprocess.CompletedProcess[str]:
     """`/hands:restart` as the skill runs it: the plugin's launcher, in the session's directory."""
     environment = {"HANDS_HOME": str(home.root), "PATH": NO_PYTHON, "HOME": str(cwd)}
-    return subprocess.run([plugin / LAUNCHER, "-m", "hands.daemon.restart"], env=environment, cwd=cwd, capture_output=True, text=True, timeout=60)
+    return subprocess.run([plugin / LAUNCHER, "-m", "hands.daemon", "restart"], env=environment, cwd=cwd, capture_output=True, text=True, timeout=60)
 
 
 def running(home: Home, deadline: float = 10.0) -> heartbeat.Status:
@@ -88,6 +88,10 @@ def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sess
         # Each start is one event: the first, and the restart's, in the same process, ready.
         starts = started(home)
         assert [(line["outcome"], line["facts"]["pid"], line["facts"]["restarted"]) for line in starts] == [("ok", daemon.pid, False), ("ok", daemon.pid, True)]
+        # [LAW:nothing-unseen] and the restart asked is one command's event, which says what it saw the daemon come back as.
+        [command] = [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line.get("event") == "hands.command"]
+        assert (command["outcome"], command["facts"]["command"], command["facts"]["exit_code"], command["facts"]["outcome"]) == ("ok", "restart", 0, "Restarted")
+        assert (command["facts"]["heartbeat"]["pid"], command["facts"]["heartbeat"]["started_at"]) == (daemon.pid, after.started_at.isoformat(timespec="milliseconds"))
     finally:
         daemon.terminate()
         daemon.wait(timeout=10)

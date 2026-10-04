@@ -27,10 +27,15 @@ from hands.sessions.home import Home
 LOOK_SECONDS = 0.2
 # How long the notice posted on the way out may take before the indicator exits without it.
 LAST_POST_SECONDS = 5.0
+# An event with nothing in it, posted to wake the event loop once it is told to stop.
+WAKE = AppKit.NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+    AppKit.NSEventTypeApplicationDefined, (0, 0), 0, 0, 0, None, 0, 0, 0
+)
 
 
-def show(home: Home, run: int) -> None:
-    """Run the status item until `run`, the process that started this one, is gone and the heartbeat has said so."""
+def show(home: Home, run: int) -> int:
+    """Run the status item until `run`, the process that started this one, is gone and the heartbeat has said so; then
+    0, the indicator's exit code. What made it stop looking at the heartbeat first is raised."""
     app = AppKit.NSApplication.sharedApplication()
     # A menu-bar item only: no Dock icon, no menu bar of its own, never the active app.
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
@@ -41,6 +46,17 @@ def show(home: Home, run: int) -> None:
     verdict_line.setEnabled_(False)
     item.setMenu_(menu)
     before: indicator.Shown | None = None
+    # How the indicator ends, set by the look that ends it: 0, the run gone and said so, or what the look raised.
+    ending: int | Exception | None = None
+
+    def end(how: int | Exception) -> None:
+        nonlocal ending
+        ending = how
+        timer.invalidate()
+        app.stop_(None)
+        # stop_ takes effect once the event being handled is done, and a timer firing is no event: one posted wakes
+        # the loop to end, so the event loop returns here and the command's event is written as it ends.
+        app.postEvent_atStart_(WAKE, True)
 
     def look(_timer: object) -> None:
         nonlocal before
@@ -54,24 +70,33 @@ def show(home: Home, run: int) -> None:
             verdict_line.setTitle_(seen.text)
             # Once `run` is gone, this process has been handed to another parent, and never back.
             if indicator.finished(verdict, orphaned=os.getppid() != run, run=run):
-                # Posted before exiting, not beside it: the notice that the run went is the last thing this process
+                # Posted before ending, not beside it: the notice that the run went is the last thing this process
                 # does, bounded so that an osascript that never returns cannot keep the process up in its place.
                 for notice in indicator.last_words(seen):
                     asyncio.run(post_last(notice))
-                os._exit(0)
+                end(0)
+                return
             for notice in seen.notices:
                 post(notice)
-        except Exception:
-            # [LAW:no-silent-failure] AppKit would log a failed timer and carry on showing a stale light; exiting
-            # instead puts the failure in the terminal the run prints to, and takes the stale light away.
-            logger.exception("the indicator failed to look at the heartbeat")
-            os._exit(1)
+        except Exception as error:
+            # [LAW:no-silent-failure] AppKit would log a failed timer and carry on showing a stale light; ending
+            # instead raises the failure into the terminal the run prints to, and takes the stale light away.
+            end(error)
 
-    look(None)
     timer = NSTimer.timerWithTimeInterval_repeats_block_(LOOK_SECONDS, True, look)
     # The common modes include the one the run loop is in while the menu is open, so an open menu keeps up too.
     NSRunLoop.currentRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
+    # The first look as the loop begins, rather than a period after: one that ends the indicator stops a running loop.
+    AppHelper.callAfter(look, None)
     AppHelper.runEventLoop(installInterrupt=True)
+    match ending:
+        case int():
+            return ending
+        case Exception():
+            raise ending
+        case None:
+            # [LAW:no-silent-failure] PyObjC prints a KeyboardInterrupt or SystemExit and returns from its loop.
+            raise RuntimeError("the indicator's event loop ended before the run did")
 
 
 def post(notice: str) -> None:

@@ -151,7 +151,7 @@ def test_hands_recall_prints_one_line_a_moment_in_local_time_and_records_what_it
     assert cli.main(["--home", str(tmp_path), "recall", "token"]) == 0
     assert capsys.readouterr().out == f"The log reaches back to {times[0].astimezone():%a %d %b %H:%M}.\n{times[0].astimezone():%a %d %b %H:%M} user: drop the token helper\n"
     # [LAW:nothing-unseen] the recall's own event, last on the log it read, with what it was asked and what it found.
-    [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line["type"] == "WideEvent"]
+    [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "memory.recall"]
     assert (event["event"], event["outcome"], event["facts"]) == ("memory.recall", "ok", {"words": ["token"], "most": 20, "since": times[0].isoformat(timespec="milliseconds")})
     assert event["counts"] == {"lines": 2, "unreadable": 0, "moments": 2, "matched": 1, "printed": 1}
 
@@ -159,7 +159,8 @@ def test_hands_recall_prints_one_line_a_moment_in_local_time_and_records_what_it
 def test_hands_recall_on_a_home_with_no_log_says_so_in_its_counts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["--home", str(tmp_path), "recall"]) == 0
     assert capsys.readouterr().out == "The log is empty.\n"
-    [event] = [json.loads(line) for line in segment(Home(tmp_path).audit, 0).read_text().splitlines()]
+    # The recall's own event, read before the command's was written.
+    [event, _] = [json.loads(line) for line in segment(Home(tmp_path).audit, 0).read_text().splitlines()]
     assert event["counts"] == {"lines": 0, "unreadable": 0, "moments": 0, "matched": 0, "printed": 0}
 
 

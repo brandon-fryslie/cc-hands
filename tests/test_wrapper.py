@@ -185,7 +185,7 @@ def test_install_copies_the_packaged_fritter_with_no_go_and_says_whether_path_fi
     printed = on_a_terminal(["claude", "hi"], f"{home.bin}:{tools}")
     assert printed.startswith("claude hi socket=/tmp/fritter-")
     # [LAW:nothing-unseen] each install's event: where it copied from and to, and whether PATH found its claude.
-    events = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line["type"] == "WideEvent"]
+    events = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "fritter.install"]
     facts = {"packaged": str(wrapper.PACKAGED), "fritter": str(home.fritter), "shim": str(home.shim)}
     assert [(event["event"], event["outcome"], event["facts"]) for event in events] == [
         ("fritter.install", "ok", {**facts, "path_finds_it": False}),
@@ -199,7 +199,7 @@ def test_install_without_a_packaged_fritter_fails_naming_where_it_looked(root: P
     assert main(["--home", str(home.root), "install-fritter"]) == 1
     assert f"hands install-fritter: hands' package carries no fritter at {root / 'package' / 'bin' / 'fritter'}: install hands again" in capsys.readouterr().err
     assert not home.fritter.exists() and not home.shim.exists()
-    [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line["type"] == "WideEvent"]
+    [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "fritter.install"]
     assert (event["event"], event["outcome"], event["facts"]) == ("fritter.install", "failed", {"packaged": str(root / "package" / "bin" / "fritter")})
     assert event["error"].startswith("hands' package carries no fritter at")
 

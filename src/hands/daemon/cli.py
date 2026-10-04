@@ -11,12 +11,13 @@ from datetime import UTC, datetime
 from functools import partial
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING, TextIO, cast
 
 from loguru import logger
 
 from hands.daemon import readiness
 from hands.daemon.config import Config, Settings, edited, load
+from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
 from hands.sessions import audit, heartbeat, marketplace, recall, wide, wrapper
 from hands.sessions.home import Home, default_home
@@ -99,6 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("login", help="set the brain (the claude backend of the home's config.toml) up on a home with none, or log it in again or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
+    commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
@@ -115,34 +117,75 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     match arguments.command:
         case "run":
-            # Read before this run's first heartbeat replaces it. A restart's run before it was told to stop, which is
-            # no crash, however long the start took that its last heartbeat may read as gone quiet.
-            after_crash = arguments.restarted is None and crashed_before(home)
-            run_start = Start(restarted=arguments.restarted is not None, after_crash=after_crash)
-            heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
-            audit_log = audit_log_of(home)
-            # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
-            # or a crash the next run must read. A restart's run holds it already: the run before it beat starting under
-            # this pid, which it keeps. Before the settings are read there is no collector: the start ends on the log alone.
-            # [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
-            with run_start.ending(audit_log.record):
-                try:
-                    settings = door(home)
-                except CannotStart as cannot:
-                    run_start.ended(audit_log.record, cannot)
-                    refuse(cannot, None if arguments.restarted is None else heart)
-                    return 1
-                try:
-                    ending, shown = run_here(home, arguments.restarted, after_crash, settings, heart, audit_log, run_start)
-                except CannotStart as cannot:
-                    # The run's launch ended the start, failed with this reason, on the edge the settings chose.
-                    refuse(cannot, heart)
-                    return 1
-                match ending:
-                    case "quit":
-                        return 0
-                    case "restart":
-                        again(invocation(home, "run", "--restarted", str(shown)))
+            return run_daemon(home, arguments.restarted)
+        case _:
+            return commanded(home, arguments)
+
+
+def run_daemon(home: Home, restarted: int | None) -> int:
+    """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
+
+    [LAW:nothing-unseen] it is the one command not inside a hands.command event: held open over the run, that event would
+    make every unit of work the daemon runs a part of its trace, and a restart, exec'd in its place, never ends it.
+    """
+    # Read before this run's first heartbeat replaces it. A restart's run before it was told to stop, which is
+    # no crash, however long the start took that its last heartbeat may read as gone quiet.
+    after_crash = restarted is None and crashed_before(home)
+    run_start = Start(restarted=restarted is not None, after_crash=after_crash)
+    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
+    audit_log = audit_log_of(home)
+    # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
+    # or a crash the next run must read. A restart's run holds it already: the run before it beat starting under
+    # this pid, which it keeps. Before the settings are read there is no collector: the start ends on the log alone.
+    # [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
+    with run_start.ending(audit_log.record):
+        try:
+            settings = door(home)
+        except CannotStart as cannot:
+            run_start.ended(audit_log.record, cannot)
+            refuse(cannot, None if restarted is None else heart)
+            return 1
+        try:
+            ending, shown = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
+        except CannotStart as cannot:
+            # The run's launch ended the start, failed with this reason, on the edge the settings chose.
+            refuse(cannot, heart)
+            return 1
+        match ending:
+            case "quit":
+                return 0
+            case "restart":
+                again(invocation(home, "run", "--restarted", str(shown)))
+
+
+def commanded(home: Home, arguments: argparse.Namespace) -> int:
+    """Run the command `arguments` name as one unit of work, and its exit code.
+
+    [LAW:nothing-unseen] the one layer every command but `run` passes through, so each invocation is one hands.command
+    event: the command, its arguments as parsed, its exit code, and how long it took. It ends failed where the command
+    exits nonzero, as the exit code says it did, and the unit of work a command runs inside it is in its trace. Written
+    to the audit log alone, as every process but the daemon's run writes its events: a command never waits on a
+    collector, or on a config.toml the daemon has yet to accept.
+    """
+    record = audit_log_of(home).record
+    with wide.unit("hands.command", record):
+        wide.annotate(command=arguments.command, **as_facts(arguments))
+        code = dispatch(home, arguments, record)
+        wide.annotate(exit_code=code)
+        if code != 0:
+            wide.fail(f"exited {code}")
+    return code
+
+
+def as_facts(arguments: argparse.Namespace) -> dict[str, wide.Fact]:
+    """A command's arguments as argparse parsed them, each under arguments.<its name>, the words it gathers a tuple."""
+    # The one list any command parses is recall's words, nargs="*".
+    return {f"arguments.{name}": tuple(cast(list[str], value)) if isinstance(value, list) else value for name, value in vars(arguments).items() if name != "command"}
+
+
+def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) -> int:
+    """Run the command `arguments` name, other than `run`, recording through `record`; its exit code."""
+    match arguments.command:
         case "status":
             return report(home)
         case "check":
@@ -152,15 +195,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         case "log":
             return tail_log(home, arguments.lines)
         case "recall":
-            return recall_moments(home, arguments.words, arguments.most)
+            return recall_moments(home, record, arguments.words, arguments.most)
         case "phone":
             return show_phone(home)
         case "login":
-            return login(home)
+            return login(home, record)
         case "install-fritter":
-            return install_fritter(home)
+            return install_fritter(home, record)
         case "plugin":
-            return render_plugin(home)
+            return render_plugin(home, record)
+        case "restart":
+            return asked_to_restart(home)
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
             # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits
@@ -171,8 +216,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             to_terminal(sys.stderr)
             from hands.daemon.menubar import show
 
-            show(home, parent)
-            return 0
+            return show(home, parent)
         case other:
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
@@ -328,6 +372,8 @@ def reap(shown: int) -> None:
 def report(home: Home) -> int:
     now = datetime.now(UTC)
     verdict = heartbeat.look(home.status, now)
+    # [LAW:nothing-unseen] what the exit code was decided by.
+    wide.annotate(verdict=verdict)
     match verdict:
         case heartbeat.Up():
             out, code = sys.stdout, 0
@@ -341,6 +387,7 @@ def report(home: Home) -> int:
 
 def check(home: Home, granted: bool) -> int:
     findings = readiness.check(home, os.environ.get("PATH", ""), granted)
+    wide.annotate(findings=tuple(findings))
     for finding in findings:
         print(f"{display(finding)[0]:<8} {finding.said}")
     kinds = {type(finding) for finding in findings}
@@ -365,22 +412,34 @@ def display(finding: readiness.Finding) -> tuple[str, str]:
             return "unknown", "WARNING"
 
 
+def asked_to_restart(home: Home) -> int:
+    """`hands restart`: ask the running daemon to start again, and say how that went."""
+    outcome = restart(home, lambda: datetime.now(UTC), lambda: time.sleep(LOOK_SECONDS))
+    match outcome:
+        case Restarted(status=status):
+            seen, out, code = status, sys.stdout, 0
+        case NotRunning(verdict=verdict) | NotBack(verdict=verdict):
+            seen, out, code = verdict, sys.stderr, 1
+    # How long it waited is the command's own duration.
+    wide.annotate(outcome=type(outcome).__name__, heartbeat=seen)
+    print(said(outcome, datetime.now(UTC)), file=out)
+    return code
+
+
 def audit_log_of(home: Home) -> audit.AuditLog:
     """The audit log of `home`, on the wall clock: every command's events, and a run's, land in the one log."""
     return audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
 
 
-def login(home: Home) -> int:
+def login(home: Home, record: audit.Record) -> int:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
     from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, starting_settings
     from hands.brain.process import login as brain_login
     from hands.core.wire import UPSTREAM
 
-    audit_log = audit_log_of(home)
     # [LAW:nothing-unseen] a login is a unit of work: whether it wrote the brain's settings, whether it took Claude Code's
-    # first run, and the account it ended on. Recorded in the audit log alone, as the plugin's render is: logging in never
-    # waits on a collector, or on a config.toml the daemon has yet to accept.
-    with wide.unit("brain.login", audit_log.record):
+    # first run, and the account it ended on.
+    with wide.unit("brain.login", record):
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
             wide.annotate(settings_written=starting_settings(home.brain))
@@ -399,16 +458,10 @@ def login(home: Home) -> int:
     return 0
 
 
-def install_fritter(home: Home) -> int:
-    try:
-        settings = load(home)
-    except Rejected as error:
-        print(f"hands: {error}", file=sys.stderr)
-        return 1
-    audit_log = audit_log_of(home)
+def install_fritter(home: Home, record: audit.Record) -> int:
     # [LAW:nothing-unseen] an install is a unit of work: the fritter it copied from, where it put it and the claude
-    # beside it, and whether PATH finds that claude, through the same export edge as the run's events.
-    with exporting(settings.config.collector, audit_log.record) as record, wide.unit("fritter.install", record):
+    # beside it, and whether PATH finds that claude.
+    with wide.unit("fritter.install", record):
         wide.annotate(packaged=wrapper.PACKAGED)
         try:
             installed = wrapper.install(home)
@@ -430,13 +483,12 @@ def install_fritter(home: Home) -> int:
                 return 1
 
 
-def render_plugin(home: Home) -> int:
-    audit_log = audit_log_of(home)
+def render_plugin(home: Home, record: audit.Record) -> int:
     # [LAW:nothing-unseen] Claude Code runs this once per session: the interpreter the hooks run on, the plugin it
-    # printed, and whether that plugin was written now or a session before had. Recorded in the audit log alone: Claude
-    # Code waits for this command to exit before the session starts, so, like the shim, it waits on no collector and
-    # reads no config.toml, whose rejection is the daemon's to report and never costs a session its hooks.
-    with wide.unit("plugin.render", audit_log.record):
+    # printed, and whether that plugin was written now or a session before had. Claude Code waits for this command to
+    # exit before the session starts, so, like the shim, it reads no config.toml, whose rejection is the daemon's to
+    # report and never costs a session its hooks.
+    with wide.unit("plugin.render", record):
         wide.annotate(interpreter=sys.executable, packaged=marketplace.PACKAGED)
         rendered = marketplace.render(home, sys.executable)
         wide.annotate(plugin=rendered.plugin, written=rendered.written)
@@ -466,17 +518,11 @@ def tail_log(home: Home, lines: int) -> int:
     raise AssertionError("following the audit log ends only when interrupted")
 
 
-def recall_moments(home: Home, words: Sequence[str], most: int) -> int:
+def recall_moments(home: Home, record: audit.Record, words: Sequence[str], most: int) -> int:
     """Print the moments `hands recall` found, one a line, each at the time it happened here."""
-    try:
-        settings = load(home)
-    except Rejected as error:
-        print(f"hands: {error}", file=sys.stderr)
-        return 1
-    audit_log = audit_log_of(home)
     # [LAW:nothing-unseen] a recall is a unit of work: what it was asked, how much of the log it read, and what it found,
-    # zeros included, through the same export edge as the run's events.
-    with exporting(settings.config.collector, audit_log.record) as record, wide.unit("memory.recall", record, ("lines", "unreadable", "moments", "matched", "printed")):
+    # zeros included.
+    with wide.unit("memory.recall", record, ("lines", "unreadable", "moments", "matched", "printed")):
         wide.annotate(words=tuple(words), most=most)
         found = recall.recall(home.audit, words, most)
         wide.annotate(since=found.since)

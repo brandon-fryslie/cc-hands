@@ -1869,7 +1869,8 @@ thing that failed `[LAW:no-silent-failure]`:
    later process took, after a crash or a reboot, reads as down rather than as not
    responding.
 3. **Log.** Every effect and every failure is one line in the segmented log
-   `~/.hands/audit/`, written by the daemon alone (`hands.sessions.audit`). Each
+   `~/.hands/audit/`, written by the daemon and by each `hands` command, under one lock
+   (`hands.sessions.audit`). Each
    segment is named by its base offset; a line that would take the active segment past
    32 MiB rolls the log to a new segment, which opens with a `Rolled` line, and
    retention deletes all but the segment just closed and the new one. A segment is never
@@ -1967,9 +1968,15 @@ depends on the network. Events are sent in batches from a thread of their own, s
 or absent collector costs a unit of work nothing. Each batch is an `Exported` line naming
 each event by its span id, how long the send took, and, where the collector did not take
 it, why `[LAW:nothing-unseen]`; a stop waits on the batches still queued for one timeout
-in all, and records those it leaves unsent. The `hands.start` event names the collector. `hands plugin` alone reads no config and exports nothing: Claude Code
-waits for it to exit before a session starts, so its `plugin.render` is in the log alone. hands
-names only the collector; which stores sit behind it is the homelab's.
+in all, and records those it leaves unsent. The `hands.start` event names the collector. Only
+`hands run` sends to it. Every other command is one `hands.command` event, written by the
+dispatcher every command passes through (`hands.daemon.cli.commanded`), carrying the command,
+its arguments as parsed, its exit code, and how long it took; it ends failed where the command
+exits nonzero, and the unit of work the command ran, such as `plugin.render`, is in its trace.
+Those events are in the log alone: Claude Code waits on `hands plugin` before a session starts,
+and `hands status` must answer whatever the config says, so no command waits on a collector or
+reads a config.toml to find one. hands names only the collector; which stores sit behind it is
+the homelab's.
 
 ## Endurance
 
