@@ -113,7 +113,7 @@ class SimpleStream:
 async def test_the_microphone_is_heard_through_the_canceller_and_only_while_the_key_is_down() -> None:
     devices = Rig()
     await devices.capture(at=1.0)  # key up
-    devices.key.move("start", "desk")
+    devices.key.move("start", "held key")
     await devices.capture(at=1.02)
     assert devices.pushed == [QUIET, CLEANED]
     assert devices.room.hears == [LOUD, LOUD]  # key up too: the canceller learns the room from every buffer
@@ -155,7 +155,7 @@ async def test_a_capture_the_canceller_fails_ends_the_pipeline_rather_than_leavi
 async def test_a_press_while_the_reply_plays_is_heard_at_once() -> None:
     devices = Rig()
     await devices.play(LOUD, at=1.0)
-    devices.key.move("start", "desk")
+    devices.key.move("start", "held key")
     await devices.capture(at=1.0)  # the reply still in the room, and a word over it
     assert devices.pushed == [CLEANED]
     assert devices.room.plays == [(LOUD, 16000, 1)]
@@ -404,7 +404,7 @@ def test_only_portaudios_own_no_default_input_reads_as_no_microphone() -> None:
 async def test_a_turns_cue_is_played_at_once_and_the_canceller_hears_it() -> None:
     devices = Rig()
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]  # as setup sets it
-    devices.key.move("start", "desk")
+    devices.key.move("start", "held key")
     devices.now = 1.0
     devices.speaker.cue(OPENED)
     await devices.capture(at=1.0)  # a word said over the cue

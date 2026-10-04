@@ -26,6 +26,7 @@ from pipecat.frames.frames import InputAudioRawFrame
 from hands.core.place import Modality, Place, modality_at
 from hands.sessions.audit import Moved, Record
 from hands.voice.hold import Move
+from hands.voice.trigger import Edge, place_of
 
 # [LAW:types-are-the-program] the key is up; arming, pressed but not yet meaning talk, which hears so the words said
 # before it does are kept; down, a hold; or dropped, up with the hold thrown away, which tells Whisper not to transcribe
@@ -129,12 +130,17 @@ class PushToTalk:
     def __init__(self, record: Record) -> None:
         self._gate = Gate()
         self._modality: Modality = modality_at(self._gate.place)
+        # The edge that opened the last turn, as it opened it: a trigger switched since does not rewrite it.
+        self._opened: Edge = "held key"
         self._record = record
 
-    def move(self, move: Move, at: Place) -> Move | None:
-        """Report what the hold at `at` did to the turn, and get back what the gate took it as, to cue and tell: the edge
-        that reads the talk key or the phone's button calls this."""
+    def move(self, move: Move, by: Edge) -> Move | None:
+        """Report what the hold made by `by` did to the turn, and get back what the gate took it as, to cue and tell: the
+        desk's edge and the phone's button call this."""
+        at = place_of(by)
         taken = self._gate.took(move, at)
+        if taken == "start":
+            self._opened = by
         self._become(self._gate.after(move, at), "turn")
         return taken
 
@@ -162,4 +168,8 @@ class PushToTalk:
     @property
     def modality(self) -> Modality:
         return self._modality
+
+    @property
+    def opened(self) -> Edge:
+        return self._opened
 
