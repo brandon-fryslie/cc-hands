@@ -14,7 +14,6 @@ import pytest
 from loguru import logger
 from pipecat.frames.frames import ErrorFrame, Frame, TranscriptionFrame, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 from pipecat.utils.errors import ErrorCategory
 
 from conftest import unprimed
@@ -351,7 +350,9 @@ async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_
                 return HoldHeard(hold, text, ())
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
-    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=unprimed, record=lambda _: None)
+    whisper = Whisper(url="http://unused/v1", prompt=unprimed, record=lambda _: None)
+    # What the pipeline's start sets: a sent hold is wrapped as a WAV at this rate.
+    whisper._sample_rate = 16_000  # pyright: ignore[reportPrivateUsage]
 
     async def push(_frame: Frame, _direction: object = None) -> None:
         pass

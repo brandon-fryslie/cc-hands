@@ -2,7 +2,8 @@
 transcribed, so a focus moved a moment ago primes the next thing said [LAW:one-source-of-truth].
 
 Whisper takes text as its initial prompt, read as what was said before the audio, and spells what it hears the way
-that text does. Ten sentences spoken by `say`, each naming one of hands' own identifiers, came back from
+that text does. LowTalker reads the prompt it is sent as one vocabulary term and refuses one past the 111 prompt tokens
+its engine keeps, so the words are fitted to that before they are sent. Ten sentences spoken by `say`, each naming one of hands' own identifiers, came back from
 large-v3-turbo with none of the ten spelled as named unprimed, and six primed with the ten; "auth middleware", said in
 ten sentences, came back as authMiddleware eight times primed with what this module read from a repository holding
 authMiddleware.ts among thirty files, and never unprimed (2026-10-03). The words are the files most recently changed in
@@ -11,9 +12,13 @@ of the running sessions, which they say to move between them.
 """
 
 import asyncio
+import base64
 import time
 from collections.abc import Mapping, Sequence
+from functools import cache
 from pathlib import Path
+
+import tiktoken
 
 from hands.sessions.audit import Primed, Record
 from hands.sessions.child import run
@@ -27,6 +32,9 @@ from hands.voice.readback import identifier
 # files hands changed most recently, came back with six spelled as named among 40 words, three among 70 and four among
 # 130: past a few dozen, the words the user said are drowned by the ones they did not.
 WORDS = 40
+
+# The most prompt tokens LowTalker's engine keeps (WhisperKit's), past which it refuses the prompt.
+TOKENS = 111
 
 # The commits whose files are read, newest first: as far back as the work a session is in is likely to reach.
 COMMITS = 30
@@ -54,7 +62,7 @@ class Lexicon:
         primed = await vocabulary(listings, self._focus(), self._environment, began)
         self._record(primed)
         # [LAW:dataflow-not-control-flow] no words is no prompt, which is Whisper unprimed.
-        return ", ".join(primed.words) or None
+        return prompt(primed.words) or None
 
     def _focus(self) -> Session | Unreadable | None:
         match focused(self._home):
@@ -66,9 +74,9 @@ class Lexicon:
 
 
 async def vocabulary(listings: Sequence[Listing[Session]], focus: Session | Unreadable | None, environment: Mapping[str, str], began: float) -> Primed:
-    """The repository words of the focused session, then every running session's project and name: oldest first, since
-    Whisper keeps the end of a prompt too long for it. `began` is when reading the vocabulary started, `listings` among
-    it, on the monotonic clock."""
+    """The repository words of the focused session, then every running session's project and name, oldest first, the
+    oldest dropped until the rest fit the prompt tokens LowTalker keeps. `began` is when reading the vocabulary started,
+    `listings` among it, on the monotonic clock."""
     match focus:
         case Session() as session:
             repository, failed = await _repository(session.membership.cwd, environment, began + READING)
@@ -80,7 +88,30 @@ async def vocabulary(listings: Sequence[Listing[Session]], focus: Session | Unre
     # [LAW:one-source-of-truth] each session as it is spoken and addressed.
     sessions = tuple(identifier(listing) for listing in listings)
     words = _unique((*repository, *sessions))[-WORDS:]
-    return Primed(focus_id, words, failed, time.monotonic() - began)
+    while (tokens := _tokens(words)) > TOKENS:
+        words = words[1:]
+    return Primed(focus_id, words, tokens, failed, time.monotonic() - began)
+
+
+def prompt(words: Sequence[str]) -> str:
+    """The prompt `words` are sent as. Space-joined: a comma-joined list had LowTalker's engine read its commas back into
+    what it heard (its README, the vocabulary check)."""
+    return " ".join(words)
+
+
+def _tokens(words: Sequence[str]) -> int:
+    """The prompt tokens LowTalker counts for the prompt of `words`: the one term it reads it as, with the leading space a
+    spoken word carries, in Whisper's own BPE; none for none. Measured against the tokenizer LowTalker loads, 2000 prompts of up to 40 file, branch
+    and session names counted the same (2026-10-04)."""
+    return len(_whisper_bpe().encode_ordinary("".join(f" {word}" for word in words)))
+
+
+@cache
+def _whisper_bpe() -> tiktoken.Encoding:
+    """Whisper's multilingual BPE (whisper.tiktoken, from openai/whisper), read once: each line a base64 token and its rank."""
+    ranks = {base64.b64decode(token): int(rank) for token, rank in (line.split() for line in (Path(__file__).parent / "whisper.tiktoken").read_text().splitlines() if line)}
+    # Whisper's pre-tokenizer, GPT-2's.
+    return tiktoken.Encoding("whisper", pat_str=r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""", mergeable_ranks=ranks, special_tokens={})
 
 
 async def _repository(cwd: Path, environment: Mapping[str, str], deadline: float) -> tuple[tuple[str, ...], str | None]:

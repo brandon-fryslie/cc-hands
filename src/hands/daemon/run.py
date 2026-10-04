@@ -209,7 +209,7 @@ def configured_from(home: Home, settings: Settings, environment: Mapping[str, st
         llm = backend(settings.config.llm, home, environment)
     except Rejected as error:
         raise CannotStart(str(error)) from error
-    return Configured(VoiceConfig(llm=llm, whisper_model=settings.config.whisper_model, voice=_voice(home)), settings)
+    return Configured(VoiceConfig(llm=llm, transcription=settings.config.transcription, voice=_voice(home)), settings)
 
 
 def _voice(home: Home) -> voices.Voice:
@@ -391,12 +391,12 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[], N
     read = await off_loop(configure, "the configuration read")
     config = read.voice
     # [LAW:nothing-unseen] which settings won is read from the start's event, not re-derived from a shell: the file they came
-    # from (None where the home has none and every setting is its default), the Whisper model and collector they name, the
+    # from (None where the home has none and every setting is its default), the transcription server and collector they name, the
     # server and model the run reaches and the brain's account (None for a keyed variant), never its key, and the voice it
     # starts speaking in, the one the user kept or the default.
     read_from = read.settings.path(home)
     run_start.heard(
-        settings=read_from, whisper_model=config.whisper_model, collector=read.settings.config.collector,
+        settings=read_from, transcription=config.transcription, collector=read.settings.config.collector,
         backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model, account=_account(config.llm), voice=config.voice,
     )
     return config

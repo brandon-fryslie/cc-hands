@@ -79,7 +79,6 @@ class Unsaid:
     """A segment Whisper transcribed and hands dropped as not said, with the scores it was dropped for."""
 
     text: str
-    no_speech_prob: float
     compression_ratio: float
     avg_logprob: float
 
@@ -95,12 +94,13 @@ class HoldHeard:
 
 @dataclass(frozen=True)
 class Primed:
-    """The words Whisper was primed with for one hold, oldest first, and how long reading them took. `focus` is the
-    session whose repository was read, None where no running session is focused; `failed` says why the focus or its
-    repository gave no words where either could not be read."""
+    """The words Whisper was primed with for one hold, oldest first, the prompt tokens they come to, and how long reading
+    them took. `focus` is the session whose repository was read, None where no running session is focused; `failed`
+    says why the focus or its repository gave no words where either could not be read."""
 
     focus: SessionId | None
     words: tuple[str, ...]
+    tokens: int
     failed: str | None
     seconds: float
 

@@ -35,16 +35,16 @@ from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, OpenAIComp
 HOME = Home(Path("/Users/someone/.hands"))
 
 
-def test_no_file_is_claude_on_the_anthropic_api_and_whisper_large_v3_turbo(tmp_path: Path) -> None:
-    assert config.load(Home(tmp_path)) == config.Settings(None, Config(llm=Anthropic(url=ANTHROPIC_URL, model=ANTHROPIC_MODEL), whisper_model="mlx-community/whisper-large-v3-turbo", collector=None))
+def test_no_file_is_claude_on_the_anthropic_api_transcribed_by_lowtalker_on_loopback(tmp_path: Path) -> None:
+    assert config.load(Home(tmp_path)) == config.Settings(None, Config(llm=Anthropic(url=ANTHROPIC_URL, model=ANTHROPIC_MODEL), transcription="http://127.0.0.1:8610/v1", collector=None))
     assert config.parse("") == Config()
 
 
-def test_the_file_names_the_backend_its_server_and_model_and_the_whisper_model(tmp_path: Path) -> None:
+def test_the_file_names_the_backend_its_server_and_model_and_the_transcription_server(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    home.config.write_text('[llm]\nbackend = "openai"\nurl = "https://reseller.example/v1"\nmodel = "gpt-other"\n\n[whisper]\nmodel = "w"\n')
+    home.config.write_text('[llm]\nbackend = "openai"\nurl = "https://reseller.example/v1"\nmodel = "gpt-other"\n\n[transcription]\nurl = "http://w/v1/"\n')
     settings = config.load(home)
-    assert settings.config == Config(llm=OpenAI(url="https://reseller.example/v1", model="gpt-other"), whisper_model="w")
+    assert settings.config == Config(llm=OpenAI(url="https://reseller.example/v1", model="gpt-other"), transcription="http://w/v1")
     assert settings.path(home) == home.config
     assert config.parse('[llm]\nbackend = "openai"\n').llm == OpenAI(url=OPENAI_URL, model=OPENAI_MODEL)
     assert config.parse('[llm]\nurl = "https://api-chicago.codexapi.pro"\nmodel = "claude-other"\n').llm == Anthropic(url="https://api-chicago.codexapi.pro", model="claude-other")
@@ -96,6 +96,17 @@ def test_the_collector_is_an_http_address_spelled_without_a_trailing_slash() -> 
         assert "secret" not in str(refused.value)
     with pytest.raises(Rejected, match="\\[telemetry\\] has no 'endpoint'"):
         config.parse('[telemetry]\nendpoint = "http://otel.example:4318"\n')
+
+
+def test_the_transcription_server_is_an_http_base_address_and_the_old_whisper_table_is_refused() -> None:
+    assert config.parse('[transcription]\nurl = "http://inferno.lan:8610/v1/"\n').transcription == "http://inferno.lan:8610/v1"
+    for unusable in ("127.0.0.1:8610/v1", "http://:8610/v1", "http://127.0.0.1:8610/v1/audio/transcriptions", "http://u:secret@127.0.0.1:8610/v1"):
+        with pytest.raises(Rejected, match="is not a transcription server's base address") as refused:
+            config.parse(f'[transcription]\nurl = "{unusable}"\n')
+        assert "secret" not in str(refused.value)
+    # A file still naming an MLX model would be a setting silently not applied.
+    with pytest.raises(Rejected, match="the file has no 'whisper'"):
+        config.parse('[whisper]\nmodel = "mlx-community/whisper-large-v3-turbo"\n')
 
 
 def test_a_backend_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path: Path) -> None:
@@ -195,7 +206,7 @@ def test_a_backend_printed_does_not_print_its_key() -> None:
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01))
     sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=lambda _event: None)
-    config = run.VoiceConfig(llm=AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL), whisper_model="w", voice=voices.DEFAULT)
+    config = run.VoiceConfig(llm=AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL), transcription="http://w/v1", voice=voices.DEFAULT)
     return Home(tmp_path), sessions, heart, config
 
 
@@ -219,15 +230,15 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         await asyncio.sleep(0.005)
     answered.set()
     assert await starting == config
-    # The start's event says which file the settings came from, the Whisper model and collector they name, which server and
+    # The start's event says which file the settings came from, the transcription server and collector they name, which server and
     # model the run reaches, and never with what key, and the voice it speaks in.
     recorded: list[Entry] = []
     run_start.ended(recorded.append, None)
     [event] = recorded
     assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("hands.start", "ok")
-    chosen = {name: event.facts[name] for name in ("settings", "whisper_model", "collector", "backend", "base_url", "model", "account", "voice")}
+    chosen = {name: event.facts[name] for name in ("settings", "transcription", "collector", "backend", "base_url", "model", "account", "voice")}
     assert chosen == {
-        "settings": home.config, "whisper_model": "w", "collector": "http://otel.example:4318",
+        "settings": home.config, "transcription": "http://w/v1", "collector": "http://otel.example:4318",
         "backend": "AnthropicBackend", "base_url": ANTHROPIC_URL, "model": ANTHROPIC_MODEL, "account": None, "voice": voices.DEFAULT,
     }
     assert "sk-secret" not in str(encoded(event))
@@ -564,9 +575,3 @@ async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path
     recorded: list[Entry] = []
     assert await config.edited(home, recorded.append, _reachable, _NO_FILE, period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
-
-
-def test_the_default_whisper_model_is_pipecats_large_v3_turbo() -> None:
-    from pipecat.services.whisper.stt import MLXModel
-
-    assert config.WHISPER_MODEL == MLXModel.LARGE_V3_TURBO

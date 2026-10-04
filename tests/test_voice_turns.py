@@ -7,12 +7,13 @@ than hoped for. Whisper, the user aggregator, and the stop strategy are the ones
 """
 
 import asyncio
+import wave
 from pathlib import Path
 from collections.abc import AsyncGenerator, Callable, Sequence
+from io import BytesIO
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-import mlx_whisper
 import pytest
 from pipecat.frames.frames import (
     Frame,
@@ -26,7 +27,6 @@ from pipecat.frames.frames import (
 from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
 from conftest import running, unprimed
 from hands.core.place import Place
@@ -190,7 +190,7 @@ async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
     voice = built.build_voice(
-        built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), whisper_model="unused", voice=voices.DEFAULT),
+        built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), transcription="http://unused/v1", voice=voices.DEFAULT),
         tools=[],
         llm=FrameProcessor(),
         key=PushToTalk(recorded.append),
@@ -205,7 +205,9 @@ async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator
     heard: list[bytes] = []
 
     async def transcribe(_self: Whisper, hold: int, audio: bytes) -> HoldHeard:
-        heard.append(audio)
+        # The hold as uploaded, a WAV: its samples are what the microphone heard.
+        with wave.open(BytesIO(audio)) as uploaded:
+            heard.append(uploaded.readframes(uploaded.getnframes()))
         return HoldHeard(hold, await texts.get() or None, ())
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
@@ -476,24 +478,7 @@ async def test_a_request_answered_before_it_reaches_the_floor_is_not_told(rig: R
     assert let_go(answered) == {"held_ms": 0.0, "fate": "dropped"}
 
 
-async def test_whisper_has_loaded_the_model_its_turns_transcribe_with_once_built(monkeypatch: pytest.MonkeyPatch) -> None:
-    """MLX Whisper keeps the model it loaded for the process, keyed on what it was asked for, so the first turn pays
-    for no load only if the one done at construction asked for exactly what a turn's transcription asks for."""
-    asked: list[dict[str, object]] = []
-
-    def transcribe(_audio: object, **options: object) -> dict[str, object]:
-        asked.append(options)
-        return {"segments": []}
-
-    monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
-    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="mlx-community/whisper-tiny"), prompt=unprimed, record=lambda _: None)
-    assert [options["path_or_hf_repo"] for options in asked] == ["mlx-community/whisper-tiny"]
-    whisper._transcribing.append(1)  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
-    [frame async for frame in whisper.run_stt(b"\x00\x00" * 16_000)]
-    assert len(asked) == 2 and asked[1] == asked[0]
-
-
 async def test_whisper_hears_only_the_keyed_microphone() -> None:
-    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=unprimed, record=lambda _: None)
+    whisper = Whisper(url="http://unused/v1", prompt=unprimed, record=lambda _: None)
     with pytest.raises(TypeError, match="carries no key"):
         await whisper.process_audio_frame(InputAudioRawFrame(b"\x00\x00", 16000, 1), FrameDirection.DOWNSTREAM)

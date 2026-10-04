@@ -19,7 +19,7 @@ once it is built - types into sessions, through the fritter that wrapped them.
                                   hands daemon
  ┌───────────────────────────────────────────────────────────────────────────────┐
  │  voice                                                                        │
- │  mic ─► gate ─► Whisper (MLX) ─► LLM ─► pocket-tts ─► speakers                │
+ │  mic ─► gate ─► Whisper (LowTalker) ─► LLM ─► pocket-tts ─► speakers          │
  │         ▲                        ▲  │        ▲                                │
  │   gate edges              notes, │  │ tool   │ system speech                  │
  │   terminal · held key     narrate│  │ calls  │ (straight to TTS)              │
@@ -1921,7 +1921,7 @@ counts as a crash: the run raises, exits nonzero, and reads as down until it is 
 A start is one `hands.start` event (`hands.daemon.starting.Start`), timed from the moment
 `hands run` began to the moment the pipeline reported started, so its duration is how
 long hands took to be ready. It says which run it is (`pid`, `restarted`, `after_crash`),
-which settings won (the file, the Whisper model, the collector, the backend, server,
+which settings won (the file, the transcription server, the collector, the backend, server,
 model, and account, the voice), and what the run listens on (the hook socket, the proxy
 and its upstream, the tap, the display route), each added as the step that learns it is
 taken, so a start that ended first says how far it got; the display's is the address it
@@ -2018,7 +2018,7 @@ variant with a real alternative or it does not exist. The fields:
 | `[llm] backend` | `anthropic` (the default), `openai`, or `claude`, the brain |
 | `[llm] model` | the model, for any backend |
 | `[llm] url` | another server that speaks the API, for `anthropic` and `openai` |
-| `[whisper] model` | the Whisper model the STT loads |
+| `[transcription] url` | the base of the server each hold is uploaded to, as `POST {url}/audio/transcriptions`; LowTalker's on loopback by default |
 | `[telemetry] collector` | the OpenTelemetry collector's OTLP/HTTP address each wide event is also sent to |
 
 The voice is not a setting: the user chooses it by voice while hands runs, and it is
@@ -2028,7 +2028,7 @@ config, which `hooks.json` is generated from.
 ## Stack
 
 Pipecat ships every piece the pipeline needs: an in-process pocket-tts service, a
-local audio transport over PyAudio, a Whisper service with an MLX build, the
+local audio transport over PyAudio, a segmented STT service for upload APIs, the
 SmallWebRTC transport, the Silero VAD, an OpenAI-compatible LLM service and an
 Anthropic one, function registration from the `LLMContext`, `TTSSpeakFrame` for the
 system channel, and `LLMMessagesAppendFrame` with `run_llm` for the other two.
@@ -2036,8 +2036,11 @@ Verified against the installed Pipecat 1.10 on 2026-09-12.
 
 pocket-tts is MIT, 100M parameters, CPU-only by design, reports no word timings, and
 streams: measured on this
-Mac, first audio 87 ms after the text arrives and about 5.6x real time. Whisper
-large-v3-turbo on MLX transcribes a four-second clip in under a second. The default
+Mac, first audio 87 ms after the text arrives and about 5.6x real time. Whisper is
+LowTalker's (~/code/low-talker), the large-v3 turbo it keeps resident on the Neural Engine
+for its own dictation, which its network build serves at OpenAI's
+`POST /v1/audio/transcriptions`: each hold is uploaded as a WAV for `verbose_json`, and a
+four-second clip comes back in about 0.9 s (2026-10-04). The default
 LLM is Claude Sonnet 5 through the Anthropic API, or any server that speaks it; OpenAI's
 chat completions API is the other backend variant. Measured on 2026-09-12, full
 voice-to-voice with Qwen3-30B-A3B on inferno, since retired: a turn with a tool call had
