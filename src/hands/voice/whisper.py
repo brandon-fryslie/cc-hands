@@ -6,6 +6,7 @@ LowTalker (~/code/low-talker) keeps its Whisper resident on the Neural Engine fo
 OpenAI's POST /audio/transcriptions, so hands uploads each hold there rather than running a second Whisper of its own.
 """
 
+import json
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import cast
@@ -45,6 +46,11 @@ _REPEATING = 2.4
 # slow-talking." at -2.8, which the compression ratio (0.68) does not catch; "okay" said quietly at -25 dBFS read
 # -0.89 to -1.11 (hands-dictation-d7i).
 _GUESSED = -1.5
+
+# How long a hold may wait on its answer before it is a failure: holds are transcribed one at a time, so a server that
+# never answers would hold up every hold after it. A 4 s hold came back in 0.93 s (hands-dictation-2bs.tsm), and the
+# longest hold, TURN_LIMIT_SECONDS, is four of Whisper's 30 s windows.
+ANSWER_SECONDS = 30.0
 
 
 class TranscriptionFailed(Exception):
@@ -188,15 +194,17 @@ class Whisper(SegmentedSTTService):
         try:
             # [LAW:no-ambient-temporal-coupling] a session per hold, so nothing has to be opened before the first hold or
             # closed after the last; on loopback the connection it opens costs nothing a turn would notice.
-            async with aiohttp.ClientSession() as session, session.post(f"{self._url}/audio/transcriptions", data=form) as response:
-                answer: object = await response.json(content_type=None)
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=ANSWER_SECONDS)) as session, session.post(f"{self._url}/audio/transcriptions", data=form) as response:
+                body = await response.read()
                 if response.status != 200:
-                    raise TranscriptionFailed(f"{self._url} answered {response.status}: {_refusal(answer)}")
+                    raise TranscriptionFailed(f"{self._url} answered {response.status}: {_refusal(body)}")
+        except TimeoutError as error:
+            raise TranscriptionFailed(f"{self._url} did not answer within {ANSWER_SECONDS:.0f} s") from error
         finally:
             await self.stop_processing_metrics()
         said: list[str] = []
         dropped: list[Unsaid] = []
-        for scored in _segments(answer):
+        for scored in _segments(body):
             worded = any(character.isalnum() for character in scored.text)
             if worded and scored.compression_ratio <= _REPEATING and scored.avg_logprob >= _GUESSED:
                 said.append(scored.text)
@@ -205,22 +213,39 @@ class Whisper(SegmentedSTTService):
         return HoldHeard(hold, " ".join(said).strip() or None, tuple(dropped))
 
 
-def _segments(answer: object) -> list[Unsaid]:
+def _segments(body: bytes) -> list[Unsaid]:
     """[LAW:parse-dont-validate] the segments of a verbose_json answer, each with its text and both scores; raises
-    TranscriptionFailed naming what is missing where the answer is not one."""
+    TranscriptionFailed showing the answer where it is not one."""
     try:
-        segments = cast("dict[str, list[dict[str, object]]]", answer)["segments"]
-        return [Unsaid(str(segment["text"]).strip(), float(cast("float", segment["compression_ratio"])), float(cast("float", segment["avg_logprob"]))) for segment in segments]
-    except (KeyError, TypeError, ValueError) as error:
-        raise TranscriptionFailed(f"the answer is not verbose_json with scored segments ({type(error).__name__}: {error}): {answer!r:.200}") from error
+        answer: object = json.loads(body)
+    except ValueError as error:
+        raise TranscriptionFailed(f"the answer is not JSON: {body[:200]!r}") from error
+    match answer:
+        case {"segments": list()}:
+            return [_segment(segment) for segment in cast("dict[str, list[object]]", answer)["segments"]]
+        case _:
+            raise TranscriptionFailed(f"the answer is not verbose_json, having no segments: {body[:200]!r}")
 
 
-def _refusal(answer: object) -> str:
-    """What an OpenAI-shaped error answer says: its code and message, or the answer itself where it is not one."""
+def _segment(segment: object) -> Unsaid:
+    match segment:
+        case {"text": str() as text, "compression_ratio": int() | float() as ratio, "avg_logprob": int() | float() as logprob}:
+            return Unsaid(text.strip(), float(ratio), float(logprob))
+        case _:
+            raise TranscriptionFailed(f"the answer is not verbose_json, a segment lacking its text or a score: {segment!r:.200}")
+
+
+def _refusal(body: bytes) -> str:
+    """What an error answer says: an OpenAI-shaped error's code and message, or the body itself where it is not one."""
+    try:
+        answer: object = json.loads(body)
+    except ValueError:
+        # Not JSON, as a proxy's or another server's error page is: the body is the refusal.
+        return f"{body[:200]!r}"
     match answer:
         case {"error": {"message": str() as message, "code": str() as code}}:
             return f"{code}: {message}"
         case {"error": {"message": str() as message}}:
             return message
         case _:
-            return f"{answer!r:.200}"
+            return f"{body[:200]!r}"

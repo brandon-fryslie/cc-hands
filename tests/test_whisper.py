@@ -1,6 +1,7 @@
 """Whisper as LowTalker serves it: each hold uploaded to a fake of LowTalker's POST /v1/audio/transcriptions, which
 answers as the network build does (low-talker feed40f), and what hands takes as said from the answer."""
 
+import asyncio
 import wave
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ from aiohttp import web
 from pipecat.frames.frames import ErrorFrame, Frame, TranscriptionFrame
 
 from hands.sessions.audit import Entry, HoldHeard, Unsaid
+from hands.voice import whisper as whisper_module
 from hands.voice.turnstop import TurnResolved
 from hands.voice.whisper import Whisper
 
@@ -25,9 +27,13 @@ class Upload:
     audio: bytes
 
 
+class Late:
+    """An answer the server gives a second after it was asked, long past the hold's patience in these tests."""
+
+
 @dataclass
 class LowTalker:
-    """The fake server: what it was sent, and the answers it gives, oldest first."""
+    """The fake server: what it was sent, and the answers it gives, oldest first: JSON, a body as it is, or one too late."""
 
     url: str
     answers: list[tuple[int, object]] = field(default_factory=list[tuple[int, object]])
@@ -56,7 +62,14 @@ async def lowtalker() -> AsyncIterator[LowTalker]:
         assert isinstance(upload, web.FileField)
         server.uploads.append(Upload({name: value for name, value in form.items() if isinstance(value, str)}, upload.filename, upload.content_type, upload.file.read()))
         status, answer = server.answers.pop(0)
-        return web.json_response(answer, status=status)
+        match answer:
+            case Late():
+                await asyncio.sleep(1.0)
+                return web.json_response(NOTHING)
+            case bytes() as body:
+                return web.Response(body=body, status=status, content_type="text/html")
+            case _:
+                return web.json_response(answer, status=status)
 
     app = web.Application()
     app.router.add_post("/v1/audio/transcriptions", transcriptions)
@@ -169,3 +182,41 @@ async def test_a_server_that_is_not_running_is_an_error() -> None:
     frames = await transcribe(whisper, 1, wav(1.0))
 
     assert [type(frame) for frame in frames] == [ErrorFrame, TurnResolved]
+
+
+async def test_an_error_page_that_is_not_json_is_said_with_its_status_and_the_server(lowtalker: LowTalker) -> None:
+    lowtalker.answers += [(404, b"<html>404 Not Found</html>")]
+    whisper = Whisper(url=lowtalker.url, prompt=primed(None), record=lambda _: None)
+
+    frames = await transcribe(whisper, 1, wav(1.0))
+
+    assert [type(frame) for frame in frames] == [ErrorFrame, TurnResolved]
+    error = frames[0]
+    assert isinstance(error, ErrorFrame) and f"{lowtalker.url} answered 404" in error.error and "404 Not Found" in error.error
+
+
+async def test_a_segment_whose_text_is_not_text_is_an_error_not_something_said(lowtalker: LowTalker) -> None:
+    lowtalker.answers += [(200, {"task": "transcribe", "language": "english", "duration": 1.5, "text": "", "segments": [{"text": None, "compression_ratio": 0.38, "avg_logprob": -0.5}]})]
+    recorded: list[Entry] = []
+    whisper = Whisper(url=lowtalker.url, prompt=primed(None), record=recorded.append)
+
+    frames = await transcribe(whisper, 1, wav(1.0))
+
+    assert [type(frame) for frame in frames] == [ErrorFrame, TurnResolved]
+    error = frames[0]
+    assert isinstance(error, ErrorFrame) and "lacking its text or a score" in error.error
+    assert recorded == []
+
+
+async def test_a_server_that_never_answers_fails_the_hold_rather_than_holding_up_the_ones_after_it(lowtalker: LowTalker, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(whisper_module, "ANSWER_SECONDS", 0.2)
+    lowtalker.answers += [(200, Late()), (200, heard(("Okay.", 0.38, -0.5)))]
+    whisper = Whisper(url=lowtalker.url, prompt=primed(None, None), record=lambda _: None)
+
+    stuck = await transcribe(whisper, 1, wav(1.0))
+    after = await transcribe(whisper, 2, wav(1.0))
+
+    assert [type(frame) for frame in stuck] == [ErrorFrame, TurnResolved]
+    error = stuck[0]
+    assert isinstance(error, ErrorFrame) and "did not answer within" in error.error
+    assert [frame.text for frame in after if isinstance(frame, TranscriptionFrame)] == ["Okay."]

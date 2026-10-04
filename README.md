@@ -80,7 +80,7 @@ model = "claude-sonnet-5"     # another model, for any backend
 url = "https://..."           # another server, for anthropic and openai
 
 [transcription]
-url = "http://127.0.0.1:8610/v1"   # the server each hold is uploaded to: LowTalker's network build, or another speaking OpenAI's
+url = "http://127.0.0.1:8610/v1"   # LowTalker's transcription server, which each hold is uploaded to
 
 [telemetry]
 collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address

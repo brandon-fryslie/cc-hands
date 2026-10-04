@@ -99,7 +99,7 @@ def test_the_collector_is_an_http_address_spelled_without_a_trailing_slash() -> 
 
 
 def test_the_transcription_server_is_an_http_base_address_and_the_old_whisper_table_is_refused() -> None:
-    assert config.parse('[transcription]\nurl = "http://inferno.lan:8610/v1/"\n').transcription == "http://inferno.lan:8610/v1"
+    assert config.parse('[transcription]\nurl = "http://127.0.0.1:8611/v1/"\n').transcription == "http://127.0.0.1:8611/v1"
     for unusable in ("127.0.0.1:8610/v1", "http://:8610/v1", "http://127.0.0.1:8610/v1/audio/transcriptions", "http://u:secret@127.0.0.1:8610/v1"):
         with pytest.raises(Rejected, match="is not a transcription server's base address") as refused:
             config.parse(f'[transcription]\nurl = "{unusable}"\n')

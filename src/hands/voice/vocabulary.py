@@ -15,7 +15,6 @@ import asyncio
 import base64
 import time
 from collections.abc import Mapping, Sequence
-from functools import cache
 from pathlib import Path
 
 import tiktoken
@@ -103,15 +102,18 @@ def _tokens(words: Sequence[str]) -> int:
     """The prompt tokens LowTalker counts for the prompt of `words`: the one term it reads it as, with the leading space a
     spoken word carries, in Whisper's own BPE; none for none. Measured against the tokenizer LowTalker loads, 2000 prompts of up to 40 file, branch
     and session names counted the same (2026-10-04)."""
-    return len(_whisper_bpe().encode_ordinary("".join(f" {word}" for word in words)))
+    return len(_WHISPER_BPE.encode_ordinary("".join(f" {word}" for word in words)))
 
 
-@cache
 def _whisper_bpe() -> tiktoken.Encoding:
-    """Whisper's multilingual BPE (whisper.tiktoken, from openai/whisper), read once: each line a base64 token and its rank."""
+    """Whisper's multilingual BPE (whisper.tiktoken, from openai/whisper): each line a base64 token and its rank."""
     ranks = {base64.b64decode(token): int(rank) for token, rank in (line.split() for line in (Path(__file__).parent / "whisper.tiktoken").read_text().splitlines() if line)}
     # Whisper's pre-tokenizer, GPT-2's.
     return tiktoken.Encoding("whisper", pat_str=r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""", mergeable_ranks=ranks, special_tokens={})
+
+
+# Read as the module is imported, with Pipecat while hands starts, so no hold waits the ~50 ms reading it takes.
+_WHISPER_BPE = _whisper_bpe()
 
 
 async def _repository(cwd: Path, environment: Mapping[str, str], deadline: float) -> tuple[tuple[str, ...], str | None]:

@@ -7,7 +7,7 @@ run runs starts the run again, on the file as edited.
     url = "https://..."          # "anthropic" and "openai" only: another server that speaks the API
 
     [transcription]
-    url = "http://127.0.0.1:8610/v1"   # the server each hold is transcribed by: LowTalker's, or another speaking OpenAI's
+    url = "http://127.0.0.1:8610/v1"   # LowTalker's transcription server, which each hold is uploaded to
 
     [telemetry]
     collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address; none by default
