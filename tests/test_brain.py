@@ -231,7 +231,11 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     for skill in ("chat", "prompt"):
         assert (plugin / "skills" / skill / "SKILL.md").read_text().startswith(f"---\nname: {skill}\n")
     assert [argv[argv.index(flag) + 1] for flag in ("--setting-sources", "--append-system-prompt", "--session-id")] == ["user", "You are hands.", "b1"]
-    hooks = json.loads(argv[argv.index("--settings") + 1])["hooks"]
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    # hands' tools are offered to the model directly, never deferred behind ToolSearch: set where neither the brain's
+    # settings.json env nor hands' environment outranks it.
+    assert settings["env"] == {"ENABLE_TOOL_SEARCH": "false"}
+    hooks = settings["hooks"]
     assert {event: hooks.pop(event) for event in ("UserPromptSubmit", "Stop", "StopFailure", "Elicitation")} == {
         event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}"}]}] for event in ("UserPromptSubmit", "Stop", "StopFailure", "Elicitation")
     }
@@ -709,9 +713,16 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
         brain.hear(Sent("x3", SessionId("elsewhere"), MainTurn(None), body))
         assert errors == []
         brain.hear(Sent("x4", SessionId("b1"), MainTurn(None), body))
+        # Deferred, as 2.1.288 offers MCP tools under tool search: the server may be connected, and is not blamed.
+        deferred = {**body, "tools": [{"name": "Read"}, {"name": "ToolSearch"}, {"name": "DeferredToolPlaceholder", "defer_loading": True}]}
+        brain.hear(Sent("x5", SessionId("b1"), MainTurn(None), deferred))
     finally:
         logger.remove(sink)
-    assert errors == ["the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (('Read',))"]
+    assert errors == [
+        "the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (('Read',))",
+        "the brain's turn went to the model without hands' tools and with ToolSearch: tool search is on though hands' --settings"
+        " turn it off (('Read', 'ToolSearch', 'DeferredToolPlaceholder'))",
+    ]
     # What a turn's requests offered is on its brain turn's event.
     assert recorded == []
 
