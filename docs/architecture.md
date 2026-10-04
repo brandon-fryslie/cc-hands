@@ -1930,7 +1930,8 @@ depends on the network. Events are sent in batches from a thread of their own, s
 or absent collector costs a unit of work nothing. Each batch is an `Exported` line naming
 each event by its span id, how long the send took, and, where the collector did not take
 it, why `[LAW:nothing-unseen]`; a stop waits on the batches still queued for one timeout
-in all, and records those it leaves unsent. `SettingsRead` names the collector. hands
+in all, and records those it leaves unsent. `SettingsRead` names the collector. `hands plugin` alone reads no config and exports nothing: Claude Code
+waits for it to exit before a session starts, so its `plugin.render` is in the log alone. hands
 names only the collector; which stores sit behind it is the homelab's.
 
 ## Endurance

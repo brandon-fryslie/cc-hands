@@ -46,6 +46,14 @@ def test_the_command_prints_the_plugin_once_written_and_the_same_one_after(tmp_p
     ]
 
 
+def test_a_config_the_daemon_rejects_still_renders_the_plugin(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    home = Home(tmp_path / "home")
+    home.root.mkdir()
+    home.config.write_text("[llm]\nbackend = 'local'\n")
+    assert main(["--home", str(home.root), "plugin"]) == 0
+    assert Path(capsys.readouterr().out.strip()).parent == home.plugins
+
+
 def test_another_interpreter_is_another_plugin(tmp_path: Path) -> None:
     home = Home(tmp_path)
     here = render(home, sys.executable)

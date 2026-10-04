@@ -409,22 +409,18 @@ def install_fritter(home: Home) -> int:
 
 
 def render_plugin(home: Home) -> int:
-    try:
-        settings = load(home)
-    except Rejected as error:
-        print(f"hands: {error}", file=sys.stderr)
-        return 1
     audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
     # [LAW:nothing-unseen] Claude Code runs this once per session: the interpreter the hooks run on, the plugin it
-    # printed, and whether that plugin was written now or a session before had.
-    with exporting(settings.config.collector, audit_log.record) as record, wide.unit("plugin.render", record):
+    # printed, and whether that plugin was written now or a session before had. Recorded in the audit log alone: Claude
+    # Code waits for this command to exit before the session starts, so, like the shim, it waits on no collector and
+    # reads no config.toml, whose rejection is the daemon's to report and never costs a session its hooks.
+    with wide.unit("plugin.render", audit_log.record):
         wide.annotate(interpreter=sys.executable, packaged=marketplace.PACKAGED)
         rendered = marketplace.render(home, sys.executable)
         wide.annotate(plugin=rendered.plugin, written=rendered.written)
-        # [LAW:no-silent-failure] stdout is the path alone, which Claude Code takes as the plugin's directory. Printed
-        # and flushed before the export edge closes, so a slow collector never holds a session's start behind it.
-        print(rendered.plugin, flush=True)
-        return 0
+    # [LAW:no-silent-failure] stdout is the path alone, which Claude Code takes as the plugin's directory.
+    print(rendered.plugin)
+    return 0
 
 
 # How often `hands log` looks for new lines.
