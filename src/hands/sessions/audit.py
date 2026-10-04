@@ -35,7 +35,6 @@ if TYPE_CHECKING:
     from loguru import Message
 
 from hands.core.effects import Input, Type
-from hands.core.place import Place
 from hands.core.session import SessionId
 from hands.core.trace import Span
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
@@ -57,16 +56,6 @@ class TypingFailed:
 
     effect: Type[Input]
     reason: str
-
-
-@dataclass(frozen=True)
-class Moved:
-    """hands moved to this place: a turn was opened there, or the phone's call came or went; and whether a hold open
-    at the place it left was thrown away."""
-
-    to: Place
-    by: Literal["turn", "call"]
-    dropped: bool
 
 
 @dataclass(frozen=True)
@@ -223,7 +212,6 @@ Entry = (
     Typing
     | TypingFailed
     | SettingsEdited
-    | Moved
     | CopiesLost
     | Exchanged
     | Transcribed
@@ -261,7 +249,7 @@ def level(entry: Entry) -> Level:
         case Primed(failed=failed) | SettingsEdited(refused=failed):
             return "info" if failed is None else "error"
         case (
-            Typing() | Exported() | Moved() | CopiesLost()
+            Typing() | Exported() | CopiesLost()
             | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Cued() | Rolled()
         ):
             return "info"

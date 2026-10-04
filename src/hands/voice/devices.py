@@ -1,8 +1,14 @@
-"""Keeping the voice on the system's default audio devices: an unplugged headset moves it, and it says where to."""
+"""Keeping the voice on the system's default audio devices: an unplugged headset moves it, and it says where to.
+
+[LAW:nothing-unseen] each move is one unit of work, `devices.moved`: the devices it left, the defaults that moved it, the
+devices it reopened on, and how long the reopen took; failed with what raised where the reopen did.
+"""
 
 import asyncio
 from collections.abc import Awaitable, Callable
 
+from hands.sessions.audit import Record
+from hands.sessions.wide import annotate, unit
 from hands.voice.coreaudio import DefaultDevices, default_device_changes, default_devices
 from hands.voice.microphone import Devices, KeyedAudioTransport
 from hands.voice.system import AudioMoved, SystemFact
@@ -13,15 +19,21 @@ async def follow(
     changes: asyncio.Event,
     current: Callable[[], Awaitable[DefaultDevices]],
     opened_on: Callable[[], DefaultDevices],
+    devices: Callable[[], Devices],
     reopen: Callable[[], Awaitable[Devices]],
     say: Callable[[SystemFact], Awaitable[None]],
+    record: Record,
 ) -> None:
     """Each time the defaults move off the ones the streams are open on, reopen on the new ones and say which; until cancelled."""
     while True:
-        await moved(changes, current, opened_on())
+        defaults = await moved(changes, current, opened_on())
         # [LAW:no-silent-failure] a reopen that fails raises out of here and stops the run, which reads as down, so
         # the next run opens whatever devices there are, rather than one run going on silently deaf and mute.
-        await say(AudioMoved(await finished(reopen())))
+        with unit("devices.moved", record):
+            annotate(before=devices(), defaults=defaults)
+            reopened = await finished(reopen())
+            annotate(after=reopened)
+        await say(AudioMoved(reopened))
 
 
 async def finished[T](work: Awaitable[T]) -> T:
@@ -37,18 +49,19 @@ async def finished[T](work: Awaitable[T]) -> T:
         raise
 
 
-async def moved(changes: asyncio.Event, current: Callable[[], Awaitable[DefaultDevices]], opened: DefaultDevices) -> None:
-    """Return once the defaults are no longer the ones opened on.
+async def moved(changes: asyncio.Event, current: Callable[[], Awaitable[DefaultDevices]], opened: DefaultDevices) -> DefaultDevices:
+    """The defaults, once they are no longer the ones opened on.
 
     An unplugged headset changes the input and the output within a millisecond, as two notices; the second finds
     the defaults already what the first reopened on. A change while a reopen runs is read after it, and followed.
     """
-    while await current() == opened:
+    while (now := await current()) == opened:
         await changes.wait()
         changes.clear()
+    return now
 
 
-async def follow_default_devices(started: asyncio.Event, audio: KeyedAudioTransport, say: Callable[[SystemFact], Awaitable[None]]) -> None:
+async def follow_default_devices(started: asyncio.Event, audio: KeyedAudioTransport, say: Callable[[SystemFact], Awaitable[None]], record: Record) -> None:
     """Follow the system's default devices once the pipeline has started, until cancelled."""
     # [LAW:no-ambient-temporal-coupling] the streams are Pipecat's to open and start until the pipeline has started.
     # A change before then is still followed: the defaults are compared with those read when PortAudio listed them.
@@ -57,4 +70,4 @@ async def follow_default_devices(started: asyncio.Event, audio: KeyedAudioTransp
     changes = asyncio.Event()
     with default_device_changes(lambda: loop.call_soon_threadsafe(changes.set)):
         # Read off the loop: CoreAudio answers under a lock it may be holding while it tears down a device that is gone.
-        await follow(changes, lambda: off_loop(default_devices, "reading the default devices"), lambda: audio.opened_on, audio.reopen, say)
+        await follow(changes, lambda: off_loop(default_devices, "reading the default devices"), lambda: audio.opened_on, lambda: audio.devices, audio.reopen, say, record)
