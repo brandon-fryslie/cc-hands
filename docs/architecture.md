@@ -1069,7 +1069,10 @@ Code took it as (`prompt`) and the tools its latest request offered the model (`
 failed it; a turn whose asker stopped waiting is still heard to its end. Each dialog it posts to hands' listener is one
 event: a `brain.permission`, with the tool, the decision, and how long it was held, and a `brain.elicitation`, which
 is always declined. A dialog posted for the turn in flight is a part of that `brain.turn`; any other is a part of the
-launch. A body hands cannot read is answered as its hook asks, and its event fails saying so.
+launch. A body hands cannot read is answered as its hook asks, and its event fails saying so. Whatever else fails in
+the brain's own work, a turn's typing, a dialog, a hook heard, is said once on the terminal with its traceback. The turn
+it was done for, if any, is stopped as an Escape stops it and ends with that error; a permission it broke is refused, and
+a hook is answered before it is heard, so one whose hearing broke is no turn's and the hooks after it are still heard.
 Each side question (`brain.aside`), asked of a Claude Code of its own, is one event from when it is asked: what it is
 for (`kind`), its Claude Code's session (`aside_session`), the question and its answer, how long it waited behind the
 ones before it (`queued_ms`, absent for a question that never had its turn; the rest of its duration is its Claude Code

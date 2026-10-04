@@ -21,7 +21,7 @@ from loguru import logger
 from hands.core.front import FrontUnread, InFront
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, account_kept_out, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -50,7 +50,7 @@ from hands.voice.backends import AnthropicBackend, ClaudeCodeBackend
 from hands.voice.beside import Noting
 from hands.voice.pipeline import VoiceConfig
 from hands.voice.summary import SummaryFailed, aside
-from hands.sessions.wide import Fact, WideEvent, continuing, here, root, unit, within
+from hands.sessions.wide import Fact, WideEvent, begun, continuing, here, root, unit, within
 from hands.voice.tools import Called, Result, audited, tool
 from hands.voice import voices
 
@@ -108,8 +108,7 @@ async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_
 async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_server_cannot_is_an_error() -> None:
     recorded: list[Entry] = []
     server = await serve_mcp([audited(tool(echo), recorded.append), audited(tool(broken), recorded.append)], recorded.append, CallSpans())
-    errors: list[str] = []
-    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
+    errors, sink = failures()
     try:
         _, wrong = await rpc(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"words": "hi"}}})
         refusal = "echo was called with the wrong arguments: missing a required argument: 'text'"
@@ -705,8 +704,7 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
     brain.session = SessionId("b1")
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
-    errors: list[str] = []
-    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
+    errors, sink = failures()
     try:
         body = {"messages": [{"role": "user", "content": "hi"}], "tools": [{"name": "Read"}]}
         with_hands = {**body, "tools": [{"name": "Read"}, {"name": "mcp__hands__read_session"}]}
@@ -757,6 +755,142 @@ async def test_a_turn_never_taken_fails_naming_hands_login_and_the_next_turn_is_
         assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
     finally:
         await brain.stop()
+
+
+class _Jammed:
+    """A typist whose every key fails as a terminal gone from under it does: not the Untyped a stale socket raises."""
+
+    def type(self, text: object) -> None:
+        raise OSError("jammed")
+
+    press = type
+
+
+def failures() -> tuple[list[str], int]:
+    """What is said on the terminal as an error, as it is said, and the sink that hears it."""
+    said: list[str] = []
+    return said, logger.add(lambda message: said.append(message.record["message"]), level="ERROR")
+
+
+async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_once_and_the_next_turn_is_its_own(
+    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Nothing was typed, so Claude Code never takes the turn, and its stop ends it once it was not taken in time.
+    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
+    said, sink = failures()
+    try:
+        typist = brain._typist  # pyright: ignore[reportPrivateUsage]
+        brain._typist = _Jammed()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+        with pytest.raises(OSError, match="jammed"):
+            await asyncio.wait_for(brain.ask("what is running?", unasked), 10)
+        brain._typist = typist  # pyright: ignore[reportPrivateUsage]
+        assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p1", None)
+    finally:
+        logger.remove(sink)
+        await brain.stop()
+    assert said == ["the brain's own work failed: OSError('jammed')"]
+    failed, _ = events(recorded, "brain.turn")
+    assert (failed.outcome, failed.error) == ("failed", "OSError: jammed")
+
+
+async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_and_says_so_once(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    recorded: list[Entry] = []
+    asked: list[Asked] = []
+
+    def asks(held: Asked) -> None:
+        asked.append(held)
+        raise RuntimeError("no voice")
+
+    brain = await start(launch(tmp_path, fritter), recorded.append)
+    said, sink = failures()
+    try:
+        with pytest.raises(RuntimeError, match="no voice"):
+            await asyncio.wait_for(brain.ask("write", asks), 10)
+        # The brain heard the refusal, so its dialog did not hold it: its Stop comes, and the next turn is its own.
+        await until(lambda: ["permission", "deny", BROKEN] in typed(tmp_path))
+        assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p2", None)
+    finally:
+        logger.remove(sink)
+        await brain.stop()
+    assert said == ["the brain's own work failed: RuntimeError('no voice')"]
+    # The user's side is told the refusal the brain heard, and the turn is stopped as an Escape stops it.
+    assert [held.decision.result() for held in asked] == [Deny(BROKEN)]
+    assert ["escape", ""] in typed(tmp_path)
+    [permission] = events(recorded, "brain.permission")
+    assert (permission.outcome, permission.error, permission.facts["decision"]) == ("failed", "RuntimeError: no voice", Deny(BROKEN))
+    assert not (tmp_path / "notes.txt").exists()
+
+
+async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_and_is_never_pressed_again(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    pressed: list[object] = []
+
+    class Jammed(_Jammed):
+        def press(self, key: object) -> None:
+            pressed.append(key)
+            raise OSError("jammed")
+
+    said, sink = failures()
+    try:
+        waiting = asyncio.create_task(brain.ask("wait", unasked))
+        await until(lambda: [" wait"] == [line[1] for line in typed(tmp_path) if line[0] == "prompt"])
+        brain._typist = Jammed()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+        brain.interrupt()
+        with pytest.raises(OSError, match="jammed"):
+            await asyncio.wait_for(waiting, 5)
+    finally:
+        logger.remove(sink)
+        await brain.stop()
+    # A second stop would press Escape again, and its Ctrl-C would land inside Claude Code's exit window.
+    assert (pressed, said) == (["escape"], ["the brain's own work failed: OSError('jammed')"])
+
+
+async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hooks_after_it_are_still_heard() -> None:
+    hooks: asyncio.Queue[_Posted] = asyncio.Queue()  # pyright: ignore[reportPrivateUsage]
+    listener, url = await _listen(hooks)  # pyright: ignore[reportPrivateUsage]
+    recorded: list[Entry] = []
+
+    def record(entry: Entry) -> None:
+        # The first event the log is handed cannot be written.
+        if not recorded:
+            recorded.append(entry)
+            raise ValueError("the log is full")
+        recorded.append(entry)
+
+    brain = object.__new__(Brain)
+    brain.session = SessionId("b1")
+    brain._record = record  # pyright: ignore[reportPrivateUsage]
+    with unit("brain.launch", lambda _entry: None):
+        brain._launched = here()  # pyright: ignore[reportPrivateUsage]
+    # The elicitation that breaks is a part of the turn in flight: it was declined before it was heard, so the turn runs on.
+    loop = asyncio.get_running_loop()
+    turn = _Turn(loop.create_future(), loop.create_future(), unasked, begun())  # pyright: ignore[reportPrivateUsage]
+    turn.taken.set_result("p1")
+    brain._turn = turn  # pyright: ignore[reportPrivateUsage]
+    brain._held = set()  # pyright: ignore[reportPrivateUsage]
+    brain._typing = set()  # pyright: ignore[reportPrivateUsage]
+    hearing = asyncio.create_task(brain._hear_hooks(hooks))  # pyright: ignore[reportPrivateUsage]
+    said, sink = failures()
+
+    async def answered(event: str, body: Mapping[str, object]) -> dict[str, object]:
+        async with aiohttp.ClientSession() as client, client.post(f"{url}/{event}", data=json.dumps(body).encode()) as reply:
+            assert reply.status == 200
+            return (await reply.json())["hookSpecificOutput"]
+
+    try:
+        elicited = {"hook_event_name": "Elicitation", "session_id": "b1", "prompt_id": "p1", "mcp_server_name": "probe", "message": "Which?"}
+        assert (await answered("Elicitation", elicited))["action"] == "decline"
+        permission = {"hook_event_name": "PermissionRequest", "session_id": "b1", "tool_name": "Write", "tool_input": {"file_path": "/tmp/x"}}
+        assert (await answered("PermissionRequest", permission))["decision"] == {"behavior": "deny", "message": NOBODY}
+    finally:
+        logger.remove(sink)
+        hearing.cancel()
+        await listener.cleanup()
+    assert said == ["the brain's own work failed: ValueError('the log is full')"]
+    assert (turn.broken, turn.answered.done(), brain._turn) == (None, False, turn)  # pyright: ignore[reportPrivateUsage]
+    assert [event.event for event in recorded if isinstance(event, WideEvent)] == ["brain.elicitation", "brain.permission"]
 
 
 async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_next_turn_gets_its_own(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
