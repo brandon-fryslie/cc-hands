@@ -142,15 +142,19 @@ class LatencyObserver(BaseObserver):
             # it is still crossing them, upstream, while the turn it failed in ends downstream.
             if frame.id != self._erred:
                 self._erred = frame.id
-                if self._window is not None and self._window is not self._turn.released:
-                    # The turn this release was of has been sent, so what failed is its reply. What hands says next
-                    # is the failure, said by the system channel, and no answer to time.
-                    self._take(self._window, "failed", now)
-                    self._window = None
-                else:
-                    # The turn is still being taken in, so nothing has been asked of the model for it: a hold Whisper
-                    # failed on ends the wait only if the turn ends with no words from any other.
-                    self._turn.failed = True
+                match self._window:
+                    case None:
+                        # No release is waiting on anything, so the error is of nothing a user asked for.
+                        pass
+                    case window if window is self._turn.released:
+                        # The turn is still being taken in, so nothing has been asked of the model for it: a hold
+                        # Whisper failed on ends the wait only if the turn ends with no words from any other.
+                        self._turn.failed = True
+                    case window:
+                        # The turn this release was of has been sent, so what failed is its reply. What hands says
+                        # next is the failure, said by the system channel, and no answer to time.
+                        self._take(window, "failed", now)
+                        self._window = None
             return
         if isinstance(frame, TranscriptionFrame):
             self._turn.said = True

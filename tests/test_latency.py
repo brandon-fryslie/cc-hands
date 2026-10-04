@@ -153,6 +153,12 @@ async def test_a_hold_whisper_failed_on_in_a_turn_that_has_words_fails_nothing_a
     assert "after key release" in lines[-1]
 
 
+async def test_an_error_with_no_release_waiting_says_nothing_of_the_next_turn() -> None:
+    """A narration nobody asked for failing is no failure of the hold pressed after it."""
+    marks = await told(ErrorFrame("no voice"), TurnOpened(hold=1), VADUserStoppedSpeakingFrame(), TurnResolved(hold=1), UserStoppedSpeakingFrame())
+    assert marks == ["released", "no words"]
+
+
 async def test_the_model_failing_after_the_words_were_heard_is_told_as_failed() -> None:
     marks = await told(
         TurnOpened(hold=1),
