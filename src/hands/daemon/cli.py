@@ -16,7 +16,7 @@ from loguru import logger
 
 from hands.daemon import readiness
 from hands.daemon.config import Config, Settings, edited, load
-from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, again, refuse, start
+from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, again, refuse, said, start
 from hands.sessions import audit, heartbeat, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.otlp import exporting
@@ -114,9 +114,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             after_crash = arguments.restarted is None and crashed_before(home)
             heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
             audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
-            # [LAW:single-enforcer] every start refused, at the door or as the run reads its configuration, ends here.
+            # Refused at the door, a run has not yet taken the heartbeat: it leaves the one there, which may be a running
+            # hands' or a crash the next run must read, and says why on the terminal and in the audit log alone.
             try:
-                ending, shown = run_here(home, arguments.restarted, after_crash, heart, audit_log)
+                granted = admitted()
+            except CannotStart as cannot:
+                said(cannot, audit_log.record)
+                return 1
+            # [LAW:single-enforcer] every start refused once it has beat starting ends here, the refusal its last heartbeat.
+            try:
+                ending, shown = run_here(home, arguments.restarted, after_crash, granted, heart, audit_log)
             except CannotStart as cannot:
                 refuse(cannot, heart, audit_log.record)
                 return 1
@@ -156,9 +163,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
 
-def run_here(home: Home, restarted: int | None, after_crash: bool, heart: heartbeat.Heart, audit_log: audit.AuditLog) -> tuple[Ending, int]:
-    """hands run in this process until it is told to stop: how it was, and the pid of the menu-bar indicator beside it.
-    Raises CannotStart where it cannot start."""
+def admitted() -> bool:
+    """The talk key's grant, which a run cannot start without: CannotStart where it is missing."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
     from hands.voice import talkkey
 
@@ -168,18 +174,24 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, heart: heartb
     if not granted:
         talkkey.ask()
         raise CannotStart(f"{readiness.grant(granted).said}, then run hands again.")
-    # [LAW:single-enforcer] the one read of the settings a run starts on: the export edge, the run, and the watch for
-    # an edit to them all take these.
-    try:
-        settings = load(home)
-    except Rejected as error:
-        raise CannotStart(str(error)) from error
+    return granted
+
+
+def run_here(home: Home, restarted: int | None, after_crash: bool, granted: bool, heart: heartbeat.Heart, audit_log: audit.AuditLog) -> tuple[Ending, int]:
+    """hands run in this process until it is told to stop: how it was, and the pid of the menu-bar indicator beside it.
+    Raises CannotStart where it cannot start, once its heartbeat says starting."""
     # In place of loguru's DEBUG default, so a run's terminal is hands' to read.
     logger.remove()
     to_terminal(sys.stderr)
     # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its models load,
     # seconds of silence in which the file would otherwise still name the process that died.
     heart.beat("starting", None, 0, listening=False, deaf=False)
+    # [LAW:single-enforcer] the one read of the settings a run starts on: the export edge, the run, and the watch for
+    # an edit to them all take these. Read after the first heartbeat, so a refused one is shown by `hands status`.
+    try:
+        settings = load(home)
+    except Rejected as error:
+        raise CannotStart(str(error)) from error
     kept = None if restarted is None else still_shown(restarted)
     shown = start_indicator(home) if kept is None else kept
     threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()

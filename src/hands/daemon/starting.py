@@ -32,17 +32,21 @@ class CannotStart(Exception):
     """A start hands will not make: a setting, a key, or a grant it cannot start without. The message is the reason."""
 
 
+def said(cannot: CannotStart, record: Record) -> None:
+    """Say why a start cannot be made where it was started and in the audit log, which keeps it after the next run."""
+    print(f"hands: {cannot}", file=sys.stderr)
+    record(StartRefused(str(cannot)))
+
+
 def refuse(cannot: CannotStart, heart: heartbeat.Heart, record: Record) -> None:
-    """End a start that cannot be made, saying why where it was started, in the audit log, and in its last heartbeat.
+    """End a start that has beat starting and cannot be made: said, and its last heartbeat says why.
 
     [LAW:nothing-unseen] a start from a launcher whose terminal nobody watches is otherwise only gone: `hands status`, and
-    the menu-bar indicator of a start refused after it was shown, read the reason from the heartbeat, and the log keeps
-    it after the next run replaces that. Said on the terminal first, so a heartbeat that cannot be written loses no reason.
+    the menu-bar indicator of a start refused after it was shown, read the reason from the heartbeat. Said first, so a
+    heartbeat that cannot be written loses no reason.
     """
-    reason = str(cannot)
-    print(f"hands: {reason}", file=sys.stderr)
-    record(StartRefused(reason))
-    heart.beat(heartbeat.Refusal(reason), None, 0, listening=False, deaf=False)
+    said(cannot, record)
+    heart.beat(heartbeat.Refusal(str(cannot)), None, 0, listening=False, deaf=False)
 
 
 @dataclass(frozen=True)

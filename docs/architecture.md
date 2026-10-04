@@ -1796,7 +1796,12 @@ in under a second. After the socket is released, a stop writes a last heartbeat 
 says `stopped`, and a stopped daemon reads as stopped even if its pid is later reused.
 A crash writes nothing more, so its last heartbeat names a pid that is gone, and it
 reads as down. A background task that failed or a pipeline that ended on its own
-counts as a crash: the run raises, exits nonzero, and reads as down until it is run again.
+counts as a crash: the run raises, exits nonzero, and reads as down until it is run again. A start that
+cannot be made says why on its terminal and as `StartRefused` in the audit log. Refused at
+the door, for the talk key's grant, it writes no heartbeat, so the one there, a running
+hands' or a crash's, stands. Refused once it has beat starting (`config.toml`, the
+backend's key, the voice, the brain), its last heartbeat says `refused` with the reason,
+which `hands status` and the indicator show, and which the next start reads as no crash.
 
 ## Wide events
 
@@ -1848,7 +1853,7 @@ transcripts governs the intermediary's own past.
 
 ## Configuration: one file, parsed once
 
-`config.toml` in the home (`~/.hands`, or `HANDS_HOME`) is read once, by `hands run` before
+`config.toml` in the home (`~/.hands`, or `HANDS_HOME`) is read once, by `hands run` just after
 its first heartbeat, and parsed into a frozen `Config` (`hands.daemon.config`). An edit is taken up the way
 everything else on disk is, by the run starting again on it: the watch weighs the
 file against the bytes the start read, and an edit that parses ends the run as the

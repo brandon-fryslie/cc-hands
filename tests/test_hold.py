@@ -1,12 +1,14 @@
 """The talk key: Right Shift held alone opens a turn, its release sends it, and any other key is typing."""
 
 import asyncio
+import json
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
 
 from hands.daemon import cli
+from hands.sessions import audit
 from hands.sessions.home import Home
 from hands.voice import keys, talkkey
 from hands.voice.hold import Hold, Idle, KeyEvent, Move, Overlong, Pressed, Released, Ripe, Typed, step
@@ -147,10 +149,10 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
     assert cli.main(["--home", str(tmp_path), "run"]) == 1
     assert "has no Input Monitoring grant" in capsys.readouterr().err
     assert asked == [None]
-    # Refused before any heartbeat says starting: the last says why, and reads as no crash.
-    assert cli.main(["--home", str(tmp_path), "status"]) == 1
-    assert "hands refused to start 0s ago: " in capsys.readouterr().out
-    assert not cli.crashed_before(Home(tmp_path))
+    # Refused before its first heartbeat: the one there is left to whatever wrote it, a running hands or a crash, and
+    # the reason is in the audit log.
+    assert not (tmp_path / "status.json").exists()
+    assert [json.loads(line)["type"] for line in audit.tail(Home(tmp_path).audit, 10)[0]] == ["StartRefused"]
 
 
 def test_the_terminal_shows_hands_from_info_and_everything_else_from_warning() -> None:

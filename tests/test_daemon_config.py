@@ -274,6 +274,26 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
 
+def test_a_settings_file_it_cannot_read_refuses_the_start_after_its_first_heartbeat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Past the door the run has taken the heartbeat, so `hands status` says why, as it does for a launcher's start.
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    home.config.write_text('[llm]\nbackend = "nonesuch"\n')
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+
+    def kept(*_: object) -> None:
+        pass
+
+    monkeypatch.setattr(cli, "to_terminal", kept)
+    monkeypatch.setattr(cli.logger, "remove", kept)
+    assert cli.main(["--home", str(home.root), "run"]) == 1
+    reason = capsys.readouterr().err.removeprefix("hands: ").rstrip("\n")
+    assert str(home.config) in reason
+    assert cli.main(["--home", str(home.root), "status"]) == 1
+    assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
+
+
 def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(tmp_path: Path) -> None:
     """Charles by the name the installed pocket_tts resolves itself, until the user chooses another, which the next run
     is built in.
