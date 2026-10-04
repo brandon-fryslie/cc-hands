@@ -8,10 +8,13 @@ uv=$(command -v uv)
 fresh=$(mktemp -d)
 trap 'rm -rf "$fresh"' EXIT
 # No go on this PATH: the install and everything it runs must do without one.
-stranger() { env -i HOME="$fresh/home" PATH="$fresh/bin:/usr/bin:/bin" UV_TOOL_DIR="$fresh/tools" UV_TOOL_BIN_DIR="$fresh/bin" UV_CACHE_DIR="$fresh/cache" UV_PYTHON_INSTALL_DIR="$fresh/python" "$@"; }
+# Of this machine's environment, only how it reaches the network passes: its certificates and its proxy.
+network=$(env | grep -E '^(SSL_CERT_FILE|SSL_CERT_DIR|HTTPS?_PROXY|https?_proxy|NO_PROXY|no_proxy)=' || [ $? -eq 1 ])
+stranger() { env -i $network HOME="$fresh/home" PATH="$fresh/bin:/usr/bin:/bin" UV_TOOL_DIR="$fresh/tools" UV_TOOL_BIN_DIR="$fresh/bin" UV_CACHE_DIR="$fresh/cache" UV_PYTHON_INSTALL_DIR="$fresh/python" "$@"; }
 mkdir -p "$fresh/home"
 stranger sh -c '! command -v go' >/dev/null || { echo "verify-wheel: go is still on the stranger's PATH" >&2; exit 1; }
-stranger "$uv" tool install --quiet "$wheel"
+# A Mac has its own Python, 3.9, which uv would otherwise take; hands needs 3.12, which uv fetches.
+stranger "$uv" tool install --quiet --python 3.12 "$wheel"
 said=$(stranger hands --version)
 [ "$said" = "hands $expected" ] || { echo "verify-wheel: hands --version said '$said', not 'hands $expected'" >&2; exit 1; }
 fritter=$(stranger "$fresh/tools/hands/bin/python" -c 'import hands, pathlib; print(pathlib.Path(hands.__file__).parent / "bin" / "fritter")')
