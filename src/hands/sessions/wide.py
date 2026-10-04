@@ -83,18 +83,18 @@ _open: ContextVar[_Open | Span | None] = ContextVar("the unit of work open here"
 
 
 @contextmanager
-def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] = ()) -> Generator[None]:
+def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] = (), span: Span | None = None) -> Generator[None]:
     """Run the body as one unit of work named `event`, and emit its event as the body ends, however it ends.
 
-    The body's exception is the body's: it is recorded on the event and raised on, never swallowed here.
+    `span` is the one `minted` for it here before it opened, so work started for it first is its child all the same; by
+    default it is minted as it opens. The body's exception is the body's: it is recorded on the event and raised on, never
+    swallowed here.
     """
-    match _open.get():
-        case None:
-            # The W3C Trace Context size of a trace id, as OTLP carries it: 16 bytes, in hex.
-            trace_id, parent_id = uuid4().hex, None
-        case _Open(trace_id=trace_id, span_id=parent_id) | Span(trace_id=trace_id, span_id=parent_id):
-            pass
-    opened = _Open(trace_id, _span_id(), parent_id, emit, dict.fromkeys(counts, 0))
+    if span is not None and span.parent_id != minted().parent_id:
+        # [LAW:no-silent-failure] a span minted under another unit would be written into a trace it is no part of.
+        raise LookupError(f"{event} was minted under another unit of work than the one open here")
+    opening = span or minted()
+    opened = _Open(opening.trace_id, opening.span_id, opening.parent_id, emit, dict.fromkeys(counts, 0))
     started_at, began = datetime.now(UTC), time.monotonic()
     token = _open.set(opened)
     outcome: Outcome = "ok"
@@ -115,8 +115,7 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
         # A task the body started copied this unit along and may outlive it: what it adds now would change an event
         # already emitted and never reach the log, so it is refused instead.
         opened.closed = True
-        duration_ms = round((time.monotonic() - began) * 1000, 3)
-        emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, started_at, duration_ms, outcome, error, trace, opened.counts, opened.facts))
+        emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, started_at, since(began), outcome, error, trace, opened.counts, opened.facts))
 
 
 @contextmanager
@@ -166,6 +165,21 @@ def here() -> Span:
     """The span of the unit of work open here, for a part of it that runs where the unit is not open."""
     opened = _current()
     return Span(opened.trace_id, opened.span_id, opened.parent_id)
+
+
+def minted() -> Span:
+    """The span a unit of work opened here would have: inside the unit open here, in its trace, or the root of a new one."""
+    match _open.get():
+        case None:
+            # The W3C Trace Context size of a trace id, as OTLP carries it: 16 bytes, in hex.
+            return Span(uuid4().hex, _span_id(), None)
+        case _Open(trace_id=trace_id, span_id=parent_id) | Span(trace_id=trace_id, span_id=parent_id):
+            return Span(trace_id, _span_id(), parent_id)
+
+
+def since(began: float) -> float:
+    """The milliseconds since `began`, a reading of time.monotonic(), as every event's duration is written."""
+    return round((time.monotonic() - began) * 1000, 3)
 
 
 def within(parent: Span) -> Span:

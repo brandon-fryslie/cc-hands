@@ -18,8 +18,10 @@ from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
 from hands.core.status import Stamp
+from hands.core.trace import Span
 from hands.sessions.audit import Record, Typing, TypingFailed
-from hands.sessions.wide import annotate, count, here, unit
+from hands.sessions import wide
+from hands.sessions.wide import annotate, continuing, count, here, minted, since, unit
 from hands.sessions.clock import stamp_now
 from hands.sessions.hookconfig import STOP_HOLD_SECONDS
 from hands.sessions.delta import Changes, NoChanges
@@ -42,7 +44,7 @@ class Performed:
     before its turn. `duration_ms` is how long it took, None for one never begun."""
 
     effect: Effect
-    outcome: Literal["ok", "failed", "cancelled", "not performed"]
+    outcome: wide.Outcome | Literal["not performed"]
     duration_ms: float | None
     error: str | None
 
@@ -114,28 +116,30 @@ class Sessions:
     def _performed(self, hearing: asyncio.Future[None]) -> None:
         self._hearing.discard(hearing)
         if not hearing.cancelled() and (error := hearing.exception()) is not None:
-            # [LAW:no-silent-failure] nothing awaits it to raise to: which effect failed is on its applied event already.
+            # [LAW:no-silent-failure] nothing awaits it to raise to, so it is said here; an effect that failed is named on
+            # its applied event as well.
             logger.error(f"performing what was heard failed: {type(error).__name__}: {error}")
 
     def _decided(self, event: Event) -> asyncio.Future[None]:
-        """The event reduced now, and its effects scheduled, under the event of its applying.
-
-        An event that changed nothing and called for nothing, such as a quiet tick, is no unit of work and leaves no event:
-        the ticker alone would leave one every second."""
+        """The event reduced now, and its effects scheduled, under the event of its applying."""
         before = self._registry
         self._registry, effects = reduce(before, event)
         performed = _unperformed(effects)
-        applying = self._scheduled(performed)
-        if not effects and self._registry == before:
-            return applying
-        # Started here, so in the context of whatever unit of work applied it: inside a hook post's, it is that post's child.
-        return asyncio.ensure_future(self._applied(event, performed, applying))
+        # Minted now, in the context of whatever unit of work applied it: inside a hook post's, it is that post's child.
+        applying = minted()
+        # [LAW:no-ambient-temporal-coupling] the effects are scheduled as they are decided, before the applying opens its
+        # unit, so they are started inside its span: what an effect opens, such as a repository mark, is its child.
+        with continuing(applying):
+            scheduled = self._scheduled(performed)
+        if _quiet(before, self._registry, effects):
+            return scheduled
+        return asyncio.ensure_future(self._applied(event, performed, scheduled, applying))
 
-    async def _applied(self, applied: Event | Answer, performed: list[Performed], performing: Awaitable[None]) -> None:
+    async def _applied(self, applied: Event | Answer, performed: list[Performed], performing: Awaitable[None], span: Span) -> None:
         # [LAW:nothing-unseen] one event for each event or answer the registry applies, open until every effect it
         # called for is performed: what was applied, each effect with its outcome and time, and the effects counted by
         # kind. [LAW:one-source-of-truth] it is the one record of them; no line beside it repeats an effect.
-        with unit("applied", self._record, counts=EFFECT_KINDS):
+        with unit("applied", self._record, counts=EFFECT_KINDS, span=span):
             annotate(applied=applied)
             try:
                 await performing
@@ -238,10 +242,12 @@ class Sessions:
 
     async def answer(self, request: RequestId, decision: Decision) -> Outcome:
         answered = Answer(request, decision)
-        self._registry, outcome, effects = answer(self._registry, answered)
-        performed = _unperformed(effects)
-        # Performed at once, in no session's order: the session is waiting on this very reply.
-        await self._applied(answered, performed, self._perform_all(performed, list(range(len(performed)))))
+        before = self._registry
+        self._registry, outcome, effects = answer(before, answered)
+        if not _quiet(before, self._registry, effects):
+            performed = _unperformed(effects)
+            # Performed at once, in no session's order: the session is waiting on this very reply.
+            await self._applied(answered, performed, self._perform_all(performed, list(range(len(performed)))), minted())
         return outcome
 
     async def draft(self, request: DraftRequest) -> DraftOutcome:
@@ -340,12 +346,12 @@ class Sessions:
             try:
                 await self._perform(effect)
             except asyncio.CancelledError:
-                performed[index] = Performed(effect, "cancelled", _since(began), None)
+                performed[index] = Performed(effect, "cancelled", since(began), None)
                 raise
             except Exception as error:
-                performed[index] = Performed(effect, "failed", _since(began), f"{type(error).__name__}: {error}")
+                performed[index] = Performed(effect, "failed", since(began), f"{type(error).__name__}: {error}")
                 raise
-            performed[index] = Performed(effect, "ok", _since(began), None)
+            performed[index] = Performed(effect, "ok", since(began), None)
 
     async def _perform(self, effect: Effect) -> None:
         match effect:
@@ -398,8 +404,11 @@ def _unperformed(effects: list[Effect]) -> list[Performed]:
     return [Performed(effect, "not performed", None, None) for effect in effects]
 
 
-def _since(began: float) -> float:
-    return round((time.monotonic() - began) * 1000, 3)
+def _quiet(before: Registry, after: Registry, effects: list[Effect]) -> bool:
+    """Whether what the registry applied changed nothing and called for nothing, as a quiet tick or an answer to a request
+    no session waits on: no unit of work, so no event, where the ticker alone would leave one every second. An answer that
+    did nothing is said on the event of the tool call that gave it."""
+    return not effects and after == before
 
 
 async def _all(performing: list[asyncio.Task[None]]) -> None:

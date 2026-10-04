@@ -1793,7 +1793,7 @@ thing that failed `[LAW:no-silent-failure]`:
    a line), open until its effects are performed, carrying what was applied, each
    effect as a `Performed` with its outcome and time (`Audit` records such as
    `Unregistered` among them), and the effects counted by kind; applied inside a hook
-   post, it is that post's child. One wrapper makes every tool call a
+   post, it is that post's child, and a unit an effect opens is its own. One wrapper makes every tool call a
    `tool.run` wide event with its arguments and the result the model was handed, and,
    called in a voice turn, the child of that turn's `tool.call` span; the context
    aggregators write each user turn as `Transcribed` and each reply as `Replied`;

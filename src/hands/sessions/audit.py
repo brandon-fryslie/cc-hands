@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from loguru import Message
 
 from hands.core.attention import Amount, Attention, Delivery, EndedRoute, Overlay, Route
-from hands.core.effects import AfterEnd, Allow, AuditRecord, Deny, Heard, Holding, Input, Type, Unclosed, Unmatched, Unregistered, Unsettled
+from hands.core.effects import Allow, Deny, Heard, Input, Type
 from hands.core.place import Place
 from hands.core.session import SessionId
 from hands.core.trace import Span
@@ -590,8 +590,7 @@ class Failure:
 
 
 Entry = (
-    AuditRecord
-    | Typing
+    Typing
     | TypingFailed
     | LLMChosen
     | SettingsRead
@@ -674,8 +673,7 @@ def level(entry: Entry) -> Level:
         case Primed(failed=failed) | SettingsEdited(refused=failed):
             return "info" if failed is None else "error"
         case (
-            Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
-            | Typing() | LLMChosen() | SettingsRead() | Exported() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
+            Typing() | LLMChosen() | SettingsRead() | Exported() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
             | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Yielded() | Cued() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
             | TurnsSummarised() | Restarting() | Rolled()

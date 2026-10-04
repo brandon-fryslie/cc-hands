@@ -14,10 +14,10 @@ from loguru import logger
 from pipecat.utils.errors import ErrorCategory
 
 from hands.brain.stage import HandsAsked, UserAsked
-from hands.core.effects import Audit, Deny, Effect, Holding, Reply, Unmatched, Unregistered, Withdraw
+from hands.core.effects import Audit, Compare, Deny, Effect, Holding, Reply, Snapshot, Summarise, Unmatched, Unregistered, Withdraw
 from hands.core.front import SessionInFront
-from hands.core.events import Abandoned, Closed, Joined, PermissionRequested, Prompted, Read, StatusReported, Stopped, Tick
-from hands.core.permissions import Answer, Permission
+from hands.core.events import Abandoned, Joined, PermissionRequested, Prompted, Read, StatusReported, Stopped, Tick
+from hands.core.permissions import Answer, NotWaiting, Permission
 from hands.core.session import Membership, PromptId, RequestId, SessionId, Told
 from hands.daemon import cli
 from hands.sessions import audit
@@ -29,6 +29,7 @@ from hands.sessions.audit import (
     Entry,
     Failure,
     Named,
+    Record,
     Replied,
     Transcribed,
     encoded,
@@ -39,6 +40,7 @@ from hands.sessions.audit import (
     segments,
     tail,
 )
+from hands.sessions.delta import NoChanges
 from hands.sessions.home import Home
 from hands.sessions.model_facts import ModelFailed
 from hands.sessions.wide import WideEvent, annotate, fail, unit
@@ -61,6 +63,28 @@ def member() -> Membership:
 def lines(log: Path) -> list[dict[str, Any]]:
     """Every line of the log, its segments read oldest first."""
     return [json.loads(line) for base in segments(log) for line in segment(log, base).read_text().splitlines()]
+
+
+class Marking(NoChanges):
+    """Marks each turn as a repository reader does, in a unit of work of its own, and reads nothing."""
+
+    def __init__(self, record: Record) -> None:
+        self._record = record
+
+    async def snapshot(self, session: SessionId, cwd: Path) -> None:
+        with unit("delta.mark", self._record):
+            pass
+
+
+class Hanging(NoChanges):
+    """Marks no turn before it is cut short, as a reader whose repository never answers."""
+
+    def __init__(self) -> None:
+        self.begun = asyncio.Event()
+
+    async def snapshot(self, session: SessionId, cwd: Path) -> None:
+        self.begun.set()
+        await asyncio.Event().wait()
 
 
 def applied(recorded: list[Entry]) -> list[WideEvent]:
@@ -521,13 +545,59 @@ async def test_an_answer_is_one_applied_event_with_the_reply_it_called_for() -> 
     assert [(type(effect).__name__, outcome) for effect, outcome in performed(event)] == [("Reply", "ok")]
 
 
+async def test_what_an_effect_opens_is_the_child_of_the_event_that_called_for_it_heard_or_applied_inside_a_unit() -> None:
+    recorded: list[Entry] = []
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append, changes=Marking(recorded.append))
+    await sessions.apply(Joined(member(), "startup"))
+    with unit("hook", recorded.append):
+        await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    sessions.hear(Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p2")))
+    await asyncio.wait_for(asyncio.gather(*sessions._hearing), 1.0)  # pyright: ignore[reportPrivateUsage]
+    hook = next(entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "hook")
+    marks = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "delta.mark"]
+    prompted = [event for event in applied(recorded) if isinstance(event.facts["applied"], Prompted)]
+    assert [(event.trace_id, event.parent_id) for event in prompted] == [(hook.trace_id, hook.span_id), (prompted[1].trace_id, None)]
+    assert [(mark.trace_id, mark.parent_id) for mark in marks] == [(event.trace_id, event.span_id) for event in prompted]
+
+
+async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_performed() -> None:
+    recorded: list[Entry] = []
+    hanging = Hanging()
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append, changes=hanging)
+    await sessions.apply(Joined(member(), "startup"))
+    prompts = [Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")), Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p2"))]
+    for prompted in prompts:
+        sessions.hear(prompted)
+    await asyncio.wait_for(hanging.begun.wait(), 1.0)
+    # What the daemon's loop does to every task still running as it stops.
+    running = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+    for task in running:
+        task.cancel()
+    await asyncio.gather(*running, return_exceptions=True)
+    first, second = [next(event for event in applied(recorded) if event.facts["applied"] == prompted) for prompted in prompts]
+    assert (first.outcome, performed(first)) == ("cancelled", [(Snapshot(member().id, member().cwd), "cancelled")])
+    # The second prompt ends the first's turn: its telling and its own mark wait behind the mark cut short, and never begin.
+    told = [Compare(member().id, again=False), Summarise(member().id, PromptId("p1"), None), Snapshot(member().id, member().cwd)]
+    assert (second.outcome, performed(second)) == ("cancelled", [(effect, "not performed") for effect in told])
+    assert [each.duration_ms is None for each in effects(first) + effects(second)] == [False, True, True, True]
+
+
+async def test_an_answer_to_a_request_nothing_waits_on_is_no_applied_event() -> None:
+    recorded: list[Entry] = []
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    await sessions.apply(Joined(member(), "startup"))
+    recorded.clear()
+    assert await sessions.answer(RequestId("gone"), Deny("no")) == NotWaiting(RequestId("gone"))
+    assert recorded == []
+
+
 async def test_a_stop_that_ends_no_turn_is_a_line_saying_so() -> None:
     recorded: list[Entry] = []
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
     await sessions.apply(stop)
-    assert (Audit(Unmatched(stop.session, stop.prompt)), "ok") not in performed(applied(recorded)[-1])
+    assert all((Audit(Unmatched(stop.session, stop.prompt)), "ok") not in performed(event) for event in applied(recorded))
     # Heard again once its turn was told, as an interrupted turn's late Stop is.
     await sessions.apply(stop)
     assert (Audit(Unmatched(stop.session, stop.prompt)), "ok") in performed(applied(recorded)[-1])
@@ -660,27 +730,31 @@ async def test_an_entry_the_log_cannot_encode_is_a_failure_line_and_the_daemon_c
 
 
 async def test_what_was_heard_where_nothing_waits_on_it_still_fails_loudly() -> None:
+    recorded: list[Entry] = []
     logged: list[str] = []
+    never = Prompted(SessionId("never-joined"), at=1.0, mode=None, prompt=PromptId("p1"))
+
+    def full(message: object) -> None:
+        if "Prompted for session never-joined" in str(message):
+            raise OSError("the terminal is gone")
+
+    # The one effect a test can make fail: an audit effect is performed as a line through loguru.
+    failing = logger.add(full, level="WARNING", catch=False)
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR")
-
-    def record(entry: Entry) -> None:
-        if isinstance(entry, WideEvent) and entry.event == "applied" and not isinstance(entry.facts["applied"], Joined):
-            raise RuntimeError("the log is full")
-
     try:
-        sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record)
-        await sessions.apply(Joined(member(), "startup"))
-        with pytest.raises(RuntimeError):
-            await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
-        sessions.hear(Closed(member().id, PromptId("p1"), "Done."))
+        sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+        sessions.hear(never)
 
         async def failed() -> None:
-            while "performing what was heard failed: RuntimeError: the log is full" not in logged:
+            while "performing what was heard failed: OSError: the terminal is gone" not in logged:
                 await asyncio.sleep(0)
 
         await asyncio.wait_for(failed(), 2.0)
     finally:
+        logger.remove(failing)
         logger.remove(sink)
+    [event] = applied(recorded)
+    assert (event.outcome, performed(event)) == ("failed", [(Audit(Unregistered(never)), "failed")])
 
 
 def test_a_brain_turn_that_failed_is_written_with_what_it_failed_of(tmp_path: Path) -> None:
