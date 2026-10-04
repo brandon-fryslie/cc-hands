@@ -414,7 +414,7 @@ async def _called(home: Home, caller: Caller) -> None:
         trusted = ssl.create_default_context(cafile=home.phone / "own.crt")
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=CALL_SECONDS)) as client, client.post(
             f"https://127.0.0.1:{PHONE_PORT}/offer",
-            json={"sdp": caller.peer.localDescription.sdp, "type": "offer", "rate": RATE},
+            json={"sdp": caller.peer.localDescription.sdp, "type": "offer", "rate": RATE, "page": "the smoke test", "claim": "take"},
             headers={"Authorization": f"Bearer {phone_key(home)}"},
             ssl=trusted,
         ) as answered:

@@ -48,21 +48,42 @@
 "use strict";
 // The phone's key travels in the fragment, which the browser never sends with the page's own request.
 const key = decodeURIComponent(location.hash.slice(1));
+// This page's own name, made as it opened: a call it makes again after a drop is one hands knows for this page's.
+const PAGE = crypto.randomUUID();
+// hands sends its voice every 20 ms, silence and all, for as long as the call is up: a call it has sent nothing over
+// for this long is gone, as hands takes a page gone that sends nothing for its QUIET_SECS.
+const QUIET_MS = 3000;
+// The waits between calls made again, doubling from the first to the last, which repeats while hands stays out of reach.
+const FIRST_RETRY_MS = 1000, LAST_RETRY_MS = 8000;
+// hands answers an offer within a second or two: one unanswered for this long went to an address the phone can no longer
+// reach, as when it moves off the LAN, and is a call dropped like any other.
+const OFFER_MS = 10000;
 const talk = document.getElementById("talk");
 const state = document.getElementById("state");
 const count = document.getElementById("count");
 const out = document.getElementById("out");
 
-// Every render quantum of the microphone goes to the page as it is captured; a "mark" sent in comes back out after
+// Every render quantum of the microphone goes to the page as it is captured; whatever is sent in comes back out after
 // every block captured before it, which is how a release is sent only once the words said before it have been.
 const TAP = `
 registerProcessor("tap", class extends AudioWorkletProcessor {
-  constructor() { super(); this.port.onmessage = () => this.port.postMessage("mark"); }
+  constructor() { super(); this.port.onmessage = ({data}) => this.port.postMessage(data); }
   process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice(0)); return true; }
 });`;
 
-let call = null;  // {pc, channel, audio, stream}
+// The microphone, opened at the first Connect pressed and kept across every call made again after it, which no press
+// starts: a browser opens the microphone for a press, not for a page calling on its own.
+let media = null;  // {stream, audio, tap}
+let call = null;  // {pc, channel, ended, press, release}
 let held = false;
+// Whether the page means to be on a call: from its first call's opening after Connect is pressed until hands gives the
+// phone to another page, the page cannot call at all, or it goes. While it does, a call that drops is made again; a
+// press whose call never opens is said, for the user there to press again.
+let wanted = false;
+let retry = null, tries = 0;
+// Each call's own number for what it sends through the tap to come back, so what a dropped call sent is never taken
+// for the next call's.
+let tags = 0;
 
 function say(text, bad = false) { state.textContent = text; state.classList.toggle("bad", bad); }
 
@@ -124,10 +145,7 @@ function pcm(blocks) {
   return samples.buffer;
 }
 
-async function connect() {
-  if (!key) { say("Open this page from the address `hands phone` prints.", true); return; }
-  talk.disabled = true;
-  say("Connecting…");
+async function open() {
   const stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
   const audio = new AudioContext();
   await audio.audioWorklet.addModule(URL.createObjectURL(new Blob([TAP], {type: "text/javascript"})));
@@ -136,7 +154,17 @@ async function connect() {
   mute.gain.value = 0;
   // Connected through to the output, silent, so the browser keeps pulling the microphone through the tap.
   audio.createMediaStreamSource(stream).connect(tap).connect(mute).connect(audio.destination);
+  // A microphone taken away (unplugged, or by another app) sends nothing again: no call made over it would be heard.
+  stream.getAudioTracks().forEach((track) => { track.onended = () => end("The microphone was taken away. Press Connect to open it again."); });
+  return {stream, audio, tap};
+}
 
+async function connect(claim) {
+  talk.disabled = true;
+  if (!media) media = await open();
+  const {audio, tap} = media;
+  // A page brought back from the background may find its microphone asleep: a call over it would send nothing.
+  await audio.resume();
   const pc = new RTCPeerConnection();
   pc.addTransceiver("audio", {direction: "recvonly"});
   pc.ontrack = (event) => { out.srcObject = new MediaStream([event.track]); out.play(); };
@@ -145,8 +173,9 @@ async function connect() {
   // Twenty milliseconds of the microphone a message.
   const per = Math.round(audio.sampleRate / 50);
   let pending = [], count = 0, marked = null;
+  const tag = ++tags;
   tap.port.onmessage = ({data}) => {
-    if (data === "mark") { flush(); marked(); return; }
+    if (typeof data === "number") { if (data === tag) { flush(); marked(); } return; }
     pending.push(data); count += data.length;
     if (count >= per) flush();
   };
@@ -157,52 +186,104 @@ async function connect() {
   // Each press and release goes out after the one before it has: a press made while a release still waits on its mark
   // is sent after that release, so hands hears them in the order the button made them, and one mark is out at a time.
   let sent = Promise.resolve();
-  call = {pc, channel, audio, stream, ended: false,
+  const made = call = {pc, channel, ended: false,
     press() { sent = sent.then(() => channel.send("press")); },
     // The release waits for the mark to come back through the tap: everything said before it has been sent first.
-    release() { sent = sent.then(() => new Promise((done) => { marked = () => { channel.send("release"); done(); }; tap.port.postMessage("mark"); })); },
+    release() { sent = sent.then(() => new Promise((done) => { marked = () => { channel.send("release"); done(); }; tap.port.postMessage(tag); })); },
   };
-  channel.onopen = () => { talk.disabled = false; talk.textContent = "Hold to talk"; say("Connected. Hold the button and speak."); };
+  channel.onopen = () => {
+    wanted = true; tries = 0;
+    talk.disabled = false; talk.textContent = "Hold to talk"; say("Connected. Hold the button and speak.");
+    watch(made);
+  };
   channel.onmessage = ({data}) => mark(data);
-  channel.onclose = () => hungUp("hands hung up.");
-  pc.onconnectionstatechange = () => { if (pc.connectionState === "failed") hungUp("The connection to hands failed."); };
+  channel.onclose = () => dropped(made, "hands hung up.");
+  pc.onconnectionstatechange = () => { if (pc.connectionState === "failed") dropped(made, "The connection to hands failed."); };
 
-  await pc.setLocalDescription(await pc.createOffer());
-  // Every candidate is gathered before the offer goes: hands answers once, with all of its own.
-  await new Promise((done) => {
-    if (pc.iceGatheringState === "complete") return done();
-    pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && done());
-  });
-  const answered = await fetch("offer", {
-    method: "POST",
-    headers: {"Authorization": `Bearer ${key}`, "Content-Type": "application/json"},
-    body: JSON.stringify({sdp: pc.localDescription.sdp, type: "offer", rate: audio.sampleRate}),
-  });
-  if (!answered.ok) throw new Error(await answered.text());
-  await pc.setRemoteDescription(await answered.json());
+  // From here on, what fails is this call, settled against it: never another call made since, as this one ended.
+  try {
+    await pc.setLocalDescription(await pc.createOffer());
+    // Every candidate is gathered before the offer goes: hands answers once, with all of its own.
+    await new Promise((done) => {
+      if (pc.iceGatheringState === "complete") return done();
+      pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && done());
+    });
+    const answered = await fetch("offer", {
+      method: "POST",
+      headers: {"Authorization": `Bearer ${key}`, "Content-Type": "application/json"},
+      body: JSON.stringify({sdp: pc.localDescription.sdp, type: "offer", rate: audio.sampleRate, page: PAGE, claim}),
+      signal: AbortSignal.timeout(OFFER_MS),
+    });
+    const body = await answered.text();
+    if (made.ended) return;
+    // hands declines a call made again while another page has the phone: that page is the one in the user's hand.
+    if (answered.status === 409) { end("Another page has hands' phone. Press Connect to take it here."); return; }
+    // A server error may pass, as hands is restarted; a refusal of the page's key or its offer never does.
+    if (answered.status >= 500) throw new Error(body);
+    if (!answered.ok) { end(`Could not connect: ${body}`); return; }
+    await pc.setRemoteDescription(JSON.parse(body));
+  } catch (error) {
+    dropped(made, `Could not reach hands: ${error.message}.`);
+  }
 }
 
-function hungUp(why) {
-  if (!call || call.ended) return;
-  call.ended = true;
-  call.stream.getTracks().forEach((t) => t.stop());
-  call.audio.close();
-  call.pc.close();
-  call = null; held = false;
+// A call is gone once hands has sent nothing over it for QUIET_MS: a page woken from sleep finds its call still
+// "connected", hands having hung it up while the phone could not hear it say so.
+async function watch(made) {
+  let received = null, heard = performance.now();
+  while (!made.ended) {
+    await new Promise((done) => setTimeout(done, 1000));
+    if (made.ended) return;
+    let now = 0, stats;
+    // Closed while the wait ran: the call is over, and so is its watch.
+    try { stats = await made.pc.getStats(); } catch { return; }
+    stats.forEach((report) => { if (report.type === "inbound-rtp" && report.kind === "audio") now = report.packetsReceived; });
+    if (now !== received) { received = now; heard = performance.now(); }
+    else if (performance.now() - heard > QUIET_MS) dropped(made, "hands went quiet.");
+  }
+}
+
+// What a call that ended leaves behind: the microphone, kept for the next, and nothing else.
+function hangUp() {
+  clearTimeout(retry); retry = null;
+  if (call) { call.ended = true; call.channel.close(); call.pc.close(); call = null; }
+  held = false;
   letGo();
   talk.classList.remove("held");
-  talk.disabled = false;
-  talk.textContent = "Connect";
+}
+
+// The call `made` dropped: made again, after a wait that doubles with every try, while the page means to be on one.
+function dropped(made, why) {
+  if (made !== call || made.ended) return;
+  if (!wanted) { end(`Could not connect: ${why}`); return; }
+  hangUp();
+  const wait = Math.min(FIRST_RETRY_MS * 2 ** tries, LAST_RETRY_MS);
+  tries += 1;
+  talk.disabled = true; talk.textContent = "Reconnecting";
+  say(`${why} Calling again in ${Math.round(wait / 1000)} s…`, true);
+  retry = setTimeout(() => { retry = null; place("resume"); }, wait);
+}
+
+// The page is done calling until Connect is pressed again: the microphone let go, and why said.
+function end(why) {
+  wanted = false; tries = 0;
+  hangUp();
+  if (media) { media.stream.getTracks().forEach((t) => t.stop()); media.audio.close(); media = null; }
+  talk.disabled = false; talk.textContent = "Connect";
   say(why, true);
 }
 
-async function down(event) {
+function place(claim) {
+  say(claim === "take" ? "Connecting…" : "Calling hands again…");
+  // What fails here failed before there was a call to make again: the microphone could not be opened or woken.
+  connect(claim).catch((error) => end(`Could not connect: ${error.message}`));
+}
+
+function down(event) {
   event.preventDefault();
-  if (!call) {
-    connect().catch((error) => { hungUp(""); talk.disabled = false; say(`Could not connect: ${error.message}`, true); });
-    return;
-  }
-  if (call.channel.readyState !== "open" || held) return;
+  if (!key) { say("Open this page from the address `hands phone` prints.", true); return; }
+  if (!call && !retry) { place("take"); return; }
+  if (!call || call.channel.readyState !== "open" || held) return;
   talk.setPointerCapture(event.pointerId);
   held = true;
   talk.classList.add("held");
@@ -224,9 +305,14 @@ talk.addEventListener("pointerdown", down);
 talk.addEventListener("pointerup", up);
 talk.addEventListener("pointercancel", up);
 talk.addEventListener("contextmenu", (event) => event.preventDefault());
-// A page put away mid-hold lets go of the button; one closed hangs up.
-document.addEventListener("visibilitychange", () => { if (document.hidden) up(); });
-addEventListener("pagehide", () => { if (call) { call.channel.close(); call.pc.close(); } });
+// A page put away mid-hold lets go of the button; brought back, a call that dropped while it was away is made again at
+// once rather than after the wait.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { up(); return; }
+  if (retry) { clearTimeout(retry); retry = null; place("resume"); }
+});
+// One closed hangs up.
+addEventListener("pagehide", () => end("This page hung up."));
 </script>
 </body>
 </html>
