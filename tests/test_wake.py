@@ -8,14 +8,17 @@ from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import aiohttp
 import pytest
+from aiohttp import web
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.sessions.wide import WideEvent, unit
 from hands.voice.engaged import Act, Begun, Engagement, Event, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, Woken, drive, untapped
 from hands.voice.hold import Move, Pressed, Released, Ripe
-from hands.voice.wake import SAMPLE_RATE, WAKE, WakeWord, listening, loaded, step
+from hands.voice.engaged import loaded as ears_loaded
+from hands.voice.wake import EMBEDDING, MELSPECTROGRAM, SAMPLE_RATE, WAKE, WORD, WakeWord, fetched, listening, loaded, step
 
 
 def acts(events: Sequence[Event]) -> list[Act]:
@@ -35,17 +38,17 @@ def acts(events: Sequence[Event]) -> list[Act]:
         # The wake word opens the turn; the pause after it ends nothing; what is asked starts, stops, and is judged, and
         # the verdict sends it.
         ([Woken(2.0), SpeechStopped(), SpeechStarting(), SpeechStarted(2.5), SpeechStopped(), TurnEnded("verdict")], ["listen", "arm", "start", "judge", "stop"]),
-        # Asked with no pause after the wake word: the silence after the whole of it ends the turn.
-        ([Woken(2.0), SpeechStopped(), TurnEnded("silence")], ["listen", "arm", "start", "stop"]),
+        # Before what is asked has started, a stop or silence ends nothing: it is the end of the wake word.
+        ([Woken(2.0), SpeechStopped(), TurnEnded("silence")], ["listen", "arm", "start"]),
         # The wake word said again inside a turn is part of the turn.
         ([Woken(2.0), SpeechStarted(2.5), Woken(3.0), SpeechStopped(), TurnEnded("verdict")], ["listen", "arm", "start", "judge", "stop"]),
         # Turns follow one another, each opened by the wake word.
-        ([Woken(2.0), TurnEnded("silence"), SpeechStarted(4.0), Woken(5.0), TurnEnded("silence")], ["listen", "arm", "start", "stop", "arm", "start", "stop"]),
+        ([Woken(2.0), SpeechStarted(2.5), TurnEnded("silence"), SpeechStarted(4.0), Woken(5.0), SpeechStarted(5.5), TurnEnded("silence")], ["listen", "arm", "start", "stop", "arm", "start", "stop"]),
         # A turn open past the limit is thrown away, whether or not what is asked has started; a limit set for an
         # earlier turn ends nothing.
         ([Woken(2.0), TurnTooLong(2.0)], ["listen", "arm", "start", "expire"]),
         ([Woken(2.0), SpeechStarted(2.5), TurnTooLong(2.0)], ["listen", "arm", "start", "expire"]),
-        ([Woken(2.0), TurnEnded("silence"), Woken(4.0), TurnTooLong(2.0)], ["listen", "arm", "start", "stop", "arm", "start"]),
+        ([Woken(2.0), SpeechStarted(2.5), TurnEnded("silence"), Woken(4.0), TurnTooLong(2.0)], ["listen", "arm", "start", "stop", "arm", "start"]),
         # The talk key does nothing.
         ([Pressed(1.0), Ripe(1.0), Released(), Woken(2.0)], ["listen", "arm", "start"]),
     ],
@@ -67,6 +70,9 @@ class ScriptedEars:
         return True, TurnMetricsData(processor="test", is_complete=True, probability=0.9, e2e_processing_time_ms=40.0)
 
     def clear(self) -> None:
+        pass
+
+    def afresh(self) -> None:
         pass
 
 
@@ -148,9 +154,17 @@ def said(text: str, at: Path) -> bytes:
     return bytes(SAMPLE_RATE * 2) + audio + bytes(SAMPLE_RATE * 2)
 
 
-async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(tmp_path: Path) -> None:
+@pytest.fixture
+async def models(pytestconfig: pytest.Config) -> Path:
+    """The wake word's models, fetched from openWakeWord's release once and kept in pytest's cache."""
+    directory = pytestconfig.cache.mkdir("wake-word") if pytestconfig.cache else pytest.fail("the cache provider is off")
+    await fetched(directory)
+    return directory
+
+
+async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(tmp_path: Path, models: Path) -> None:
     events: list[WideEvent] = []
-    async with loaded(SAMPLE_RATE, events.append) as word:
+    async with loaded(SAMPLE_RATE, models, events.append) as word:
         # The desk's microphone hands over 20 ms at a time.
         def wakes(audio: bytes) -> bool:
             word.reset()
@@ -164,6 +178,89 @@ async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(
 async def test_a_microphone_at_another_rate_is_refused_out_loud() -> None:
     events: list[WideEvent] = []
     with pytest.raises(ValueError, match="16000 Hz"):
-        async with loaded(48_000, events.append):
+        async with loaded(48_000, Path("unread"), events.append):
             pass
     assert [(event.event, event.outcome) for event in events] == [("trigger.wake_word_loaded", "failed")]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Hey Jarvis what is the status of the build",
+        "Hey Jarvis, what is the status of the build?",
+        "Hey Jarvis. [[slnc 1500]] What is the status of the build?",
+        "Hey Jarvis stop",
+    ],
+)
+async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_breath_or_after_a_pause(text: str, tmp_path: Path, models: Path) -> None:
+    """Silero, Smart Turn, and the wake word's model, real, on macOS's own voice: Smart Turn's verdict on what was asked
+    sends the turn, not the silence after it, and not the pause after the wake word."""
+    audio = said(text, tmp_path / "asked.wav") + bytes(SAMPLE_RATE * 2 * 4)
+    made: list[Move] = []
+    events: list[WideEvent] = []
+
+    @asynccontextmanager
+    async def overheard() -> AsyncGenerator[AsyncIterator[bytes]]:
+        async def buffers() -> AsyncIterator[bytes]:
+            for start in range(0, len(audio), 640):
+                yield audio[start : start + 640]
+            await asyncio.Event().wait()
+
+        yield buffers()
+
+    async def on_move(move: Move) -> None:
+        made.append(move)
+
+    async with ears_loaded(SAMPLE_RATE, events.append) as ears, loaded(SAMPLE_RATE, models, events.append) as word:
+        driving = asyncio.create_task(drive(WAKE, untapped, overheard, ears, listening(word, lambda: False, events.append), on_move, events.append))
+        async with asyncio.timeout(60.0):
+            while "stop" not in made:
+                await asyncio.sleep(0.01)
+        driving.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await driving
+    assert made == ["listen", "arm", "start", "stop", "deafen"]
+    [awake] = [event for event in events if event.event == "trigger.awake"]
+    assert dict(awake.counts)["ended_on_silence"] == 0
+    assert [event.facts["complete"] for event in events if event.event == "trigger.judged"] == [True]
+
+
+async def test_the_models_are_fetched_whole_or_not_at_all_and_never_twice(tmp_path: Path) -> None:
+    served: list[str] = []
+
+    async def model(request: web.Request) -> web.StreamResponse:
+        name = request.match_info["name"]
+        served.append(name)
+        match name:
+            case "embedding_model.onnx":
+                raise web.HTTPNotFound()
+            case "hey_jarvis_v0.1.onnx":
+                # The connection drops with the body half sent.
+                response = web.StreamResponse(headers={"Content-Length": "100"})
+                await response.prepare(request)
+                await response.write(b"half")
+                request.transport.close() if request.transport else None
+                return response
+            case _:
+                return web.Response(body=b"features")
+
+    app = web.Application()
+    app.router.add_get("/{name}", model)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = runner.addresses[0][1]
+    try:
+        with pytest.raises(aiohttp.ClientResponseError):
+            await fetched(tmp_path, f"http://127.0.0.1:{port}")
+        assert sorted(path.name for path in tmp_path.iterdir()) == [MELSPECTROGRAM]
+        (tmp_path / EMBEDDING).write_bytes(b"features")
+        with pytest.raises(aiohttp.ClientPayloadError):
+            await fetched(tmp_path, f"http://127.0.0.1:{port}")
+        assert not (tmp_path / WORD).exists()
+        (tmp_path / WORD).write_bytes(b"word")
+        assert await fetched(tmp_path, f"http://127.0.0.1:{port}") == ()
+        assert served == [MELSPECTROGRAM, EMBEDDING, WORD]
+    finally:
+        await runner.cleanup()

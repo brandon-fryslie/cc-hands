@@ -169,7 +169,7 @@ def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
             return Talking(at), ("start",)
         case Arming(), SpeechStopped():
             return Listening(), ("disarm",)
-        case Woke() | Talking(), SpeechStopped() | TurnEnded() | TurnTooLong():
+        case Talking(), SpeechStopped() | TurnEnded() | TurnTooLong():
             return in_turn(phase, heard)
         case _:
             return phase, ()
@@ -211,6 +211,7 @@ class Ears(Protocol):
     def heard(self, audio: bytes, speech: bool) -> bool: ...
     async def judge(self) -> tuple[bool, TurnMetricsData | None]: ...
     def clear(self) -> None: ...
+    def afresh(self) -> None: ...
 
 
 class Models:
@@ -236,6 +237,12 @@ class Models:
         return state == EndOfTurnState.COMPLETE, metrics if isinstance(metrics, TurnMetricsData) else None
 
     def clear(self) -> None:
+        self._turn.clear()
+
+    def afresh(self) -> None:
+        """Hear on as if nothing came before: Silero is quiet until sure of speech again, and Smart Turn holds none."""
+        # Setting the detector's parameters puts it back to quiet, with no speech counted toward starting or stopping.
+        self._vad.set_params(self._vad.params)
         self._turn.clear()
 
     async def close(self) -> None:
@@ -356,6 +363,12 @@ async def drive(
                         match each, acts:
                             case TurnEnded(by="silence"), ("stop",):
                                 count(ended_on_silence=1)
+                            # [LAW:types-are-the-program] the wake word's own speech is no part of what is asked:
+                            # heard afresh from where it opened the turn, what is asked starts as any speech does, and
+                            # Smart Turn judges it alone.
+                            case Woken(), ("arm", "start"):
+                                ears.afresh()
+                                detected = VADState.QUIET
                             case _:
                                 pass
                         owed.extend(acts)

@@ -1647,9 +1647,14 @@ half-duplex: while hands speaks, the wake-word detector hears silence in place o
 room, because an open mic in a room with speakers hears the pipeline's own voice. The
 pause after "Hey Jarvis," is no end of the turn: Smart Turn judges the vocative
 complete, so a stop goes to it only once speech has started again after the wake word.
-Asked in one breath, with no pause, the turn ends on the silence after it. The edge
-shares engaged conversation's driver and models (`hands.voice.engaged.drive`); the
-desk listens for as long as it is in use, so the wake word is in the turn's audio.
+The driver hears afresh from the wake (`Ears.afresh`): Silero is quiet until sure of speech
+again and Smart Turn holds none, so what is asked starts as any speech does, after a
+pause or in the same breath, and Smart Turn judges it alone. The edge shares engaged
+conversation's driver and models (`hands.voice.engaged.drive`); the desk listens for as
+long as it is in use, so the wake word is in the turn's audio for Whisper. The model's
+files are fetched into the home's `wake-word` directory by `set_trigger` before the switch
+(`hands.voice.trigger.readied`): a fetch that fails refuses the switch out loud and the
+trigger in use stays.
 
 **The trigger is the desk's edge, one choice switched by voice** (`hands.voice.trigger`).
 The phone's button is there for every call; at the desk, the edge that drives the gate is

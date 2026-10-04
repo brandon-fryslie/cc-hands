@@ -48,6 +48,11 @@ class Home:
         return self.root / "voice"
 
     @property
+    def wake_word(self) -> Path:
+        """The wake word's models, fetched by the daemon as the wake word is first switched to (hands.voice.wake)."""
+        return self.root / "wake-word"
+
+    @property
     def focus(self) -> Path:
         """The session the user is talking to when they name none, written by the daemon alone; absent for none."""
         return self.root / "focus"

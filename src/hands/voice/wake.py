@@ -11,17 +11,26 @@ import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from pathlib import Path
 from typing import cast
 
+import aiohttp
 import numpy as np
 from openwakeword.model import Model
-from openwakeword.utils import download_models
 
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice.engaged import Act, Begun, Conversation, Disengaged, Engagement, Event, Listening, SpeechStarted, SpeechStopped, Talking, TurnEnded, TurnTooLong, Woke, Woken, in_turn, released
 
-# The pretrained model's name in openWakeWord: the name it is fetched and loaded by, and its score is given under.
-MODEL = "hey_jarvis"
+# openWakeWord's release, and the files hands runs the wake word from, in ONNX: the two models that turn audio into the
+# features every wake word model hears, and the "hey jarvis" model itself.
+RELEASE = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1"
+MELSPECTROGRAM = "melspectrogram.onnx"
+EMBEDDING = "embedding_model.onnx"
+WORD = "hey_jarvis_v0.1.onnx"
+# The model's score is given under its file's name.
+MODEL = Path(WORD).stem
+# Long enough for the three files, about 3 MB, on a slow connection; a stalled one fails the switch rather than hang it.
+FETCH_SECONDS = 60
 # openWakeWord's own default: its pretrained models are tuned to score a wake word above it and little else.
 THRESHOLD = 0.5
 # The only rate openWakeWord's models hear.
@@ -37,11 +46,11 @@ def step(engagement: Engagement, event: Event) -> tuple[Engagement, tuple[Act, .
         case Listening(), Woken(at=at):
             return replace(engagement, phase=Woke(at)), ("arm", "start")
         # [LAW:types-are-the-program] the pause after "Hey Jarvis," is no end of the turn: Smart Turn judges "Hey
-        # Jarvis" complete, so only once what is asked has started does a stop go to it. With no pause, the silence after
-        # the whole of it ends the turn.
+        # Jarvis" complete, so only once what is asked has started does a stop go to it. The driver hears afresh from
+        # the wake, so what is asked starts as any speech does, asked after a pause or in the same breath.
         case Woke(since=since), SpeechStarted():
             return replace(engagement, phase=Talking(since)), ()
-        case Woke() as turn, TurnEnded() | TurnTooLong():
+        case Woke() as turn, TurnTooLong():
             phase, acts = in_turn(turn, event)
             return replace(engagement, phase=phase), acts
         case Talking() as turn, SpeechStopped() | TurnEnded() | TurnTooLong():
@@ -55,14 +64,29 @@ def step(engagement: Engagement, event: Event) -> tuple[Engagement, tuple[Act, .
 WAKE = Conversation("trigger.awake", step, released, counts=("woken", "muted"))
 
 
-class WakeWord:
-    """openWakeWord's "hey jarvis" model, run locally on the CPU with ONNX Runtime, on 16 kHz mono audio."""
+async def fetched(models: Path, release: str = RELEASE) -> tuple[str, ...]:
+    """The wake word's models in `models`, each fetched from `release` unless already there, and whole or not there at
+    all: the names of those fetched."""
+    missing = tuple(name for name in (MELSPECTROGRAM, EMBEDDING, WORD) if not (models / name).exists())
+    models.mkdir(parents=True, exist_ok=True)
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=FETCH_SECONDS), raise_for_status=True) as http:
+        for name in missing:
+            async with http.get(f"{release}/{name}") as response:
+                partial = models / f"{name}.partial"
+                partial.write_bytes(await response.read())
+            # [LAW:one-source-of-truth] a file under its own name is the whole of it, so one there is never fetched again.
+            partial.replace(models / name)
+    return missing
 
-    def __init__(self) -> None:
-        # Fetched into openWakeWord's own models directory the first time, where `Model` looks for it by name; a model
-        # already there is not fetched again.
-        download_models(model_names=[MODEL])
-        self._model = Model(wakeword_models=[MODEL], inference_framework="onnx")
+
+class WakeWord:
+    """openWakeWord's "hey jarvis" model, run locally on the CPU with ONNX Runtime, on 16 kHz mono audio, from the files
+    `fetched` put in `models`."""
+
+    def __init__(self, models: Path) -> None:
+        self._model = Model(
+            wakeword_models=[str(models / WORD)], melspec_model_path=str(models / MELSPECTROGRAM), embedding_model_path=str(models / EMBEDDING), inference_framework="onnx"
+        )
 
     def score(self, audio: bytes) -> float:
         """How sure the model is that the wake word has just been said, from 0 to 1, with `audio` heard last."""
@@ -76,12 +100,12 @@ class WakeWord:
 
 
 @asynccontextmanager
-async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGenerator[WakeWord]:
-    """The wake word's model, fetched and loaded off the loop as its own unit of work."""
+async def loaded(sample_rate: int, models: Path, emit: Callable[[WideEvent], None]) -> AsyncGenerator[WakeWord]:
+    """The wake word's model, loaded from `models` off the loop as its own unit of work."""
     with unit("trigger.wake_word_loaded", emit):
         if sample_rate != SAMPLE_RATE:
             raise ValueError(f"the wake word is heard at {SAMPLE_RATE} Hz, and the desk's microphone runs at {sample_rate} Hz")
-        word = await asyncio.to_thread(WakeWord)
+        word = await asyncio.to_thread(WakeWord, models)
     yield word
 
 
@@ -95,7 +119,8 @@ def listening(word: WakeWord, speaking: Callable[[], bool], emit: Callable[[Wide
         score = await asyncio.to_thread(word.score, bytes(len(audio)) if muted else audio)
         if score < THRESHOLD:
             return False
-        word.reset()
+        # Off the loop as scoring is: forgetting refills the model with seconds of features.
+        await asyncio.to_thread(word.reset)
         count(woken=1)
         # [LAW:nothing-unseen] each waking is its own event, with how sure the model was.
         with unit("trigger.woken", emit):

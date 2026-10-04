@@ -6,9 +6,11 @@ built later is one more value here, one more arm wherever a trigger is matched, 
 
 import asyncio
 from collections.abc import Callable, Coroutine
+from pathlib import Path
 from typing import Literal
 
 from hands.core.place import Place
+from hands.voice import wake
 
 # Right Shift held alone for each turn (`hands.voice.hold`); or held once to engage, after which the user's voice opens
 # each turn and end-of-turn detection closes it (`hands.voice.engaged`); or the wake word said, with no key at all
@@ -60,6 +62,16 @@ class Triggers:
     @property
     def in_use(self) -> Trigger:
         return self._in_use
+
+
+async def readied(trigger: Trigger, wake_word: Path) -> tuple[str, ...]:
+    """What `trigger`'s edge loads from disk, fetched before it is put in use, so a switch that cannot be made is refused
+    as it is asked for and the edge loads only what is there: the names of the files fetched."""
+    match trigger:
+        case "wake word":
+            return await wake.fetched(wake_word)
+        case "held key" | "engaged conversation":
+            return ()
 
 
 def described(trigger: Trigger) -> str:

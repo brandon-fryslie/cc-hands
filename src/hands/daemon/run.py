@@ -492,7 +492,7 @@ async def converse(
                     await drive_engaged(tapped, voice.audio.input().overheard, ears, lambda move: at_desk(move, "engaged conversation"), record)
             case "wake word":
                 # As engaged conversation's, with the wake word's model beside them; the talk key is not read.
-                async with loaded(voice.audio.input().sample_rate, record) as ears, wake.loaded(voice.audio.input().sample_rate, record) as word:
+                async with loaded(voice.audio.input().sample_rate, record) as ears, wake.loaded(voice.audio.input().sample_rate, home.wake_word, record) as word:
                     woken = wake.listening(word, lambda: voice.audio.output().hands_speaking, record)
                     await drive(WAKE, untapped, voice.audio.input().overheard, ears, woken, lambda move: at_desk(move, "wake word"), record)
 
