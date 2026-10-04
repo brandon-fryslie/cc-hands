@@ -5,8 +5,8 @@ description = "Hands-free control of Claude Code: a voice intermediary in one da
 requires-python = ">=3.12"
 dependencies = [
     "pipecat-ai[anthropic,local,pocket-tts]>=1.9.0,<2",
+    "mlx-whisper>=0.4.3,<0.5",  # hands.voice.transcription calls it, and its tokenizer, directly
     "aiohttp>=3.11",  # ClientConnectorDNSError
-    "tiktoken>=0.7",
     "loguru>=0.7",
     "pyobjc-framework-cocoa>=11",
     "pyobjc-framework-coreaudio>=11",

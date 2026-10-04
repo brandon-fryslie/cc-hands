@@ -60,34 +60,32 @@ is not, what does it; it exits 0 only when every step is done.
    `~/.hands/config.toml`, then `hands login`. The other backends are under
    [Shape](#shape).
 
-7. [LowTalker](https://github.com/brandon-fryslie/low-talker)'s network build, which
-   transcribes what you say, with Serve Transcription switched on in its menu.
-
-8. The Input Monitoring grant for the terminal app hands runs in, so it hears the talk
+7. The Input Monitoring grant for the terminal app hands runs in, so it hears the talk
    key from other apps: System Settings > Privacy & Security > Input Monitoring, then
    restart that app. `hands run` asks macOS to show the prompt when the grant is missing.
 
-9. hands itself, in that terminal; then hold Right Shift in any app to talk:
+8. hands itself, in that terminal; then hold Right Shift in any app to talk. Its first
+   start fetches Whisper's model, about 1.6 GB, from the Hugging Face hub:
 
    ```
    hands run
    hands check        # in another terminal: every line ok
    ```
 
-10. The smoke test, in another terminal while hands runs. It calls hands as the phone's
-    page does and takes three spoken turns in macOS's voice: it asks hands to have a
-    session it starts in `~/.hands/smoke` name the one file there, sends the draft, and
-    asks what the session said. Each part of the pipeline gets an `ok` line, and the run
-    stops at the first part that did not do its share and names it; it exits 0 only when
-    every part did. It runs a model turn in that session, on your Claude Code login.
+9. The smoke test, in another terminal while hands runs. It calls hands as the phone's
+   page does and takes three spoken turns in macOS's voice: it asks hands to have a
+   session it starts in `~/.hands/smoke` name the one file there, sends the draft, and
+   asks what the session said. Each part of the pipeline gets an `ok` line, and the run
+   stops at the first part that did not do its share and names it; it exits 0 only when
+   every part did. It runs a model turn in that session, on your Claude Code login.
 
-    ```
-    hands smoke
-    ```
+   ```
+   hands smoke
+   ```
 
-    The first time, Claude Code may ask whether to trust `~/.hands/smoke`; the run then
-    stops at `joined` and shows that question. Run `claude` there once, accept, and run
-    the smoke test again.
+   The first time, Claude Code may ask whether to trust `~/.hands/smoke`; the run then
+   stops at `joined` and shows that question. Run `claude` there once, accept, and run
+   the smoke test again.
 
 ## The intermediary
 
@@ -140,7 +138,7 @@ One Python process, `hands`, run in a terminal, with a Pipecat voice pipeline on
 side and the Claude Code plumbing on the other, meeting through a pure core.
 
 ```
-mic ──► gate ──► Whisper (LowTalker) ──► LLM ──► pocket-tts ──► speakers
+mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts ──► speakers
                                     │   ▲
                          tool calls │   │ hook events, as frames
                                     ▼   │
@@ -163,9 +161,6 @@ naming a backend whose key or login it lacks, is said in `hands log`, and hands 
 backend = "claude"            # "anthropic" (the default), "openai", or "claude"
 model = "claude-sonnet-5"     # another model, for any backend
 url = "https://..."           # another server, for anthropic and openai
-
-[transcription]
-url = "http://127.0.0.1:8610/v1"   # LowTalker's transcription server, which each hold is uploaded to
 
 [telemetry]
 collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address
@@ -231,7 +226,10 @@ which git ignores, and `uv run --env-file .env` puts it in the environment; uv s
 the file is not there. The gate is push-to-talk: the key is the voice activity detector and the microphone mute,
 so the turn boundary is the key and the pipeline can never transcribe itself. Measured
 on 2026-09-12, voice to voice with a local Qwen3-30B-A3B since retired: 1.4 s from key release to first
-audio on a plain turn, 4.3 s on a turn with a tool call.
+audio on a plain turn, 4.3 s on a turn with a tool call. Measured on 2026-10-04 with the brain, the same six
+spoken turns: Whisper on MLX in hands has the transcript 298 to 329 ms after the release, and first audio
+1.3 to 1.75 s on a plain turn; LowTalker's Whisper, the same large-v3-turbo on the Neural Engine, took 613 to
+724 ms, first audio 1.5 to 2.0 s, by upload and by its Realtime socket alike, so hands keeps its own.
 
 ## Installing the hooks
 
@@ -355,8 +353,7 @@ uv run python evals/intermediary.py    # conversations through the intermediary'
 and says it is done or what does it: the native `claude` on this `PATH`; PortAudio;
 `hands` on this `PATH` being this hands, since Claude Code runs it for the plugin;
 `claude` on this `PATH` being hands' shim; the plugin, installed and enabled; the
-backend's key or login; the transcription server transcribing a quarter second of
-silence; this terminal's Input Monitoring grant; hands running; each running session hands
+backend's key or login; this terminal's Input Monitoring grant; hands running; each running session hands
 knows of that cannot be typed into; and each running session hands has no record of, such
 as one started before the plugin was installed; both by its directory and pid. `hands run`
 says the same lines as it starts, the backend as it reached it. An up daemon is not a

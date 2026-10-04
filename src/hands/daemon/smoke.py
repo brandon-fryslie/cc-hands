@@ -10,12 +10,11 @@ could have read it.
 
 Each stage is read off what the pipeline itself leaves: the membership the session's hooks write, the audit lines the
 daemon writes as it hears a hold, types into a session, and takes a session's Stop, and the speech the call carries
-back, transcribed by the server hands transcribes with. What hands said is judged from that speech alone, whichever
+back, transcribed by the Whisper hands transcribes with. What hands said is judged from that speech alone, whichever
 backend said it and whether in its own words or a tool's readback: it is what the user would have heard.
 """
 
 import asyncio
-import io
 import json
 import os
 import random
@@ -38,7 +37,6 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 
 from hands.core.session import Membership, SessionId
-from hands.daemon.config import load
 from hands.sessions import audit, heartbeat
 from hands.sessions.child import run
 from hands.sessions.home import Home
@@ -85,12 +83,11 @@ JOIN_SECONDS = 60.0
 CALL_SECONDS = 15.0
 TURN_SECONDS = 60.0
 FINISH_SECONDS = 180.0
-TRANSCRIBE_SECONDS = 30.0
 # How often the records are read again while a stage is waited on.
 POLL_SECONDS = 0.2
 
 # The call's audio, both ways: 16-bit mono at the rate `say` is asked for and Whisper hears at, in the page's 20 ms frames.
-RATE = 16000
+RATE = transcription.RATE
 FRAME_SECS = 0.02
 FRAME_BYTES = round(RATE * FRAME_SECS) * 2
 # A frame of hands' speech is voiced above this RMS; the silence it sends between utterances is all zeros.
@@ -190,17 +187,6 @@ def as_from_a_terminal(environment: Mapping[str, str], home: Home) -> dict[str, 
     return {**{name: value for name, value in untapped(environment).items() if name not in SESSION_GIVEN}, "HANDS_HOME": str(home.root)}
 
 
-def as_wav(audio: bytes) -> bytes:
-    """16-bit mono audio at RATE, as the WAV file a transcription server is sent."""
-    written = io.BytesIO()
-    with wave.open(written, "wb") as file:
-        file.setnchannels(1)
-        file.setsampwidth(2)
-        file.setframerate(RATE)
-        file.writeframes(audio)
-    return written.getvalue()
-
-
 @dataclass
 class Ear:
     """The audio hands sends the call, as it arrives: each frame at RATE, mono, with when it came and whether it is voiced."""
@@ -298,7 +284,6 @@ class Run:
 
     home: Home
     word: str
-    transcription: str
     offset: int
     lines: list[Line] = field(default_factory=list[Line])
     began: float = field(default_factory=time.monotonic)
@@ -335,14 +320,7 @@ async def smoke(home: Home, environment: Mapping[str, str]) -> int:
     folder = (home.root / FOLDER).resolve()
     annotate(word=word, folder=folder)
     _, offset = audit.tail(home.audit, 0)
-    try:
-        # The server hands transcribes with, as the settings hands runs on name it.
-        smoked = Run(home, word, load(home).config.transcription, offset)
-    except Rejected as error:
-        annotate(failed_at="up", why=f"hands cannot read its settings: {error}")
-        print(f"FAILED up: hands cannot read its settings: {error}", flush=True)
-        return 1
-    annotate(transcription=smoked.transcription)
+    smoked = Run(home, word, offset)
     try:
         await _stages(smoked, folder, environment)
     except NotReached as missed:
@@ -366,6 +344,10 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
             smoked.reached("up", heartbeat.describe(verdict, datetime.now(UTC)))
         case _:
             raise NotReached("up", f"{heartbeat.describe(verdict, datetime.now(UTC))}; start it with `hands run`")
+    # The test's own ear, no part of hands, loaded before the session joins: its failure is the test's, raised, never named
+    # as a stage, and no stage's time goes on the load.
+    annotate(model=transcription.MODEL)
+    await asyncio.to_thread(transcription.load)
     claude = shutil.which("claude", path=environment.get("PATH"))
     if claude is None:
         raise NotReached("joined", "there is no `claude` on PATH")
@@ -477,7 +459,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
             if last is None or last in transcribed_to:
                 return None
             transcribed_to.append(last)
-            heard[:] = [await _transcribed(stage, smoked.transcription, caller.ear.since(released))]
+            heard[:] = [await _transcribed(caller.ear.since(released))]
             return f"hands said {heard[0]!r}" if holds in heard[0].casefold() else None
 
         return await until(stage, TURN_SECONDS, found, lambda: f"what hands said back never named {holds!r}: it said {heard[0]!r}" if heard else "hands said nothing back on the call")
@@ -510,12 +492,9 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
     smoked.reached("told", await told_back("told", released, smoked.word))
 
 
-async def _transcribed(stage: Stage, url: str, audio: bytes) -> str:
-    """`audio`, as the server hands transcribes with hears it."""
-    try:
-        heard = await transcription.segments(url, as_wav(audio), "smoke.wav", None, TRANSCRIBE_SECONDS)
-    except (transcription.TranscriptionFailed, aiohttp.ClientError, TimeoutError, OSError) as error:
-        raise NotReached(stage, f"what hands said back could not be transcribed at {url}: {error}") from error
+async def _transcribed(audio: bytes) -> str:
+    """`audio`, as the Whisper hands transcribes with hears it, unprimed."""
+    heard = await asyncio.to_thread(transcription.segments, audio, None)
     return " ".join(segment.text for segment in heard).strip()
 
 

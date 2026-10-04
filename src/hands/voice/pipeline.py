@@ -1,8 +1,8 @@
 """Assemble the voice pipeline from a configuration.
 
-Building it loads pocket-tts's local model, so a built voice answers its
-first turn as fast as its tenth; Whisper is LowTalker's, resident there. Nothing
-here opens a microphone or calls an API until the returned worker is run. `VoiceConfig` is
+Building it loads the two local models, Whisper's and pocket-tts's, so a
+built voice answers its first turn as fast as its tenth; nothing here opens a
+microphone or calls an API until the returned worker is run. `VoiceConfig` is
 the whole variability of the pipeline as data.
 """
 
@@ -65,8 +65,6 @@ class VoiceConfig:
     """Everything that varies between two runs of the pipeline."""
 
     llm: LLMBackend
-    # The base of the server each hold is transcribed by.
-    transcription: str
     voice: voices.Voice
     max_reply_tokens: int = 300
 
@@ -190,7 +188,7 @@ class Voice:
 def build_voice(
     config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, noting: Sequence[FrameProcessor], key: PushToTalk, player: Player, floor: Floor, refocus: Refocus, prompt: Callable[[], Awaitable[str | None]], record: Record
 ) -> Voice:
-    """Wire mic, push-to-talk, Whisper as LowTalker serves it, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers."""
+    """Wire mic, push-to-talk, Whisper on MLX, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and Whisper reads it off each
     # frame to push the VAD frames the turn strategies act on, so the user
@@ -201,7 +199,7 @@ def build_voice(
     # [LAW:one-source-of-truth] the phone's audio is at the pipeline's own rates, as the desk's devices are opened at.
     phone = Phone(key, heard_rate=params.audio_in_sample_rate, played_rate=params.audio_out_sample_rate, record=record)
     transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key, phone, record)
-    stt = Whisper(url=config.transcription, prompt=prompt, record=record)
+    stt = Whisper(prompt=prompt, record=record)
     # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
     # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
     # own reply alike, so this is the one place all of them meet before they are heard.

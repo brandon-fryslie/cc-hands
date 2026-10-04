@@ -6,9 +6,6 @@ run runs starts the run again, on the file as edited.
     model = "claude-sonnet-5"    # any backend's
     url = "https://..."          # "anthropic" and "openai" only: another server that speaks the API
 
-    [transcription]
-    url = "http://127.0.0.1:8610/v1"   # LowTalker's transcription server, which each hold is uploaded to
-
     [telemetry]
     collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address; none by default
 
@@ -34,8 +31,6 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 
-# Where LowTalker's network build serves transcription, on loopback.
-TRANSCRIPTION_URL = "http://127.0.0.1:8610/v1"
 # How late an edit to the file is heard.
 EDIT_SECONDS = 1.0
 
@@ -75,12 +70,10 @@ type LLM = Anthropic | OpenAI | Claude
 
 @dataclass(frozen=True)
 class Config:
-    """`transcription` is the base of the server each hold is uploaded to, which /audio/transcriptions is appended to.
-    `collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
+    """`collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
     but the audit log."""
 
     llm: LLM = Anthropic()
-    transcription: str = TRANSCRIPTION_URL
     collector: str | None = None
 
 
@@ -177,16 +170,10 @@ def parse(text: str) -> Config:
         top = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise Rejected(f"not TOML: {error}") from error
-    _known(top, "the file", ("llm", "transcription", "telemetry"))
-    transcription = _table(top, "transcription")
-    _known(transcription, "[transcription]", ("url",))
+    _known(top, "the file", ("llm", "telemetry"))
     telemetry = _table(top, "telemetry")
     _known(telemetry, "[telemetry]", ("collector",))
-    return Config(llm=_llm(_table(top, "llm")), transcription=_transcription(transcription), collector=_collector(telemetry))
-
-
-def _transcription(table: Mapping[str, object]) -> str:
-    return _base(_text(table, "[transcription]", "url", TRANSCRIPTION_URL), "[transcription] url", "a transcription server", TRANSCRIPTION_URL, "/audio/transcriptions")
+    return Config(llm=_llm(_table(top, "llm")), collector=_collector(telemetry))
 
 
 def _collector(table: Mapping[str, object]) -> str | None:

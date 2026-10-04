@@ -1,8 +1,6 @@
 """`hands check`: each piece hands needs, found or named as missing, through the same edges a user's machine has."""
 
 import contextlib
-import http.server
-import threading
 import fcntl
 import json
 import os
@@ -17,7 +15,6 @@ from collections.abc import Callable, Generator, Iterator, Sequence
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -32,7 +29,6 @@ from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.terminals import Terminal, attended, terminal_processes
 from hands.sessions.wrapper import shim_script
-from hands.voice import transcription as transcribing
 from hands.voice.backends import ClaudeCodeBackend
 
 
@@ -576,22 +572,22 @@ def test_a_hands_that_cannot_say_its_version_is_unknown(root: Path) -> None:
 # The backend
 
 
-def keyed(home: Home, transcription: str = "http://127.0.0.1:9/v1") -> None:
+def keyed(home: Home) -> None:
     home.root.mkdir(parents=True, exist_ok=True)
-    home.config.write_text(f'[llm]\nbackend = "openai"\n\n[transcription]\nurl = "{transcription}"\n')
+    home.config.write_text('[llm]\nbackend = "openai"\n')
 
 
 def test_a_backend_with_its_key_is_ready_and_never_says_the_key(root: Path) -> None:
     home = Home(root / "home")
     keyed(home)
-    found, _ = readiness.configured(home, {"OPENAI_API_KEY": "sk-secret"})
+    found = readiness.configured(home, {"OPENAI_API_KEY": "sk-secret"})
     assert isinstance(found, Ready) and "with its key" in found.said and "sk-secret" not in found.said
 
 
 def test_a_backend_without_its_key_is_missing_and_names_it(root: Path) -> None:
     home = Home(root / "home")
     keyed(home)
-    found, _ = readiness.configured(home, {})
+    found = readiness.configured(home, {})
     assert isinstance(found, Missing) and "OPENAI_API_KEY is not set" in found.said
 
 
@@ -599,16 +595,14 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
     home = Home(root / "home")
     home.root.mkdir(parents=True)
     home.config.write_text("[llm\n")
-    reached, heard = readiness.configured(home, {})
+    reached = readiness.configured(home, {})
     assert isinstance(reached, Missing) and str(home.config) in reached.said
-    # Where the server is was never read: the step is not known missing, and is not said twice.
-    assert heard == Unknown("which server transcribes is in the settings hands cannot read")
 
 
 def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path) -> None:
     home = Home(root / "home")
     keyed(home)
-    found, _ = readiness.configured(home, {"OPENAI_API_KEY": "k", "HANDS_DEBUG": "1"})
+    found = readiness.configured(home, {"OPENAI_API_KEY": "k", "HANDS_DEBUG": "1"})
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
@@ -620,112 +614,13 @@ def test_a_backend_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pyte
         raise PermissionError("claude is not executable")
 
     monkeypatch.setattr(readiness, "resolve", unspawnable)
-    found, _ = readiness.configured(home, {})
+    found = readiness.configured(home, {})
     assert isinstance(found, Unknown) and "claude is not executable" in found.said
 
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:
     found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account="brain@example.com"))
     assert found == Ready("the brain is logged in as brain@example.com, and reaches claude-sonnet-5")
-
-
-# Transcription
-
-
-class Transcriber(http.server.BaseHTTPRequestHandler):
-    """A transcription server answering every upload with the server's status and text."""
-
-    def do_POST(self) -> None:
-        server = cast(Answering, self.server)
-        length = int(self.headers["Content-Length"])
-        server.uploads.append((self.path, self.rfile.read(length)))
-        self.send_response(server.status)
-        self.end_headers()
-        self.wfile.write(server.text.encode())
-
-    def log_message(self, format: str, *args: object) -> None:
-        pass
-
-
-class Answering(http.server.ThreadingHTTPServer):
-    def __init__(self, status: int, text: str) -> None:
-        super().__init__(("127.0.0.1", 0), Transcriber)
-        self.status = status
-        self.text = text
-        self.uploads: list[tuple[str, bytes]] = []
-
-    @property
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self.server_address[1]}/v1"
-
-
-@contextlib.contextmanager
-def serving(status: int = 200, text: str = '{"text": "", "segments": []}') -> Generator[Answering]:
-    server = Answering(status, text)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-def test_a_server_that_transcribes_silence_is_ready_and_was_sent_a_wav() -> None:
-    with serving() as server:
-        assert readiness.transcription(server.url) == Ready(f"the transcription server at {server.url} transcribes a hold")
-    [(path, body)] = server.uploads
-    assert path == "/v1/audio/transcriptions" and b"RIFF" in body and b'name="model"' in body
-
-
-def test_nothing_listening_is_missing_and_names_lowtalker() -> None:
-    found = readiness.transcription("http://127.0.0.1:9/v1")
-    assert isinstance(found, Missing) and "low-talker" in found.said and "Serve Transcription" in found.said
-
-
-def test_an_address_that_does_not_resolve_is_missing_and_points_at_the_config_not_lowtalker() -> None:
-    found = readiness.transcription("http://lowtalker.invalid:8610/v1")
-    assert isinstance(found, Missing) and "cannot be reached" in found.said and "config.toml" in found.said and "Serve Transcription" not in found.said
-
-
-def test_a_server_still_loading_its_model_is_missing_and_says_so() -> None:
-    with serving(503, "model not ready") as server:
-        found = readiness.transcription(server.url)
-    assert isinstance(found, Missing) and "answered 503: " in found.said and "model not ready" in found.said and "menu says the model is ready" in found.said
-
-
-def test_a_server_that_refuses_a_hold_is_missing_and_says_its_answer() -> None:
-    with serving(404, "no such route") as server:
-        found = readiness.transcription(server.url)
-    assert isinstance(found, Missing) and "answered 404" in found.said and "no such route" in found.said
-
-
-def test_a_server_failing_on_its_own_side_is_unknown_not_missing() -> None:
-    # A 500 is a hold LowTalker could not decode, not an address that is no transcription server's.
-    with serving(500, "decode failed") as server:
-        found = readiness.transcription(server.url)
-    assert isinstance(found, Unknown) and "answered 500" in found.said and "config.toml" not in found.said
-
-
-def test_a_server_busy_with_four_holds_is_unknown_not_missing() -> None:
-    # LowTalker refuses a fifth upload at once; the next may well be transcribed.
-    with serving(429, "busy") as server:
-        found = readiness.transcription(server.url)
-    assert isinstance(found, Unknown) and "answered 429" in found.said and "busy" in found.said
-
-
-def test_a_server_answering_with_no_segments_is_missing_as_every_hold_would_fail() -> None:
-    with serving(200, '{"text": ""}') as server:
-        found = readiness.transcription(server.url)
-    assert isinstance(found, Missing) and "not verbose_json" in found.said
-
-
-def test_a_server_that_does_not_answer_in_time_is_unknown_not_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Accepts the connection and never answers.
-    listening = socket.create_server(("127.0.0.1", 0))
-    monkeypatch.setattr(transcribing, "PROBE_SECONDS", 0.2)
-    with listening:
-        found = readiness.transcription(f"http://127.0.0.1:{listening.getsockname()[1]}/v1")
-    assert isinstance(found, Unknown) and "did not answer within 0.2 s" in found.said
 
 
 # hands running
@@ -759,22 +654,16 @@ def test_a_heartbeat_hands_cannot_read_is_unknown(root: Path) -> None:
 # hands check
 
 
-STEPS = ["claude", "portaudio", "hands", "shim", "plugin", "backend", "transcription", "grant", "running", "sessions"]
+STEPS = ["claude", "portaudio", "hands", "shim", "plugin", "backend", "grant", "running", "sessions"]
 
 
-@pytest.fixture
-def lowtalker() -> Iterator[Answering]:
-    with serving() as server:
-        yield server
-
-
-def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: object, transcriber: Answering) -> Home:
+def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: object) -> Home:
     """A home on which every step of the README is done, with `plugins` listed by its claude."""
     home = Home(root / "home")
     home.bin.mkdir(parents=True)
     shutil.copy2(fritter, home.bin / "fritter")
     executable(home.shim, shim_script(home.bin / "fritter", home.wire))
-    keyed(home, transcriber.url)
+    keyed(home)
     beating(home)
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     hands_printing(root, f"hands {version('hands')}")
@@ -795,8 +684,8 @@ def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
     return {step: line.split()[0] for step, line in zip(STEPS, lines)}
 
 
-def test_every_step_done_is_ok_and_exits_0(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], lowtalker: Answering) -> None:
-    home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)], lowtalker)
+def test_every_step_done_is_ok_and_exits_0(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     assert main(["--home", str(home.root), "check"]) == 0
     assert marks(capsys) == dict.fromkeys(STEPS, "ok")
 
@@ -829,19 +718,15 @@ def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> No
     home.status.unlink()
 
 
-def not_transcribing(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
-    keyed(home)
-
-
 @pytest.mark.parametrize(
     ("undo", "step"),
-    [(no_hands, "hands"), (unshimmed, "shim"), (no_plugin, "plugin"), (no_key, "backend"), (not_transcribing, "transcription"), (ungranted, "grant"), (not_running, "running")],
-    ids=["hands", "shim", "plugin", "backend", "transcription", "grant", "running"],
+    [(no_hands, "hands"), (unshimmed, "shim"), (no_plugin, "plugin"), (no_key, "backend"), (ungranted, "grant"), (not_running, "running")],
+    ids=["hands", "shim", "plugin", "backend", "grant", "running"],
 )
 def test_a_home_missing_one_step_names_that_step_and_exits_1(
-    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], lowtalker: Answering, undo: Undo, step: str
+    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], undo: Undo, step: str
 ) -> None:
-    home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)], lowtalker)
+    home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     undo(root, home, monkeypatch)
     assert main(["--home", str(home.root), "check"]) == 1
     assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), step: "missing"}
@@ -851,9 +736,9 @@ def test_a_home_missing_one_step_names_that_step_and_exits_1(
 
 
 def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
-    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], lowtalker: Answering
+    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    home = set_up(root, fritter, monkeypatch, "unreadable", lowtalker)
+    home = set_up(root, fritter, monkeypatch, "unreadable")
     assert main(["--home", str(home.root), "check"]) == 2
     assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), "plugin": "unknown"}
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
