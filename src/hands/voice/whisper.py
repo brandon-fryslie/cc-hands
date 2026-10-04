@@ -5,6 +5,7 @@ done with each."""
 import asyncio
 import io
 import math
+import threading
 import wave
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -27,6 +28,7 @@ from pipecat.utils.tracing.service_decorators import traced_stt  # pyright: igno
 from hands.sessions.audit import HoldHeard, Levels, Record, Unsaid
 from hands.sessions.wide import annotate, unit
 from hands.core.place import Place
+from hands.threads import SerialThread
 from hands.voice import transcription
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved
@@ -43,6 +45,11 @@ _REPEATING = 2.4
 # at -2.8, which the compression ratio (0.68) does not catch; "okay" said quietly at -25 dBFS read
 # -0.89 to -1.11 (hands-dictation-d7i).
 _GUESSED = -1.5
+
+# The longest a hold's transcription may take before it fails. The model takes about a third of a second a hold, and the
+# longest hold the key keeps open (TURN_LIMIT_SECONDS) is a few seconds' work, so a minute is a transcription that is
+# not coming back.
+TRANSCRIBING_SECONDS = 60.0
 
 
 class Whisper(SegmentedSTTService):
@@ -62,6 +69,9 @@ class Whisper(SegmentedSTTService):
         # The vocabulary each hold is transcribed with, read as it is: see hands.voice.vocabulary.
         self._prompt = prompt
         self._record = record
+        # The one thread the model transcribes on: a transcription given up on (TRANSCRIBING_SECONDS) is still running,
+        # and the next must not run beside it.
+        self._model = SerialThread("Whisper")
         # The key the last frame of microphone audio was captured under.
         self._captured: Key = "up"
         # Whose microphone the last frame came from, and how many turns the gate had sent and thrown away by it.
@@ -156,12 +166,13 @@ class Whisper(SegmentedSTTService):
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         hold, levels = self._transcribing.popleft()
+        # [LAW:no-silent-failure] a transcription that never returns would hold its turn open for ever, since nothing but
+        # Whisper resolving its holds ends one: it fails instead. A model that is running cannot be stopped, so the next
+        # hold's transcription waits behind it, on the one thread, inside its own bound.
+        bound = asyncio.timeout(TRANSCRIBING_SECONDS)
         try:
-            heard = await self._heard(hold, levels, audio)
-        except Exception as error:
-            # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from Whisper aloud.
-            yield ErrorFrame(error=f"Whisper could not transcribe hold {hold}: {type(error).__name__}: {error}", exception=error)
-        else:
+            async with bound:
+                heard = await self._heard(hold, levels, audio)
             # Recorded, so "I spoke and nothing happened" can be looked into.
             self._record(heard)
             match heard.said:
@@ -171,6 +182,10 @@ class Whisper(SegmentedSTTService):
                 case said:
                     await self._handle_transcription(said, True, LANGUAGE)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's tracing decorator is untyped)
                     yield TranscriptionFrame(said, self._user_id, time_now_iso8601(), LANGUAGE)
+        except Exception as error:
+            # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from Whisper aloud.
+            why = f"nothing after {TRANSCRIBING_SECONDS:g} s" if bound.expired() else f"{type(error).__name__}: {error}"
+            yield ErrorFrame(error=f"Whisper could not transcribe hold {hold}: {why}", exception=error)
         # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
         yield TurnResolved(hold=hold)
 
@@ -181,11 +196,15 @@ class Whisper(SegmentedSTTService):
         at: that is what a primed Whisper makes of noise. A hold with nothing said in it comes back with no segment.
         """
         prompt = await self._prompt()
+        samples = _samples(audio)
+        # Set once nobody waits for this hold's transcription any more: the model is not run on it if it has yet to be.
+        given_up = threading.Event()
         await self.start_processing_metrics()
         try:
             # Off the loop: the model runs for a third of a second a hold, and the speaker and the key go on meanwhile.
-            scored = await asyncio.to_thread(transcription.segments, _samples(audio), prompt)
+            scored = await self._model.run(lambda: [] if given_up.is_set() else transcription.segments(samples, prompt))
         finally:
+            given_up.set()
             await self.stop_processing_metrics()
         said: list[str] = []
         dropped: list[Unsaid] = []

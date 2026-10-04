@@ -8,6 +8,7 @@ than hoped for. Whisper, the user aggregator, and the stop strategy are the ones
 
 import asyncio
 import struct
+import threading
 import wave
 from pathlib import Path
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
@@ -37,7 +38,8 @@ from hands.core.front import FrontUnread, InFront, SessionInFront
 from hands.core.place import Place
 from hands.voice.backends import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.beside import Noting
-from hands.sessions.audit import Entry, HoldHeard, Levels
+from hands.sessions.audit import Entry, HoldHeard, Levels, Unsaid
+from hands.voice import transcription
 from hands.sessions.wide import Fact
 from hands.voice import pipeline as built
 from hands.voice.conversation import cue_receipt
@@ -55,6 +57,7 @@ from hands.core.session import Held, Membership, Permission, RequestId, Running,
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Pushed, Unprompted
 from hands.voice.turnstop import TurnOpened, TurnResolved
+from hands.voice import whisper
 from hands.voice.whisper import Whisper
 from test_llm import Shape, anthropic_stream, openai_stream
 from test_narrator import heard
@@ -62,7 +65,10 @@ from hands.voice import voices
 
 CLOSING = "that is all"
 
-# Well inside the 5 s after which Pipecat ends a turn on its own, so a turn left open fails here instead of ending late.
+# Whisper's own transcribing of a hold, which the rig stands in for.
+WHISPER_HEARD: object = vars(Whisper)["_heard"]
+
+# Nothing but the key's holds ends a turn, so a turn left open fails here instead of ending late.
 PATIENCE_SECS = 2.0
 
 
@@ -454,6 +460,17 @@ async def test_a_silent_hold_in_a_turn_that_has_words_is_not_told_as_no_words(ri
     assert rig.told == ["released", "transcript", "released"]
 
 
+async def test_a_hold_whisper_is_slow_to_transcribe_is_sent_with_its_own_turn(rig: Rig) -> None:
+    await held(rig, 1)
+    # Longer than the 5 s after which Pipecat's user aggregator, left to its default, ends a turn on its own.
+    await asyncio.sleep(5.6)
+    assert rig.out.stopped == 0
+    await rig.texts.put("what time is it")
+    await rig.until(lambda: rig.out.sent == ["what time is it"])
+    assert rig.out.stopped == 1
+    assert rig.told == ["released", "transcript"]
+
+
 async def test_a_hold_whisper_could_not_transcribe_is_told_as_failed_and_not_as_no_words(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     async def refused(_self: Whisper, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
         raise ConnectionError("LowTalker is not serving")
@@ -462,6 +479,42 @@ async def test_a_hold_whisper_could_not_transcribe_is_told_as_failed_and_not_as_
     await held(rig, 1)
     await rig.until(lambda: rig.out.stopped == 1)
     assert rig.told == ["released", "failed"]
+
+
+async def test_a_hold_whisper_never_finishes_transcribing_fails_and_ends_its_turn(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def hung(_self: Whisper, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
+        await asyncio.Event().wait()
+        raise AssertionError("a transcription that never returns returned")
+
+    monkeypatch.setattr(Whisper, "_heard", hung)
+    monkeypatch.setattr(whisper, "TRANSCRIBING_SECONDS", 0.2)
+    await held(rig, 1)
+    await rig.until(lambda: rig.out.stopped == 1)
+    assert rig.told == ["released", "failed"]
+
+
+async def test_a_transcription_given_up_on_is_not_run_beside_the_next(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    returns, begun = threading.Event(), list[None]()
+
+    def stuck(samples: bytes, prompt: str | None) -> list[Unsaid]:
+        begun.append(None)
+        returns.wait()
+        return []
+
+    # Whisper as it is, down to the model: the rig's stand-in is put aside.
+    monkeypatch.setattr(Whisper, "_heard", WHISPER_HEARD)
+    monkeypatch.setattr(transcription, "segments", stuck)
+    monkeypatch.setattr(whisper, "TRANSCRIBING_SECONDS", 0.2)
+    try:
+        await held(rig, 1)
+        await rig.until(lambda: rig.out.stopped == 1)
+        await held(rig, 2)
+        await rig.until(lambda: rig.out.stopped == 2)
+        assert rig.told == ["released", "failed", "released", "failed"]
+        # The second hold's turn failed in its own time without the model being run on it beside the first.
+        assert len(begun) == 1
+    finally:
+        returns.set()
 
 
 API, WEB = SessionId("api"), SessionId("web")
