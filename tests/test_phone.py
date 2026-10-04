@@ -26,7 +26,7 @@ from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
 from hands.voice.mark import Mark
-from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Phone, wire
+from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Phone, kind
 from hands.voice.transcript import Cut, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -192,7 +192,7 @@ async def test_what_hands_says_is_played_on_the_phone(call: Call) -> None:
 
 
 # Every line of the transcript there is, as the page is told it.
-LINES: list[Line] = [Heard("Is the parser fixed?"), Saying("It is."), Spoken(), Saying("Its tests pass."), Cut()]
+LINES: list[Line] = [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 12.5), Cut()]
 
 
 async def test_the_page_is_told_each_mark_of_its_turn_and_each_line_of_the_transcript_and_the_call_counts_them(call: Call) -> None:
@@ -203,9 +203,9 @@ async def test_the_page_is_told_each_mark_of_its_turn_and_each_line_of_the_trans
     await call.until(lambda: len(call.page.told) == len(get_args(Mark)) + len(LINES))
     assert [json.loads(cast(str, told)) for told in call.page.told] == [{"kind": "mark", "mark": mark} for mark in get_args(Mark)] + [
         {"kind": "heard", "text": "Is the parser fixed?"},
-        {"kind": "saying", "text": "It is."},
+        {"kind": "saying", "text": "It is.", "chars_per_sec": 15.0},
         {"kind": "spoken"},
-        {"kind": "saying", "text": "Its tests pass."},
+        {"kind": "saying", "text": "Its tests pass.", "chars_per_sec": 12.5},
         {"kind": "cut"},
     ]
     await call.phone.hang_up("stopped")
@@ -229,7 +229,7 @@ def test_the_page_knows_every_mark_hands_tells_it() -> None:
 def test_the_page_knows_every_line_of_the_transcript_hands_tells_it() -> None:
     page = resources.files("hands.voice").joinpath("phone.html").read_text()
     table = page[page.index("const LINES = {") : page.index("\n};", page.index("const LINES = {"))]
-    assert [kind for line in LINES if f'"{(kind := json.loads(wire(line))["kind"])}": ' not in table] == []
+    assert [kind(line) for line in get_args(Line) if f'"{kind(line)}": ' not in table] == []
 
 
 async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was_playing(call: Call) -> None:

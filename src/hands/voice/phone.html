@@ -154,11 +154,9 @@ function mark(name) {
 // Lets go of the hold shown: no mark told from here is of it, and its count stops.
 function letGo() { clearInterval(ticking); ticking = null; hold = null; count.textContent = ""; }
 
-// hands' speaking rate, in characters a millisecond: measured off each sentence played to its end, and a typical
-// voice's until the first has been.
-let rate = 0.015;
-// The sentence of hands' playing: its words, where each ends in its text, and when it started; null between sentences.
-let saying = null;  // {words, ends, started, frame}
+// The sentence of hands' playing: its words, where each ends in its text, when it started, and the rate hands speaks
+// at, in characters a millisecond; null between sentences.
+let saying = null;  // {words, ends, started, rate, frame}
 
 // Writes a line at the transcript's end, keeping its end in view if it was.
 function write(line) {
@@ -168,9 +166,10 @@ function write(line) {
 }
 
 // [LAW:one-source-of-truth] pocket-tts gives no word timings, so a word is reached when as many characters of its
-// sentence have been said, at the rate measured, as come before it; the last waits there until hands says it is done.
+// sentence have been said, at the rate hands measured, as come before it; the last waits there until hands says it is
+// done.
 function sweep() {
-  const reached = (performance.now() - saying.started) * rate;
+  const reached = (performance.now() - saying.started) * saying.rate;
   const now = Math.min(saying.ends.filter((end) => end <= reached).length, saying.words.length - 1);
   saying.words.forEach((word, i) => { word.className = i < now ? "" : i === now ? "now" : "ahead"; });
   saying.frame = requestAnimationFrame(sweep);
@@ -184,6 +183,9 @@ function stop(left) {
   saying = null;
 }
 
+// What of a sentence stopped short was not heard: the words not yet reached.
+const cutOff = (word) => word.className === "ahead" ? "cut" : "";
+
 // What each line of the transcript does to the page (hands.voice.transcript).
 const LINES = {
   "heard": ({text}) => {
@@ -192,7 +194,7 @@ const LINES = {
     line.textContent = text;
     write(line);
   },
-  "saying": ({text}) => {
+  "saying": ({text, chars_per_sec}) => {
     stop(() => "");
     const line = document.createElement("p");
     let end = 0;
@@ -206,17 +208,11 @@ const LINES = {
       words.push(word); end += part.length; ends.push(end);
     }
     write(line);
-    saying = {words, ends, started: performance.now(), frame: null};
+    saying = {words, ends, started: performance.now(), rate: chars_per_sec / 1000, frame: null};
     sweep();
   },
-  "spoken": () => {
-    if (saying === null) return;
-    // The rate is learned from the sentences played whole, half from this one, so a slow or fast voice is caught up to.
-    const took = performance.now() - saying.started;
-    if (took > 0) rate = (rate + saying.ends.at(-1) / took) / 2;
-    stop(() => "");
-  },
-  "cut": () => stop((word) => word.className === "ahead" ? "cut" : ""),
+  "spoken": () => stop(() => ""),
+  "cut": () => stop(cutOff),
 };
 
 // Everything hands tells the page, by its kind: a mark of the hold shown, or a line of the transcript.
@@ -339,6 +335,8 @@ function hangUp() {
   if (call) { call.ended = true; call.channel.close(); call.pc.close(); call = null; }
   held = false;
   letGo();
+  // The rest of what was playing never reaches this page.
+  stop(cutOff);
   talk.classList.remove("held");
 }
 

@@ -1824,13 +1824,14 @@ The channel also carries the transcript (`hands.voice.transcript`), which the pa
 keeps under a button, hidden until asked for. Every message on it is one JSON
 object whose `kind` says which it is: a `mark`, or a line. The user's words are
 the line Whisper heard of each hold. Each of hands' sentences is told twice: as the
-output transport lets its text go, which is when the audio ahead of it has played,
-and as it lets the sentence's end go, or a barge-in cuts it off. pocket-tts reports
-no word timings, so the page sweeps the highlight through a sentence's words at a
-speaking rate it measures from the sentences it has seen played to their end, holds
-on the last word until hands says the sentence is done, and strikes through the
-words a barge-in cut off. The `phone.call` event counts the lines told beside the
-marks.
+output transport writes its first audio, and as it lets the sentence's end go, or a
+barge-in cuts it off. Its text alone is no start: the first sentence of a reply is
+let go before its audio is made. pocket-tts reports no word timings, so hands
+measures its speaking rate off each sentence played to its end and tells it with
+the next; the page sweeps the highlight through a sentence's words at that rate,
+holds on the last word until hands says the sentence is done, and strikes through
+the words a barge-in, or the call ending, cut off. The `phone.call` event counts the
+lines told beside the marks.
 
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts

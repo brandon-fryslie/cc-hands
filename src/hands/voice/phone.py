@@ -26,7 +26,7 @@ import fractions
 import json
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Literal
 
 import numpy as np
@@ -41,7 +41,7 @@ from hands.sessions.wide import Begun, Fact, continuing, ended, since
 from hands.voice.hold import Move
 from hands.voice.mark import Mark
 from hands.voice.ptt import KeyedAudio, PushToTalk
-from hands.voice.transcript import Cut, Heard, Line, Saying, Spoken
+from hands.voice.transcript import Line
 
 # The length of each frame sent to the phone: Opus's own 20 ms.
 FRAME_SECS = 0.02
@@ -119,19 +119,18 @@ def call_ended(record: Record, began: Begun, remote: str, asked: Asked | None, e
             ended("phone.call", record, began, None, failure, **facts, ended=end)
 
 
+def kind(line: type[Line]) -> str:
+    """The word the page knows a line of the transcript by: its class's name."""
+    return line.__name__.lower()
+
+
 def wire(told: Mark | Line) -> str:
     """[LAW:single-enforcer] what the page is told, as it reads it: one JSON object, its `kind` saying which."""
     match told:
-        case Heard(text=text):
-            return json.dumps({"kind": "heard", "text": text})
-        case Saying(text=text):
-            return json.dumps({"kind": "saying", "text": text})
-        case Spoken():
-            return json.dumps({"kind": "spoken"})
-        case Cut():
-            return json.dumps({"kind": "cut"})
-        case mark:
-            return json.dumps({"kind": "mark", "mark": mark})
+        case str():
+            return json.dumps({"kind": "mark", "mark": told})
+        case line:
+            return json.dumps({"kind": kind(type(line)), **asdict(line)})
 
 
 class Outbound(MediaStreamTrack):
@@ -424,10 +423,10 @@ class Phone:
             case _Call(channel=RTCDataChannel(readyState="open") as channel) as call:
                 channel.send(wire(told))
                 match told:
-                    case Heard() | Saying() | Spoken() | Cut():
-                        call.lines += 1
-                    case _:
+                    case str():
                         call.told += 1
+                    case _:
+                        call.lines += 1
             case _:
                 pass
 

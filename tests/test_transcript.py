@@ -1,6 +1,6 @@
 """The transcript: each line read off the pipeline once, from the processor that makes it."""
 
-from pipecat.frames.frames import InterruptionFrame, TranscriptionFrame
+from pipecat.frames.frames import AggregatedTextFrame, InterruptionFrame, OutputAudioRawFrame, TranscriptionFrame
 from pipecat.processors.filters.identity_filter import IdentityFilter
 
 from conftest import running
@@ -9,20 +9,37 @@ from test_playback import Heard as Reached
 from test_playback import ended, spoken
 
 
+def audio() -> OutputAudioRawFrame:
+    return OutputAudioRawFrame(bytes(640), 16000, 1)
+
+
 async def test_each_line_is_told_once_as_whisper_hears_it_and_as_the_speaker_plays_it() -> None:
     told: list[Line] = []
+    # The clock reads one second for each time the observer asks it: "It is." plays its 6 characters in one second.
+    seconds = iter(range(100))
     # Whisper, a processor between it and the TTS service, the output transport, and what follows it: every frame
     # crosses each boundary, and each line is still told once.
     stt, between, output, reached = IdentityFilter(), IdentityFilter(), IdentityFilter(), Reached()
-    async with running([stt, between, output, reached], [TranscriptObserver(stt, output, told.append)]) as run:
+    observer = TranscriptObserver(stt, output, told.append, clock=lambda: next(seconds))
+    async with running([stt, between, output, reached], [observer]) as run:
         for frame in (
             TranscriptionFrame("Is the parser fixed?", "me", "now"),
+            # The first sentence of a reply is let go before its audio is made: it starts with its sound.
             spoken("It is."),
+            audio(),
+            audio(),
             ended("It is."),
             spoken("Its tests pass."),
+            audio(),
+            # Let go in the moment of the barge-in, its audio never written.
+            spoken("All of them."),
         ):
             await run.worker.queue_frame(frame)
-        await reached.until(2, type(spoken("")))
+        # Every sentence let go, and the one ended, which is a kind of AggregatedTextFrame too.
+        await reached.until(4, AggregatedTextFrame)
         await run.worker.queue_frame(InterruptionFrame())
         await reached.until(1, InterruptionFrame)
-    assert told == [Heard("Is the parser fixed?"), Saying("It is."), Spoken(), Saying("Its tests pass."), Cut()]
+        # After the barge-in, sound of the next reply, ahead of any sentence of it.
+        await run.worker.queue_frame(audio())
+        await reached.until(4, OutputAudioRawFrame)
+    assert told == [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 10.5), Cut()]
