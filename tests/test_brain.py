@@ -27,7 +27,7 @@ from hands.core.permissions import heard
 from hands.core.session import Permission
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, level, segment
-from conftest import onboard
+from conftest import events, onboard
 from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
@@ -185,11 +185,6 @@ def unasked(asked: Asked) -> None:
 
 def launch(tmp: Path, fritter: Path = Path("/nonexistent/fritter")) -> Launch:
     return Launch(station(tmp), "brain@example.com", "You are hands.", '{"mcpServers": {}}', SessionId("b1"), fritter)
-
-
-def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
-    """The wide events named `name`, in the order they were emitted."""
-    return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == name]
 
 
 def typed(tmp: Path) -> list[list[str]]:

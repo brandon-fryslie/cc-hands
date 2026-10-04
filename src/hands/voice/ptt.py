@@ -24,7 +24,8 @@ from typing import Literal
 from pipecat.frames.frames import InputAudioRawFrame
 
 from hands.core.place import Modality, Place, modality_at
-from hands.sessions.audit import Moved, Record
+from hands.sessions.audit import Record
+from hands.sessions.wide import begun, ended
 from hands.voice.hold import Move
 from hands.voice.trigger import Edge, place_of
 
@@ -175,11 +176,13 @@ class PushToTalk:
 
     def _become(self, gate: Gate, by: Literal["turn", "call"]) -> None:
         before, self._gate = self._gate, gate
-        # [LAW:nothing-unseen] the one writer of the gate says each move of the place, whichever edge made it.
+        # [LAW:nothing-unseen] the one writer of the gate writes each move of the place as one `place.moved` event,
+        # whichever edge made it: from where to where, what made it, and whether a hold open at the place it left was
+        # thrown away.
         if gate.place != before.place:
             # [LAW:one-source-of-truth] the way the user talks sets the modality, so a move sets it in the same write.
             self._modality = modality_at(gate.place)
-            self._record(Moved(to=gate.place, by=by, dropped=gate.dropped != before.dropped))
+            ended("place.moved", self._record, begun(), None, before=before.place, after=gate.place, by=by, dropped=gate.dropped != before.dropped)
 
     @property
     def gate(self) -> Gate:

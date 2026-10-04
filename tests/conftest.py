@@ -21,10 +21,16 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
-from hands.sessions.audit import SettingsEdited
+from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.marketplace import render
+from hands.sessions.wide import WideEvent
 from hands.sessions.wrapper import PACKAGED
+
+def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
+    """The wide events named `name`, in the order they were emitted."""
+    return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == name]
+
 
 # How long a pipeline may take to start before a test fails on it.
 STARTUP_SECS = 5.0

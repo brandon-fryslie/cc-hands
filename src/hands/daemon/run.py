@@ -470,7 +470,7 @@ async def converse(
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),
     ]
-    following = asyncio.create_task(follow_default_devices(pipeline.started, voice.audio, channel.say), name="the audio device follower")
+    following = asyncio.create_task(follow_default_devices(pipeline.started, voice.audio, channel.say, record), name="the audio device follower")
     background.append(following)
     for task in background:
         task.add_done_callback(stop_if_failed)

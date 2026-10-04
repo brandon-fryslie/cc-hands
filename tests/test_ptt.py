@@ -2,8 +2,9 @@
 
 import pytest
 
+from conftest import events
 from hands.voice.hold import Move
-from hands.sessions.audit import Entry, Moved
+from hands.sessions.audit import Entry
 from hands.voice.ptt import Gate, Key, PushToTalk
 from hands.voice.tools import modality_tool
 
@@ -99,7 +100,11 @@ def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:
     key.move("stop", "phone button")
     key.move("start", "held key")
     key.move("stop", "held key")
-    assert recorded == [Moved(to="phone", by="call", dropped=True), Moved(to="desk", by="turn", dropped=False)]
+    assert [move.facts for move in events(recorded, "place.moved")] == [
+        {"before": "desk", "after": "phone", "by": "call", "dropped": True},
+        {"before": "phone", "after": "desk", "by": "turn", "dropped": False},
+    ]
+    assert all(move.outcome == "ok" for move in events(recorded, "place.moved")) and len(recorded) == 2
 
 
 @pytest.mark.parametrize("held", ["arming", "down"])
@@ -112,7 +117,7 @@ def test_a_turn_opened_at_one_place_while_a_hold_is_open_at_the_other_drops_both
     key = PushToTalk(recorded.append)
     key.move("start", "phone button")
     assert key.move("start", "held key") == "drop"
-    assert recorded[-1] == Moved(to="desk", by="turn", dropped=True)
+    assert events(recorded, "place.moved")[-1].facts == {"before": "phone", "after": "desk", "by": "turn", "dropped": True}
 
 
 @pytest.mark.parametrize("ending", ["stop", "drop", "expire"])

@@ -29,7 +29,7 @@ from loguru import logger
 
 from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
-from hands.sessions.wide import Begun, ended, since
+from hands.sessions.wide import Begun, continuing, ended, since
 from hands.voice.hold import Move
 from hands.voice.ptt import KeyedAudio, PushToTalk
 
@@ -276,7 +276,9 @@ class Phone:
         self._offered = None
         gone = self._leave("replaced")
         self._call, call.arrived_ms = call, since(call.began.began)
-        self._key.go("phone")
+        # [LAW:nothing-unseen] the move a call makes is part of that call, in its trace, wherever the call's end is noticed.
+        with continuing(call.began.span):
+            self._key.go("phone")
         # Watched from the channel's opening: the page sends nothing before it.
         call.watch = asyncio.create_task(self._watch(call), name="the phone's call watch")
         match gone:
@@ -330,7 +332,8 @@ class Phone:
             case None:
                 return None
             case _Call():
-                self._key.go("desk")
+                with continuing(call.began.span):
+                    self._key.go("desk")
                 call.outbound.stop()
                 if call.watch is not None and call.watch is not asyncio.current_task():
                     call.watch.cancel()
