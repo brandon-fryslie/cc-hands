@@ -148,13 +148,13 @@ class Keeper:
 
     def _decide(self, old: tuple[Result, ...]) -> None:
         fresh = [result for result in old if result.call not in self._decided]
-        for result in fresh:
-            said = self._store.known(key(result))
-            self._decided[result.call] = None if said is None else line(result, said)
         if fresh:
-            # [LAW:nothing-unseen] a batch reached is one unit of work: the calls whose results go as a line from now on,
-            # and those that go whole because no sentence had been said of them by then.
+            # [LAW:nothing-unseen] a batch reached is one unit of work, its lookups in the store included: the calls whose
+            # results go as a line from now on, and those that go whole because no sentence had been said of them by then.
             with unit("context.stubbing", self._record, counts=("stubbed", "whole")):
+                for result in fresh:
+                    said = self._store.known(key(result))
+                    self._decided[result.call] = None if said is None else line(result, said)
                 stubbed = tuple(result.call for result in fresh if self._decided[result.call] is not None)
                 whole = tuple(result.call for result in fresh if self._decided[result.call] is None)
                 annotate(stubbed=stubbed, whole=whole)

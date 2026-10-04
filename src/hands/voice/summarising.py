@@ -7,7 +7,8 @@ found, asked, said, and failed on.
 """
 
 import itertools
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from hands.core.sentences import Due, answered, page
 from hands.sessions.audit import Record
 from hands.sessions.backlog import Unread, read_backlog
 from hands.sessions.payload import Rejected
-from hands.sessions.wide import annotate, count, fail, unit
+from hands.sessions.wide import Fact, annotate, count, fail, unit
 from hands.voice.sentences import Backlog, SummaryStore, Turns
 from hands.voice.summary import SUMMARY_FAILURES, Summariser
 
@@ -41,15 +42,31 @@ async def keep_summarising(store: SummaryStore, summarise: Summariser, record: R
 
 
 @dataclass
-class _Unsaid:
-    """What one pass's replies gave no sentence for, and what each call that failed raised: facts of its event, kept as
-    they grow so a pass cut short still says what it had."""
+class _Missed:
+    """What one pass's replies gave no sentence for, and what each call that failed raised."""
 
     left_out: list[str] = field(default_factory=list[str])
     errors: list[str] = field(default_factory=list[str])
 
 
-async def _say(due: Sequence[Due], store: SummaryStore, summarise: Summariser, unsaid: _Unsaid, batch: int) -> int:
+# What every pass counts of the calls it makes, after the counts of its own.
+CALL_COUNTS = ("said", "calls", "failed_calls", "stray")
+
+
+@contextmanager
+def _pass(event: str, record: Record, counts: tuple[str, ...], **facts: Fact) -> Generator[_Missed]:
+    """Run the body as one pass, a unit of work whose event carries what its replies left out and its calls raised,
+    written as the body ends however it ends, so a pass cut short still says what it had."""
+    with unit(event, record, counts=(*counts, *CALL_COUNTS)):
+        annotate(**facts)
+        missed = _Missed()
+        try:
+            yield missed
+        finally:
+            annotate(left_out=tuple(missed.left_out), errors=tuple(missed.errors))
+
+
+async def _say(due: Sequence[Due], store: SummaryStore, summarise: Summariser, missed: _Missed, batch: int) -> int:
     """Ask the summariser for a sentence for each of `due`, a batch at a time, keep what comes back, and say how many."""
     said = 0
     for asked in itertools.batched(due, batch):
@@ -58,15 +75,16 @@ async def _say(due: Sequence[Due], store: SummaryStore, summarise: Summariser, u
             reply = await summarise(page(asked, TEXT_LIMIT))
         except SUMMARY_FAILURES as error:
             count(failed_calls=1)
-            unsaid.errors.append(f"{type(error).__name__}: {error}")
-            annotate(errors=tuple(unsaid.errors))
+            missed.errors.append(f"{type(error).__name__}: {error}")
+            # [LAW:no-silent-failure] a call that failed fails its pass, so the pass is read as an error; the pass goes on
+            # to its other batches.
+            fail(f"the summariser failed on {len(asked)} things: {type(error).__name__}: {error}")
             continue
         answer = answered(reply, asked)
         store.keep(answer.said)
         said += len(answer.said)
         count(said=len(answer.said), stray=len(answer.stray))
-        unsaid.left_out.extend(answer.missing)
-        annotate(left_out=tuple(unsaid.left_out))
+        missed.left_out.extend(answer.missing)
     return said
 
 
@@ -74,13 +92,12 @@ async def summarise_turns(turns: Turns, store: SummaryStore, summarise: Summaris
     """Make a sentence for each turn asked for, as one unit of work."""
     # [LAW:nothing-unseen] `known` is what was said since the turns were queued, `asked` what this pass asked for; a
     # pass that found everything said is one of zeros.
-    with unit("summary.turns", record, counts=("known", "asked", "said", "calls", "failed_calls", "stray")):
-        annotate(session=turns.session, left_out=(), errors=())
+    with _pass("summary.turns", record, ("known", "asked"), session=turns.session) as missed:
         # A turn is let go of as it is taken, so a read while it is being said queues it again: this pass runs after
         # both, and asks only for what is still unsaid.
         unsaid = [due for due in turns.due if store.known(due.digest) is None]
         count(known=len(turns.due) - len(unsaid), asked=len(unsaid))
-        await _say(unsaid, store, summarise, _Unsaid(), batch)
+        await _say(unsaid, store, summarise, missed, batch)
 
 
 async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summariser, record: Record, batch: int = BATCH) -> None:
@@ -89,8 +106,7 @@ async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summa
     # on or left out, and the parents above them. `left_out` names what a reply gave no sentence for, and `stray`
     # counts the reply lines that named nothing asked, so a model that skips items reads apart from one whose calls
     # failed.
-    with unit("summary.backlog", record, counts=("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray")):
-        annotate(project=project, left_out=(), errors=())
+    with _pass("summary.backlog", record, ("things", "known", "unsaid", "rounds"), project=project) as missed:
         try:
             backlog = await read_backlog(project)
         except (Unread, Rejected) as error:
@@ -100,13 +116,12 @@ async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summa
         thing = backlog.thing()
         first = store.reckon(thing)
         count(things=len(first.said) + len(first.due) + first.waiting, known=len(first.said))
-        unsaid = _Unsaid()
         reckoning = first
         # A round says what is due; the parents it unblocks are due in the next. A round that says nothing ends the
         # pass, since another would ask the same again.
         while reckoning.due:
             count(rounds=1)
-            if not await _say(reckoning.due, store, summarise, unsaid, batch):
+            if not await _say(reckoning.due, store, summarise, missed, batch):
                 break
             reckoning = store.reckon(thing)
         count(unsaid=len(reckoning.due) + reckoning.waiting)

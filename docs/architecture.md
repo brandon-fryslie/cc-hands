@@ -1517,7 +1517,7 @@ parents keyed by their sentences. Each pass is one `summary.backlog` event: how 
 things the backlog has, how many were known, said, and still unsaid at its end, its rounds,
 calls, failed calls, and stray reply lines, and the things a reply left out (`left_out`) and
 what each failed call raised (`errors`); it fails with lit's error when the export could not
-be read. A tool
+be read, and with the last failed call's error when one failed, either kind of pass. A tool
 never waits on it: a thing with no sentence yet is served by its title and counted in
 `unsummarised`. Measured 2026-09-29 on this repo: 52 sentences in 5 calls and 45 s cold,
 0 calls and 0.16 s warm.

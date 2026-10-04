@@ -252,7 +252,7 @@ async def test_what_the_summariser_leaves_out_stays_unsaid_and_the_pass_says_so(
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
 
     async def forgets_t1(page: str) -> str:
-        return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page) if id != "t1")
+        return "\n".join([*(f"{id}: said {id}" for id in Summariser.asked(page) if id != "t1"), "t9: Not asked."])
 
     records: list[Entry] = []
     await summarise_backlog(project, store, forgets_t1, records.append)
@@ -262,6 +262,8 @@ async def test_what_the_summariser_leaves_out_stays_unsaid_and_the_pass_says_so(
     assert isinstance(record, WideEvent) and (record.outcome, record.counts["said"], record.counts["unsaid"]) == ("ok", 3, 2)
     # Asked in every round, left out of every reply: the event tells a model that skips an item from calls that failed.
     assert (record.counts["rounds"], record.facts["left_out"], record.counts["failed_calls"]) == (3, ("t1", "t1", "t1"), 0)
+    # A line in each reply that names nothing asked.
+    assert record.counts["stray"] == 3
 
 
 async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path, tmp_path: Path) -> None:
@@ -283,15 +285,16 @@ async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_runnin
         os.kill(int((project / "pid").read_text()), 0)
 
 
-async def test_a_summariser_that_cannot_start_is_a_failed_call_and_the_pass_still_ends(project: Path, tmp_path: Path) -> None:
+async def test_a_summariser_that_cannot_start_is_a_failed_call_that_fails_the_pass(project: Path, tmp_path: Path) -> None:
     async def no_claude(_page: str) -> str:
         raise FileNotFoundError("claude")
 
     records: list[Entry] = []
     await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), no_claude, records.append)
     [record] = records
-    assert isinstance(record, WideEvent) and (record.outcome, record.counts["said"], record.counts["calls"], record.counts["failed_calls"]) == ("ok", 0, 1, 1)
+    assert isinstance(record, WideEvent) and (record.outcome, record.counts["said"], record.counts["calls"], record.counts["failed_calls"]) == ("failed", 0, 1, 1)
     assert record.facts["errors"] == ("FileNotFoundError: claude",)
+    assert record.error == "the summariser failed on 3 things: FileNotFoundError: claude"
 
 
 async def test_a_backlog_with_nothing_left_asks_the_summariser_nothing_and_its_pass_is_all_zeros(project: Path, tmp_path: Path) -> None:
