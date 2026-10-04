@@ -83,6 +83,13 @@ def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -
     assert second.written_at >= first.written_at
 
 
+def test_the_cli_answers_status_check_and_log_without_loading_pipecat() -> None:
+    # A fresh interpreter, since this one has Pipecat loaded by other tests: any import chain that reaches it fails
+    # here, whichever module it runs through.
+    script = "import sys\nimport hands.daemon.cli\nprint(sorted(m for m in sys.modules if m.split('.')[0] == 'pipecat'))"
+    assert subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True).stdout == "[]\n"
+
+
 async def test_a_start_still_importing_pipecat_beats_starting_until_the_run_it_loads_begins(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
     imported = threading.Event()
