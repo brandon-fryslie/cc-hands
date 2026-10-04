@@ -38,8 +38,8 @@ class AssistantTurns(LLMAssistantAggregator):
     takes none as under way whatever the model's turn, so the end it sends is not taken inside one.
 
     [LAW:no-ambient-temporal-coupling] the extent of the model's turn is held here, where the context is written: open
-    from a reply's start to its end, while a call it made is unanswered, and from a result the model is run on until
-    the reply that answers it starts. A line written inside it would follow the call's result in the context, and the
+    from a reply's start to its end, while a call it made is unanswered, and from a request for a reply, made or owed,
+    until that reply starts. A line written inside it would follow the call's result in the context, and the
     request that answers the call would end on an assistant message, which Claude refuses as a prefill. So a line said
     inside the model's turn is written with it: by the end of the reply that answers the call, or, where the model is
     not run again, as the last of its calls is answered or cancelled.
@@ -83,17 +83,18 @@ class AssistantTurns(LLMAssistantAggregator):
 
     @property
     def _open(self) -> bool:
-        return self._replying or self._answering or bool(self._calls)
+        # A result the model is to be run on once the speaker stops is a request owed (Pipecat's own note of it, 1.10.0).
+        return self._replying or self._answering or self._push_context_on_bot_stopped_speaking or bool(self._calls)
 
     async def _end_turn(self) -> None:
         # Ended as Pipecat's own service ends a line's turn, by the frame it sends for one.
         await super().process_frame(LLMAssistantPushAggregationFrame(), FrameDirection.DOWNSTREAM)
 
-    async def _maybe_push_context_after_function_result(self) -> None:
-        # [LAW:one-source-of-truth] Pipecat's aggregator decides here, and nowhere else, that the model is run on a
-        # call's result, at once or once the speaker stops (1.10.0): read where it is decided, never worked out again.
-        self._answering = True
-        await super()._maybe_push_context_after_function_result()
+    async def push_context_frame(self, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+        # [LAW:one-source-of-truth] the context sent up to the model is the request for a reply, whatever asked for it:
+        # read where it is made, never worked out again from what led to it.
+        self._answering |= direction is FrameDirection.UPSTREAM
+        await super().push_context_frame(direction)
 
 
 def turns(context: LLMContext, user_params: LLMUserAggregatorParams) -> tuple[LLMUserAggregator, AssistantTurns]:
