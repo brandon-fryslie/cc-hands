@@ -34,8 +34,7 @@ if TYPE_CHECKING:
     # Defined only in loguru's type stubs.
     from loguru import Message
 
-from hands.core.attention import Amount, Attention, Delivery, EndedRoute, Overlay, Route
-from hands.core.effects import Allow, Deny, Heard, Input, Type
+from hands.core.effects import Allow, Deny, Input, Type
 from hands.core.place import Place
 from hands.core.session import SessionId
 from hands.core.trace import Span
@@ -345,16 +344,6 @@ class Announced:
     via: Literal["speech", "screen"]
 
 
-@dataclass(frozen=True)
-class Yielded:
-    """What hands had to say unprompted, let go by the floor: the kind of each thing that came, in the order it came,
-    the kind of each thing told of it, in the order told, and how long the user's turn held it, 0 when no turn was
-    open. `held` longer than `told` is something folded into a session's telling or no longer waiting on the user."""
-
-    held: tuple[str, ...]
-    told: tuple[str, ...]
-    waited: float
-
 
 # Where a cue went: the phone, the desk's speaker, or nowhere, with no desk speaker attached to play it on.
 Played = Literal["phone", "desk", "unattached"]
@@ -371,33 +360,7 @@ class Cued:
     played: Played
 
 
-@dataclass(frozen=True)
-class Relayed:
-    """Something a session said to the user, passed on to the pipeline."""
 
-    heard: Heard
-
-
-@dataclass(frozen=True)
-class Routed:
-    """Which way a session's progress went: played, briefly or in full, for the focused session, or noted for the
-    model; and what hands was set to say unprompted, the focus, and the overlay that decided it, as they were read."""
-
-    session: SessionId
-    attention: Attention
-    focused: bool
-    overlay: Overlay
-    route: Route
-
-
-@dataclass(frozen=True)
-class EndedRouted:
-    """Whether a session's ending was said, or left to the log for catch_up; and what hands was set to say unprompted
-    that decided it, as it was read."""
-
-    session: SessionId
-    attention: Attention
-    route: EndedRoute
 
 
 RefocusOutcome = Literal["moved", "ended", "failed"]
@@ -414,47 +377,6 @@ class Refocused:
     failed: str | None
 
 
-@dataclass(frozen=True)
-class ProgressTold:
-    """Progress routed to be played, as it went to the floor: how much text it held, the clause that text was summarised
-    as or why it could not be, and whether its turn still ran once it was ready, since progress of a turn that has ended
-    is not played: its result is told instead."""
-
-    session: SessionId
-    written: int  # characters of text, 0 for a burst of calls alone
-    explained: str | None
-    failed: str | None
-    current: bool
-    # How much of it the user set to be said: briefly, a burst is said by its text alone, and one with none is not said.
-    amount: Amount
-
-
-@dataclass(frozen=True)
-class Recounted:
-    """What hands told of a turn a session finished, and what the narration left the user able to ask for.
-
-    `reply` is the last thing the session said in the turn and `facts` what hands adds from its record: what the model
-    is handed to say in its own words, under the session's name as it is when told. `delivered` is how it reached the
-    user and what decided it: told as the turn finished, and how much of it, or held for when they ask (tell_turn).
-    `topics` is every part of the turn's narration that was built and not played — its sections, and what it
-    asked through a dialog and is no longer waiting on — which makes this line the
-    one place a developer who cannot see the screen can find out what "more on that" has to open. `questions`
-    is what the session is waiting on an answer to. `opened`
-    is the kind of thing that opened the turn — Asked, Notified, Commanded, or Shelled — so a turn the user's own
-    command opened is told apart from one they asked for. `subagents` names each subagent that reported back in the
-    turn and whose own transcript was read for it, and `unread` each one whose transcript could not be read, so a turn
-    told without a subagent's work is told apart from one no subagent reported back to.
-    """
-
-    session: str
-    reply: str | None
-    facts: str
-    topics: tuple[str, ...]
-    questions: tuple[str, ...]
-    delivered: Delivery
-    opened: str
-    subagents: tuple[str, ...]
-    unread: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -624,14 +546,8 @@ Entry = (
     | Replied
     | CutOff
     | Announced
-    | Yielded
     | Cued
-    | Relayed
-    | Routed
-    | EndedRouted
     | Refocused
-    | ProgressTold
-    | Recounted
     | Summarised
     | TurnsSummarised
     | Named
@@ -666,8 +582,6 @@ def level(entry: Entry) -> Level:
             return "error" if outcome == "failed" else "info"
         case Named(outcome=outcome):
             return "error" if outcome in ("unread", "failed", "refused") else "info"
-        case ProgressTold(failed=failed):
-            return "info" if failed is None else "error"
         case Refocused(outcome=outcome):
             return "error" if outcome == "failed" else "info"
         case Primed(failed=failed) | SettingsEdited(refused=failed):
@@ -675,7 +589,7 @@ def level(entry: Entry) -> Level:
         case (
             Typing() | LLMChosen() | SettingsRead() | Exported() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
             | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
-            | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Yielded() | Cued() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
+            | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Cued() | Summarised()
             | TurnsSummarised() | Restarting() | Rolled()
         ):
             return "info"

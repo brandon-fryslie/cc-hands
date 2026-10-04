@@ -372,8 +372,25 @@ unprompted of the sessions, under either telling, reaches the floor (`voice/floo
 of the user aggregator as a value, a `Pending` (`core/pending.py`), not yet a frame. From the
 press that opens the user's turn until that turn is sent it waits there and follows the user's
 words; what arrives with no turn open is let go at once, the same way. Either way the floor
-makes frames of it only as it lets it go, after `coalesce` (below), and each letting go is one
-`Yielded` line in the audit log: what came, what was told of it, and how long it waited.
+makes frames of it only as it lets it go, after `coalesce` (below), which says for each thing
+it tells where each thing it holds stood, so what it drops is known by none naming it.
+
+Each thing a session gives hands to say unasked is one `utterance` wide event
+(`voice/utterance.py`), opened as the relay or the narrator hears it and emitted at its fate:
+`noted` (the route, the delivery, or a turn or burst with nothing new kept it from being said),
+`dropped` (no longer so by the time it was to be told: out of date as the floor let it go, or
+progress of a turn that ended before its summary), `silent` (a note to the model's context,
+settled as it is sent), `played`, or `cut`. Its facts are what was
+heard and from which session, what decided its route, how long the floor held it (`held_ms`),
+what it was told as and how many things heard were folded into that telling, and
+`first_audio_ms`, from heard to the first audio the speaker wrote of it. The last three fates
+are read off the output transport by the `Audible` observer: what says an utterance is sent
+between an `Uttering` frame, dropped by a barge-in with the words it leads, and an `Uttered`
+frame, kept through one, so every utterance handed on reaches the output transport closed, in
+order with its audio. The brain's stage sends them around what it takes from hands' lane, leads
+what its turn still has to say with an uninterruptible `Resumed` after a barge-in the turn goes
+on through, and fails each utterance of a telling the brain failed; the brain's turn telling an
+utterance is its child, in its trace.
 `Story` carries finished turns and sessions gone in one ordered
 queue, because an end spoken at once was heard before the last turn it ended. Every
 finished turn is read once into a `News` (`voice/narrator.py`, `recount`): the session's last
@@ -384,7 +401,7 @@ to say in its own words. How that one summary reaches the user is its `Delivery`
 the brain — when finished turns are set to be told, briefly or in full, or when the session is
 watched (`Spoken`); otherwise it is held (`Withheld`, saying why) and `tell_turn` hands it
 to the model when the user asks. Each session's last summary is held in `Recounts` either
-way, as its `News`, and each is a `Recounted` audit line naming its delivery. Nothing of a turn is said as
+way, as its `News`, and its utterance names its delivery. Nothing of a turn is said as
 written past the model, and nothing is said of a session that sits at its prompt.
 `Heard` also carries a mode change as a `Note`, which enters the intermediary's context
 with `run_llm` off. Each session has an overlay, `normal`, `watched`, or `muted`, one file per
@@ -1018,8 +1035,8 @@ narration tree; then the question it is waiting on, which the intermediary is to
 on. If the brain cannot take the turn, hands says as written that it could not tell it,
 and nothing more. Each working session is told at `SessionStart`, by the plugin's shim, to end every
 turn with a concise, speakable overview. A turn the user stopped before it did anything is handed
-on like any other, its record adding that the user interrupted it. Each summary is written to
-the audit log as `Recounted`, with how it was delivered.
+on like any other, its record adding that the user interrupted it. Each summary, and how it was
+delivered, are facts on the turn's utterance.
 A transcript that cannot be read is said as "cc-hands finished a turn, and I could not
 read it." without the model and out of the context, and logged as a `Failure` line.
 
@@ -1241,7 +1258,7 @@ what it gathered unsaid, its result being told instead; its tick lets a burst go
 `Progress` once no call has come for `SETTLE` seconds, or once its first has waited
 `LONGEST` `[LAW:no-ambient-temporal-coupling]`. The relay routes it by
 `attention.progress_route`, a table over the focus and the overlay, and records each choice
-as a `Routed` line: the focused session's is `Working`, played as written at `fyi`
+and what decided it on the burst's utterance: the focused session's is `Working`, played as written at `fyi`
 ("cc-hands: edit ten files, then run the test suite."), and kept out of a pushed context,
 which keeps every message it is given. Any other's, and a muted one's even when focused, is
 left to the session listing, which says what a working session last set out to do: the
@@ -1258,7 +1275,7 @@ waits on a summary and a permission request must not wait behind that: the summa
 imperative phrase, which goes ahead of the burst's calls ("cc-hands: explain how DNS resolution works, then run the test
 suite."). Text that cannot be summarised is said as "write something", never read out. A turn that ended while its
 progress was being summarised is not played, its result being told instead; the registry says so as the summary is
-ready, and a `ProgressTold` line records the text's length, its phrase or its failure, and whether it played.
+ready, and the burst's utterance records its phrase, or its failure, which fails the utterance and leaves it said.
 
 A subagent is heard the same way while it works, from its own transcript. The tail knows one by the
 `agent-<id>.meta.json` Claude Code writes beside that transcript as it starts it, and follows any started before hands
@@ -1814,8 +1831,8 @@ thing that failed `[LAW:no-silent-failure]`:
    `tool.run` wide event with its arguments and the result the model was handed, and,
    called in a voice turn, the child of that turn's `tool.call` span; the context
    aggregators write each user turn as `Transcribed` and each reply as `Replied`;
-   the system channel writes `Announced` with whether it spoke or posted; the narrator
-   writes each turn summary it speaks as `Recounted`; and a
+   the system channel writes `Announced` with whether it spoke or posted; each thing a
+   session gives hands to say unasked is an `utterance` wide event, from heard to its fate; and a
    loguru sink turns every error a `hands` module logs into a `Failure`. A dictation is
    traced from the words to the readback: `Transcribed`, then the `tool.run` of
    `stage_draft` with what hands said back, which no model rewords. The log watches

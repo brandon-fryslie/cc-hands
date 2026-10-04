@@ -16,16 +16,15 @@ system voice is not in it: it reports the model's own failures, so it is queued 
 """
 
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from pipecat.frames.frames import DataFrame, Frame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from hands.core.pending import Pending, coalesce
+from hands.core.pending import coalesce
 from hands.core.session import Session, SessionId
-from hands.sessions.audit import Record, Yielded
-from hands.voice.speech import Names, Telling, Unprompted, frames
+from hands.voice.speech import Names, Telling, Unprompted, frames, sent
 
 
 @dataclass
@@ -36,11 +35,11 @@ class _Given(DataFrame):
 
 @dataclass
 class _Taken:
-    """The user has the floor: since when, whether the turn is still open, and what hands had to say meanwhile, in order."""
+    """The user has the floor: whether the turn is still open, and what hands had to say meanwhile, in order, each with
+    when it came."""
 
-    since: float
     open: bool = True
-    held: list[Pending] = field(default_factory=list[Pending])
+    held: list[tuple[Unprompted, float]] = field(default_factory=list[tuple[Unprompted, float]])
 
 
 class Floor(FrameProcessor):
@@ -49,14 +48,12 @@ class Floor(FrameProcessor):
 
     def __init__(
         self,
-        record: Record,
         telling: Telling,
         names: Names,
         live: Callable[[], Mapping[SessionId, Session]],
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
-        self._record = record
         self._telling = telling
         self._names = names
         self._live = live
@@ -67,7 +64,7 @@ class Floor(FrameProcessor):
         await super().process_frame(frame, direction)
         match frame, self._taken:
             case UserStartedSpeakingFrame(), None:
-                self._taken = _Taken(self._now())
+                self._taken = _Taken()
                 await self.push_frame(frame, direction)
             case UserStartedSpeakingFrame(), _Taken() as taken:
                 # A press before what the last turn held was given back: it waits out this turn as well.
@@ -79,28 +76,36 @@ class Floor(FrameProcessor):
                 taken.open = False
                 await self.push_frame(frame, direction)
                 await self.queue_frame(_Given())
-            case _Given(), _Taken(open=False, since=since, held=held):
+            case _Given(), _Taken(open=False, held=held):
                 self._taken = None
-                await self._let_go(held, self._now() - since)
+                await self._let_go(held)
             case _Given(), _:
                 # The close of a turn a later press reopened: that turn's own close gives everything back.
                 pass
-            case Unprompted(pending=pending), _Taken(held=held):
-                held.append(pending)
-            case Unprompted(pending=pending), None:
-                await self._let_go([pending], 0.0)
+            case Unprompted() as unprompted, _Taken(held=held):
+                held.append((unprompted, self._now()))
+            case Unprompted() as unprompted, None:
+                await self._let_go([(unprompted, self._now())])
             case _:
                 await self.push_frame(frame, direction)
 
-    async def _let_go(self, pending: list[Pending], waited: float) -> None:
-        """Tell what was pending, as `coalesce` orders and folds it, with the sessions read as it is let go."""
-        told = coalesce(pending, self._live())
+    async def _let_go(self, came: list[tuple[Unprompted, float]]) -> None:
+        """Tell what came, each with when it came, as `coalesce` orders and folds it, with the sessions read as it is let
+        go: what it drops is no longer so, and what is told is sent with what it tells."""
+        now = self._now()
+        held = [each for each, _ in came]
+        told = coalesce([each.pending for each in held], self._live())
+        for each, since in came:
+            for utterance in each.utterances:
+                # [LAW:nothing-unseen] how long the user's turn held it, from when it came: 0 for what came with no turn open.
+                utterance.annotate(held_ms=round((now - since) * 1000, 3))
+        for dropped in set(range(len(held))).difference(*(each.sources for each in told)):
+            for utterance in held[dropped].utterances:
+                utterance.settle("dropped")
         for each in told:
-            for spoken in frames(each, self._telling, self._names):
-                await self.push_frame(spoken)
-        # [LAW:nothing-unseen] what came, what was told of it, and how long the user's turn held it.
-        self._record(Yielded(_kinds(pending), _kinds(told), waited))
-
-
-def _kinds(pending: Sequence[Pending]) -> tuple[str, ...]:
-    return tuple(type(each).__name__ for each in pending)
+            utterances = tuple(utterance for at in each.sources for utterance in held[at].utterances)
+            for utterance in utterances:
+                # What it was told as, and how many things hands heard were told in it.
+                utterance.annotate(told=type(each.pending).__name__, folded=len(each.sources))
+            for frame in sent(frames(each.pending, self._telling, self._names), self._telling, utterances):
+                await self.push_frame(frame)

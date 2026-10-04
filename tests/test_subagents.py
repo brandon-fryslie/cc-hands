@@ -14,7 +14,6 @@ from hands.core.steps import Call, Result, recognise
 from hands.core.narration import narration
 from hands.core.subagents import Subagent, reporting
 from hands.core.turn import AgentId, AgentTask, Asked, Continuing, Delegated, Notified, Other, Ran, Ref, Reported, Said, Turn
-from hands.sessions.audit import Entry, Recounted
 from hands.sessions.payload import Payload
 from hands.sessions.registry import Sessions
 from hands.sessions.subagents import read_subagent
@@ -24,7 +23,7 @@ from hands.sessions.turning import Turning
 from hands.voice.narrator import Recounts, recount
 from hands.voice.tools import expand_tool
 
-from test_narrator import Registry
+from test_narrator import Registry, heard
 
 SID = SessionId("s1")
 REVIEWER = AgentId("a1b2c3d4e5f6a7b8c")
@@ -96,11 +95,13 @@ def reviewer(transcript: Path, *, forked: bool = False) -> None:
     (folder / f"agent-{REVIEWER}.jsonl").write_text("".join(f"{_record(record)}\n" for record in records))
 
 
-async def told(transcript: Path, recorded: list[Entry]) -> Recounts:
+async def told(transcript: Path) -> tuple[Recounts, dict[str, object]]:
+    """What a turn's recount holds, and the facts it found of the turn."""
     recounts = Recounts()
     tails = Tails(Registry(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript)))
-    await recount(tails, SID, PromptId("p2"), None, recorded.append, Delta(), Spoken("full", "finished"), recounts)
-    return recounts
+    utterance = heard()
+    await recount(tails, SID, PromptId("p2"), None, utterance, Delta(), Spoken("full", "finished"), recounts)
+    return recounts, dict(utterance.facts)
 
 
 async def opened(recounts: Recounts, part: str) -> list[str]:
@@ -112,16 +113,14 @@ async def opened(recounts: Recounts, part: str) -> list[str]:
 async def test_what_the_reviewer_found_is_answered_from_the_reviewers_own_steps(tmp_path: Path) -> None:
     transcript = parent(tmp_path, REVIEWER)
     reviewer(transcript)
-    recorded: list[Entry] = []
-    recounts = await told(transcript, recorded)
+    recounts, facts = await told(transcript)
     whole = await expand_tool(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), recounts).body(session=SID)
     lines = [entry["told"] for entry in cast(list[dict[str, str]], whole["parts"]) if entry["part"] == WORK]
     # Named by the job it was given, and counted: its prompt is the job, and not a step of it.
     assert lines == ["A subagent's own work on /code-review medium 66: two steps."]
     [work] = await opened(recounts, WORK)
     assert FOUND in work and "git diff master...HEAD" in work
-    [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
-    assert recounted.subagents == (REVIEWER,) and WORK in recounted.topics
+    assert facts["subagents"] == (REVIEWER,) and WORK in cast(tuple[str, ...], facts["topics"])
     # The telling says whose work it carries, so progress heard of that subagent gives way to it.
     held = recounts.of(SID)
     assert held is not None and held.tellings[-1].reported == frozenset({REVIEWER})
@@ -130,12 +129,10 @@ async def test_what_the_reviewer_found_is_answered_from_the_reviewers_own_steps(
 async def test_a_reviewer_that_reports_while_its_parent_works_is_told_with_that_turn(tmp_path: Path) -> None:
     transcript = working(tmp_path, REVIEWER)
     reviewer(transcript)
-    recorded: list[Entry] = []
-    recounts = await told(transcript, recorded)
+    recounts, facts = await told(transcript)
     [work] = await opened(recounts, WORK)
     assert FOUND in work
-    [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
-    assert recounted.subagents == (REVIEWER,) and WORK in recounted.topics
+    assert facts["subagents"] == (REVIEWER,) and WORK in cast(tuple[str, ...], facts["topics"])
     held = recounts.of(SID)
     assert held is not None and held.tellings[-1].reported == frozenset({REVIEWER})
     # One subagent, launched and then heard from: counted once, and its report as what arrived, not a second subagent.
@@ -168,12 +165,10 @@ def test_an_attachment_that_only_mentions_a_notification_is_no_record_of_a_turn(
 
 async def test_a_notification_from_a_background_command_is_told_as_it_was(tmp_path: Path) -> None:
     """A background command or a monitor notifies as a subagent does, and has no subagent's work to tell."""
-    recorded: list[Entry] = []
-    recounts = await told(parent(tmp_path, "b7x9k2", 'Background command "pytest" completed (exit code 0)'), recorded)
+    recounts, facts = await told(parent(tmp_path, "b7x9k2", 'Background command "pytest" completed (exit code 0)'))
     held = recounts.of(SID)
     assert held is not None and WORK not in {segment.topic.name for segment in held.parts}
-    [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
-    assert recounted.subagents == () and recounted.unread == ()
+    assert (facts["subagents"], facts["unread_subagents"]) == ((), ())
 
 
 async def test_a_subagent_whose_work_cannot_be_read_is_said_and_its_turn_is_still_told(tmp_path: Path) -> None:
@@ -181,14 +176,12 @@ async def test_a_subagent_whose_work_cannot_be_read_is_said_and_its_turn_is_stil
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
     try:
-        recorded: list[Entry] = []
-        recounts = await told(transcript, recorded)
+        recounts, facts = await told(transcript)
     finally:
         logger.remove(sink)
     assert recounts.of(SID) is not None
     assert errors and REVIEWER in errors[0] and "FileNotFoundError" in errors[0]
-    [recounted] = [entry for entry in recorded if isinstance(entry, Recounted)]
-    assert recounted.subagents == () and recounted.unread == (REVIEWER,)
+    assert (facts["subagents"], facts["unread_subagents"]) == ((), (REVIEWER,))
 
 
 def test_a_subagent_is_read_with_the_sessions_own_fold(tmp_path: Path) -> None:

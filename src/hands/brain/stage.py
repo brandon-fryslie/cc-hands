@@ -67,11 +67,12 @@ from hands.core.wire import (
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import BrainAnswered, BrainInterrupted, Record
-from hands.sessions.wide import annotate, child, count, fail, here, unit, within
+from hands.sessions.wide import annotate, child, continuing, count, fail, here, unit, within
 from hands.voice.player import Mark
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
 from hands.voice.speech import Aloud, Narrated, brain_asks
+from hands.voice.utterance import Resumed, Utterance, Uttered, Uttering, uttering
 from hands.voice.tools import Result, Tool, silent, whole
 
 
@@ -146,6 +147,8 @@ class _Turn:
     # Hands the words on to TTS until the turn is over or the user barges in.
     speaking: asyncio.Task[None] = field(init=False)
     spoken: list[str]
+    # What the turn says of the sessions, where hands asked it to tell them; none for the user's own turn.
+    utterances: tuple[Utterance, ...]
     # The turn's span: each of its requests is a span inside it, which the proxy's record of that request carries.
     span: Span
     # The requests on the wire that are this turn's own, in the order they left.
@@ -281,10 +284,14 @@ class BrainStage(FrameProcessor):
             case InterruptionFrame():
                 # [LAW:no-ambient-temporal-coupling] the turn stops being spoken, then the pipeline is told, then the brain:
                 # what is playing stops first, and a brain that cannot be written to cannot hold the barge-in back.
+                turn = self._turn
                 stop = self._barge_in()
                 await self.push_frame(frame, direction)
                 if stop:
                     self._brain.interrupt()
+                if turn is not None and not turn.interrupted:
+                    # A barge-in the turn goes on through cut off none of what it is still to say of the sessions.
+                    await self.push_frame(Resumed(turn.utterances))
             case _:
                 await self.push_frame(frame, direction)
 
@@ -298,14 +305,27 @@ class BrainStage(FrameProcessor):
             match waiting:
                 case (str() as text, reading):
                     asker = await reading
-                    await self._ask("\n\n".join(part for part in (text, told(asker.front), place.told(asker.modality)) if part), asker, (), arrived, released, taken)
-                case Narrated(text=text, unsaid=unsaid, session=session):
+                    await self._ask("\n\n".join(part for part in (text, told(asker.front), place.told(asker.modality)) if part), asker, (), (), arrived, released, taken)
+                case Narrated(text=text, unsaid=unsaid, session=session, utterances=utterances):
                     # [LAW:no-ambient-temporal-coupling] moved as the telling is taken, with the user's last turn ended and
                     # none waiting, since they go first, and before the brain is asked, so its request reads the new focus.
                     await self._refocus(session)
-                    await self._ask(text, HandsAsked(), (unsaid,), arrived, None, taken)
-                case Aloud(spoken=spoken):
-                    await self.push_frame(spoken)
+                    # The turn is what says them, sent with what tells what of them was heard, and a part of the first
+                    # of them, in its trace.
+                    await self.push_frame(Uttering(utterances))
+                    with continuing(utterances[0].begun.span if utterances else None):
+                        failure = await self._ask(text, HandsAsked(), (unsaid,), utterances, arrived, None, taken)
+                    match failure:
+                        case str():
+                            for utterance in utterances:
+                                # [LAW:nothing-unseen] what was heard of a telling the brain failed is that it could not be told.
+                                utterance.fail(failure)
+                        case None:
+                            pass
+                    await self.push_frame(Uttered(utterances))
+                case Aloud(spoken=spoken, utterances=utterances):
+                    for frame in uttering(utterances, (spoken,)):
+                        await self.push_frame(frame)
 
     async def _read_front(self, modality: Modality, opened: Edge) -> UserAsked:
         began = self._now()
@@ -330,20 +350,25 @@ class BrainStage(FrameProcessor):
         self._contexts.clear()
         return (news, reading), arrived, released
 
-    async def _ask(self, text: str, asker: Asker, unsaid: Sequence[str], arrived: Seconds, released: Seconds | None, taken: Seconds) -> None:
-        """One turn of the brain's, and its one event; `unsaid` is what hands says as written if the brain cannot take it.
-        `released` is when the user let go of the key on the words the turn asks, None for a turn not asked aloud, and
-        `taken` when the turn left its lane."""
+    async def _ask(
+        self, text: str, asker: Asker, unsaid: Sequence[str], utterances: tuple[Utterance, ...], arrived: Seconds, released: Seconds | None, taken: Seconds
+    ) -> str | None:
+        """One turn of the brain's, and its one event; `unsaid` is what hands says as written if the brain cannot take it,
+        and `utterances` what the turn says of the sessions. `released` is when the user let go of the key on the words
+        the turn asks, None for a turn not asked aloud, and `taken` when the turn left its lane. Returns why the turn
+        failed, None where it did not."""
         # [LAW:nothing-unseen] every turn passes through here, whoever asked it and however it ends.
         with unit("voice.turn", self._record, COUNTS):
-            await self._turn_of(text, asker, unsaid, arrived, released, taken)
+            return await self._turn_of(text, asker, unsaid, utterances, arrived, released, taken)
 
-    async def _turn_of(self, text: str, asker: Asker, unsaid: Sequence[str], arrived: Seconds, released: Seconds | None, taken: Seconds) -> None:
+    async def _turn_of(
+        self, text: str, asker: Asker, unsaid: Sequence[str], utterances: tuple[Utterance, ...], arrived: Seconds, released: Seconds | None, taken: Seconds
+    ) -> str | None:
         note, self._broken_off = self._broken_off, ""
         text = "\n\n".join(part for part in (note, text) if part)
         said: asyncio.Queue[str | Asked | None] = asyncio.Queue()
         spoken: list[str] = []
-        turn = self._turn = _Turn(said, spoken, here())
+        turn = self._turn = _Turn(said, spoken, utterances, here())
         turn.speaking = asyncio.create_task(self._speak(turn), name="the brain's words")
         # When the brain ended the turn, or it was stopped: set before anything reads it, however the turn ends.
         ended = taken
@@ -366,14 +391,16 @@ class BrainStage(FrameProcessor):
         failure = None if asked.exception() is not None else _failed(turn, asked.result().error)
         annotate(failed=None if failure is None else failure.fact)
         if (error := asked.exception()) is not None:
-            fail(f"the brain failed a turn: {error}")
+            failed = f"the brain failed a turn: {error}"
+            fail(failed)
             # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
             # from its own watch, but one that never took the turn, or could not be typed into, is still running.
             logger.opt(exception=error).error("the brain failed a turn")
             # A turn the brain never took did not tell it what the user heard: the turn after it does.
             self._broken_off = note
             await self._unsaid(unsaid)
-            await self.push_error(f"the brain failed a turn: {error}")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+            await self.push_error(failed)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+            return failed
         elif failure is not None:
             # [LAW:no-silent-failure] said as the API services' failures are: an error from the model's stage. No category:
             # Pipecat takes an invalid request or a refused login as permanent and stops the stage, and the brain goes on.
@@ -381,6 +408,8 @@ class BrainStage(FrameProcessor):
             fail(failure.error)
             await self._unsaid(unsaid)
             await self.push_error(failure.error, exception=ModelFault(failure.fact))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+            return failure.error
+        return None
 
     def _account(self, turn: _Turn, asker: Asker, arrived: Seconds, released: Seconds | None, taken: Seconds, ended: Seconds) -> None:
         """The turn's event: how long the user waited for its first word and where the time went, what it said, and each
