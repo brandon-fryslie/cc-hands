@@ -47,6 +47,7 @@ from hands.sessions.registry import Listing, Sessions
 from hands.sessions import attention as settings
 from hands.core import playback
 from hands.core.place import Modality
+from hands.voice.trigger import Trigger, Triggers, described
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
 from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
@@ -267,7 +268,7 @@ def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
 
 
 def intermediary_tools(
-    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], acting: Callable[[], None]
+    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], triggers: Triggers, acting: Callable[[], None]
 ) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
     but staying silent, whose call is the choice not to act.
@@ -294,6 +295,7 @@ def intermediary_tools(
         catch_up_tool(sessions, home, lambda: datetime.now(UTC)),
         attention_tool(home),
         modality_tool(switch),
+        *trigger_tools(triggers),
         *voice_tools(Voices(home, player.lines, fetched)),
         *playback_tools(player),
     ]
@@ -942,6 +944,31 @@ def _modality_readback(modality: Modality) -> str:
             return "Okay, you can see a screen."
         case "audio-only":
             return "Okay, audio only."
+
+
+def trigger_tools(triggers: Triggers) -> list[Tool]:
+    """Which trigger opens the user's turns at the Mac: saying the one in use, and switching to another while hands runs."""
+
+    async def trigger_in_use() -> Result:
+        """Say which trigger is in use: the way the user opens a turn at the Mac.
+
+        Call this when the user asks how to talk to hands, or which trigger is on. Say the returned readback.
+        """
+        return {"trigger": triggers.in_use, "readback": described(triggers.in_use)}
+
+    async def set_trigger(trigger: Trigger) -> Result:
+        """Switch the trigger the user opens their turns with at the Mac; their next turn opens the new way.
+
+        Call this when the user asks for a trigger by name. A trigger not listed here is not built: tell them so, and
+        that the one in use stays on. Say the returned readback.
+
+        Args:
+            trigger: the trigger to use from now on.
+        """
+        triggers.choose(trigger)
+        return {"trigger": trigger, "readback": f"Okay. {described(trigger)}"}
+
+    return [tool(trigger_in_use, completes=True), tool(set_trigger, completes=True)]
 
 
 def voice_tools(voices: Voices) -> list[Tool]:

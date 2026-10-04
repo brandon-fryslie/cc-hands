@@ -1635,6 +1635,13 @@ The wake-word edge is the only one that opens the mic without a hand, and it is
 half-duplex: while the output transport is playing, the wake-word detector is deaf,
 because an open mic in a room with speakers hears the pipeline's own voice.
 
+**The trigger is one choice, switched by voice** (`hands.voice.trigger`). Which way the
+user opens a turn at the desk is one value `Triggers` holds while hands runs: the brain's
+`trigger_in_use` says it and `set_trigger` switches it, the talk key's edge steps by the
+one in use at every key event, so the next turn opens the new way, and each turn's
+`UserAsked` records it. Built: the `held key`. A trigger not built is refused by the tool's
+closed set, and the one in use stays.
+
 **The phone is a second place, beside the desk.** The desk is the Mac's own mic and
 speakers; the phone is a page hands serves (`hands.voice.phonepage`) that a phone
 opens over the LAN or the tailnet, with a talk button. Both are there for the whole

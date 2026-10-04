@@ -99,7 +99,7 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
         if move == "start":
             started.set()
 
-    driving = asyncio.create_task(keys.drive_talk_key(on_move))
+    driving = asyncio.create_task(keys.drive_talk_key(on_move, lambda: "held key"))
     while not taps:
         await asyncio.sleep(0)
     taps[0](Pressed(asyncio.get_running_loop().time()))  # dated as the tap dates it, on the loop's clock
@@ -129,7 +129,7 @@ async def test_a_turn_held_past_the_limit_is_thrown_away_without_a_release(monke
     async def on_move(move: Move) -> None:
         made.append(move)
 
-    driving = asyncio.create_task(keys.drive_talk_key(on_move))
+    driving = asyncio.create_task(keys.drive_talk_key(on_move, lambda: "held key"))
     while not taps:
         await asyncio.sleep(0)
     taps[0](Pressed(asyncio.get_running_loop().time()))  # and never released: a key stuck down

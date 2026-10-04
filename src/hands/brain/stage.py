@@ -69,6 +69,7 @@ from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, Model
 from hands.sessions.audit import BrainAnswered, BrainInterrupted, Record
 from hands.sessions.wide import annotate, child, count, fail, here, unit, within
 from hands.voice.player import Mark
+from hands.voice.trigger import Trigger
 from hands.voice.turnstop import HoldDiscarded
 from hands.voice.speech import Aloud, Narrated, brain_asks
 from hands.voice.tools import Result, Tool, silent, whole
@@ -88,10 +89,11 @@ class Asking(Protocol):
 
 @dataclass(frozen=True)
 class UserAsked:
-    """The user's words: whether they could see a screen and what was in front on the Mac's as they were submitted, and
-    how long reading it took, in milliseconds."""
+    """The user's words: whether they could see a screen, the trigger they opened their turns with, and what was in front
+    on the Mac's as they were submitted, and how long reading it took, in milliseconds."""
 
     modality: Modality
+    trigger: Trigger
     front: InFront
     read_ms: float
 
@@ -198,6 +200,7 @@ class BrainStage(FrameProcessor):
         refocus: Callable[[SessionId], Awaitable[None]],
         front: Callable[[], Awaitable[InFront]],
         modality: Callable[[], Modality],
+        trigger: Callable[[], Trigger],
         record: Record,
         clock: Callable[[], Seconds] = time.monotonic,
     ) -> None:
@@ -207,6 +210,8 @@ class BrainStage(FrameProcessor):
         self._front = front
         # Whether the user can see a screen, read as their words arrive.
         self._modality = modality
+        # Which trigger opens the user's turns, read with it.
+        self._trigger = trigger
         # Moves the focus to a session whose telling the brain takes.
         self._refocus = refocus
         # What hands appends to each request of a turn, composed as that request leaves.
@@ -251,7 +256,7 @@ class BrainStage(FrameProcessor):
                 # taken: the user may look elsewhere, or switch to audio-only, while it waits.
                 released, self._released = self._released, None
                 if news := self._news(context):
-                    self._contexts.append((news, self._now(), released, asyncio.ensure_future(self._read_front(self._modality()))))
+                    self._contexts.append((news, self._now(), released, asyncio.ensure_future(self._read_front(self._modality(), self._trigger()))))
                     self._waiting.set()
             case HoldDiscarded():
                 await self.push_frame(frame, direction)
@@ -291,10 +296,10 @@ class BrainStage(FrameProcessor):
                 case Aloud(spoken=spoken):
                     await self.push_frame(spoken)
 
-    async def _read_front(self, modality: Modality) -> UserAsked:
+    async def _read_front(self, modality: Modality, trigger: Trigger) -> UserAsked:
         began = self._now()
         front = await self._front()
-        return UserAsked(modality, front, (self._now() - began) * 1000)
+        return UserAsked(modality, trigger, front, (self._now() - began) * 1000)
 
     async def _upcoming(self) -> tuple[tuple[str, asyncio.Task[UserAsked]] | Narrated | Aloud, Seconds, Seconds | None]:
         """What is next: the user's words while any wait, since what they said goes ahead of what hands has to tell, all
