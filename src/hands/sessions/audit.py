@@ -542,26 +542,6 @@ class Named:
 
 
 @dataclass(frozen=True)
-class NameGiven:
-    """A name handed to Claude Code in the reply to a session's prompt, which sets the session's title."""
-
-    session: str
-    name: str
-
-
-@dataclass(frozen=True)
-class NameWithheld:
-    """A name hands decided and did not give at the session's prompt: its title is no longer the one the name was decided
-    against, `held` (set since, by the user's /rename), or it could not be read, which `error` says."""
-
-    session: str
-    name: str
-    against: str | None
-    held: str | None
-    error: str | None
-
-
-@dataclass(frozen=True)
 class BacklogUnread:
     """A pass of the summary store that could not start: lit would not hand over the project's backlog, and why."""
 
@@ -678,8 +658,6 @@ Entry = (
     | Summarised
     | TurnsSummarised
     | Named
-    | NameGiven
-    | NameWithheld
     | BacklogUnread
     | StartRefused
     | Restarting
@@ -693,8 +671,7 @@ Level = Literal["error", "info"]
 
 
 def level(entry: Entry) -> Level:
-    """Whether a line tells of something that went wrong: a Failure; a start refused; an effect, a backlog read, a unit of work or a
-    name that failed; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
+    """Whether a line tells of something that went wrong: a Failure; a start refused; an effect, a backlog read, or a unit of work that failed; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
     broke off; or a brain turn or side question that came to nothing."""
     # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
@@ -704,7 +681,7 @@ def level(entry: Entry) -> Level:
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)
-        case BrainAnswered(error=error) | NameWithheld(error=error):
+        case BrainAnswered(error=error):
             return "info" if error is None else "error"
         case AsideAnswered(failed=failed):
             return "error" if failed else "info"
@@ -723,7 +700,7 @@ def level(entry: Entry) -> Level:
             | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | Exported() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
             | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Yielded() | Cued() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
-            | TurnsSummarised() | NameGiven() | Restarting() | Rolled()
+            | TurnsSummarised() | Restarting() | Rolled()
         ):
             return "info"
         case _:

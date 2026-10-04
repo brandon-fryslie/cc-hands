@@ -13,9 +13,11 @@ from hands.core.effects import Allow, AllowWith, Approve, Command, Deny, HookRep
 from hands.core.events import Attached, PermissionRequested
 from hands.core.session import AskedQuestion, Blocker, CommandName, Membership, Option, Permission, Plan, PromptText, Question, RequestId, SessionId
 from hands.daemon import cli
-from hands.sessions.audit import Applied, AuditLog, Entry, NameGiven, NameWithheld, Performed, Replied, Transcribed, Typing, TypingFailed, segment
+from hands.sessions.audit import Applied, AuditLog, Entry, Performed, Replied, Transcribed, Typing, TypingFailed, segment
 from hands.sessions.home import Home
+from hands.sessions.names import NameGiven, NameWithheld
 from hands.sessions.recall import Moment, recall
+from hands.sessions.wide import WideEvent
 
 MORNING = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 BILLING = SessionId("6f1c2d3e-0000-4000-8000-000000000001")
@@ -47,13 +49,18 @@ def answered(request: str, reply: HookReply) -> Performed:
     return Performed(Reply(BILLING, RequestId(request), reply))
 
 
+def prompted(name: NameGiven | NameWithheld) -> WideEvent:
+    """The event of a prompt's hook, whose reply gave the session a name hands decided, or withheld it."""
+    return WideEvent("hook", "c" * 32, "d" * 16, None, MORNING, 1.0, "ok", None, (), {}, {"hook": "UserPromptSubmit", "session": BILLING, "name": name})
+
+
 def test_a_sent_draft_is_recalled_by_a_word_in_it_under_the_session_it_went_to(tmp_path: Path) -> None:
     home = Home(tmp_path)
     times = written(
         home,
         [
             Transcribed("tell billing to drop the token helper and read the keychain"),
-            NameGiven(BILLING, "billing"),
+            prompted(NameGiven("billing")),
             Replied("Draft for billing: drop the token helper.", interrupted=False),
             typed("Drop the token-helper; read the token from the keychain."),
             Transcribed("what's the weather"),
@@ -89,7 +96,7 @@ def test_a_permission_answered_is_recalled_with_what_it_asked_and_a_withdrawn_on
     times = written(
         home,
         [
-            NameGiven(BILLING, "billing"),
+            prompted(NameGiven("billing")),
             asked("r1", Permission("Bash", {"command": "rm src/token_helper.py"})),
             answered("r1", Allow()),
             asked("r2", Permission("Write", {"file_path": "/x"})),
@@ -145,8 +152,8 @@ def test_a_send_goes_by_the_name_its_session_was_given_after_it_and_one_that_fai
             failed,
             TypingFailed(failed.effect, "cannot talk to the fritter"),
             # The name a turn's end decided is given in the reply to the prompt after it; the user's /rename outranks it.
-            NameGiven(BILLING, "billing"),
-            NameWithheld(BILLING, "billing work", against="billing", held="payments", error=None),
+            prompted(NameGiven("billing")),
+            prompted(NameWithheld("billing work", against="billing", held="payments")),
         ],
     )
     assert recall(home.audit, [], 20).moments == (
@@ -162,7 +169,7 @@ def test_an_answered_question_is_recalled_with_what_the_user_chose(tmp_path: Pat
     times = written(
         home,
         [
-            NameGiven(BILLING, "billing"),
+            prompted(NameGiven("billing")),
             asked("q", question),
             answered("q", AllowWith({**question.input, "answers": {"Which database?": "Postgres", "Which ORM?": "SQLAlchemy"}})),
         ],
@@ -199,7 +206,7 @@ def test_a_session_hands_saw_join_goes_by_its_project_as_hands_speaks_it_and_a_s
             Applied(Attached(Membership(BILLING, 42, Path("/code/home-infra"), Path("/t.jsonl")))),
             typed("plan the atlantis wait"),
             Replied("", interrupted=False),
-            NameGiven(BILLING, "atlantis plan wait"),
+            prompted(NameGiven("atlantis plan wait")),
         ],
     )
     assert recall(home.audit, ["home-infra"], 20).moments == (Moment(times[1], "sent to home-infra, atlantis plan wait", "plan the atlantis wait"),)

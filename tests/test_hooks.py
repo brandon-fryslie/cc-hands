@@ -43,7 +43,7 @@ def home(tmp_path: Path) -> Home:
 
 
 def test_a_start_reads_the_membership_the_shim_wrote(home: Home) -> None:
-    assert parse_hook(body(hook_event_name="SessionStart", source="startup"), home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook(None, Joined(MEMBER, "startup"))
+    assert parse_hook(body(hook_event_name="SessionStart", source="startup"), home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook("SessionStart", SID, None, Joined(MEMBER, "startup"))
     assert parse(home, body(hook_event_name="SessionStart", source="compact")) == Joined(MEMBER, "compact")
 
 
@@ -57,7 +57,7 @@ def test_a_hook_whose_session_has_no_file_joins_nothing_and_still_says_what_happ
     """It ended, or its process moved on to another session: the registry says which, as it did before hooks joined."""
     home.membership(SID).unlink()
     raw = body(hook_event_name="UserPromptSubmit", prompt="hi", prompt_id="p", permission_mode="default")
-    assert parse_hook(raw, home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook(None, Prompted(SID, at=12.5, mode="default", prompt=PromptId("p")))
+    assert parse_hook(raw, home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook("UserPromptSubmit", SID, None, Prompted(SID, at=12.5, mode="default", prompt=PromptId("p")))
 
 
 @pytest.mark.parametrize(
@@ -77,7 +77,7 @@ def test_every_hook_of_a_running_session_brings_the_session_so_one_that_never_st
 
 def test_an_end_needs_no_membership_file_the_shim_has_already_removed(home: Home) -> None:
     home.membership(SID).unlink()
-    assert parse_hook(body(hook_event_name="SessionEnd", reason="other"), home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook(None, Ended(SID, "other"))
+    assert parse_hook(body(hook_event_name="SessionEnd", reason="other"), home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook("SessionEnd", SID, None, Ended(SID, "other"))
 
 
 def test_the_turn_hooks(home: Home) -> None:

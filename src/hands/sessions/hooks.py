@@ -17,8 +17,10 @@ from hands.sessions.payload import Payload, Rejected
 
 @dataclass(frozen=True)
 class Hook:
-    """What one hook says, applied in this order."""
+    """What one hook says, applied in this order, and which hook said it: its name as Claude Code gives it, and its session."""
 
+    name: str
+    session: SessionId
     # The session as its file names it, for a daemon that may not have heard of it: a session running since before
     # the plugin never fired its start hook, and joins on whatever hook it fires first. One the registry holds is left
     # as it is. None for a start, which joins by itself; for an end, whose file the shim has removed; and for a hook
@@ -32,17 +34,18 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, heard: Stamp, request: Re
     # [LAW:parse-dont-validate] past this function nothing looks at hook JSON again.
     payload = Payload.parse(raw)
     session = payload.session_id()
-    match payload.text("hook_event_name"):
+    name = payload.text("hook_event_name")
+    match name:
         case "SessionStart":
             # The shim writes the membership file before it posts, so the start reads it.
             source = _start_source(payload.text("source"))
-            return Hook(None, Joined(read_membership(home, session), source))
+            return Hook(name, session, None, Joined(read_membership(home, session), source))
         case "SessionEnd":
-            return Hook(None, Ended(session, _end_reason(payload.text("reason"))))
+            return Hook(name, session, None, Ended(session, _end_reason(payload.text("reason"))))
         case _:
             happened = _happened(payload, session, at, heard, request)
             recorded = recorded_membership(home, session)
-            return Hook(None if recorded is None else Attached(recorded), happened)
+            return Hook(name, session, None if recorded is None else Attached(recorded), happened)
 
 
 def parse_display(raw: bytes, *, at: Instant) -> Displayed:

@@ -22,10 +22,12 @@ from hands.core.events import PermissionRequested, StatusReported, Tick, ToolFin
 from hands.core.reducer import EXPIRED_MESSAGE
 from hands.core.session import AskedQuestion, Held, LetGo, Option, Permission, Plan, Question, RequestId, SessionId
 from hands.core.status import Busy, Idle, Report, Stamp
+from hands.sessions.audit import Entry
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.names import Names
 from hands.sessions.server import serve_hooks
+from hands.sessions.wide import WideEvent
 from hands.voice.speech import Aloud, Narrated, Pushed, Told, Tailed, Unprompted, frames, relay
 
 from test_shim import STARTED
@@ -149,6 +151,33 @@ async def test_a_voice_allow_is_what_the_waiting_hook_prints(home: Home, session
     assert await call(tool, request=moment.request, decision="deny") == {
         "readback": "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
     }
+
+
+async def test_a_permission_hook_is_one_event_saying_what_it_was_answered_or_that_its_session_closed_it(home: Home, clock: Clock) -> None:
+    recorded: list[Entry] = []
+
+    def asks() -> list[WideEvent]:
+        return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.facts.get("hook") == "PermissionRequest"]
+
+    sessions = Sessions(permission_deadline=DEADLINE, clock=clock, record=lambda _: None)
+    runner = await serve_hooks(home, sessions, Names(), recorded.append)
+    try:
+        shim, moment = await asked(home, sessions)
+        await call(named(sessions, "answer_permission"), request=moment.request, decision="allow")
+        await shim.finished()
+        closed = await Shim.run(home, ASK)
+        await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
+        # The user answered at the dialog, which kills the hook.
+        closed.process.kill()
+        await closed.process.wait()
+        # [LAW:no-ambient-temporal-coupling] the daemon has noticed the closed connection once the hook's event is out,
+        # and before shutdown, which would let the hook go instead.
+        async with asyncio.timeout(WAIT_SECONDS):
+            while len(asks()) < 2:
+                await asyncio.sleep(0.01)
+    finally:
+        await runner.cleanup()
+    assert [(entry.outcome, entry.facts.get("reply")) for entry in asks()] == [("ok", Allow()), ("cancelled", None)]
 
 
 async def test_voice_answers_to_a_question_are_what_the_waiting_hook_prints_in_its_input(home: Home, sessions: Sessions) -> None:

@@ -24,10 +24,13 @@ from hands.sessions.home import Home
 from hands.sessions.liveness import sweep
 from hands.sessions.membership import read_membership, write_membership
 from hands.sessions.registry import Sessions
-from hands.sessions.audit import NameGiven, NameWithheld
-from hands.sessions.names import Names
+from hands.core.events import StatusReported
+from hands.core.status import Busy, Report, Stamp
+from hands.sessions.audit import Entry
+from hands.sessions.names import NameGiven, NameUnread, NameWithheld, Names
 from hands.sessions.server import serve_hooks
 from hands.sessions.untap import untapped
+from hands.sessions.wide import Fact, WideEvent
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
 COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/code/a"}
@@ -77,6 +80,15 @@ async def shim(home: Home, payload: Mapping[str, object], fritter: str | None = 
     )
     stdout, stderr = await process.communicate(json.dumps(payload).encode())
     return process.returncode, stdout.decode(), stderr.decode()
+
+
+def hooks(recorded: list[Entry]) -> list[tuple[str, str | None, dict[str, Fact]]]:
+    """Each hook event recorded: how it ended, why it failed, and the facts naming the hook and the branch it took."""
+    return [
+        (entry.outcome, entry.error, {name: entry.facts[name] for name in ("hook", "stop", "reply", "name") if name in entry.facts})
+        for entry in recorded
+        if isinstance(entry, WideEvent) and entry.event == "hook"
+    ]
 
 
 def beat(home: Home, pid: int, written_ago: timedelta, pipeline: heartbeat.PipelineState = "running") -> None:
@@ -260,6 +272,37 @@ async def test_a_hook_the_daemon_refuses_exits_nonzero_with_its_reason(home: Hom
     assert sessions.live() == []
 
 
+async def test_each_hook_posted_is_one_event_saying_how_it_was_answered(home: Home) -> None:
+    recorded: list[Entry] = []
+    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None, stop_hold=0.2)
+    runner = await serve_hooks(home, registry, Names(), recorded.append)
+    try:
+        await shim(home, START)
+        await shim(home, {**COMMON, "hook_event_name": "PreCompact"})
+        await shim(home, PROMPT)
+        # Nothing is waiting to be read: the Stop is decided as it is heard.
+        await shim(home, STOP)
+        await shim(home, {**PROMPT, "prompt_id": "p2"})
+        # A Stop for a turn whose prompt hands never heard waits for the transcript to say whose it is, read once a
+        # status is; no record comes, so the hold passes.
+        await registry.apply(StatusReported(SID, Report(Busy(), Stamp(1000)), at=10.0))
+        await shim(home, {**STOP, "prompt_id": "p3"})
+    finally:
+        await runner.cleanup()
+    rejected = "rejected hook: hook event 'PreCompact' is not one hands handles; a session that loaded hands' hooks before hands stopped hooking it takes the current ones with /reload-plugins"
+    assert hooks(recorded) == [
+        ("ok", None, {"hook": "SessionStart"}),
+        ("failed", rejected, {}),
+        ("ok", None, {"hook": "UserPromptSubmit", "name": None}),
+        ("ok", None, {"hook": "Stop", "stop": "decided"}),
+        ("ok", None, {"hook": "UserPromptSubmit", "name": None}),
+        ("ok", None, {"hook": "Stop", "stop": "let go"}),
+    ]
+    [let_go] = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.facts.get("stop") == "let go"]
+    # The event lasts as long as the hook held its session: the whole hold.
+    assert let_go.duration_ms >= 200 and let_go.facts["session"] == SID
+
+
 async def test_a_second_daemon_will_not_take_a_live_socket(home: Home, sessions: Sessions) -> None:
     with pytest.raises(RuntimeError, match="already listening"):
         await serve_hooks(home, Sessions(60.0, clock=lambda: 0.0, record=lambda _: None), Names(), lambda _: None)
@@ -327,7 +370,7 @@ async def test_an_untapped_session_s_commands_are_given_nothing(home: Home, tmp_
 
 async def test_a_finished_turn_has_its_session_named_and_the_name_is_handed_to_claude_code_at_the_next_prompt_once(home: Home) -> None:
     names = Names()
-    given: list[object] = []
+    given: list[Entry] = []
     registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None, stop_hold=0.05)
     runner = await serve_hooks(home, registry, names, given.append)
     try:
@@ -341,16 +384,17 @@ async def test_a_finished_turn_has_its_session_named_and_the_name_is_handed_to_c
         named = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "sessionTitle": "naming fix"}}
         code, stdout, stderr = await shim(home, {**PROMPT, "prompt_id": "p2"})
         assert (code, json.loads(stdout), stderr) == (0, named, "")
-        assert given == [NameGiven(SID, "naming fix")]
         # Given once: the next prompt sets nothing, and Claude Code keeps the name it holds.
         assert await shim(home, {**PROMPT, "prompt_id": "p3"}) == (0, "", "")
+        prompts = [facts for _, _, facts in hooks(given) if facts["hook"] == "UserPromptSubmit"]
+        assert prompts == [{"hook": "UserPromptSubmit", "name": name} for name in (None, NameGiven("naming fix"), None)]
     finally:
         await runner.cleanup()
 
 
 async def test_a_name_set_since_hands_decided_one_is_not_overwritten_by_it(home: Home, tmp_path: Path) -> None:
     names = Names()
-    given: list[object] = []
+    given: list[Entry] = []
     transcript = tmp_path / "t.jsonl"
     # The user gave the session a name with /rename after hands decided its own against the session having none.
     transcript.write_text('{"type":"custom-title","customTitle":"my thing","sessionId":"s"}\n')
@@ -361,8 +405,26 @@ async def test_a_name_set_since_hands_decided_one_is_not_overwritten_by_it(home:
         await shim(home, {**START, **at})
         names.rename(SID, "naming fix", None)
         assert await shim(home, {**PROMPT, **at}) == (0, "", "")
-        assert given == [NameWithheld(SID, "naming fix", None, "my thing", None)]
+        assert hooks(given)[-1] == ("ok", None, {"hook": "UserPromptSubmit", "name": NameWithheld("naming fix", None, "my thing")})
         assert names.due(SID) is None
+    finally:
+        await runner.cleanup()
+
+
+async def test_a_name_is_not_given_over_a_title_that_cannot_be_read(home: Home, tmp_path: Path) -> None:
+    names = Names()
+    given: list[Entry] = []
+    # A directory where the transcript should be: reading the session's title fails.
+    at = {"transcript_path": str(tmp_path)}
+    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None)
+    runner = await serve_hooks(home, registry, names, given.append)
+    try:
+        await shim(home, {**START, **at})
+        names.rename(SID, "naming fix", None)
+        assert await shim(home, {**PROMPT, **at}) == (0, "", "")
+        [(outcome, error, facts)] = hooks(given)[-1:]
+        assert (outcome, facts) == ("failed", {"hook": "UserPromptSubmit", "name": NameUnread("naming fix", None)})
+        assert error is not None and error.startswith(f"cannot read the name of session {SID} from {tmp_path}, so 'naming fix' is not given:")
     finally:
         await runner.cleanup()
 
