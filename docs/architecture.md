@@ -1063,6 +1063,10 @@ failed it; a turn whose asker stopped waiting is still heard to its end. Each di
 event: a `brain.permission`, with the tool, the decision, and how long it was held, and a `brain.elicitation`, which
 is always declined. A dialog posted for the turn in flight is a part of that `brain.turn`; any other is a part of the
 launch. A body hands cannot read is answered as its hook asks, and its event fails saying so.
+Each side question (`brain.aside`), asked of a Claude Code of its own, is one event from when it is asked: what it is
+for (`kind`), the question and its answer, how long it waited behind the ones before it (`queued_ms`) and how long its
+Claude Code took (`answering_ms`, absent for a question left before its turn), or why it has none (`unanswered`).
+Asked inside another unit of work, it is a part of that one.
 
 **What is in front.** Built: as the user's words reach the brain's stage, hands reads once
 what is in front on the Mac's screen (`sessions/front.py`, decided by the pure

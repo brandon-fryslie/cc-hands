@@ -8,7 +8,7 @@ from typing import cast
 import pytest
 
 from hands.brain.context import VOICE_COMPACTION, Keeper, Kept
-from hands.brain.asides import AsideFailed
+from hands.brain.asides import AsideFailed, Unanswered
 from hands.core.context import LONG, QUOTED, SHOWN, Result, aged, boundary, key, line, question
 from hands.core.sentences import Digest
 from hands.core.session import SessionId
@@ -120,7 +120,7 @@ class Asked:
         [file] = re.findall(r'Input: \{"file_path": "(/\d+)"\}', question)
         self.files.append(file)
         if file in self.failing:
-            raise AsideFailed("no answer in 120s")
+            raise AsideFailed(Unanswered.TIMED_OUT, "no answer in 120s")
         # Broken over lines, as a model may break it.
         return f"  file {file}\nholds its digit. "
 

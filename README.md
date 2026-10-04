@@ -133,7 +133,7 @@ It is interactive Claude Code under hands' own fritter, never `claude -p`: hands
 and stops a turn with Escape, and types nothing else into it; its hooks say when a turn was taken and when it ended.
 What hands asks in the background, the Claude Code backend's summaries and the sentence an old tool result goes as,
 is asked of a second interactive Claude Code started for each question, with `/btw` and the question as its opening
-prompt (`src/hands/brain/asides.py`), so a spoken turn never waits on one; each has its `AsideAnswered` audit line. It is the pipeline's LLM stage (`src/hands/brain/stage.py`): what
+prompt (`src/hands/brain/asides.py`), so a spoken turn never waits on one; each is a `brain.aside` wide event. It is the pipeline's LLM stage (`src/hands/brain/stage.py`): what
 it says is spoken from its requests on the wire, never from its screen; each turn's `voice.turn` wide event names the
 exchanges its words came from. A barge-in stops it, except while a tool whose effect must land is running,
 which finishes and has its readback, or why it failed, spoken; after that, and after `stay_silent`, hands
