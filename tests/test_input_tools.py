@@ -237,7 +237,8 @@ async def test_a_control_in_what_was_heard_reaches_the_terminal_as_its_escape_an
     try:
         await fire(user, "on_user_turn_message_added", UserTurnMessageAddedMessage("\x1b[2Kgone\x07 back\x08\x08 {x}\x9b2J\x7f\u202eo", "t1"))
     finally:
-        logger.remove(sink)
+        for each in sink:
+            logger.remove(each)
 
     written = terminal.getvalue()
     assert written.endswith(" - heard: \\u001b[2Kgone\\u0007 back\\u0008\\u0008 {x}\\u009b2J\\u007f\\u202eo\n")

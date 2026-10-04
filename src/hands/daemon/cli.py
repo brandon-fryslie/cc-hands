@@ -29,7 +29,7 @@ from hands.threads import off_loop
 TERMINAL_LEVELS: dict[str | None, str | int | bool] = {"": "WARNING", "hands": "INFO"}  # loguru's FilterDict
 
 if TYPE_CHECKING:
-    from loguru import Record
+    from loguru import Message, Record
 
 # Every C0 and C1 control, DEL, and bidi embedding, override, and isolate, written as its JSON escape: a line's text
 # comes from transcripts, replies, and session names, and a raw ESC, BEL, or BS in it would move the cursor, ring the
@@ -52,10 +52,24 @@ def terminal_line(record: "Record") -> str:
     return LINE
 
 
-def to_terminal(stream: TextIO) -> int:
+def to_terminal(stream: TextIO) -> tuple[int, int]:
     """[LAW:single-enforcer] the one terminal sink: hands' own lines from INFO, every library's only from WARNING, and
-    no message read by the terminal as a control."""
-    return logger.add(stream, filter=TERMINAL_LEVELS, format=terminal_line)
+    nothing in them read by the terminal as a control. Its two loguru sinks, which each record reaches one of.
+
+    A record with no exception is written as loguru colours it. One with an exception is written whole with every
+    control made visible, so it is not coloured: loguru fills `{exception}` after the format runs, with the exception's
+    own text among its colours, and only the written line holds both, where they cannot be told apart. Its backtrace
+    and its diagnosis are loguru's own.
+    """
+
+    def traced(message: "Message") -> None:
+        stream.write(message.translate(VISIBLE))
+        stream.flush()
+
+    # Each sink's format is empty for the records the other writes, so each record is one write, and never split over two.
+    lines = logger.add(stream, filter=TERMINAL_LEVELS, format=lambda record: "" if record["exception"] else terminal_line(record))
+    traces = logger.add(traced, filter=TERMINAL_LEVELS, format=lambda record: terminal_line(record) if record["exception"] else "", colorize=False)
+    return lines, traces
 
 
 def said_failed(record: audit.Record) -> audit.Record:

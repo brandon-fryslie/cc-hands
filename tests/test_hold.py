@@ -180,8 +180,8 @@ def test_a_unit_of_work_that_failed_is_said_on_the_terminal_and_is_one_line_in_t
         with pytest.raises(OSError), wide.unit("hook", record), wide.unit("applied", record):
             raise OSError("the session is gone")
     finally:
-        logger.remove(shown)
-        logger.remove(failures)
+        for sink in (*shown, failures):
+            logger.remove(sink)
     # The failed ones are said by name and error, controls made visible. The one that ended ok is not said, and
     # neither are the ones that raised.
     said = terminal.getvalue().splitlines()
@@ -192,6 +192,32 @@ def test_a_unit_of_work_that_failed_is_said_on_the_terminal_and_is_one_line_in_t
         ("naming.pass", "failed"), ("summary.pass", "ok"), ("tool.call", "failed"), ("brain.turn", "ok"), ("applied", "failed"), ("hook", "failed"),
     ]
     assert len(recorded) == 6
+
+
+def test_an_exception_reaches_the_terminal_with_its_controls_as_escapes_and_its_diagnosis_kept() -> None:
+    import io
+
+    from loguru import logger
+
+    terminal = io.StringIO()
+    shown = cli.to_terminal(terminal)
+    try:
+        try:
+            said = "gone\x1b[2K\x07\x08"
+            raise ValueError(said)
+        except ValueError:
+            logger.exception("the turn could not be read")
+        logger.warning("next")
+    finally:
+        for sink in shown:
+            logger.remove(sink)
+    written = terminal.getvalue()
+    assert not {"\x1b", "\x07", "\x08"} & set(written)
+    assert "ValueError: gone\\u001b[2K\\u0007\\u0008" in written
+    # The backtrace marks the frame that caught it, and the diagnosis names a variable's value under the line using it.
+    assert "> File " in written and "'gone\\x1b[2K\\x07\\x08'" in written
+    # One write per record, so the line after it follows the trace.
+    assert written.rstrip("\n").endswith(" - next")
 
 
 def test_the_terminal_shows_hands_from_info_and_everything_else_from_warning() -> None:
