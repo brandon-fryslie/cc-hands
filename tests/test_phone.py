@@ -24,7 +24,7 @@ from hands.sessions.audit import Entry
 from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
-from hands.voice.phone import Left, Offer, Phone, Refused, Unreached
+from hands.voice.phone import CallLeft, CallRefused, CallUnreached, Offer, Phone
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent, begun
@@ -75,10 +75,10 @@ def calls(recorded: list[Entry]) -> list[WideEvent]:
     return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "phone.call"]
 
 
-def left(event: WideEvent) -> Left:
+def left(event: WideEvent) -> CallLeft:
     """How the call `event` is the event of ended, where it was up."""
     match event.facts["ended"]:
-        case Left() as ended:
+        case CallLeft() as ended:
             return ended
         case ended:
             pytest.fail(f"the call was not up as it ended: {ended}")
@@ -193,10 +193,10 @@ async def test_an_offer_that_never_connects_moves_nothing_and_is_let_go_of_by_th
     page, offer = await a_page()
     await phone.answer(offer, "192.168.7.22", begun())
     [older] = calls(recorded)
-    assert (older.outcome, dict(older.facts)) == ("ok", {"remote": "192.168.7.21", "ended": Unreached("replaced")})
+    assert (older.outcome, dict(older.facts)) == ("ok", {"remote": "192.168.7.21", "ended": CallUnreached("replaced")})
     await phone.stop()
     [_, newer] = calls(recorded)
-    assert (newer.outcome, dict(newer.facts)) == ("ok", {"remote": "192.168.7.22", "ended": Unreached("stopped")})
+    assert (newer.outcome, dict(newer.facts)) == ("ok", {"remote": "192.168.7.22", "ended": CallUnreached("stopped")})
     await unheard.peer.close()
     await page.peer.close()
 
@@ -213,41 +213,43 @@ async def test_a_message_that_is_neither_audio_nor_the_button_is_said_and_moves_
     assert call.key.gate.key == "up"
 
 
-Served = tuple[TestClient[web.Request, web.Application], Phone, list[Entry]]
+Served = tuple[TestClient[web.Request, web.Application], Phone, PushToTalk, list[Entry]]
 
 
 @pytest.fixture
 async def page_server() -> AsyncGenerator[Served, None]:
-    recorded: list[Entry] = []
-    phone = Phone(PushToTalk(lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
+    key, recorded = PushToTalk(lambda _: None), list[Entry]()
+    phone = Phone(key, heard_rate=16000, played_rate=24000, record=recorded.append)
     client = TestClient(TestServer(phone_app(phone, KEY, recorded.append)))
     await client.start_server()
-    yield client, phone, recorded
+    yield client, phone, key, recorded
     await phone.stop()
     await client.close()
 
 
 
 async def test_the_page_is_served_to_anyone(page_server: Served) -> None:
-    client, _, _ = page_server
+    client, _, _, _ = page_server
     shown = await client.get("/")
     assert shown.status == 200 and "Hold to talk" in await shown.text()
 
 
 async def test_an_offer_without_the_phone_key_is_refused_and_recorded(page_server: Served) -> None:
-    client, phone, recorded = page_server
+    client, phone, key, recorded = page_server
     page, offer = await a_page()
     body = json.dumps({"sdp": offer.sdp, "type": "offer", "rate": PAGE_RATE})
     refused = await client.post("/offer", data=body, headers={"Authorization": "Bearer guessed"})
     assert refused.status == 401
     [event] = calls(recorded)
     assert (event.outcome, event.error, event.parent_id) == ("failed", "offered without the phone's key", None)
-    assert dict(event.facts) == {"remote": "127.0.0.1", "ended": Refused("offered without the phone's key")}
+    assert dict(event.facts) == {"remote": "127.0.0.1", "ended": CallRefused("offered without the phone's key")}
     assert phone.moves.empty() and phone.heard.empty()
     taken = await client.post("/offer", data=body, headers={"Authorization": f"Bearer {KEY}"})
     assert taken.status == 200
     await page.peer.setRemoteDescription(RTCSessionDescription(**await taken.json()))
-    await page.opened.wait()
+    async with asyncio.timeout(10):
+        while key.gate.place != "phone":
+            await asyncio.sleep(0.01)
     await phone.hang_up("hung up")
     [_, up] = calls(recorded)
     assert (up.facts["remote"], left(up).reason) == ("127.0.0.1", "hung up")
@@ -255,11 +257,20 @@ async def test_an_offer_without_the_phone_key_is_refused_and_recorded(page_serve
 
 
 async def test_an_offer_that_is_no_offer_is_refused_and_is_one_event_saying_why(page_server: Served) -> None:
-    client, _, recorded = page_server
+    client, _, _, recorded = page_server
     refused = await client.post("/offer", data="{}", headers={"Authorization": f"Bearer {KEY}"})
     assert refused.status == 400
     [event] = calls(recorded)
-    assert (event.outcome, event.error, event.facts["ended"]) == ("failed", await refused.text(), Refused(await refused.text()))
+    assert (event.outcome, event.error, event.facts["ended"]) == ("failed", await refused.text(), CallRefused(await refused.text()))
+
+
+async def test_an_offer_whose_body_cannot_be_read_is_one_failed_event_saying_what_raised(page_server: Served) -> None:
+    client, _, _, recorded = page_server
+    unread = await client.post("/offer", data=b"\xff\xfe", headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json; charset=utf-8"})
+    assert unread.status == 500
+    [event] = calls(recorded)
+    assert (event.outcome, dict(event.facts)) == ("failed", {"remote": "127.0.0.1"})
+    assert event.error is not None and event.error.startswith("UnicodeDecodeError") and event.trace
 
 
 async def test_an_offer_hands_cannot_answer_is_one_failed_event_and_raises() -> None:

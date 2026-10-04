@@ -47,21 +47,21 @@ PhoneGone = Literal["replaced", "hung up", "failed", "went quiet", "stopped"]
 
 
 @dataclass(frozen=True)
-class Refused:
+class CallRefused:
     """The page's offer was not taken: it came without the phone's key, or was no offer."""
 
     why: str
 
 
 @dataclass(frozen=True)
-class Unreached:
+class CallUnreached:
     """The call was answered and let go before it connected: hands never moved to it."""
 
     reason: PhoneGone
 
 
 @dataclass(frozen=True)
-class Left:
+class CallLeft:
     """The call was up, hands at the phone from `arrived_ms` after its offer, and it ended."""
 
     reason: PhoneGone
@@ -69,7 +69,7 @@ class Left:
 
 
 # How a call ended; or what raised as hands answered it.
-CallEnd = Refused | Unreached | Left | BaseException
+CallEnd = CallRefused | CallUnreached | CallLeft | BaseException
 
 
 def call_ended(record: Record, began: Begun, remote: str, end: CallEnd) -> None:
@@ -78,9 +78,9 @@ def call_ended(record: Record, began: Begun, remote: str, end: CallEnd) -> None:
     match end:
         case BaseException():
             ended("phone.call", record, began, end, remote=remote)
-        case Refused(why=why):
+        case CallRefused(why=why):
             ended("phone.call", record, began, None, why, remote=remote, ended=end)
-        case Unreached(reason=reason) | Left(reason=reason):
+        case CallUnreached(reason=reason) | CallLeft(reason=reason):
             failure = "the call's connection failed" if reason == "failed" else None
             ended("phone.call", record, began, None, failure, remote=remote, ended=end)
 
@@ -183,7 +183,9 @@ class _Call:
     began: Begun
     # Set by every message the page sends; the watch hangs up a call that goes QUIET_SECS without one.
     heard: asyncio.Event
+    # Set as it arrives: its watch, and how long after its offer it came.
     watch: asyncio.Task[None] | None = None
+    arrived_ms: float = 0.0
 
 
 class Phone:
@@ -205,9 +207,8 @@ class Phone:
         self._heard_rate = heard_rate
         self._played_rate = played_rate
         self._record = record
-        # The call hands is at, and how long after its offer it arrived; and the newest offer answered and not yet up.
+        # The call hands is at, and the newest offer answered and not yet up.
         self._call: _Call | None = None
-        self._arrived_ms = 0.0
         self._offered: _Call | None = None
         # The phone's microphone as the pipeline hears it: keyed frames at the pipeline's rate, while hands is at the phone.
         self.heard: asyncio.Queue[KeyedAudio] = asyncio.Queue()
@@ -261,9 +262,9 @@ class Phone:
             await peer.setRemoteDescription(RTCSessionDescription(offer.sdp, offer.type))
             await peer.setLocalDescription(await peer.createAnswer())
         except BaseException as error:
-            # Never offered, so nothing else holds the peer to close it, or ends its call.
-            await peer.close()
+            # Never offered, so nothing else ends its call or holds the peer to close it.
             call_ended(self._record, began, remote, error)
+            await peer.close()
             raise
         older, self._offered = self._offered, call
         await self._let_go(older, "replaced")
@@ -274,7 +275,7 @@ class Phone:
         # await: a speaker reading the gate between them never finds the phone without a call.
         self._offered = None
         gone = self._leave("replaced")
-        self._call, self._arrived_ms = call, since(call.began.began)
+        self._call, call.arrived_ms = call, since(call.began.began)
         self._key.go("phone")
         # Watched from the channel's opening: the page sends nothing before it.
         call.watch = asyncio.create_task(self._watch(call), name="the phone's call watch")
@@ -290,7 +291,7 @@ class Phone:
             case None:
                 pass
             case _Call():
-                call_ended(self._record, offered.began, offered.remote, Unreached(reason))
+                call_ended(self._record, offered.began, offered.remote, CallUnreached(reason))
                 await offered.peer.close()
 
     async def _watch(self, call: _Call) -> None:
@@ -333,7 +334,7 @@ class Phone:
                 call.outbound.stop()
                 if call.watch is not None and call.watch is not asyncio.current_task():
                     call.watch.cancel()
-                call_ended(self._record, call.began, call.remote, Left(reason, self._arrived_ms))
+                call_ended(self._record, call.began, call.remote, CallLeft(reason, call.arrived_ms))
                 return call
 
     async def hang_up(self, reason: PhoneGone) -> None:
