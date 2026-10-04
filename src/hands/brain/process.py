@@ -522,8 +522,11 @@ class Brain:
         try:
             await self._escape(turn)
         finally:
-            # A broken turn ends with what broke it however its stop went, even unstopped: nothing else is left to end it.
-            if turn.broken is not None:
+            # A broken turn ends with what broke it however its stop went, even unstopped: nothing else is left to end it,
+            # and what it holds is refused first, so no dialog of it is left open for the next turn's Return. Unanswered,
+            # it is still the turn in flight, so what is held is its own and no later turn's.
+            if turn.broken is not None and not turn.answered.done():
+                self._settle(Deny(BROKEN))
                 self._over(turn, turn.broken)
 
     async def _escape(self, turn: _Turn) -> None:
@@ -618,7 +621,7 @@ class Brain:
     def _answer(self, posted: _Posted) -> None:
         match posted.event:
             case "PermissionRequest":
-                # What breaks in its dialog is the turn's it was held for, which `_dialog` finds; anything else is no turn's.
+                # What breaks in its settling is the turn's it was held for, which `_permit` finds; anything else is no turn's.
                 self._keep(self._permit(posted), None)
             case "Elicitation":
                 # A dialog is kept shut, whatever it says.
@@ -646,7 +649,9 @@ class Brain:
                 with unit("brain.permission", self._record):
                     fail(f"hands could not read the permission request: {error}")
                 return
-            with self._dialog("brain.permission", prompt) as turn:
+            # What breaks in its settling is its owner's: the turn whose user it was held to be put to.
+            turn = self._owner(prompt)
+            with self._done_for(turn), self._dialog("brain.permission", prompt, turn):
                 annotate(tool=tool)
                 try:
                     match asked:
@@ -673,15 +678,18 @@ class Brain:
             posted.reply.set_result(hook_output(decision))
 
     @contextlib.contextmanager
-    def _dialog(self, event: str, prompt: str | None) -> Generator[_Turn | None]:
-        """A dialog the brain posted, as one unit of work `event`: a part of the turn in flight it was posted for, which it
-        yields, or else of the brain's launch, for one a turn before it left behind or one posted between turns."""
+    def _dialog(self, event: str, prompt: str | None, owner: _Turn | None) -> Generator[None]:
+        """A dialog the brain posted, as one unit of work `event`: a part of its `owner`, the turn in flight it was posted
+        for, or else of the brain's launch, for one a turn before it left behind or one posted between turns."""
+        with continuing(self._launched if owner is None else owner.began.span), unit(event, self._record):
+            annotate(prompt=prompt)
+            yield
+
+    def _owner(self, prompt: str | None) -> _Turn | None:
+        """The turn in flight a dialog posted for `prompt` is a part of, if it is still in flight."""
         turn = self._turn
         # [LAW:single-enforcer] the turn's own, as its Stop is: one a turn before it left behind is nobody's to answer.
-        owner = turn if turn is not None and not turn.answered.done() and turn.prompt == prompt else None
-        with self._done_for(owner), continuing(self._launched if owner is None else owner.began.span), unit(event, self._record):
-            annotate(prompt=prompt)
-            yield owner
+        return turn if turn is not None and not turn.answered.done() and turn.prompt == prompt else None
 
     def _settle(self, decision: Allow | Deny) -> None:
         """Settles every permission held now: its turn is over, so no answer of the user's can reach it."""
@@ -698,7 +706,7 @@ class Brain:
             with unit("brain.elicitation", self._record):
                 fail(f"hands could not read the Elicitation hook: {error}")
             return
-        with self._dialog("brain.elicitation", prompt):
+        with self._dialog("brain.elicitation", prompt, self._owner(prompt)):
             annotate(server=server)
 
     def _hook(self, body: bytes) -> None:

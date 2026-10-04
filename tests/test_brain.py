@@ -21,7 +21,7 @@ from loguru import logger
 from hands.core.front import FrontUnread, InFront
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import BROKEN, NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, account_kept_out, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -50,7 +50,7 @@ from hands.voice.backends import AnthropicBackend, ClaudeCodeBackend
 from hands.voice.beside import Noting
 from hands.voice.pipeline import VoiceConfig
 from hands.voice.summary import SummaryFailed, aside
-from hands.sessions.wide import Fact, WideEvent, continuing, here, root, unit, within
+from hands.sessions.wide import Fact, WideEvent, begun, continuing, here, root, unit, within
 from hands.voice.tools import Called, Result, audited, tool
 from hands.voice import voices
 
@@ -842,7 +842,11 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
     brain._record = record  # pyright: ignore[reportPrivateUsage]
     with unit("brain.launch", lambda _entry: None):
         brain._launched = here()  # pyright: ignore[reportPrivateUsage]
-    brain._turn = None  # pyright: ignore[reportPrivateUsage]
+    # The elicitation that breaks is a part of the turn in flight: it was declined before it was heard, so the turn runs on.
+    loop = asyncio.get_running_loop()
+    turn = _Turn(loop.create_future(), loop.create_future(), unasked, begun())  # pyright: ignore[reportPrivateUsage]
+    turn.taken.set_result("p1")
+    brain._turn = turn  # pyright: ignore[reportPrivateUsage]
     brain._held = set()  # pyright: ignore[reportPrivateUsage]
     brain._typing = set()  # pyright: ignore[reportPrivateUsage]
     hearing = asyncio.create_task(brain._hear_hooks(hooks))  # pyright: ignore[reportPrivateUsage]
@@ -854,7 +858,7 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
             return (await reply.json())["hookSpecificOutput"]
 
     try:
-        elicited = {"hook_event_name": "Elicitation", "session_id": "b1", "mcp_server_name": "probe", "message": "Which?"}
+        elicited = {"hook_event_name": "Elicitation", "session_id": "b1", "prompt_id": "p1", "mcp_server_name": "probe", "message": "Which?"}
         assert (await answered("Elicitation", elicited))["action"] == "decline"
         permission = {"hook_event_name": "PermissionRequest", "session_id": "b1", "tool_name": "Write", "tool_input": {"file_path": "/tmp/x"}}
         assert (await answered("PermissionRequest", permission))["decision"] == {"behavior": "deny", "message": NOBODY}
@@ -863,6 +867,7 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
         hearing.cancel()
         await listener.cleanup()
     assert said == ["the brain's own work failed: ValueError('the log is full')"]
+    assert (turn.broken, turn.answered.done(), brain._turn) == (None, False, turn)  # pyright: ignore[reportPrivateUsage]
     assert [event.event for event in recorded if isinstance(event, WideEvent)] == ["brain.elicitation", "brain.permission"]
 
 
