@@ -128,7 +128,7 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     # A line cut short, as a write that failed part way leaves it: the lines after it are still read.
     with segment(path, 0).open("a", encoding="utf-8") as torn:
         torn.write('{"at": "2026-10-03T00:00:00.000+00:00", "level": "err\n')
-    log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("no route", 0.0), True))
+    log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("no route", 0.0), True, None))
     log.record(Called("list_sessions", {}, {"sessions": []}))
     log.record(BacklogUnread(project="/code/p", error="lit exited 3", seconds=0.1))
     # A file that is no segment is no part of the log.

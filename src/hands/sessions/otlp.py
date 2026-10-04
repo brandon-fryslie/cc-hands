@@ -26,7 +26,9 @@ from typing import Literal
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from hands.sessions.audit import Entry, Exported, Record, jsonable
+from hands.core.trace import Span
+from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
+from hands.sessions.audit import Entry, Exported, Record, jsonable, level
 from hands.sessions.wide import Outcome, WideEvent
 
 # OpenTelemetry's service.name, which every span carries on its resource.
@@ -60,13 +62,44 @@ def exporting(collector: str | None, record: Record) -> Generator[Record]:
 
     def both(entry: Entry) -> None:
         record(entry)
-        if isinstance(entry, WideEvent):
-            exporter.send(entry)
+        if (event := traced(entry)) is not None:
+            exporter.send(event)
 
     try:
         yield both
     finally:
         exporter.close()
+
+
+def traced(entry: Entry) -> WideEvent | None:
+    """The span a line of the audit log is in a trace: a wide event as it is, and the proxy's record of a request a unit of
+    work made, such as a voice turn's round trip to the model, read as that unit's part; None for a line in no trace."""
+    match entry:
+        case WideEvent():
+            return entry
+        case Exchanged(span=Span() as span, sent_at=sent_at, reply=reply):
+            # [LAW:one-source-of-truth] a view of the record, under its own names, never a second record kept of it; and
+            # [LAW:single-enforcer] failed where the audit log judges the line an error.
+            failed = level(entry) == "error"
+            ended, error, facts = _reply_end(sent_at, reply)
+            return WideEvent(
+                "proxy.exchange", span.trace_id, span.span_id, span.parent_id, datetime.fromtimestamp(sent_at, UTC), round((ended - sent_at) * 1000, 3),
+                "failed" if failed else "ok", error if failed else None, (), {}, {"exchange": entry.exchange, "final": entry.final, **facts},
+            )
+        case _:
+            return None
+
+
+def _reply_end(sent_at: float, reply: Reached | Unreached | Held | Uncopied) -> tuple[float, str | None, Mapping[str, object]]:
+    """When a request's reply ended, what it failed of where it did, and what it says of the reply."""
+    match reply:
+        case Unreached(error=error, failed_at=at) | Uncopied(reason=error, lost_at=at):
+            return at, error, {}
+        case Held(answered_at=at):
+            return at, None, {}
+        case Reached(status=status, first_byte_at=first, last_byte_at=last, reply_bytes=size, body=body):
+            facts = {"status": status, "first_byte_ms": round((first - sent_at) * 1000, 3), "reply_bytes": size}
+            return last, body.reason if isinstance(body, Garbled) else f"the API answered {status}", facts
 
 
 class _Closed:

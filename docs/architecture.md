@@ -1022,7 +1022,13 @@ For the brain, a narration waits in a lane of `BrainStage`'s own, never in Pipec
 context, and the user's turn goes ahead of it: a narration that waited while the brain
 was answering is asked only once no words of the user's are waiting. What the narrator
 says as written waits in the same lane (`Aloud`), so a session's end is heard after its
-last turn. `BrainSpoke.waited` is how long each turn waited in its lane.
+last turn. Each turn is one `voice.turn` wide event, and its `queued_ms` is how long it waited in its lane.
+Its `waited_ms` is how long the user waited from letting go of the key to the turn's first word on the wire,
+`transcribed_ms` and `queued_ms` are where that wait went before the brain was written to; words that waited behind a
+turn together are timed from the last of them. Each call the brain's replies made (`tool.call`) is a child event under
+it, timed as the stage heard it on the wire. Each model round trip is the proxy's own `Exchanged` line, which carries a
+span inside the turn's (`span`), and reaches the collector as a `proxy.exchange` span under it: no second record of a
+round trip is kept. A turn hands stopped mid-way still emits its event, cancelled, with what it had done.
 
 **What is in front.** Built: as the user's words reach the brain's stage, hands reads once
 what is in front on the Mac's screen (`sessions/front.py`, decided by the pure
@@ -1034,7 +1040,7 @@ a narration is not read against it. The app in front is the one LaunchServices s
 session when it holds one. A tab running tmux shows the pane its client is on. A session is
 in front when that terminal is on its line of ancestors: its fritter's, its tab's or its
 pane's. A screen hands cannot read (no app in front, a refused or unanswered AppleScript,
-several sessions under the terminals it shows) is left out of the turn, and `BrainSpoke.asker`, a
+several sessions under the terminals it shows) is left out of the turn, and the `voice.turn` event's `asker` fact, a
 `UserAsked`, records what was read or why it was not, and how long the read took.
 
 The rest of this section is planned: step summaries built as steps arrive, and streaming.
@@ -1792,7 +1798,10 @@ A unit of work runs inside `hands.sessions.wide.unit`, which leaves exactly one
 `WideEvent` however the run ends: ok, failed with what it raised and the frames it
 came up through, or cancelled `[LAW:nothing-unseen]`. Code inside the run calls
 `annotate` to add a fact and `count` to add to a count the unit declared. It never
-emits anything itself. A declared count the run never added to is written as 0, so a
+emits anything itself. A run that fails without raising calls `fail`, and its event
+ends failed with that error. A part of the run that was timed where it happened, such
+as a request another process made, is emitted with `child` as its own event under the
+unit. A declared count the run never added to is written as 0, so a
 run that did nothing reads differently from a run that never happened. A unit opened
 inside another shares its `trace_id`. A task that outlives the unit it was started in
 cannot add to the event once it is emitted: it is refused with a `LookupError`.

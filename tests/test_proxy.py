@@ -17,6 +17,7 @@ from aiohttp import web
 from loguru import logger
 
 from hands.core.session import SessionId
+from hands.core.trace import Span
 from hands.core.wire import (
     Answered,
     Answering,
@@ -532,6 +533,14 @@ async def test_an_appended_request_reaches_the_api_with_the_tail_after_its_newes
     assert (exchange.changes, exchange.request_bytes) == ((Tail("[hands] how they stand"),), len(REQUEST))
 
 
+async def test_a_request_made_as_part_of_a_unit_of_work_is_recorded_with_its_span_in_that_units_trace(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    _, wire = await serve(streamed)
+    span = Span("4bf92f3577b34da6a3ce929d0e0e4736", "1111111111111111", "00f067aa0ba902b7")
+    wire.route = lambda _sent: Send(span=span)
+    await post(wire.proxy.url)
+    assert only_exchange(wire).span == span
+
+
 async def test_a_request_the_tail_cannot_be_appended_to_goes_on_as_it_came(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     wire.route = lambda _sent: Send((Tail("tail"),))
@@ -586,7 +595,7 @@ async def test_a_route_that_raises_is_logged_and_the_request_goes_on_as_it_came(
 def test_the_daemon_keeps_one_audit_line_per_exchange_and_nothing_per_event() -> None:
     lines: list[Entry] = []
     observe = wire_to(lines.append)
-    exchange = Exchanged("e1", None, MainTurn(None), "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0), False)
+    exchange = Exchanged("e1", None, MainTurn(None), "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0), False, None)
     observe(Sent("e1", None, MainTurn(None), None))
     observe(Heard("e1", TextDelta(0, "hi")))
     observe(exchange)

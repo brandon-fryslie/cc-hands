@@ -3,6 +3,8 @@
     with unit("delta.read", record, counts=("commits", "files")):
         annotate(session=session)       # a fact about this run, from anywhere inside it
         count(commits=len(commits))     # added to a count it declared; one it never counted is written as 0
+        child("git.log", at, ms, "ok")  # a part of this run measured where it happened, as a span under it
+        fail("the forge refused")       # this run failed, said rather than raised: it ends failed, and nothing is thrown
 
 Code inside a unit of work never emits; it annotates the event the nearest open unit holds, and the unit emits it, once,
 on success, on failure, and on cancellation alike [LAW:nothing-unseen]. The event leaves through the `emit` the unit was
@@ -21,6 +23,8 @@ from datetime import UTC, datetime
 from secrets import token_hex
 from typing import Literal, cast
 from uuid import uuid4
+
+from hands.core.trace import Span
 
 Outcome = Literal["ok", "failed", "cancelled"]
 
@@ -51,8 +55,12 @@ class _Open:
 
     trace_id: str
     span_id: str
+    parent_id: str | None
+    emit: Callable[[WideEvent], None]
     counts: dict[str, int]
     facts: dict[str, object] = field(default_factory=dict[str, object])
+    # Why the run failed, where it said so rather than raising.
+    failure: str | None = None
     closed: bool = False
 
 
@@ -68,8 +76,8 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
     The body's exception is the body's: it is recorded on the event and raised on, never swallowed here.
     """
     enclosing = _open.get()
-    # The W3C Trace Context sizes, as OTLP carries them: a 16-byte trace id and an 8-byte span id, in hex.
-    opened = _Open(uuid4().hex if enclosing is None else enclosing.trace_id, token_hex(8), dict.fromkeys(counts, 0))
+    # The W3C Trace Context size of a trace id, as OTLP carries it: 16 bytes, in hex.
+    opened = _Open(uuid4().hex if enclosing is None else enclosing.trace_id, _span_id(), None if enclosing is None else enclosing.span_id, emit, dict.fromkeys(counts, 0))
     started_at, began = datetime.now(UTC), time.monotonic()
     token = _open.set(opened)
     outcome: Outcome = "ok"
@@ -77,6 +85,8 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
     trace: tuple[str, ...] = ()
     try:
         yield
+        if opened.failure is not None:
+            outcome, error = "failed", opened.failure
     except asyncio.CancelledError:
         outcome = "cancelled"
         raise
@@ -89,7 +99,7 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
         # already emitted and never reach the log, so it is refused instead.
         opened.closed = True
         duration_ms = round((time.monotonic() - began) * 1000, 3)
-        emit(WideEvent(event, opened.trace_id, opened.span_id, None if enclosing is None else enclosing.span_id, started_at, duration_ms, outcome, error, trace, opened.counts, opened.facts))
+        emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, started_at, duration_ms, outcome, error, trace, opened.counts, opened.facts))
 
 
 def annotate(**facts: object) -> None:
@@ -105,6 +115,35 @@ def count(**counts: int) -> None:
         raise KeyError(f"counts this unit of work did not declare: {sorted(undeclared)}")
     for name, n in counts.items():
         opened.counts[name] += n
+
+
+def fail(error: str) -> None:
+    """End the unit of work open here failed, with `error`, for a failure it reports rather than raises: the run goes on
+    to its end, and its event says it failed and why. A later failure of the same run replaces an earlier one."""
+    _current().failure = error
+
+
+def child(event: str, started_at: datetime, duration_ms: float, outcome: Outcome, error: str | None = None, **facts: object) -> None:
+    """Emit a part of the unit of work open here that was timed where it happened rather than run inside it, such as a
+    request another process made on its behalf: its own event, in the unit's trace, naming the unit as its parent."""
+    opened = _current()
+    opened.emit(WideEvent(event, opened.trace_id, _span_id(), opened.span_id, started_at, duration_ms, outcome, error, (), {}, facts))
+
+
+def here() -> Span:
+    """The span of the unit of work open here, for a part of it that runs where the unit is not open."""
+    opened = _current()
+    return Span(opened.trace_id, opened.span_id, opened.parent_id)
+
+
+def within(parent: Span) -> Span:
+    """A new span inside `parent`, in its trace."""
+    return Span(parent.trace_id, _span_id(), parent.span_id)
+
+
+def _span_id() -> str:
+    # The W3C Trace Context size of a span id, as OTLP carries it: 8 bytes, in hex.
+    return token_hex(8)
 
 
 def _current() -> _Open:

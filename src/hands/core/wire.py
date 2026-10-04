@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, cast
 
 from hands.core.session import PromptId, SessionId
+from hands.core.trace import Span
 
 # Where Claude Code reaches the API when nothing says otherwise.
 UPSTREAM = "https://api.anthropic.com"
@@ -708,6 +709,8 @@ class Send:
     # What the client makes of the API refusing it: asks again on its own schedule, or, told the refusal is final, ends
     # there, so the refusal is heard the moment it comes.
     refusal: Literal["retried", "final"] = "retried"
+    # The span the exchange is in a unit of work's trace, for a request made as part of one: its record carries it.
+    span: Span | None = None
 
 
 @dataclass(frozen=True)
@@ -897,6 +900,9 @@ class Exchanged:
     reply: Reached | Unreached | Held | Uncopied
     # The client was answered the proxy's own refusal, told final (x-should-retry: false), in place of the API's answer.
     final: bool
+    # [LAW:one-source-of-truth] the exchange's own span in the trace of the unit of work it was made for, so this record
+    # is that unit's part and no second one is kept of it; None for a request made as part of none.
+    span: Span | None
 
 
 Observed = Sent | Heard | Answering | Exchanged

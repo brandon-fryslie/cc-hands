@@ -37,11 +37,9 @@ if TYPE_CHECKING:
 from hands.core.attention import Amount, Attention, Delivery, EndedRoute, Overlay, Route
 from hands.core.effects import AfterEnd, Allow, AuditRecord, Deny, Effect, Heard, Holding, Input, Type, Unclosed, Unmatched, Unregistered, Unsettled
 from hands.core.events import Event
-from hands.core.front import InFront
 from hands.core.place import Place
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
-from hands.sessions.model_facts import ModelFact
 from hands.sessions.wide import WideEvent, chain
 
 
@@ -290,41 +288,6 @@ class BrainInterrupted:
 
     running: tuple[str, ...]
     stopped: bool
-
-
-@dataclass(frozen=True)
-class UserAsked:
-    """The user's words: what was in front on the Mac's screen as they were submitted, and how long reading it took, in
-    milliseconds."""
-
-    front: InFront
-    read_ms: float
-
-
-@dataclass(frozen=True)
-class HandsAsked:
-    """What hands handed the brain to tell."""
-
-
-# Whose turn the brain answered.
-Asker = UserAsked | HandsAsked
-
-
-@dataclass(frozen=True)
-class BrainSpoke:
-    """What a brain turn handed to the speaker, and the exchanges on the wire its words came from; `readbacks` is what hands
-    said for it once its next request was held. `asker` is whose turn it was: the user's words, or hands' narration.
-    `waited` is how long, in seconds, the turn waited in its lane for the brain before it was written. `failed` is what the
-    turn failed of: the error its latest answer on the wire said, or a model that answered it with nothing; None for a
-    turn that did not fail."""
-
-    exchanges: tuple[str, ...]
-    text: str
-    readbacks: tuple[str, ...]
-    interrupted: bool
-    asker: Asker
-    waited: float
-    failed: ModelFact | None
 
 
 @dataclass(frozen=True)
@@ -681,7 +644,6 @@ Entry = (
     | AsideAnswered
     | ResultsStubbed
     | BrainInterrupted
-    | BrainSpoke
     | BrainExited
     | Transcribed
     | HoldHeard
@@ -727,8 +689,6 @@ def level(entry: Entry) -> Level:
             return _reply_level(reply)
         case BrainAnswered(error=error) | NameWithheld(error=error):
             return "info" if error is None else "error"
-        case BrainSpoke(failed=fact):
-            return "info" if fact is None else "error"
         case AsideAnswered(failed=failed):
             return "error" if failed else "info"
         case Called(result=result):

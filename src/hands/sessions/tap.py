@@ -158,7 +158,7 @@ async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], 
         record(CopiesLost(sent.session, request.lost))
     tell(sent)
     reply = await _reply(reader, sent.kind, lambda event: tell(Heard(sent.exchange, event)), clock)
-    tell(Exchanged(sent.exchange, sent.session, sent.kind, request.method, request.path, len(request.body), (), request.at, request.at, reply, False))
+    tell(Exchanged(sent.exchange, sent.session, sent.kind, request.method, request.path, len(request.body), (), request.at, request.at, reply, False, None))
 
 
 def _opened(raw: bytes) -> tuple[Request, Sent]:
