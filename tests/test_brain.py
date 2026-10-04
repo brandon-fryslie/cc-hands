@@ -642,12 +642,12 @@ async def test_an_asker_in_no_hurry_for_its_turn_has_its_whole_time_limit_once_i
     asides.hear(answered(typed(tmp_path)[0][2], "One."))
     assert await first == "One."
     # Never answered, it is given the whole of its time limit from its turn: every bound here is one a slow machine only
-    # widens, as a timer is never run before its time but by the clock's resolution.
+    # widens, as a timer is never run before its time but by the clock's resolution, and the log writes each to 0.001ms.
     with pytest.raises(AsideFailed, match=r"no answer within TimeLimit\(seconds=0.3\)"):
         await patient
     [_, waited] = events(recorded, "brain.aside")
     assert waited.facts["queued_ms"] >= 500  # pyright: ignore[reportOperatorIssue]
-    assert waited.duration_ms - waited.facts["queued_ms"] >= 300 - time.get_clock_info("monotonic").resolution * 1000  # pyright: ignore[reportOperatorIssue]
+    assert waited.duration_ms - waited.facts["queued_ms"] >= 300 - time.get_clock_info("monotonic").resolution * 1000 - 0.001  # pyright: ignore[reportOperatorIssue]
 
 
 async def test_an_asker_told_to_leave_again_while_its_claude_code_is_ending_leaves_none_running(tmp_path: Path, fake_claude: Path) -> None:
