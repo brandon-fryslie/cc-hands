@@ -205,7 +205,7 @@ async def rigged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProc
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
     voice = built.build_voice(
-        built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), transcription="http://unused/v1", voice=voices.DEFAULT),
+        built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), voice=voices.DEFAULT),
         tools=[],
         llm=llm,
         noting=noting,
@@ -654,6 +654,6 @@ async def test_a_request_answered_before_it_reaches_the_floor_is_not_told(rig: R
 
 
 async def test_whisper_hears_only_the_keyed_microphone() -> None:
-    whisper = Whisper(url="http://unused/v1", prompt=unprimed, record=lambda _: None)
+    whisper = Whisper(prompt=unprimed, record=lambda _: None)
     with pytest.raises(TypeError, match="carries no key"):
         await whisper.process_audio_frame(InputAudioRawFrame(b"\x00\x00", 16000, 1), FrameDirection.DOWNSTREAM)

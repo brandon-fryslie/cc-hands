@@ -19,7 +19,7 @@ once it is built - types into sessions, through the fritter that wrapped them.
                                   hands daemon
  ┌───────────────────────────────────────────────────────────────────────────────┐
  │  voice                                                                        │
- │  mic ─► gate ─► Whisper (LowTalker) ─► LLM ─► pocket-tts ─► speakers          │
+ │  mic ─► gate ─► Whisper (MLX)       ─► LLM ─► pocket-tts ─► speakers          │
  │         ▲                        ▲  │        ▲                                │
  │   gate edges              notes, │  │ tool   │ system speech                  │
  │   terminal · held key     narrate│  │ calls  │ (straight to TTS)              │
@@ -1823,24 +1823,14 @@ sounds like too. So every failure has a path to the user that does not depend on
 thing that failed `[LAW:no-silent-failure]`:
 
 1. **Speech.** The system channel says "the language model is unreachable", "that turn
-   was not heard: LowTalker's model is still loading", "the session cc-hands is gone". These are
+   was not heard", "the session cc-hands is gone". These are
    `Speak` effects and need no model. `hands.voice.system` renders each fact from a
    template and queues it at the TTS processor, past the LLM and out of its context,
    so the model never reads a system line as a reply it gave. The worker's
    `on_pipeline_error` routes every error by the processor that raised it: the LLM's
    become "unreachable", "usage limit reached, until <when it lifts>" (read from the
-   API's message, never spoken from it), or "failed: <category>", Whisper's become "that turn was not heard" with the
-   transcription server's fault, and a TTS error goes to the screen. The upload names that
-   fault once, as `transcription.Fault`: nothing listening (LowTalker quit, Serve
-   Transcription off, or the offline build, which serves nothing), an address that
-   does not resolve or whose TLS fails, 503 while its model loads, 429 at four uploads
-   in flight, no answer within `ANSWER_SECONDS`, a connection dropped, a 5xx it failed
-   on, or an answer that is no transcription; each is said with what to do about it (`transcription.remedy`,
-   which `hands check` says too). With MLX Whisper gone there is no second engine to
-   fall to. Once "hands is up" is said, the start asks the server with a quarter second
-   of silence (the `transcription.probed` event), and a standing fault, one that fails
-   every hold until something is done, is said next: "hands cannot hear you", and why.
-   A passing fault (busy, slow, cut off, a 5xx) is left to the hold it costs. Pipecat files an SDK connection error
+   API's message, never spoken from it), or "failed: <category>", Whisper's become "that turn was not heard",
+   and a TTS error goes to the screen. Pipecat files an SDK connection error
    under UNKNOWN, so "unreachable" is recognised from the exception type. A model reply
    with no words and no call in it is the model's failure too, "sent back nothing": the
    API services read it off the frames they push (`EmptyReplyFails`), excusing the reply to a call's result, and
@@ -1956,7 +1946,7 @@ counts as a crash: the run raises, exits nonzero, and reads as down until it is 
 A start is one `hands.start` event (`hands.daemon.starting.Start`), timed from the moment
 `hands run` began to the moment the pipeline reported started, so its duration is how
 long hands took to be ready. It says which run it is (`pid`, `restarted`, `after_crash`),
-which settings won (the file, the transcription server, the collector, the backend, server,
+which settings won (the file, the collector, the backend, server,
 model, and account, the voice), and what the run listens on (the hook socket, the proxy
 and its upstream, the tap, the display route), each added as the step that learns it is
 taken, so a start that ended first says how far it got; the display's is the address it
@@ -2059,7 +2049,6 @@ variant with a real alternative or it does not exist. The fields:
 | `[llm] backend` | `anthropic` (the default), `openai`, or `claude`, the brain |
 | `[llm] model` | the model, for any backend |
 | `[llm] url` | another server that speaks the API, for `anthropic` and `openai` |
-| `[transcription] url` | the base of the server each hold is uploaded to, as `POST {url}/audio/transcriptions`; LowTalker's on loopback by default |
 | `[telemetry] collector` | the OpenTelemetry collector's OTLP/HTTP address each wide event is also sent to |
 
 The voice is not a setting: the user chooses it by voice while hands runs, and it is
@@ -2078,10 +2067,11 @@ Verified against the installed Pipecat 1.10 on 2026-09-12.
 pocket-tts is MIT, 100M parameters, CPU-only by design, reports no word timings, and
 streams: measured on this
 Mac, first audio 87 ms after the text arrives and about 5.6x real time. Whisper is
-LowTalker's (~/code/low-talker), the large-v3 turbo it keeps resident on the Neural Engine
-for its own dictation, which its network build serves at OpenAI's
-`POST /v1/audio/transcriptions`: each hold is uploaded as a WAV for `verbose_json`, and a
-four-second clip comes back in about 0.9 s (2026-10-04). The default
+large-v3-turbo on MLX, in hands' own process (`hands.voice.transcription`), loaded as the
+pipeline is built (the `whisper.loaded` event): the transcript lands about 0.3 s after the
+key's release. LowTalker (~/code/low-talker) serves the same weights from the Neural
+Engine, and took 0.6 to 0.7 s for the same holds, by upload and by its Realtime socket
+alike (2026-10-04, hands-dictation-2bs.kpm), so hands keeps its own. The default
 LLM is Claude Sonnet 5 through the Anthropic API, or any server that speaks it; OpenAI's
 chat completions API is the other backend variant. Measured on 2026-09-12, full
 voice-to-voice with Qwen3-30B-A3B on inferno, since retired: a turn with a tool call had

@@ -253,11 +253,11 @@ hands can type into is one the session-input epic (`hands-harness-5nb`) can reac
 
 Need 2.
 
-- **Vocabulary bias.** Each hold is transcribed with Whisper's prompt, the upload's `prompt`,
+- **Vocabulary bias.** Each hold is transcribed with Whisper's `initial_prompt`,
   read as it is transcribed (`hands.voice.vocabulary`): the names of the files
   changed in the focused session's last 30 commits and its uncommitted work, its
   branch, then every running session's project and name, newest last, at most
-  40 of them and the oldest dropped until the rest fit the 111 prompt tokens LowTalker
+  40 of them and the oldest dropped until the rest fit the 223 prompt tokens Whisper
   keeps. Each hold's words and their token count are a `Primed` line in the audit log,
   and what Whisper made of it, with each segment dropped as not said and how loud the
   hold was before and after the echo canceller, a `HoldHeard` line: primed, Whisper turns
