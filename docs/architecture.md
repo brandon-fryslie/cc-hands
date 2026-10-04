@@ -482,7 +482,9 @@ as a `custom-title` record and shows on the terminal's tab, exactly as `/rename`
 After each turn a session finishes, hands asks the summariser's model whether the
 session's name still fits, showing it the name and the turn's closing reply
 (`hands.voice.naming`). A new name, three words at most, waits in `Names` for that
-session's next prompt. A hook can set a title only at a start or a prompt, so a session
+session's next prompt. Each judging is one `name.judged` event: the name before, the reply, the
+name decided, and what came of it (`judged`: renamed or kept, or, failing the event, unread, failed, or
+refused). A hook can set a title only at a start or a prompt, so a session
 shows its new name from its next prompt on. Spoken, a session is its project and then its
 name, as one identifier: "cc-hands, naming fix".
 
@@ -1069,7 +1071,8 @@ ones before it (`queued_ms`, absent for a question that never had its turn; the 
 answering), or why it has none (`unanswered`), its asker's time running out among them (a `Deadline` from asking, or for the
 line an old result goes as a `TimeLimit` from its turn), with what its Claude Code showed then (`shown`). Its Claude
 Code is always ended gracefully, after its asker's time if need be: it shares the brain's config directory. An explanation is a part of
-the `utterance` it delays; the rest begin traces of their own.
+the `utterance` it delays, a summary of the `summary.backlog` or `summary.turns` pass that asked it, and a name of
+its `name.judged`; a line, asked once its result's turn has ended, begins a trace of its own.
 
 **What is in front.** Built: as the user's words reach the brain's stage, hands reads once
 what is in front on the Mac's screen (`sessions/front.py`, decided by the pure
@@ -1364,7 +1367,9 @@ brain's history is kept small on the way out the same way (`hands.brain.context`
 tool result more than K turns old goes as `<tool>: <sentence>`, a batch every K turns so
 the cached prefix changes once a batch, with the sentence asked once the result's turn
 ends, as a side question that shows the result to a Claude Code started for that question
-alone (`hands.brain.asides`), and kept in the summary store by the result's content; and its compaction is asked for what a voice
+alone (`hands.brain.asides`), and kept in the summary store by the result's content. Each batch reached
+is one `context.stubbing` event, naming the calls that go as a line from then on (`stubbed`) and those
+that go whole because no sentence had been said of them by then (`whole`), each counted; and its compaction is asked for what a voice
 session keeps rather than what a coding session does. This is the single decision that avoids
 most of Happy's trouble: it pushed history in and could not pull, so it needed a
 bootstrap dump, an eviction policy it never wrote, and a window that only grew.
@@ -1508,8 +1513,11 @@ is its identity, below). The rows live in
 Sentences are made off the voice path by one task (`hands.voice.summarising`). A
 backlog is wanted at start for every live session's project and again at every read;
 the task asks the summariser for what is due, twenty things to a call, leaves before the
-parents keyed by their sentences, and writes one `Summarised` audit line per pass, or
-`BacklogUnread` with lit's error when the export could not be read. A tool
+parents keyed by their sentences. Each pass is one `summary.backlog` event: how many
+things the backlog has, how many were known, said, and still unsaid at its end, its rounds,
+calls, failed calls, and stray reply lines, and the things a reply left out (`left_out`) and
+what each failed call raised (`errors`); it fails with lit's error when the export could not
+be read, and with the last failed call's error when one failed, either kind of pass. A tool
 never waits on it: a thing with no sentence yet is served by its title and counted in
 `unsummarised`. Measured 2026-09-29 on this repo: 52 sentences in 5 calls and 45 s cold,
 0 calls and 0.16 s warm.
@@ -1519,8 +1527,8 @@ one per request (`hands.core.turn.turns`), and hands over the newest forty with 
 for each finished turn, or its request while the sentence is unsaid; `before` pages back,
 and `read_turn` pages one turn's steps from a mark. A finished turn never changes, so its key is not its text but its identity
 (`turn_digest`): its first record's id and how many things happened in it, under no
-instruction. The turns are wanted at each read and said by the same task, one `TurnsSummarised` line per pass, which
-skips what was said after it was queued. Whether the last turn is finished is the
+instruction. The turns are wanted at each read and said by the same task, one `summary.turns` event per pass, which
+skips what was said after it was queued (`known`) and counts what it asked, said, and failed on. Whether the last turn is finished is the
 registry's to say, and only `Idle` or an ended session proves it: an `Unreported` one may
 be mid-turn.
 

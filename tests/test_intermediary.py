@@ -20,8 +20,8 @@ import pytest
 
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, MainTurn, Unreached
-from hands.sessions.audit import SEGMENT_GLOB, AuditLog, BacklogUnread, Transcribed, segment
-from hands.sessions.wide import annotate, unit
+from hands.sessions.audit import SEGMENT_GLOB, AuditLog, Transcribed, segment
+from hands.sessions.wide import annotate, fail, unit
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.briefing import brief, briefing, tail
@@ -136,7 +136,8 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("no route", 0.0), True, None))
     with unit("tool.run", log.record):
         annotate(tool="list_sessions")
-    log.record(BacklogUnread(project="/code/p", error="lit exited 3", seconds=0.1))
+    with unit("summary.backlog", log.record):
+        fail("lit exited 3")
     # A file that is no segment is no part of the log.
     (path / "audit.jsonl").write_text(json.dumps({"level": "error", "type": "Stray"}) + "\n")
     shown = [line[2:].partition(": ") for line in brain_instruction(path, tmp_path / "brain", "hands recall").splitlines() if line.startswith("- ")]
@@ -147,15 +148,15 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
         ran = subprocess.run(commands[label], shell=True, capture_output=True, text=True, check=True)
         return [line["event"] if line["type"] == "WideEvent" else line["type"] for line in map(json.loads, ran.stdout.splitlines())]
 
-    assert found("the latest errors") == ["Exchanged", "BacklogUnread"]
-    assert found("what happened lately") == ["Transcribed", "tool.run", "BacklogUnread"]
+    assert found("the latest errors") == ["Exchanged", "summary.backlog"]
+    assert found("what happened lately") == ["Transcribed", "tool.run", "summary.backlog"]
     assert found("one kind of line") == ["Transcribed"]
     assert found("the tools called lately") == ["tool.run"]
     # Once the log has rolled, what the closed segment holds is found too, before what came after.
     with unit("tool.run", AuditLog(path, clock=lambda: datetime(2026, 10, 3, tzinfo=UTC), segment_bytes=1).record):
         annotate(tool="list_sessions")
     assert found("the tools called lately") == ["tool.run", "tool.run"]
-    assert found("the latest errors") == ["Exchanged", "BacklogUnread"]
+    assert found("the latest errors") == ["Exchanged", "summary.backlog"]
 
 
 def test_every_conversation_case_loads_with_exactly_one_expectation_and_names_only_tools_the_daemon_gives() -> None:

@@ -184,15 +184,6 @@ class CopiesLost:
 
 
 @dataclass(frozen=True)
-class ResultsStubbed:
-    """The brain's history crossed a batch boundary: the calls whose results go as a line from now on, and those that
-    go whole because no sentence had been said of them by then."""
-
-    stubbed: tuple[str, ...]
-    unsaid: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class Transcribed:
     """What the user said in one turn, as it went into the intermediary's context."""
 
@@ -291,80 +282,6 @@ class Refocused:
 
 
 @dataclass(frozen=True)
-class Summarised:
-    """One pass of the summary store over a project's backlog: how much of it was already said, and what this pass said.
-
-    `unsaid` is what is still without a sentence when the pass ends: things the summariser failed on or left out, and
-    the parents above them. `left_out` names what a reply gave no sentence for, and `stray` counts the reply lines
-    that named nothing asked, so a model that skips items reads apart from one whose calls failed.
-    """
-
-    project: str
-    outcome: Literal["said", "partial"]
-    things: int
-    known: int
-    said: int
-    unsaid: int
-    rounds: int
-    calls: int
-    failed_calls: int
-    left_out: tuple[str, ...]
-    stray: int
-    seconds: float
-
-
-@dataclass(frozen=True)
-class TurnsSummarised:
-    """One pass of the summary store over finished turns of a session that read_session found unsaid.
-
-    `known` is how many turns it was handed that had been said since they were queued, and `asked` how many it asked
-    the summariser for; `left_out` names those a reply gave no sentence for, and `stray` counts the reply lines that
-    named nothing asked.
-    """
-
-    session: str
-    outcome: Literal["said", "partial"]
-    known: int
-    asked: int
-    said: int
-    calls: int
-    failed_calls: int
-    left_out: tuple[str, ...]
-    stray: int
-    seconds: float
-
-
-NamingOutcome = Literal["renamed", "kept", "unread", "failed", "refused"]
-
-
-@dataclass(frozen=True)
-class Named:
-    """One judging of a session's name after a turn it finished.
-
-    `outcome` says what came of it: `renamed` decided a new name, given at the session's next prompt; `kept` found the
-    name it has still fits; `unread` could not read the name it has; `failed` had no answer from the model; `refused`
-    had an answer that is not a name of three words at most, which `reply` holds.
-    """
-
-    session: str
-    outcome: NamingOutcome
-    before: str | None
-    name: str | None
-    reply: str | None
-    error: str | None
-    seconds: float
-
-
-@dataclass(frozen=True)
-class BacklogUnread:
-    """A pass of the summary store that could not start: lit would not hand over the project's backlog, and why."""
-
-    project: str
-    error: str
-    seconds: float
-
-
-@dataclass(frozen=True)
 class SettingsEdited:
     """The home's config.toml changed while hands ran: the run restarts on it, or, where it was `refused`, says why
     and runs on the settings it started with."""
@@ -441,7 +358,6 @@ Entry = (
     | PhoneRefused
     | CopiesLost
     | Exchanged
-    | ResultsStubbed
     | Transcribed
     | HoldHeard
     | Primed
@@ -450,10 +366,6 @@ Entry = (
     | Announced
     | Cued
     | Refocused
-    | Summarised
-    | TurnsSummarised
-    | Named
-    | BacklogUnread
     | StartRefused
     | Restarting
     | Rolled
@@ -466,29 +378,25 @@ Level = Literal["error", "info"]
 
 
 def level(entry: Entry) -> Level:
-    """Whether a line tells of something that went wrong: a Failure; a start refused; a backlog read or a unit of work that failed; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
+    """Whether a line tells of something that went wrong: a Failure; a start refused; a unit of work that failed; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
     broke off."""
     # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | TypingFailed() | Exported(error=str()) | BacklogUnread() | StartRefused() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
+        case Failure() | TypingFailed() | Exported(error=str()) | StartRefused() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)
         case WideEvent(outcome=outcome):
             return "error" if outcome == "failed" else "info"
-        case Named(outcome=outcome):
-            return "error" if outcome in ("unread", "failed", "refused") else "info"
         case Refocused(outcome=outcome):
             return "error" if outcome == "failed" else "info"
         case Primed(failed=failed) | SettingsEdited(refused=failed):
             return "info" if failed is None else "error"
         case (
             Typing() | LLMChosen() | SettingsRead() | Exported() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
-            | ResultsStubbed()
-            | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Cued() | Summarised()
-            | TurnsSummarised() | Restarting() | Rolled()
+            | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Cued() | Restarting() | Rolled()
         ):
             return "info"
         case _:

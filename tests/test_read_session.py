@@ -9,7 +9,8 @@ from typing import Any
 from hands.core.events import Ended, Joined, StatusReported
 from hands.core.session import Membership, SessionId
 from hands.core.status import Busy, Idle, Report, Stamp
-from hands.sessions.audit import Entry, TurnsSummarised
+from hands.sessions.audit import Entry
+from hands.sessions.wide import WideEvent
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
 from hands.voice.sentences import SummaryStore, Turns
@@ -305,7 +306,8 @@ async def test_an_hour_long_session_is_a_sentence_per_turn_said_off_the_voice_pa
     recorded: list[Entry] = []
     await summarised(store, recorded)
     [pass_] = recorded
-    assert isinstance(pass_, TurnsSummarised) and (pass_.outcome, pass_.known, pass_.asked, pass_.said, pass_.calls) == ("said", 0, 30, 30, 2)
+    assert isinstance(pass_, WideEvent) and (pass_.event, pass_.outcome, pass_.facts["session"]) == ("summary.turns", "ok", SID)
+    assert pass_.counts == {"known": 0, "asked": 30, "said": 30, "calls": 2, "failed_calls": 0, "stray": 0}
 
     then = await sentences(sessions, store)
     assert then["turns"][4] == {"turn": 5, "summary": "What turn-5 did."}
@@ -395,4 +397,31 @@ async def test_a_turn_said_after_it_was_queued_is_not_asked_for_again(tmp_path: 
     await summarise_turns(second, store, summarise, recorded.append)
     assert len(asked) == 1
     [_, again] = recorded
-    assert isinstance(again, TurnsSummarised) and (again.outcome, again.known, again.asked, again.calls) == ("said", 3, 0, 0)
+    # Everything said since it was queued: a pass of zeros but what it found known.
+    assert isinstance(again, WideEvent) and again.counts == {"known": 3, "asked": 0, "said": 0, "calls": 0, "failed_calls": 0, "stray": 0}
+
+
+async def test_a_turns_pass_says_what_its_replies_left_out_and_its_calls_raised(tmp_path: Path) -> None:
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("".join(f"{record}\n" for record in hour(turns=3, steps=1)))
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    await sentences(await at_prompt(await joined(transcript)), store)
+    wanted = await store.wanted()
+    assert isinstance(wanted, Turns)
+    _, second, third = (due.id for due in wanted.due)
+    calls = 0
+
+    async def summarise(page: str) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("no answer in 180s")
+        # Each reply names the second turn and one made up: asked for the third, it leaves it out.
+        return f"{second}: What it did.\nz9: Not asked."
+
+    recorded: list[Entry] = []
+    await summarise_turns(wanted, store, summarise, recorded.append, batch=1)
+    [pass_] = recorded
+    assert isinstance(pass_, WideEvent) and pass_.outcome == "failed" and pass_.error == "the summariser failed on 1 things: TimeoutError: no answer in 180s"
+    assert pass_.counts == {"known": 0, "asked": 3, "said": 1, "calls": 3, "failed_calls": 1, "stray": 3}
+    assert (pass_.facts["left_out"], pass_.facts["errors"]) == ((third,), ("TimeoutError: no answer in 180s",))

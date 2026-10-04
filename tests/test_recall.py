@@ -15,10 +15,11 @@ from hands.core.session import AskedQuestion, Blocker, CommandName, Membership, 
 from hands.daemon import cli
 from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed, Typing, TypingFailed, segment
 from hands.sessions.home import Home
-from hands.sessions.names import NameGiven, NameWithheld
+from hands.sessions.names import Finished, NameGiven, Names, NameWithheld
 from hands.sessions.recall import Moment, recall
 from hands.sessions.registry import Performed
 from hands.sessions.wide import WideEvent
+from hands.voice.naming import judge
 
 MORNING = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 BILLING = SessionId("6f1c2d3e-0000-4000-8000-000000000001")
@@ -128,6 +129,20 @@ def test_a_torn_line_is_counted_and_the_lines_after_it_are_read(tmp_path: Path) 
     found = recall(home.audit, [], 20)
     assert [moment.text for moment in found.moments] == ["before", "after"]
     assert (found.lines, found.unreadable) == (3, 1)
+
+
+async def test_a_session_goes_by_the_name_its_judging_found_it_with(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    transcript = tmp_path / "billing.jsonl"
+    transcript.write_text(json.dumps({"type": "custom-title", "customTitle": "billing", "sessionId": BILLING}, separators=(",", ":")) + "\n")
+    log = AuditLog(home.audit, clock=lambda: MORNING)
+
+    async def keeps(_text: str) -> str:
+        return "billing"
+
+    await judge(Finished(Membership(BILLING, pid=1, cwd=tmp_path, transcript=transcript), "done"), Names(), (), keeps, log.record)
+    log.record(typed("Drop the token-helper."))
+    assert [moment.heading for moment in recall(home.audit, [], 20).moments] == ["sent to billing"]
 
 
 def test_hands_recall_prints_one_line_a_moment_in_local_time_and_records_what_it_took(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
