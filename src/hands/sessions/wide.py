@@ -180,6 +180,18 @@ def here() -> Span:
     return Span(opened.trace_id, opened.span_id, opened.parent_id)
 
 
+def opened() -> Span | None:
+    """The span work done here is a part of: the unit of work open here, or the trace continued here; None where neither
+    is. Handed to `continuing` where that work runs on elsewhere, a unit opened there is a part of it all the same."""
+    match _open.get():
+        case None:
+            return None
+        case _Open(trace_id=trace_id, span_id=span_id, parent_id=parent_id):
+            return Span(trace_id, span_id, parent_id)
+        case Span() as span:
+            return span
+
+
 def _minted() -> Span:
     """The span a unit of work opened here would have: inside the unit open here, in its trace, or the root of a new one."""
     match _open.get():

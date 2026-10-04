@@ -21,13 +21,12 @@ from loguru import logger
 from hands.core.front import FrontUnread, InFront
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Asides, aside_command
-from hands.brain.process import NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
-from hands.sessions.payload import Payload
-from hands.sessions.audit import AsideAnswered, BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainPermission, BrainRefused, Entry
+from hands.sessions.audit import AsideAnswered, Entry
 from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
@@ -47,7 +46,7 @@ from hands.voice.sentences import SummaryStore
 from hands.voice.speech import Pushed, Tailed
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, VoiceConfig
 from hands.voice.summary import SummaryFailed, aside
-from hands.sessions.wide import Fact, WideEvent, here, unit, within
+from hands.sessions.wide import Fact, WideEvent, continuing, here, unit, within
 from hands.voice.tools import Called, Result, audited, tool
 from hands.voice import voices
 
@@ -184,7 +183,12 @@ def unasked(asked: Asked) -> None:
 
 
 def launch(tmp: Path, fritter: Path = Path("/nonexistent/fritter")) -> Launch:
-    return Launch(station(tmp), "You are hands.", '{"mcpServers": {}}', SessionId("b1"), fritter)
+    return Launch(station(tmp), "brain@example.com", "You are hands.", '{"mcpServers": {}}', SessionId("b1"), fritter)
+
+
+def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
+    """The wide events named `name`, in the order they were emitted."""
+    return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == name]
 
 
 def typed(tmp: Path) -> list[list[str]]:
@@ -259,7 +263,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == env["CLAUDE_CODE_DISABLE_CRON"] == "1"
 
 
-async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_both_ends_in_the_log(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_and_run_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
     try:
@@ -270,21 +274,21 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_with_bot
     assert (tmp_path / "brain" / "cwd").is_dir()
     # Behind a space, so a turn that opens with a slash is the words it is and not a command.
     assert typed(tmp_path) == [["prompt", " what is running?"], ["prompt", " /and now?"]]
-    exited = recorded[-1]
-    assert isinstance(exited, BrainExited)
-    assert recorded == [
-        BrainLaunched(brain.pid, tmp_path / "brain", tmp_path / "brain" / "cwd", "claude-sonnet-5"),
-        BrainAsked("what is running?"),
-        BrainAnswered("p1", None),
-        BrainAsked("/and now?"),
-        BrainAnswered("p2", None),
-        exited,
-    ]
+    # The turns are the voice turn's to record, which asked them: the brain's own record is its launch and its run.
+    launched, ran = recorded
+    assert isinstance(launched, WideEvent) and isinstance(ran, WideEvent)
+    assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
+    assert launched.facts == {
+        "session": "b1", "account": "brain@example.com", "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "pid": brain.pid,
+    }
+    # Its run is a part of its launch, from its input coming up to its process's end.
+    assert (ran.event, ran.outcome, ran.trace_id, ran.parent_id) == ("brain.run", "ok", launched.trace_id, launched.span_id)
+    assert ran.facts["pid"] == brain.pid and isinstance(ran.facts["code"], int) and isinstance(ran.facts["shown"], str)
 
 
-def permissions(recorded: list[Entry]) -> list[tuple[str | None, str, Allow | Deny]]:
+def permissions(recorded: Sequence[Entry]) -> list[tuple[Fact, Fact, Fact]]:
     """The permissions the brain's setup asked about, as the log says each was settled."""
-    return [(entry.prompt, entry.tool, entry.decision) for entry in recorded if isinstance(entry, BrainPermission)]
+    return [(event.facts["prompt"], event.facts["tool"], event.facts["decision"]) for event in events(recorded, "brain.permission")]
 
 
 async def test_a_permission_the_brains_setup_asks_about_holds_its_turn_until_answered_and_only_a_yes_runs_the_tool(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
@@ -318,7 +322,7 @@ async def test_a_permission_the_brains_setup_asks_about_holds_its_turn_until_ans
         ["prompt", " write"], ["permission", "deny", no.message], ["elicitation", "decline"],
     ]
     assert permissions(recorded) == [("p1", "Write", Allow()), ("p2", "Write", no)]
-    assert BrainRefused("p2", "Elicitation", "probe") in recorded
+    assert [event.facts for event in events(recorded, "brain.elicitation")] == [{"prompt": "p1", "server": "probe"}, {"prompt": "p2", "server": "probe"}]
 
 
 async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -327,11 +331,16 @@ async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: 
     held: list[Asked] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
     try:
-        assert await asyncio.wait_for(brain.ask("write", held.append), 10) == BrainAnswered("p1", None)
+        with unit("voice.turn", recorded.append):
+            asking = here()
+            assert await asyncio.wait_for(brain.ask("write", held.append), 10) == BrainAnswered("p1", None)
     finally:
         await brain.stop()
     assert held[0].decision.result() == Deny(UNANSWERED)
     assert permissions(recorded) == [("p1", "Write", Deny(UNANSWERED))]
+    # A part of the turn it was held for, timed from its post to its answer.
+    [permission] = events(recorded, "brain.permission")
+    assert (permission.trace_id, permission.parent_id) == (asking.trace_id, asking.span_id) and permission.duration_ms >= 300
     assert not (tmp_path / "notes.txt").exists()
 
 
@@ -345,6 +354,10 @@ async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_nev
         await brain.stop()
     assert held == []
     assert permissions(recorded) == [("p0", "Write", Deny(NOBODY))]
+    # No turn's own, so a part of the brain's launch.
+    [launched] = events(recorded, "brain.launch")
+    [permission] = events(recorded, "brain.permission")
+    assert permission.parent_id == launched.span_id
 
 
 async def test_a_turn_stopped_while_it_holds_a_permission_refuses_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
@@ -369,10 +382,14 @@ async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answ
     brain = object.__new__(Brain)
     brain.session = SessionId("b1")
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
+    with unit("brain.launch", recorded.append):
+        launched = here()
+    brain._launched = launched  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
     brain._held = set()  # pyright: ignore[reportPrivateUsage]
     brain._typing = set()  # pyright: ignore[reportPrivateUsage]
-    hearing = asyncio.create_task(brain._hear_hooks(hooks))  # pyright: ignore[reportPrivateUsage]
+    with continuing(launched):
+        hearing = asyncio.create_task(brain._hear_hooks(hooks))  # pyright: ignore[reportPrivateUsage]
 
     async def answered(event: str, body: bytes) -> dict[str, object]:
         async with aiohttp.ClientSession() as client, client.post(f"{url}/{event}", data=body) as reply:
@@ -393,8 +410,14 @@ async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answ
     finally:
         hearing.cancel()
         await listener.cleanup()
-    assert recorded[0] == BrainRefused(None, "Elicitation", "probe")
-    assert permissions(recorded) == [(None, "Write", Deny(NOBODY)), (None, "AskUserQuestion", Deny(UNVOICED))]
+    # Each is one event, a part of the brain's launch, the unreadable ones failed saying so.
+    unread, elicited_event = events(recorded, "brain.elicitation")
+    assert unread.outcome == "failed" and unread.error is not None and unread.error.startswith("hands could not read the Elicitation hook")
+    assert (elicited_event.outcome, elicited_event.facts) == ("ok", {"prompt": None, "server": "probe"})
+    unreadable, *read = events(recorded, "brain.permission")
+    assert unreadable.outcome == "failed" and unreadable.error is not None and unreadable.error.startswith("hands could not read the permission request")
+    assert permissions(read) == [(None, "Write", Deny(NOBODY)), (None, "AskUserQuestion", Deny(UNVOICED))]
+    assert {event.parent_id for event in events(recorded, "brain.permission") + events(recorded, "brain.elicitation")} == {launched.span_id}
 
 
 async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_failed_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
@@ -588,15 +611,14 @@ def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_are_st
     brain.session = SessionId("b1")
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
     # An error that is not text: the hook is logged and passed over, never raised out of the loop that hears hooks.
-    brain._hook(Payload({"hook_event_name": "StopFailure", "session_id": "b1", "prompt_id": "p1", "error": {"kind": "odd"}}))  # pyright: ignore[reportPrivateUsage]
+    brain._hook(json.dumps({"hook_event_name": "StopFailure", "session_id": "b1", "prompt_id": "p1", "error": {"kind": "odd"}}).encode())  # pyright: ignore[reportPrivateUsage]
 
 
-def test_the_tools_a_brain_turn_offers_are_audited_when_they_change_and_a_turn_without_hands_tools_is_an_error() -> None:
+def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
     recorded: list[Entry] = []
     brain = object.__new__(Brain)
     brain.session = SessionId("b1")
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
-    brain._offered = None  # pyright: ignore[reportPrivateUsage]
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
@@ -610,8 +632,8 @@ def test_the_tools_a_brain_turn_offers_are_audited_when_they_change_and_a_turn_w
     finally:
         logger.remove(sink)
     assert errors == ["the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (('Read',))"]
-    # Said once for the first request and again only for the one that offered other tools; another session's are not the brain's.
-    assert recorded == [BrainOffered(("Read", "mcp__hands__read_session")), BrainOffered(("Read",))]
+    # What a turn's requests offered is on its voice turn's event.
+    assert recorded == []
 
 
 async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_ended(
@@ -626,8 +648,9 @@ async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_en
         await brain.ask("anyone?", unasked)
     # The watch that saw it die and the stop at teardown both wait on the one exit.
     await brain.stop()
-    [exited] = [entry for entry in recorded if isinstance(entry, BrainExited)]
-    assert exited.code == 3 and "bye" in exited.shown
+    [ran] = events(recorded, "brain.run")
+    shown = ran.facts["shown"]
+    assert ran.facts["code"] == 3 and isinstance(shown, str) and "bye" in shown
 
 
 async def test_a_turn_never_taken_fails_naming_the_setup_command_and_the_next_turn_is_its_own(
@@ -653,8 +676,7 @@ async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_n
         assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
     finally:
         await brain.stop()
-    turns = [entry for entry in recorded if isinstance(entry, BrainAsked | BrainAnswered)]
-    assert turns == [BrainAsked("slow"), BrainAnswered("p1", None), BrainAsked("and now?"), BrainAnswered("p2", None)]
+    assert [event.event for event in events(recorded, "brain.launch") + events(recorded, "brain.run")] == ["brain.launch", "brain.run"]
 
 
 # How a hands starts a Claude Code of its own, and the pids of what it started: its brain under fritter, or an aside's
@@ -792,12 +814,12 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed()
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
-        [launched] = [entry for entry in recorded if isinstance(entry, BrainLaunched)]
-        assert launched.cwd == tmp_path / "brain" / "cwd"
+        [launched] = events(recorded, "brain.launch")
+        assert (launched.facts["cwd"], launched.facts["account"]) == (tmp_path / "brain" / "cwd", "brain@example.com")
         # The stage speaks from the wire while the brain runs, so a second one cannot join it.
         with pytest.raises(RuntimeError, match="joined the wire"), wire.joined(minded.llm):
             pass
-    assert isinstance(recorded[-1], BrainExited)
+    assert isinstance(ran := recorded[-1], WideEvent) and ran.event == "brain.run"
     # Gone with the brain: the wire forwards everything again.
     with wire.joined(minded.llm):
         pass
@@ -815,3 +837,8 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
     with pytest.raises(CannotStart, match=f"^no fritter at {tmp_path / 'no-fritter'}"):
         async with mind(claude, [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "no-fritter", tmp_path / "audit", "hands recall", recorded.append, os.environ):
             pass
+    # The launch that failed is one event, saying why; no brain ran, so there is no run.
+    [launched] = events(recorded, "brain.launch")
+    assert launched.outcome == "failed" and launched.error == f"Unstartable: no fritter at {tmp_path / 'no-fritter'} to run the brain under: run `hands install-fritter`"
+    assert launched.facts["account"] == "brain@example.com" and "pid" not in launched.facts
+    assert events(recorded, "brain.run") == []

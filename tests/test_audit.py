@@ -25,7 +25,6 @@ from hands.sessions.audit import (
     AuditLog,
     AsideAnswered,
     BacklogUnread,
-    BrainAnswered,
     Entry,
     Failure,
     Named,
@@ -151,8 +150,6 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
     log = AuditLog(path, clock=lambda: AT)
     log.record(Failure(source="hands.x:f", message="broke", where="/x.py:1", trace=()))
     log.record(BacklogUnread(project="/code/p", error="lit exited 3", seconds=0.1))
-    log.record(BrainAnswered(prompt="p1", error="rate_limit"))
-    log.record(BrainAnswered(prompt="p2", error=None))
     log.record(Named(session="s1", outcome="kept", before="a b", name=None, reply="a b", error=None, seconds=0.1))
     log.record(Named(session="s1", outcome="failed", before="a b", name=None, reply=None, error="timed out", seconds=0.1))
     log.record(AsideAnswered("q", "", True, SessionId("s2"), 0.0, 9.0))
@@ -167,8 +164,6 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
     assert [(line["type"], line["level"]) for line in lines(path)] == [
         ("Failure", "error"),
         ("BacklogUnread", "error"),
-        ("BrainAnswered", "error"),
-        ("BrainAnswered", "info"),
         ("Named", "info"),
         ("Named", "error"),
         ("AsideAnswered", "error"),
