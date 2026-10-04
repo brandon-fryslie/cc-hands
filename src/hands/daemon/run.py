@@ -157,7 +157,7 @@ class Watch:
 
 @dataclass(frozen=True)
 class Mind:
-    """The pipeline's LLM stage for the model's variant, what notes the user's turns ahead of it, what that variant runs beside the pipeline, and how the model is told how the sessions stand."""
+    """The pipeline's LLM stage for the model's variant, what notes the user's words on their way to its context, what that variant runs beside the pipeline, and how the model is told how the sessions stand."""
 
     llm: FrameProcessor
     noting: Sequence[FrameProcessor]

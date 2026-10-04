@@ -1099,16 +1099,14 @@ move to the phone `audio-only`, and the brain's `set_modality` tool switches it 
 next move. It is a hint the brain chooses by, never a limit on what hands does.
 
 **The same notes on an API backend.** Built: `core/beside.py` composes both notes for
-either model. The user aggregator, `voice/beside.py`'s `UserTurns`, asks the model each
-turn of the user's by a `TurnAsked` frame, and what hands tells of the sessions by
-Pipecat's own context frame. Under an API model `Noting` stands ahead of the model's
-stage: on a `TurnAsked` it reads the same two readers and writes the notes into the
-context as a message behind the user's words, then passes the ask on; any other ask
-passes un-noted. The read is made there and not in the aggregator, so a turn the user
-opens during it drops the ask as it would drop the model's request, and their words are
-asked with that turn. Each turn noted is one `voice.noted` wide event: its `front` and
-`modality` facts are what was read, its duration is the read, and its outcome is
-`cancelled` where the user spoke over it.
+either model. Under an API model `voice/beside.py`'s `Noting` stands between the floor
+and the user aggregator: as a hold's words arrive from Whisper it reads the same two
+readers and puts the notes into the context as a message, then passes the words on. The
+hold is resolved behind its words, so the turn stays open through the read: the note is
+in the context ahead of the user's words, a key pressed meanwhile joins the turn, and
+what hands tells of the sessions, which the floor holds until the turn ends, follows both
+and is followed by no note. Each hold noted is one `voice.noted` wide event: its `front`
+and `modality` facts are what was read, and its duration is the read.
 
 The rest of this section is planned: step summaries built as steps arrive, and streaming.
 

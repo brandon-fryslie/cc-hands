@@ -1047,7 +1047,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
 
     async with mind(api, [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, AnthropicLLMService) and minded.watches == () and minded.telling == Pushed()
-        # An API model's turns are noted ahead of its stage; the brain's stage notes its own.
+        # An API model's context is noted as the user's words arrive; the brain's stage notes its own.
         assert [type(stage) for stage in minded.noting] == [Noting]
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com"), transcription="http://w/v1", voice=voices.DEFAULT)
     async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
