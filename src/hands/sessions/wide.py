@@ -20,13 +20,25 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import Enum
+from pathlib import Path
 from secrets import token_hex
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
 from hands.core.trace import Span
 
+if TYPE_CHECKING:
+    # Defined only in the standard library's type stubs: any instance of a dataclass.
+    from _typeshed import DataclassInstance
+
 Outcome = Literal["ok", "failed", "cancelled"]
+
+# [LAW:types-are-the-program] a fact is a value both the audit log's line (hands.sessions.audit.jsonable) and an OTLP
+# span's attribute can carry, so one neither can is refused by pyright where it is annotated, rather than found as its
+# line is written. Containers are the immutable ones, since an event emitted is never changed. A dataclass's own fields
+# are its type's to admit: pyright cannot follow them here.
+type Fact = None | bool | int | float | str | datetime | Path | Enum | DataclassInstance | tuple[Fact, ...] | frozenset[Fact] | Mapping[str, Fact]
 
 
 @dataclass(frozen=True)
@@ -46,7 +58,7 @@ class WideEvent:
     error: str | None
     trace: tuple[str, ...]
     counts: Mapping[str, int]
-    facts: Mapping[str, object]
+    facts: Mapping[str, Fact]
 
 
 @dataclass
@@ -58,7 +70,7 @@ class _Open:
     parent_id: str | None
     emit: Callable[[WideEvent], None]
     counts: dict[str, int]
-    facts: dict[str, object] = field(default_factory=dict[str, object])
+    facts: dict[str, Fact] = field(default_factory=dict[str, Fact])
     # Why the run failed, where it said so rather than raising.
     failure: str | None = None
     closed: bool = False
@@ -102,7 +114,7 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
         emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, started_at, duration_ms, outcome, error, trace, opened.counts, opened.facts))
 
 
-def annotate(**facts: object) -> None:
+def annotate(**facts: Fact) -> None:
     """Add facts to the event of the unit of work open here. A later fact of the same name replaces an earlier one."""
     _current().facts.update(facts)
 
@@ -123,7 +135,7 @@ def fail(error: str) -> None:
     _current().failure = error
 
 
-def child(event: str, started_at: datetime, duration_ms: float, outcome: Outcome, error: str | None = None, **facts: object) -> None:
+def child(event: str, started_at: datetime, duration_ms: float, outcome: Outcome, error: str | None = None, **facts: Fact) -> None:
     """Emit a part of the unit of work open here that was timed where it happened rather than run inside it, such as a
     request another process made on its behalf: its own event, in the unit's trace, naming the unit as its parent."""
     opened = _current()

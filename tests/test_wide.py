@@ -2,12 +2,17 @@
 
 import asyncio
 import json
+import subprocess
+import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 
 import pytest
 
 from hands.sessions.audit import AuditLog, segment, segments
+from hands.sessions.otlp import spans
 from hands.sessions.wide import WideEvent, annotate, child, count, fail, here, unit, within
 
 
@@ -158,3 +163,52 @@ def test_an_event_is_an_audit_line_with_its_start_written_as_a_time_and_a_failed
     assert [(line["type"], line["level"], line["outcome"]) for line in written] == [("WideEvent", "info", "ok"), ("WideEvent", "error", "failed")]
     assert written[0]["counts"] == {"seen": 0} and written[0]["facts"] == {"session": "s1"}
     assert datetime.fromisoformat(written[0]["started_at"]).tzinfo is not None
+
+
+class Reading(Enum):
+    READ = "read"
+
+
+@dataclass(frozen=True)
+class Pushed:
+    branch: str
+
+
+def test_every_kind_of_fact_is_written_on_its_audit_line_and_carried_by_its_otlp_span(tmp_path: Path) -> None:
+    log = AuditLog(tmp_path / "audit", clock=lambda: datetime(2026, 10, 3, tzinfo=UTC))
+    emitted: list[WideEvent] = []
+
+    def record(event: WideEvent) -> None:
+        log.record(event)
+        emitted.append(event)
+
+    at = datetime(2026, 10, 3, 1, 2, 3, tzinfo=UTC)
+    with unit("job", record):
+        annotate(none=None, flag=True, n=3, ms=1.5, word="s1", at=at, path=Path("/x"), reading=Reading.READ, change=Pushed("fix"))
+        annotate(changes=(Pushed("a"), 2), seen=frozenset({"b", "a"}), by={"inner": (1, None)})
+    [line] = [json.loads(line) for base in segments(tmp_path / "audit") for line in segment(tmp_path / "audit", base).read_text().splitlines()]
+    pushed = {"type": "Pushed", "branch": "fix"}
+    assert line["facts"] == {
+        "none": None, "flag": True, "n": 3, "ms": 1.5, "word": "s1", "at": "2026-10-03T01:02:03.000+00:00", "path": "/x", "reading": "read",
+        "change": pushed, "changes": [{"type": "Pushed", "branch": "a"}, 2], "seen": ["a", "b"], "by": {"inner": [1, None]},
+    }
+    [span] = json.loads(json.dumps(spans(emitted)))["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    carried = {attribute["key"]: attribute["value"] for attribute in span["attributes"]}
+    assert (carried["facts.n"], carried["facts.word"], json.loads(carried["facts.change"]["stringValue"])) == ({"intValue": "3"}, {"stringValue": "s1"}, pushed)
+
+
+def test_a_fact_neither_the_audit_log_nor_otlp_can_carry_is_refused_by_pyright_where_it_is_annotated(tmp_path: Path) -> None:
+    annotated = tmp_path / "annotated.py"
+    annotated.write_text(
+        "import socket\n"
+        "from hands.sessions.wide import annotate, child\n"
+        "from datetime import UTC, datetime\n"
+        "annotate(n=1, words=('a', 'b'), by={'a': (None, 1.5)})\n"
+        "annotate(socket=socket.socket())\n"
+        "annotate(listed=[1])\n"
+        "annotate(by={1: 'a'})\n"
+        "child('part', datetime.now(UTC), 1.0, 'ok', handler=print)\n"
+    )
+    checked = subprocess.run([sys.executable, "-m", "pyright", "--outputjson", str(annotated)], capture_output=True, text=True, cwd=Path(__file__).parents[1])
+    refused = sorted(diagnostic["range"]["start"]["line"] + 1 for diagnostic in json.loads(checked.stdout)["generalDiagnostics"])
+    assert refused == [5, 6, 7, 8]
