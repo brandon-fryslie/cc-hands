@@ -103,7 +103,7 @@ class Recorded(FrameProcessor):
 class NoSpeech(FrameProcessor):
     """Stands in for pocket-tts, which loads its weights when it is made."""
 
-    Settings = built.Speaker.Settings
+    Settings = built.PocketTTSService.Settings
 
     def __init__(self, **_: object) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
@@ -187,7 +187,7 @@ class Rig:
 
 @pytest.fixture
 async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator[Rig, None]:
-    monkeypatch.setattr(built, "Speaker", NoSpeech)
+    monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
     voice = built.build_voice(
         built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), transcription="http://unused/v1", voice=voices.DEFAULT),

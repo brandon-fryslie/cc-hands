@@ -8,15 +8,17 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
 from pipecat.services.pocket_tts.tts import PocketTTSSettings
+from pipecat.services.tts_service import TTSService
 from pipecat.transcriptions.language import Language
 
 from conftest import running
 from hands.sessions.audit import Entry, Replied
 from hands.voice.conversation import record_turns
-from hands.voice.spoken import EndsReplies, FenceAggregator
+from hands.voice.speech import as_a_turn
+from hands.voice.spoken import FenceAggregator
 
 
-class Speaker(EndsReplies):
+class Speaker(TTSService):
     """The speaker with the synthesis taken out: started, stopped, and its text pushed by Pipecat's service as pocket-tts's are."""
 
     def __init__(self) -> None:
@@ -49,6 +51,31 @@ async def replies(frames: Sequence[Frame], count: int) -> list[Entry]:
 
 async def test_a_readback_hands_says_after_the_models_reply_is_written_as_heard_whole_once_it_is_said() -> None:
     """hands-readback-ddk: it was written only at the next key press, as cut off, however long before it had been heard."""
-    said = [LLMFullResponseStartFrame(), LLMTextFrame("Staging it now."), LLMFullResponseEndFrame(), TTSSpeakFrame("Draft for bananas: cherry.")]
+    said = [LLMFullResponseStartFrame(), LLMTextFrame("Staging it now."), LLMFullResponseEndFrame(), *as_a_turn(TTSSpeakFrame("Draft for bananas: cherry."))]
 
     assert await replies(said, 2) == [Replied("Staging it now.", interrupted=False), Replied("Draft for bananas: cherry.", interrupted=False)]
+
+
+async def test_a_question_hands_asks_in_the_middle_of_a_reply_is_written_between_the_two_halves_of_it() -> None:
+    """The brain's stage ends the reply so far, has hands ask, and starts the reply again once the question is answered."""
+    said = [
+        LLMFullResponseStartFrame(),
+        LLMTextFrame("Deleting the branch."),
+        LLMFullResponseEndFrame(),
+        *as_a_turn(TTSSpeakFrame("May it run git push?")),
+        LLMFullResponseStartFrame(),
+        LLMTextFrame("Done."),
+        LLMFullResponseEndFrame(),
+    ]
+
+    assert await replies(said, 3) == [
+        Replied("Deleting the branch.", interrupted=False),
+        Replied("May it run git push?", interrupted=False),
+        Replied("Done.", interrupted=False),
+    ]
+
+
+async def test_a_line_kept_out_of_the_context_is_no_reply_whatever_is_sent_behind_it() -> None:
+    said = [*as_a_turn(TTSSpeakFrame("api: reading files.", append_to_context=False)), *as_a_turn(TTSSpeakFrame("The session api is gone."))]
+
+    assert await replies(said, 1) == [Replied("The session api is gone.", interrupted=False)]

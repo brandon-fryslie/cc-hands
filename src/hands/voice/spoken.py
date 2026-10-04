@@ -38,9 +38,6 @@ The filter is stateless, so a barge-in in the middle of a sentence leaves nothin
 from collections.abc import AsyncIterator
 
 from loguru import logger
-from pipecat.frames.frames import Frame, LLMFullResponseEndFrame
-from pipecat.processors.frame_processor import FrameDirection
-from pipecat.services.tts_service import TTSService
 from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
 from pipecat.utils.text.base_text_filter import BaseTextFilter
 from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
@@ -111,22 +108,3 @@ class FenceAggregator(SimpleTextAggregator):
     async def reset(self) -> None:
         await super().reset()
         self._fence, self._line = None, ""
-
-
-class EndsReplies(TTSService):
-    """A TTS service for which the model's reply is over at its end frame, so a line hands says after it is a turn of its own.
-
-    Pipecat's service ends the assistant turn of a `TTSSpeakFrame` kept in the context only while no reply is under
-    way, and one that pushes its own text frames, as pocket-tts does, takes a reply as under way from its start frame
-    until the next barge-in (still so upstream on 2026-10-04). Every kept line said after a reply then stayed an open
-    turn, written to the context and the audit log at the next key press, as cut off.
-    """
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
-        await super().process_frame(frame, direction)
-        match frame:
-            case LLMFullResponseEndFrame():
-                # [LAW:one-source-of-truth] the end frame is what says the reply ended; the service's own note of it follows.
-                self._llm_response_started = False
-            case _:
-                pass
