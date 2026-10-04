@@ -260,13 +260,13 @@ async def mind(
                 Pushed(),
                 lambda instruction, max_tokens, timeout: summariser(backend, instruction, max_tokens, timeout),
             )
-        case ClaudeCodeBackend(model=model, config_dir=config_dir):
+        case ClaudeCodeBackend(model=model, config_dir=config_dir, account=account):
             spans = CallSpans()
             server = await serve_mcp(tools, record, spans)
             try:
                 station = Station(config_dir, workdir(config_dir), model, proxy_url, environment)
                 try:
-                    brain = await start_brain(Launch(station, brain_instruction(log, config_dir, recall), server.config(), SessionId(str(uuid4())), fritter), record)
+                    brain = await start_brain(Launch(station, account, brain_instruction(log, config_dir, recall), server.config(), SessionId(str(uuid4())), fritter), record)
                 except Unstartable as error:
                     # hands runs on no brain it could not start: its start is refused, saying why.
                     raise CannotStart(str(error)) from error

@@ -112,12 +112,12 @@ own MCP server, which it may use without asking, and its hooks, and it keeps the
 Nobody sits at its keyboard to answer a dialog. A permission its settings ask about is put to the user by voice, in
 the turn of theirs that led to it: hands says what the tool would do, and only a plain yes, said once the question has
 played to its end, runs it. Anything else they say refuses it and is handed to the brain, and a permission nobody can
-be asked, or nobody answers in time, is refused; a `BrainPermission` audit line records how each was settled. Any
+be asked, or nobody answers in time, is refused; a `brain.permission` event records how each was settled. Any
 other dialog is refused: the brain asks its questions in its reply, and an MCP server asking for input gets a
-`BrainRefused` audit line. Its settings say `"defaultMode": "default"` with the tools it may use without asking in
+`brain.elicitation` event. Its settings say `"defaultMode": "default"` with the tools it may use without asking in
 `permissions.allow`, and `"syncClaudeAiSkills": false` and `"syncClaudeAiPlugins": false` keep the
-account's skills and plugins out, which Claude Code reads from no other place. A `BrainOffered` audit line names the tools
-its requests offer, at its first request and whenever they change.
+account's skills and plugins out, which Claude Code reads from no other place. Each `brain.turn` event names the tools
+the turn's latest request offered.
 It works a project's backlog itself, with `lit` from its shell in the project's repository, as `lit quickstart` there
 says; `read_backlog` names where in it to run `lit`.
 It searches the web and reads pages with the `firecrawl` command from its shell, on that command's own login, as a

@@ -1051,6 +1051,18 @@ turn together are timed from the last of them. Each call the brain's replies mad
 it, timed as the stage heard it on the wire. Each model round trip is the proxy's own `Exchanged` line, which carries a
 span inside the turn's (`span`), and reaches the collector as a `proxy.exchange` span under it: no second record of a
 round trip is kept. A turn hands stopped mid-way still emits its event, cancelled, with what it had done.
+The event also says what was typed into the brain (`asked`), and, where the user barged in, the calls running then
+(`running`) and whether the brain was told to stop at once (`stopped`).
+
+The brain's own process is four kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
+up, on which account, model, and config directory, or with what failed it. Its run (`brain.run`), a part of the launch,
+runs from then until its process ends, with its exit code and the last of what it showed. Each turn typed into it
+(`brain.turn`), a part of the `voice.turn` that asked it, runs from its typing to its end, with the prompt id Claude
+Code took it as (`prompt`) and the tools its latest request offered the model (`offered`), or with the error that
+failed it; a turn whose asker stopped waiting is still heard to its end. Each dialog it posts to hands' listener is one
+event: a `brain.permission`, with the tool, the decision, and how long it was held, and a `brain.elicitation`, which
+is always declined. A dialog posted for the turn in flight is a part of that `brain.turn`; any other is a part of the
+launch. A body hands cannot read is answered as its hook asks, and its event fails saying so.
 
 **What is in front.** Built: as the user's words reach the brain's stage, hands reads once
 what is in front on the Mac's screen (`sessions/front.py`, decided by the pure

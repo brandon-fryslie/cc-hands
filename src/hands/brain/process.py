@@ -30,7 +30,7 @@ import subprocess
 import tempfile
 import termios
 import threading
-from collections.abc import Callable, Coroutine, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,12 +41,14 @@ from hands.brain.mcp import SERVER_NAME
 from hands.core.effects import Allow, Deny, Text
 from hands.core.session import ESCAPES, Permission, SessionId, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
-from hands.sessions.audit import BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainPermission, BrainRefused, Record
+from hands.core.trace import Span
+from hands.sessions.audit import Record
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS, declared
 from hands.sessions.hooks import called, hook_output
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
+from hands.sessions.wide import Begun, annotate, begun, continuing, fail, here, unit
 from hands.sessions.wrapper import real_claude
 
 # What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu, 2.1.284).
@@ -89,8 +91,6 @@ UNANSWERED = "No answer came from the user in time, so it did not run."
 SPOKEN_OVER = "The user spoke over this turn before they could be asked, so it did not run."
 STOPPED = "The user stopped this turn, so it did not run."
 DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}}
-# What each hook is answered with when its body cannot be read: a dialog is kept shut, and the rest ask nothing.
-UNREADABLE: Mapping[str, Mapping[str, object]] = {"PermissionRequest": hook_output(Deny(UNREAD)), "Elicitation": DECLINED}
 
 # What the brain posts to hands, each to its own path: a typed turn taken, a turn ended, a turn the API failed, and a
 # dialog about to open. Escape ends a turn with none of them (measured on 2.1.285), so a turn told to stop is over when
@@ -139,6 +139,8 @@ class Launch:
     """Everything the brain is started with."""
 
     station: Station
+    # The subscription account its config directory is logged in as, read as the run started.
+    account: str
     instruction: str
     mcp_config: str
     # [LAW:one-source-of-truth] chosen by hands, so the brain's requests are known as its own from the first one on the
@@ -412,6 +414,15 @@ def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:
     return ["/bin/sh", "-c", ': <>"$0"; exec "$@"', terminal, *argv]
 
 
+@dataclass(frozen=True)
+class BrainAnswered:
+    """The end of a brain turn: its Stop hook, its StopFailure hook with what failed it, or the Escape hands pressed to
+    stop it. Its words are on the wire."""
+
+    prompt: str  # the prompt id Claude Code gave the turn, which every hook of the turn and its transcript records carry
+    error: str | None
+
+
 # Compared by identity: each is its own request, however alike two calls are.
 @dataclass(frozen=True, eq=False)
 class Asked:
@@ -433,10 +444,10 @@ class Asked:
 
 @dataclass(frozen=True)
 class _Posted:
-    """A hook the brain posted, to the path of its event, and the body its post is answered with."""
+    """A hook the brain posted, to the path of its event, as it was posted, and the body its post is answered with."""
 
     event: str
-    said: Payload
+    body: bytes
     reply: "asyncio.Future[Mapping[str, object]]"
 
 
@@ -446,6 +457,10 @@ class _Turn:
     taken: asyncio.Future[str]  # the prompt id Claude Code gave the turn when it took it
     # Told of each permission the turn holds at its hook, to put it to the user.
     asks: Callable[[Asked], None]
+    # The turn's own unit of work, begun as it was asked: each dialog it holds is a part of it.
+    began: Begun
+    # The tools the turn's latest request offered the model: what the brain's own setup gave it, beside hands' tools.
+    offered: tuple[str, ...] = ()
 
     @property
     def prompt(self) -> str | None:
@@ -465,6 +480,7 @@ class Brain:
         sockets: Path,
         config_dir: Path,
         record: Record,
+        launched: Span,
     ) -> None:
         self._claude = claude
         self._config_dir = config_dir
@@ -473,8 +489,8 @@ class Brain:
         self._listener = listener
         self._sockets = sockets
         self._record = record
-        # The tools its requests last offered, so the audit says them once and again only when they change.
-        self._offered: tuple[str, ...] | None = None
+        # What the brain does that no turn asked for is a part of its launch, in the launch's trace.
+        self._launched = launched
         # [LAW:single-enforcer] the input is the user's, and only two things are ever typed into it: a turn, and the
         # keys that stop one. A turn keeps it until its hook says Claude Code took the turn, and a stop's keys go in alone.
         self._input = asyncio.Lock()
@@ -489,8 +505,9 @@ class Brain:
         self._typing: set[asyncio.Task[None]] = set()
         # When the last stop pressed Ctrl-C, on the event loop's clock.
         self._cleared = float("-inf")
-        self._heard = asyncio.ensure_future(self._hear_hooks(hooks))
-        self._exit = asyncio.ensure_future(self._run_out())
+        with continuing(launched):
+            self._heard = asyncio.ensure_future(self._hear_hooks(hooks))
+            self._exit = asyncio.ensure_future(self._run_out(begun()))
 
     @property
     def pid(self) -> int:
@@ -503,7 +520,7 @@ class Brain:
         if self._exit.done():
             raise BrainGone(f"the brain had exited ({self._exit.result()}) before it was asked")
         loop = asyncio.get_running_loop()
-        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), asks)
+        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), asks, begun())
         # An asker that stops waiting leaves the turn to be typed and to run to its end, which is still the brain's to hear.
         self._keep(self._send(text, turn))
         return await asyncio.shield(turn.answered)
@@ -515,20 +532,30 @@ class Brain:
         task.add_done_callback(self._typing.discard)
 
     async def _send(self, text: str, turn: _Turn) -> None:
-        try:
-            # [LAW:no-ambient-temporal-coupling] the input is the turn's from its first key until Claude Code says it took
-            # the turn. Claude Code reads keys that reach it together as one paste, and a Return inside a paste sends
-            # nothing: what was typed 10ms behind a turn joined the turn's prompt, or was left in the input with it
-            # (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
-            async with self._input:
-                # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
-                await self._type(lambda typist: typist.type(Text(pasted(text)).typed))
-                self._record(BrainAsked(text))
-                await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
-            if not (turn.taken.done() or turn.answered.done()):
-                raise Untaken(f"the brain did not take the turn typed into it in {TAKE_SECONDS:.0f}s; if it is on a setup screen, run: {setup(self._config_dir)}")
-        except (BrainGone, Untaken) as error:
-            self._over(turn, error)
+        # [LAW:nothing-unseen] the turn is one event of the brain's own, from its typing to its end, however long its asker
+        # still waits on it: a turn left to run on is still heard to its end.
+        with unit("brain.turn", self._record, began=turn.began):
+            try:
+                # [LAW:no-ambient-temporal-coupling] the input is the turn's from its first key until Claude Code says it
+                # took the turn. Claude Code reads keys that reach it together as one paste, and a Return inside a paste
+                # sends nothing: what was typed 10ms behind a turn joined the turn's prompt, or was left in the input with
+                # it (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
+                async with self._input:
+                    # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
+                    await self._type(lambda typist: typist.type(Text(pasted(text)).typed))
+                    await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+                if not (turn.taken.done() or turn.answered.done()):
+                    raise Untaken(f"the brain did not take the turn typed into it in {TAKE_SECONDS:.0f}s; if it is on a setup screen, run: {setup(self._config_dir)}")
+            except (BrainGone, Untaken) as error:
+                self._over(turn, error)
+            await asyncio.wait({turn.answered})
+            annotate(prompt=turn.prompt, offered=turn.offered)
+            match turn.answered.exception():
+                case None:
+                    if (error := turn.answered.result().error) is not None:
+                        fail(f"the brain's turn ended in error: {error}")
+                case failed:
+                    fail(f"the brain failed the turn: {failed}")
 
     def interrupt(self) -> None:
         """Stop the turn in flight with Escape, as at the keyboard. Returns at once: the Escape is the brain's to press,
@@ -569,18 +596,15 @@ class Brain:
         if turn.answered.done():
             # Its Stop came while the Escape was pressed: the turn ended by itself, and says so once.
             return
-        stopped = BrainAnswered(turn.taken.result(), None)
-        self._record(stopped)
-        self._over(turn, stopped)
+        self._over(turn, BrainAnswered(turn.taken.result(), None))
 
     def hear(self, observed: Observed) -> None:
-        """The brain's own requests, read from the wire: the tools its setup gave it, and whether a turn reached hands' tools."""
+        """The brain's own requests, read from the wire: the tools its turn offered the model, and whether they reached hands'."""
         match observed:
             case Sent(session=session, kind=MainTurn(), body=body) if session == self.session:
                 tools = tool_names(body)
-                if tools != self._offered:
-                    self._offered = tools
-                    self._record(BrainOffered(tools))
+                if self._turn is not None:
+                    self._turn.offered = tools
                 if not any(name.startswith(f"mcp__{SERVER_NAME}__") for name in tools):
                     # [LAW:no-silent-failure] a brain without hands' tools answers every question about the sessions from nothing.
                     logger.error(f"the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server ({tools})")
@@ -604,13 +628,16 @@ class Brain:
         except Untyped as error:
             raise BrainGone(f"the brain cannot be typed into: {error}") from error
 
-    async def _run_out(self) -> int:
-        code = await asyncio.shield(self._claude.exit)
-        self._settle(Deny(f"the brain exited ({code})"))
-        # [LAW:no-silent-failure] a turn that can never end is said to have failed, not left waiting.
-        if self._turn is not None:
-            self._over(self._turn, BrainGone(f"the brain exited ({code}) before it answered"))
-        self._record(BrainExited(code, self._claude.shown()))
+    async def _run_out(self, up: Begun) -> int:
+        # [LAW:nothing-unseen] the brain's run, from its input coming up to its process's end, is one event as it ends:
+        # its exit code, and the last of what it showed on its terminal; or that hands stopped waiting for its end.
+        with unit("brain.run", self._record, began=up):
+            code = await asyncio.shield(self._claude.exit)
+            annotate(pid=self.pid, code=code, shown=self._claude.shown())
+            self._settle(Deny(f"the brain exited ({code})"))
+            # [LAW:no-silent-failure] a turn that can never end is said to have failed, not left waiting.
+            if self._turn is not None:
+                self._over(self._turn, BrainGone(f"the brain exited ({code}) before it answered"))
         return code
 
     async def _hear_hooks(self, hooks: "asyncio.Queue[_Posted]") -> None:
@@ -620,60 +647,80 @@ class Brain:
                 case "PermissionRequest":
                     self._keep(self._permit(posted))
                 case "Elicitation":
+                    # A dialog is kept shut, whatever it says.
                     posted.reply.set_result(DECLINED)
-                    self._refused(posted.said)
+                    self._refused(posted.body)
                 case _:
                     # Asks nothing of the turn, so it is answered at once, whatever it says.
                     posted.reply.set_result({})
-                    self._hook(posted.said)
+                    self._hook(posted.body)
 
     async def _permit(self, posted: _Posted) -> None:
-        """Answers a permission request: held while the user is asked, when a turn of theirs is in flight to ask in."""
-        loop = asyncio.get_running_loop()
-        began = loop.time()
+        """Answers a permission request: held while the user is asked, when a turn of theirs is in flight to ask in.
+
+        [LAW:nothing-unseen] each is one event, however it was settled: a part of the turn it was held for, or of the
+        brain's launch where no turn of the user's was in flight to ask in."""
         try:
-            prompt, asked = posted.said.optional_text("prompt_id"), called(posted.said)
+            said = Payload.parse(posted.body)
+            prompt, tool, asked = said.optional_text("prompt_id"), said.text("tool_name"), called(said)
         except Rejected as error:
-            logger.warning(f"the brain posted a permission request hands cannot read: {error}")
-            posted.reply.set_result(UNREADABLE["PermissionRequest"])
+            with unit("brain.permission", self._record):
+                fail(f"hands could not read the permission request: {error}")
+                posted.reply.set_result(hook_output(Deny(UNREAD)))
             return
+        with self._dialog("brain.permission", prompt) as turn:
+            match asked:
+                case Permission() if turn is not None:
+                    held = Asked(asked, asyncio.get_running_loop().create_future())
+                    self._held.add(held)
+                    try:
+                        turn.asks(held)
+                        await asyncio.wait({held.decision}, timeout=PERMISSION_DEADLINE_SECONDS)
+                    finally:
+                        self._held.discard(held)
+                    held.settle(Deny(UNANSWERED))
+                    decision = held.decision.result()
+                case Permission():
+                    decision = Deny(NOBODY)
+                case _:
+                    # A dialog of questions or a plan is never put to the user by voice: the brain's own words ask them.
+                    decision = Deny(UNVOICED)
+            annotate(tool=tool, decision=decision)
+            # Answered inside its unit: whatever its event's writing meets, the brain's dialog is not left waiting on it.
+            posted.reply.set_result(hook_output(decision))
+
+    @contextlib.contextmanager
+    def _dialog(self, event: str, prompt: str | None) -> Generator[_Turn | None]:
+        """A dialog the brain posted, as one unit of work `event`: a part of the turn in flight it was posted for, which it
+        yields, or else of the brain's launch, for one a turn before it left behind or one posted between turns."""
         turn = self._turn
-        match asked:
-            # [LAW:single-enforcer] the turn's own, as its Stop is: one a turn before it left behind is nobody's to answer.
-            case Permission(tool=tool) if turn is not None and not turn.answered.done() and turn.prompt == prompt:
-                held = Asked(asked, loop.create_future())
-                self._held.add(held)
-                try:
-                    turn.asks(held)
-                    await asyncio.wait({held.decision}, timeout=PERMISSION_DEADLINE_SECONDS)
-                finally:
-                    self._held.discard(held)
-                held.settle(Deny(UNANSWERED))
-                decision = held.decision.result()
-            case Permission(tool=tool):
-                decision = Deny(NOBODY)
-            case _:
-                # A dialog of questions or a plan is never put to the user by voice: the brain's own words ask them.
-                decision, tool = Deny(UNVOICED), posted.said.text("tool_name")
-        # [LAW:nothing-unseen] one line for each, however it was settled.
-        self._record(BrainPermission(prompt, tool, decision, loop.time() - began))
-        posted.reply.set_result(hook_output(decision))
+        # [LAW:single-enforcer] the turn's own, as its Stop is: one a turn before it left behind is nobody's to answer.
+        owner = turn if turn is not None and not turn.answered.done() and turn.prompt == prompt else None
+        with continuing(self._launched if owner is None else owner.began.span), unit(event, self._record):
+            annotate(prompt=prompt)
+            yield owner
 
     def _settle(self, decision: Allow | Deny) -> None:
         """Settles every permission held now: its turn is over, so no answer of the user's can reach it."""
         for held in self._held:
             held.settle(decision)
 
-    def _refused(self, said: Payload) -> None:
-        """An MCP server's ask for input, answered no in a turn or between turns, where it has no prompt id; said here too,
-        so the refusal is not only the brain's to tell."""
+    def _refused(self, body: bytes) -> None:
+        """An MCP server's ask for input, answered no in a turn or between turns, where it has no prompt id: one event, so
+        the refusal is not only the brain's to tell, a part of the turn it was posted in or else of the brain's launch."""
         try:
-            self._record(BrainRefused(said.optional_text("prompt_id"), "Elicitation", said.optional_text("mcp_server_name")))
+            said = Payload.parse(body)
+            prompt, server = said.optional_text("prompt_id"), said.optional_text("mcp_server_name")
         except Rejected as error:
-            logger.warning(f"the brain posted an Elicitation hook that does not parse: {error}")
+            with unit("brain.elicitation", self._record):
+                fail(f"hands could not read the Elicitation hook: {error}")
+            return
+        with self._dialog("brain.elicitation", prompt):
+            annotate(server=server)
 
-    def _hook(self, said: Payload) -> None:
+    def _hook(self, body: bytes) -> None:
         try:
+            said = Payload.parse(body)
             event, session = said.text("hook_event_name"), said.session_id()
             prompt = said.text("prompt_id")
             failed = f"{said.optional_text('error')}: {said.optional_text('last_assistant_message')}"
@@ -689,10 +736,7 @@ class Brain:
             case "UserPromptSubmit" if not turn.taken.done():
                 turn.taken.set_result(prompt)
             case "Stop" | "StopFailure" if turn.prompt == prompt:
-                error = None if event == "Stop" else failed
-                answered = BrainAnswered(prompt, error)
-                self._record(answered)
-                self._over(turn, answered)
+                self._over(turn, BrainAnswered(prompt, None if event == "Stop" else failed))
             case _:
                 logger.warning(f"the brain's {event} hook for prompt {prompt} does not fit the turn in flight (prompt {turn.prompt})")
 
@@ -710,28 +754,33 @@ class Brain:
 
 async def start(launch: Launch, record: Record) -> Brain:
     """Start the brain under fritter on a terminal of hands' own, on the login its backend was parsed with."""
-    claude = brain_claude(launch.station.inherited)
-    if not launch.fritter.is_file():
-        raise Unstartable(f"no fritter at {launch.fritter} to run the brain under: run `hands install-fritter`")
-    hooks: asyncio.Queue[_Posted] = asyncio.Queue()
-    listener, url = await _listen(hooks)
-    # A unix socket's path is capped near 104 bytes on macOS, so not under the brain's own directory.
-    sockets = Path(tempfile.mkdtemp(prefix="hands-brain-"))
-    running: ClaudeCode | None = None
-    try:
-        running = await spawn(launch.station, [str(launch.fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url)])
-        record(BrainLaunched(running.pid, launch.station.config_dir, launch.station.cwd, launch.station.model))
-        typist = await _typist(running, sockets, launch.session)
-        await asyncio.sleep(SETTLE_SECONDS)
-    except BaseException:
-        # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
-        # its own, which nothing but hands' own end would hang up.
-        if running is not None:
-            await running.stop()
-        await listener.cleanup()
-        shutil.rmtree(sockets, ignore_errors=True)
-        raise
-    return Brain(running, launch.session, typist, hooks, listener, sockets, launch.station.config_dir, record)
+    station = launch.station
+    # [LAW:nothing-unseen] the launch is one event, from the spawn until the brain's input is up, or what failed it.
+    with unit("brain.launch", record):
+        annotate(session=launch.session, account=launch.account, model=station.model, config_dir=station.config_dir, cwd=station.cwd)
+        claude = brain_claude(station.inherited)
+        if not launch.fritter.is_file():
+            raise Unstartable(f"no fritter at {launch.fritter} to run the brain under: run `hands install-fritter`")
+        hooks: asyncio.Queue[_Posted] = asyncio.Queue()
+        listener, url = await _listen(hooks)
+        # A unix socket's path is capped near 104 bytes on macOS, so not under the brain's own directory.
+        sockets = Path(tempfile.mkdtemp(prefix="hands-brain-"))
+        running: ClaudeCode | None = None
+        try:
+            running = await spawn(station, [str(launch.fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url)])
+            annotate(pid=running.pid)
+            typist = await _typist(running, sockets, launch.session)
+            await asyncio.sleep(SETTLE_SECONDS)
+        except BaseException:
+            # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
+            # its own, which nothing but hands' own end would hang up.
+            if running is not None:
+                await running.stop()
+            await listener.cleanup()
+            shutil.rmtree(sockets, ignore_errors=True)
+            raise
+        launched = here()
+    return Brain(running, launch.session, typist, hooks, listener, sockets, station.config_dir, record, launched)
 
 
 async def _listen(hooks: "asyncio.Queue[_Posted]") -> tuple[web.AppRunner, str]:
@@ -739,15 +788,10 @@ async def _listen(hooks: "asyncio.Queue[_Posted]") -> tuple[web.AppRunner, str]:
     the brain settles for it."""
 
     async def hook(request: web.Request) -> web.Response:
-        # The event read off the path, so a body hands cannot read is still answered as its hook asks.
-        event = request.match_info["event"]
-        try:
-            said = Payload.parse(await request.read())
-        except Rejected as error:
-            logger.warning(f"the brain posted a {event} hook hands cannot read: {error}")
-            return web.json_response(UNREADABLE.get(event, {}))
+        # The event read off the path, so a body hands cannot read is still answered as its hook asks, by the brain,
+        # whose record of the hook says it could not be read.
         reply: asyncio.Future[Mapping[str, object]] = asyncio.get_running_loop().create_future()
-        hooks.put_nowait(_Posted(event, said, reply))
+        hooks.put_nowait(_Posted(request.match_info["event"], await request.read(), reply))
         # Shielded: a handler aiohttp cancels leaves the reply to be set by the brain, which is never refused a hook.
         return web.json_response(await asyncio.shield(reply))
 

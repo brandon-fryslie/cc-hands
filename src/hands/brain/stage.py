@@ -38,7 +38,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
 from hands.brain.mcp import SERVER_NAME, CallSpans
-from hands.brain.process import NOBODY, SPOKEN_OVER, Asked
+from hands.brain.process import NOBODY, SPOKEN_OVER, Asked, BrainAnswered
 from hands.core.effects import Deny
 from hands.core import place
 from hands.core.place import Modality
@@ -66,7 +66,7 @@ from hands.core.wire import (
     tool_answers,
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
-from hands.sessions.audit import BrainAnswered, BrainInterrupted, Record
+from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, child, continuing, count, fail, here, unit, within
 from hands.voice.player import Mark
 from hands.voice.trigger import Edge
@@ -172,6 +172,8 @@ class _Turn:
     # What hands says for the calls of a held request once the turn's own words are said, since the model is not asked to.
     readbacks: list[str] = field(default_factory=list[str])
     interrupted: bool = False
+    # The calls running when the user barged in, which the turn's event names with whether the brain was told to stop.
+    running: tuple[str, ...] = ()
     # The permissions the turn has put to the user, oldest first, which are asked one at a time.
     asked: list[Asked] = field(default_factory=list[Asked])
     # The permission whose question the user has heard to its end: what they say next answers it while it is open. Only a
@@ -366,6 +368,8 @@ class BrainStage(FrameProcessor):
     ) -> str | None:
         note, self._broken_off = self._broken_off, ""
         text = "\n\n".join(part for part in (note, text) if part)
+        # What is typed into the brain for the turn, as it is typed.
+        annotate(asked=text)
         said: asyncio.Queue[str | Asked | None] = asyncio.Queue()
         spoken: list[str] = []
         turn = self._turn = _Turn(said, spoken, utterances, here())
@@ -422,6 +426,8 @@ class BrainStage(FrameProcessor):
             text="".join(turn.spoken),
             readbacks=tuple(turn.readbacks),
             interrupted=turn.interrupted,
+            running=turn.running,
+            stopped=turn.stopped,
             # The wait, then where it went: transcribing what was said, waiting behind the turn before it, and the rest,
             # from the turn leaving its lane to its first word: what was left of reading the screen (the asker's read_ms
             # is the whole read, begun as the words arrived), then the model's and its tools', as its parts show.
@@ -502,9 +508,8 @@ class BrainStage(FrameProcessor):
             asked.settle(Deny(SPOKEN_OVER))
         # A tool whose effect must land runs to its end; stopped by the harness, it would land and be written in
         # history as refused. Its turn's next request is held instead, so the model is not asked to go on either way.
-        running = tuple(turn.calls.values())
-        turn.stopped = not any(self._completes(name) for name in running)
-        self._record(BrainInterrupted(running, turn.stopped))
+        turn.running = tuple(turn.calls.values())
+        turn.stopped = not any(self._completes(name) for name in turn.running)
         return turn.stopped
 
     def route(self, sent: Sent) -> Route:

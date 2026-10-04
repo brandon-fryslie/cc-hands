@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     # Defined only in loguru's type stubs.
     from loguru import Message
 
-from hands.core.effects import Allow, Deny, Input, Type
+from hands.core.effects import Input, Type
 from hands.core.place import Place
 from hands.core.session import SessionId
 from hands.core.trace import Span
@@ -184,61 +184,6 @@ class CopiesLost:
 
 
 @dataclass(frozen=True)
-class BrainLaunched:
-    """The brain's process started, with the login and working directory it was given."""
-
-    pid: int
-    config_dir: Path
-    cwd: Path
-    model: str
-
-
-@dataclass(frozen=True)
-class BrainOffered:
-    """The tools the brain's requests offer the model, from the first of its requests and each that offers others: what
-    its own setup gave it, beside hands' tools."""
-
-    tools: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class BrainRefused:
-    """A dialog the brain's Claude Code would have opened, answered no by hands at its hook: nobody is at its keyboard.
-    A permission is a BrainPermission, held while the user is asked."""
-
-    prompt: str | None  # the prompt id of the turn that asked; none for what asked between turns
-    dialog: str  # its hook: Elicitation, from an MCP server
-    asker: str | None  # what asked, as the hook names it: the MCP server
-
-
-@dataclass(frozen=True)
-class BrainPermission:
-    """A permission the brain's own setup asked about, held at its hook while the user was asked, and how it was settled:
-    by their plain yes, by their other words, by nobody answering in time, or by the turn's end. `seconds` is how long it was held."""
-
-    prompt: str | None  # the prompt id of the turn that asked
-    tool: str
-    decision: Allow | Deny
-    seconds: float
-
-
-@dataclass(frozen=True)
-class BrainAsked:
-    """The typed end of a brain turn: what was typed into it, at this line's time."""
-
-    text: str
-
-
-@dataclass(frozen=True)
-class BrainAnswered:
-    """The end of a brain turn, at this line's time: its Stop hook, its StopFailure hook with what failed it, or the Escape
-    hands pressed to stop it. Its words are on the wire."""
-
-    prompt: str  # the prompt id Claude Code gave the turn, which every hook of the turn and its transcript records carry
-    error: str | None
-
-
-@dataclass(frozen=True)
 class AsideAnswered:
     """A side question hands asked in the background, of a slim Claude Code started for it alone, and its answer from
     the wire, or why it has none. `session` is that Claude Code's, which its exchanges on the wire carry. `waited` is how
@@ -260,25 +205,6 @@ class ResultsStubbed:
 
     stubbed: tuple[str, ...]
     unsaid: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class BrainInterrupted:
-    """The user barged in on a brain turn: the tools it had in flight, and whether it was told to stop at once.
-
-    Not stopped means a tool whose effect must land was running: it runs to its end, and the turn's next request is held.
-    """
-
-    running: tuple[str, ...]
-    stopped: bool
-
-
-@dataclass(frozen=True)
-class BrainExited:
-    """The brain's process ended: its exit code, and the last of what it showed on its terminal."""
-
-    code: int
-    shown: str
 
 
 @dataclass(frozen=True)
@@ -530,16 +456,8 @@ Entry = (
     | PhoneRefused
     | CopiesLost
     | Exchanged
-    | BrainLaunched
-    | BrainOffered
-    | BrainRefused
-    | BrainPermission
-    | BrainAsked
-    | BrainAnswered
     | AsideAnswered
     | ResultsStubbed
-    | BrainInterrupted
-    | BrainExited
     | Transcribed
     | HoldHeard
     | Primed
@@ -565,7 +483,7 @@ Level = Literal["error", "info"]
 
 def level(entry: Entry) -> Level:
     """Whether a line tells of something that went wrong: a Failure; a start refused; a backlog read or a unit of work that failed; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
-    broke off; or a brain turn or side question that came to nothing."""
+    broke off; or a side question that came to nothing."""
     # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
@@ -574,8 +492,6 @@ def level(entry: Entry) -> Level:
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)
-        case BrainAnswered(error=error):
-            return "info" if error is None else "error"
         case AsideAnswered(failed=failed):
             return "error" if failed else "info"
         case WideEvent(outcome=outcome):
@@ -588,7 +504,7 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case (
             Typing() | LLMChosen() | SettingsRead() | Exported() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
-            | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
+            | ResultsStubbed()
             | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Cued() | Summarised()
             | TurnsSummarised() | Restarting() | Rolled()
         ):
