@@ -96,7 +96,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("check", help="say whether hands is set up to work here: its plugin, the claude shim on PATH, this terminal's Input Monitoring grant, and the running sessions; exits 0 only when every piece is there, 1 when one is missing, 2 when one could not be looked at")
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
-    commands.add_parser("login", help="log the brain (the claude backend of the home's config.toml) in again, or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
+    commands.add_parser("login", help="set the brain (the claude backend of the home's config.toml) up on a home with none, or log it in again or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
@@ -360,18 +360,30 @@ def display(finding: readiness.Finding) -> tuple[str, str]:
 
 def login(home: Home) -> int:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
-    from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable
+    from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, set_up, starting_settings, workdir
     from hands.brain.process import login as brain_login
     from hands.core.wire import UPSTREAM
 
-    try:
-        account = brain_login(home.brain, UPSTREAM, os.environ)
-    except (LoginFailed, NotLoggedIn, Unstartable) as error:
-        print(f"hands login: {error}", file=sys.stderr)
-        return 1
-    except KeyboardInterrupt:
-        print("hands login: interrupted", file=sys.stderr)
-        return 1
+    audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    # [LAW:nothing-unseen] a login is a unit of work: whether the home was new, whether it wrote the brain's settings,
+    # and the account it ended on. Recorded in the audit log alone, as the plugin's render is: logging in never waits on
+    # a collector, or on a config.toml the daemon has yet to accept.
+    with wide.unit("brain.login", audit_log.record):
+        # A home with no brain has never been through Claude Code's first screens, and its login is one of them.
+        new = not home.brain.exists()
+        workdir(home.brain)
+        wide.annotate(new=new, settings_written=starting_settings(home.brain))
+        try:
+            account = (set_up if new else brain_login)(home.brain, UPSTREAM, os.environ)
+        except (LoginFailed, NotLoggedIn, Unstartable) as error:
+            wide.fail(str(error))
+            print(f"hands login: {error}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            wide.fail("interrupted")
+            print("hands login: interrupted", file=sys.stderr)
+            return 1
+        wide.annotate(account=account)
     print(f"the brain at {home.brain} is logged in as {account}")
     print("a hands already running started its brain on the login before: restart it to start the brain on this one")
     return 0

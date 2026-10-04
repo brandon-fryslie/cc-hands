@@ -236,6 +236,34 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> str:
     return logged_in(config_dir, base_url, inherited)
 
 
+def set_up(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> str:
+    """Claude Code's own first run for the brain, at this terminal, in the directory the brain runs in: its first
+    screens, its login among them, answered once as any Claude Code's are; the account it holds after.
+
+    `claude auth login` alone leaves those screens for the brain's first start, where nobody is at its keyboard."""
+    ran = subprocess.run([brain_claude(inherited)], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
+    if ran.returncode != 0:
+        raise LoginFailed(f"the brain's first run of Claude Code exited {ran.returncode}")
+    return logged_in(config_dir, base_url, inherited)
+
+
+# Each is on unless settings.json says false: they sync the login's account's skills and plugins, which are Brandon's.
+KEPT_OUT = ("syncClaudeAiSkills", "syncClaudeAiPlugins")
+
+
+def starting_settings(config_dir: Path) -> bool:
+    """Writes the settings.json a brain home starts with when it has none; whether it wrote one. One that is there is
+    left as it is: the brain's settings are its directory's to say."""
+    # [LAW:one-source-of-truth] what account_kept_out requires, and the mode the README says the brain runs in.
+    starting = {**dict.fromkeys(KEPT_OUT, False), "permissions": {"defaultMode": "default"}}
+    try:
+        with (config_dir / "settings.json").open("x") as made:
+            json.dump(starting, made, indent=2)
+    except FileExistsError:
+        return False
+    return True
+
+
 def account_kept_out(config_dir: Path) -> None:
     """Raises Unstartable unless the brain's settings.json keeps out the skills and plugins its login's account syncs.
 
@@ -245,7 +273,7 @@ def account_kept_out(config_dir: Path) -> None:
     fix = f'set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in {settings}'
     try:
         said = Payload.parse(settings.read_bytes())
-        synced = [switch for switch in ("syncClaudeAiSkills", "syncClaudeAiPlugins") if said.fields.get(switch) is not False]
+        synced = [switch for switch in KEPT_OUT if said.fields.get(switch) is not False]
     except (OSError, Rejected) as error:
         raise Unstartable(f"the brain's settings could not be read ({error}): {fix}") from None
     if synced:
