@@ -133,7 +133,7 @@ def test_while_hands_speaks_the_detector_hears_silence_and_each_waking_is_an_eve
     woken = listening(word, lambda: speaking[0], events.append)
 
     async def heard() -> list[bool]:
-        with unit("trigger.awake", events.append, counts=("woken", "muted")):
+        with unit("trigger.awake", events.append, counts=("heard", "muted")):
             deaf = await woken(b"\x01\x02" * 160)
             speaking[0] = False
             return [deaf, await woken(b"\x01\x02" * 160)]
@@ -141,8 +141,8 @@ def test_while_hands_speaks_the_detector_hears_silence_and_each_waking_is_an_eve
     assert asyncio.run(heard()) == [False, True]
     assert word.heard == [bytes(320), b"\x01\x02" * 160]
     assert word.resets == 1
-    assert [(event.event, event.facts.get("score")) for event in events] == [("trigger.woken", 0.9), ("trigger.awake", None)]
-    assert dict(events[1].counts) == {"woken": 1, "muted": 1}
+    assert [(event.event, event.facts.get("score")) for event in events] == [("trigger.wake_word_heard", 0.9), ("trigger.awake", None)]
+    assert dict(events[1].counts) == {"heard": 1, "muted": 1}
     assert events[0].parent_id == events[1].span_id
 
 

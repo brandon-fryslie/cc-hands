@@ -61,7 +61,7 @@ def step(engagement: Engagement, event: Event) -> tuple[Engagement, tuple[Act, .
 
 
 # [LAW:one-source-of-truth] switched away from, the desk stops listening and a turn open is thrown away, as engaged.
-WAKE = Conversation("trigger.awake", step, released, counts=("woken", "muted"))
+WAKE = Conversation("trigger.awake", step, released, counts=("heard", "muted"))
 
 
 async def fetched(models: Path, release: str = RELEASE) -> tuple[str, ...]:
@@ -121,9 +121,10 @@ def listening(word: WakeWord, speaking: Callable[[], bool], emit: Callable[[Wide
             return False
         # Off the loop as scoring is: forgetting refills the model with seconds of features.
         await asyncio.to_thread(word.reset)
-        count(woken=1)
-        # [LAW:nothing-unseen] each waking is its own event, with how sure the model was.
-        with unit("trigger.woken", emit):
+        count(heard=1)
+        # [LAW:nothing-unseen] each hearing is its own event, with how sure the model was; whether it opened a turn is
+        # the engagement's to say, as its count of starts.
+        with unit("trigger.wake_word_heard", emit):
             annotate(score=score, threshold=THRESHOLD)
         return True
 
