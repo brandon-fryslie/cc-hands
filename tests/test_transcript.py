@@ -15,16 +15,15 @@ def audio() -> OutputAudioRawFrame:
 
 async def test_each_line_is_told_once_as_whisper_hears_it_and_as_the_speaker_plays_it() -> None:
     told: list[Line] = []
-    # The clock reads one second for each time the observer asks it: "It is." plays its 6 characters in one second.
-    seconds = iter(range(100))
     # Whisper, a processor between it and the TTS service, the output transport, and what follows it: every frame
     # crosses each boundary, and each line is still told once.
     stt, between, output, reached = IdentityFilter(), IdentityFilter(), IdentityFilter(), Reached()
-    observer = TranscriptObserver(stt, output, told.append, clock=lambda: next(seconds))
+    observer = TranscriptObserver(stt, output, told.append)
     async with running([stt, between, output, reached], [observer]) as run:
         for frame in (
             TranscriptionFrame("Is the parser fixed?", "me", "now"),
             # The first sentence of a reply is let go before its audio is made: it starts with its sound.
+            # Its 6 characters in two frames of 20 ms: 150 a second.
             spoken("It is."),
             audio(),
             audio(),
@@ -42,4 +41,4 @@ async def test_each_line_is_told_once_as_whisper_hears_it_and_as_the_speaker_pla
         # After the barge-in, sound of the next reply, ahead of any sentence of it.
         await run.worker.queue_frame(audio())
         await reached.until(4, OutputAudioRawFrame)
-    assert told == [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 10.5), Cut()]
+    assert told == [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 82.5), Cut()]

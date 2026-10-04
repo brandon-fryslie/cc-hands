@@ -7,7 +7,6 @@ hands.voice.player). pocket-tts reports no word timings, so a sentence is the fi
 its words across the time it takes, at the speaking rate measured here off the sentences played to their end.
 """
 
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -51,17 +50,14 @@ class TranscriptObserver(BaseObserver):
     makes it: the user's words where Whisper pushes them, hands' where the output transport lets them go.
     """
 
-    def __init__(
-        self, stt: FrameProcessor, output: FrameProcessor, told: Callable[[Line], None], clock: Callable[[], float] = time.monotonic
-    ) -> None:
+    def __init__(self, stt: FrameProcessor, output: FrameProcessor, told: Callable[[Line], None]) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._stt = stt
         self._output = output
         self._told = told
-        self._now = clock
         # Measured off each sentence played to its end, half from the latest; a typical voice's until the first has been.
         self._chars_per_sec = 15.0
-        # The sentence let go whose audio has not begun, and the one playing with when its audio began.
+        # The sentence let go whose audio has not begun, and the one playing with the seconds of its audio written.
         self._next: str | None = None
         self._playing: tuple[str, float] | None = None
 
@@ -72,18 +68,24 @@ class TranscriptObserver(BaseObserver):
             case TTSTextFrame() as frame if data.source is self._output and frame.will_be_spoken:
                 # A sentence's audio made is a kind of AggregatedTextFrame too, so it is taken first.
                 match self._playing:
-                    case (text, began):
-                        self._chars_per_sec = (self._chars_per_sec + len(text.strip()) / (self._now() - began)) / 2
+                    case (text, lasted):
+                        self._chars_per_sec = (self._chars_per_sec + len(text.strip()) / lasted) / 2
                     case None:
                         pass
                 self._next = self._playing = None
                 self._told(Spoken())
             case AggregatedTextFrame(text=text) as frame if data.source is self._output and frame.will_be_spoken:
                 self._next = text
-            case OutputAudioRawFrame() if data.source is self._output and self._next is not None:
-                self._playing = (self._next, self._now())
-                self._told(Saying(self._next, self._chars_per_sec))
-                self._next = None
+            case OutputAudioRawFrame() as frame if data.source is self._output:
+                # A sentence starts with its first audio written, and lasts as long as all of it.
+                if self._next is not None:
+                    self._told(Saying(self._next, self._chars_per_sec))
+                    self._playing, self._next = (self._next, 0.0), None
+                match self._playing:
+                    case (text, lasted):
+                        self._playing = (text, lasted + frame.num_frames / frame.sample_rate)
+                    case None:
+                        pass
             case InterruptionFrame() if data.source is self._output:
                 # A sentence let go in the moment of the barge-in never plays: forgotten with the one cut off.
                 self._next = self._playing = None
