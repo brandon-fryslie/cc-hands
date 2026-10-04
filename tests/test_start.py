@@ -16,7 +16,8 @@ def events(recorded: list[Entry]) -> list[WideEvent]:
 
 
 def test_a_start_that_comes_up_is_one_event_with_which_run_it_is_and_what_it_learned() -> None:
-    run_start = Start(restarted=True, after_crash=False)
+    run_start = Start(restarted=True)
+    run_start.heard(after_crash=False)
     run_start.heard(proxy="http://127.0.0.1:5000", tap=Path("/home/wire.sock"))
     run_start.heard(voice="charles")
     recorded: list[Entry] = []
@@ -28,8 +29,8 @@ def test_a_start_that_comes_up_is_one_event_with_which_run_it_is_and_what_it_lea
 
 
 def test_a_refused_start_is_failed_with_its_reason_and_says_how_far_it_got() -> None:
-    run_start = Start(restarted=False, after_crash=True)
-    run_start.heard(proxy="http://127.0.0.1:5000")
+    run_start = Start(restarted=False)
+    run_start.heard(after_crash=True, proxy="http://127.0.0.1:5000")
     recorded: list[Entry] = []
     with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
         raise CannotStart("no key")
@@ -40,7 +41,7 @@ def test_a_refused_start_is_failed_with_its_reason_and_says_how_far_it_got() -> 
 
 def test_a_failed_start_traces_only_the_frames_its_error_came_up_through() -> None:
     # Written down, never raised again to be written: no frame of the event's own making is in its trace.
-    run_start = Start(restarted=False, after_crash=False)
+    run_start = Start(restarted=False)
     recorded: list[Entry] = []
     with pytest.raises(ValueError, match="x"), run_start.ending(recorded.append):
         raise ValueError("x")
@@ -50,7 +51,7 @@ def test_a_failed_start_traces_only_the_frames_its_error_came_up_through() -> No
 
 
 def test_a_start_told_to_stop_before_it_was_ready_is_cancelled() -> None:
-    run_start = Start(restarted=False, after_crash=False)
+    run_start = Start(restarted=False)
     recorded: list[Entry] = []
     with run_start.ending(recorded.append):
         pass
@@ -58,7 +59,7 @@ def test_a_start_told_to_stop_before_it_was_ready_is_cancelled() -> None:
 
 
 def test_a_run_that_ends_after_its_start_was_ready_leaves_the_start_as_it_was() -> None:
-    run_start = Start(restarted=False, after_crash=False)
+    run_start = Start(restarted=False)
     recorded: list[Entry] = []
     with pytest.raises(RuntimeError, match="the pipeline ended"), run_start.ending(recorded.append):
         run_start.ended(recorded.append, None)
@@ -67,7 +68,7 @@ def test_a_run_that_ends_after_its_start_was_ready_leaves_the_start_as_it_was() 
 
 
 async def test_a_stop_while_the_start_awaits_is_cancelled_not_failed() -> None:
-    run_start = Start(restarted=False, after_crash=False)
+    run_start = Start(restarted=False)
     recorded: list[Entry] = []
 
     async def starting() -> None:
@@ -83,7 +84,7 @@ async def test_a_stop_while_the_start_awaits_is_cancelled_not_failed() -> None:
 
 
 def test_a_start_ends_once_and_learns_nothing_after() -> None:
-    run_start = Start(restarted=False, after_crash=False)
+    run_start = Start(restarted=False)
     run_start.ended(lambda _entry: None, None)
     with pytest.raises(RuntimeError, match="already ended"):
         run_start.ended(lambda _entry: None, None)

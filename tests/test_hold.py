@@ -170,41 +170,58 @@ def holding(home: Path, then: str) -> subprocess.Popen[str]:
     return holder
 
 
-def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbeat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize("run", [["run"], ["run", "--restarted", "0"]])
+def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbeat_and_sockets(run: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    import shutil
+    import socket
+    import tempfile
     from datetime import UTC, datetime, timedelta
 
     from hands.sessions import heartbeat
 
-    home = Home(tmp_path)
-    holder = holding(tmp_path, "import sys; sys.stdin.read()")
+    # A unix socket path is capped near 104 bytes on macOS, so not under pytest's long tmp_path.
+    root = Path(tempfile.mkdtemp(prefix="hands-"))
+    home = Home(root)
+    holder = holding(root, "import sys; sys.stdin.read()")
+    listening = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         heartbeat.Heart(home.status, holder.pid, datetime.now(UTC), timedelta(seconds=2)).beat("running", None, 1, listening=True, deaf=False)
         live = home.status.read_bytes()
+        listening.bind(str(home.socket))
+        listening.listen()
         # The ticket's repro: the second run is in a terminal without the grant, and is told the daemon runs, not
         # asked for a grant it does not need.
         asked: list[None] = []
         monkeypatch.setattr(talkkey, "granted", lambda: False)
         monkeypatch.setattr(talkkey, "ask", lambda: asked.append(None))
-        assert cli.main(["--home", str(tmp_path), "run"]) == 1
-        assert f"hands is already running on {tmp_path}; hands is up: pid {holder.pid}" in capsys.readouterr().err
+        assert cli.main(["--home", str(root), *run]) == 1
+        assert f"hands is already running on {root}, as pid {holder.pid}" in capsys.readouterr().err
         assert asked == []
         assert home.status.read_bytes() == live
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as shim:
+            shim.connect(str(home.socket))
         [refused] = [json.loads(line) for line in audit.tail(home.audit, 10)[0]]
         assert (refused["event"], refused["outcome"]) == ("hands.start", "failed") and "already running" in refused["error"]
     finally:
+        listening.close()
         holder.kill()
         holder.wait()
+        shutil.rmtree(root)
 
 
 def test_a_restart_execd_in_the_running_daemons_process_keeps_its_home(tmp_path: Path) -> None:
-    # Held, the process execs into hands again, as a restart's run does, and holds the home there too.
-    restarted = holds(tmp_path, "again") + "import sys; sys.stdin.read()"
+    # Held, the process execs into hands again, as a restart's run does, and holds the home there too, through the one
+    # descriptor it already had on the lock.
+    lock = Home(tmp_path).lock
+    counted = f"import os\ntarget = os.stat({str(lock)!r})\nopen_on = 0\nfor name in os.listdir('/dev/fd'):\n    try:\n        found = os.fstat(int(name))\n    except OSError:\n        continue\n    open_on += (found.st_dev, found.st_ino) == (target.st_dev, target.st_ino)\nprint(open_on, flush=True)\n"
+    restarted = holds(tmp_path, "again") + counted + "import sys; sys.stdin.read()"
     holder = holding(tmp_path, f"import sys\nfrom hands.daemon.starting import again\nagain([sys.executable, '-c', {restarted!r}])")
     try:
         assert holder.stdout is not None and holder.stdout.readline() == "again\n"
+        assert holder.stdout.readline() == "1\n"
         # And still holds it against every other process.
         other = subprocess.run([sys.executable, "-c", holds(tmp_path, "held")], capture_output=True, text=True)
-        assert other.returncode != 0 and f"hands is already running on {tmp_path}" in other.stderr
+        assert other.returncode != 0 and f"hands is already running on {tmp_path}, as pid {holder.pid}" in other.stderr
     finally:
         holder.kill()
         holder.wait()
