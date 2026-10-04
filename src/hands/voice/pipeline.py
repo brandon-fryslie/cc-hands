@@ -236,7 +236,8 @@ def build_voice(
     worker = PipelineWorker(
         pipeline,
         params=params,
-        observers=[LatencyObserver(), player.watching(tts, output), Audible(output)],
+        # The phone is told each mark of every turn, as the latency log is, and passes it to the page of the call that is up.
+        observers=[LatencyObserver(phone.tell), player.watching(tts, output), Audible(output)],
         idle_timeout_secs=None,
     )
     return Voice(

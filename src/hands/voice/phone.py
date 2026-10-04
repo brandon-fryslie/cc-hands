@@ -9,7 +9,9 @@ has gone. A newer call replaces the one before it: the page last opened is the o
 let go before it connected, or left after hands was at it, and why; its duration is how long it lasted.
 
 The page sends its microphone as plain 16-bit audio over the call's data channel, in order with its button, and hands
-plays to it over an audio track. Earbuds keep hands' voice out of the phone's microphone, and the page asks the browser
+plays to it over an audio track. Over the same channel hands tells the page each mark of the turn it is waiting on
+(`hands.voice.mark`): the hold taken or thrown away, its words heard or none found, a stage failing, the reply begun,
+and the first sound, which the page shows with how long each took. Earbuds keep hands' voice out of the phone's microphone, and the page asks the browser
 for its echo cancellation as well; so the phone's audio is gated by its button alone, with none of the desk
 microphone's wait for the room to go quiet.
 """
@@ -31,6 +33,7 @@ from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import Begun, continuing, ended, since
 from hands.voice.hold import Move
+from hands.voice.mark import Mark
 from hands.voice.ptt import KeyedAudio, PushToTalk
 
 # The length of each frame sent to the phone: Opus's own 20 ms.
@@ -62,10 +65,12 @@ class CallUnreached:
 
 @dataclass(frozen=True)
 class CallLeft:
-    """The call was up, hands at the phone from `arrived_ms` after its offer, and it ended."""
+    """The call was up, hands at the phone from `arrived_ms` after its offer, and it ended, its page `told` that many
+    marks of its turns."""
 
     reason: PhoneGone
     arrived_ms: float
+    told: int
 
 
 # How a call ended; or what raised as hands answered it.
@@ -183,9 +188,12 @@ class _Call:
     began: Begun
     # Set by every message the page sends; the watch hangs up a call that goes QUIET_SECS without one.
     heard: asyncio.Event
-    # Set as it arrives: its watch, and how long after its offer it came.
+    # Set as it arrives: its channel, its watch, and how long after its offer it came.
+    channel: RTCDataChannel | None = None
     watch: asyncio.Task[None] | None = None
     arrived_ms: float = 0.0
+    # How many marks of its turns the page has been told.
+    told: int = 0
 
 
 class Phone:
@@ -247,7 +255,7 @@ class Phone:
                     logger.error(str(error))
 
             if self._offered is call:
-                await self._arrive(call)
+                await self._arrive(call, channel)
 
         @peer.on("connectionstatechange")
         async def changed() -> None:  # pyright: ignore[reportUnusedFunction]
@@ -270,12 +278,12 @@ class Phone:
         await self._let_go(older, "replaced")
         return peer.localDescription
 
-    async def _arrive(self, call: _Call) -> None:
+    async def _arrive(self, call: _Call, channel: RTCDataChannel) -> None:
         # [LAW:no-ambient-temporal-coupling] the call that was up goes, and this one comes, in one step before any
         # await: a speaker reading the gate between them never finds the phone without a call.
         self._offered = None
         gone = self._leave("replaced")
-        self._call, call.arrived_ms = call, since(call.began.began)
+        self._call, call.channel, call.arrived_ms = call, channel, since(call.began.began)
         # [LAW:nothing-unseen] the move a call makes is part of that call, in its trace, wherever the call's end is noticed.
         with continuing(call.began.span):
             self._key.go("phone")
@@ -337,7 +345,7 @@ class Phone:
                 call.outbound.stop()
                 if call.watch is not None and call.watch is not asyncio.current_task():
                     call.watch.cancel()
-                call_ended(self._record, call.began, call.remote, CallLeft(reason, call.arrived_ms))
+                call_ended(self._record, call.began, call.remote, CallLeft(reason, call.arrived_ms, call.told))
                 return call
 
     async def hang_up(self, reason: PhoneGone) -> None:
@@ -353,6 +361,16 @@ class Phone:
         offered, self._offered = self._offered, None
         await self._let_go(offered, "stopped")
         await self.hang_up("stopped")
+
+    def tell(self, mark: Mark) -> None:
+        """Tell the page a mark of the turn it is waiting on, over the call's channel, as the page sends its button: the
+        mark's own word. With no call up, or its channel on its way shut, there is no page to tell."""
+        match self._call:
+            case _Call(channel=RTCDataChannel(readyState="open") as channel) as call:
+                channel.send(mark)
+                call.told += 1
+            case _:
+                pass
 
     def play(self, audio: bytes) -> asyncio.Future[None]:
         """Send 16-bit mono audio at the played rate to the phone; resolved once it has gone, or the call has ended."""
