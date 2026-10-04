@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from hands.sessions.audit import AuditLog, segment, segments
-from hands.sessions.wide import WideEvent, annotate, count, unit
+from hands.sessions.wide import WideEvent, annotate, child, count, fail, unit
 
 
 def test_a_unit_that_ends_well_is_one_event_with_its_facts_and_its_counts_zeros_included() -> None:
@@ -106,6 +106,25 @@ def test_a_count_the_unit_did_not_declare_is_refused_and_fails_the_unit() -> Non
         with unit("job", emitted.append, counts=("seen",)):
             count(pushed=1)
     assert [event.outcome for event in emitted] == ["failed"]
+
+
+def test_a_unit_that_says_it_failed_ends_failed_with_why_and_runs_to_its_end() -> None:
+    emitted: list[WideEvent] = []
+    with unit("job", emitted.append):
+        fail("the forge refused")
+        annotate(after="still ran")
+    [event] = emitted
+    assert (event.outcome, event.error, event.trace, event.facts) == ("failed", "the forge refused", (), {"after": "still ran"})
+
+
+def test_a_part_timed_elsewhere_is_its_own_event_under_the_unit_in_its_trace() -> None:
+    emitted: list[WideEvent] = []
+    at = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
+    with unit("turn", emitted.append):
+        child("model.round_trip", at, 700.0, "ok", exchange="x1")
+    part, turn = emitted
+    assert (part.event, part.started_at, part.duration_ms, part.outcome, part.facts) == ("model.round_trip", at, 700.0, "ok", {"exchange": "x1"})
+    assert (part.trace_id, part.parent_id) == (turn.trace_id, turn.span_id) and part.span_id != turn.span_id
 
 
 def test_a_fact_with_no_unit_open_to_land_on_is_refused() -> None:

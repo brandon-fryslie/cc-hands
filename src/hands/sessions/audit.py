@@ -40,7 +40,6 @@ from hands.core.events import Event
 from hands.core.place import Place
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
-from hands.sessions.model_facts import ModelFact
 from hands.sessions.wide import WideEvent, chain
 
 
@@ -289,27 +288,6 @@ class BrainInterrupted:
 
     running: tuple[str, ...]
     stopped: bool
-
-
-# Whose turn the brain answered: the user's words, or what hands handed it to tell.
-Asker = Literal["user", "hands"]
-
-
-@dataclass(frozen=True)
-class BrainSpoke:
-    """What a brain turn handed to the speaker, and the exchanges on the wire its words came from; `readbacks` is what hands
-    said for it once its next request was held. `asker` is whose turn it was: the user's words, or hands' narration.
-    `waited` is how long, in seconds, the turn waited in its lane for the brain before it was written. `failed` is what the
-    turn failed of: the error its latest answer on the wire said, or a model that answered it with nothing; None for a
-    turn that did not fail."""
-
-    exchanges: tuple[str, ...]
-    text: str
-    readbacks: tuple[str, ...]
-    interrupted: bool
-    asker: Asker
-    waited: float
-    failed: ModelFact | None
 
 
 @dataclass(frozen=True)
@@ -666,7 +644,6 @@ Entry = (
     | AsideAnswered
     | ResultsStubbed
     | BrainInterrupted
-    | BrainSpoke
     | BrainExited
     | Transcribed
     | HoldHeard
@@ -712,8 +689,6 @@ def level(entry: Entry) -> Level:
             return _reply_level(reply)
         case BrainAnswered(error=error) | NameWithheld(error=error):
             return "info" if error is None else "error"
-        case BrainSpoke(failed=fact):
-            return "info" if fact is None else "error"
         case AsideAnswered(failed=failed):
             return "error" if failed else "info"
         case Called(result=result):

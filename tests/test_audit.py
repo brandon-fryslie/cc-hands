@@ -24,7 +24,6 @@ from hands.sessions.audit import (
     AsideAnswered,
     BacklogUnread,
     BrainAnswered,
-    BrainSpoke,
     Called,
     Entry,
     Failure,
@@ -40,7 +39,8 @@ from hands.sessions.audit import (
     tail,
 )
 from hands.sessions.home import Home
-from hands.sessions.model_facts import ModelFailed, ModelReplyEmpty
+from hands.sessions.model_facts import ModelFailed
+from hands.sessions.wide import annotate, fail, unit
 from hands.sessions.registry import Sessions
 from hands.voice.tools import Result, Tool, audited, draft_tools, tool
 from hands.core.status import Busy, Report, Stamp
@@ -115,8 +115,6 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
     log.record(Named(session="s1", outcome="kept", before="a b", name=None, reply="a b", error=None, seconds=0.1))
     log.record(Named(session="s1", outcome="failed", before="a b", name=None, reply=None, error="timed out", seconds=0.1))
     log.record(AsideAnswered("q", "", True, SessionId("s2"), 0.0, 9.0))
-    log.record(BrainSpoke(("x1",), "", (), False, "user", 0.0, ModelReplyEmpty()))
-    log.record(BrainSpoke(("x1",), "Sent.", (), False, "user", 0.0, None))
     log.record(Called("tell_turn", {}, {"error": "no running session has the id 'x'"}))
     # An "error" deep in a line, in what a tool handed back, does not make the line hands' error.
     log.record(Called("read_turn", {}, {"turn": {"error": {"type": "rate_limit_error"}}}))
@@ -136,8 +134,6 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
         ("Named", "info"),
         ("Named", "error"),
         ("AsideAnswered", "error"),
-        ("BrainSpoke", "error"),
-        ("BrainSpoke", "info"),
         ("Called", "error"),
         ("Called", "info"),
         ("Exchanged", "info"),
@@ -601,6 +597,10 @@ async def test_what_was_heard_where_nothing_waits_on_it_still_fails_loudly() -> 
 
 def test_a_brain_turn_that_failed_is_written_with_what_it_failed_of(tmp_path: Path) -> None:
     path = tmp_path / "audit"
-    AuditLog(path, clock=lambda: AT).record(BrainSpoke(("x1",), "", (), False, "user", 0.0, ModelFailed(ErrorCategory.SERVER)))
+    log = AuditLog(path, clock=lambda: AT)
+    with unit("voice.turn", log.record):
+        annotate(failed=ModelFailed(ErrorCategory.SERVER))
+        fail("the brain's turn ended in error: api_error")
     [line] = lines(path)
-    assert line["failed"] == {"type": "ModelFailed", "category": "server"}
+    assert (line["level"], line["error"]) == ("error", "the brain's turn ended in error: api_error")
+    assert line["facts"]["failed"] == {"type": "ModelFailed", "category": "server"}

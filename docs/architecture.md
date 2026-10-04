@@ -1022,7 +1022,11 @@ For the brain, a narration waits in a lane of `BrainStage`'s own, never in Pipec
 context, and the user's turn goes ahead of it: a narration that waited while the brain
 was answering is asked only once no words of the user's are waiting. What the narrator
 says as written waits in the same lane (`Aloud`), so a session's end is heard after its
-last turn. `BrainSpoke.waited` is how long each turn waited in its lane.
+last turn. Each turn is one `voice.turn` wide event, and its `queued_ms` is how long it waited in its lane.
+Its `waited_ms` is how long the user waited from letting go of the key to the turn's first word on the wire,
+`transcribed_ms` and `queued_ms` are where that wait went before the brain was written to, and each model round
+trip (`model.round_trip`) and each call the brain's replies made (`tool.call`) is a child event under it, timed as the
+stage heard it on the wire.
 
 The rest of this section is planned: step summaries built as steps arrive, and streaming.
 
@@ -1779,7 +1783,10 @@ A unit of work runs inside `hands.sessions.wide.unit`, which leaves exactly one
 `WideEvent` however the run ends: ok, failed with what it raised and the frames it
 came up through, or cancelled `[LAW:nothing-unseen]`. Code inside the run calls
 `annotate` to add a fact and `count` to add to a count the unit declared. It never
-emits anything itself. A declared count the run never added to is written as 0, so a
+emits anything itself. A run that fails without raising calls `fail`, and its event
+ends failed with that error. A part of the run that was timed where it happened, such
+as a request another process made, is emitted with `child` as its own event under the
+unit. A declared count the run never added to is written as 0, so a
 run that did nothing reads differently from a run that never happened. A unit opened
 inside another shares its `trace_id`. A task that outlives the unit it was started in
 cannot add to the event once it is emitted: it is refused with a `LookupError`.
