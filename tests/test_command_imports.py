@@ -43,16 +43,10 @@ with open(out, "w") as file:
 """
 
 
-@pytest.mark.parametrize("command", ["status", "check", "log", "phone", "login"])
-def test_the_command_answers_without_loading_pipecat(command: str, tmp_path: Path) -> None:
+# Each command's code in a home with no daemon: status and check say it is not running, and the rest run whole.
+@pytest.mark.parametrize(("command", "code"), [("status", 1), ("check", 1), ("log", 0), ("phone", 0), ("login", 0)])
+def test_the_command_answers_without_loading_pipecat(command: str, code: int, tmp_path: Path) -> None:
     out = tmp_path / "modules.json"
     child = subprocess.run([sys.executable, "-c", CHILD, str(tmp_path / "home"), command, str(out)], capture_output=True, text=True)
     assert child.returncode == 0, child.stderr
-    assert json.loads(out.read_text())["pipecat"] == []
-
-
-@pytest.mark.parametrize("command", ["phone", "login"])
-def test_the_command_runs_whole_on_its_stand_ins(command: str, tmp_path: Path) -> None:
-    out = tmp_path / "modules.json"
-    child = subprocess.run([sys.executable, "-c", CHILD, str(tmp_path / "home"), command, str(out)], capture_output=True, text=True)
-    assert json.loads(out.read_text())["code"] == 0, child.stderr
+    assert json.loads(out.read_text()) == {"code": code, "pipecat": []}, child.stderr

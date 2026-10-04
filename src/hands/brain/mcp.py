@@ -2,7 +2,8 @@
 
     claude --mcp-config '{"mcpServers": {"hands": {"type": "http", "url": "<the server's url>"}}}'
 
-The second adapter over the tool bodies in hands.voice.tools, beside Pipecat's. It speaks the part of MCP a tools-only
+The second adapter over the tools in hands.voice.tools, beside Pipecat's, reading each through hands.voice.tool, which
+loads no Pipecat. It speaks the part of MCP a tools-only
 server needs: initialize, ping, tools/list, and tools/call, each POSTed as JSON-RPC and answered as JSON. It opens no
 event stream of its own, so a GET is refused, as the transport allows.
 
