@@ -243,7 +243,7 @@ uv run python -m hands.sessions.hookconfig > plugin/hooks/hooks.json
 uv sync
 uv run hands run                        # the backend ~/.hands/config.toml names; hold Right Shift in any app to talk, release to send; q in its terminal quits
 uv run --env-file .env hands run        # its key in .env: ANTHROPIC_API_KEY (else the keychain's HANDS_LLM_ANT_KEY) or OPENAI_API_KEY
-uv run hands status                     # up, stopped, not responding, down, or never ran; exits 0 only when up
+uv run hands status                     # up, stopped, refused to start (and why), not responding, down, or never ran; exits 0 only when up
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands recall token helper        # what was said, sent to a session, and answered there that holds every word; the brain recalls with it
@@ -277,8 +277,8 @@ hands runs only while `hands run` does, in the terminal it was started in: `q` o
 Ctrl-C stops it, and nothing starts it again.
 
 `hands run` starts the menu-bar indicator beside it. The indicator's title is ✋ while
-the daemon is up. It reads "hands stuck", "hands down", or "hands unreadable" when
-something is wrong, and "✋ off" when the daemon was stopped or never ran. It posts a
+the daemon is up. It reads "hands stuck", "hands down", "hands refused to start", or "hands unreadable"
+when something is wrong, and "✋ off" when the daemon was stopped or never ran. It posts a
 notification when the daemon stops being up, and once the daemon is gone it posts that
 and goes away too.
 

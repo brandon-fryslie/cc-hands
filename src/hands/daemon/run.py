@@ -90,7 +90,7 @@ from hands.voice.briefing import as_sent, brief
 from hands.voice.conversation import record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
-from hands.daemon.starting import Ended, invocation, keep_beating, start
+from hands.daemon.starting import CannotStart, Ended, invocation, keep_beating, start
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain_instruction
 from hands.voice.player import Player
 from hands.voice import voices
@@ -193,15 +193,16 @@ class Configured:
 
 
 def configured_from(home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
-    """The process boundary: the settings the run started on and the environment's secrets in, typed configuration out."""
+    """The process boundary: the settings the run started on and the environment's secrets in, typed configuration out;
+    CannotStart where hands cannot run on them."""
     # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
     # config.toml, and HANDS_HOME, where that is, is the one variable of hands' own it reads.
     if stray := sorted(name for name in environment if name.startswith("HANDS_") and name != "HANDS_HOME"):
-        sys.exit(f"hands: {', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
+        raise CannotStart(f"{', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
     try:
         llm = backend(settings.config.llm, home, environment)
     except Rejected as error:
-        sys.exit(f"hands: {error}")
+        raise CannotStart(str(error)) from error
     return Configured(VoiceConfig(llm=llm, whisper_model=settings.config.whisper_model, voice=_voice(home)), settings)
 
 
@@ -210,7 +211,7 @@ def _voice(home: Home) -> voices.Voice:
     try:
         return voices.chosen(home)
     except (Rejected, OSError) as error:
-        sys.exit(str(error))
+        raise CannotStart(str(error)) from error
 
 
 @dataclass(frozen=True)
@@ -258,7 +259,11 @@ async def mind(
             server = await serve_mcp(tools, record)
             try:
                 station = Station(config_dir, workdir(config_dir), model, proxy_url, environment)
-                brain = await start_brain(Launch(station, brain_instruction(log, config_dir, recall), server.config(), SessionId(str(uuid4())), fritter), record)
+                try:
+                    brain = await start_brain(Launch(station, brain_instruction(log, config_dir, recall), server.config(), SessionId(str(uuid4())), fritter), record)
+                except Unstartable as error:
+                    # hands runs on no brain it could not start: its start is refused, saying why.
+                    raise CannotStart(str(error)) from error
                 try:
                     # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
                     # its own: nothing but the user's turns and their stops is ever typed into the brain.

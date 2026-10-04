@@ -160,9 +160,9 @@ def unreached(home: Home, error: Unreached) -> int:
         # socket, and reads the session files when it does, so it is quiet too.
         case heartbeat.NeverRan() | heartbeat.Stopped() | heartbeat.Up(status=heartbeat.Status(pipeline="starting")):
             return 0
-        # [LAW:no-silent-failure] a daemon that died, hung, or cannot be judged, and one running its pipeline that
+        # [LAW:no-silent-failure] a daemon that died, refused to start, hung, or cannot be judged, and one running its pipeline that
         # does not answer, are each reported with what the heartbeat says of it.
-        case heartbeat.Down() | heartbeat.Unresponsive() | heartbeat.Unreadable() | heartbeat.Up():
+        case heartbeat.Down() | heartbeat.Refused() | heartbeat.Unresponsive() | heartbeat.Unreadable() | heartbeat.Up():
             print(f"hands: {error}; {heartbeat.describe(verdict, now)}", file=sys.stderr)
             return FAILED
 

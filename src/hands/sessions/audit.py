@@ -579,6 +579,13 @@ class SettingsEdited:
 
 
 @dataclass(frozen=True)
+class StartRefused:
+    """A start of hands that ended before it ran, and why: a setting, a key, or a grant it could not start without."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
 class Restarting:
     """The daemon was asked to restart, or its settings were edited (SettingsEdited): it has stopped, and starts again
     as pid `pid`, the same process, from the code and configuration on disk now."""
@@ -674,6 +681,7 @@ Entry = (
     | NameGiven
     | NameWithheld
     | BacklogUnread
+    | StartRefused
     | Restarting
     | Rolled
     | Failure
@@ -685,14 +693,14 @@ Level = Literal["error", "info"]
 
 
 def level(entry: Entry) -> Level:
-    """Whether a line tells of something that went wrong: a Failure; an effect, a backlog read, a unit of work or a
+    """Whether a line tells of something that went wrong: a Failure; a start refused; an effect, a backlog read, a unit of work or a
     name that failed; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
     broke off; a tool that answered with an error; or a brain turn or side question that came to nothing."""
     # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | TypingFailed() | EffectFailed() | Exported(error=str()) | BacklogUnread() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
+        case Failure() | TypingFailed() | EffectFailed() | Exported(error=str()) | BacklogUnread() | StartRefused() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)

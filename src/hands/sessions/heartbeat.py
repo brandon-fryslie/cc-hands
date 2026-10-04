@@ -18,6 +18,13 @@ from hands.sessions.processes import parse_pid, process_starts, still_running
 # Starting until Pipecat reports the pipeline started; stopped only in the last heartbeat of a run told to stop.
 PipelineState = Literal["starting", "running", "stopped"]
 
+
+@dataclass(frozen=True)
+class Refusal:
+    """The last heartbeat of a start hands refused: its pipeline never ran, for `reason`."""
+
+    reason: str
+
 # How often the daemon rewrites the file.
 HEARTBEAT = timedelta(seconds=2)
 # A reader that has missed this many heartbeats in a row calls the daemon unresponsive.
@@ -32,7 +39,7 @@ class Status:
     started_at: datetime
     written_at: datetime
     heartbeat: timedelta
-    pipeline: PipelineState
+    pipeline: PipelineState | Refusal
     last_audio_out: datetime | None
     live_sessions: int
     listening: bool  # a turn is open: the talk key is held and has been held long enough to mean talk
@@ -46,7 +53,7 @@ def encode(status: Status) -> str:
             "started_at": status.started_at.isoformat(),
             "written_at": status.written_at.isoformat(),
             "heartbeat_ms": round(status.heartbeat.total_seconds() * 1000),
-            "pipeline": status.pipeline,
+            **_pipeline_fields(status.pipeline),
             "last_audio_out": None if status.last_audio_out is None else status.last_audio_out.isoformat(),
             "live_sessions": status.live_sessions,
             "listening": status.listening,
@@ -66,7 +73,7 @@ def parse(raw: bytes) -> Status:
         started_at=_instant(fields.text("started_at")),
         written_at=_instant(fields.text("written_at")),
         heartbeat=_period(fields.integer("heartbeat_ms")),
-        pipeline=_pipeline(fields.text("pipeline")),
+        pipeline=_pipeline(fields.text("pipeline"), fields.optional_text("refusal")),
         last_audio_out=None if last_audio_out is None else _instant(last_audio_out),
         live_sessions=fields.integer("live_sessions"),
         listening=fields.optional_flag("listening"),
@@ -91,7 +98,7 @@ class Heart:
     started_at: datetime
     period: timedelta
 
-    def beat(self, pipeline: PipelineState, last_audio_out: datetime | None, live_sessions: int, *, listening: bool, deaf: bool) -> None:
+    def beat(self, pipeline: PipelineState | Refusal, last_audio_out: datetime | None, live_sessions: int, *, listening: bool, deaf: bool) -> None:
         write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions, listening, deaf))
 
 
@@ -133,6 +140,15 @@ class Stopped:
 
 
 @dataclass(frozen=True)
+class Refused:
+    """The daemon's last heartbeat, written at `written_at`, said it refused to start, and why: it ended before it ran,
+    rather than died or hung."""
+
+    refusal: Refusal
+    written_at: datetime
+
+
+@dataclass(frozen=True)
 class Unreadable:
     """There is a heartbeat file, but it cannot be read or does not parse: nothing can be said of the daemon."""
 
@@ -140,7 +156,7 @@ class Unreadable:
     reason: str
 
 
-Verdict = NeverRan | Up | Unresponsive | Down | Stopped | Unreadable
+Verdict = NeverRan | Up | Unresponsive | Down | Stopped | Refused | Unreadable
 
 
 def look(path: Path, now: datetime) -> Verdict:
@@ -169,6 +185,8 @@ def judge(path: Path, status: Status | None, now: datetime, alive: bool) -> Verd
         # Checked before the pid: once stopped, a running pid is a daemon still cleaning up, or a stranger reusing the number.
         case Status(pipeline="stopped"):
             return Stopped(status)
+        case Status(pipeline=Refusal() as refusal, written_at=written_at):
+            return Refused(refusal, written_at)
         case Status() if not alive:
             return Down(status)
         case Status() if now - status.written_at > status.heartbeat * MISSED_BEATS:
@@ -192,6 +210,8 @@ def describe(verdict: Verdict, now: datetime) -> str:
             )
         case Stopped(status=status):
             return f"hands is stopped: pid {status.pid} finished its pipeline {_span(now - status.written_at)} ago"
+        case Refused(refusal=Refusal(reason=reason), written_at=written_at):
+            return f"hands refused to start {_span(now - written_at)} ago: {reason}"
         case Up(status=status):
             heard = "never" if status.last_audio_out is None else f"{_span(now - status.last_audio_out)} ago"
             state = "up but cannot hear, as there is no microphone" if status.deaf else "up"
@@ -228,9 +248,25 @@ def _period(milliseconds: int) -> timedelta:
     return timedelta(milliseconds=milliseconds)
 
 
-def _pipeline(text: str) -> PipelineState:
-    match text:
-        case "starting" | "running" | "stopped":
+def _pipeline_fields(pipeline: PipelineState | Refusal) -> dict[str, str]:
+    match pipeline:
+        case Refusal(reason=reason):
+            return {"pipeline": "refused", "refusal": reason}
+        case state:
+            return {"pipeline": state}
+
+
+def _pipeline(text: str, refusal: str | None) -> PipelineState | Refusal:
+    # [LAW:parse-dont-validate] a refusal is read with its reason or not at all: a refused pipeline that names none, or a
+    # reason beside a pipeline that ran, is refused here.
+    match text, refusal:
+        case "starting" | "running" | "stopped", None:
             return text
-        case other:
-            raise Rejected(f"pipeline should be starting, running, or stopped, got {other!r}")
+        case "refused", str():
+            return Refusal(refusal)
+        case "refused", None:
+            raise Rejected("a refused pipeline says why, in refusal")
+        case _, str():
+            raise Rejected(f"refusal is said only of a refused pipeline, not of {text!r}")
+        case other, None:
+            raise Rejected(f"pipeline should be starting, running, stopped, or refused, got {other!r}")

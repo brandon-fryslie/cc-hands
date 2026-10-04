@@ -615,7 +615,7 @@ stopped or never ran is off, not broken: the shim exits 0 and prints nothing, an
 permission request falls through to Claude Code's own dialog. So is one still
 starting: `hands run` writes its first heartbeat before it imports Pipecat and serves
 the socket, and it reads the session files once it does. A hands whose heartbeat
-says it died, hung, or is up but not answering, or whose heartbeat cannot be read,
+says it died, refused to start, hung, or is up but not answering, or whose heartbeat cannot be read,
 makes the shim exit 1 with the socket error and the verdict on stderr, so Claude Code
 shows the failure in the session where it happened rather than letting a dead daemon
 look like a quiet one `[LAW:no-silent-failure]`.
@@ -1738,8 +1738,8 @@ thing that failed `[LAW:no-silent-failure]`:
    terminal's Ctrl-C takes it down first. It lives while the process that started it does,
    and once that is gone, until the light leaves up: it posts that notice and exits. Once a second it judges the heartbeat through `heartbeat.look`, the one
    read-and-judge that `hands status`, the crash check at start, and the hook shim also use. Its title
-   shows one of six lights: up, deaf (up, with no microphone to hear through), not
-   responding, down, off (stopped or never ran), and unreadable. An unreadable heartbeat
+   shows one of seven lights: up, deaf (up, with no microphone to hear through), not
+   responding, down, refused (a start that ended before it ran, with its reason), off (stopped or never ran), and unreadable. An unreadable heartbeat
    is warned of as loudly as a dead daemon. It posts a notification when the light
    changes into deaf or out of a running light (up or deaf) into a warning, at most once a minute, so a loop that
    stalls and recovers over and over is not announced every time. A departure inside that
@@ -1797,7 +1797,14 @@ in under a second. After the socket is released, a stop writes a last heartbeat 
 says `stopped`, and a stopped daemon reads as stopped even if its pid is later reused.
 A crash writes nothing more, so its last heartbeat names a pid that is gone, and it
 reads as down. A background task that failed or a pipeline that ended on its own
-counts as a crash: the run raises, exits nonzero, and reads as down until it is run again.
+counts as a crash: the run raises, exits nonzero, and reads as down until it is run again. A start that
+cannot be made says why on its terminal and as `StartRefused` in the audit log. Refused at
+the door (the talk key's grant, `config.toml`), a run holds no heartbeat yet and writes
+none, so the one there, a running hands' or a crash's, stands; a restart's run holds the
+heartbeat from the outset, its predecessor having beat starting under the same pid.
+Refused once it holds the heartbeat (the backend's key, the voice, the brain), its last
+heartbeat says `refused` with the reason, which `hands status` and the indicator show,
+and which the next start reads as no crash.
 
 ## Wide events
 
