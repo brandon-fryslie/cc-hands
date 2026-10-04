@@ -665,8 +665,8 @@ class Brain:
                 # and one with them only behind ToolSearch asks the model for them before it can answer.
                 if not any(name.startswith(f"mcp__{SERVER_NAME}__") for name in tools):
                     logger.error(
-                        f"the brain's turn went to the model with hands' tools deferred behind {TOOL_SEARCH}:"
-                        f" a setting ranked above hands' --settings turned tool search on ({tools})"
+                        f"the brain's turn went to the model without hands' tools and with {TOOL_SEARCH}: tool search is on"
+                        f" though hands' --settings turn it off ({tools})"
                         if TOOL_SEARCH in tools
                         else f"the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server ({tools})"
                     )

@@ -720,8 +720,8 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
         logger.remove(sink)
     assert errors == [
         "the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (('Read',))",
-        "the brain's turn went to the model with hands' tools deferred behind ToolSearch: a setting ranked above hands' --settings"
-        " turned tool search on (('Read', 'ToolSearch', 'DeferredToolPlaceholder'))",
+        "the brain's turn went to the model without hands' tools and with ToolSearch: tool search is on though hands' --settings"
+        " turn it off (('Read', 'ToolSearch', 'DeferredToolPlaceholder'))",
     ]
     # What a turn's requests offered is on its brain turn's event.
     assert recorded == []
