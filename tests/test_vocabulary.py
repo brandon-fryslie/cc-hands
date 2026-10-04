@@ -5,19 +5,16 @@ import subprocess
 import time
 from pathlib import Path
 
-import mlx_whisper
 import pytest
-from pipecat.frames.frames import TranscriptionFrame
-from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
 from hands.core.session import Membership, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
-from hands.sessions.audit import Entry, HoldHeard, Primed, Unsaid, level
+from hands.sessions.audit import Entry, Primed, level
 from hands.sessions.focus import Unreadable, set_focus
 from hands.sessions.home import Home
 from hands.sessions.registry import Listing, Sessions
-from hands.voice.vocabulary import WORDS, Lexicon, vocabulary
-from hands.voice.whisper import Whisper
+from hands.voice import vocabulary as lexicon
+from hands.voice.vocabulary import TOKENS, WORDS, Lexicon, prompt, vocabulary
 
 ENVIRONMENT = {"PATH": os.environ["PATH"], "HOME": "/nonexistent"}
 
@@ -76,7 +73,9 @@ async def test_a_rename_not_yet_staged_is_named_where_it_went(repository: Path) 
     assert primed.words == ("billing", "ledger", "auth-rework")
 
 
-async def test_only_the_newest_words_are_kept(repository: Path) -> None:
+async def test_only_the_newest_words_are_kept(repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Room for every word, so the count alone decides.
+    monkeypatch.setattr(lexicon, "TOKENS", 10_000)
     commit(repository, *(f"old_{n}.py" for n in range(WORDS + 10)))
     commit(repository, "authMiddleware.ts")
     focus = session(repository)
@@ -85,6 +84,26 @@ async def test_only_the_newest_words_are_kept(repository: Path) -> None:
 
     assert len(primed.words) == WORDS
     assert primed.words[-2:] == ("authMiddleware", "auth-rework")
+
+
+async def test_the_oldest_words_are_dropped_until_the_rest_fit_the_prompt_tokens_lowtalker_keeps(repository: Path) -> None:
+    named = [f"hands_dictation_{n}_transcription_server.py" for n in range(WORDS)]
+    commit(repository, *named)
+    focus = session(repository)
+
+    primed = await vocabulary([], focus, ENVIRONMENT, time.monotonic())
+
+    # The newest words, as many as fit: one more of the older ones would not.
+    assert primed.words[-1] == "auth-rework" and 0 < len(primed.words) < WORDS
+    assert primed.tokens <= TOKENS < lexicon._tokens((named[-len(primed.words)].removesuffix(".py"), *primed.words))  # pyright: ignore[reportPrivateUsage]
+
+
+def test_the_prompt_is_counted_as_lowtalker_counts_it() -> None:
+    # Its README: "Brynleigh, Fryslie, and Jaxxon are 10 tokens", sent as " Brynleigh Fryslie Jaxxon".
+    assert lexicon._tokens(("Brynleigh", "Fryslie", "Jaxxon")) == 10  # pyright: ignore[reportPrivateUsage]
+    assert lexicon._tokens(()) == 0  # pyright: ignore[reportPrivateUsage]
+    # Space-joined: LowTalker's engine read a comma-joined list's commas back into what it heard.
+    assert prompt(("Brynleigh", "Fryslie", "Jaxxon")) == "Brynleigh Fryslie Jaxxon"
 
 
 async def test_a_session_outside_any_repository_is_primed_with_the_sessions_alone(tmp_path: Path) -> None:
@@ -130,55 +149,3 @@ async def test_with_nothing_focused_and_nothing_running_whisper_is_unprimed_and_
 
     assert await lexicon() is None
     assert [(entry.focus, entry.words, entry.failed) for entry in recorded if isinstance(entry, Primed)] == [(None, (), None)]
-
-
-async def test_whisper_transcribes_each_hold_primed_with_the_vocabulary_as_it_is_then(monkeypatch: pytest.MonkeyPatch) -> None:
-    asked: list[object] = []
-
-    def transcribe(_audio: object, **options: object) -> dict[str, object]:
-        asked.append(options["initial_prompt"])
-        return {"segments": []}
-
-    monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
-    prompts = iter(["authMiddleware", "sessionStore"])
-
-    async def prompt() -> str | None:
-        return next(prompts)
-
-    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=prompt, record=lambda _: None)
-    for hold in (1, 2):
-        whisper._transcribing.append(hold)  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
-        [frame async for frame in whisper.run_stt(b"\x00\x00" * 160)]
-    # The load is unprimed; each hold is primed with what the vocabulary was when it was transcribed.
-    assert asked == [None, "authMiddleware", "sessionStore"]
-
-
-async def test_what_a_primed_whisper_makes_of_silence_is_not_said(monkeypatch: pytest.MonkeyPatch) -> None:
-    # What large-v3-turbo returned, primed, for one and three seconds of silence and for "okay" said quietly under noise.
-    silence = {"text": " .", "no_speech_prob": 0.0, "compression_ratio": 0.11, "avg_logprob": -1.4}
-    longer = {"text": " The End", "no_speech_prob": 0.0, "compression_ratio": 0.47, "avg_logprob": -2.11}
-    speech = {"text": " Okay", "no_speech_prob": 0.0, "compression_ratio": 0.33, "avg_logprob": -0.95}
-    held = iter([[silence], [longer], [speech]])
-
-    def transcribe(_audio: object, **options: object) -> dict[str, object]:
-        # The load is unprimed and hears nothing.
-        return {"segments": [] if options["initial_prompt"] is None else next(held)}
-
-    monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
-
-    async def prompt() -> str | None:
-        return "authMiddleware"
-
-    recorded: list[Entry] = []
-    whisper = Whisper(settings=WhisperSTTServiceMLX.Settings(model="unused"), prompt=prompt, record=recorded.append)
-    said: list[str] = []
-    for hold in (1, 2, 3):
-        whisper._transcribing.append(hold)  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
-        said += [frame.text async for frame in whisper.run_stt(b"\x00\x00" * 160) if isinstance(frame, TranscriptionFrame)]
-    assert said == ["Okay"]
-    # Each hold is recorded with what was dropped from it and why, so a hold that sent nothing can be looked into.
-    assert recorded == [
-        HoldHeard(1, None, (Unsaid(".", 0.0, 0.11, -1.4),)),
-        HoldHeard(2, None, (Unsaid("The End", 0.0, 0.47, -2.11),)),
-        HoldHeard(3, "Okay", ()),
-    ]

@@ -6,8 +6,8 @@ run runs starts the run again, on the file as edited.
     model = "claude-sonnet-5"    # any backend's
     url = "https://..."          # "anthropic" and "openai" only: another server that speaks the API
 
-    [whisper]
-    model = "mlx-community/whisper-large-v3-turbo"
+    [transcription]
+    url = "http://127.0.0.1:8610/v1"   # LowTalker's transcription server, which each hold is uploaded to
 
     [telemetry]
     collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address; none by default
@@ -34,9 +34,8 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 
-# Spelled here, not taken from Pipecat's Whisper service, whose import is most of the seconds the start spends off
-# the loop: the start watches this file before then, on it.
-WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
+# Where LowTalker's network build serves transcription, on loopback.
+TRANSCRIPTION_URL = "http://127.0.0.1:8610/v1"
 # How late an edit to the file is heard.
 EDIT_SECONDS = 1.0
 
@@ -76,11 +75,12 @@ type LLM = Anthropic | OpenAI | Claude
 
 @dataclass(frozen=True)
 class Config:
-    """`collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
+    """`transcription` is the base of the server each hold is uploaded to, which /audio/transcriptions is appended to.
+    `collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
     but the audit log."""
 
     llm: LLM = Anthropic()
-    whisper_model: str = WHISPER_MODEL
+    transcription: str = TRANSCRIPTION_URL
     collector: str | None = None
 
 
@@ -177,28 +177,37 @@ def parse(text: str) -> Config:
         top = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise Rejected(f"not TOML: {error}") from error
-    _known(top, "the file", ("llm", "whisper", "telemetry"))
-    whisper = _table(top, "whisper")
-    _known(whisper, "[whisper]", ("model",))
+    _known(top, "the file", ("llm", "transcription", "telemetry"))
+    transcription = _table(top, "transcription")
+    _known(transcription, "[transcription]", ("url",))
     telemetry = _table(top, "telemetry")
     _known(telemetry, "[telemetry]", ("collector",))
-    return Config(llm=_llm(_table(top, "llm")), whisper_model=_text(whisper, "[whisper]", "model", Config.whisper_model), collector=_collector(telemetry))
+    return Config(llm=_llm(_table(top, "llm")), transcription=_transcription(transcription), collector=_collector(telemetry))
+
+
+def _transcription(table: Mapping[str, object]) -> str:
+    return _base(_text(table, "[transcription]", "url", TRANSCRIPTION_URL), "[transcription] url", "a transcription server", TRANSCRIPTION_URL, "/audio/transcriptions")
 
 
 def _collector(table: Mapping[str, object]) -> str | None:
     if "collector" not in table:
         return None
-    # [LAW:parse-dont-validate] spelled one way from here on: the base each OTLP signal's path is appended to.
-    url = _text(table, "[telemetry]", "collector", "").rstrip("/")
+    return _base(_text(table, "[telemetry]", "collector", ""), "[telemetry] collector", "an OTLP/HTTP collector", "http://host:4318", "/v1/traces")
+
+
+def _base(url: str, where: str, server: str, example: str, appended: str) -> str:
+    """[LAW:parse-dont-validate] a server's base address, spelled one way from here on: the base `appended` is appended
+    to, with no trailing slash."""
+    url = url.rstrip("/")
     # Not echoed: a refused edit is a log line, and the address may hold credentials.
-    unusable = Rejected("[telemetry] collector is not an OTLP/HTTP collector's base address, as http://host:4318, to which hands appends /v1/traces, with no credentials in it")
+    unusable = Rejected(f"{where} is not {server}'s base address, as {example}, to which hands appends {appended}, with no credentials in it")
     try:
         parts = urlsplit(url)
         # Read for what it raises: a port that is not a number, or out of range.
         parts.port
     except ValueError as error:
         raise unusable from error
-    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username is not None or parts.password is not None or parts.query or parts.fragment or parts.path.endswith("/v1/traces"):
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username is not None or parts.password is not None or parts.query or parts.fragment or parts.path.endswith(appended):
         raise unusable
     return url
 

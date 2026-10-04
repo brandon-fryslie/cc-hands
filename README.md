@@ -55,7 +55,7 @@ One Python process, `hands`, run in a terminal, with a Pipecat voice pipeline on
 side and the Claude Code plumbing on the other, meeting through a pure core.
 
 ```
-mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts ──► speakers
+mic ──► gate ──► Whisper (LowTalker) ──► LLM ──► pocket-tts ──► speakers
                                     │   ▲
                          tool calls │   │ hook events, as frames
                                     ▼   │
@@ -79,8 +79,8 @@ backend = "claude"            # "anthropic" (the default), "openai", or "claude"
 model = "claude-sonnet-5"     # another model, for any backend
 url = "https://..."           # another server, for anthropic and openai
 
-[whisper]
-model = "mlx-community/whisper-large-v3-turbo"
+[transcription]
+url = "http://127.0.0.1:8610/v1"   # LowTalker's transcription server, which each hold is uploaded to
 
 [telemetry]
 collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address

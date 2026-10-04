@@ -960,7 +960,7 @@ async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_w
 async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_variant_alone(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
     wire = Wire(lambda _observed: None)
-    api = VoiceConfig(llm=AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m"), whisper_model="w", voice=voices.DEFAULT)
+    api = VoiceConfig(llm=AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m"), transcription="http://w/v1", voice=voices.DEFAULT)
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     refocus = Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
 
@@ -969,7 +969,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
 
     async with mind(api, [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, AnthropicLLMService) and minded.watches == () and minded.telling == Pushed()
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com"), whisper_model="w", voice=voices.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com"), transcription="http://w/v1", voice=voices.DEFAULT)
     async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed()
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
@@ -992,7 +992,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
     async def unread() -> InFront:
         return FrontUnread("not read in this test")
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com"), whisper_model="w", voice=voices.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com"), transcription="http://w/v1", voice=voices.DEFAULT)
     with pytest.raises(CannotStart, match=f"^no fritter at {tmp_path / 'no-fritter'}"):
         async with mind(claude, [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "no-fritter", tmp_path / "audit", "hands recall", recorded.append, os.environ):
             pass
