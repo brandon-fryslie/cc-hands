@@ -70,7 +70,7 @@ from hands.voice.vocabulary import Lexicon
 from hands.voice.readback import identifier, spoken_name
 from hands.voice import backends
 from hands.voice.backends import AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
-from hands.voice.beside import NotedTurns, UserTurns, unnoted
+from hands.voice.beside import Noting
 from hands.voice.pipeline import Voice, VoiceConfig, build_llm, build_voice
 from hands.daemon.backend import backend
 from hands.voice.naming import NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS, keep_naming
@@ -157,10 +157,10 @@ class Watch:
 
 @dataclass(frozen=True)
 class Mind:
-    """The pipeline's LLM stage for the model's variant, how the user's turns are written for it, what that variant runs beside the pipeline, and how the model is told how the sessions stand."""
+    """The pipeline's LLM stage for the model's variant, what notes the user's turns ahead of it, what that variant runs beside the pipeline, and how the model is told how the sessions stand."""
 
     llm: FrameProcessor
-    user_turns: UserTurns
+    noting: Sequence[FrameProcessor]
     watches: Sequence[Watch]
     telling: Telling
     # A summariser on this model, given what it is for, its instruction, how many tokens it may answer in, and how long it has.
@@ -186,7 +186,7 @@ async def mind(
             yield Mind(
                 build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens),
                 # [LAW:one-source-of-truth] noted from the readers the brain's stage is given.
-                lambda context, params: NotedTurns(context, params, front, modality, record),
+                (Noting(front, modality, record),),
                 (),
                 Pushed(),
                 lambda _kind, instruction, max_tokens, timeout: summariser(backend, instruction, max_tokens, timeout),
@@ -210,7 +210,8 @@ async def mind(
                     with wire.joined(Kept(stage, keeper, asides, brain)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                         # A summary is as long as its Claude Code makes it: only its time is the summary's own.
-                        yield Mind(stage, unnoted, watches, Tailed(), lambda kind, instruction, _max_tokens, timeout: aside(partial(asides.ask, kind), instruction, timeout))
+                        # The brain's stage notes each turn of the user's itself, as it types it.
+                        yield Mind(stage, (), watches, Tailed(), lambda kind, instruction, _max_tokens, timeout: aside(partial(asides.ask, kind), instruction, timeout))
                 finally:
                     await brain.stop()
             finally:
@@ -288,7 +289,7 @@ async def run(
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)
-                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, minded.user_turns, key, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, quit_event)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, minded.noting, key, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, heart, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, run_start)

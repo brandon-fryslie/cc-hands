@@ -188,7 +188,7 @@ class Voice:
 
 
 def build_voice(
-    config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, user_turns: UserTurns, key: PushToTalk, player: Player, floor: Floor, refocus: Refocus, prompt: Callable[[], Awaitable[str | None]], record: Record
+    config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, noting: Sequence[FrameProcessor], key: PushToTalk, player: Player, floor: Floor, refocus: Refocus, prompt: Callable[[], Awaitable[str | None]], record: Record
 ) -> Voice:
     """Wire mic, push-to-talk, Whisper as LowTalker serves it, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
@@ -220,18 +220,19 @@ def build_voice(
         stop=[KeyTurnStop()],
     )
     context = LLMContext(tools=context_tools(tools, player.lines, llm))
-    # The two halves Pipecat's pair would make on one context, the user's as the model's variant has its turns written.
+    # The two halves Pipecat's pair would make on one context, the user's saying which asks are a turn of theirs.
     # The pair also hands the assistant's half the user's, which only a speech-to-speech service reads (1.10.0).
-    user_aggregator = user_turns(context, LLMUserAggregatorParams(user_turn_strategies=turns))
+    user_aggregator = UserTurns(context, params=LLMUserAggregatorParams(user_turn_strategies=turns))
     assistant_aggregator = LLMAssistantAggregator(context)
 
     # Ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
     # context or the model's stage takes it, and follows the user's words when given back.
+    # `noting` right ahead of the model's stage, so a turn of the user's is noted where it is asked, in order with them.
     # Right behind the model's stage, so the focus moves to a session told of in order with the user's words to the model.
     # What the player says again enters just ahead of the speaker, and it reads what is played off the speaker's pushes.
     # Right behind the output transport, which passes a mark on only once what was said ahead of it has played.
     output = transport.output()
-    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, Refocusing(refocus), pieces, player.lines, tts, output, Marks(), assistant_aggregator])
+    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, *noting, llm, Refocusing(refocus), pieces, player.lines, tts, output, Marks(), assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=params,

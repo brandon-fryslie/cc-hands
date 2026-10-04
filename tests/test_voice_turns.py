@@ -10,7 +10,7 @@ import asyncio
 import struct
 import wave
 from pathlib import Path
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from io import BytesIO
 from dataclasses import dataclass, field, replace
@@ -32,10 +32,10 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import Endpoint, ServeApi, events, running, unprimed
-from hands.core.front import InFront, SessionInFront
+from hands.core.front import FrontUnread, InFront, SessionInFront
 from hands.core.place import Place
 from hands.voice.backends import AnthropicBackend, OpenAICompatibleBackend
-from hands.voice.beside import NotedTurns, UserTurns, unnoted
+from hands.voice.beside import Noting
 from hands.sessions.audit import Entry, HoldHeard, Levels
 from hands.sessions.wide import Fact
 from hands.voice import pipeline as built
@@ -195,20 +195,20 @@ class Rig:
 
 @pytest.fixture
 async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator[Rig, None]:
-    async with rigged(monkeypatch, tmp_path, FrameProcessor(), unnoted, []) as made:
+    async with rigged(monkeypatch, tmp_path, FrameProcessor(), [], []) as made:
         yield made
 
 
 @asynccontextmanager
-async def rigged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProcessor, user_turns: UserTurns, behind: list[FrameProcessor]) -> AsyncGenerator[Rig]:
-    """The rig, its user turns written as `user_turns` writes them for `llm`, with `behind` run behind what records them."""
+async def rigged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProcessor, noting: list[FrameProcessor], behind: list[FrameProcessor]) -> AsyncGenerator[Rig]:
+    """The rig, the user's turns passed through `noting` on their way to what records them, with `behind` run behind that."""
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
     voice = built.build_voice(
         built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), transcription="http://unused/v1", voice=voices.DEFAULT),
         tools=[],
         llm=llm,
-        user_turns=user_turns,
+        noting=noting,
         key=PushToTalk(recorded.append),
         player=Player(recorded.append),
         floor=Floor(Pushed(), lambda id: id, dict),
@@ -230,7 +230,7 @@ async def rigged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProc
     # The floor sits where build_voice puts it, between Whisper and the user aggregator.
     received: list[None] = []
     cue_receipt(voice.user_turns, lambda: received.append(None))
-    async with running([voice.stt, Floor(Pushed(), lambda id: id, lambda: live, clock), voice.user_turns, out, *behind]) as run:
+    async with running([voice.stt, Floor(Pushed(), lambda id: id, lambda: live, clock), voice.user_turns, *noting, out, *behind]) as run:
         yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received)
 
 
@@ -482,10 +482,26 @@ def user_texts(request: dict[str, object]) -> list[str]:
     return texts
 
 
-@pytest.mark.parametrize("shape", ["openai", "anthropic"])
-async def test_an_api_models_request_carries_hands_notes_beside_the_users_words_and_beside_nothing_hands_tells(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi, shape: Shape
-) -> None:
+AUDIO_ONLY = "[hands] The user is audio-only: they cannot see a screen."
+IN_FRONT = '[hands] As the user said this, iTerm2 was in front on the Mac\'s screen, showing the session "api" (id api). Say nothing about this unless it bears on what they said.'
+
+
+async def api_in_front() -> InFront:
+    return SessionInFront("iTerm2", API, "api")
+
+
+@dataclass
+class Served:
+    """The rig asking a served model, each turn of the user's noted on its way: every request the model was made, and
+    each note's event."""
+
+    rig: Rig
+    requests: list[dict[str, object]]
+    noted: list[Entry]
+
+
+@asynccontextmanager
+async def served(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi, shape: Shape, front: Callable[[], Awaitable[InFront]]) -> AsyncGenerator[Served]:
     requests: list[dict[str, object]] = []
 
     def answering(stream: list[str]) -> Endpoint:
@@ -503,11 +519,16 @@ async def test_an_api_models_request_carries_hands_notes_beside_the_users_words_
     backend = OpenAICompatibleBackend(base_url=api.url, api_key="k", model="m") if shape == "openai" else AnthropicBackend(base_url=api.anthropic_url, api_key="k", model="m")
     llm = built.build_llm(backend, instruction="Speak.", max_tokens=50)
     noted: list[Entry] = []
+    async with rigged(monkeypatch, tmp_path, llm, [Noting(front, lambda: "audio-only", noted.append)], [llm]) as rig:
+        yield Served(rig, requests, noted)
 
-    async def front() -> InFront:
-        return SessionInFront("iTerm2", API, "api")
 
-    async with rigged(monkeypatch, tmp_path, llm, lambda context, params: NotedTurns(context, params, front, lambda: "audio-only", noted.append), [llm]) as rig:
+@pytest.mark.parametrize("shape", ["openai", "anthropic"])
+async def test_an_api_models_request_carries_hands_notes_beside_the_users_words_and_beside_nothing_hands_tells(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi, shape: Shape
+) -> None:
+    async with served(monkeypatch, tmp_path, api_server, shape, api_in_front) as asked:
+        rig, requests = asked.rig, asked.requests
         await rig.hold(["down", "up"])
         await rig.texts.put("what time is it")
         await rig.until(lambda: len(requests) == 1)
@@ -515,16 +536,58 @@ async def test_an_api_models_request_carries_hands_notes_beside_the_users_words_
         rig.live[API] = waiting_on(API, "r1")
         await rig.worker.queue_frame(asking(API, "r1"))
         await rig.until(lambda: len(requests) == 2)
-    note = (
-        '[hands] As the user said this, iTerm2 was in front on the Mac\'s screen, showing the session "api" (id api). Say nothing about this unless it bears on what they said.'
-        "\n\n[hands] The user is audio-only: they cannot see a screen."
-    )
+    note = f"{IN_FRONT}\n\n{AUDIO_ONLY}"
     assert user_texts(requests[0]) == ["what time is it", note]
     words, noted_once, told = user_texts(requests[1])
     assert (words, noted_once) == ("what time is it", note) and told.startswith("[hands] The Claude Code session api is waiting for permission")
     # [LAW:nothing-unseen] the one turn noted is one event: what was read, and where the user was.
-    [asked] = events(noted, "voice.asked")
-    assert asked.outcome == "ok" and asked.facts == {"front": SessionInFront("iTerm2", API, "api"), "modality": "audio-only"}
+    [noted] = events(asked.noted, "voice.noted")
+    assert noted.outcome == "ok" and noted.facts == {"front": SessionInFront("iTerm2", API, "api"), "modality": "audio-only"}
+
+
+async def test_a_turn_whose_screen_could_not_be_read_is_asked_with_where_the_user_is_alone_and_its_event_says_why(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi
+) -> None:
+    unread = FrontUnread("the screen was not read in this test")
+
+    async def front() -> InFront:
+        return unread
+
+    async with served(monkeypatch, tmp_path, api_server, "anthropic", front) as asked:
+        await asked.rig.hold(["down", "up"])
+        await asked.rig.texts.put("what time is it")
+        await asked.rig.until(lambda: len(asked.requests) == 1)
+    assert user_texts(asked.requests[0]) == ["what time is it", AUDIO_ONLY]
+    [noted] = events(asked.noted, "voice.noted")
+    assert noted.outcome == "ok" and noted.facts == {"front": unread, "modality": "audio-only"}
+
+
+async def test_a_key_pressed_while_the_screen_is_read_drops_that_ask_and_the_next_turn_asks_both_with_one_note(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi
+) -> None:
+    reading = asyncio.Event()
+
+    async def front() -> InFront:
+        # The first read never returns: the user's next press is what ends it.
+        if not reading.is_set():
+            reading.set()
+            await asyncio.Event().wait()
+        return await api_in_front()
+
+    async with served(monkeypatch, tmp_path, api_server, "anthropic", front) as asked:
+        rig = asked.rig
+        await rig.hold(["down", "up"])
+        await rig.texts.put("what time is it")
+        await reading.wait()
+        await rig.hold(["down"])
+        await rig.until(lambda: len(events(asked.noted, "voice.noted")) == 1)
+        await rig.hold(["up"])
+        await rig.texts.put("in Lisbon")
+        await rig.until(lambda: len(events(asked.noted, "voice.noted")) == 2)
+        await rig.until(lambda: len(asked.requests) == 1)
+    # The model was never asked the first turn alone: its words are asked with the next, noted once, as that one arrived.
+    assert [user_texts(request) for request in asked.requests] == [["what time is it", "in Lisbon", f"{IN_FRONT}\n\n{AUDIO_ONLY}"]]
+    assert [noted.outcome for noted in events(asked.noted, "voice.noted")] == ["cancelled", "ok"]
 
 
 async def test_two_sessions_finishing_during_one_held_key_are_told_asks_first_and_one_telling_a_session(rig: Rig) -> None:
