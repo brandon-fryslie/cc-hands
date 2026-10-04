@@ -1,7 +1,6 @@
 """The unix socket the shims post to, and the loopback route Claude Code posts the text it displays to."""
 
 import asyncio
-import socket
 from pathlib import Path
 from uuid import uuid4
 
@@ -140,16 +139,10 @@ async def serve_display(sessions: Sessions, host: str, port: int, path: str, rec
 
 
 def claim_socket(path: Path) -> None:
-    """Clear a socket left by a dead daemon; refuse one a live daemon is listening on."""
+    """Clear a socket an earlier daemon left in the home, so this one can listen there.
+
+    [LAW:single-enforcer] the daemon holds the home's lock before it listens (hands.daemon.cli.hold), so any socket here
+    is an earlier run's, never a live daemon's.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        probe.connect(str(path))
-    except FileNotFoundError:
-        return
-    except ConnectionRefusedError:
-        path.unlink()
-        return
-    finally:
-        probe.close()
-    raise RuntimeError(f"another hands daemon is already listening on {path}")
+    path.unlink(missing_ok=True)

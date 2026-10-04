@@ -27,7 +27,7 @@ PERIOD = timedelta(milliseconds=100)
 
 def main() -> None:
     home = Home(Path(sys.argv[1]))
-    run_start = Start(restarted="--restarted" in sys.argv[2:], after_crash=False)
+    run_start = Start(restarted="--restarted" in sys.argv[2:])
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), PERIOD)
     heart.beat("starting", None, 0, listening=False, deaf=False)
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))

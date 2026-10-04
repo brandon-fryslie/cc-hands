@@ -49,9 +49,9 @@ class Start:
     start's trace.
     """
 
-    def __init__(self, restarted: bool, after_crash: bool) -> None:
+    def __init__(self, restarted: bool) -> None:
         self._began = begun()
-        self._facts: dict[str, Fact] = {"pid": os.getpid(), "restarted": restarted, "after_crash": after_crash}
+        self._facts: dict[str, Fact] = {"pid": os.getpid(), "restarted": restarted}
         self._ended = False
 
     def heard(self, **facts: Fact) -> None:

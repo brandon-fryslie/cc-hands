@@ -2,7 +2,9 @@
 
 import argparse
 import asyncio
+import fcntl
 import os
+import struct
 import sys
 import threading
 import time
@@ -176,22 +178,26 @@ def run_daemon(home: Home, restarted: int | None) -> int:
     [LAW:nothing-unseen] it is the one command not inside a hands.command event: held open over the run, that event would
     make every unit of work the daemon runs a part of its trace, and a restart, exec'd in its place, never ends it.
     """
-    # Read before this run's first heartbeat replaces it. A restart's run before it was told to stop, which is
-    # no crash, however long the start took that its last heartbeat may read as gone quiet.
-    after_crash = restarted is None and crashed_before(home)
-    run_start = Start(restarted=restarted is not None, after_crash=after_crash)
+    run_start = Start(restarted=restarted is not None)
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
     audit_log = audit_log_of(home)
     # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
-    # or a crash the next run must read. A restart's run holds it already: the run before it beat starting under
-    # this pid, which it keeps. Before the settings are read there is no collector: the start ends on the log alone.
-    # [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
+    # or a crash the next run must read. A restart's run holds it already, once it holds the home: the run before it
+    # beat starting under this pid, which it keeps. Before the settings are read there is no collector: the start ends
+    # on the log alone. [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
+    held: heartbeat.Heart | None = None
     with run_start.ending(audit_log.record):
         try:
+            hold(home)
+            held = None if restarted is None else heart
+            # Read once the home is this run's, before its first heartbeat replaces it. A restart's run before it was
+            # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
+            after_crash = restarted is None and crashed_before(home)
+            run_start.heard(after_crash=after_crash)
             settings = door(home)
         except CannotStart as cannot:
             run_start.ended(audit_log.record, cannot)
-            refuse(cannot, None if restarted is None else heart)
+            refuse(cannot, held)
             return 1
         try:
             ending, shown = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
@@ -288,8 +294,8 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
 
 
 def door(home: Home) -> Settings:
-    """What a run checks before its first heartbeat, each in a moment: the talk key's grant, and the settings it starts
-    on. CannotStart where either is missing."""
+    """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant, and the
+    settings it starts on. CannotStart where either is missing."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
     from hands.voice import talkkey
 
@@ -305,6 +311,59 @@ def door(home: Home) -> Settings:
         return load(home)
     except Rejected as error:
         raise CannotStart(str(error)) from error
+
+
+def hold(home: Home) -> None:
+    """Lock the home for the rest of this process, or CannotStart, naming the daemon that holds it.
+
+    [LAW:single-enforcer] the one test of whether a daemon runs on the home, made before anything of the home is
+    written: a second run refused here leaves the heartbeat, the socket, and the indicator to the daemon running.
+    A POSIX record lock is the process's, kept across a restart's exec through the inheritable descriptor, so the same
+    pid takes it again; the kernel lets it go when the process ends, however it ends, so a crash leaves no stale lock.
+    """
+    home.root.mkdir(parents=True, exist_ok=True)
+    # Never closed: closing any descriptor of the file would let the process's lock go. A restart's run locks again
+    # through the one the run before it opened, so restarts open no more of them.
+    descriptor = inherited(home.lock)
+    if descriptor is None:
+        descriptor = os.open(home.lock, os.O_RDWR | os.O_CREAT, 0o600)
+        os.set_inheritable(descriptor, True)
+    while True:
+        try:
+            fcntl.lockf(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError as error:
+            # [LAW:one-source-of-truth] the lock names who holds it; the heartbeat may still be an earlier run's.
+            # None where the holder let go between the two asks, so the home is free to take.
+            pid = holder(descriptor)
+            if pid is not None:
+                os.close(descriptor)
+                raise CannotStart(f"hands is already running on {home.root}, as pid {pid}") from error
+
+
+def inherited(path: Path) -> int | None:
+    """The descriptor on `path` this process already has open: a restart's run has the one the run before it opened."""
+    try:
+        target = path.stat()
+    except FileNotFoundError:
+        return None
+    for name in os.listdir("/dev/fd"):
+        try:
+            found = os.fstat(int(name))
+        except OSError:
+            # The descriptor listdir read /dev/fd through, closed before it is asked about.
+            continue
+        if (found.st_dev, found.st_ino) == (target.st_dev, target.st_ino):
+            return int(name)
+    return None
+
+
+def holder(descriptor: int) -> int | None:
+    """The pid of the process whose lock on `descriptor`'s file refused this one's, or None where none holds it now."""
+    # macOS's struct flock: l_start, l_len, l_pid, l_type, l_whence; a length of 0 asks about the whole file.
+    shape = "qqihh"
+    _, _, pid, kind, _ = struct.unpack(shape, fcntl.fcntl(descriptor, fcntl.F_GETLK, struct.pack(shape, 0, 0, 0, fcntl.F_WRLCK, os.SEEK_SET)))
+    return None if kind == fcntl.F_UNLCK else pid
 
 
 def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:

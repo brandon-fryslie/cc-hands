@@ -1864,7 +1864,11 @@ thing that failed `[LAW:no-silent-failure]`:
    without having said `stopped`.
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, the count of live sessions, whether a turn is
-   open, and whether the microphone is open on no device. `hands status` prints it. When TTS itself is down, a macOS notification is posted through
+   open, and whether the microphone is open on no device. `hands status` prints it. The
+   daemon running is its one writer: a run locks `~/.hands/hands.lock` before it reads the
+   heartbeat or listens, so a second `hands run` on a home a daemon holds is refused there,
+   says that hands is already running and the pid the lock names, and leaves the heartbeat
+   and the sockets alone; only its failed `hands.start` reaches the log. When TTS itself is down, a macOS notification is posted through
    `osascript`. `hands indicator` is a menu-bar status item in a process of its own,
    which `hands run` starts in a session of its own, so neither the daemon dying nor the
    terminal's Ctrl-C takes it down first. It lives while the process that started it does,
