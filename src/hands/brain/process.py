@@ -389,6 +389,8 @@ class _Turn:
     asks: Callable[[Asked], None]
     # The turn's own unit of work, begun as it was asked: each dialog it holds is a part of it.
     began: Begun
+    # How long the turn has to be taken, read once as it is asked: its typing and its stop wait the same time.
+    take: float
     # The tools the turn's latest request offered the model: what the brain's own setup gave it, beside hands' tools.
     offered: tuple[str, ...] = ()
     # What broke in the brain's own work for the turn: it ends with this once Claude Code's turn is stopped.
@@ -452,7 +454,7 @@ class Brain:
         if self._exit.done():
             raise BrainGone(f"the brain had exited ({self._exit.result()}) before it was asked")
         loop = asyncio.get_running_loop()
-        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), asks, begun())
+        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), asks, begun(), TAKE_SECONDS)
         # An asker that stops waiting leaves the turn to be typed and to run to its end, which is still the brain's to hear.
         self._keep(self._send(text, turn), turn)
         return await asyncio.shield(turn.answered)
@@ -497,9 +499,9 @@ class Brain:
                 async with self._input:
                     # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
                     await self._type(lambda typist: typist.type(Text(pasted(text)).typed))
-                    await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+                    await asyncio.wait({turn.taken, turn.answered}, timeout=turn.take, return_when=asyncio.FIRST_COMPLETED)
                 if not (turn.taken.done() or turn.answered.done()):
-                    raise Untaken(f"the brain did not take the turn typed into it in {TAKE_SECONDS:.0f}s; if it is on one of Claude Code's first screens, `hands login` answers them")
+                    raise Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; if it is on one of Claude Code's first screens, `hands login` answers them")
             except (BrainGone, Untaken) as error:
                 self._over(turn, error)
             await asyncio.wait({turn.answered})
@@ -538,12 +540,12 @@ class Brain:
     async def _escape(self, turn: _Turn) -> None:
         # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: a turn ended
         # while its UserPromptSubmit hook is still coming would leave that hook to be taken for the next turn's.
-        await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait({turn.taken, turn.answered}, timeout=turn.take, return_when=asyncio.FIRST_COMPLETED)
         if self._turn is not turn:
             return
         if not turn.taken.done():
             # [LAW:no-silent-failure] the turn runs on, told to stop by nobody: its words are the stage's to hold.
-            logger.warning(f"the brain was not stopped: its turn was not taken in {TAKE_SECONDS:.0f}s")
+            logger.warning(f"the brain was not stopped: its turn was not taken in {turn.take:g}s")
             return
         try:
             async with self._input:

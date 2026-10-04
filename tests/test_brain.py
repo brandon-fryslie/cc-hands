@@ -22,7 +22,7 @@ from loguru import logger
 from hands.core.front import FrontUnread, InFront
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import BROKEN, NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, STOPPED, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -752,10 +752,11 @@ async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_en
 async def test_a_turn_never_taken_fails_naming_hands_login_and_the_next_turn_is_its_own(
     tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
     brain = await start(launch(tmp_path, fritter), lambda _entry: None)
     try:
-        with pytest.raises(Untaken, match="`hands login` answers them"):
+        # Only the deaf turn is held to a short limit: the next is a real turn, given the brain's own.
+        with monkeypatch.context() as short, pytest.raises(Untaken, match="`hands login` answers them"):
+            short.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
             await brain.ask("deaf", unasked)
         assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
     finally:
@@ -780,15 +781,16 @@ def failures() -> tuple[list[str], int]:
 async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_once_and_the_next_turn_is_its_own(
     tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Nothing was typed, so Claude Code never takes the turn, and its stop ends it once it was not taken in time.
-    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
     said, sink = failures()
     try:
         typist = brain._typist  # pyright: ignore[reportPrivateUsage]
         brain._typist = _Jammed()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
-        with pytest.raises(OSError, match="jammed"):
+        # Nothing was typed, so Claude Code never takes the turn, and its stop ends it once it was not taken in time:
+        # a short time, which the next turn, a real one, is not held to.
+        with monkeypatch.context() as short, pytest.raises(OSError, match="jammed"):
+            short.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
             await asyncio.wait_for(brain.ask("what is running?", unasked), 10)
         brain._typist = typist  # pyright: ignore[reportPrivateUsage]
         assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p1", None)
@@ -871,7 +873,7 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
         brain._launched = here()  # pyright: ignore[reportPrivateUsage]
     # The elicitation that breaks is a part of the turn in flight: it was declined before it was heard, so the turn runs on.
     loop = asyncio.get_running_loop()
-    turn = _Turn(loop.create_future(), loop.create_future(), unasked, begun())  # pyright: ignore[reportPrivateUsage]
+    turn = _Turn(loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS)  # pyright: ignore[reportPrivateUsage]
     turn.taken.set_result("p1")
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
     brain._held = set()  # pyright: ignore[reportPrivateUsage]
