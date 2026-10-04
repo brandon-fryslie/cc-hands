@@ -49,6 +49,7 @@ from hands.sessions.model_facts import ModelFault, ModelReplyEmpty
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus, Refocusing
 from hands.voice.latency import LatencyObserver
+from hands.voice.utterance import Audible
 from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.phone import Phone
 from hands.sessions.audit import Record
@@ -272,7 +273,7 @@ def build_voice(
     worker = PipelineWorker(
         pipeline,
         params=params,
-        observers=[LatencyObserver(), player.watching(tts, output)],
+        observers=[LatencyObserver(), player.watching(tts, output), Audible(output)],
         idle_timeout_secs=None,
     )
     return Voice(

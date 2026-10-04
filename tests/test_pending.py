@@ -8,7 +8,7 @@ import pytest
 
 from hands.core.effects import Asking, DeadlineNear, Expired, ModeChanged, Narrate, Note, SessionGone, Speak
 from hands.core.narration import THE_TESTS, Segment
-from hands.core.pending import Briefing, Finished, News, Pending, Unread, coalesce
+from hands.core.pending import Briefing, Finished, News, Pending, Told, Unread, coalesce
 from hands.core.session import Held, Membership, Permission, PromptId, RequestId, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
 
@@ -130,10 +130,18 @@ GONE = SessionGone(SessionId("old"))
     ],
 )
 def test_coalesce(pending: Sequence[Pending], waiting: Mapping[SessionId, Session], told: tuple[Pending, ...]) -> None:
-    assert coalesce(pending, waiting) == told
+    assert tuple(each.pending for each in coalesce(pending, waiting)) == told
+
+
+def test_what_is_told_names_where_each_thing_it_tells_stood_and_what_was_dropped_is_named_by_none() -> None:
+    """The floor follows each thing it held to its fate by these: a fold tells every turn it took in, and a request
+    answered meanwhile is told by nothing."""
+    first, second = News(None, "one", "", "", (), frozenset()), News(None, "two", "", "", (), frozenset())
+    told = coalesce((Finished(API, (first,), "full"), asks(API, "gone"), GONE, Finished(API, (second,), "full")), {})
+    assert told == (Told(Finished(API, (first, second), "full"), (0, 3)), Told(GONE, (2,)))
 
 
 def test_a_folded_telling_keeps_every_turn_s_parts() -> None:
     first, second = News(None, "one", "", "", (Segment(THE_TESTS, "one test run"),), frozenset()), News(None, "two", "It committed.", "Push it?", (), frozenset())
     [folded] = coalesce((Finished(API, (first,), "full"), Finished(API, (second,), "brief")), {})
-    assert folded == Finished(API, (first, second), "brief")
+    assert folded.pending == Finished(API, (first, second), "brief")

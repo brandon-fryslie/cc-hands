@@ -25,7 +25,6 @@ from hands.core.pending import Finished, News, Unread
 from hands.core.session import PromptId, SessionId
 from hands.core.subagents import Subagent, reporting
 from hands.core.turn import Said
-from hands.sessions.audit import EndedRouted, Recounted, Record
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.focus import focused
 from hands.sessions.home import Home
@@ -35,6 +34,7 @@ from hands.sessions.registry import Sessions
 from hands.sessions.subagents import read_subagent
 from hands.sessions.tail import Tails, Telling
 from hands.voice.speech import Unprompted
+from hands.voice.utterance import Utterance, Utterances
 
 # Everything reading a turn is expected to fail with; each is said, and the next turn is still heard.
 _FAILURES = (Rejected, OSError)
@@ -99,9 +99,9 @@ class Recounts:
 
 async def narrate(
     sessions: Sessions,
+    utterances: Utterances,
     tails: Tails,
     queue_frame: Callable[[Frame], Awaitable[None]],
-    record: Record,
     aloud: Callable[[], Attention],
     overlays: Overlays,
     recounts: Recounts,
@@ -115,19 +115,23 @@ async def narrate(
     read = changes or NoChanges()
     while True:
         story = await sessions.story()
+        utterance = utterances.heard(story.session, story)
         match story:
             case Summarise(session=session, turn=turn, closing=closing):
                 delivered = delivery(await set_to(aloud), await _overlay(overlays, session))
-                told = await recount(tails, session, turn, closing, record, await read.taken(session), delivered, recounts)
+                told = await recount(tails, session, turn, closing, utterance, await read.taken(session), delivered, recounts)
             case SessionGone(session=session):
                 recounts.gone(session)
                 attention = await set_to(aloud)
                 route = ended_route(attention)
                 # [LAW:nothing-unseen] whether the ending was said, and what was set that decided it.
-                record(EndedRouted(session, attention, route))
+                utterance.annotate(attention=attention, route=route)
                 told = _routed(route, story)
-        if told is not None:
-            await queue_frame(Unprompted(told))
+        match told:
+            case None:
+                utterance.settle("noted")
+            case _:
+                await queue_frame(Unprompted(told, (utterance,)))
 
 
 async def recount(
@@ -135,7 +139,7 @@ async def recount(
     session: SessionId,
     turn: PromptId | None,
     closing: str | None,
-    record: Record,
+    utterance: Utterance,
     delta: Delta,
     delivered: Delivery,
     recounts: Recounts,
@@ -143,14 +147,17 @@ async def recount(
     """Summarise what the turn did beyond what was told before, and what the floor hands the model of it as the turn
     finishes; None when there is nothing new, or when it is held until the user asks.
 
+    `utterance` is the turn's, which carries what was told of it and how it was delivered.
     `delta` is what the repository says the turn did, read when it stopped. A turn with no steps left to tell
     but a repository that moved is still worth telling: that is a formatter or a code generator, and naming
     what it changed is the whole point of reading git at all.
     """
+    utterance.annotate(delivered=delivered)
     try:
         told = await tails.tell(session, turn, closing)
     except _FAILURES as error:
         _unread(session, error)
+        utterance.fail(f"the turn could not be read: {type(error).__name__}: {error}")
         recounts.unread(session, turn)
         return _delivered(delivered, lambda _: Unread(session))
     if told is None or not (told.turn.steps or delta):
@@ -163,18 +170,20 @@ async def recount(
     # before the step that ended it.
     replied = [step.text for step in told.turn.steps if isinstance(step, Said)][-1:]
     news = News(turn, replied[0] if replied else None, tree.facts(), tree.asked(), tree.parts, frozenset(task.id for task in reporting(told.turn)))
-    record(
-        Recounted(
-            session,
-            news.reply,
-            news.facts,
-            tuple(dict.fromkeys(segment.topic.name for segment in (*tree.sections, *tree.settled, *tree.subagents))),
-            tuple(question.text for question in tree.questions),
-            delivered,
-            opened=type(told.turn.opening).__name__,
-            subagents=tuple(subagent.id for subagent in subagents),
-            unread=unread,
-        )
+    # [LAW:nothing-unseen] what the model is handed to say of the turn: the last thing the session said and what hands adds
+    # from its record. `topics` is every part of the narration built and not played, which makes this the one place a
+    # developer who cannot see the screen finds what "more on that" has to open, and `questions` what the session waits
+    # on an answer to. `opened` is the kind of thing that opened the turn, so a turn the user's own command opened is told
+    # apart from one they asked for; `subagents` each one that reported back and was read, and `unread_subagents` each
+    # whose transcript could not be.
+    utterance.annotate(
+        reply=news.reply,
+        facts=news.facts,
+        topics=tuple(dict.fromkeys(segment.topic.name for segment in (*tree.sections, *tree.settled, *tree.subagents))),
+        questions=tuple(question.text for question in tree.questions),
+        opened=type(told.turn.opening).__name__,
+        subagents=tuple(subagent.id for subagent in subagents),
+        unread_subagents=unread,
     )
     # Marked told however it is delivered, so the tail lets the steps go: what is kept of them is the tree's parts, held
     # with the telling until the session's next turn, for the user to open.
@@ -186,7 +195,7 @@ async def recount(
 async def _subagents(session: SessionId, told: Telling) -> tuple[tuple[Subagent, ...], tuple[str, ...]]:
     """The subagents that reported back in the turn, each read from its own transcript, and the ids of those that could not be.
 
-    A subagent whose transcript cannot be read is said in the log and on the turn's audit line, and the turn is told
+    A subagent whose transcript cannot be read is said in the log and on the turn's utterance, and the turn is told
     without it: the parent's own record of it, the call and the report, is still the turn's [LAW:no-silent-failure].
     """
     read: list[Subagent] = []

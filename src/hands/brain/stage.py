@@ -67,11 +67,12 @@ from hands.core.wire import (
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import BrainAnswered, BrainInterrupted, Record
-from hands.sessions.wide import annotate, child, count, fail, here, unit, within
+from hands.sessions.wide import annotate, child, continuing, count, fail, here, unit, within
 from hands.voice.player import Mark
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
 from hands.voice.speech import Aloud, Narrated, brain_asks
+from hands.voice.utterance import Uttered, Uttering, uttering
 from hands.voice.tools import Result, Tool, silent, whole
 
 
@@ -299,13 +300,19 @@ class BrainStage(FrameProcessor):
                 case (str() as text, reading):
                     asker = await reading
                     await self._ask("\n\n".join(part for part in (text, told(asker.front), place.told(asker.modality)) if part), asker, (), arrived, released, taken)
-                case Narrated(text=text, unsaid=unsaid, session=session):
+                case Narrated(text=text, unsaid=unsaid, session=session, utterances=utterances):
                     # [LAW:no-ambient-temporal-coupling] moved as the telling is taken, with the user's last turn ended and
                     # none waiting, since they go first, and before the brain is asked, so its request reads the new focus.
                     await self._refocus(session)
-                    await self._ask(text, HandsAsked(), (unsaid,), arrived, None, taken)
-                case Aloud(spoken=spoken):
-                    await self.push_frame(spoken)
+                    # The turn is what says them, sent with what tells what of them was heard, and a part of the first
+                    # of them, in its trace.
+                    await self.push_frame(Uttering(utterances))
+                    with continuing(utterances[0].begun.span if utterances else None):
+                        await self._ask(text, HandsAsked(), (unsaid,), arrived, None, taken)
+                    await self.push_frame(Uttered(utterances))
+                case Aloud(spoken=spoken, utterances=utterances):
+                    for frame in uttering(utterances, (spoken,)):
+                        await self.push_frame(frame)
 
     async def _read_front(self, modality: Modality, opened: Edge) -> UserAsked:
         began = self._now()

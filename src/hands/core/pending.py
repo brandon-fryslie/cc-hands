@@ -95,9 +95,19 @@ def priority(pending: Pending) -> Priority:
             return "fyi"
 
 
-def coalesce(pending: Sequence[Pending], live: Mapping[SessionId, Session]) -> tuple[Pending, ...]:
+@dataclass(frozen=True)
+class Told:
+    """One thing told: what is said, and where in what was pending each thing it tells stood, more than one where a
+    session's turns or its progress were folded into it."""
+
+    pending: Pending
+    sources: tuple[int, ...]
+
+
+def coalesce(pending: Sequence[Pending], live: Mapping[SessionId, Session]) -> tuple[Told, ...]:
     """What is told of `pending`, in the order it is told: what no longer waits on the user dropped, each session's
-    finished turns folded into one telling, then soonest first, in arrival order within a priority.
+    finished turns folded into one telling, then soonest first, in arrival order within a priority. What was dropped is
+    each thing whose place no telling names.
 
     A session's story is told in the order it happened: what it said before something sooner is told with that sooner
     thing, never after it, so its next turn's request is not heard ahead of the turn that came before it. What is only
@@ -107,13 +117,13 @@ def coalesce(pending: Sequence[Pending], live: Mapping[SessionId, Session]) -> t
     user talked is no longer one, and neither is a deadline counted down on it; and progress of a turn that ended
     meanwhile is out of date, however the ending was told, or whether it was told at all.
     """
-    told = _folded(_current([each for each in pending if _waits(each, live)]))
-    stories = [_story(each, at) for at, each in enumerate(told)]
+    told = _folded(_current([Told(each, (at,)) for at, each in enumerate(pending) if _waits(each, live)]))
+    stories = [_story(each.pending, at) for at, each in enumerate(told)]
     # Walked from the last: each thing is told as soon as the soonest thing its story tells after it.
     soonest: dict[SessionId | int, int] = {}
     ranks = [0] * len(told)
     for at in reversed(range(len(told))):
-        ranks[at] = soonest[stories[at]] = min(_SOONEST.index(priority(told[at])), soonest.get(stories[at], len(_SOONEST)))
+        ranks[at] = soonest[stories[at]] = min(_SOONEST.index(priority(told[at].pending)), soonest.get(stories[at], len(_SOONEST)))
     # [LAW:dataflow-not-control-flow] sorted is stable, so arrival order holds within a priority with no second key.
     return tuple(each for _, each in sorted(zip(ranks, told, strict=True), key=lambda ranked: ranked[0]))
 
@@ -165,12 +175,12 @@ def _story(pending: Pending, at: int) -> SessionId | int:
             return at
 
 
-def _current(pending: Sequence[Pending]) -> list[Pending]:
+def _current(pending: Sequence[Told]) -> list[Told]:
     """What a session was doing, dropped where its story tells how that turn ended: the result says it better, and
     progress heard after it would be heard out of date. Progress of the turn after it is news, wherever the result of
     the turn before stands: a result is told once it is summarised, and the next turn's calls do not wait on that."""
-    ends = [(at, each) for at, each in enumerate(pending) if isinstance(each, Finished | Unread | SessionGone)]
-    return [each for at, each in enumerate(pending) if not (isinstance(each, Working) and any(_ends(end, each, at < where) for where, end in ends))]
+    ends = [(at, each.pending) for at, each in enumerate(pending) if isinstance(each.pending, Finished | Unread | SessionGone)]
+    return [each for at, each in enumerate(pending) if not (isinstance(each.pending, Working) and any(_ends(end, each.pending, at < where) for where, end in ends))]
 
 
 def _ends(end: Finished | Unread | SessionGone, progress: Working, before: bool) -> bool:
@@ -189,7 +199,7 @@ def _ends(end: Finished | Unread | SessionGone, progress: Working, before: bool)
             return session == progress.session and before
 
 
-def _folded(pending: Sequence[Pending]) -> list[Pending]:
+def _folded(pending: Sequence[Told]) -> list[Told]:
     """Each session's finished turns as one Finished, and its progress as one Working, where the first of them stood:
     three Stops heard during one held key are one telling whose headline covers them all, and every telling in it keeps
     the parts it was cut from; ten edits are one sentence.
@@ -198,24 +208,25 @@ def _folded(pending: Sequence[Pending]) -> list[Pending]:
     between the turns before and after it, as it happened.
     """
     # A dict keeps a key where it was first put, so a fold's slot stays where its first thing stood as later ones join it.
-    slots: dict[tuple[object, ...], Pending] = {}
+    slots: dict[tuple[object, ...], Told] = {}
     # How many things that do not fold each story has told so far: a fold is what came between two of them.
     between: dict[SessionId | int, int] = {}
     for at, each in enumerate(pending):
-        story = _story(each, at)
-        match each:
-            case Finished() | Working():
+        story = _story(each.pending, at)
+        match each.pending:
+            case Finished() | Working() as folding:
                 # A subagent's work folds only with its own: each is said as the work of the call that started it.
-                slot = (type(each), story, between.get(story, 0), each.of if isinstance(each, Working) and isinstance(each.of, AgentTask) else None)
-                slots[slot] = _joined(slots.get(slot), each)
+                slot = (type(folding), story, between.get(story, 0), folding.of if isinstance(folding, Working) and isinstance(folding.of, AgentTask) else None)
+                before = slots.get(slot)
+                slots[slot] = each if before is None else Told(_joined(before.pending, folding), (*before.sources, *each.sources))
             case _:
                 between[story] = between.get(story, 0) + 1
                 slots[(at,)] = each
     return list(slots.values())
 
 
-def _joined(before: Pending | None, each: Finished | Working) -> Pending:
-    """`each` folded into the telling of its kind that came before it in its slot, or standing alone in a slot of its own."""
+def _joined(before: Pending, each: Finished | Working) -> Pending:
+    """`each` folded into the telling of its kind that came before it in its slot."""
     match before, each:
         case Finished(news=earlier), Finished(session=session, news=news, amount=amount):
             return Finished(session, (*earlier, *news), amount)

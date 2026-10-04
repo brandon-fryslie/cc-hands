@@ -77,7 +77,7 @@ async def brief(sessions: Sessions, home: Home, telling: Telling, queue_frame: C
     thing in the model's context and every change it hears of came after what the note says.
     """
     for note in _notes(telling, sessions, home):
-        await queue_frame(Unprompted(Briefing(note)))
+        await queue_frame(Unprompted(Briefing(note), ()))
 
 
 def _notes(telling: Telling, sessions: Sessions, home: Home) -> Sequence[str]:
