@@ -8,7 +8,9 @@ event says which way it went, what decided it, how long the floor held it, and h
 
 Whether it was heard is read off the output transport, by two frames sent with what says it: `Uttering` ahead of it and
 `Uttered` behind. `Uttering` is dropped by a barge-in like the words it leads, and `Uttered` is kept through one, so each
-utterance's `Uttered` reaches the output transport, in order with the audio ahead of it. Pushed by the output transport,
+utterance's `Uttered` reaches the output transport, in order with the audio ahead of it. A barge-in the brain's turn goes
+on through cuts off none of what that turn is still to say: the brain's stage leads the rest with `Resumed`. What is
+never said, a note to the model's context, is never sent between them: its fate is `silent` as it is sent. Pushed by the output transport,
 `Uttering` means what follows it is this utterance's, the first audio after it is its first audio, and a barge-in
 before its `Uttered` cut it off; an `Uttered` with no `Uttering` before it was cut off before any of it played.
 """
@@ -28,9 +30,10 @@ from hands.core.session import SessionId
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, Fact, annotate, begun, fail, unit
 
-# How an utterance ended. `noted`: what the user set, or a turn with nothing new in it, kept it from being said.
-# `dropped`: no longer so as the floor let it go. `silent`: handed on, and nothing of it was heard, as a note to the
-# model's context is not. `played`: heard to its end. `cut`: a barge-in stopped it, before or after its first audio.
+# How an utterance ended. `noted`: what the user set, or a turn or a burst with nothing new in it, kept it from being
+# said. `dropped`: no longer so by the time it was to be told: out of date as the floor let it go, or progress of a turn
+# that ended before its summary was ready. `silent`: handed on, and nothing of it was heard, as a note to the model's
+# context is not. `played`: heard to its end. `cut`: a barge-in stopped it, before or after its first audio.
 Fate = Literal["noted", "dropped", "silent", "played", "cut"]
 
 
@@ -97,6 +100,12 @@ class Uttering(DataFrame):
     follows it is theirs."""
 
     utterances: tuple[Utterance, ...]
+
+
+@dataclass
+class Resumed(Uttering, UninterruptibleFrame):
+    """Leads what is still to say `utterances` after a barge-in that left what says them going: kept through that
+    barge-in, since none of what it leads was in flight to be dropped with it."""
 
 
 @dataclass

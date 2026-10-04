@@ -96,7 +96,7 @@ def priority(pending: Pending) -> Priority:
 
 
 @dataclass(frozen=True)
-class Told:
+class Coalesced:
     """One thing told: what is said, and where in what was pending each thing it tells stood, more than one where a
     session's turns or its progress were folded into it."""
 
@@ -104,7 +104,7 @@ class Told:
     sources: tuple[int, ...]
 
 
-def coalesce(pending: Sequence[Pending], live: Mapping[SessionId, Session]) -> tuple[Told, ...]:
+def coalesce(pending: Sequence[Pending], live: Mapping[SessionId, Session]) -> tuple[Coalesced, ...]:
     """What is told of `pending`, in the order it is told: what no longer waits on the user dropped, each session's
     finished turns folded into one telling, then soonest first, in arrival order within a priority. What was dropped is
     each thing whose place no telling names.
@@ -117,7 +117,7 @@ def coalesce(pending: Sequence[Pending], live: Mapping[SessionId, Session]) -> t
     user talked is no longer one, and neither is a deadline counted down on it; and progress of a turn that ended
     meanwhile is out of date, however the ending was told, or whether it was told at all.
     """
-    told = _folded(_current([Told(each, (at,)) for at, each in enumerate(pending) if _waits(each, live)]))
+    told = _folded(_current([Coalesced(each, (at,)) for at, each in enumerate(pending) if _waits(each, live)]))
     stories = [_story(each.pending, at) for at, each in enumerate(told)]
     # Walked from the last: each thing is told as soon as the soonest thing its story tells after it.
     soonest: dict[SessionId | int, int] = {}
@@ -175,7 +175,7 @@ def _story(pending: Pending, at: int) -> SessionId | int:
             return at
 
 
-def _current(pending: Sequence[Told]) -> list[Told]:
+def _current(pending: Sequence[Coalesced]) -> list[Coalesced]:
     """What a session was doing, dropped where its story tells how that turn ended: the result says it better, and
     progress heard after it would be heard out of date. Progress of the turn after it is news, wherever the result of
     the turn before stands: a result is told once it is summarised, and the next turn's calls do not wait on that."""
@@ -199,7 +199,7 @@ def _ends(end: Finished | Unread | SessionGone, progress: Working, before: bool)
             return session == progress.session and before
 
 
-def _folded(pending: Sequence[Told]) -> list[Told]:
+def _folded(pending: Sequence[Coalesced]) -> list[Coalesced]:
     """Each session's finished turns as one Finished, and its progress as one Working, where the first of them stood:
     three Stops heard during one held key are one telling whose headline covers them all, and every telling in it keeps
     the parts it was cut from; ten edits are one sentence.
@@ -208,7 +208,7 @@ def _folded(pending: Sequence[Told]) -> list[Told]:
     between the turns before and after it, as it happened.
     """
     # A dict keeps a key where it was first put, so a fold's slot stays where its first thing stood as later ones join it.
-    slots: dict[tuple[object, ...], Told] = {}
+    slots: dict[tuple[object, ...], Coalesced] = {}
     # How many things that do not fold each story has told so far: a fold is what came between two of them.
     between: dict[SessionId | int, int] = {}
     for at, each in enumerate(pending):
@@ -218,7 +218,7 @@ def _folded(pending: Sequence[Told]) -> list[Told]:
                 # A subagent's work folds only with its own: each is said as the work of the call that started it.
                 slot = (type(folding), story, between.get(story, 0), folding.of if isinstance(folding, Working) and isinstance(folding.of, AgentTask) else None)
                 before = slots.get(slot)
-                slots[slot] = each if before is None else Told(_joined(before.pending, folding), (*before.sources, *each.sources))
+                slots[slot] = each if before is None else Coalesced(_joined(before.pending, folding), (*before.sources, *each.sources))
             case _:
                 between[story] = between.get(story, 0) + 1
                 slots[(at,)] = each

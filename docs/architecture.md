@@ -377,16 +377,20 @@ it tells where each thing it holds stood, so what it drops is known by none nami
 
 Each thing a session gives hands to say unasked is one `utterance` wide event
 (`voice/utterance.py`), opened as the relay or the narrator hears it and emitted at its fate:
-`noted` (the route, the delivery, or a turn with nothing new kept it from being said), `dropped`
-(no longer so as the floor let it go), `silent`, `played`, or `cut`. Its facts are what was
+`noted` (the route, the delivery, or a turn or burst with nothing new kept it from being said),
+`dropped` (no longer so by the time it was to be told: out of date as the floor let it go, or
+progress of a turn that ended before its summary), `silent` (a note to the model's context,
+settled as it is sent), `played`, or `cut`. Its facts are what was
 heard and from which session, what decided its route, how long the floor held it (`held_ms`),
 what it was told as and how many things heard were folded into that telling, and
 `first_audio_ms`, from heard to the first audio the speaker wrote of it. The last three fates
 are read off the output transport by the `Audible` observer: what says an utterance is sent
 between an `Uttering` frame, dropped by a barge-in with the words it leads, and an `Uttered`
 frame, kept through one, so every utterance handed on reaches the output transport closed, in
-order with its audio. The brain's stage sends them around what it takes from hands' lane, and
-the brain's turn telling an utterance is its child, in its trace.
+order with its audio. The brain's stage sends them around what it takes from hands' lane, leads
+what its turn still has to say with an uninterruptible `Resumed` after a barge-in the turn goes
+on through, and fails each utterance of a telling the brain failed; the brain's turn telling an
+utterance is its child, in its trace.
 `Story` carries finished turns and sessions gone in one ordered
 queue, because an end spoken at once was heard before the last turn it ended. Every
 finished turn is read once into a `News` (`voice/narrator.py`, `recount`): the session's last

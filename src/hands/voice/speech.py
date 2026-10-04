@@ -133,7 +133,8 @@ Saying = AsWritten | InOwnWords | Known
 
 
 def sent(saying: Saying, telling: Telling, utterances: tuple[Utterance, ...]) -> Sequence[Frame]:
-    """The frames that say `saying` under the model's telling, sent with what tells which of `utterances` was heard."""
+    """The frames that say `saying` under the model's telling, sent with what tells which of `utterances` was heard;
+    what is never said settles them `silent` here."""
     match saying, telling:
         case AsWritten(spoken=spoken), Pushed():
             return uttering(utterances, (spoken,))
@@ -148,7 +149,10 @@ def sent(saying: Saying, telling: Telling, utterances: tuple[Utterance, ...]) ->
             # The brain's stage puts the user's words ahead of hands', so it moves the focus itself as it takes the telling.
             return (Narrated(text, unsaid, session, utterances),)
         case Known(notes=notes), _:
-            return uttering(utterances, notes)
+            # Never said, so never read off the speaker: a brain turn speaking beside it would lend it its audio.
+            for utterance in utterances:
+                utterance.settle("silent")
+            return notes
 
 
 def bounded(text: str, limit: int) -> str:

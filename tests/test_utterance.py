@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import pytest
-from pipecat.frames.frames import Frame, InterruptionFrame, OutputAudioRawFrame, TTSAudioRawFrame, TTSSpeakFrame
+from pipecat.frames.frames import Frame, InterruptionFrame, LLMMessagesAppendFrame, OutputAudioRawFrame, TTSAudioRawFrame, TTSSpeakFrame
 from pipecat.observers.base_observer import FramePushed
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
@@ -15,8 +15,8 @@ from hands.core.effects import Expired, SessionGone, Speak
 from hands.core.session import Permission, SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
-from hands.voice.speech import AsWritten, Pushed, sent
-from hands.voice.utterance import Audible, Utterance, Utterances, Uttered, Uttering
+from hands.voice.speech import AsWritten, Known, Pushed, Tailed, sent
+from hands.voice.utterance import Audible, Resumed, Utterance, Utterances, Uttered, Uttering
 
 from conftest import running
 from hands.voice.microphone import DefaultDevices, KeyedAudioTransport
@@ -27,7 +27,7 @@ from test_microphone import FreshPortAudio, Room, SimpleStream, _phone  # pyrigh
 API = SessionId("api")
 EXPIRED = Speak(Expired(API, Permission("Bash", {"command": "ls"})))
 # What the output transport pushes of one utterance: the frames that lead and close it, and what plays between.
-Step = Literal["lead", "audio", "barge-in", "close"]
+Step = Literal["lead", "audio", "barge-in", "resume", "close"]
 AUDIO = OutputAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=16_000, num_channels=1)
 
 
@@ -86,18 +86,29 @@ async def test_an_announcement_spoken_is_one_event_with_its_first_audio_timed_fr
 @pytest.mark.parametrize(
     ("steps", "fate"),
     [
-        pytest.param(("lead", "close"), "silent", id="handed on and nothing of it heard, as a note to the context"),
+        pytest.param(("lead", "close"), "silent", id="handed on and nothing of it played"),
         pytest.param(("lead", "audio", "barge-in", "close"), "cut", id="a barge-in over it"),
         pytest.param(("lead", "barge-in", "close"), "cut", id="a barge-in before its first audio"),
         pytest.param(("close",), "cut", id="a barge-in that dropped it before it reached the speaker"),
+        pytest.param(("lead", "audio", "barge-in", "resume", "audio", "close"), "played", id="a barge-in the turn saying it went on through"),
+        pytest.param(("barge-in", "resume", "audio", "close"), "played", id="a barge-in the turn went on through, that dropped its lead"),
     ],
 )
 async def test_what_of_an_utterance_was_heard_is_read_off_the_output_transport(rig: Rig, steps: Sequence[Step], fate: str) -> None:
     utterance = rig.utterances.heard(API, EXPIRED)
     lead, _, close = said(utterance)
-    pushed: dict[Step, Frame] = {"lead": lead, "audio": AUDIO, "barge-in": InterruptionFrame(), "close": close}
+    pushed: dict[Step, Frame] = {"lead": lead, "audio": AUDIO, "barge-in": InterruptionFrame(), "resume": Resumed((utterance,)), "close": close}
     await rig.played([pushed[step] for step in steps])
     assert (await rig.event()).facts["fate"] == fate
+
+
+@pytest.mark.parametrize("telling", [Pushed(), Tailed()])
+async def test_a_note_for_the_model_s_context_is_sent_bare_and_is_silent_as_it_is_sent(rig: Rig, telling: Pushed | Tailed) -> None:
+    """Never said, so never read off the speaker, where a brain turn speaking beside it would lend it its audio."""
+    utterance = rig.utterances.heard(API, EXPIRED)
+    note = LLMMessagesAppendFrame([{"role": "user", "content": "[hands] api is now in plan mode."}], run_llm=False)
+    assert tuple(sent(Known((note,)), telling, (utterance,))) == (note,)
+    assert (await rig.event()).facts["fate"] == "silent"
 
 
 async def test_audio_that_played_before_an_utterance_was_led_on_is_not_its_first(rig: Rig) -> None:
@@ -198,3 +209,32 @@ async def test_a_barge_in_while_the_output_transport_still_holds_an_utterance_s_
     [event] = recorded
     assert isinstance(event, WideEvent) and event.facts["fate"] == "cut"
     assert len(speakers.speaker.written) < 20
+
+
+async def test_what_a_turn_says_after_a_barge_in_it_went_on_through_is_still_its_utterance_s() -> None:
+    """Led on again right behind the barge-in, through the output transport's flush of what it held."""
+    speakers = Speakers()
+    params = LocalAudioTransportParams(audio_out_enabled=True, audio_out_sample_rate=16_000)
+    speaker = KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, defaults=lambda: DefaultDevices(input=1, output=1), echo=lambda: Room()).output()
+    recorded: list[Entry] = []
+    utterances = Utterances(recorded.append)
+    keeping = asyncio.create_task(utterances.keep())
+    utterance = utterances.heard(API, EXPIRED)
+    try:
+        async with running([speaker], observers=[Audible(speaker)]) as run:
+            speakers.speaker.blocking = True
+            await run.worker.queue_frames([Uttering((utterance,)), *(TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1) for _ in range(20))])
+            await asyncio.sleep(0.1)
+            await run.worker.queue_frames([InterruptionFrame(), Resumed((utterance,))])
+            await asyncio.sleep(0.1)
+            speakers.speaker.blocking = False
+            await run.worker.queue_frames([TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1), Uttered((utterance,))])
+            async with asyncio.timeout(5):
+                while not recorded:
+                    await asyncio.sleep(0.01)
+    finally:
+        speakers.speaker.blocking = False
+        keeping.cancel()
+        await asyncio.gather(keeping, return_exceptions=True)
+    [event] = recorded
+    assert isinstance(event, WideEvent) and event.facts["fate"] == "played"

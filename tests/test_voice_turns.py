@@ -434,6 +434,8 @@ async def test_two_sessions_finishing_during_one_held_key_are_told_asks_first_an
     rig.clock.now = 2.0
     await rig.worker.queue_frames([*held, TextFrame("marker")])
     await rig.until(lambda: "marker" in rig.out.order)
+    # Each is held from when it came, not from the press.
+    rig.clock.now = 5.0
     await rig.hold(["up"])
     await rig.texts.put("what time is it")
     await rig.until(lambda: len(rig.out.context) == 3)
@@ -443,10 +445,10 @@ async def test_two_sessions_finishing_during_one_held_key_are_told_asks_first_an
     assert told.startswith("[hands] The Claude Code session api (id api) finished 2 turns. The last thing it said was:\n\nFixed the parser.\n\nThen, in the turn after that: The last thing it said was:\n\nPushed it.")
     # Each thing heard is followed to its fate: both turns told in one telling, and the request answered meanwhile dropped.
     assert [let_go(each) for each in held] == [
-        {"held_ms": 2000.0, "told": "Finished", "folded": 2},
-        {"held_ms": 2000.0, "fate": "dropped"},
-        {"held_ms": 2000.0, "told": "Finished", "folded": 2},
-        {"held_ms": 2000.0, "told": "Narrate", "folded": 1},
+        {"held_ms": 3000.0, "told": "Finished", "folded": 2},
+        {"held_ms": 3000.0, "fate": "dropped"},
+        {"held_ms": 3000.0, "told": "Finished", "folded": 2},
+        {"held_ms": 3000.0, "told": "Narrate", "folded": 1},
     ]
 
 

@@ -177,6 +177,7 @@ class Spoken(FrameProcessor):
                     self.uttering.append(frame.text)
                 await self.push_frame(frame, direction)
             case Uttering() | Uttered():
+                # A Resumed is an Uttering, named as itself.
                 self.uttering.append(type(frame).__name__)
                 await self.push_frame(frame, direction)
             case _:
@@ -348,6 +349,41 @@ async def test_the_brain_s_turn_telling_a_finished_turn_is_part_of_its_utterance
     [turn] = turns(rig.recorded)
     assert (turn.trace_id, turn.parent_id) == (utterance.begun.span.trace_id, utterance.begun.span.span_id)
     assert rig.out.uttering == ["Uttering", "api opened pull request 68.", "Uttered"]
+
+
+async def test_a_barge_in_the_telling_goes_on_through_leads_the_rest_of_it_on_again(rig: Rig) -> None:
+    """None of the turn's requests had left, so the barge-in stops nothing: what the turn says is still the telling's."""
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api"), (unasked(),)))
+    await rig.until(lambda: rig.brain.asked == ["[hands] api finished a turn."])
+    await rig.interrupt()
+    exchange, _ = rig.request()
+    rig.stream(exchange, "api opened pull request 68.")
+    rig.brain.end()
+    await rig.until(lambda: rig.out.uttering[-1:] == ["Uttered"])
+    assert rig.out.uttering == ["Uttering", "Resumed", "api opened pull request 68.", "Uttered"]
+    assert rig.brain.interrupts == 0
+
+
+async def test_a_barge_in_that_stops_the_telling_leads_nothing_more_on(rig: Rig) -> None:
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api"), (unasked(),)))
+    await rig.until(lambda: rig.brain.asked == ["[hands] api finished a turn."])
+    exchange, _ = rig.request()
+    rig.stream(exchange, "api opened ")
+    await rig.until(lambda: "api opened " in rig.out.uttering)
+    await rig.interrupt()
+    rig.brain.end()
+    await rig.until(lambda: rig.out.uttering[-1:] == ["Uttered"])
+    assert rig.out.uttering == ["Uttering", "api opened ", "Uttered"]
+
+
+async def test_a_telling_the_brain_fails_fails_its_utterance_with_why(rig: Rig) -> None:
+    utterance = unasked()
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api"), (utterance,)))
+    await rig.until(lambda: len(rig.brain.asked) == 1)
+    rig.brain.end(BrainAnswered("p1", "unknown: API Error: 500 overloaded"))
+    await rig.until(lambda: rig.out.uttering[-1:] == ["Uttered"])
+    [turn] = turns(rig.recorded)
+    assert turn.error is not None and utterance.failure == turn.error
 
 
 async def test_a_line_said_as_written_in_hands_lane_is_sent_between_its_marks(rig: Rig) -> None:
