@@ -59,8 +59,10 @@ class Whisper(WhisperSTTServiceMLX):
         self._warm()
         # The key the last frame of microphone audio was captured under.
         self._captured: Key = "up"
-        # Whose microphone the last frame came from.
+        # Whose microphone the last frame came from, and how many turns the gate had sent and thrown away by it.
         self._heard_at: Place = "desk"
+        self._sent = 0
+        self._dropped = 0
         # The number of the last hold the key opened.
         self._opened = 0
         # The holds whose audio is queued for transcription, oldest first. Pipecat transcribes its queue one segment at
@@ -107,38 +109,48 @@ class Whisper(WhisperSTTServiceMLX):
             # A turn is heard at one place: what the other's microphone heard before it is no part of it.
             self._audio_buffer.clear()
             self._heard_at = frame.place
+        # [LAW:no-ambient-temporal-coupling] a turn ends as the gate's counts move, not as its key is next seen at rest: a
+        # turn can end and the next arm between two frames, with no frame captured at rest between them.
+        match self._captured, frame.sent != self._sent, frame.dropped != self._dropped:
+            case "down", True, _ if self.is_usable:
+                # Sent: the hold's audio is queued, to be transcribed and sent.
+                stopped = VADUserStoppedSpeakingFrame()
+                self._transcribing.append(self._opened)
+                await super()._handle_user_stopped_speaking(stopped)
+                await self.push_frame(stopped)
+                self._captured = "up"
+            case ("down", True, _) | ("down", _, True):
+                # Thrown away, as typing, too long open, or a call came or went; or sent to a Whisper that can no longer
+                # transcribe, which Pipecat would give nothing to. Nothing is transcribed or sent, and Whisper is done
+                # with the hold at once.
+                self._user_speaking = False
+                self._audio_buffer.clear()
+                await self.push_frame(HoldDiscarded())
+                await self.push_frame(TurnResolved(hold=self._opened))
+                self._captured = "up"
+            case _:
+                pass
+        self._sent, self._dropped = frame.sent, frame.dropped
         match self._captured, frame.key:
-            case "up" | "dropped", "arming":
+            case "up", "arming":
                 # A hold's audio begins at its press: nothing heard before it is any part of it.
                 self._audio_buffer.clear()
-            case "arming", "up" | "dropped":
+            case "arming", "up":
                 # The press was Shift after all: what it heard is no part of any turn.
                 self._user_speaking = False
                 self._audio_buffer.clear()
             case "arming", "listening":
                 # A start that was only a noise: the desk listens on, and its last second is kept as Pipecat keeps it.
                 self._user_speaking = False
-            case "up" | "listening" | "arming" | "dropped", "down":
+            case "up" | "listening" | "arming", "down":
                 self._opened += 1
                 opened = TurnOpened(hold=self._opened)
                 await super()._handle_user_started_speaking(opened)
                 await self.push_frame(opened)
-            case "down", "up" | "listening" if self.is_usable:
-                # The key was let go, or the voice finished its turn: the hold's audio is queued, to be transcribed and
-                # sent.
-                stopped = VADUserStoppedSpeakingFrame()
-                self._transcribing.append(self._opened)
-                await super()._handle_user_stopped_speaking(stopped)
-                await self.push_frame(stopped)
-            case "down", "up" | "listening" | "arming" | "dropped":
-                # Another key was pressed, so the hold was typing, not speech (and the key may already be pressed
-                # again); or the key was let go of a Whisper that can no longer transcribe, which Pipecat would give
-                # nothing to. What the hold recorded is thrown away, so nothing is transcribed or sent, and Whisper is
-                # done with it at once.
-                self._user_speaking = False
-                self._audio_buffer.clear()
-                await self.push_frame(HoldDiscarded())
-                await self.push_frame(TurnResolved(hold=self._opened))
+            case "down", "up" | "listening" | "arming":
+                # [LAW:no-silent-failure] the gate counts every end of a turn, so a key leaving down uncounted is a gate
+                # that lies.
+                raise RuntimeError(f"the key went from down to {frame.key} with no turn sent or thrown away")
             case _:
                 # From listening to arming, the second the desk heard before it is kept: the turn's first words.
                 pass

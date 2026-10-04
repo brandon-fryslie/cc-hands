@@ -52,7 +52,7 @@ from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, count, unit
 from hands.voice.echo import COUNTS, Echo, EchoCanceller
 from hands.voice.phone import Phone
-from hands.voice.ptt import KeyedAudio, PushToTalk
+from hands.voice.ptt import PushToTalk
 from hands.threads import SerialThread, off_loop
 
 Instant = float  # seconds on the monotonic clock
@@ -424,13 +424,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
         # phone, the desk's frames are not the pipeline's at all, so its stream is the phone's unbroken.
         if not gate.hears("desk"):
             return None, pyaudio.paContinue
-        frame = KeyedAudio(
-            audio=gate.audible(cleaned),
-            sample_rate=self._sample_rate,
-            num_channels=self._params.audio_in_channels,
-            key=gate.key,
-            place="desk",
-        )
+        frame = gate.framed(cleaned, self._sample_rate, self._params.audio_in_channels, "desk")
         asyncio.run_coroutine_threadsafe(self.push_audio_frame(frame), loop)
         return None, pyaudio.paContinue
 

@@ -1545,7 +1545,10 @@ and its newlines stay inside the prompt because fritter pastes it.
 voice-activity frames, so the key is the VAD: every microphone frame carries the key
 it was captured under, and Whisper pushes the VAD frames where those keys change,
 numbering each hold, so the turn the strategies see and the audio Whisper transcribes
-are cut at the same frame. The key is also the mute: microphone bytes become silence
+are cut at the same frame. How a turn ended is not a key position: the gate counts the
+turns it has sent and thrown away, every frame carries both counts, and Whisper ends
+its hold as they move. A frame is captured every 20 ms, and a turn can end and the next
+arm between two of them. The key is also the mute: microphone bytes become silence
 of the same length unless the key is pressed. Frames flow at full rate either way;
 only their content changes. The microphone opens on the press, and a hold's audio
 begins there, so words said before the hold means talk are kept; they are thrown

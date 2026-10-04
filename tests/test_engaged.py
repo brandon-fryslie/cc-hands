@@ -230,3 +230,23 @@ async def test_loading_the_models_is_its_own_unit_of_work() -> None:
     async with loaded(16000, events.append) as ears:
         assert await ears.detect(bytes(1024)) == VADState.QUIET
     assert [(event.event, event.outcome) for event in events] == [("trigger.loaded", "ok")]
+
+
+async def test_a_switch_away_mid_step_hands_the_gate_what_that_step_still_owed_it() -> None:
+    rig = Rig(verdicts=[])
+    stuck = asyncio.Event()
+
+    async def slow_stop(move: Move) -> None:
+        rig.made.append(move)
+        if move == "stop":
+            await stuck.wait()  # as a stop's say waits on the speaker
+
+    driving = asyncio.create_task(drive_engaged(rig.tapped, rig.overheard, rig.ears, slow_stop, rig.events.append))
+    await rig.press()
+    await rig.hear(b"s", b"S")
+    await rig.settle(3)
+    await rig.press()  # disengaging: the turn open is sent, and the desk stops listening
+    await rig.settle(4)
+    await stopped(driving)
+    assert rig.made == ["listen", "arm", "start", "stop", "deafen"]
+    assert dict(rig.events[0].counts)["deafen"] == 1

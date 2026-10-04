@@ -254,11 +254,11 @@ class SystemChannel:
 
 
 def told(move: Move, devices: Devices) -> tuple[NoMicrophone | TurnExpired, ...]:
-    """What a move of the key says aloud, beyond its tone: a press to talk with no microphone, which no turn will
-    answer since no frame reaches Whisper, and a turn thrown away for being open too long, which with no microphone
+    """What a move of the key says aloud, beyond its tone: a press to talk, or engaging, with no microphone, which no
+    turn will answer since no frame reaches Whisper, and a turn thrown away for being open too long, which with no microphone
     recorded nothing to throw away."""
     match move, devices:
-        case "start", Devices(input=None):
+        case "start" | "listen", Devices(input=None):
             return (NoMicrophone(),)
         case "expire", Devices(input=None):
             return ()
