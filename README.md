@@ -150,21 +150,27 @@ audio on a plain turn, 4.3 s on a turn with a tool call.
 ## Installing the hooks
 
 hands hears a session through Claude Code hooks, and they come from a plugin. This
-repository is a marketplace holding that plugin, `plugin/`, so installing it installs
-the hooks in every session, and nothing is merged into your settings by hand:
+repository is a marketplace whose one entry is that plugin, and installing it installs
+the hooks in every session, with nothing merged into your settings by hand. The plugin
+itself comes from the hands you installed: the entry has Claude Code run `hands plugin`,
+which writes the plugin, its hooks run by that hands' own Python, and prints where.
+Claude Code shows you that command and asks you to accept it at install.
 
 ```
-claude plugin marketplace add ~/code/cc-hands     # once; in a session: /plugin marketplace add ~/code/cc-hands
-claude plugin install hands@cc-hands              # hooks on, in every new session
+claude plugin marketplace add brandon-fryslie/cc-hands   # once; a checkout's path works too
+claude plugin install hands@cc-hands              # accept `hands plugin`; hooks on, in every new session
 claude plugin disable hands@cc-hands              # hooks off, still installed
 claude plugin enable hands@cc-hands               # hooks back on
 claude plugin uninstall hands@cc-hands            # hooks gone
 claude plugin marketplace remove cc-hands         # and the marketplace with them
 ```
 
-The same commands work as `/plugin ...` inside a session. A session picks up a change
-when it starts, or on `/reload-plugins`. Installed from a local directory, the plugin
-runs from this checkout, so a `git pull` here updates the hooks too.
+The same commands work as `/plugin ...` inside a session. Claude Code runs `hands plugin`
+again once in every session, shortly after it starts, so after hands is upgraded the
+next session's hooks and skills are the new version's, with no plugin command. A session
+already running picks the change up on `/reload-plugins`. `hands` must be on the `PATH`
+Claude Code runs with; for a checkout, that is a `hands` that runs `uv run --project
+<checkout> hands`. A checkout's hooks run the checkout's own `src`, through its venv.
 
 The plugin also holds two skills. `/hands:restart` restarts a running hands from the
 session you are in, so it runs the code, the brain's prompt, and the brain's setup on
@@ -189,10 +195,9 @@ it which voices there are and to let you hear some: each says a line in its own 
 Tell it which one to use, and what it says next is in that voice. The choice is kept in
 `~/.hands/voice`, so it lasts across restarts.
 
-The hooks need a Python 3.12 or newer on `PATH` (`python3.14`, `python3.13`,
-`python3.12`, or a `python3` that is new enough); they run hands' own `src` and need no
-venv. Without one, every hook fails saying so. The shim finds hands' home as the CLI
-does: `HANDS_HOME`, which must be absolute, or `~/.hands`.
+The shim finds hands' home as the CLI does: `HANDS_HOME`, which must be absolute, or
+`~/.hands`. `hands plugin` writes the plugin there, in `plugins/`, one directory for each
+version and interpreter.
 
 ## Wrapping every session
 
@@ -233,11 +238,11 @@ run, or is still starting, they cost a session nothing: no hook error, and a per
 request gets Claude Code's own dialog. A hands that died, hung, or left a heartbeat nothing can read shows
 up in every session as a hook error saying so.
 
-`plugin/hooks/hooks.json` is generated from `hands.sessions.hookconfig`, and a test fails when
-the two differ. After changing the hook table:
+`src/hands/sessions/plugin/hooks/hooks.json` is generated from `hands.sessions.hookconfig`, and a
+test fails when the two differ. After changing the hook table:
 
 ```
-uv run python -m hands.sessions.hookconfig > plugin/hooks/hooks.json
+uv run python -m hands.sessions.hookconfig > src/hands/sessions/plugin/hooks/hooks.json
 ```
 
 ## Running

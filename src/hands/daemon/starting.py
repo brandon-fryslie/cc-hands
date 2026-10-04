@@ -61,7 +61,7 @@ class Ended:
 
 def invocation(home: Home, *arguments: str) -> list[str]:
     """The command line that runs `hands --home <home> <arguments>` on this Python and this code, whichever `hands` is on PATH."""
-    # -P, as the plugin's launcher runs Python: the working directory is kept off the path.
+    # -P: the working directory is kept off the path.
     return [sys.executable, "-P", "-m", "hands.daemon", "--home", str(home.root), *arguments]
 
 

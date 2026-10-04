@@ -164,8 +164,9 @@ closes.
 - **Audio device loss.** Unplugging the headset does not kill the pipeline: the
   transport error is spoken through the surviving device or shown on screen, and
   the transport is rebuilt on the default device. Done by unplugging mid-turn.
-- **Hooks as a plugin.** The repository is a Claude Code plugin whose
-  `plugin/hooks/hooks.json` is generated from `hookconfig`; installing, disabling, or
+- **Hooks as a plugin.** The repository is a Claude Code marketplace whose plugin
+  the installed hands writes (`hands plugin`), its hooks run by that hands' own
+  Python, and whose `hooks/hooks.json` is generated from `hookconfig`; installing, disabling, or
   uninstalling the plugin is how the hooks go on and off. A shim that cannot reach
   the daemon exits 0 silently when the heartbeat says hands was stopped or never
   ran, and exits 1 with the reason when it died, hung, or cannot be read. Done when

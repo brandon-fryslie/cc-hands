@@ -12,26 +12,25 @@ from pathlib import Path
 
 import pytest
 
-from conftest import unedited
+from conftest import NO_PYTHON, unedited
 from hands.core.session import Membership, SessionId
 from hands.daemon.cli import launch, still_shown
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.starting import Ended
 from hands.sessions import audit, heartbeat
-from hands.sessions.hookconfig import LAUNCHER, PLUGIN_DIR
+from hands.sessions.hookconfig import LAUNCHER
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent / PLUGIN_DIR
 STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
 NOW = datetime(2026, 10, 3, 12, 0, 0, tzinfo=UTC)
 EDITED = audit.SettingsEdited(path="/home/config.toml", refused=None)
 
 
-def restart(home: Home, cwd: Path, path: str) -> subprocess.CompletedProcess[str]:
-    """`/hands:restart` as the skill runs it: the plugin's launcher, in the session's directory, with no venv."""
-    environment = {"HANDS_HOME": str(home.root), "PATH": path, "HOME": str(cwd)}
-    return subprocess.run([PLUGIN_ROOT / LAUNCHER, "-m", "hands.daemon.restart"], env=environment, cwd=cwd, capture_output=True, text=True, timeout=60)
+def restart(plugin: Path, home: Home, cwd: Path) -> subprocess.CompletedProcess[str]:
+    """`/hands:restart` as the skill runs it: the plugin's launcher, in the session's directory."""
+    environment = {"HANDS_HOME": str(home.root), "PATH": NO_PYTHON, "HOME": str(cwd)}
+    return subprocess.run([plugin / LAUNCHER, "-m", "hands.daemon.restart"], env=environment, cwd=cwd, capture_output=True, text=True, timeout=60)
 
 
 def running(home: Home, deadline: float = 10.0) -> heartbeat.Status:
@@ -56,7 +55,7 @@ def session(tmp_path: Path) -> Iterator[Membership]:
         process.wait()
 
 
-def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sessions(tmp_path: Path, python312: str, session: Membership) -> None:
+def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sessions(tmp_path: Path, plugin: Path, session: Membership) -> None:
     home = Home(tmp_path / "home")
     write_membership(home, session)
     daemon = subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
@@ -64,7 +63,7 @@ def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sess
         before = running(home)
         assert before.live_sessions == 1
 
-        done = restart(home, tmp_path, python312)
+        done = restart(plugin, home, tmp_path)
 
         assert done.returncode == 0, done.stderr
         after = heartbeat.read(home.status)
@@ -161,18 +160,18 @@ async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: 
     assert status is None or status.pipeline != "stopped"
 
 
-def test_a_daemon_that_is_not_running_is_not_asked_and_the_skill_says_why(tmp_path: Path, python312: str) -> None:
+def test_a_daemon_that_is_not_running_is_not_asked_and_the_skill_says_why(tmp_path: Path, plugin: Path) -> None:
     home = Home(tmp_path / "home")
-    done = restart(home, tmp_path, python312)
+    done = restart(plugin, home, tmp_path)
     assert (done.returncode, done.stdout) == (1, "")
     assert done.stderr == f"hands was not restarted: hands has not run: there is no heartbeat at {home.status}.\n"
 
 
-def test_a_daemon_still_starting_is_not_asked(tmp_path: Path, python312: str) -> None:
+def test_a_daemon_still_starting_is_not_asked(tmp_path: Path, plugin: Path) -> None:
     # Its pid is this test's, which a restart signal would end: being refused, it is never sent.
     home = Home(tmp_path / "home")
     heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT).beat("starting", None, 0, listening=False, deaf=False)
-    done = restart(home, tmp_path, python312)
+    done = restart(plugin, home, tmp_path)
     assert done.returncode == 1
     assert done.stderr.startswith(f"hands was not restarted: hands is up: pid {os.getpid()}, ")
     assert "pipeline starting" in done.stderr

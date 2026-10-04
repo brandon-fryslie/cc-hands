@@ -2,7 +2,6 @@
 that is hookconfig's table and nothing else."""
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -12,10 +11,8 @@ from hands.core.effects import AllowWith, Allow, Deny, Withdraw
 from hands.core.reducer import UNTOLD
 from hands.sessions.hookconfig import (
     HOOKS_FILE,
-    LAUNCHER,
     PERMISSION_DEADLINE_SECONDS,
     PERMISSION_HOOK_TIMEOUT_SECONDS,
-    PLUGIN_DIR,
     PLUGIN_ID,
     POST_TIMEOUT_SECONDS,
     STOP_HOLD_SECONDS,
@@ -25,8 +22,9 @@ from hands.sessions.hookconfig import (
     rendered,
 )
 from hands.sessions.hooks import hook_output
+from hands.sessions.marketplace import PACKAGED
 
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent / PLUGIN_DIR
+REPOSITORY = Path(__file__).resolve().parent.parent
 
 
 def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_and_tool_hooks_run_in_the_background() -> None:
@@ -46,18 +44,14 @@ def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_and_tool_
 
 def test_the_checked_in_hooks_json_is_what_hookconfig_declares() -> None:
     # [LAW:one-source-of-truth] hooks.json is generated from hookconfig; a hand edit, or a change to hookconfig not
-    # regenerated with `python -m hands.sessions.hookconfig > plugin/hooks/hooks.json`, fails here.
-    assert (PLUGIN_ROOT / HOOKS_FILE).read_text(encoding="utf-8") == rendered()
+    # regenerated with `python -m hands.sessions.hookconfig > src/hands/sessions/plugin/hooks/hooks.json`, fails here.
+    assert (PACKAGED / HOOKS_FILE).read_text(encoding="utf-8") == rendered()
 
 
 def test_the_module_prints_the_hooks_json() -> None:
     printed = subprocess.run([sys.executable, "-m", "hands.sessions.hookconfig"], capture_output=True, text=True, check=True)
     assert printed.stdout == rendered()
     assert set(json.loads(printed.stdout)["hooks"]) == {*SUBSCRIBED, "MessageDisplay"}
-
-
-def test_the_launcher_every_hook_names_is_in_the_plugin_and_runnable() -> None:
-    assert os.access(PLUGIN_ROOT / LAUNCHER, os.X_OK)
 
 
 def test_the_shim_waits_as_long_as_claude_code_lets_the_hook_and_the_daemon_denies_before_that() -> None:
@@ -79,8 +73,8 @@ def test_a_reply_is_printed_in_the_shape_claude_code_reads() -> None:
     assert hook_output(AllowWith(answered)) == {"hookSpecificOutput": {**decided, "decision": {"behavior": "allow", "updatedInput": answered}}}
 
 
-def test_the_plugin_id_is_the_plugin_s_name_at_the_marketplace_s() -> None:
-    marketplace = json.loads((PLUGIN_ROOT.parent / ".claude-plugin" / "marketplace.json").read_text())
-    plugin = json.loads((PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text())
+def test_the_plugin_id_is_the_plugin_s_name_at_the_marketplace_s_and_the_installed_hands_prints_the_plugin() -> None:
+    marketplace = json.loads((REPOSITORY / ".claude-plugin" / "marketplace.json").read_text())
+    plugin = json.loads((PACKAGED / ".claude-plugin" / "plugin.json").read_text())
     assert f"{plugin['name']}@{marketplace['name']}" == PLUGIN_ID
-    assert [entry["source"] for entry in marketplace["plugins"] if entry["name"] == plugin["name"]] == [f"./{PLUGIN_DIR}"]
+    assert [entry["source"] for entry in marketplace["plugins"] if entry["name"] == plugin["name"]] == [{"source": "command", "command": "hands plugin"}]
