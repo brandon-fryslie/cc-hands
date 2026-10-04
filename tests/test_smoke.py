@@ -16,76 +16,88 @@ from typing import Any
 import numpy as np
 import pytest
 
-from hands.core.session import SessionId
+from hands.core.effects import Summarise, Text, Type
+from hands.core.session import PromptId, PromptText, SessionId
+from hands.core.trace import Span
 from hands.daemon.cli import main
 from hands.daemon.smoke import FOLDER, QUIET_SECS, SESSION_GIVEN, WORDS, Caller, Ear, Line, NotReached, as_from_a_terminal, joined, parsed, proof
 from hands.sessions import heartbeat
-from hands.sessions.audit import segment
+from hands.sessions.audit import HoldHeard, Typing, TypingFailed, Unsaid, encoded, segment
 from hands.sessions.home import Home
+from hands.sessions.wide import Fact, Outcome, WideEvent
 
 SESSION = SessionId("5086f176-e3cf-4222-bdb9-d7993c507d33")
 OTHER = SessionId("33a1f45e-fc95-41ca-98d0-a9310ab422fe")
 SPAN = "e5fe41d042769d03"
 
 
+def as_logged(record: object) -> Line:
+    """`record` as the audit log holds it: the daemon's own encoding, so a field renamed there is renamed here."""
+    return encoded(record)
+
+
 def typing(session: SessionId, span: str = SPAN) -> Line:
-    return {
-        "type": "Typing",
-        "effect": {"type": "Type", "session": session, "socket": "/tmp/f/session.sock", "pid": 7, "input": {"type": "Text", "prompt": "Reply with the file."}},
-        "span": {"type": "Span", "trace_id": "t", "span_id": span, "parent_id": None},
-    }
+    effect = Type(session, Path("/tmp/f/session.sock"), 7, Text(PromptText("Reply with the file.")))
+    return as_logged(Typing(effect, Span("t", span, None)))
+
+
+def event(name: str, span: str = "s", outcome: Outcome = "ok", error: str | None = None, **facts: Fact) -> Line:
+    return as_logged(WideEvent(name, "t", span, None, datetime.now(UTC), 1.0, outcome, error, (), {}, facts))
 
 
 def ended(span: str = SPAN) -> Line:
-    return {"type": "WideEvent", "event": "tool.run", "span_id": span, "outcome": "ok"}
+    return event("tool.run", span)
+
+
+def hook(name: str, session: SessionId) -> Line:
+    return event("hook", hook=name, session=session)
 
 
 def stop(session: SessionId) -> Line:
-    return {"type": "WideEvent", "event": "hook", "span_id": "s", "facts": {"hook": "Stop", "session": session}}
+    return hook("Stop", session)
 
 
 def test_a_hold_is_heard_once_whisper_took_words_from_it() -> None:
-    words: Line = {"type": "HoldHeard", "hold": 2, "said": "tell the smoke session", "dropped": []}
     assert proof("heard", [], SESSION) is None
-    assert proof("heard", [words], SESSION) == "heard 'tell the smoke session'"
+    assert proof("heard", [as_logged(HoldHeard(2, "tell the smoke session", ()))], SESSION) == "heard 'tell the smoke session'"
 
 
 def test_a_hold_whisper_took_no_words_from_is_never_heard_and_says_so() -> None:
-    nothing: Line = {"type": "HoldHeard", "hold": 1, "said": None, "dropped": [{"type": "Unsaid", "text": "Thank you."}]}
+    nothing = as_logged(HoldHeard(1, None, (Unsaid("Thank you.", 2.9, -1.2),)))
     with pytest.raises(NotReached) as raised:
         proof("heard", [nothing], SESSION)
     assert (raised.value.stage, raised.value.why) == ("heard", "Whisper took no words from the hold; it dropped 1 segment(s)")
 
 
-def utterance(session: SessionId, delivered: Line, outcome: str = "ok", error: str | None = None) -> Line:
-    heard = {"type": "Summarise", "session": session, "turn": "8dc206d5-ceb8-4cf1-887e-e00c5c57a55c", "closing": "falcon.txt"}
-    return {"type": "WideEvent", "event": "utterance", "outcome": outcome, "error": error, "facts": {"session": session, "heard": heard, "delivered": delivered}}
+def utterance(session: SessionId, fate: str, outcome: Outcome = "ok", error: str | None = None) -> Line:
+    heard = Summarise(session, PromptId("8dc206d5-ceb8-4cf1-887e-e00c5c57a55c"), "falcon.txt")
+    return event("utterance", outcome=outcome, error=error, session=session, heard=heard, fate=fate)
 
 
-def test_the_session_s_turn_told_unasked_is_told_once_the_reply_after_its_refocus_was_said() -> None:
-    def refocused(session: SessionId) -> Line:
-        return {"type": "Refocused", "session": session, "outcome": "moved", "failed": None}
-
-    replied: Line = {"type": "Replied", "text": "It said falcon.", "interrupted": False}
-    spoken = utterance(SESSION, {"type": "Spoken", "amount": "full", "why": "finished"})
-    # Said before the telling was taken, or the telling of another session: not this telling.
-    assert proof("told", [replied, stop(SESSION), spoken, refocused(OTHER), replied], SESSION) is None
-    # Refocused is written as the telling is taken, before it is said.
-    assert proof("told", [spoken, refocused(SESSION)], SESSION) is None
-    assert proof("told", [spoken, refocused(SESSION), replied], SESSION) == f"hands told the user of session {SESSION}'s turn: 'It said falcon.'"
+def test_the_session_s_turn_is_settled_once_its_utterance_is_held_or_played_to_its_end() -> None:
+    assert proof("told", [stop(SESSION), utterance(OTHER, "played")], SESSION) is None
+    assert proof("told", [utterance(SESSION, "noted")], SESSION) == f"hands' telling of session {SESSION}'s turn: noted"
+    assert proof("told", [utterance(SESSION, "played")], SESSION) == f"hands' telling of session {SESSION}'s turn: played"
 
 
-def test_the_session_s_turn_held_until_asked_needs_no_telling_waited_for() -> None:
-    held = {"type": "Withheld", "why": "off"}
-    assert proof("told", [utterance(OTHER, held)], SESSION) is None
-    assert proof("told", [utterance(SESSION, held)], SESSION) == f"hands holds session {SESSION}'s turn until asked (off)"
+def test_a_telling_cut_off_is_never_settled_and_says_so() -> None:
+    with pytest.raises(NotReached) as raised:
+        proof("told", [utterance(SESSION, "cut")], SESSION)
+    assert (raised.value.stage, raised.value.why) == ("told", f"hands' telling of session {SESSION}'s turn was cut off before the question was asked")
 
 
 def test_a_turn_hands_could_not_read_is_never_told_and_says_why() -> None:
-    failed = utterance(SESSION, {"type": "Spoken", "amount": "full", "why": "finished"}, "failed", "the turn could not be read: OSError: gone")
+    failed = utterance(SESSION, "played", "failed", "the turn could not be read: OSError: gone")
     with pytest.raises(NotReached) as raised:
         proof("told", [failed], SESSION)
     assert (raised.value.stage, raised.value.why) == ("told", f"hands could not tell session {SESSION}'s turn: the turn could not be read: OSError: gone")
+
+
+def test_a_session_that_asks_permission_never_finishes_and_says_so() -> None:
+    assert proof("finished", [hook("PermissionRequest", OTHER)], SESSION) is None
+    with pytest.raises(NotReached) as raised:
+        proof("finished", [hook("PermissionRequest", SESSION)], SESSION)
+    assert raised.value.stage == "finished" and raised.value.why.startswith(f"session {SESSION} asked permission to use a tool")
 
 
 def test_a_send_is_typed_only_once_the_unit_that_typed_it_has_ended() -> None:
@@ -96,7 +108,8 @@ def test_a_send_is_typed_only_once_the_unit_that_typed_it_has_ended() -> None:
 
 
 def test_a_send_that_failed_is_never_typed_and_says_why() -> None:
-    failed: Line = {"type": "TypingFailed", "effect": typing(SESSION)["effect"], "reason": "this socket types into process 45443"}
+    effect = Type(SESSION, Path("/tmp/f/session.sock"), 7, Text(PromptText("Reply with the file.")))
+    failed = as_logged(TypingFailed(effect, "this socket types into process 45443"))
     with pytest.raises(NotReached) as raised:
         proof("typed", [typing(SESSION), failed, ended()], SESSION)
     assert (raised.value.stage, raised.value.why) == ("typed", f"hands could not type into session {SESSION}: this socket types into process 45443")
@@ -210,4 +223,4 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     facts = command["facts"]
     assert facts["word"] in WORDS and facts["folder"] == str((home.root / FOLDER).resolve())
     assert (facts["reached"], facts["failed_at"], facts["why"], facts["daemon_errors"]) == ("up", "joined", "there is no `claude` on PATH", [])
-    assert isinstance(facts["up_ms"], int) and "joined_ms" not in facts
+    assert isinstance(facts["up_ms"], int) and facts["up"].startswith(f"hands is up: pid {os.getpid()}") and "joined_ms" not in facts

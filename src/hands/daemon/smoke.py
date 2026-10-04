@@ -130,10 +130,9 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
     line shows it never will be."""
     # [LAW:dataflow-not-control-flow] one reading per stage, of the records the daemon writes as it reaches it, in order.
     # A send's Typing line is written before it is typed: it was typed once the unit of work that typed it has ended
-    # with no TypingFailed line for it. A telling's Refocused line is written as it is taken, before it is said: it was
-    # said once the reply that follows it is, which is recorded once it has been played.
+    # with no TypingFailed line for it. A finished turn's utterance event is written once its fate is settled: held until
+    # asked, or told to its end or cut off, as read off the output transport.
     sending: tuple[str, str] | None = None
-    telling = False
     for line in lines:
         match stage, line:
             case "heard", {"type": "HoldHeard", "said": str(said)}:
@@ -148,15 +147,14 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
                 return f"typed {sending[1]!r} into session {session}"
             case "finished", {"type": "WideEvent", "event": "hook", "facts": {"hook": "Stop", "session": str(stopped)}} if stopped == session:
                 return f"session {session} finished its turn"
-            # How the finished turn reaches the user, which hands decides at once: held until asked, or told unasked.
+            case "finished", {"type": "WideEvent", "event": "hook", "facts": {"hook": "PermissionRequest", "session": str(asking)}} if asking == session:
+                raise NotReached("finished", f"session {session} asked permission to use a tool, which nothing in the test answers; allow it in the user's Claude Code settings")
             case "told", {"type": "WideEvent", "event": "utterance", "outcome": "failed", "error": str(error), "facts": {"session": str(told), "heard": {"type": "Summarise"}}} if told == session:
                 raise NotReached("told", f"hands could not tell session {session}'s turn: {error}")
-            case "told", {"type": "WideEvent", "event": "utterance", "facts": {"session": str(told), "heard": {"type": "Summarise"}, "delivered": {"type": "Withheld", "why": str(why)}}} if told == session:
-                return f"hands holds session {session}'s turn until asked ({why})"
-            case "told", {"type": "Refocused", "session": str(told)} if told == session:
-                telling = True
-            case "told", {"type": "Replied", "text": str(text)} if telling:
-                return f"hands told the user of session {session}'s turn: {text!r}"
+            case "told", {"type": "WideEvent", "event": "utterance", "facts": {"session": str(told), "heard": {"type": "Summarise"}, "fate": "cut"}} if told == session:
+                raise NotReached("told", f"hands' telling of session {session}'s turn was cut off before the question was asked")
+            case "told", {"type": "WideEvent", "event": "utterance", "facts": {"session": str(told), "heard": {"type": "Summarise"}, "fate": str(fate)}} if told == session:
+                return f"hands' telling of session {session}'s turn: {fate}"
             case _:
                 pass
     return None
@@ -316,8 +314,8 @@ class Run:
         return len(self.lines)
 
     def reached(self, stage: Stage, shown: str) -> None:
-        # [LAW:nothing-unseen] when each stage was reached, from the start of the run, on the command's event.
-        annotate(**{f"{stage}_ms": round((time.monotonic() - self.began) * 1000), "reached": stage})
+        # [LAW:nothing-unseen] when each stage was reached, from the start of the run, and what showed it, on the command's event.
+        annotate(**{f"{stage}_ms": round((time.monotonic() - self.began) * 1000), stage: shown, "reached": stage})
         print(f"ok {stage}: {shown}", flush=True)
 
 
@@ -373,7 +371,11 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
         raise NotReached("joined", "there is no `claude` on PATH")
     said = [await _synthesized(text) for text in SAID]
     # The folder holds the one file, named for this run's word, and nothing else.
-    shutil.rmtree(folder, ignore_errors=True)
+    try:
+        shutil.rmtree(folder)
+    except FileNotFoundError:
+        # The first run on this home: there is no folder to empty.
+        pass
     folder.mkdir(parents=True)
     (folder / f"{smoked.word}.txt").write_text("")
     before = frozenset(path.stem for path in home.memberships.glob("*.json"))
@@ -428,7 +430,7 @@ async def _called(home: Home, caller: Caller) -> None:
     try:
         # hands' own certificate, which names 127.0.0.1, is the one authority this call trusts.
         trusted = ssl.create_default_context(cafile=home.phone / "own.crt")
-        async with aiohttp.ClientSession() as client, client.post(
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=CALL_SECONDS)) as client, client.post(
             f"https://127.0.0.1:{PHONE_PORT}/offer",
             json={"sdp": caller.peer.localDescription.sdp, "type": "offer", "rate": RATE},
             headers={"Authorization": f"Bearer {phone_key(home)}"},
@@ -458,6 +460,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
 
     def logged(stage: Logged, since: int, what: str) -> Callable[[], Awaitable[str]]:
         async def found() -> str | None:
+            caller.up(stage)
             smoked.read()
             return proof(stage, smoked.lines[since:], session)
 
@@ -495,10 +498,11 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
         return True if caller.ear.last_voiced is None or loop.time() - caller.ear.last_voiced >= QUIET_SECS else None
 
     # [LAW:no-ambient-temporal-coupling] hands may tell the user of the session's finished turn unasked; the question waits
-    # for the record that it was held or has been told, then for its speech to end, so the question cuts nothing off and
-    # is what is answered.
-    held_or_told = await logged("told", since, f"telling of session {session}'s turn, nor its holding (utterance, Refocused)")()
-    print(f"   {held_or_told}", flush=True)
+    # for that telling's fate to be settled, held or played to its end, then for the call to go quiet, so the question
+    # cuts nothing off and is what is answered.
+    telling = await logged("told", since, f"settled telling of session {session}'s turn (utterance)")()
+    annotate(telling=telling)
+    print(f"   {telling}", flush=True)
     await until("told", TURN_SECONDS, quiet, lambda: "hands never stopped speaking after telling of the session's turn")
 
     # The question: what the session said, told back aloud.
