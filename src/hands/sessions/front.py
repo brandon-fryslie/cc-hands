@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from Foundation import NSAppleScript
+from loguru import logger
 
 from hands.core.front import Candidate, FrontUnread, InFront, Screen, in_front
 from hands.core.session import SessionId
@@ -67,6 +68,11 @@ async def read_front(sessions: Mapping[SessionId, tuple[int, str]], environment:
         return FrontUnread(str(unread))
     except (OSError, TimeoutError) as error:
         # [LAW:no-silent-failure] the turn goes without the fact, and the turn's record says why it was left out.
+        return FrontUnread(f"{type(error).__name__}: {error}")
+    except Exception as error:
+        # [LAW:no-silent-failure] a read broken by a fault of its own is logged with where, and recorded the same: the
+        # screen is a fact the turn can go without, never one that ends the brain's turns.
+        logger.opt(exception=error).error("reading what is in front broke")
         return FrontUnread(f"{type(error).__name__}: {error}")
     candidates = [Candidate(session, name, frozenset(_terminals(pid, processes))) for session, (pid, name) in sessions.items()]
     return in_front(screen, panes, candidates)
