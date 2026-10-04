@@ -59,7 +59,7 @@ from hands.sessions.tap import moves, serve_tap
 from hands.sessions.overlays import Overlays
 from hands.sessions.attention import attention
 from hands.voice.devices import follow_default_devices
-from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues, keep_cueing
+from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
 from hands.voice.hold import Move
 from hands.voice.keys import drive_quit, drive_talk_key
 from hands.voice.phonepage import serve_phone
@@ -96,7 +96,7 @@ from hands.voice.player import Player
 from hands.voice import voices
 from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
-from hands.voice.tools import Tool, audited, cued, intermediary_tools
+from hands.voice.tools import Tool, audited, intermediary_tools
 from hands.brain.mcp import serve_mcp
 from hands.brain.asides import Asides
 from hands.brain.process import Brain, Launch, NotLoggedIn, Station, Unstartable, account_kept_out, logged_in, start as start_brain, workdir
@@ -346,7 +346,7 @@ async def run(
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues()
-        tools = [audited(cued(tool, lambda: quiet_cues.owe(WORKING)), record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch)]
+        tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, lambda: quiet_cues.owe(WORKING))]
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, record), heart, sessions.live_count, quit_event)
         if config is not None:
@@ -428,7 +428,6 @@ async def converse(
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
         asyncio.create_task(relay(sessions, voice.worker.queue_frame, record, partial(attending, home, overlays, lambda: attention(home)), lambda progress, amount: playing.put_nowait((progress, amount)), lambda: quiet_cues.owe(WORKING)), name="the session speech relay"),
-        asyncio.create_task(keep_cueing(quiet_cues, voice.audio.output(), record), name="the cues for silence"),
         asyncio.create_task(
             keep_playing(playing, sessions.live_session, voice.worker.queue_frame, record, minded.summariser(EXPLAIN_INSTRUCTION, EXPLAIN_MAX_TOKENS, EXPLAIN_TIMEOUT_SECONDS)),
             name="the progress player",
@@ -484,6 +483,14 @@ async def converse(
         finally:
             await voice.phone.stop()
 
+    async def cue_silence_once_started() -> None:
+        # As for the talk key: a cue is played on a stream the pipeline has opened, so what is owed before then waits.
+        await pipeline.started.wait()
+        await quiet_cues.keep_playing(voice.audio.output(), record)
+
+    cueing = asyncio.create_task(cue_silence_once_started(), name="the cues for silence")
+    cueing.add_done_callback(stop_if_failed)
+    background.append(cueing)
     talk_key = asyncio.create_task(drive_talk_key_once_started(), name="the talk key")
     talk_key.add_done_callback(stop_if_failed)
     background.append(talk_key)

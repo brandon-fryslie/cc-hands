@@ -389,14 +389,19 @@ class Yielded:
     waited: float
 
 
+# Where a cue went: the phone, the desk's speaker, or nowhere, with no desk speaker attached to play it on.
+Played = Literal["phone", "desk", "unattached"]
+
+
 @dataclass(frozen=True)
 class Cued:
-    """A cue for silence played: its line, how many cues like it were folded into this one playing, and how long the
-    first of them waited, for hands to stop speaking among other things, from being owed to being played."""
+    """A cue for silence handed to the speaker: its line, how many times it was owed since it last played, how long
+    the first of those was held, by speech or by its spacing, and where it went."""
 
     line: str
     folded: int
     waited: float
+    played: Played
 
 
 @dataclass(frozen=True)

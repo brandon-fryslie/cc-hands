@@ -29,11 +29,11 @@ from collections.abc import Awaitable, Callable
 from functools import partial
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 import pyaudio
 from loguru import logger
-from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, OutputAudioRawFrame, StartFrame
+from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, OutputAudioRawFrame, StartFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
@@ -47,7 +47,7 @@ from pipecat.transports.local.audio import (
 
 from hands.voice.coreaudio import DefaultDevices, default_devices
 from hands.voice.cues import Cue, sound
-from hands.sessions.audit import Record
+from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, count, unit
 from hands.voice.echo import COUNTS, Echo, EchoCanceller
 from hands.voice.phone import Phone
@@ -148,7 +148,9 @@ class Speaker(LocalAudioOutputTransport):
         self.opened: Output | None = None
         # Set while a stream is attached; a write waits on it through a reopen.
         self._attached = asyncio.Event()
-        # Set while hands is not speaking, as Pipecat's own sender says it started and stopped: a cue for silence waits on it.
+        # Who is speaking, as the frames passing out of the pipeline say: hands as its sender starts and stops, the user
+        # as a turn opens and closes. Quiet is set while it is nobody, and a cue for silence waits on it.
+        self._speaking: set[Literal["hands", "user"]] = set()
         self.quiet = asyncio.Event()
         self.quiet.set()
 
@@ -205,14 +207,23 @@ class Speaker(LocalAudioOutputTransport):
         await _let_go_at_cleanup(self._out_stream, self.let_go, self._attached.clear)
 
     async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
-        # [LAW:one-source-of-truth] the sender pushes both edges of hands' speech through here, and an interruption stops it.
+        # [LAW:one-source-of-truth] the sender pushes both edges of hands' speech through here, an interruption stops it,
+        # and the user's turn edges pass through on their way out.
         match frame:
             case BotStartedSpeakingFrame():
-                self.quiet.clear()
+                self._speaking.add("hands")
             case BotStoppedSpeakingFrame():
-                self.quiet.set()
+                self._speaking.discard("hands")
+            case UserStartedSpeakingFrame():
+                self._speaking.add("user")
+            case UserStoppedSpeakingFrame():
+                self._speaking.discard("user")
             case _:
                 pass
+        if self._speaking:
+            self.quiet.clear()
+        else:
+            self.quiet.set()
         await super().push_frame(frame, direction)
 
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
@@ -246,7 +257,7 @@ class Speaker(LocalAudioOutputTransport):
         await self._writes.run(write)
         return True
 
-    def cue(self, cue: Cue) -> None:
+    def cue(self, cue: Cue) -> Played:
         """Hand a turn's cue to the stream attached now, ahead of the pipeline's next chunk, and not wait for it to play.
 
         [LAW:no-ambient-temporal-coupling] the talk key's edge calls this, and the key's next move never waits on the
@@ -261,8 +272,10 @@ class Speaker(LocalAudioOutputTransport):
                 self.sounded_at = self._clock()
                 # Not waited for, as a cue given to the desk's writer thread is not.
                 self._phone.play(sound(cue, self.sample_rate, 1))
+                return "phone"
             case "desk", False:
                 logger.warning(f"no speaker is attached; the tone for {cue.line!r} is not played")
+                return "unattached"
             case "desk", True:
                 stream, echo = cast(Playback, self._out_stream), self._echo
                 audio = sound(cue, self.sample_rate, self._params.audio_out_channels)
@@ -274,6 +287,7 @@ class Speaker(LocalAudioOutputTransport):
                     stream.write(audio)
 
                 self._writes.give(write)
+                return "desk"
 
 
 class KeyedMicrophone(LocalAudioInputTransport):

@@ -134,8 +134,8 @@ async def relay(
     sessions: Sessions, queue_frame: Callable[[Frame], Awaitable[None]], record: Record, attending: Attending, play: Callable[[Progress, Amount], None], working: Callable[[], None]
 ) -> None:
     """Hand what the sessions say to the floor, in the order it was decided, until cancelled; progress to be played is
-    handed to `play`, since text in it waits on a summary, and what a session asks never waits behind that. Progress of
-    the session in focus is told to `working` as it comes, whatever is said of it: another session's makes no sound."""
+    handed to `play`, since text in it waits on a summary, and what a session asks never waits behind that. Progress that
+    is heard is told to `working` as it comes, ahead of its summary: progress only noted makes no sound."""
     while True:
         heard = await sessions.heard()
         record(Relayed(heard))
@@ -145,16 +145,15 @@ async def relay(
                 route = progress_route(attention, focused, overlay)
                 # [LAW:nothing-unseen] which way progress went, and what decided it.
                 record(Routed(session, attention, focused, overlay, route))
-                if focused:
-                    working()
-                _routed(route, heard, play)
+                _routed(route, heard, play, working)
             case Speak() | Narrate() | Note():
                 await queue_frame(Unprompted(heard))
 
 
-def _routed(route: Route, progress: Progress, play: Callable[[Progress, Amount], None]) -> None:
+def _routed(route: Route, progress: Progress, play: Callable[[Progress, Amount], None], working: Callable[[], None]) -> None:
     match route:
         case "brief" | "full":
+            working()
             play(progress, route)
         case "note":
             # [LAW:one-source-of-truth] the session listing says what a working session last set out to do, for either
