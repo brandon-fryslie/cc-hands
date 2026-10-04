@@ -4,12 +4,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from hands.core.sentences import cut
-from hands.core.effects import SessionGone, Summarise
-from hands.core.events import Joined
+from hands.core.effects import Effect, SessionGone, Summarise
+from hands.core.events import Joined, Tick
 from hands.core.session import Membership, PromptId, SessionId
-from hands.sessions.audit import Announced, AuditLog, EffectFailed, Entry, Performed, Replied, Transcribed
+from hands.sessions.audit import Announced, AuditLog, Entry, Replied, Transcribed
 from hands.sessions.home import Home
-from hands.sessions.registry import Sessions
+from hands.sessions.registry import Performed, Sessions
 from hands.sessions.wide import WideEvent
 from hands.voice.tools import Called, CATCH_UP_CLOSINGS, CATCH_UP_LEAST, audited, catch_up_tool
 
@@ -21,12 +21,18 @@ def member(name: str) -> Membership:
     return Membership(SessionId(name), pid=len(name), cwd=Path("/code") / name, transcript=Path(f"/nowhere/{name}.jsonl"))
 
 
-def told(session: str, prompt: str, closing: str | None) -> Performed:
-    return Performed(Summarise(SessionId(session), PromptId(prompt), closing))
+def applied(effect: Effect, failed: str | None = None) -> WideEvent:
+    """The event of the registry applying what called for `effect`, which was performed, or failed with `failed`."""
+    done = Performed(effect, "ok", 0.5, None) if failed is None else Performed(effect, "failed", 0.5, failed)
+    return WideEvent("applied", "e" * 32, "f" * 16, None, LEFT, 1.0, "ok" if failed is None else "failed", failed, (), {}, {"applied": Tick(0.0), "effects": (done,)})
 
 
-def gone(session: str) -> Performed:
-    return Performed(SessionGone(SessionId(session)))
+def told(session: str, prompt: str, closing: str | None) -> WideEvent:
+    return applied(Summarise(SessionId(session), PromptId(prompt), closing))
+
+
+def gone(session: str) -> WideEvent:
+    return applied(SessionGone(SessionId(session)))
 
 
 def written(home: Home, lines: list[tuple[datetime, Entry]]) -> None:
@@ -63,7 +69,7 @@ async def test_what_did_i_miss_after_ten_minutes_lists_every_session_that_finish
             (LEFT + timedelta(minutes=2), told("parser", "p1", "Parser fixed, tests pass.")),
             (LEFT + timedelta(minutes=3), Announced("hands could not reach the model.", "speech")),
             # A turn whose telling could not be begun still finished.
-            (LEFT + timedelta(minutes=4), EffectFailed(Summarise(SessionId("docs"), PromptId("d2"), None), "the model is down")),
+            (LEFT + timedelta(minutes=4), applied(Summarise(SessionId("docs"), PromptId("d2"), None), "the model is down")),
             (LEFT + timedelta(minutes=5), Announced("hands could not reach the model.", "speech")),
             (LEFT + timedelta(minutes=6), told("deploy", "x1", "Deployed.")),
             (LEFT + timedelta(minutes=8), gone("scratch")),

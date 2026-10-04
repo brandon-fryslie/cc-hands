@@ -1788,10 +1788,12 @@ thing that failed `[LAW:no-silent-failure]`:
    newest lines and follows the log across a roll without losing one. Each line is a value encoded one way: its type
    under `"type"`, its fields beside it, nested events and effects alike, and the
    wall-clock time under `"at"`. `Sessions` is the single writer for the session
-   side: an `Applied` event (only one that changed the registry or called for an
-   effect, so a quiet tick is not a line), each `Audit` record as it is (`Unregistered`,
-   `AfterEnd`), then `Performed` or
-   `EffectFailed` for every other effect. One wrapper makes every tool call a
+   side: one `applied` wide event for each event or voice answer the registry applies
+   (only one that changed the registry or called for an effect, so a quiet tick is not
+   a line), open until its effects are performed, carrying what was applied, each
+   effect as a `Performed` with its outcome and time (`Audit` records such as
+   `Unregistered` among them), and the effects counted by kind; applied inside a hook
+   post, it is that post's child. One wrapper makes every tool call a
    `tool.run` wide event with its arguments and the result the model was handed, and,
    called in a voice turn, the child of that turn's `tool.call` span; the context
    aggregators write each user turn as `Transcribed` and each reply as `Replied`;
