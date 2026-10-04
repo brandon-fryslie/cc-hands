@@ -32,7 +32,6 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregator,
-    LLMContextAggregatorPair,
     LLMUserAggregator,
     LLMUserAggregatorParams,
 )
@@ -59,7 +58,7 @@ from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.tool import Tool
 from hands.voice.tools import RunsReplies, context_tools
 from hands.voice.turnstop import KeyTurnStop
-from hands.voice import voices
+from hands.voice import conversation, voices
 from hands.voice.whisper import Whisper
 from hands.voice.backends import AnthropicBackend, LLMBackend, OpenAICompatibleBackend
 
@@ -221,15 +220,14 @@ def build_voice(
         stop=[KeyTurnStop()],
     )
     context = LLMContext(tools=context_tools(tools, player.lines, llm))
-    pair = LLMContextAggregatorPair(
+    user_aggregator, assistant_aggregator = conversation.turns(
         context,
         # [LAW:single-enforcer] the key's holds alone end a user turn. Pipecat's aggregator also ends one itself after
         # this long with no speech and no transcript, which a slow or queued transcription outlasts: the turn would end
         # empty and the hold's words go out with the next one. Whisper resolves every hold it opens, heard or not or
         # failed, and fails one it cannot transcribe within TRANSCRIBING_SECONDS, so every turn ends.
-        user_params=LLMUserAggregatorParams(user_turn_strategies=turns, user_turn_stop_timeout=math.inf),
+        LLMUserAggregatorParams(user_turn_strategies=turns, user_turn_stop_timeout=math.inf),
     )
-    user_aggregator, assistant_aggregator = pair.user(), pair.assistant()
 
     # The floor ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
     # context or the model's stage takes it, and follows the user's words when given back.

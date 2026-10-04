@@ -71,7 +71,7 @@ from hands.sessions.wide import annotate, child, continuing, count, fail, here, 
 from hands.voice.player import Mark
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
-from hands.voice.speech import Aloud, Narrated, as_a_turn, brain_asks
+from hands.voice.speech import Aloud, Narrated, brain_asks
 from hands.voice.utterance import Resumed, Utterance, Uttered, Uttering, uttering
 from hands.voice.tool import Result, Tool, silent, whole
 
@@ -327,7 +327,7 @@ class BrainStage(FrameProcessor):
                     await self.push_frame(Uttered(utterances))
                 case Aloud(spoken=spoken, utterances=utterances):
                     # In hands' lane no turn of the brain's is under way.
-                    for frame in uttering(utterances, as_a_turn(spoken)):
+                    for frame in uttering(utterances, (spoken,)):
                         await self.push_frame(frame)
 
     async def _read_front(self, modality: Modality, opened: Edge) -> UserAsked:
@@ -388,8 +388,7 @@ class BrainStage(FrameProcessor):
             await asyncio.wait({turn.speaking})
             for readback in turn.readbacks:
                 # Said by hands, since the model that would have said it was not asked to go on.
-                for frame in as_a_turn(TTSSpeakFrame(readback)):
-                    await self.push_frame(frame)
+                await self.push_frame(TTSSpeakFrame(readback))
         finally:
             # [LAW:nothing-unseen] what the turn did is on its event however it ended, a turn cancelled mid-way included.
             self._account(turn, asker, arrived, released, taken, ended)
@@ -473,8 +472,7 @@ class BrainStage(FrameProcessor):
                     # Said by hands, as its own sentence once the brain's words before it are: the response so far ends
                     # first, so what TTS holds of it is said ahead of the question.
                     await self.push_frame(LLMFullResponseEndFrame())
-                    for frame in as_a_turn(TTSSpeakFrame(brain_asks(permission))):
-                        await self.push_frame(frame)
+                    await self.push_frame(TTSSpeakFrame(brain_asks(permission)))
                     # [LAW:no-ambient-temporal-coupling] answerable once the speaker has played it to its end, which the
                     # mark is told of, and never if a barge-in cut it off.
                     await self.push_frame(Mark(partial(turn.hear, asked)))

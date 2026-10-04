@@ -1970,7 +1970,11 @@ thing that failed `[LAW:no-silent-failure]`:
    post, it is that post's child, and a unit an effect opens is its own. One wrapper makes every tool call a
    `tool.run` wide event with its arguments and the result the model was handed, and,
    called in a voice turn, the child of that turn's `tool.call` span; the context
-   aggregators write each user turn as `Transcribed` and each reply as `Replied`;
+   aggregators write each user turn as `Transcribed` and each reply as `Replied`
+   (a line hands says as written and keeps in the context is a `Replied` of its own
+   once it is said, and part of the model's where it is said inside the model's turn,
+   which runs through its calls to the reply that answers them:
+   `hands.voice.conversation.AssistantTurns`);
    the system channel writes `Announced` with whether it spoke or posted; each thing a
    session gives hands to say unasked is an `utterance` wide event, from heard to its fate; and a
    loguru sink turns every error a `hands` module logs into a `Failure`. A dictation is
