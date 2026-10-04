@@ -5,6 +5,7 @@ import pytest
 from hands.voice.hold import Move
 from hands.sessions.audit import Entry, Moved
 from hands.voice.ptt import Gate, Key, PushToTalk
+from hands.voice.tools import modality_tool
 
 LOUD = b"\x7f\x7f" * 160
 QUIET = b"\x00\x00" * 160
@@ -98,3 +99,40 @@ def test_the_other_place_moves_nothing_and_the_gate_says_so() -> None:
     on_the_phone = Gate("down", "phone")
     assert on_the_phone.took("stop", "desk") is None
     assert on_the_phone.took("start", "phone") == "start"
+
+
+def test_the_way_the_user_talks_sets_whether_they_can_see_a_screen() -> None:
+    key = PushToTalk(lambda _: None)
+    assert key.modality == "screen"
+    key.go("phone")  # a call arrives
+    assert key.modality == "audio-only"
+    key.move("start", "desk")  # a turn opened at the desk while the call is up
+    assert key.modality == "screen"
+
+
+def test_a_switch_by_voice_holds_until_the_user_talks_from_the_other_place() -> None:
+    key = PushToTalk(lambda _: None)
+    key.switch("audio-only")
+    # Turns at the place it was switched at keep it.
+    key.move("start", "desk")
+    key.move("stop", "desk")
+    assert key.modality == "audio-only"
+    key.go("phone")
+    key.switch("screen")
+    key.move("start", "phone")
+    assert key.modality == "screen"
+    key.go("desk")
+    assert key.modality == "screen"
+    key.go("phone")
+    assert key.modality == "audio-only"
+
+
+async def test_set_modality_switches_it_says_so_and_refuses_what_is_neither() -> None:
+    key = PushToTalk(lambda _: None)
+    switch = modality_tool(key)
+    assert await switch.body(modality="audio-only") == {"modality": "audio-only", "readback": "Okay, audio only."}
+    assert key.modality == "audio-only"
+    assert await switch.body(modality="screen") == {"modality": "screen", "readback": "Okay, you can see a screen."}
+    assert key.modality == "screen"
+    assert "error" in await switch.body(modality="video")
+    assert key.modality == "screen"

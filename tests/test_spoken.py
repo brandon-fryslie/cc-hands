@@ -32,6 +32,7 @@ from hands.voice.player import Player
 from hands.voice.speech import Pushed
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice import voices
+from hands.voice.ptt import PushToTalk
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
 
@@ -361,6 +362,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         ),
         tools=[],
         llm=FrameProcessor(),
+        key=PushToTalk(lambda _: None),
         player=(player := Player(lambda _: None)),
         floor=Floor(lambda _: None, Pushed(), lambda id: id, dict),
         refocus=Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), Home(tmp_path), lambda _: None),

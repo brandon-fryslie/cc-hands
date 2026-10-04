@@ -1043,6 +1043,12 @@ pane's. A screen hands cannot read (no app in front, a refused or unanswered App
 several sessions under the terminals it shows) is left out of the turn, and the `voice.turn` event's `asker` fact, a
 `UserAsked`, records what was read or why it was not, and how long the read took.
 
+**Screen or audio-only.** Built: the user's turn also tells the brain whether they can see a
+screen (`core/place.py`'s `Modality`), read as their words reach the stage and recorded on
+`UserAsked`. `PushToTalk` owns it with the place: a move to the desk makes it `screen`, a
+move to the phone `audio-only`, and the brain's `set_modality` tool switches it until the
+next move. It is a hint the brain chooses by, never a limit on what hands does.
+
 The rest of this section is planned: step summaries built as steps arrive, and streaming.
 
 **Spoken form.** Built: `core/spoken.py` is a pure function from text to speakable

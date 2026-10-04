@@ -21,6 +21,7 @@ from hands.voice.narrator import Recounts
 from hands.voice.player import Player
 from hands.voice.refocus import Refocus
 from hands.voice.sentences import SummaryStore
+from hands.voice.ptt import PushToTalk
 from hands.voice.tools import Tool, audited, defaulting_to_focus, intermediary_tools, stay_silent_tool
 
 HANDS = SessionId("s-hands")
@@ -36,7 +37,7 @@ async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
 
 def tools(sessions: Sessions, home: Home) -> dict[str, Tool]:
     """The tools as the daemon gives them, focus defaulting and all."""
-    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None))
+    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(lambda _entry: None))
     return {tool.name: tool for tool in given}
 
 

@@ -35,7 +35,7 @@ from hands.sessions.registry import Sessions
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus
 from hands.voice.player import Player
-from hands.voice.ptt import Key, KeyedAudio
+from hands.voice.ptt import Key, KeyedAudio, PushToTalk
 from hands.core.effects import Asking, Narrate, SessionGone
 from hands.core.pending import Finished, News
 from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
@@ -161,6 +161,7 @@ async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator
         built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), whisper_model="unused", voice=voices.DEFAULT),
         tools=[],
         llm=FrameProcessor(),
+        key=PushToTalk(recorded.append),
         player=Player(recorded.append),
         floor=Floor(lambda _: None, Pushed(), lambda id: id, dict),
         refocus=Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append),

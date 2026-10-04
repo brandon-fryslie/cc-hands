@@ -40,6 +40,7 @@ from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.core.front import InFront
+from hands.core.place import Modality
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
 from hands.sessions.audit import LLMChosen, ProxyListening, Record, SettingsRead, TapListening, VoiceChosen, failures_to
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT, PERMISSION_DEADLINE_SECONDS
@@ -93,6 +94,7 @@ from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain
 from hands.voice.player import Player
 from hands.voice import voices
 from hands.sessions.payload import Rejected
+from hands.voice.ptt import PushToTalk
 from hands.voice.tools import Tool, audited, intermediary_tools
 from hands.brain.mcp import serve_mcp
 from hands.brain.asides import Asides
@@ -237,7 +239,7 @@ async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFro
 
 @asynccontextmanager
 async def mind(
-    config: VoiceConfig, tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
+    config: VoiceConfig, tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
     fritter: Path, log: Path, record: Record, environment: Mapping[str, str],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
@@ -260,7 +262,7 @@ async def mind(
                     # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
                     # its own: nothing but the user's turns and their stops is ever typed into the brain.
                     asides = Asides(station, record)
-                    stage = BrainStage(brain, tools, tail, refocus, front, record)
+                    stage = BrainStage(brain, tools, tail, refocus, front, modality, record)
                     keeper = Keeper(brain.session, asides.ask, store, EVERY, record)
                     with wire.joined(Kept(stage, keeper, brain, asides)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
@@ -337,16 +339,19 @@ async def run(
         player = Player(record)
         # [LAW:single-enforcer] one mover of the focus to a session just told of, for the model's stage and tell_turn alike.
         refocus = Refocus(sessions, home, record)
-        tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus)]
+        # [LAW:one-source-of-truth] one owner of where the user is: the voice's edges move it, set_modality switches it,
+        # and the brain's stage reads it.
+        key = PushToTalk(record)
+        tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key)]
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), refocus, proxy.url, wire, store, home.fritter, home.audit, record, environment) as minded:
+            async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, refocus, proxy.url, wire, store, home.fritter, home.audit, record, environment) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(record, minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)
-                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, quit_event)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, key, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, heart, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts)

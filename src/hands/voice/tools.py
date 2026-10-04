@@ -46,8 +46,10 @@ from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
 from hands.sessions import attention as settings
 from hands.core import playback
+from hands.core.place import Modality
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
 from hands.voice.player import Player
+from hands.voice.ptt import PushToTalk
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.refocus import NotRunning, Refocus, move_focus
@@ -254,7 +256,7 @@ def audited(tool: Tool, record: Record) -> Tool:
     return replace(tool, body=call)
 
 
-def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus) -> list[Tool]:
+def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, key: PushToTalk) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them.
 
     [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
@@ -278,6 +280,7 @@ def intermediary_tools(sessions: Sessions, store: SummaryStore, home: Home, reco
         *permission_tools(sessions),
         catch_up_tool(sessions, home, lambda: datetime.now(UTC)),
         attention_tool(home),
+        modality_tool(key),
         *voice_tools(Voices(home, player.lines, fetched)),
         *playback_tools(player),
         stay_silent_tool(),
@@ -901,6 +904,26 @@ def attention_tool(home: Home) -> Tool:
         return {"readback": settings.described(to)}
 
     return tool(attention, completes=True)
+
+
+def modality_tool(key: PushToTalk) -> Tool:
+    async def set_modality(modality: Modality) -> Result:
+        """Take the user as able to see a screen, or as audio-only, from now on.
+
+        Each of their turns says which they are: talking at the Mac starts as screen, and from the phone as audio-only.
+        This switches it until they next talk from the other. It is a hint for choosing what to do, never a limit on what
+        you can do. Call this when the user asks to go audio-only, or back to a screen. Say the returned readback.
+
+        Args:
+            modality: screen, or audio-only.
+        """
+        key.switch(modality)
+        return {"modality": modality, "readback": _MODALITY_READBACKS[modality]}
+
+    return tool(set_modality, completes=True)
+
+
+_MODALITY_READBACKS: dict[Modality, str] = {"screen": "Okay, you can see a screen.", "audio-only": "Okay, audio only."}
 
 
 def voice_tools(voices: Voices) -> list[Tool]:
