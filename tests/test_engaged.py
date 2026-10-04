@@ -20,6 +20,7 @@ from hands.voice.engaged import (
     TurnEnded,
     TurnTooLong,
     drive_engaged,
+    loaded,
     released,
     step,
 )
@@ -42,23 +43,24 @@ def acts(events: Sequence[Event]) -> tuple[Engagement, list[Act]]:
     ("events", "made"),
     [
         # Disengaged, the room opens nothing.
-        ([SpeechStarting(), SpeechStarted(2.0), SpeechStopped(), TurnEnded()], []),
+        ([SpeechStarting(), SpeechStarted(2.0), SpeechStopped(), TurnEnded("verdict")], []),
         # Engaged: speech arms, is confirmed and opens the turn, stops and is judged, and the verdict sends it.
-        ([*HOLD, SpeechStarting(), SpeechStarted(2.0), SpeechStopped(), TurnEnded()], ["listen", "arm", "start", "judge", "stop"]),
+        ([*HOLD, SpeechStarting(), SpeechStarted(2.0), SpeechStopped(), TurnEnded("verdict")], ["listen", "arm", "start", "judge", "stop"]),
         # A pause judged a thought still going holds the turn open; speech goes on in the same turn.
-        ([*HOLD, SpeechStarting(), SpeechStarted(2.0), SpeechStopped(), SpeechStarting(), SpeechStarted(3.0), SpeechStopped(), TurnEnded()], ["listen", "arm", "start", "judge", "judge", "stop"]),
+        ([*HOLD, SpeechStarting(), SpeechStarted(2.0), SpeechStopped(), SpeechStarting(), SpeechStarted(3.0), SpeechStopped(), TurnEnded("verdict")], ["listen", "arm", "start", "judge", "judge", "stop"]),
         # A noise that never became speech disarms, and opens no turn.
         ([*HOLD, SpeechStarting(), SpeechStopped()], ["listen", "arm", "disarm"]),
         # Engaged while already speaking: the turn opens at once.
-        ([*HOLD, SpeechStarted(2.0), SpeechStopped(), TurnEnded()], ["listen", "arm", "start", "judge", "stop"]),
+        ([*HOLD, SpeechStarted(2.0), SpeechStopped(), TurnEnded("verdict")], ["listen", "arm", "start", "judge", "stop"]),
         # Turns follow one another with no key between them.
-        ([*HOLD, SpeechStarted(2.0), TurnEnded(), SpeechStarted(4.0), TurnEnded(), SpeechStarted(6.0), TurnEnded()], ["listen", *["arm", "start", "stop"] * 3]),
+        ([*HOLD, SpeechStarted(2.0), TurnEnded("verdict"), SpeechStarted(4.0), TurnEnded("verdict"), SpeechStarted(6.0), TurnEnded("verdict")], ["listen", *["arm", "start", "stop"] * 3]),
         # A turn open past the limit is thrown away; a limit set for an earlier turn ends nothing.
         ([*HOLD, SpeechStarted(2.0), TurnTooLong(2.0)], ["listen", "arm", "start", "expire"]),
-        ([*HOLD, SpeechStarted(2.0), TurnEnded(), SpeechStarted(4.0), TurnTooLong(2.0)], ["listen", "arm", "start", "stop", "arm", "start"]),
-        # Disengaging stops the desk listening, which sends a turn open; after it, the room opens nothing.
-        ([*HOLD, SpeechStarted(2.0), Pressed(5.0), Ripe(5.0), SpeechStarting(), SpeechStarted(6.0)], ["listen", "arm", "start", "deafen"]),
-        ([*HOLD, SpeechStarting(), Pressed(5.0), Ripe(5.0)], ["listen", "arm", "deafen"]),
+        ([*HOLD, SpeechStarted(2.0), TurnEnded("verdict"), SpeechStarted(4.0), TurnTooLong(2.0)], ["listen", "arm", "start", "stop", "arm", "start"]),
+        # Disengaging sends a turn open and lets go of a start, then stops the desk listening; after it, the room opens
+        # nothing.
+        ([*HOLD, SpeechStarted(2.0), Pressed(5.0), Ripe(5.0), SpeechStarting(), SpeechStarted(6.0)], ["listen", "arm", "start", "stop", "deafen"]),
+        ([*HOLD, SpeechStarting(), Pressed(5.0), Ripe(5.0)], ["listen", "arm", "disarm", "deafen"]),
         # Right Shift typed as Shift, or tapped, neither engages nor disengages.
         ([Pressed(1.0), Typed(), Ripe(1.0), Released(), SpeechStarted(2.0)], []),
         ([Pressed(1.0), Released(), Ripe(1.0), SpeechStarted(2.0)], []),
@@ -80,7 +82,7 @@ def test_a_hold_engages_and_another_disengages() -> None:
     [
         ([], ()),
         ([*HOLD], ("deafen",)),
-        ([*HOLD, SpeechStarting()], ("deafen",)),
+        ([*HOLD, SpeechStarting()], ("disarm", "deafen")),
         ([*HOLD, SpeechStarted(2.0)], ("drop", "deafen")),
     ],
 )
@@ -94,6 +96,8 @@ class ScriptedEars:
     def __init__(self, verdicts: Sequence[bool]) -> None:
         self._verdicts = list(verdicts)
         self.cleared = 0
+        # Set to keep Smart Turn thinking until it is cleared, as audio goes on being heard.
+        self.thinking: asyncio.Event | None = None
 
     async def detect(self, audio: bytes) -> VADState:
         return {b"q": VADState.QUIET, b"s": VADState.STARTING, b"S": VADState.SPEAKING, b"x": VADState.QUIET}[audio]
@@ -103,6 +107,8 @@ class ScriptedEars:
         return audio == b"x"
 
     async def judge(self) -> tuple[bool, TurnMetricsData | None]:
+        if self.thinking is not None:
+            await self.thinking.wait()
         complete = self._verdicts.pop(0)
         return complete, TurnMetricsData(processor="test", is_complete=complete, probability=0.9 if complete else 0.1, e2e_processing_time_ms=40.0)
 
@@ -183,7 +189,7 @@ async def test_three_turns_with_no_key_between_them_then_a_disengage() -> None:
     assert rig.made == ["listen", *["arm", "start", "stop"] * 3, "deafen"]
     engagement = [event for event in rig.events if event.event == "trigger.engaged"]
     assert len(engagement) == 1
-    assert dict(engagement[0].counts) == {"listen": 1, "arm": 3, "disarm": 0, "start": 3, "stop": 3, "expire": 0, "deafen": 1, "held_open": 2}
+    assert dict(engagement[0].counts) == {"listen": 1, "arm": 3, "disarm": 0, "start": 3, "stop": 3, "drop": 0, "expire": 0, "deafen": 1, "held_open": 2, "ended_on_silence": 1}
     judged = [event for event in rig.events if event.event == "trigger.judged"]
     assert [event.facts["complete"] for event in judged] == [False, True, True, False]
     assert all(event.parent_id == engagement[0].span_id for event in judged)
@@ -198,3 +204,29 @@ async def test_a_switch_away_mid_turn_drops_it_and_ends_the_engagement_cancelled
     await stopped(driving)
     assert rig.made == ["listen", "arm", "start", "drop", "deafen"]
     assert [(event.event, event.outcome) for event in rig.events] == [("trigger.engaged", "cancelled")]
+    assert dict(rig.events[0].counts) == {"listen": 1, "arm": 1, "disarm": 0, "start": 1, "stop": 0, "drop": 1, "expire": 0, "deafen": 1, "held_open": 0, "ended_on_silence": 0}
+
+
+async def test_a_verdict_ends_the_turn_it_judged_however_long_smart_turn_thinks() -> None:
+    rig = Rig(verdicts=[True, True])
+    rig.ears.thinking = asyncio.Event()
+    driving = rig.start()
+    await rig.press()
+    # A pause is judged; while Smart Turn thinks, the user speaks again, and the silence after that runs on.
+    await rig.hear(b"s", b"S", b"q")
+    await rig.settle(3)
+    await rig.hear(b"s", b"S", b"q", b"x")
+    for _ in range(20):
+        await asyncio.sleep(0)
+    rig.ears.thinking.set()
+    await rig.settle(6)
+    await stopped(driving)
+    # The first verdict sends the first turn; the speech heard while it was given opens the next, which is judged too.
+    assert rig.made[:7] == ["listen", "arm", "start", "stop", "arm", "start", "stop"]
+
+
+async def test_loading_the_models_is_its_own_unit_of_work() -> None:
+    events: list[WideEvent] = []
+    async with loaded(16000, events.append) as ears:
+        assert await ears.detect(bytes(1024)) == VADState.QUIET
+    assert [(event.event, event.outcome) for event in events] == [("trigger.loaded", "ok")]

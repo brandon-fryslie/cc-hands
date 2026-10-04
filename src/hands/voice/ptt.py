@@ -71,6 +71,9 @@ class Gate:
                 return None
             case True, _, _:
                 return move
+            case False, "start", _ if at == "desk" and self.listens:
+                # The desk's voice opens nothing while the user is on the phone: what the desk hears is the room.
+                return None
             case False, "start", "arming" | "down":
                 return "drop"
             case False, "start", "up" | "listening" | "dropped":
@@ -94,16 +97,13 @@ class Gate:
         match to == self.place, self.key:
             case True, _:
                 return self
-            case False, "arming" | "down":
-                return Gate("dropped", to, self.listens)
-            case False, "dropped":
+            case False, "arming" | "down" | "dropped":
                 return Gate("dropped", to, self.listens)
             case False, "up" | "listening":
                 return Gate(self._rest(to, self.listens), to, self.listens)
 
     def _resting(self, place: Place, listens: bool) -> Key:
-        """The key once the desk starts or stops listening: a turn open is sent, a press arming is let go of, and one
-        thrown away stays thrown away until the next opens."""
+        """The key once the desk starts or stops listening: a turn thrown away stays thrown away until the next opens."""
         match place, self.key:
             case "phone", _:
                 return self.key

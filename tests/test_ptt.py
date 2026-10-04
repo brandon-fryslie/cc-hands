@@ -69,6 +69,16 @@ def test_the_phone_never_listens_between_turns_and_the_desk_does_again_once_hand
     assert engaged_away.moved("desk").key == "listening"
 
 
+@pytest.mark.parametrize("key", ["up", "down"])
+def test_the_room_at_an_engaged_desk_touches_no_call(key: Key) -> None:
+    # Someone talks at the desk while the user is on the phone, between turns or in one.
+    call = Gate(key, "phone", listens=True)
+    assert call.took("start", "desk") is None
+    assert call.after("start", "desk") == call
+    # The desk's listening does not keep the phone's button from opening a turn while hands is at the desk.
+    assert Gate("listening", "desk", listens=True).after("start", "phone").place == "phone"
+
+
 def test_a_turn_opened_at_the_other_place_moves_the_gate_there() -> None:
     gate = Gate().after("start", "phone")
     assert (gate.key, gate.place) == ("down", "phone")

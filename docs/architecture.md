@@ -1652,8 +1652,8 @@ disengages, each cued with two tones. While the desk listens, the key rests at `
 between turns rather than `up`: the microphone's bytes reach Whisper, which keeps the last
 second of them as Pipecat keeps audio nobody is speaking in, so the turn the voice opens
 starts with the words said while Silero made sure of them (about 0.2 s). Listening is the
-desk's alone: at the phone the key rests at `up`, and the desk listens again once hands is
-back. Both models hear the desk through the echo canceller; measured on MacBook speakers, a
+desk's alone: at the phone the key rests at `up`, what the desk hears opens no turn there,
+and the desk listens again once hands is back. Both models hear the desk through the echo canceller; measured on MacBook speakers, a
 canceller that has heard one reply lets none of the next trip Silero, where the raw
 microphone tripped it at every phrase, and only the first two seconds of a fresh
 canceller's life let one through.
