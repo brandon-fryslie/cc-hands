@@ -36,13 +36,14 @@ Key = Literal["up", "listening", "arming", "down", "dropped"]
 
 @dataclass(kw_only=True)
 class KeyedAudio(InputAudioRawFrame):
-    """Microphone audio, and the key position it was captured under.
+    """Microphone audio, the key position it was captured under, and the place whose microphone captured it.
 
     [LAW:no-ambient-temporal-coupling] the key travels with the audio, in capture order, so whatever reads it later
     reads the key as it was when this sound was recorded, never as it is by the time the frame arrives.
     """
 
     key: Key
+    place: Place
 
 
 @dataclass(frozen=True)
@@ -71,9 +72,6 @@ class Gate:
                 return None
             case True, _, _:
                 return move
-            case False, "start", _ if at == "desk" and self.listens:
-                # The desk's voice opens nothing while the user is on the phone: what the desk hears is the room.
-                return None
             case False, "start", "arming" | "down":
                 return "drop"
             case False, "start", "up" | "listening" | "dropped":

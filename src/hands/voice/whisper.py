@@ -25,6 +25,7 @@ from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.types import assert_given, require_given
 
 from hands.sessions.audit import HoldHeard, Record, Unsaid
+from hands.core.place import Place
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved
 
@@ -58,6 +59,8 @@ class Whisper(WhisperSTTServiceMLX):
         self._warm()
         # The key the last frame of microphone audio was captured under.
         self._captured: Key = "up"
+        # Whose microphone the last frame came from.
+        self._heard_at: Place = "desk"
         # The number of the last hold the key opened.
         self._opened = 0
         # The holds whose audio is queued for transcription, oldest first. Pipecat transcribes its queue one segment at
@@ -100,6 +103,10 @@ class Whisper(WhisperSTTServiceMLX):
         # [LAW:parse-dont-validate] the microphone makes every frame this sees, and it tags each one.
         if not isinstance(frame, KeyedAudio):
             raise TypeError(f"{type(frame).__name__} carries no key; the keyed microphone makes every frame Whisper hears")
+        if frame.place != self._heard_at:
+            # A turn is heard at one place: what the other's microphone heard before it is no part of it.
+            self._audio_buffer.clear()
+            self._heard_at = frame.place
         match self._captured, frame.key:
             case "up" | "dropped", "arming":
                 # A hold's audio begins at its press: nothing heard before it is any part of it.

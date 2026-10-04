@@ -371,8 +371,8 @@ class KeyedMicrophone(LocalAudioInputTransport):
 
     @asynccontextmanager
     async def overheard(self) -> AsyncGenerator[AsyncIterator[bytes]]:
-        """Every buffer the desk's microphone captures while open, heard through the echo canceller, whatever the gate
-        says and wherever hands is: what an edge listens to for when to open and close the turn."""
+        """Every buffer the desk's microphone captures while open, heard through the echo canceller whatever the key
+        says, and silent while hands is at the phone: what an edge listens to for when to open and close the turn."""
         heard: asyncio.Queue[bytes] = asyncio.Queue()
         self._overhearing = (*self._overhearing, heard)
 
@@ -413,10 +413,13 @@ class KeyedMicrophone(LocalAudioInputTransport):
             asyncio.run_coroutine_threadsafe(self._fail(error), self.get_event_loop())
             return None, pyaudio.paAbort
         loop = self.get_event_loop()
-        for overhearing in self._overhearing:
-            loop.call_soon_threadsafe(overhearing.put_nowait, cleaned)
         # One read of the gate: what the frame holds and the key it says it was captured under always agree.
         gate = self._key.gate
+        # [LAW:single-enforcer] the gate says which place is heard, by an edge as by Whisper: while hands is at the
+        # phone, the desk's buffers reach an edge as silence of the same length, so the room there opens nothing.
+        overheard = cleaned if gate.hears("desk") else bytes(len(cleaned))
+        for overhearing in self._overhearing:
+            loop.call_soon_threadsafe(overhearing.put_nowait, overheard)
         # [LAW:single-enforcer] the gate alone says which place's microphone reaches Whisper; while hands is at the
         # phone, the desk's frames are not the pipeline's at all, so its stream is the phone's unbroken.
         if not gate.hears("desk"):
@@ -426,6 +429,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
             sample_rate=self._sample_rate,
             num_channels=self._params.audio_in_channels,
             key=gate.key,
+            place="desk",
         )
         asyncio.run_coroutine_threadsafe(self.push_audio_frame(frame), loop)
         return None, pyaudio.paContinue

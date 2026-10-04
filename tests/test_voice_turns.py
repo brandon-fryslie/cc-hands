@@ -28,6 +28,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
 from conftest import running, unprimed
+from hands.core.place import Place
 from hands.sessions.audit import Entry, HoldHeard, Yielded
 from hands.voice import pipeline as built
 from hands.voice.conversation import cue_receipt
@@ -131,8 +132,8 @@ class Rig:
     # Each turn hands said it received, as its words were written to the context.
     received: list[None] = field(default_factory=list[None])
 
-    async def hold(self, keys: Sequence[Key], sound: bytes = b"\x00\x00" * 320) -> None:
-        await self.worker.queue_frames([KeyedAudio(audio=sound, sample_rate=16000, num_channels=1, key=key) for key in keys])
+    async def hold(self, keys: Sequence[Key], sound: bytes = b"\x00\x00" * 320, at: Place = "desk") -> None:
+        await self.worker.queue_frames([KeyedAudio(audio=sound, sample_rate=16000, num_channels=1, key=key, place=at) for key in keys])
 
     async def until(self, what: Callable[[], bool]) -> None:
         async with asyncio.timeout(PATIENCE_SECS):
@@ -269,6 +270,16 @@ async def test_an_engaged_start_that_was_only_noise_opens_no_turn_and_the_desk_l
     await rig.texts.put("what time is it")
     assert await rig.everything_sent(holds=1) == ["what time is it"]
     assert noise not in rig.heard[0]
+
+
+async def test_a_phone_turn_opened_while_the_desk_listens_hears_nothing_the_desk_heard(rig: Rig) -> None:
+    room, said = (bytes([n, n]) * 320 for n in (1, 3))
+    listening: list[Key] = ["listening"]
+    await rig.hold(listening * 20, sound=room)
+    await rig.hold(["down", "down", "up"], sound=said, at="phone")
+    await rig.texts.put("what time is it")
+    assert await rig.everything_sent(holds=1) == ["what time is it"]
+    assert room not in rig.heard[0]
 
 
 async def test_a_dropped_hold_ends_its_turn_and_sends_nothing(rig: Rig) -> None:
