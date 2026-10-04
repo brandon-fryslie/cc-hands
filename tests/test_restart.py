@@ -88,10 +88,13 @@ def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sess
         # Each start is one event: the first, and the restart's, in the same process, ready.
         starts = started(home)
         assert [(line["outcome"], line["facts"]["pid"], line["facts"]["restarted"]) for line in starts] == [("ok", daemon.pid, False), ("ok", daemon.pid, True)]
-        # [LAW:nothing-unseen] and the restart asked is one command's event, which says what it saw the daemon come back as.
+        # [LAW:nothing-unseen] and the restart asked is one command's event, which says what it saw the daemon come back as, and
+        # how long that took.
         [command] = [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line.get("event") == "hands.command"]
-        assert (command["outcome"], command["facts"]["command"], command["facts"]["exit_code"], command["facts"]["outcome"]) == ("ok", "restart", 0, "Restarted")
-        assert (command["facts"]["heartbeat"]["pid"], command["facts"]["heartbeat"]["started_at"]) == (daemon.pid, after.started_at.isoformat(timespec="milliseconds"))
+        outcome = command["facts"]["outcome"]
+        assert (command["outcome"], command["facts"]["command"], command["facts"]["exit_code"], outcome["type"]) == ("ok", "restart", 0, "Restarted")
+        assert (outcome["status"]["pid"], outcome["status"]["started_at"]) == (daemon.pid, after.started_at.isoformat(timespec="milliseconds"))
+        assert outcome["took"] > 0
     finally:
         daemon.terminate()
         daemon.wait(timeout=10)

@@ -293,8 +293,13 @@ def segments(directory: Path) -> list[int]:
 class AuditLog:
     def __init__(self, directory: Path, clock: Callable[[], datetime], segment_bytes: int = SEGMENT_BYTES) -> None:
         # The log holds what every tapped session said, as the tap's socket does: the user's alone to read.
-        directory.mkdir(parents=True, exist_ok=True)
-        directory.chmod(0o700)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            directory.chmod(0o700)
+        except OSError as error:
+            # [LAW:single-enforcer] as a line it cannot write is: a log it cannot make costs the work it watches nothing,
+            # and each line it then fails at says so.
+            logger.warning(f"the audit log {directory} cannot be made the user's alone: {error}")
         self._directory = directory
         self._clock = clock
         self._segment_bytes = segment_bytes
@@ -387,7 +392,7 @@ def encoded(value: object) -> dict[str, object]:
 
 
 def jsonable(value: object) -> object:
-    """value as JSON holds it: a dataclass encoded, a time in ISO 8601, a duration in seconds, a set sorted."""
+    """value as JSON holds it: a dataclass encoded, a time in ISO 8601, a duration in milliseconds, a set sorted."""
     match value:
         case None | bool() | int() | float() | str():
             return value
@@ -396,8 +401,8 @@ def jsonable(value: object) -> object:
         case datetime():
             return value.isoformat(timespec="milliseconds")
         case timedelta():
-            # In seconds, as a number a query can compare and sum.
-            return value.total_seconds()
+            # [LAW:one-source-of-truth] in milliseconds, the log's one unit of time, as duration_ms and heartbeat_ms are.
+            return value / timedelta(milliseconds=1)
         case Enum():
             return jsonable(value.value)
         case Mapping():

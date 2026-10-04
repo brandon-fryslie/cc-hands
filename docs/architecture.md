@@ -1971,7 +1971,7 @@ it, why `[LAW:nothing-unseen]`; a stop waits on the batches still queued for one
 in all, and records those it leaves unsent. The `hands.start` event names the collector. Only
 `hands run` sends to it. Every other command is one `hands.command` event, written by the
 dispatcher every command passes through (`hands.daemon.cli.commanded`), carrying the command,
-its arguments as parsed, its exit code, and how long it took; it ends failed where the command
+the home it ran on, its arguments as parsed, its exit code, and how long it took; it ends failed where the command
 exits nonzero, and the unit of work the command ran, such as `plugin.render`, is in its trace.
 Those events are in the log alone: Claude Code waits on `hands plugin` before a session starts,
 and `hands status` must answer whatever the config says, so no command waits on a collector or

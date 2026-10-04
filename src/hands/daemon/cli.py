@@ -68,15 +68,18 @@ def show_phone(home: Home) -> int:
     name = asyncio.run(tailnet_name())
     match name:
         case Untailed(reason=reason):
+            wide.annotate(untailed=reason)
             print(f"hands: no tailnet address, since {reason}; the LAN's alone:", file=sys.stderr)
         case str():
             pass
     try:
         key = phone_key(home)
     except Rejected as error:
+        wide.annotate(phone_key=str(error))
         print(f"hands: {error}", file=sys.stderr)
         return 1
     urls = page_urls(name, lan_addresses(), key)
+    wide.annotate(addresses=len(urls))
     if not urls:
         print("hands: this machine has no address a phone can reach.", file=sys.stderr)
         return 1
@@ -169,7 +172,8 @@ def commanded(home: Home, arguments: argparse.Namespace) -> int:
     """
     record = audit_log_of(home).record
     with wide.unit("hands.command", record):
-        wide.annotate(command=arguments.command, **as_facts(arguments))
+        # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
+        wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
         code = dispatch(home, arguments, record)
         wide.annotate(exit_code=code)
         if code != 0:
@@ -179,8 +183,20 @@ def commanded(home: Home, arguments: argparse.Namespace) -> int:
 
 def as_facts(arguments: argparse.Namespace) -> dict[str, wide.Fact]:
     """A command's arguments as argparse parsed them, each under arguments.<its name>, the words it gathers a tuple."""
-    # The one list any command parses is recall's words, nargs="*".
-    return {f"arguments.{name}": tuple(cast(list[str], value)) if isinstance(value, list) else value for name, value in vars(arguments).items() if name != "command"}
+    return {f"arguments.{name}": as_fact(value) for name, value in vars(arguments).items() if name != "command"}
+
+
+def as_fact(value: object) -> wide.Fact:
+    """One parsed argument as a fact: argparse admits no other kind than these, so one is a parser added here without it."""
+    match value:
+        case None | bool() | int() | str() | Path():
+            return value
+        case list():
+            # recall's words, nargs="*".
+            return tuple(map(as_fact, cast(list[object], value)))
+        case other:
+            # [LAW:no-silent-failure] raised in the command's event, rather than the event lost as its line is written.
+            raise TypeError(f"an argument parsed as a {type(other).__name__}, which no hands.command event carries")
 
 
 def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) -> int:
@@ -416,12 +432,12 @@ def asked_to_restart(home: Home) -> int:
     """`hands restart`: ask the running daemon to start again, and say how that went."""
     outcome = restart(home, lambda: datetime.now(UTC), lambda: time.sleep(LOOK_SECONDS))
     match outcome:
-        case Restarted(status=status):
-            seen, out, code = status, sys.stdout, 0
-        case NotRunning(verdict=verdict) | NotBack(verdict=verdict):
-            seen, out, code = verdict, sys.stderr, 1
-    # How long it waited is the command's own duration.
-    wide.annotate(outcome=type(outcome).__name__, heartbeat=seen)
+        case Restarted():
+            out, code = sys.stdout, 0
+        case NotRunning() | NotBack():
+            out, code = sys.stderr, 1
+    # What the heartbeat said, and how long the restart took or was waited on.
+    wide.annotate(outcome=outcome)
     print(said(outcome, datetime.now(UTC)), file=out)
     return code
 

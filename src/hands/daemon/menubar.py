@@ -53,6 +53,8 @@ def show(home: Home, run: int) -> int:
         nonlocal ending
         ending = how
         timer.invalidate()
+        # An open menu tracks events in a loop of its own, which a posted event would wait behind until it closed.
+        menu.cancelTracking()
         app.stop_(None)
         # stop_ takes effect once the event being handled is done, and a timer firing is no event: one posted wakes
         # the loop to end, so the event loop returns here and the command's event is written as it ends.
