@@ -289,6 +289,15 @@ def test_a_claude_printing_or_piped_into_at_a_terminal_is_no_session(root: Path)
     assert found == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: 2, and each can be typed into")
 
 
+def test_a_check_run_from_a_removed_directory_says_its_own_config_cannot_be_told(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    gone = root / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    found = readiness.unrecorded(Home(root / "home"), installed(root), set())
+    assert isinstance(found, readiness.Unfindable) and found.said.startswith("cannot tell which Claude Code config this check runs under")
+
+
 def test_the_kernel_says_what_a_process_at_a_terminal_was_started_with_and_whether_it_reads_and_writes_it(root: Path) -> None:
     with at_a_terminal(Path("/bin/sleep"), root) as reading, at_a_terminal(Path("/bin/sleep"), root, ["31"], piped=True) as piped:
         found = {process.pid: process for process in terminal_processes()}

@@ -301,7 +301,11 @@ def unrecorded(home: Home, path: str, members: Collection[int]) -> Unrecorded | 
             return unfindable
         case executable:
             try:
-                return unjoined(home, executable, config_dir(os.environ, Path.cwd()), terminal_processes(), members, attended)
+                config = config_dir(os.environ, Path.cwd())
+            except OSError as error:
+                return Unfindable(f"cannot tell which Claude Code config this check runs under: {error}")
+            try:
+                return unjoined(home, executable, config, terminal_processes(), members, attended)
             except OSError as error:
                 return Unfindable(f"cannot look at this user's processes at a terminal: {error}")
 
