@@ -1820,6 +1820,18 @@ shown or threw it away, nothing else told is of that hold. A mark of a hold the
 page has let go of is not shown. A call's `phone.call` event counts the marks its
 page was told.
 
+The channel also carries the transcript (`hands.voice.transcript`), which the page
+keeps under a button, hidden until asked for. Every message on it is one JSON
+object whose `kind` says which it is: a `mark`, or a line. The user's words are
+the line Whisper heard of each hold. Each of hands' sentences is told twice: as the
+output transport lets its text go, which is when the audio ahead of it has played,
+and as it lets the sentence's end go, or a barge-in cuts it off. pocket-tts reports
+no word timings, so the page sweeps the highlight through a sentence's words at a
+speaking rate it measures from the sentences it has seen played to their end, holds
+on the last word until hands says the sentence is done, and strikes through the
+words a barge-in cut off. The `phone.call` event counts the lines told beside the
+marks.
+
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts
 as it is; under a LAN address it shows a self-signed one, which the phone is asked

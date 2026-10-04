@@ -26,7 +26,8 @@ from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
 from hands.voice.mark import Mark
-from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Phone
+from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Phone, wire
+from hands.voice.transcript import Cut, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent, begun
@@ -190,14 +191,26 @@ async def test_what_hands_says_is_played_on_the_phone(call: Call) -> None:
     await call.until(lambda: any(np.abs(frame.to_ndarray()).max() > 1000 for frame in call.page.played))
 
 
-async def test_the_page_is_told_each_mark_of_its_turn_and_the_call_counts_them(call: Call) -> None:
+# Every line of the transcript there is, as the page is told it.
+LINES: list[Line] = [Heard("Is the parser fixed?"), Saying("It is."), Spoken(), Saying("Its tests pass."), Cut()]
+
+
+async def test_the_page_is_told_each_mark_of_its_turn_and_each_line_of_the_transcript_and_the_call_counts_them(call: Call) -> None:
     for mark in get_args(Mark):
         call.phone.tell(mark)
-    await call.until(lambda: len(call.page.told) == len(get_args(Mark)))
-    assert call.page.told == list(get_args(Mark))
+    for line in LINES:
+        call.phone.tell(line)
+    await call.until(lambda: len(call.page.told) == len(get_args(Mark)) + len(LINES))
+    assert [json.loads(cast(str, told)) for told in call.page.told] == [{"kind": "mark", "mark": mark} for mark in get_args(Mark)] + [
+        {"kind": "heard", "text": "Is the parser fixed?"},
+        {"kind": "saying", "text": "It is."},
+        {"kind": "spoken"},
+        {"kind": "saying", "text": "Its tests pass."},
+        {"kind": "cut"},
+    ]
     await call.phone.hang_up("stopped")
     [event] = calls(call.recorded)
-    assert left(event).told == len(get_args(Mark))
+    assert (left(event).told, left(event).lines) == (len(get_args(Mark)), len(LINES))
 
 
 async def test_a_mark_with_no_call_up_is_told_to_nobody() -> None:
@@ -211,6 +224,12 @@ def test_the_page_knows_every_mark_hands_tells_it() -> None:
     page = resources.files("hands.voice").joinpath("phone.html").read_text()
     table = page[page.index("const TOLD = {") : page.index("};", page.index("const TOLD = {"))]
     assert [mark for mark in get_args(Mark) if f'"{mark}": ' not in table] == []
+
+
+def test_the_page_knows_every_line_of_the_transcript_hands_tells_it() -> None:
+    page = resources.files("hands.voice").joinpath("phone.html").read_text()
+    table = page[page.index("const LINES = {") : page.index("\n};", page.index("const LINES = {"))]
+    assert [kind for line in LINES if f'"{(kind := json.loads(wire(line))["kind"])}": ' not in table] == []
 
 
 async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was_playing(call: Call) -> None:
@@ -227,7 +246,7 @@ async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was
     ended = left(event)
     assert ended.reason == "hung up" and 0 < ended.arrived_ms <= event.duration_ms
     # A call whose page was told nothing says so: zero, written down.
-    assert ended.told == 0
+    assert (ended.told, ended.lines) == (0, 0)
 
 
 async def test_a_newer_call_replaces_the_one_before_it_once_it_connects(call: Call) -> None:
