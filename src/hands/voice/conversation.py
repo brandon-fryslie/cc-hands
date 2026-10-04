@@ -31,11 +31,11 @@ class AssistantTurns(LLMAssistantAggregator):
     """Pipecat's assistant aggregator, which also ends the turn of a line hands says as written and keeps in the
     context: written once it is said, as heard whole, or with the model's turn where one is open.
 
-    [LAW:single-enforcer] the one place such a line's turn is ended inside the model's turn or after it, under either
-    model, so whoever says a line sends the line alone. Pipecat's TTS service ends it only while it takes no reply as
-    under way, which is never inside the model's turn, and one that pushes its own text frames, as pocket-tts does,
-    takes a reply as under way from its start frame to the next barge-in (1.10.0, `tts_service.py:858`): the line stayed
-    an open turn, written at the next key press as cut off.
+    [LAW:single-enforcer] the one place such a line's turn is ended, under either model, so whoever says a line sends
+    the line alone. Pipecat's TTS service ends it only while it takes no reply as under way, and one that pushes its own
+    text frames, as pocket-tts does, takes a reply as under way from its start frame to the next barge-in (1.10.0,
+    `tts_service.py:858`): the line stayed an open turn, written at the next key press as cut off. After a barge-in it
+    takes none as under way whatever the model's turn, so the end it sends is not taken inside one.
 
     [LAW:no-ambient-temporal-coupling] the extent of the model's turn is held here, where the context is written: open
     from a reply's start to its end, while a call it made is unanswered, and from a result the model is run on until
@@ -50,11 +50,16 @@ class AssistantTurns(LLMAssistantAggregator):
     # The calls the model made that are neither answered nor cancelled, read off the frames that say so: Pipecat's own
     # count keeps a call cancelled before its in-progress frame arrived, a frame the audio ahead of it holds back (1.10.0).
     _calls: frozenset[str] = frozenset()
+    # How much of what is said and unwritten was said before the reply under way started: the lines it answers behind.
+    _ahead = 0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         match frame:
+            case LLMAssistantPushAggregationFrame() if self._open:
+                # The TTS service's end of a line's turn, sent after a barge-in whatever the model's turn (1.10.0).
+                return
             case LLMFullResponseStartFrame():
-                self._replying, self._answering = True, False
+                self._replying, self._answering, self._ahead = True, False, len(self._aggregation)
             case LLMFullResponseEndFrame():
                 self._replying = False
             case FunctionCallsStartedFrame(function_calls=calls):
@@ -64,8 +69,8 @@ class AssistantTurns(LLMAssistantAggregator):
             case InterruptionFrame():
                 # A barge-in drops the reply under way and the request for the one that would have answered a call. A
                 # line waiting on either was heard whole, its text arriving behind its audio: written as that, ahead of
-                # Pipecat writing a reply under way as cut off.
-                if self._aggregation and not self._replying:
+                # Pipecat writing a reply as cut off once a sentence of its own has been heard.
+                if self._aggregation and not (self._replying and len(self._aggregation) > self._ahead):
                     await self._end_turn()
                 self._replying = self._answering = False
             case _:

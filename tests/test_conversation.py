@@ -200,6 +200,27 @@ async def test_a_line_heard_whole_while_a_call_runs_is_written_as_heard_whole_at
         assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone.", interrupted=False)]
 
 
+async def test_a_line_heard_whole_is_written_as_that_at_a_barge_in_on_the_reply_behind_it_before_a_sentence_of_it_is_heard() -> None:
+    async with conversing() as conversation:
+        await conversation.said(*calling("c1", TTSSpeakFrame("The session api is gone.")), result("c1", run_llm=True))
+        await conversation.said(LLMFullResponseStartFrame())
+        await conversation.barge_in()
+
+        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone.", interrupted=False)]
+
+
+async def test_a_line_said_after_a_barge_in_a_call_ran_on_through_is_written_with_the_reply_that_answers_the_call() -> None:
+    """After a barge-in Pipecat's TTS service ends a line's turn itself, whatever the model's turn (1.10.0)."""
+    async with conversing() as conversation:
+        await conversation.said(*calling("c1"))
+        await conversation.barge_in()
+        await conversation.said(result("c1", run_llm=True), TTSSpeakFrame("The session api is gone."))
+        assert conversation.ends_on() == "tool"
+
+        await conversation.said(*ANSWER)
+        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone. Nothing is running.", interrupted=False)]
+
+
 async def test_a_call_cancelled_before_it_is_told_as_in_progress_holds_no_line_said_after_it() -> None:
     """A barge-in while the reply that made the call still plays: the cancellation overtakes the in-progress frame, which
     the audio holds back, and Pipecat's aggregator keeps the call as open from then on (1.10.0)."""
