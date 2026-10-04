@@ -200,16 +200,17 @@ hands types into a session through fritter, so it reaches only the sessions star
 under it. Install a `claude` that starts every one that way, and put it first on `PATH`:
 
 ```
-uv run hands install-fritter                    # builds fritter, writes ~/.hands/bin/claude beside it
+uv run hands install-fritter                    # copies fritter, writes ~/.hands/bin/claude beside it
 export PATH="$HOME/.hands/bin:$PATH"            # in your shell's startup file
 ```
 
 That `claude` runs the next `claude` on `PATH` under fritter when a terminal is on both
 ends and there is no `-p` or `--print`; a pipe, a script, and `claude -p` run the real
 claude exactly as before. `hands install-fritter` exits 0 only when `claude` on the
-current `PATH` is the one it wrote, and says what to add when it is not. Run it again
-after fritter changes: it builds fritter from this checkout. A session started before
-the shim stays unreachable until it ends.
+current `PATH` is the one it wrote, and says what to add when it is not. The fritter it
+copies is the one hands' package carries, built when hands was installed, so no Go is
+needed to run it. Run it again after hands is upgraded, or in a checkout after fritter's
+source changes. A session started before the shim stays unreachable until it ends.
 
 A session under fritter reaches the API through its own fritter, which is the session's
 proxy: the session still names the API it would have used, fritter answers its
@@ -223,7 +224,8 @@ could not hand over are counted in the next one hands takes. The session's shell
 commands, and any `claude` started from it, run with the proxy the session had before
 fritter. A firewall that asks per program, such as Little Snitch, sees the session's
 connections as fritter's and holds each one until it is answered: allow
-`~/.hands/bin/fritter` out, and again after `install-fritter` rebuilds it.
+`~/.hands/bin/fritter` out, and again after `install-fritter` copies a new one, which
+happens only when hands itself is a new build.
 
 The hooks are on whether or not hands is running. While hands is stopped, has never
 run, or is still starting, they cost a session nothing: no hook error, and a permission

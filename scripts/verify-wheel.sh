@@ -1,7 +1,8 @@
 #!/bin/sh
 # verify-wheel.sh WHEEL VERSION: install the wheel as a stranger would, with no Go and a fresh uv tool directory, and
-# check that the hands it gives prints VERSION and the fritter inside its package runs a program. The stranger has
-# Homebrew's portaudio, which PyAudio builds against.
+# check that the hands it gives prints VERSION, the fritter inside its package runs a program, and install-fritter puts
+# that fritter and its claude in the stranger's hands home. The stranger has Homebrew's portaudio, which PyAudio builds
+# against.
 set -eu
 [ $# -eq 2 ] || { echo "verify-wheel: usage: verify-wheel.sh WHEEL VERSION (given: $*)" >&2; exit 2; }
 wheel=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
@@ -32,4 +33,8 @@ stranger script -q /dev/null "$fritter" -- /bin/sh -c 'test -S "$FRITTER_SOCKET"
 code=$?
 set -e
 [ "$code" = 7 ] || { echo "verify-wheel: the packaged fritter at $fritter exited $code, not the program's 7" >&2; exit 1; }
-echo "verify-wheel: $(basename "$wheel") installs without go, prints hands $expected, and its fritter runs"
+# The home's bin first on PATH, as the README has the stranger put it, so install-fritter finds its claude and exits 0.
+# A later PATH= in env's arguments wins over stranger's own.
+stranger PATH="$fresh/home/.hands/bin:$fresh/bin:/usr/bin:/bin" hands install-fritter >/dev/null
+cmp -s "$fritter" "$fresh/home/.hands/bin/fritter" || { echo "verify-wheel: install-fritter did not copy the packaged fritter to the home's bin" >&2; exit 1; }
+echo "verify-wheel: $(basename "$wheel") installs without go, prints hands $expected, its fritter runs, and install-fritter installs it"

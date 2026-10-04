@@ -159,11 +159,11 @@ def test_a_path_with_spaces_and_quotes_is_the_path_the_shim_names(root: Path) ->
     assert printed == f"fritter {TAPPED} -- {root / 'real' / 'claude'} socket=unset\n"
 
 
-@pytest.mark.skipif(shutil.which("go") is None, reason="building fritter needs go")
-def test_install_builds_a_fritter_that_gives_the_session_an_address_and_says_whether_path_finds_it(root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_install_copies_the_packaged_fritter_with_no_go_and_says_whether_path_finds_its_claude(root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
     executable(root / "real" / "claude", RECORDER)
-    tools = f"{root / 'real'}:{Path(shutil.which('go') or '').parent}:/usr/bin:/bin"
+    tools = f"{root / 'real'}:/usr/bin:/bin"
+    assert shutil.which("go", path=tools) is None
 
     monkeypatch.setenv("PATH", tools)
     assert main(["--home", str(home.root), "install-fritter"]) == 1
@@ -174,12 +174,22 @@ def test_install_builds_a_fritter_that_gives_the_session_an_address_and_says_whe
 
     monkeypatch.setenv("PATH", f"{home.bin}:{tools}")
     assert main(["--home", str(home.root), "install-fritter"]) == 0
-    assert f"`claude` on this PATH is hands' shim, {home.shim}" in capsys.readouterr().out
+    assert f"copied {wrapper.PACKAGED} to {home.fritter}" in (out := capsys.readouterr().out)
+    assert f"`claude` on this PATH is hands' shim, {home.shim}" in out
     assert (home.bin / "claude").read_bytes() == first
+    assert home.fritter.read_bytes() == wrapper.PACKAGED.read_bytes()
     assert sorted(entry.name for entry in home.bin.iterdir()) == ["claude", "fritter"]
 
     printed = on_a_terminal(["claude", "hi"], f"{home.bin}:{tools}")
     assert printed.startswith("claude hi socket=/tmp/fritter-")
+
+
+def test_install_without_a_packaged_fritter_fails_naming_where_it_looked(root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(root / "home")
+    monkeypatch.setattr(wrapper, "PACKAGED", root / "package" / "bin" / "fritter")
+    assert main(["--home", str(home.root), "install-fritter"]) == 1
+    assert f"hands install-fritter: cannot install {root / 'package' / 'bin' / 'fritter'} into {home.bin}" in capsys.readouterr().err
+    assert not home.fritter.exists() and not home.shim.exists()
 
 
 def test_a_relative_home_is_this_directory_s(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:

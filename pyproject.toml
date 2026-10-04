@@ -37,7 +37,7 @@ source = "vcs"
 [tool.hatch.build.targets.wheel]
 packages = ["src/hands"]
 
-# hatch_build.py: the wheel carries fritter, built for macOS arm64.
+# hatch_build.py: the package carries fritter, built for macOS arm64, in a wheel and in a checkout's editable install.
 [tool.hatch.build.targets.wheel.hooks.custom]
 
 [tool.pyright]
@@ -57,5 +57,6 @@ testpaths = ["tests"]
 # hands is a Mac app (CoreAudio, Quartz event taps), so the lock is resolved for macOS alone: openWakeWord's Linux-only
 # tflite-runtime has no wheel for the Python hands runs on.
 environments = ["sys_platform == 'darwin'"]
-# A new commit or tag rebuilds the checkout's own install, so `hands --version` there is the checkout's.
-cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
+# A new commit or tag rebuilds the checkout's own install, so `hands --version` there is the checkout's, and so does an
+# edit to fritter's source or its build, so the fritter in src/hands/bin is the checkout's.
+cache-keys = [{ file = "pyproject.toml" }, { file = "hatch_build.py" }, { file = "fritter/go.mod" }, { file = "fritter/go.sum" }, { file = "fritter/**/*.go" }, { git = { commit = true, tags = true } }]

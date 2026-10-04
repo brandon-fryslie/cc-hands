@@ -5,7 +5,6 @@ import base64
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from pathlib import Path
@@ -18,7 +17,7 @@ from hands.core.session import PromptId, SessionId
 from hands.core.wire import Block, Elsewhere, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Streamed, Subagent, Text, TextDelta, ToolUse, Uncopied, Unkept, Unreached
 from hands.sessions.audit import CopiesLost, Entry
 from hands.sessions.tap import moves, serve_tap
-from hands.sessions.wrapper import FRITTER_SOURCE
+from hands.sessions.wrapper import PACKAGED
 
 REQUEST = (
     b'{"model": "claude-opus-5-5", "tools": [{"name": "Read"}], "stream": true, "messages": '
@@ -193,10 +192,9 @@ async def test_the_socket_is_the_user_s_alone(tap: Heard_, socket_path: Path) ->
     assert socket_path.stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.skipif(shutil.which("go") is None or shutil.which("curl") is None, reason="needs go to build fritter, and curl to be the session")
+@pytest.mark.skipif(shutil.which("curl") is None, reason="needs curl to be the session")
 async def test_a_session_under_a_real_fritter_is_answered_by_the_api_and_heard_on_the_wire(tap: Heard_, socket_path: Path) -> None:
-    fritter = socket_path.parent / "fritter"
-    subprocess.run(["go", "build", "-o", str(fritter), "."], cwd=FRITTER_SOURCE, check=True, capture_output=True)
+    fritter = PACKAGED
 
     async def messages(request: web.Request) -> web.StreamResponse:
         assert request.headers["X-Api-Key"] == "the-sessions-own"
