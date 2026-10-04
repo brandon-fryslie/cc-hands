@@ -10,6 +10,9 @@ The edge moves the gate with the held key's own moves, so the gate, Whisper, and
 take a held one: speech starting arms the microphone, speech confirmed opens the turn, a start that was only a noise
 disarms it, and the end of the turn sends it. Engaging has the desk listen between turns, so Whisper keeps the second
 before each turn opens and the words said while the detector made sure of them are in it; disengaging stops that.
+
+The driver is shared with the wake word (`hands.voice.wake`), the other edge that opens turns without a hand: each is a
+`Conversation`, its own step over the same engagement, and the driver hears for both.
 """
 
 import asyncio
@@ -56,14 +59,26 @@ class TurnEnded:
 
 
 @dataclass(frozen=True)
+class Woken:
+    """The wake word was heard, at `at`."""
+
+    at: Instant
+
+
+@dataclass(frozen=True)
 class TurnTooLong:
     """`TURN_LIMIT_SECONDS` have passed since the turn opened at `opened_at`."""
 
     opened_at: Instant
 
 
-Heard = SpeechStarting | SpeechStarted | SpeechStopped | TurnEnded | TurnTooLong
-Event = KeyEvent | Heard
+@dataclass(frozen=True)
+class Begun:
+    """The edge has begun: its trigger was switched to."""
+
+
+Heard = SpeechStarting | SpeechStarted | SpeechStopped | Woken | TurnEnded | TurnTooLong
+Event = KeyEvent | Heard | Begun
 
 
 @dataclass(frozen=True)
@@ -88,7 +103,15 @@ class Talking:
     since: Instant
 
 
-Phase = Disengaged | Listening | Arming | Talking
+@dataclass(frozen=True)
+class Woke:
+    """The wake word opened the user's turn, since `since`, and what they ask has yet to start: a stop now is the end of
+    the wake word, not of the turn (`hands.voice.wake`)."""
+
+    since: Instant
+
+
+Phase = Disengaged | Listening | Arming | Woke | Talking
 
 
 @dataclass(frozen=True)
@@ -110,7 +133,9 @@ Act = Move | Literal["judge"]
 def step(engagement: Engagement, event: Event) -> tuple[Engagement, tuple[Act, ...]]:
     """The engagement after `event`, and what the edge does."""
     match event:
-        case SpeechStarting() | SpeechStarted() | SpeechStopped() | TurnEnded() | TurnTooLong():
+        case Begun():
+            return engagement, ()
+        case SpeechStarting() | SpeechStarted() | SpeechStopped() | Woken() | TurnEnded() | TurnTooLong():
             phase, acts = _heard(engagement.phase, event)
             return replace(engagement, phase=phase), acts
         case _:
@@ -129,7 +154,7 @@ def _toggled(phase: Phase) -> tuple[Phase, tuple[Act, ...]]:
             return Disengaged(), ("deafen",)
         case Arming():
             return Disengaged(), ("disarm", "deafen")
-        case Talking():
+        case Woke() | Talking():
             # Disengaging ends the conversation, not the last thing said in it: the turn open is sent, and heard sent.
             return Disengaged(), ("stop", "deafen")
 
@@ -144,15 +169,25 @@ def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
             return Talking(at), ("start",)
         case Arming(), SpeechStopped():
             return Listening(), ("disarm",)
-        case Talking(), SpeechStopped():
-            return phase, ("judge",)
-        case Talking(), TurnEnded():
-            return Listening(), ("stop",)
-        # [LAW:no-ambient-temporal-coupling] a limit counts only for the turn it was set for.
-        case Talking(since=since), TurnTooLong(opened_at=opened_at) if opened_at == since:
-            return Listening(), ("expire",)
+        case Talking(), SpeechStopped() | TurnEnded() | TurnTooLong():
+            return in_turn(phase, heard)
         case _:
             return phase, ()
+
+
+def in_turn(turn: Woke | Talking, heard: SpeechStopped | TurnEnded | TurnTooLong) -> tuple[Phase, tuple[Act, ...]]:
+    """How a turn the voice opened ends, whatever opened it: Smart Turn's verdict on a stop, the silence after it, or the
+    limit."""
+    match heard:
+        case SpeechStopped():
+            return turn, ("judge",)
+        case TurnEnded():
+            return Listening(), ("stop",)
+        # [LAW:no-ambient-temporal-coupling] a limit counts only for the turn it was set for.
+        case TurnTooLong(opened_at=opened_at) if opened_at == turn.since:
+            return Listening(), ("expire",)
+        case TurnTooLong():
+            return turn, ()
 
 
 def released(engagement: Engagement) -> tuple[Move, ...]:
@@ -165,7 +200,7 @@ def released(engagement: Engagement) -> tuple[Move, ...]:
             return ("deafen",)
         case Arming():
             return ("disarm", "deafen")
-        case Talking():
+        case Woke() | Talking():
             return ("drop", "deafen")
 
 
@@ -176,6 +211,7 @@ class Ears(Protocol):
     def heard(self, audio: bytes, speech: bool) -> bool: ...
     async def judge(self) -> tuple[bool, TurnMetricsData | None]: ...
     def clear(self) -> None: ...
+    def afresh(self) -> None: ...
 
 
 class Models:
@@ -203,6 +239,12 @@ class Models:
     def clear(self) -> None:
         self._turn.clear()
 
+    def afresh(self) -> None:
+        """Hear on as if nothing came before: Silero is quiet until sure of speech again, and Smart Turn holds none."""
+        # Setting the detector's parameters puts it back to quiet, with no speech counted toward starting or stopping.
+        self._vad.set_params(self._vad.params)
+        self._turn.clear()
+
     async def close(self) -> None:
         """Shut down the thread each model runs on."""
         await self._vad.cleanup()
@@ -226,6 +268,31 @@ async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGe
 _COUNTED: tuple[str, ...] = tuple(name for literal in get_args(Move) for name in get_args(literal))
 
 
+@dataclass(frozen=True)
+class Conversation:
+    """An edge that opens turns without a hand on the key and closes them by end-of-turn detection: how it steps, what
+    it leaves the gate with when switched away from, and the event each of its engagements is, with what it counts."""
+
+    event: str
+    step: Callable[[Engagement, Event], tuple[Engagement, tuple[Act, ...]]]
+    released: Callable[[Engagement], tuple[Move, ...]]
+    counts: tuple[str, ...] = ()
+
+
+ENGAGED = Conversation("trigger.engaged", step, released)
+
+
+@asynccontextmanager
+async def untapped(into: Callable[[KeyEvent], None]) -> AsyncGenerator[None]:
+    """No talk key: for an edge the key has no part in."""
+    yield
+
+
+async def unwoken(audio: bytes) -> bool:
+    """No wake word: for an edge no word opens."""
+    return False
+
+
 async def drive_engaged(
     tapped: Callable[[Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     overheard: Callable[[], AbstractAsyncContextManager[AsyncIterator[bytes]]],
@@ -234,11 +301,25 @@ async def drive_engaged(
     emit: Callable[[WideEvent], None],
     clock: Callable[[], Instant] = time.monotonic,
 ) -> None:
-    """Hand every move the edge makes to `on_move`, until cancelled.
+    """Engaged conversation: the talk key engages and disengages, and the voice opens each turn."""
+    await drive(ENGAGED, tapped, overheard, ears, unwoken, on_move, emit, clock)
 
-    One task steps the engagement, in the order things were heard, so the speech, the key, and Smart Turn's verdicts
-    never race each other: a verdict is stepped as it is given, before any audio heard while the model thought, so it
-    ends the turn it judged and no other.
+
+async def drive(
+    conversation: Conversation,
+    tapped: Callable[[Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
+    overheard: Callable[[], AbstractAsyncContextManager[AsyncIterator[bytes]]],
+    ears: Ears,
+    woken: Callable[[bytes], Awaitable[bool]],
+    on_move: Callable[[Move], Awaitable[None]],
+    emit: Callable[[WideEvent], None],
+    clock: Callable[[], Instant] = time.monotonic,
+) -> None:
+    """Hand every move `conversation` makes to `on_move`, until cancelled.
+
+    One task steps the engagement, in the order things were heard, so the speech, the key, the wake word, and Smart
+    Turn's verdicts never race each other: a verdict is stepped as it is given, before any audio heard while the model
+    thought, so it ends the turn it judged and no other.
     """
     loop = asyncio.get_running_loop()
     events: asyncio.Queue[Event | bytes] = asyncio.Queue()
@@ -251,14 +332,15 @@ async def drive_engaged(
     engagement = Engagement()
     # The silence the last buffer was heard in, as the detector said it.
     detected = VADState.QUIET
-    # [LAW:nothing-unseen] one event per engagement, open from the hold that engages to the one that disengages.
+    # [LAW:nothing-unseen] one event per engagement, open from what engages to what disengages.
     engaged = ExitStack()
     # The acts the last step made that the gate has yet to be handed: a switch away mid-step hands them on.
     owed = deque[Act]()
     with engaged:
         try:
+            events.put_nowait(Begun())
             async with tapped(events.put_nowait), asyncio.TaskGroup() as group:
-                group.create_task(overhearing(), name="the engaged edge's microphone")
+                group.create_task(overhearing(), name="the desk's microphone, overheard")
                 while True:
                     match await events.get():
                         case bytes() as audio:
@@ -266,19 +348,27 @@ async def drive_engaged(
                             # Smart Turn hears speech only where the detector is sure of it, as Pipecat feeds it, and
                             # only while engaged, so the room it hears disengaged is trimmed as silence is.
                             silent_too_long = ears.heard(audio, engagement.engaged and state == VADState.SPEAKING)
-                            heard: deque[Event] = deque([*_changed(detected, state, clock), *([TurnEnded("silence")] if silent_too_long else [])])
+                            heard: deque[Event] = deque(
+                                [*_changed(detected, state, clock), *([Woken(clock())] if await woken(audio) else []), *([TurnEnded("silence")] if silent_too_long else [])]
+                            )
                             detected = state
                         case event:
                             heard = deque[Event]([event])
                     while heard:
                         each = heard.popleft()
                         was = engagement
-                        engagement, acts = step(engagement, each)
+                        engagement, acts = conversation.step(engagement, each)
                         if engagement.engaged and not was.engaged:
-                            engaged.enter_context(unit("trigger.engaged", emit, counts=(*_COUNTED, "held_open", "ended_on_silence")))
+                            engaged.enter_context(unit(conversation.event, emit, counts=(*_COUNTED, "held_open", "ended_on_silence", *conversation.counts)))
                         match each, acts:
                             case TurnEnded(by="silence"), ("stop",):
                                 count(ended_on_silence=1)
+                            # [LAW:types-are-the-program] the wake word's own speech is no part of what is asked:
+                            # heard afresh from where it opened the turn, what is asked starts as any speech does, and
+                            # Smart Turn judges it alone.
+                            case Woken(), ("arm", "start"):
+                                ears.afresh()
+                                detected = VADState.QUIET
                             case _:
                                 pass
                         owed.extend(acts)
@@ -296,8 +386,10 @@ async def drive_engaged(
                                     if move in ("stop", "drop", "expire"):
                                         ears.clear()
                                     await on_move(move)
-                        match engagement.phase:
-                            case Talking(since=since) if not isinstance(was.phase, Talking):
+                        match engagement.phase, was.phase:
+                            case Woke(since=since) | Talking(since=since), Woke(since=opened) | Talking(since=opened) if since == opened:
+                                pass
+                            case Woke(since=since) | Talking(since=since), _:
                                 loop.call_at(since + TURN_LIMIT_SECONDS, events.put_nowait, TurnTooLong(since))
                             case _:
                                 pass
@@ -307,7 +399,7 @@ async def drive_engaged(
             # Inside the engagement's event, so what a switch away leaves the gate with is counted on it: what the last
             # step owed the gate, and then what is left open.
             left: list[Move] = [act for act in owed if act != "judge"]
-            for move in (*left, *released(engagement)):
+            for move in (*left, *conversation.released(engagement)):
                 count(**{move: 1})
                 await on_move(move)
 

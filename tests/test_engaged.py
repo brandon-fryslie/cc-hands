@@ -115,6 +115,9 @@ class ScriptedEars:
     def clear(self) -> None:
         self.cleared += 1
 
+    def afresh(self) -> None:
+        raise AssertionError("engaged conversation has no wake word to hear afresh from")
+
 
 class Rig:
     """The engaged edge driven with a fake talk key and a fake microphone."""

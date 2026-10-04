@@ -6,13 +6,16 @@ built later is one more value here, one more arm wherever a trigger is matched, 
 
 import asyncio
 from collections.abc import Callable, Coroutine
+from pathlib import Path
 from typing import Literal
 
 from hands.core.place import Place
+from hands.voice import wake
 
 # Right Shift held alone for each turn (`hands.voice.hold`); or held once to engage, after which the user's voice opens
-# each turn and end-of-turn detection closes it (`hands.voice.engaged`).
-Trigger = Literal["held key", "engaged conversation"]
+# each turn and end-of-turn detection closes it (`hands.voice.engaged`); or the wake word said, with no key at all
+# (`hands.voice.wake`).
+Trigger = Literal["held key", "engaged conversation", "wake word"]
 # [LAW:domain-language] an edge is what moves the gate (docs/architecture.md, "The gate has one owner and several
 # edges"): the desk's is the trigger in use, and the phone's is its page's talk button, there for every call.
 Edge = Trigger | Literal["phone button"]
@@ -21,7 +24,7 @@ Edge = Trigger | Literal["phone button"]
 def place_of(edge: Edge) -> Place:
     """Where the user is when `edge` moves the gate."""
     match edge:
-        case "held key" | "engaged conversation":
+        case "held key" | "engaged conversation" | "wake word":
             return "desk"
         case "phone button":
             return "phone"
@@ -61,6 +64,16 @@ class Triggers:
         return self._in_use
 
 
+async def readied(trigger: Trigger, wake_word: Path) -> tuple[str, ...]:
+    """What `trigger`'s edge loads from disk, fetched before it is put in use, so a switch that cannot be made is refused
+    as it is asked for and the edge loads only what is there: the names of the files fetched."""
+    match trigger:
+        case "wake word":
+            return await wake.fetched(wake_word)
+        case "held key" | "engaged conversation":
+            return ()
+
+
 def described(trigger: Trigger) -> str:
     """What hands says of a trigger in use: its name, and how to talk under it."""
     match trigger:
@@ -68,3 +81,5 @@ def described(trigger: Trigger) -> str:
             return "The held key: hold Right Shift to talk, and let go to send."
         case "engaged conversation":
             return "Engaged conversation: hold Right Shift once to engage, then just talk; hands answers when you finish, and listens again. Hold it once more to disengage."
+        case "wake word":
+            return "The wake word: say Hey Jarvis, then what you want; hands answers when you finish. It cannot hear the wake word while it speaks."
