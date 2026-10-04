@@ -8,6 +8,7 @@ from typing import get_args
 
 import pytest
 
+from hands.core.trace import Span
 from hands.core.effects import Allow, AllowWith, Approve, Command, Deny, HookReply, Input, Key, Reply, Text, Type, Withdraw
 from hands.core.events import Attached, PermissionRequested
 from hands.core.session import AskedQuestion, Blocker, CommandName, Membership, Option, Permission, Plan, PromptText, Question, RequestId, SessionId
@@ -30,8 +31,12 @@ def written(home: Home, entries: Sequence[Entry]) -> list[datetime]:
     return times
 
 
+# The span of the tool call that typed it.
+SPAN = Span("a" * 32, "b" * 16, None)
+
+
 def typed(prompt: str) -> Typing:
-    return Typing(Type(BILLING, Path("/tmp/fritter/session.sock"), 42, Text(PromptText(prompt))))
+    return Typing(Type(BILLING, Path("/tmp/fritter/session.sock"), 42, Text(PromptText(prompt))), SPAN)
 
 
 def asked(request: str, on: Blocker) -> Applied:
@@ -75,7 +80,7 @@ def test_the_heading_is_searched_too_and_only_the_newest_are_kept(tmp_path: Path
 def test_what_was_typed_reads_as_it_was_typed(tmp_path: Path) -> None:
     home = Home(tmp_path)
     for input in (Command(CommandName("compact"), None), Command(CommandName("rc"), PromptText("on")), Key("escape")):
-        AuditLog(home.audit, clock=lambda: MORNING).record(Typing(Type(BILLING, Path("/s"), 1, input)))
+        AuditLog(home.audit, clock=lambda: MORNING).record(Typing(Type(BILLING, Path("/s"), 1, input), SPAN))
     assert [moment.text for moment in recall(home.audit, [], 20).moments] == ["/compact", "/rc on", "the escape key"]
 
 
@@ -179,7 +184,7 @@ def test_recall_reads_every_input_request_and_reply_the_log_can_hold(tmp_path: P
     home = Home(tmp_path)
     written(
         home,
-        [*(Typing(Type(BILLING, Path("/s"), 1, input)) for input in INPUTS)]
+        [*(Typing(Type(BILLING, Path("/s"), 1, input), SPAN) for input in INPUTS)]
         + [line for number, (on, reply) in enumerate(zip(BLOCKERS * 2, REPLIES)) for line in (asked(f"r{number}", on), answered(f"r{number}", reply))],
     )
     # The Withdraw decided nothing, so it is the one reply with no moment.

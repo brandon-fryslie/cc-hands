@@ -38,7 +38,8 @@ from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
 from hands.sessions import catchup
-from hands.sessions.audit import Called, Record
+from hands.sessions.audit import Record
+from hands.sessions.wide import annotate, fail, unit
 from hands.sessions.focus import Unreadable, focused
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.home import Home
@@ -61,6 +62,14 @@ Result = Mapping[str, object]
 Body = Callable[..., Awaitable[Result]]
 JsonSchema = Mapping[str, object]
 Handler = Callable[[FunctionCallParams], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class Called:
+    """What the model gave a tool, and the result it was handed back: None while the body runs, and for a body that raised."""
+
+    arguments: Mapping[str, object]
+    result: Result | None
 
 
 @dataclass(frozen=True)
@@ -239,19 +248,29 @@ _COMMAND_NAME = re.compile(r"/?([A-Za-z0-9][A-Za-z0-9_:-]*)")
 
 
 def audited(tool: Tool, record: Record) -> Tool:
-    """The tool, with every call written to the audit log beside the result the model is handed."""
+    """The tool, each call one wide event: the tool's name, what it was given, and what the model was handed back, ending
+    failed where the body raised or the result refuses the call, as one whose arguments do not fit the body is refused."""
+    signature = inspect.signature(tool.body)
 
-    # [LAW:single-enforcer] one wrapper on every body, whichever adapter calls it, so no call leaves no line.
+    # [LAW:single-enforcer] one unit on every body, whichever adapter calls it, so no call goes unseen [LAW:nothing-unseen].
     @functools.wraps(tool.body)
     async def call(**arguments: object) -> Result:
-        try:
-            result = await tool.body(**arguments)
-        except Exception:
-            # [LAW:no-silent-failure] a tool that raises hands the model no result, so it has no Called line; this is its line.
-            logger.exception(f"the tool {tool.name} raised, called with {arguments!r}")
-            raise
-        record(Called(tool.name, arguments, result))
-        return result
+        with unit("tool.run", record):
+            annotate(tool=tool.name, called=Called(arguments, None))
+            try:
+                signature.bind(**arguments)
+            except TypeError as error:
+                # The model is told, as a result, and can call again.
+                result: Result = {"error": f"{tool.name} was called with the wrong arguments: {error}"}
+            else:
+                result = await tool.body(**arguments)
+            annotate(called=Called(arguments, result))
+            match result:
+                case {"error": refused}:
+                    fail(str(refused))
+                case _:
+                    pass
+            return result
 
     return replace(tool, body=call)
 
@@ -306,7 +325,7 @@ def playback_tools(player: Player) -> list[Tool]:
     """Going back over what was said: hands says it again from where the speaker was, never the model from memory.
 
     [LAW:nothing-unseen] each call's result is what hands said for it and how many cut-off readings still wait, so its
-    Called line holds what was heard and where it left playback.
+    event holds what was heard and where it left playback.
     """
 
     async def resume() -> Result:
@@ -340,7 +359,7 @@ def stay_silent_tool() -> Tool:
 
         Calling it is the whole reply: add no words of your own.
         """
-        # [LAW:no-silent-failure] the choice not to answer is still a Called line in the audit log, and with the model
+        # [LAW:no-silent-failure] the choice not to answer is still a tool's event in the audit log, and with the model
         # not run on the result, nothing follows it to the speaker.
         return {"silent": True}
 
@@ -364,7 +383,7 @@ def defaulting_to_focus(tool: Tool, home: Home) -> Tool:
             case Unreadable(reason):
                 return {"error": f"no session was named, and which one is focused cannot be read: {reason}"}
             case focus:
-                # [LAW:nothing-unseen] the session the focus stood in for rides on the result, so its Called line says where the call went.
+                # [LAW:nothing-unseen] the session the focus stood in for rides on the result, so its event says where the call went.
                 return {**await tool.body(session=focus, **arguments), "focused_session": focus}
 
     # The body's own signature with session optional, so a call whose other arguments do not fit is refused as the body would refuse it.
@@ -829,7 +848,7 @@ def expand_tool(sessions: Sessions, recounts: Recounts) -> Tool:
         # counted by the part, so the list asked for between two askings neither moves nor repeats it.
         depth = recounts.open(id, topic) + 1 if topic else 0
         drilled = drill(chosen, depth)
-        # [LAW:nothing-unseen] the depth rides on the result, so the Called line says how far down this asking went.
+        # [LAW:nothing-unseen] the depth rides on the result, so the call's event says how far down this asking went.
         return {"parts": [{"part": topic, "told": told} for topic, told in drilled.told], "deeper": drilled.deeper, "depth": depth}
 
     return tool(expand)
@@ -867,7 +886,7 @@ def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -
         share = max(CATCH_UP_LEAST, CATCH_UP_CLOSINGS // max(1, len(missed.finished)))
         return {
             # [LAW:nothing-unseen] where the window opened and what of it could not be read ride on the result, so the
-            # Called line says what was read.
+            # call's event says what was read.
             "since_minutes_ago": None if missed.since is None else round((at - missed.since).total_seconds() / 60),
             "unreadable_lines": missed.unreadable,
             "finished": [
@@ -976,7 +995,7 @@ def voice_tools(voices: Voices) -> list[Tool]:
     """Choosing the voice hands speaks in, by ear: the user hears the voices said by hands, and keeps one.
 
     [LAW:nothing-unseen] each result names the voice hands speaks in after the call, and a hearing the voices it said,
-    so the Called line holds what was heard and what was kept.
+    so the call's event holds what was heard and what was kept.
     """
 
     async def voices_on_offer() -> Result:

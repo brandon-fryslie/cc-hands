@@ -28,7 +28,7 @@ def record_turns(user_turns: LLMUserAggregator, assistant_turns: LLMAssistantAgg
     async def replied(_aggregator: LLMAssistantAggregator, message: AssistantTurnStoppedMessage) -> None:  # pyright: ignore[reportUnusedFunction]
         match message:
             case AssistantTurnStoppedMessage(content="", interrupted=False):
-                # A turn that only called a tool said nothing; its Called line is the record of it.
+                # A turn that only called a tool said nothing; its tool's event is the record of it.
                 pass
             case _:
                 record(Replied(message.content, message.interrupted))

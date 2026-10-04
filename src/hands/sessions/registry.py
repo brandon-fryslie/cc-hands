@@ -16,6 +16,7 @@ from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
 from hands.core.status import Stamp
 from hands.sessions.audit import Applied, EffectFailed, Performed, Record, Typing, TypingFailed
+from hands.sessions.wide import here
 from hands.sessions.clock import stamp_now
 from hands.sessions.hookconfig import STOP_HOLD_SECONDS
 from hands.sessions.delta import Changes, NoChanges
@@ -207,8 +208,9 @@ class Sessions:
                 return outcome
 
     async def _type[I: Input](self, effect: Type[I]) -> Typed[I] | NotTyped[I]:
-        # [LAW:single-enforcer] everything typed into a session passes here, so every one is in the log before it is typed.
-        self._record(Typing(effect))
+        # [LAW:single-enforcer] everything typed into a session passes here, so every one is in the log before it is typed,
+        # joined to the event of the tool call that typed it by its span.
+        self._record(Typing(effect, here()))
         try:
             await asyncio.to_thread(self._typist, effect)
         except Untyped as error:

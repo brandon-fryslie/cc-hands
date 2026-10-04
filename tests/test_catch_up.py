@@ -7,10 +7,11 @@ from hands.core.sentences import cut
 from hands.core.effects import SessionGone, Summarise
 from hands.core.events import Joined
 from hands.core.session import Membership, PromptId, SessionId
-from hands.sessions.audit import Announced, AuditLog, Called, EffectFailed, Entry, Performed, Replied, Transcribed
+from hands.sessions.audit import Announced, AuditLog, EffectFailed, Entry, Performed, Replied, Transcribed
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
-from hands.voice.tools import CATCH_UP_CLOSINGS, CATCH_UP_LEAST, audited, catch_up_tool
+from hands.sessions.wide import WideEvent
+from hands.voice.tools import Called, CATCH_UP_CLOSINGS, CATCH_UP_LEAST, audited, catch_up_tool
 
 LEFT = datetime(2026, 10, 3, 14, 0, tzinfo=UTC)
 BACK = LEFT + timedelta(minutes=10)
@@ -85,8 +86,9 @@ async def test_what_did_i_miss_after_ten_minutes_lists_every_session_that_finish
         "ended": ["scratch"],
         "announced": [{"text": "hands could not reach the model.", "times": 2}],
     }
-    # [LAW:nothing-unseen] the call's line carries where the window opened.
-    assert called == [Called("catch_up", {"minutes": 0}, result)]
+    # [LAW:nothing-unseen] the call's event carries where the window opened.
+    [event] = called
+    assert isinstance(event, WideEvent) and event.facts == {"tool": "catch_up", "called": Called({"minutes": 0}, result)}
 
 
 async def test_minutes_reaches_back_past_what_the_user_said(tmp_path: Path) -> None:

@@ -35,6 +35,7 @@ from hands.core.effects import Allow, Deny
 from hands.core import place
 from hands.core.place import Modality
 from hands.core.session import Permission
+from hands.brain.mcp import CallSpans
 from hands.brain.stage import INTERRUPTED, SILENT, BrainStage, HandsAsked, UserAsked
 from hands.core.front import FrontUnread, InFront, NoSessionInFront, SessionInFront, told
 from hands.core.session import SessionId
@@ -200,6 +201,8 @@ class Rig:
     modalities: list[Modality]
     # The edge that opened the gate's last turn: the last of these.
     edges: list[Edge]
+    # Each running call's span, as hands' MCP server finds it.
+    call_spans: CallSpans
     context: LLMContext = field(default_factory=LLMContext)
     exchanges: int = 0
     # The span each request sent on carries, in the order they left.
@@ -271,13 +274,14 @@ async def rig() -> AsyncGenerator[Rig, None]:
 
     modalities: list[Modality] = ["screen"]
     edges: list[Edge] = ["held key"]
-    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: edges[-1], recorded.append, clock=lambda: now[0])
+    call_spans = CallSpans()
+    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: edges[-1], recorded.append, call_spans, clock=lambda: now[0])
     out = Spoken()
     async with running([stage, out]) as run:
         # As the daemon runs it: a watch beside the pipeline.
         asking = asyncio.create_task(stage.ask_each())
         try:
-            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused, fronts, asking, modalities, edges)
+            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused, fronts, asking, modalities, edges, call_spans)
         finally:
             asking.cancel()
 
@@ -508,6 +512,8 @@ async def test_a_turn_is_one_event_saying_how_long_the_user_waited_and_where_the
     rig.stage.hear(Answering(first, 200, None))
     rig.now[0] = 1001.2
     rig.calls(first, ("t1", "mcp__hands__read_session"))
+    # The span hands' MCP server runs the call inside, while it runs.
+    running = rig.call_spans.span("t1")
     # The call's result going back is the end of its run, and the second round trip's start.
     rig.now[0] = 1001.5
     second, _ = rig.request(answering("mcp__hands__read_session", {"steps": []}))
@@ -524,8 +530,11 @@ async def test_a_turn_is_one_event_saying_how_long_the_user_waited_and_where_the
     # Two seconds from letting go to the first word: 0.4 transcribing, none waiting behind another turn, and the rest
     # the model's and its tool's, as the parts show.
     assert {fact: turn.facts[fact] for fact in ("asker", "waited_ms", "transcribed_ms", "queued_ms")} == {"asker": ASKED, "waited_ms": 2000.0, "transcribed_ms": 400.0, "queued_ms": 0.0}
-    [call] = [(event.event, event.duration_ms, event.outcome, event.facts) for event in events if event is not turn]
-    assert call == ("tool.call", 300.0, "ok", {"call": "t1", "tool": "mcp__hands__read_session"})
+    [call] = [event for event in events if event is not turn]
+    assert (call.event, call.duration_ms, call.outcome, call.facts) == ("tool.call", 300.0, "ok", {"call": "t1", "tool": "mcp__hands__read_session"})
+    # The call's run is the child of the very span the call is emitted as, and the turn's end forgets it.
+    assert running is not None and (call.trace_id, call.span_id, call.parent_id) == (running.trace_id, running.span_id, running.parent_id)
+    assert rig.call_spans.span("t1") is None
     # Each round trip is the proxy's record of its request, which carries a span of its own inside the turn's.
     spans = [span for span in rig.spans if span is not None]
     assert [(span.trace_id, span.parent_id) for span in spans] == [(turn.trace_id, turn.span_id)] * 2

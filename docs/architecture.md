@@ -1786,14 +1786,15 @@ thing that failed `[LAW:no-silent-failure]`:
    side: an `Applied` event (only one that changed the registry or called for an
    effect, so a quiet tick is not a line), each `Audit` record as it is (`Unregistered`,
    `AfterEnd`), then `Performed` or
-   `EffectFailed` for every other effect. One wrapper writes every tool call as
-   `Called` with its arguments and the result the model was handed; the context
+   `EffectFailed` for every other effect. One wrapper makes every tool call a
+   `tool.run` wide event with its arguments and the result the model was handed, and,
+   called in a voice turn, the child of that turn's `tool.call` span; the context
    aggregators write each user turn as `Transcribed` and each reply as `Replied`;
    the system channel writes `Announced` with whether it spoke or posted; the narrator
    writes each turn summary it speaks as `Recounted`; and a
    loguru sink turns every error a `hands` module logs into a `Failure`. A dictation is
-   traced from the words to the readback: `Transcribed`, then `Called stage_draft`
-   with what hands said back, which no model rewords. The log watches
+   traced from the words to the readback: `Transcribed`, then the `tool.run` of
+   `stage_draft` with what hands said back, which no model rewords. The log watches
    and never steers: a line the disk will not take is lost with a warning on stderr,
    a value it cannot encode is a `Failure` line instead, and the draft, the question, or the tick it described goes on. `hands log` follows
    the file by inode and offset, so a log moved aside is read from its first line.

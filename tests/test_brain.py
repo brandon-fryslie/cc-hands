@@ -10,7 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -19,7 +19,7 @@ import pytest
 from loguru import logger
 
 from hands.core.front import FrontUnread, InFront
-from hands.brain.mcp import McpServer, serve_mcp
+from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Asides, aside_command
 from hands.brain.process import NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
@@ -27,7 +27,7 @@ from hands.core.permissions import heard
 from hands.core.session import Permission
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.payload import Payload
-from hands.sessions.audit import AsideAnswered, BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainPermission, BrainRefused, Called, Entry, McpConnected
+from hands.sessions.audit import AsideAnswered, BrainAnswered, BrainAsked, BrainExited, BrainLaunched, BrainOffered, BrainPermission, BrainRefused, Entry
 from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
@@ -47,7 +47,8 @@ from hands.voice.sentences import SummaryStore
 from hands.voice.speech import Pushed, Tailed
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, VoiceConfig
 from hands.voice.summary import SummaryFailed, aside
-from hands.voice.tools import Result, audited, tool
+from hands.sessions.wide import Fact, WideEvent, here, unit, within
+from hands.voice.tools import Called, Result, audited, tool
 from hands.voice import voices
 
 
@@ -71,9 +72,13 @@ async def rpc(server: McpServer, message: dict[str, object]) -> tuple[int, objec
         return reply.status, (await reply.json() if reply.status == 200 else None)
 
 
-async def test_a_client_opens_lists_and_calls_the_tools_and_each_call_is_audited() -> None:
+def ran(recorded: Sequence[Entry]) -> list[tuple[str, str, Mapping[str, Fact]]]:
+    return [(entry.event, entry.outcome, entry.facts) for entry in recorded if isinstance(entry, WideEvent)]
+
+
+async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_event() -> None:
     recorded: list[Entry] = []
-    server = await serve_mcp([audited(tool(echo), recorded.append)], recorded.append)
+    server = await serve_mcp([audited(tool(echo), recorded.append)], recorded.append, CallSpans())
     try:
         status, opened = await rpc(server, {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "clientInfo": {"name": "claude-code"}}})
         assert status == 200 and opened == {
@@ -88,16 +93,22 @@ async def test_a_client_opens_lists_and_calls_the_tools_and_each_call_is_audited
         }]}}
         _, called = await rpc(server, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "hi", "times": 2}}})
         assert called == {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": '{"said": "hi hi"}'}], "isError": False}}
-        assert recorded == [McpConnected({"name": "claude-code"}, "2025-06-18"), Called("echo", {"text": "hi", "times": 2}, {"said": "hi hi"})]
+        assert ran(recorded) == [
+            ("mcp.request", "ok", {"method": "initialize", "client": "claude-code", "client_version": None, "protocol": "2025-06-18"}),
+            ("mcp.request", "ok", {"method": "tools/list"}),
+            ("tool.run", "ok", {"tool": "echo", "called": Called({"text": "hi", "times": 2}, {"said": "hi hi"})}),
+        ]
     finally:
         await server.close()
 
 
 async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_server_cannot_is_an_error() -> None:
-    server = await serve_mcp([tool(echo), tool(broken)], lambda _: None)
+    recorded: list[Entry] = []
+    server = await serve_mcp([audited(tool(echo), recorded.append), audited(tool(broken), recorded.append)], recorded.append, CallSpans())
     try:
         _, wrong = await rpc(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"words": "hi"}}})
-        assert wrong == {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "echo was called with the wrong arguments: missing a required argument: 'text'"}], "isError": True}}
+        refusal = "echo was called with the wrong arguments: missing a required argument: 'text'"
+        assert wrong == {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": json.dumps({"error": refusal})}], "isError": True}}
         _, failed = await rpc(server, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "broken"}})
         assert failed == {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": "broken failed: RuntimeError: the transcript went away"}], "isError": True}}
         _, unknown = await rpc(server, {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "resume"}})
@@ -106,14 +117,39 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
         assert unasked == {"jsonrpc": "2.0", "id": 4, "error": {"code": -32601, "message": "no method resources/list"}}
         async with aiohttp.ClientSession() as client, client.get(server.url, headers={"Authorization": f"Bearer {server.token}"}) as stream:
             assert stream.status == 405
+        assert [(event, outcome, facts.get("tool", facts.get("method"))) for event, outcome, facts in ran(recorded)] == [
+            ("tool.run", "failed", "echo"),
+            ("tool.run", "failed", "broken"),
+            ("mcp.request", "failed", "tools/call"),
+            ("mcp.request", "failed", "resources/list"),
+        ]
     finally:
         await server.close()
 
 
+async def test_a_call_a_turn_is_running_is_run_as_a_part_of_the_turns_call_and_one_no_turn_is_running_is_a_root() -> None:
+    recorded: list[Entry] = []
+    spans = CallSpans()
+    server = await serve_mcp([audited(tool(echo), recorded.append)], recorded.append, spans)
+    with unit("voice.turn", recorded.append):
+        call = within(here())
+    spans.opened("toolu_1", call)
+    try:
+        for id, used in enumerate(("toolu_1", "toolu_2")):
+            await rpc(server, {"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "hi"}, "_meta": {TOOL_USE_ID: used}}})
+        spans.ended(["toolu_1"])
+        await rpc(server, {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "hi"}, "_meta": {TOOL_USE_ID: "toolu_1"}}})
+    finally:
+        await server.close()
+    _, in_turn, outside, after = recorded
+    assert isinstance(in_turn, WideEvent) and (in_turn.trace_id, in_turn.parent_id) == (call.trace_id, call.span_id)
+    assert all(isinstance(run, WideEvent) and run.parent_id is None and run.trace_id != call.trace_id for run in (outside, after))
+
+
 async def test_a_request_without_the_brains_token_reaches_no_tool() -> None:
     recorded: list[Entry] = []
-    server = await serve_mcp([audited(tool(echo), recorded.append)], recorded.append)
-    call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "hi"}}}
+    server = await serve_mcp([audited(tool(echo), recorded.append)], recorded.append, CallSpans())
+    call ={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "hi"}}}
     try:
         async with aiohttp.ClientSession() as client:
             # What a web page can send with no preflight: a text/plain POST, with no token or the wrong one.

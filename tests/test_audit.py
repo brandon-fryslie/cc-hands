@@ -26,7 +26,6 @@ from hands.sessions.audit import (
     AsideAnswered,
     BacklogUnread,
     BrainAnswered,
-    Called,
     Entry,
     Failure,
     Named,
@@ -44,7 +43,7 @@ from hands.sessions.home import Home
 from hands.sessions.model_facts import ModelFailed
 from hands.sessions.wide import annotate, fail, unit
 from hands.sessions.registry import Sessions
-from hands.voice.tools import Result, Tool, audited, draft_tools, tool
+from hands.voice.tools import Called, audited, tool
 from hands.core.status import Busy, Report, Stamp
 from hands.core.wire import Answered, Exchanged, Garbled, MainTurn, Reached, Uncopied, Unreached
 
@@ -64,10 +63,6 @@ def lines(log: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for base in segments(log) for line in segment(log, base).read_text().splitlines()]
 
 
-async def invoke(tool: Tool, **arguments: object) -> Result:
-    return await tool.body(**arguments)
-
-
 def test_an_entry_is_its_type_and_fields_nested_values_alike() -> None:
     assert encoded(Performed(Reply(SessionId("s1"), RequestId("r1"), Withdraw()))) == {
         "type": "Performed",
@@ -85,7 +80,7 @@ def test_an_entry_is_its_type_and_fields_nested_values_alike() -> None:
 
 def test_a_value_the_log_cannot_write_is_refused_rather_than_guessed_at() -> None:
     with pytest.raises(TypeError, match="cannot encode a bytes"):
-        encoded(Called("t", {"odd": b"\x00"}, {}))
+        encoded(Called({"odd": b"\x00"}, None))
 
 
 def test_the_log_is_the_user_s_alone_to_read_whether_it_is_new_or_was_there(tmp_path: Path) -> None:
@@ -117,9 +112,6 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
     log.record(Named(session="s1", outcome="kept", before="a b", name=None, reply="a b", error=None, seconds=0.1))
     log.record(Named(session="s1", outcome="failed", before="a b", name=None, reply=None, error="timed out", seconds=0.1))
     log.record(AsideAnswered("q", "", True, SessionId("s2"), 0.0, 9.0))
-    log.record(Called("tell_turn", {}, {"error": "no running session has the id 'x'"}))
-    # An "error" deep in a line, in what a tool handed back, does not make the line hands' error.
-    log.record(Called("read_turn", {}, {"turn": {"error": {"type": "rate_limit_error"}}}))
     for reply in (
         Reached(200, 0.0, 0.0, 2, Answered({"input_tokens": 3})),
         Reached(429, 0.0, 0.0, 2, Answered({"type": "error", "error": {"type": "rate_limit_error"}})),
@@ -136,8 +128,6 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
         ("Named", "info"),
         ("Named", "error"),
         ("AsideAnswered", "error"),
-        ("Called", "error"),
-        ("Called", "info"),
         ("Exchanged", "info"),
         ("Exchanged", "error"),
         ("Exchanged", "error"),
@@ -498,36 +488,6 @@ async def test_a_stop_heard_as_the_daemon_shuts_down_is_still_applied() -> None:
     assert live is not None and live.turn == Told(PromptId("p1"))
 
 
-async def test_an_audited_tool_keeps_its_schema_and_writes_its_call_beside_its_result() -> None:
-    recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
-    [stage, *_] = draft_tools(sessions)
-    wrapped = audited(stage, recorded.append)
-    assert (wrapped.name, wrapped.description, wrapped.input_schema, wrapped.completes) == (stage.name, stage.description, stage.input_schema, stage.completes)
-    result = await invoke(wrapped, session="nobody", text="hi", resolutions=[])
-    assert recorded == [Called("stage_draft", {"session": "nobody", "text": "hi", "resolutions": []}, result)]
-
-
-async def test_a_tool_that_raises_is_a_failure_line_naming_it_and_its_arguments() -> None:
-    recorded: list[Entry] = []
-
-    async def broken(session: str) -> Result:
-        """Fail."""
-        raise RuntimeError("the transcript went away")
-
-    sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
-    try:
-        with pytest.raises(RuntimeError):
-            await invoke(audited(tool(broken), recorded.append), session="s1")
-    finally:
-        logger.remove(sink)
-    [failure] = recorded
-    assert isinstance(failure, Failure)
-    assert (failure.source, failure.message) == ("hands.voice.tools:call", "the tool broken raised, called with {'session': 's1'}: RuntimeError: the transcript went away")
-    # Where it was raised, a frame of the test's own, is the last frame; where hands logged it is in the tools.
-    assert failure.trace[-1].endswith(" in broken") and failure.where.split("/")[-1].startswith("tools.py:")
-
-
 def test_hands_log_piped_into_a_reader_that_stops_ends_quietly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
     home.audit.mkdir()
@@ -560,17 +520,22 @@ def test_hands_log_prints_a_control_json_left_raw_as_its_escape_and_the_line_is_
     assert json.loads(printed) == {"t": "a\x9b2J\x7f\u202eb\x1b"}
 
 
-def test_an_entry_the_log_cannot_encode_is_a_failure_line_and_the_daemon_carries_on(tmp_path: Path) -> None:
+async def test_an_entry_the_log_cannot_encode_is_a_failure_line_and_the_daemon_carries_on(tmp_path: Path) -> None:
     path = tmp_path / "audit"
     log = AuditLog(path, clock=lambda: AT)
+
+    async def list_sessions() -> dict[str, object]:
+        """List."""
+        return {"sessions": object()}
+
     sink = logger.add(failures_to(log.record), level="ERROR", filter="hands")
     try:
-        log.record(Called("list_sessions", {}, {"sessions": object()}))
+        assert "sessions" in await audited(tool(list_sessions), log.record).body()
     finally:
         logger.remove(sink)
     [line] = lines(path)
     assert line["type"] == "Failure"
-    assert line["message"].startswith("the audit log cannot encode a Called line: the audit log cannot encode a object")
+    assert line["message"].startswith("the audit log cannot encode a WideEvent line: the audit log cannot encode a object")
 
 
 async def test_what_was_heard_where_nothing_waits_on_it_still_fails_loudly() -> None:

@@ -39,6 +39,7 @@ from hands.core.effects import AfterEnd, Allow, AuditRecord, Deny, Effect, Heard
 from hands.core.events import Event
 from hands.core.place import Place
 from hands.core.session import SessionId
+from hands.core.trace import Span
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
 from hands.sessions.wide import WideEvent, chain
 
@@ -57,9 +58,11 @@ class Performed:
 
 @dataclass(frozen=True)
 class Typing:
-    """What is about to be typed into a session: written before the typing, so the log holds every send."""
+    """What is about to be typed into a session: written before the typing, so the log holds every send, and the span of
+    the unit of work that typed it, whose event says why."""
 
     effect: Type[Input]
+    span: Span
 
 
 @dataclass(frozen=True)
@@ -198,14 +201,6 @@ class CopiesLost:
 
     session: str | None
     lost: int
-
-
-@dataclass(frozen=True)
-class McpConnected:
-    """A client of hands' MCP server opened with it: who it says it is, and the protocol version it asked for."""
-
-    client: Mapping[str, object]
-    protocol: str
 
 
 @dataclass(frozen=True)
@@ -359,15 +354,6 @@ class CutOff:
 
     sentence: str | None
     waiting: int
-
-
-@dataclass(frozen=True)
-class Called:
-    """A tool the intermediary called, with the arguments it gave and the result it was handed back."""
-
-    tool: str
-    arguments: Mapping[str, object]
-    result: Mapping[str, object]
 
 
 @dataclass(frozen=True)
@@ -665,7 +651,6 @@ Entry = (
     | PhoneRefused
     | CopiesLost
     | Exchanged
-    | McpConnected
     | BrainLaunched
     | BrainOffered
     | BrainRefused
@@ -681,7 +666,6 @@ Entry = (
     | Primed
     | Replied
     | CutOff
-    | Called
     | Announced
     | Yielded
     | Cued
@@ -711,7 +695,7 @@ Level = Literal["error", "info"]
 def level(entry: Entry) -> Level:
     """Whether a line tells of something that went wrong: a Failure; a start refused; an effect, a backlog read, a unit of work or a
     name that failed; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
-    broke off; a tool that answered with an error; or a brain turn or side question that came to nothing."""
+    broke off; or a brain turn or side question that came to nothing."""
     # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
@@ -724,8 +708,6 @@ def level(entry: Entry) -> Level:
             return "info" if error is None else "error"
         case AsideAnswered(failed=failed):
             return "error" if failed else "info"
-        case Called(result=result):
-            return "error" if "error" in result else "info"
         case WideEvent(outcome=outcome):
             return "error" if outcome == "failed" else "info"
         case Named(outcome=outcome):
@@ -739,7 +721,7 @@ def level(entry: Entry) -> Level:
         case (
             Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
             | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | Exported() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
-            | McpConnected() | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
+            | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Yielded() | Cued() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
             | TurnsSummarised() | NameGiven() | Restarting() | Rolled()
         ):
