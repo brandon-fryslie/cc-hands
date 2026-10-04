@@ -197,14 +197,17 @@ def installed(root: Path) -> str:
 
 
 @contextlib.contextmanager
-def at_a_terminal(executable: Path, cwd: Path, arguments: Sequence[str] = ("30",), piped: bool = False) -> Generator[int]:
-    """A process running executable in cwd with a terminal of its own, as a session runs, its stdin a pipe if piped; its
-    pid, once it runs executable."""
+def at_a_terminal(executable: Path, cwd: Path, arguments: Sequence[str] = ("30",), piped: bool = False, pass_fds: Sequence[int] = ()) -> Generator[int]:
+    """A process started as executable in cwd with a terminal of its own, as a session runs, its stdin a pipe if piped;
+    its pid, once it runs executable."""
     controller, terminal = pty.openpty()
     # Popen returns only once the child has exec'd, so the process is executable from the first look at it.
     process = subprocess.Popen(
         [executable, *arguments],
         cwd=cwd,
+        # As a shell starts a program: with the directory it starts in as its PWD.
+        env={**os.environ, "PWD": str(cwd)},
+        pass_fds=pass_fds,
         stdin=subprocess.PIPE if piped else terminal,
         stdout=terminal,
         stderr=terminal,
@@ -334,6 +337,22 @@ def test_a_session_on_a_version_pruned_since_it_started_is_still_found(root: Pat
         pruned.unlink()
         found = readiness.sessions(home, path)
     assert isinstance(found, Missing) and f"(pid {pid}) is a session hands has no record of" in found.said
+
+
+# Moves to the directory it is given, says so on the descriptor it is given, and stays.
+MOVES = 'cd "$1" && printf . >&"$2" && read -r _'
+
+
+def test_a_program_started_by_a_relative_path_is_named_where_it_is_after_it_changes_directory(root: Path) -> None:
+    read, write = os.pipe()
+    with open(read, "rb", buffering=0) as moved, open(write, "wb", buffering=0) as said:
+        # As the shim starts the real `claude` under a relative PATH entry, and as a session then moves into a worktree.
+        with at_a_terminal(Path("bin/bash"), Path("/"), ("-c", MOVES, "bash", str(root), str(write)), pass_fds=(write,)) as pid:
+            # Only the program can say so now: one that ends without moving is read as nothing, not waited on.
+            said.close()
+            assert moved.read(1) == b"."
+            [process] = [process for process in terminal_processes() if process.pid == pid]
+    assert (process.executable, process.cwd) == (Path("/bin/bash"), root)
 
 
 def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
