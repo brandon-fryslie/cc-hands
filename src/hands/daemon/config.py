@@ -9,6 +9,9 @@ run runs starts the run again, on the file as edited.
     [whisper]
     model = "mlx-community/whisper-large-v3-turbo"
 
+    [telemetry]
+    collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address; none by default
+
 A file left out, or a key, is the default. Secrets are not settings: an API key comes from the environment or the
 keychain, and the brain's login from its own config directory. The voice is not either: the user chooses it by voice,
 and it changes while the daemon runs (hands.voice.voices).
@@ -24,6 +27,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
 
 from hands.sessions.audit import Record, SettingsEdited
 from hands.sessions.home import Home
@@ -72,33 +76,45 @@ type LLM = Anthropic | OpenAI | Claude
 
 @dataclass(frozen=True)
 class Config:
+    """`collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
+    but the audit log."""
+
     llm: LLM = Anthropic()
     whisper_model: str = WHISPER_MODEL
+    collector: str | None = None
 
 
-def load(home: Home) -> tuple[Config, Path | None]:
-    """The settings `home` holds and the file they were read from, or the defaults and None where it holds no file;
-    raises Rejected naming the file and what is wrong in it."""
-    held = _held(home)
-    return _settings(home, held), None if held is None else home.config
+@dataclass(frozen=True)
+class Settings:
+    """The settings a run starts on: the file's bytes as it read them, None where there was no file, and what they hold."""
+
+    held: bytes | None
+    config: Config
+
+    def path(self, home: Home) -> Path | None:
+        """The file the settings were read from, None where they are every default."""
+        return None if self.held is None else home.config
 
 
-async def edited(home: Home, record: Record, reachable: Callable[[Config], object], period: float = EDIT_SECONDS) -> SettingsEdited:
-    """The edit, once the file holds settings other than the run is on: written, rewritten, or removed.
+def load(home: Home) -> Settings:
+    """The settings `home` holds, read once as a run starts; raises Rejected naming the file and what is wrong in it."""
+    held = _readable(home, _held(home))
+    return Settings(held, _settings(home, held))
 
-    [LAW:no-ambient-temporal-coupling] begun before the run reads the file, so an edit is never missed: one that lands
-    between the two starts a run already on it again, which is the same run once more. An edit is weighed once its
+
+async def edited(home: Home, record: Record, reachable: Callable[[Config], object], running: Settings, period: float = EDIT_SECONDS) -> SettingsEdited:
+    """The edit, once the file holds settings other than `running`, the ones the run was started on: written, rewritten,
+    or removed.
+
+    [LAW:no-ambient-temporal-coupling] weighed against the bytes the run read, not a read of its own, so an edit is never
+    missed, however late after the run's read the watch begins. An edit is weighed once its
     bytes read the same on two polls, so a save an editor writes in two steps is weighed whole, and it is taken only
     while the file still holds it once weighed. One that does not parse, or names a model `reachable` refuses, is
     said and outlived, and the run keeps the settings it has; the next edit is weighed as any other. One whose
     settings are the run's, a comment or a revert, is no edit.
     """
-    seen = weighed = _held(home)
-    try:
-        running = _settings(home, seen)
-    except Rejected:
-        # A run on a file it cannot read stops at its start; until it does, every edit is weighed.
-        running = None
+    seen: bytes | _Unreadable | None = running.held
+    weighed = seen
     while True:
         await asyncio.sleep(period)
         if (now := _held(home)) != seen:
@@ -107,8 +123,8 @@ async def edited(home: Home, record: Record, reachable: Callable[[Config], objec
         if now == weighed:
             continue
         try:
-            settings = _settings(home, now)
-            if settings != running:
+            settings = _settings(home, _readable(home, now))
+            if settings != running.config:
                 # reachable blocks, on a keychain prompt or a login check, on a thread a stop does not wait for.
                 await off_loop(partial(reachable, settings), "weighing a settings edit")
                 if _held(home) == now:
@@ -135,20 +151,24 @@ def _held(home: Home) -> bytes | _Unreadable | None:
         return _Unreadable(str(error))
 
 
-def _settings(home: Home, held: bytes | _Unreadable | None) -> Config:
-    # [LAW:single-enforcer] the start and the watch weigh the file's bytes here, the same bytes each compared.
+def _readable(home: Home, held: bytes | _Unreadable | None) -> bytes | None:
     match held:
-        case None:
-            return Config()
         case _Unreadable(reason=reason):
             raise Rejected(f"{home.config} could not be read: {reason}")
-        case bytes():
-            try:
-                return parse(held.decode())
-            except UnicodeDecodeError as error:
-                raise Rejected(f"{home.config} could not be read: {error}") from error
-            except Rejected as error:
-                raise Rejected(f"{home.config}: {error}") from error
+        case _:
+            return held
+
+
+def _settings(home: Home, held: bytes | None) -> Config:
+    # [LAW:single-enforcer] the start and the watch weigh the file's bytes here, the same bytes each compared.
+    if held is None:
+        return Config()
+    try:
+        return parse(held.decode())
+    except UnicodeDecodeError as error:
+        raise Rejected(f"{home.config} could not be read: {error}") from error
+    except Rejected as error:
+        raise Rejected(f"{home.config}: {error}") from error
 
 
 def parse(text: str) -> Config:
@@ -157,10 +177,30 @@ def parse(text: str) -> Config:
         top = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise Rejected(f"not TOML: {error}") from error
-    _known(top, "the file", ("llm", "whisper"))
+    _known(top, "the file", ("llm", "whisper", "telemetry"))
     whisper = _table(top, "whisper")
     _known(whisper, "[whisper]", ("model",))
-    return Config(llm=_llm(_table(top, "llm")), whisper_model=_text(whisper, "[whisper]", "model", Config.whisper_model))
+    telemetry = _table(top, "telemetry")
+    _known(telemetry, "[telemetry]", ("collector",))
+    return Config(llm=_llm(_table(top, "llm")), whisper_model=_text(whisper, "[whisper]", "model", Config.whisper_model), collector=_collector(telemetry))
+
+
+def _collector(table: Mapping[str, object]) -> str | None:
+    if "collector" not in table:
+        return None
+    # [LAW:parse-dont-validate] spelled one way from here on: the base each OTLP signal's path is appended to.
+    url = _text(table, "[telemetry]", "collector", "").rstrip("/")
+    # Not echoed: a refused edit is a log line, and the address may hold credentials.
+    unusable = Rejected("[telemetry] collector is not an OTLP/HTTP collector's base address, as http://host:4318, to which hands appends /v1/traces, with no credentials in it")
+    try:
+        parts = urlsplit(url)
+        # Read for what it raises: a port that is not a number, or out of range.
+        parts.port
+    except ValueError as error:
+        raise unusable from error
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username is not None or parts.password is not None or parts.query or parts.fragment or parts.path.endswith("/v1/traces"):
+        raise unusable
+    return url
 
 
 def _llm(table: Mapping[str, object]) -> LLM:

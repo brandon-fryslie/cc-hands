@@ -50,7 +50,7 @@ async def test_a_unit_cancelled_mid_run_is_a_cancelled_event_and_not_a_failure()
     assert [(event.outcome, event.error) for event in emitted] == [("cancelled", None)]
 
 
-async def test_a_unit_opened_inside_another_shares_its_trace_and_each_annotates_only_its_own_event() -> None:
+async def test_a_unit_opened_inside_another_is_its_child_in_one_trace_and_each_annotates_only_its_own_event() -> None:
     emitted: list[WideEvent] = []
     with unit("turn", emitted.append):
         annotate(level="outer")
@@ -64,6 +64,7 @@ async def test_a_unit_opened_inside_another_shares_its_trace_and_each_annotates_
         annotate(after=True)
     inner_event, outer_event = emitted
     assert inner_event.trace_id == outer_event.trace_id
+    assert (inner_event.parent_id, outer_event.parent_id) == (outer_event.span_id, None) and len(outer_event.span_id) == 16
     assert (inner_event.facts, outer_event.facts) == ({"level": "inner"}, {"level": "outer", "after": True})
 
 
