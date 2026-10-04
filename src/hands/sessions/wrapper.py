@@ -10,12 +10,14 @@ stay unwrapped until they end.
 import os
 import shlex
 import shutil
+import string
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from itertools import takewhile
 from pathlib import Path
+from typing import Literal
 
 from hands.core.wire import UPSTREAM
 from hands.sessions.files import replace_whole
@@ -30,16 +32,37 @@ PACKAGED = Path(__file__).resolve().parents[1] / "bin" / "fritter"
 MARK = "# A hands claude shim, written whole by `hands install-fritter`: change hands.sessions.wrapper, not this."
 
 # [LAW:one-source-of-truth] the options that make a run print, not a session: the shim's case matches them, and
-# is_session matches them for a claude already running. -c is the one flag that takes no value and leaves a run going,
+# run matches them for a claude already running. -c is the one flag that takes no value and leaves a run going,
 # so `-cp` is print too.
 PRINT = ("--print", "-p*", "-cp*")
 
+# [LAW:one-source-of-truth] a first argument that names a subcommand, as the shim's case and run both match it: a bare
+# word of lowercase letters, digits and hyphens, so one that starts a command and has no character that cannot be in
+# one. Claude Code dispatches on its first argument, and its help lists only some of what it dispatches on (not
+# remote-control, rc, sync, bridge), so no list of its subcommands is complete and the word's shape is the test. Its
+# cost: a one-word lowercase opening prompt, `claude review`, is a session to Claude Code and runs as the real claude.
+# Only the first argument is read, since an option's value, `--model opus`, has the same shape. The letters are spelled
+# out, since a [a-z] range in the shell can follow the locale's collation and take capitals.
+STARTS_A_COMMAND = f"[{string.ascii_lowercase}]*"
+CANNOT_BE_A_COMMAND = f"*[!{string.ascii_lowercase}{string.digits}-]*"
 
-def is_session(arguments: Sequence[str], terminal_stdio: bool) -> bool:
-    """Whether the shim runs claude with these arguments as a session under fritter: a terminal on both ends, and no
-    print among the options before `--`."""
+# Why the shim runs a claude as the real claude and not as a session: not a terminal on both ends, a subcommand first,
+# or a print among the options before `--`, tested in that order.
+NotASession = Literal["piped", "subcommand", "print"]
+type Run = Literal["session"] | NotASession
+
+
+def run(arguments: Sequence[str], terminal_stdio: bool) -> Run:
+    """What the shim runs claude with these arguments as: a session under fritter, or the real claude, and why."""
+    first = arguments[0] if arguments else ""
     options = takewhile(lambda argument: argument != "--", arguments)
-    return terminal_stdio and not any(fnmatchcase(option, pattern) for option in options for pattern in PRINT)
+    if not terminal_stdio:
+        return "piped"
+    if fnmatchcase(first, STARTS_A_COMMAND) and not fnmatchcase(first, CANNOT_BE_A_COMMAND):
+        return "subcommand"
+    if any(fnmatchcase(option, pattern) for option in options for pattern in PRINT):
+        return "print"
+    return "session"
 
 
 class Uninstallable(Exception):
@@ -52,18 +75,36 @@ class Installed:
     fritter: Path
 
 
-def fritter_of(path: Path) -> Path | None:
-    """The fritter a hands shim at path runs, this home's or another's; None when path is not a hands shim."""
-    assigned = _shim(path) or ""
+@dataclass(frozen=True)
+class Shim:
+    """A hands shim, this home's or another's, that is the one this hands writes: the fritter it runs and the wire it
+    copies API traffic to."""
+
+    fritter: Path
+    wire: Path
+
+
+@dataclass(frozen=True)
+class Stale:
+    """A hands shim, by its mark, that is not the one this hands writes for any fritter and wire: an older hands wrote it."""
+
+
+def shim_of(path: Path) -> Shim | Stale | None:
+    """What the file at path is as a hands shim; None when it is not one."""
+    text = _shim(path)
+    if text is None:
+        return None
     try:
-        words = shlex.split(assigned.removeprefix("fritter=")) if assigned.startswith("fritter=") else []
+        words = [shlex.split(line.removeprefix(f"{name}=")) if line.startswith(f"{name}=") else [] for name, line in zip(("fritter", "wire"), text.splitlines()[2:4])]
     except ValueError:  # an unclosed quote: not a line shim_script writes
         words = []
+    # [LAW:one-source-of-truth] the shim is shim_script written out for the fritter and wire it names, and `hands check`
+    # asks run what that script does, so one an older hands wrote is Stale, never taken to do what this one would.
     match words:
-        case [fritter]:
-            return Path(fritter)
+        case [[fritter], [wire]] if text == shim_script(Path(fritter), Path(wire)):
+            return Shim(Path(fritter), Path(wire))
         case _:
-            return None
+            return Stale()
 
 
 def real_claude(search: str) -> Path | None:
@@ -79,15 +120,17 @@ def real_claude(search: str) -> Path | None:
 
 
 def _shim(path: Path) -> str | None:
-    """The line after a hands shim's mark; None when path is not a file marked as a shim."""
+    """The whole text of a hands shim; None when path is not a file marked as a shim."""
     # [LAW:one-source-of-truth] the one reading of the mark in Python. Read as the shim reads each claude on PATH: a file
-    # it cannot read is not a shim to it either.
+    # it cannot read is not a shim to it either. Only a marked file is read past its mark: the real claude is large.
     try:
         with path.open("rb") as found:
-            lines = [found.readline() for _ in range(3)]
+            head = found.readline() + found.readline()
+            if head.splitlines()[1:] != [MARK.encode()]:
+                return None
+            return (head + found.read()).decode(errors="replace")
     except OSError:
         return None
-    return lines[2].rstrip(b"\n").decode(errors="replace") if lines[1].rstrip(b"\n") == MARK.encode() else None
 
 
 def shim_script(fritter: Path, wire: Path) -> str:
@@ -99,10 +142,11 @@ def shim_script(fritter: Path, wire: Path) -> str:
     # take the other for the real claude, and fritter would nest without end. fritter is handed the path, never the
     # name, or it would run a shim again. An empty PATH entry is the current directory, as it is to the shell; the colon
     # added before splitting keeps a trailing one, which splitting on IFS would drop.
-    # A session is a terminal on both ends and no print. A pipe, a script, and `claude -p` are not sessions to
-    # drive, and on a pty they would not be what they are; they run the real claude, without the address of any
-    # session they were started from, so none of them claims a fritter that does not type into it. is_session is this
-    # same test, asked of a claude already running.
+    # A session is a terminal on both ends, no subcommand, and no print. A pipe, a script, `claude update`, and
+    # `claude -p` are not sessions to drive, and on a pty they would not be what they are; they run the real claude,
+    # without the address of any session they were started from, so none of them claims a fritter that does not type
+    # into it. run is this same test, asked of a claude already running. A first argument that cannot be a command is
+    # tested first: a glob cannot say "only these characters" alone.
     # A session reaches its API as it would without the shim, ANTHROPIC_BASE_URL unchanged, so Claude Code keeps all it
     # keeps for Anthropic's own API: fritter is its proxy instead, and opens only the connections to that API's host. What
     # the tap replaced is given back first, so a claude run from inside a session is tapped once, by its own fritter, and
@@ -134,6 +178,10 @@ fi
 
 session=yes
 [ -t 0 ] && [ -t 1 ] || session=no
+case ${{1-}} in
+  {CANNOT_BE_A_COMMAND}) ;;
+  {STARTS_A_COMMAND}) session=no ;;
+esac
 for arg; do
   case $arg in
     --) break ;;

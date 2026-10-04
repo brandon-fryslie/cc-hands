@@ -133,16 +133,24 @@ def test_an_empty_path_entry_is_the_current_directory(root: Path, entries: str) 
     assert ran.stdout == "claude  socket=unset\n"
 
 
-def test_any_home_s_shim_names_the_fritter_it_runs_and_nothing_else_names_one(root: Path) -> None:
+def test_any_home_s_shim_names_the_fritter_and_wire_it_runs_and_nothing_else_is_one(root: Path) -> None:
     shim = installed_shim(root)
-    other = executable(root / "it's other" / "claude", shim_script(root / "it's other" / "fritter", WIRE))
-    assert wrapper.fritter_of(shim) == root / "bin" / "fritter"
-    assert wrapper.fritter_of(other) == root / "it's other" / "fritter"
+    other = executable(root / "it's other" / "claude", shim_script(root / "it's other" / "fritter", root / "it's other" / "wire.sock"))
+    assert wrapper.shim_of(shim) == wrapper.Shim(root / "bin" / "fritter", WIRE)
+    assert wrapper.shim_of(other) == wrapper.Shim(root / "it's other" / "fritter", root / "it's other" / "wire.sock")
     unreadable = executable(root / "locked" / "claude", "#!/bin/sh\n")
     unreadable.chmod(0o111)
-    damaged = [executable(root / f"damaged{n}" / "claude", f"#!/bin/sh\n{wrapper.MARK}\n{line}\n") for n, line in enumerate(["fritter=", "fritter='x", "fritter=a b"])]
-    for path in (root / "real" / "claude", root / "nowhere" / "claude", unreadable, root / "bin", *damaged):
-        assert wrapper.fritter_of(path) is None
+    for path in (root / "real" / "claude", root / "nowhere" / "claude", unreadable, root / "bin"):
+        assert wrapper.shim_of(path) is None
+
+
+@pytest.mark.parametrize(
+    "lines",
+    # The first is a shim as hands wrote it before the wire: a fritter and no wire.
+    ["fritter=f\n\nexec f", "fritter=\nwire=w", "fritter='x\nwire=w", "fritter=a b\nwire=w", "fritter=f\nwire='w", "wire=w\nfritter=f"],
+)
+def test_a_marked_file_that_is_not_the_shim_this_hands_writes_is_stale(root: Path, lines: str) -> None:
+    assert wrapper.shim_of(executable(root / "claude", f"#!/bin/sh\n{wrapper.MARK}\n{lines}\n")) == wrapper.Stale()
 
 
 def test_no_real_claude_on_path_is_said_and_runs_nothing(root: Path) -> None:
@@ -182,8 +190,8 @@ def test_install_copies_the_packaged_fritter_with_no_go_and_says_whether_path_fi
     assert home.fritter.read_bytes() == wrapper.PACKAGED.read_bytes()
     assert sorted(entry.name for entry in home.bin.iterdir()) == ["claude", "fritter"]
 
-    printed = on_a_terminal(["claude", "hi"], f"{home.bin}:{tools}")
-    assert printed.startswith("claude hi socket=/tmp/fritter-")
+    printed = on_a_terminal(["claude", "say hi"], f"{home.bin}:{tools}")
+    assert printed.startswith("claude say hi socket=/tmp/fritter-")
     # [LAW:nothing-unseen] each install's event: where it copied from and to, and whether PATH found its claude.
     events = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "fritter.install"]
     facts = {"packaged": str(wrapper.PACKAGED), "fritter": str(home.fritter), "shim": str(home.shim)}
@@ -261,11 +269,33 @@ def test_a_session_is_tapped_toward_the_api_it_was_given_and_still_names_it(root
 
 
 @pytest.mark.parametrize(
-    "args",
-    [[], ["--resume", "abc"], ["-p", "hi"], ["--print"], ["--model", "opus", "-p", "hi"], ["-cp", "hi"], ["-pc"], ["-dp"], ["-rp"], ["--", "-p"], ["mcp", "serve"]],
+    ("args", "run"),
+    [
+        ([], "session"),
+        (["--resume", "abc"], "session"),
+        (["--model", "opus"], "session"),
+        (["fix the readme"], "session"),
+        (["Hello"], "session"),
+        (["--model", "opus", "fix the readme"], "session"),
+        (["--", "update"], "session"),
+        (["-p", "hi"], "print"),
+        (["--print"], "print"),
+        (["--model", "opus", "-p", "hi"], "print"),
+        (["-cp", "hi"], "print"),
+        (["-pc"], "print"),
+        (["-dp"], "session"),
+        (["-rp"], "session"),
+        (["--", "-p"], "session"),
+        (["mcp", "serve"], "subcommand"),
+        (["update"], "subcommand"),
+        (["remote-control", "--spawn", "worktree"], "subcommand"),
+        (["setup-token"], "subcommand"),
+        (["bg-pty-host"], "subcommand"),
+    ],
 )
-def test_a_claude_already_running_is_a_session_by_the_shims_own_test(root: Path, args: list[str]) -> None:
+def test_a_claude_already_running_is_a_session_by_the_shims_own_test(root: Path, args: list[str], run: str) -> None:
     shim = installed_shim(root)
     printed = on_a_terminal([str(shim), *args], f"{root / 'bin'}:{root / 'real'}:/usr/bin:/bin")
-    assert printed.startswith("fritter ") == wrapper.is_session(args, True)
-    assert not wrapper.is_session(args, False)
+    assert printed.startswith("fritter ") == (run == "session")
+    assert wrapper.run(args, True) == run
+    assert wrapper.run(args, False) == "piped"
