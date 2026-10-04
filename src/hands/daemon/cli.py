@@ -72,7 +72,7 @@ def said_failed(record: audit.Record) -> audit.Record:
         match entry:
             case wide.WideEvent(outcome="failed", trace=(), event=event, error=error):
                 # A part timed elsewhere, as a tool call whose result was an error, can fail with no error to say.
-                logger.bind(**{audit.AUDITED: True}).error(f"{event} failed" if error is None else f"{event} failed: {error}")
+                audit.said(f"{event} failed" if error is None else f"{event} failed: {error}")
             case _:
                 pass
 

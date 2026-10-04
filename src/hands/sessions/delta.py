@@ -26,7 +26,7 @@ from loguru import logger
 
 from hands.core.delta import Branched, Changed, Commit, Delta, PullRequested, Pushed
 from hands.core.session import SessionId
-from hands.sessions.audit import Record
+from hands.sessions.audit import Record, said
 from hands.sessions.child import run
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 from hands.sessions.wide import annotate, count, unit
@@ -264,9 +264,10 @@ class Deltas:
                     delta, reached, asked = await self._between(mark, time.monotonic() + self._reading, began + self._patience - SPARE)
                     annotate(changes=delta.changes, forge=asked.forge, forge_seconds=asked.seconds)
                     count(commits=len(delta.commits), files=len(delta.files))
-        except Exception:
+        except Exception as error:
             # A reading that raised is a failed event, which says what it raised; the turn is told without its delta.
-            pass
+            # [LAW:no-silent-failure] the exception ends here, so it is said here.
+            said(f"what a turn changed could not be read: {type(error).__name__}: {error}")
         finally:
             # Answered however this ends, a cancelled reading included, so the part going on never waits on it for ever.
             end.set_result(reached)

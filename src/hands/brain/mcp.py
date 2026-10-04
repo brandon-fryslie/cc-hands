@@ -21,7 +21,7 @@ from aiohttp import web
 from loguru import logger
 
 from hands.core.trace import Span
-from hands.sessions.audit import Record
+from hands.sessions.audit import Record, said
 from hands.sessions.wide import annotate, continuing, fail, unit
 from hands.voice.tools import Tool
 
@@ -140,7 +140,9 @@ async def serve_mcp(tools: Sequence[Tool], record: Record, spans: CallSpans) -> 
             with continuing(spans.span(used)):
                 result = await tool.body(**arguments)
         except Exception as error:
-            # The tool's event holds what it raised; the model hears that the tool failed.
+            # The tool's event holds what it raised; the model hears that the tool failed. [LAW:no-silent-failure] the
+            # exception ends here, so it is said here.
+            said(f"{tool.name} failed: {type(error).__name__}: {error}")
             return _result(id, {"content": [{"type": "text", "text": f"{tool.name} failed: {type(error).__name__}: {error}"}], "isError": True})
         # A refusal is a result like any other: Claude Code turns an isError result into an error of its own wording, out
         # of which the brain's stage could not read the refusal back.
