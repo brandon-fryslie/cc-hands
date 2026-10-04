@@ -336,8 +336,9 @@ def unjoined(
     an update leaves running sessions on the version they started on, that the shim would have run as a session: a
     `claude -p`, or a claude piped into, is none. One whose parent runs claude is that run's own helper. The hook records that same
     process, so it is matched by pid. One under another config, as the brain is, has other plugins, and is no session
-    of the plugin this check looks at. `attended` says whether a process reads and writes its terminal; it is asked only
-    of a run of claude, the one process it matters for.
+    of the plugin this check looks at; one under the same directory by another path, through a link, is. `attended`
+    says whether a process reads and writes its terminal; it is asked only of a run of claude, the one process it
+    matters for.
     """
     by_pid = {process.pid: process for process in terminals}
     install = _unversioned(claude)
@@ -346,10 +347,11 @@ def unjoined(
         return pid in by_pid and _unversioned(by_pid[pid].executable) == install
 
     fritter = home.fritter.resolve()
+    config = config.resolve()
     runs = [
         process
         for process in terminals
-        if runs_claude(process.pid) and not runs_claude(process.parent) and config_dir(process.environment) == config and process.pid not in members
+        if runs_claude(process.pid) and not runs_claude(process.parent) and config_dir(process.environment).resolve() == config and process.pid not in members
     ]
     # [LAW:one-source-of-truth] a session is what the shim would run as one, by the shim's own test.
     sessions = [process for process in runs if wrapper.is_session(process.arguments, attended(process))]

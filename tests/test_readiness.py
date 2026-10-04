@@ -401,6 +401,15 @@ def test_a_session_under_another_config_as_the_brain_is_has_other_plugins_and_is
     assert unjoined("/v/2.1.288", [brain]) == []
 
 
+def test_a_session_under_the_same_config_by_way_of_a_link_is_named(tmp_path: Path) -> None:
+    target = tmp_path / "dotfiles" / "claude"
+    target.mkdir(parents=True)
+    (tmp_path / ".claude").symlink_to(target)
+    session = terminal(1, "/v/2.1.288", config=target)
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), tmp_path / ".claude", [session], set(), reads_its_terminal)
+    assert [joined.process for joined in found.sessions] == [session]
+
+
 def test_a_sessions_own_helper_run_from_its_executable_is_not_a_session() -> None:
     session, helper = terminal(10, "/v/2.1.288"), terminal(11, "/v/2.1.288", parent=10)
     assert unjoined("/v/2.1.288", [session, helper], {10}) == []
