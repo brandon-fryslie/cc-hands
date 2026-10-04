@@ -14,11 +14,13 @@ import os
 import re
 import shutil
 import subprocess
+from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import version
 from pathlib import Path
+from typing import get_args
 
 from hands.core.events import Attached
 from hands.core.session import Membership
@@ -184,19 +186,19 @@ def plugin_listed(raw: str) -> Finding:
 
 
 def shim(home: Home, path: str) -> Finding:
-    """Whether `claude` on this PATH is a hands shim whose fritter is the one this hands carries, so it starts every
-    interactive session under fritter."""
+    """Whether `claude` on this PATH is the shim this hands writes, with the fritter this hands carries, so it starts
+    every interactive session under fritter."""
     found = shutil.which("claude", path=path)
-    fritter = None if found is None else wrapper.fritter_of(Path(found))
+    claude = None if found is None else Path(found)
     # [LAW:dataflow-not-control-flow] what to do is read off what is there: an installed shim wants only the PATH.
     first = f'put {home.bin} first on PATH: export PATH="{home.bin}:$PATH"'
     fix = first if wrapper.fritter_of(home.shim) is not None else f"run `hands install-fritter`, then {first}"
-    match fritter:
-        case None:
+    match None if claude is None else (claude, wrapper.fritter_of(claude)):
+        case None | (_, None):
             return Missing(f"`claude` on this PATH is {found or 'nothing'}, not hands' shim, so no session started from it can be typed into: {fix}")
-        case runs if not os.access(runs, os.X_OK):
+        case (_, runs) if not os.access(runs, os.X_OK):
             return Missing(f"`claude` on this PATH is hands' shim, {found}, but its fritter {runs} is not there to run, so every interactive claude fails to start: run `hands install-fritter`")
-        case runs:
+        case (claude, runs):
             # [LAW:one-source-of-truth] the fritter in a home's bin is a copy of the packaged one, so a copy that has
             # drifted from it, as one does when hands is upgraded or a checkout's fritter rebuilt, is said, never trusted.
             try:
@@ -205,6 +207,14 @@ def shim(home: Home, path: str) -> Finding:
                 return Unknown(f"cannot tell whether {runs} is the fritter this hands carries, {wrapper.PACKAGED}: {error}")
             if not current:
                 return Missing(f"`claude` on this PATH is hands' shim, {found}, but its fritter {runs} is not the one this hands carries, {wrapper.PACKAGED}: run `hands install-fritter`")
+            # [LAW:one-source-of-truth] the shim is shim_script written out, and `hands check` asks run what that script
+            # does, so a shim an older hands wrote is said, never taken to do what this one would.
+            try:
+                written = claude.read_text() == wrapper.shim_script(runs, home.wire)
+            except OSError as error:
+                return Unknown(f"cannot tell whether {found} is the shim this hands writes: {error}")
+            if not written:
+                return Missing(f"`claude` on this PATH is hands' shim, {found}, but not the one this hands writes: run `hands install-fritter`")
             return Ready(f"`claude` on this PATH is hands' shim, {found}: every interactive session started from it can be typed into")
 
 
@@ -249,10 +259,10 @@ class Unjoined:
 
 @dataclass(frozen=True)
 class Unrecorded:
-    """The sessions at a terminal hands has no record of, and how many runs of claude beside them are no session."""
+    """The sessions at a terminal hands has no record of, and how many runs of claude beside them are no session, by why."""
 
     sessions: list[Unjoined]
-    runs: int
+    others: Counter[wrapper.NotASession]
 
 
 def unrecorded(home: Home, path: str, members: Collection[int]) -> Unrecorded | Unfindable:
@@ -302,12 +312,11 @@ def unjoined(
 
     A session is a process at a terminal running `claude`, the Claude Code executable, or any other version of it, since
     an update leaves running sessions on the version they started on, that the shim would have run as a session: a
-    `claude -p`, or a claude piped into, is none. One whose parent runs claude is that run's own helper. The hook records that same
-    process, so it is matched by pid. One under another config, as the brain is, has other plugins, and is no session
-    of the plugin this check looks at; one under the same directory by another path, through a link, is, since `config`
-    and each process's are both as `config_dir` reads them. `attended`
-    says whether a process reads and writes its terminal; it is asked only of a run of claude, the one process it
-    matters for.
+    `claude -p`, a subcommand, or a claude piped into, is none. One whose parent runs claude is that run's own helper. The
+    hook records that same process, so it is matched by pid. One under another config, as the brain is, has other
+    plugins, and is no session of the plugin this check looks at; one under the same directory by another path, through
+    a link, is, since `config` and each process's are both as `config_dir` reads them. `attended` says whether a process
+    reads and writes its terminal; it is asked only of a run of claude, the one process it matters for.
     """
     by_pid = {process.pid: process for process in terminals}
     install = _unversioned(claude)
@@ -322,10 +331,10 @@ def unjoined(
         if runs_claude(process.pid) and not runs_claude(process.parent) and config_dir(process.environment, process.cwd) == config and process.pid not in members
     ]
     # [LAW:one-source-of-truth] a session is what the shim would run as one, by the shim's own test.
-    sessions = [process for process in runs if wrapper.is_session(process.arguments, attended(process))]
+    ran: list[tuple[Terminal, wrapper.Run]] = [(process, wrapper.run(process.arguments, attended(process))) for process in runs]
     return Unrecorded(
-        [Unjoined(process, process.parent in by_pid and by_pid[process.parent].executable == fritter) for process in sessions],
-        len(runs) - len(sessions),
+        [Unjoined(process, process.parent in by_pid and by_pid[process.parent].executable == fritter) for process, why in ran if why == "session"],
+        Counter(why for _, why in ran if why != "session"),
     )
 
 
@@ -350,9 +359,10 @@ def sessions_found(
     match unrecorded:
         case Unfindable(said):
             unknown, unseen, beside = [], [f"a session hands has no record of cannot be found: {said}"], ""
-        case Unrecorded(sessions, runs):
-            # [LAW:nothing-unseen] a claude at a terminal set aside as no session is counted, so none goes unseen.
-            unknown, unseen, beside = [_unjoined(session) for session in sessions], [], f", runs of claude at a terminal that are none: {runs}"
+        case Unrecorded(sessions, others):
+            # [LAW:nothing-unseen] a claude at a terminal set aside as no session is counted by why, so none goes unseen.
+            counts = ", ".join(f"{why} {others[why]}" for why in get_args(wrapper.NotASession))
+            unknown, unseen, beside = [_unjoined(session) for session in sessions], [], f", runs of claude at a terminal that are none: {counts}"
     unreached = [
         *(line for member in running for line in _untypable(member, listening)),
         *(f"{file.path} names no session hands can read ({file.error}): hands run removes it" for file in unreadable),

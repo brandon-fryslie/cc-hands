@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from itertools import takewhile
 from pathlib import Path
+from typing import Literal
 
 from hands.core.wire import UPSTREAM
 from hands.sessions.files import replace_whole
@@ -31,27 +32,37 @@ PACKAGED = Path(__file__).resolve().parents[1] / "bin" / "fritter"
 MARK = "# A hands claude shim, written whole by `hands install-fritter`: change hands.sessions.wrapper, not this."
 
 # [LAW:one-source-of-truth] the options that make a run print, not a session: the shim's case matches them, and
-# is_session matches them for a claude already running. -c is the one flag that takes no value and leaves a run going,
+# run matches them for a claude already running. -c is the one flag that takes no value and leaves a run going,
 # so `-cp` is print too.
 PRINT = ("--print", "-p*", "-cp*")
 
-# [LAW:one-source-of-truth] a first argument that names a subcommand, as the shim's case and is_session both match it:
-# a bare word of lowercase letters, digits and hyphens. Claude Code dispatches on its first argument, and its help lists
-# only some of what it dispatches on (not remote-control, rc, sync, bridge), so no list of its subcommands is
-# complete; the word's shape is the test, and a one-word lowercase opening prompt reads as a subcommand, as `claude
-# sync` already does to Claude Code itself. The letters are spelled out, since a [a-z] range in the shell can follow
-# the locale's collation and take capitals.
-COMMAND = f"[{string.ascii_lowercase}]*"
-NOT_A_COMMAND = f"*[!{string.ascii_lowercase}{string.digits}-]*"
+# [LAW:one-source-of-truth] a first argument that names a subcommand, as the shim's case and run both match it: a bare
+# word of lowercase letters, digits and hyphens, so one that starts a command and has no character that cannot be in
+# one. Claude Code dispatches on its first argument, and its help lists only some of what it dispatches on (not
+# remote-control, rc, sync, bridge), so no list of its subcommands is complete and the word's shape is the test. Its
+# cost: a one-word lowercase opening prompt, `claude review`, is a session to Claude Code and runs as the real claude.
+# Only the first argument is read, since an option's value, `--model opus`, has the same shape. The letters are spelled
+# out, since a [a-z] range in the shell can follow the locale's collation and take capitals.
+STARTS_A_COMMAND = f"[{string.ascii_lowercase}]*"
+CANNOT_BE_A_COMMAND = f"*[!{string.ascii_lowercase}{string.digits}-]*"
+
+# Why the shim runs a claude as the real claude and not as a session: not a terminal on both ends, a subcommand first,
+# or a print among the options before `--`, tested in that order.
+NotASession = Literal["piped", "subcommand", "print"]
+type Run = Literal["session"] | NotASession
 
 
-def is_session(arguments: Sequence[str], terminal_stdio: bool) -> bool:
-    """Whether the shim runs claude with these arguments as a session under fritter: a terminal on both ends, no
-    subcommand first, and no print among the options before `--`."""
+def run(arguments: Sequence[str], terminal_stdio: bool) -> Run:
+    """What the shim runs claude with these arguments as: a session under fritter, or the real claude, and why."""
     first = arguments[0] if arguments else ""
-    subcommand = fnmatchcase(first, COMMAND) and not fnmatchcase(first, NOT_A_COMMAND)
     options = takewhile(lambda argument: argument != "--", arguments)
-    return terminal_stdio and not subcommand and not any(fnmatchcase(option, pattern) for option in options for pattern in PRINT)
+    if not terminal_stdio:
+        return "piped"
+    if fnmatchcase(first, STARTS_A_COMMAND) and not fnmatchcase(first, CANNOT_BE_A_COMMAND):
+        return "subcommand"
+    if any(fnmatchcase(option, pattern) for option in options for pattern in PRINT):
+        return "print"
+    return "session"
 
 
 class Uninstallable(Exception):
@@ -112,9 +123,10 @@ def shim_script(fritter: Path, wire: Path) -> str:
     # name, or it would run a shim again. An empty PATH entry is the current directory, as it is to the shell; the colon
     # added before splitting keeps a trailing one, which splitting on IFS would drop.
     # A session is a terminal on both ends, no subcommand, and no print. A pipe, a script, `claude update`, and
-    # `claude -p` are not sessions to drive, and on a pty they would not be what they are; they run the real claude, without the address of any
-    # session they were started from, so none of them claims a fritter that does not type into it. is_session is this
-    # same test, asked of a claude already running.
+    # `claude -p` are not sessions to drive, and on a pty they would not be what they are; they run the real claude,
+    # without the address of any session they were started from, so none of them claims a fritter that does not type
+    # into it. run is this same test, asked of a claude already running. A first argument that cannot be a command is
+    # tested first: a glob cannot say "only these characters" alone.
     # A session reaches its API as it would without the shim, ANTHROPIC_BASE_URL unchanged, so Claude Code keeps all it
     # keeps for Anthropic's own API: fritter is its proxy instead, and opens only the connections to that API's host. What
     # the tap replaced is given back first, so a claude run from inside a session is tapped once, by its own fritter, and
@@ -147,8 +159,8 @@ fi
 session=yes
 [ -t 0 ] && [ -t 1 ] || session=no
 case ${{1-}} in
-  {NOT_A_COMMAND}) ;;
-  {COMMAND}) session=no ;;
+  {CANNOT_BE_A_COMMAND}) ;;
+  {STARTS_A_COMMAND}) session=no ;;
 esac
 for arg; do
   case $arg in

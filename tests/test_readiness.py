@@ -158,6 +158,16 @@ def test_a_shim_whose_fritter_is_not_the_one_hands_carries_says_to_install_it_ag
     assert f"its fritter {home.bin / 'fritter'} is not the one this hands carries, {wrapper.PACKAGED}: run `hands install-fritter`" in found.said
 
 
+def test_a_shim_an_older_hands_wrote_says_to_install_it_again(root: Path, fritter: Path) -> None:
+    # As after hands is upgraded: the shim is not the script this hands writes, so it may not run what `run` says it does.
+    home = Home(root / "home")
+    home.bin.mkdir(parents=True)
+    shutil.copy2(fritter, home.bin / "fritter")
+    executable(home.shim, shim_script(home.bin / "fritter", home.wire).replace("session=no ;;", ";;"))
+    found = readiness.shim(home, f"{home.bin}")
+    assert found == Missing(f"`claude` on this PATH is hands' shim, {home.shim}, but not the one this hands writes: run `hands install-fritter`")
+
+
 def test_no_shim_installed_says_to_install_it(root: Path) -> None:
     found = readiness.shim(Home(root / "home"), f"{root / 'empty'}")
     assert isinstance(found, Missing)
@@ -223,7 +233,7 @@ def at_a_terminal(executable: Path, cwd: Path, arguments: Sequence[str] = ("30",
 
 
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
-    assert readiness.sessions(Home(root / "home"), installed(root)) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: 0, and each can be typed into")
+    assert readiness.sessions(Home(root / "home"), installed(root)) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and each can be typed into")
 
 
 def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: Path) -> None:
@@ -244,7 +254,7 @@ def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: 
             sleeper.kill()
             sleeper.wait()
     assert isinstance(found, Missing)
-    assert found.said.startswith("running sessions hands knows of: 3, runs of claude at a terminal that are none: 0, and hands cannot reach these:")
+    assert found.said.startswith("running sessions hands knows of: 3, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and hands cannot reach these:")
     assert f"/code/unwrapped (pid {sleepers[1].pid}) was started outside fritter" in found.said
     assert f"/code/orphaned (pid {sleepers[2].pid}) has lost its fritter, whose socket {root / 'gone.sock'} is gone" in found.said
     assert "/code/wrapped" not in found.said
@@ -255,7 +265,7 @@ def test_a_session_whose_process_has_ended_is_not_running(root: Path) -> None:
     ended = subprocess.Popen(["true"])
     ended.wait()
     joined(home, "ended", ended.pid, None)
-    assert readiness.sessions(home, installed(root)) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: 0, and each can be typed into")
+    assert readiness.sessions(home, installed(root)) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and each can be typed into")
 
 
 def test_an_unreadable_membership_file_is_named_and_left_where_it_is(root: Path) -> None:
@@ -286,7 +296,7 @@ def test_a_claude_printing_or_piped_into_at_a_terminal_is_no_session(root: Path)
     # The shell waits on its sleep, so it is still the process its -p was given to.
     with at_a_terminal(shell, root, ["-c", "sleep 30; :", "-p", "hello"]), at_a_terminal(root / "install" / "9.9.9", root, piped=True):
         found = readiness.sessions(home, path)
-    assert found == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: 2, and each can be typed into")
+    assert found == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 1, subcommand 0, print 1, and each can be typed into")
 
 
 def test_a_check_run_from_a_removed_directory_says_its_own_config_cannot_be_told(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -373,7 +383,7 @@ def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
             found = readiness.sessions(home, path)
     finally:
         listening.close()
-    assert found == Ready("running sessions hands knows of: 1, runs of claude at a terminal that are none: 0, and each can be typed into")
+    assert found == Ready("running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and each can be typed into")
 
 
 CONFIG = Path("/home/.claude")
@@ -461,7 +471,8 @@ def test_a_claude_the_shim_would_not_have_run_as_a_session_is_not_named() -> Non
     controlling = terminal(4, "/v/2.1.288", arguments=("remote-control", "--spawn", "worktree"))
     asked = terminal(5, "/v/2.1.288", arguments=("fix the readme",))
     found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), CHECKED, [printing, piped, prompted, controlling, asked], set(), reads_its_terminal)
-    assert ([session.process for session in found.sessions], found.runs) == ([prompted, asked], 3)
+    assert [session.process for session in found.sessions] == [prompted, asked]
+    assert found.others == {"print": 1, "piped": 1, "subcommand": 1}
 
 
 def test_the_helper_of_a_claude_that_is_no_session_is_no_session_either() -> None:
