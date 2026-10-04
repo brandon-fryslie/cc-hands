@@ -14,8 +14,8 @@ async def test_a_trigger_not_built_is_refused_and_the_one_in_use_stays() -> None
     assert triggers.in_use == "held key"
 
 
-async def test_set_trigger_switches_it_and_says_so() -> None:
+async def test_set_trigger_to_the_one_in_use_says_it_is_already_on() -> None:
     triggers = Triggers()
     _, switch = trigger_tools(triggers)
-    assert await switch.body(trigger="held key") == {"trigger": "held key", "readback": "Okay. The held key: hold Right Shift to talk, and let go to send."}
+    assert await switch.body(trigger="held key") == {"trigger": "held key", "was": "held key", "readback": "Already on. The held key: hold Right Shift to talk, and let go to send."}
     assert triggers.in_use == "held key"

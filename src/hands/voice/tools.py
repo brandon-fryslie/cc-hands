@@ -965,10 +965,11 @@ def trigger_tools(triggers: Triggers) -> list[Tool]:
         Args:
             trigger: the trigger to use from now on.
         """
-        triggers.choose(trigger)
-        return {"trigger": trigger, "readback": f"Okay. {described(trigger)}"}
+        was = triggers.choose(trigger)
+        # [LAW:nothing-unseen] the trigger it replaced lands on the call's event, so a switch and a no-op read apart.
+        return {"trigger": trigger, "was": was, "readback": f"{'Already on' if was == trigger else 'Okay'}. {described(trigger)}"}
 
-    return [tool(trigger_in_use, completes=True), tool(set_trigger, completes=True)]
+    return [tool(trigger_in_use), tool(set_trigger, completes=True)]
 
 
 def voice_tools(voices: Voices) -> list[Tool]:

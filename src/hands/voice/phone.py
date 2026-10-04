@@ -267,7 +267,7 @@ class Phone:
                         audio = out.to_ndarray().astype(np.int16).tobytes()
                         self.heard.put_nowait(KeyedAudio(audio=gate.audible(audio), sample_rate=self._heard_rate, num_channels=1, key=gate.key))
             case move:
-                match self._key.move(move, "phone"):
+                match self._key.move(move, "phone button"):
                     case None:
                         pass
                     case taken:

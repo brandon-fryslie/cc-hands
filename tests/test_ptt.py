@@ -64,12 +64,12 @@ def test_leaving_a_place_mid_hold_throws_the_hold_away() -> None:
 def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:
     recorded: list[Entry] = []
     key = PushToTalk(recorded.append)
-    key.move("arm", "desk")
+    key.move("arm", "held key")
     key.go("phone")  # a call arrives while Shift is held at the desk
-    key.move("start", "phone")
-    key.move("stop", "phone")
-    key.move("start", "desk")
-    key.move("stop", "desk")
+    key.move("start", "phone button")
+    key.move("stop", "phone button")
+    key.move("start", "held key")
+    key.move("stop", "held key")
     assert recorded == [Moved(to="phone", by="call", dropped=True), Moved(to="desk", by="turn", dropped=False)]
 
 
@@ -81,8 +81,8 @@ def test_a_turn_opened_at_one_place_while_a_hold_is_open_at_the_other_drops_both
     assert gate.after("start", "phone") == Gate("dropped", "phone")
     recorded: list[Entry] = []
     key = PushToTalk(recorded.append)
-    key.move("start", "phone")
-    assert key.move("start", "desk") == "drop"
+    key.move("start", "phone button")
+    assert key.move("start", "held key") == "drop"
     assert recorded[-1] == Moved(to="desk", by="turn", dropped=True)
 
 
@@ -106,20 +106,35 @@ def test_the_way_the_user_talks_sets_whether_they_can_see_a_screen() -> None:
     assert key.modality == "screen"
     key.go("phone")  # a call arrives
     assert key.modality == "audio-only"
-    key.move("start", "desk")  # a turn opened at the desk while the call is up
+    key.move("start", "held key")  # a turn opened at the desk while the call is up
     assert key.modality == "screen"
+
+
+def test_a_turn_is_known_by_the_edge_that_opened_it_until_another_opens() -> None:
+    key = PushToTalk(lambda _: None)
+    key.go("phone")  # a call arrives: it opens no turn
+    assert key.opened == "held key"
+    key.move("start", "phone button")
+    key.move("stop", "phone button")
+    assert key.opened == "phone button"
+    key.go("desk")
+    key.move("arm", "held key")  # a press still arming opens nothing
+    key.move("disarm", "held key")
+    assert key.opened == "phone button"
+    key.move("start", "held key")
+    assert key.opened == "held key"
 
 
 def test_a_switch_by_voice_holds_until_hands_moves_between_the_desk_and_the_phone() -> None:
     key = PushToTalk(lambda _: None)
     key.switch("audio-only")
     # Turns at the place it was switched at keep it.
-    key.move("start", "desk")
-    key.move("stop", "desk")
+    key.move("start", "held key")
+    key.move("stop", "held key")
     assert key.modality == "audio-only"
     key.go("phone")
     key.switch("screen")
-    key.move("start", "phone")
+    key.move("start", "phone button")
     assert key.modality == "screen"
     key.go("desk")
     assert key.modality == "screen"

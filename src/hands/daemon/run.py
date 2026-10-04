@@ -96,7 +96,7 @@ from hands.voice.player import Player
 from hands.voice import voices
 from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
-from hands.voice.trigger import Trigger, Triggers
+from hands.voice.trigger import Edge, Trigger, Triggers
 from hands.voice.tools import Tool, audited, intermediary_tools
 from hands.brain.mcp import serve_mcp
 from hands.brain.asides import Asides
@@ -242,7 +242,7 @@ async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFro
 
 @asynccontextmanager
 async def mind(
-    config: VoiceConfig, tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], trigger: Callable[[], Trigger], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
+    config: VoiceConfig, tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Edge], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
     fritter: Path, log: Path, recall: str, record: Record, environment: Mapping[str, str],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
@@ -269,7 +269,7 @@ async def mind(
                     # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
                     # its own: nothing but the user's turns and their stops is ever typed into the brain.
                     asides = Asides(station, record)
-                    stage = BrainStage(brain, tools, tail, refocus, front, modality, trigger, record)
+                    stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record)
                     keeper = Keeper(brain.session, asides.ask, store, EVERY, record)
                     with wire.joined(Kept(stage, keeper, brain, asides)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
@@ -349,8 +349,8 @@ async def run(
         # [LAW:one-source-of-truth] one owner of where the user is: the voice's edges move it, set_modality switches it,
         # and the brain's stage reads it.
         key = PushToTalk(record)
-        # [LAW:one-source-of-truth] one owner of which trigger opens the user's turns: set_trigger switches it, the talk
-        # key's edge steps by it, and each turn's event says it.
+        # [LAW:one-source-of-truth] one owner of which trigger opens the user's turns at the desk: set_trigger switches
+        # it, and the desk is driven by its edge.
         triggers = Triggers()
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
@@ -360,7 +360,7 @@ async def run(
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: triggers.in_use, refocus, proxy.url, wire, store, home.fritter, home.audit, shlex.join(invocation(home, "recall")), record, environment) as minded:
+            async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.fritter, home.audit, shlex.join(invocation(home, "recall")), record, environment) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(record, minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)
@@ -461,8 +461,8 @@ async def converse(
         # The indicator reads the key from the heartbeat, so the edge is written now rather than at the next beat.
         beat()
 
-    async def at_desk(move: Move) -> None:
-        match voice.key.move(move, "desk"):
+    async def at_desk(move: Move, by: Trigger) -> None:
+        match voice.key.move(move, by):
             case None:
                 # A Shift at the desk while the turn is the phone's: nothing of it is cued, said, or beaten.
                 return
@@ -471,11 +471,14 @@ async def converse(
                 for fact in told(taken, voice.audio.devices):
                     await channel.say(fact)
 
-    async def drive_talk_key_once_started() -> None:
+    async def drive_desk_once_started() -> None:
         # [LAW:no-ambient-temporal-coupling] a move reads the devices, which are known once the pipeline has opened
-        # its streams; the key is watched from then on.
+        # its streams; the desk is driven from then on.
         await pipeline.started.wait()
-        await drive_talk_key(at_desk, lambda: triggers.in_use)
+        # [LAW:one-type-per-behavior] the trigger in use picks the edge that drives the desk: each trigger is one arm.
+        match triggers.in_use:
+            case "held key":
+                await drive_talk_key(lambda move: at_desk(move, "held key"))
 
     async def answer_the_phone_once_started() -> None:
         # As for the talk key: a call is taken once the pipeline is up to hear it.
@@ -501,7 +504,7 @@ async def converse(
     cueing = asyncio.create_task(cue_silence_once_started(), name="the cues for silence")
     cueing.add_done_callback(stop_if_failed)
     background.append(cueing)
-    talk_key = asyncio.create_task(drive_talk_key_once_started(), name="the talk key")
+    talk_key = asyncio.create_task(drive_desk_once_started(), name="the desk's trigger")
     talk_key.add_done_callback(stop_if_failed)
     background.append(talk_key)
     phone = asyncio.create_task(answer_the_phone_once_started(), name="the phone")

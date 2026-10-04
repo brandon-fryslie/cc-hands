@@ -8,14 +8,13 @@ from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 
 from hands.voice import talkkey
-from hands.voice.trigger import Trigger
 from hands.voice.hold import HOLD_SECONDS, TURN_LIMIT_SECONDS, Hold, Idle, KeyEvent, Move, Overlong, Pressed, Ripe, step
 
 QUIT = "q"
 
 
-async def drive_talk_key(on_move: Callable[[Move], Awaitable[None]], trigger: Callable[[], Trigger]) -> None:
-    """Hand every move of the turn to `on_move`, as the talk key makes them under the trigger in use, until cancelled."""
+async def drive_talk_key(on_move: Callable[[Move], Awaitable[None]]) -> None:
+    """Hand every move of the turn to `on_move`, as the talk key makes them, until cancelled."""
     loop = asyncio.get_running_loop()
     heard: asyncio.Queue[KeyEvent] = asyncio.Queue()
 
@@ -38,11 +37,7 @@ async def drive_talk_key(on_move: Callable[[Move], Awaitable[None]], trigger: Ca
     hold: Hold = Idle()
     try:
         while True:
-            event = await heard.get()
-            # [LAW:one-type-per-behavior] read at every event, so a switch by voice holds from the next key the user presses.
-            match trigger():
-                case "held key":
-                    hold, moves = step(hold, event)
+            hold, moves = step(hold, await heard.get())
             for move in moves:
                 await on_move(move)
     finally:

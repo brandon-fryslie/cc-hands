@@ -615,5 +615,5 @@ def test_a_brain_turn_is_written_with_what_was_in_front_as_the_user_asked_it_and
         with unit("voice.turn", log.record):
             annotate(asker=asker)
     user, hands = lines(path)
-    assert user["facts"]["asker"] == {"type": "UserAsked", "modality": "screen", "trigger": "held key", "front": {"type": "SessionInFront", "app": "iTerm2", "session": "s1", "name": "hands, docs"}, "read_ms": 4.2}
+    assert user["facts"]["asker"] == {"type": "UserAsked", "modality": "screen", "opened": "held key", "front": {"type": "SessionInFront", "app": "iTerm2", "session": "s1", "name": "hands, docs"}, "read_ms": 4.2}
     assert hands["facts"]["asker"] == {"type": "HandsAsked"}
