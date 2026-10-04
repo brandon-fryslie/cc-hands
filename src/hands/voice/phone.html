@@ -34,6 +34,18 @@
   #told p { margin: 0; min-height: 1.4em; }
   #state.bad { color: var(--bad); }
   #count { font-variant-numeric: tabular-nums; }
+  #shown { font: inherit; color: var(--muted); background: none; border: 1px solid var(--ring); border-radius: 999px; padding: 6px 16px; cursor: pointer; }
+  #transcript {
+    width: min(100%, 36rem); max-height: 38vh; overflow-y: auto; margin: 0; padding: 0 4px;
+    user-select: text; -webkit-user-select: text;
+  }
+  #transcript p { margin: 0 0 10px; }
+  #transcript:empty::before { content: "Nothing said yet."; color: var(--muted); }
+  #transcript .user { color: var(--muted); text-align: right; }
+  /* hands' words not yet reached are faint; the one being said is marked; those cut off are struck through. */
+  #transcript .ahead { opacity: .45; }
+  #transcript .now { background: var(--ring); border-radius: 3px; }
+  #transcript .cut { opacity: .45; text-decoration: line-through; }
 </style>
 </head>
 <body>
@@ -43,6 +55,9 @@
   <p id="state" role="status" aria-live="polite"></p>
   <p id="count" aria-hidden="true"></p>
 </div>
+<button id="shown" type="button" aria-controls="transcript" aria-expanded="false">Show transcript</button>
+<!-- Every line is written here whether it is shown or not: showing it is only taking the hidden off. -->
+<section id="transcript" aria-label="Transcript" hidden></section>
 <audio id="out" autoplay playsinline></audio>
 <script>
 "use strict";
@@ -62,6 +77,8 @@ const talk = document.getElementById("talk");
 const state = document.getElementById("state");
 const count = document.getElementById("count");
 const out = document.getElementById("out");
+const shown = document.getElementById("shown");
+const transcript = document.getElementById("transcript");
 
 // Every render quantum of the microphone goes to the page as it is captured; whatever is sent in comes back out after
 // every block captured before it, which is how a release is sent only once the words said before it have been.
@@ -137,6 +154,75 @@ function mark(name) {
 // Lets go of the hold shown: no mark told from here is of it, and its count stops.
 function letGo() { clearInterval(ticking); ticking = null; hold = null; count.textContent = ""; }
 
+// The sentence of hands' playing: its words, where each ends in its text, when it started, and the rate hands speaks
+// at, in characters a millisecond; null between sentences.
+let saying = null;  // {words, ends, started, rate, frame}
+
+// Writes a line at the transcript's end, keeping its end in view if it was.
+function write(line) {
+  const atEnd = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 24;
+  transcript.append(line);
+  if (atEnd) transcript.scrollTop = transcript.scrollHeight;
+}
+
+// [LAW:one-source-of-truth] pocket-tts gives no word timings, so a word is reached when as many characters of its
+// sentence have been said, at the rate hands measured, as come before it; the last waits there until hands says it is
+// done.
+function sweep() {
+  const reached = (performance.now() - saying.started) * saying.rate;
+  const now = Math.min(saying.ends.filter((end) => end <= reached).length, saying.words.length - 1);
+  saying.words.forEach((word, i) => { word.className = i < now ? "" : i === now ? "now" : "ahead"; });
+  saying.frame = requestAnimationFrame(sweep);
+}
+
+// Ends the sentence playing, each word as `left` would have it: said, or cut off.
+function stop(left) {
+  if (saying === null) return;
+  cancelAnimationFrame(saying.frame);
+  saying.words.forEach((word) => { word.className = left(word); });
+  saying = null;
+}
+
+// What of a sentence stopped short was not heard: the words not yet reached.
+const cutOff = (word) => word.className === "ahead" ? "cut" : "";
+
+// What each line of the transcript does to the page (hands.voice.transcript).
+const LINES = {
+  "heard": ({text}) => {
+    const line = document.createElement("p");
+    line.className = "user";
+    line.textContent = text;
+    write(line);
+  },
+  "saying": ({text, chars_per_sec}) => {
+    stop(() => "");
+    const line = document.createElement("p");
+    let end = 0;
+    const words = [], ends = [];
+    for (const part of text.split(/(\s+)/)) {
+      if (part === "") continue;
+      if (/^\s+$/.test(part)) { line.append(part); end += part.length; continue; }
+      const word = document.createElement("span");
+      word.textContent = part;
+      line.append(word);
+      words.push(word); end += part.length; ends.push(end);
+    }
+    write(line);
+    saying = {words, ends, started: performance.now(), rate: chars_per_sec / 1000, frame: null};
+    sweep();
+  },
+  "spoken": () => stop(() => ""),
+  "cut": () => stop(cutOff),
+};
+
+// Everything hands tells the page, by its kind: a mark of the hold shown, or a line of the transcript.
+function told(message) {
+  if (message.kind === "mark") { mark(message.mark); return; }
+  // [LAW:no-silent-failure] the page and hands disagree about what hands tells: said on its face, not guessed at.
+  if (!Object.hasOwn(LINES, message.kind)) { say(`hands told a "${message.kind}", which this page does not know.`, true); return; }
+  LINES[message.kind](message);
+}
+
 function pcm(blocks) {
   const length = blocks.reduce((n, b) => n + b.length, 0);
   const samples = new Int16Array(length);
@@ -196,7 +282,7 @@ async function connect(claim) {
     talk.disabled = false; talk.textContent = "Hold to talk"; say("Connected. Hold the button and speak.");
     watch(made);
   };
-  channel.onmessage = ({data}) => mark(data);
+  channel.onmessage = ({data}) => told(JSON.parse(data));
   channel.onclose = () => dropped(made, "hands hung up.");
   pc.onconnectionstatechange = () => { if (pc.connectionState === "failed") dropped(made, "The connection to hands failed."); };
 
@@ -249,6 +335,8 @@ function hangUp() {
   if (call) { call.ended = true; call.channel.close(); call.pc.close(); call = null; }
   held = false;
   letGo();
+  // The rest of what was playing never reaches this page.
+  stop(cutOff);
   talk.classList.remove("held");
 }
 
@@ -300,6 +388,19 @@ function up() {
   if (hold?.mark === "held") show({...hold, mark: "sent", released: performance.now()});
   call.release();
 }
+
+// The transcript is hidden until asked for, and stays as this phone last left it.
+function showTranscript(open) {
+  transcript.hidden = !open;
+  shown.setAttribute("aria-expanded", String(open));
+  shown.textContent = open ? "Hide transcript" : "Show transcript";
+  if (open) transcript.scrollTop = transcript.scrollHeight;
+}
+try { showTranscript(localStorage.getItem("transcript") === "shown"); } catch { showTranscript(false); }
+shown.addEventListener("click", () => {
+  showTranscript(transcript.hidden);
+  try { localStorage.setItem("transcript", transcript.hidden ? "hidden" : "shown"); } catch { /* kept for this page only */ }
+});
 
 talk.addEventListener("pointerdown", down);
 talk.addEventListener("pointerup", up);

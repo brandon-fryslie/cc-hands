@@ -11,7 +11,8 @@ let go before it connected, or left after hands was at it, and why; its duration
 The page sends its microphone as plain 16-bit audio over the call's data channel, in order with its button, and hands
 plays to it over an audio track. Over the same channel hands tells the page each mark of the turn it is waiting on
 (`hands.voice.mark`): the hold taken or thrown away, its words heard or none found, a stage failing, the reply begun,
-and the first sound, which the page shows with how long each took. Earbuds keep hands' voice out of the phone's microphone, and the page asks the browser
+and the first sound, which the page shows with how long each took; and each line of the transcript
+(`hands.voice.transcript`), which the page shows when asked to. Earbuds keep hands' voice out of the phone's microphone, and the page asks the browser
 for its echo cancellation as well; so the phone's audio is gated by its button alone, with none of the desk
 microphone's wait for the room to go quiet.
 
@@ -22,9 +23,10 @@ the phone back and forth between them; only a press takes it from another page.
 
 import asyncio
 import fractions
+import json
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Literal
 
 import numpy as np
@@ -39,6 +41,7 @@ from hands.sessions.wide import Begun, Fact, continuing, ended, since
 from hands.voice.hold import Move
 from hands.voice.mark import Mark
 from hands.voice.ptt import KeyedAudio, PushToTalk
+from hands.voice.transcript import Line
 
 # The length of each frame sent to the phone: Opus's own 20 ms.
 FRAME_SECS = 0.02
@@ -82,11 +85,12 @@ class CallUnreached:
 @dataclass(frozen=True)
 class CallLeft:
     """The call was up, hands at the phone from `arrived_ms` after its offer, and it ended, its page `told` that many
-    marks of its turns."""
+    marks of its turns and that many `lines` of the transcript."""
 
     reason: PhoneGone
     arrived_ms: float
     told: int
+    lines: int
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,20 @@ def call_ended(record: Record, began: Begun, remote: str, asked: Asked | None, e
         case CallUnreached(reason=reason) | CallLeft(reason=reason):
             failure = "the call's connection failed" if reason == "failed" else None
             ended("phone.call", record, began, None, failure, **facts, ended=end)
+
+
+def kind(line: type[Line]) -> str:
+    """The word the page knows a line of the transcript by: its class's name."""
+    return line.__name__.lower()
+
+
+def wire(told: Mark | Line) -> str:
+    """[LAW:single-enforcer] what the page is told, as it reads it: one JSON object, its `kind` saying which."""
+    match told:
+        case str():
+            return json.dumps({"kind": "mark", "mark": told})
+        case line:
+            return json.dumps({"kind": kind(type(line)), **asdict(line)})
 
 
 class Outbound(MediaStreamTrack):
@@ -219,8 +237,9 @@ class _Call:
     channel: RTCDataChannel | None = None
     watch: asyncio.Task[None] | None = None
     arrived_ms: float = 0.0
-    # How many marks of its turns the page has been told.
+    # How many marks of its turns, and lines of the transcript, the page has been told.
     told: int = 0
+    lines: int = 0
 
 
 class Phone:
@@ -380,7 +399,7 @@ class Phone:
                 call.outbound.stop()
                 if call.watch is not None and call.watch is not asyncio.current_task():
                     call.watch.cancel()
-                call_ended(self._record, call.began, call.remote, call.asked, CallLeft(reason, call.arrived_ms, call.told))
+                call_ended(self._record, call.began, call.remote, call.asked, CallLeft(reason, call.arrived_ms, call.told, call.lines))
                 return call
 
     async def hang_up(self, reason: PhoneGone) -> None:
@@ -397,13 +416,17 @@ class Phone:
         await self._let_go(offered, "stopped")
         await self.hang_up("stopped")
 
-    def tell(self, mark: Mark) -> None:
-        """Tell the page a mark of the turn it is waiting on, over the call's channel, as the page sends its button: the
-        mark's own word. With no call up, or its channel on its way shut, there is no page to tell."""
+    def tell(self, told: Mark | Line) -> None:
+        """Tell the page a mark of the turn it is waiting on, or a line of the transcript, over the call's channel, as the
+        page sends its button. With no call up, or its channel on its way shut, there is no page to tell."""
         match self._call:
             case _Call(channel=RTCDataChannel(readyState="open") as channel) as call:
-                channel.send(mark)
-                call.told += 1
+                channel.send(wire(told))
+                match told:
+                    case str():
+                        call.told += 1
+                    case _:
+                        call.lines += 1
             case _:
                 pass
 
