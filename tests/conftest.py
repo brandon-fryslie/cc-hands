@@ -1,6 +1,7 @@
 """Fixtures more than one test module needs."""
 
 import asyncio
+import json
 import os
 import stat
 import subprocess
@@ -188,6 +189,15 @@ def fritter() -> Path:
     return PACKAGED
 
 
+def onboard(brain: Path, settings: bytes = b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false}', trusted: bool = True) -> None:
+    """A brain home Claude Code has been through its onboarding on, holding `settings`; the directory it runs in trusted, as
+    Claude Code trusts it, by a directory above it, unless not `trusted`."""
+    brain.mkdir(parents=True)
+    projects = {str(brain.resolve().parent): {"hasTrustDialogAccepted": trusted}}
+    (brain / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "projects": projects}))
+    (brain / "settings.json").write_bytes(settings)
+
+
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A `claude` first on PATH that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding and the trust of the directory it ran in) it recorded, made by AUTH_METHOD (claude.ai unless named), and as the brain is Claude Code at a keyboard: it
@@ -209,7 +219,8 @@ if sys.argv[1:3] == ["auth", "login"] or first_run:
         sys.exit(int(os.environ["LOGIN_EXIT"]))
     with open(login, "w") as made:
         json.dump({{"argv": sys.argv[1:], "cwd": os.getcwd(), "settings": os.path.exists(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "settings.json")), "credentials": sorted(set(os.environ) & {{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}})}}, made)
-    if first_run:
+    # LOGIN_UNANSWERED: quit before its last screen, which Claude Code exits 0 on as on any other.
+    if first_run and not os.environ.get("LOGIN_UNANSWERED"):
         with open(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], ".claude.json"), "w") as state:
             json.dump({{"hasCompletedOnboarding": True, "projects": {{os.getcwd(): {{"hasTrustDialogAccepted": True}}}}}}, state)
     sys.exit(0)

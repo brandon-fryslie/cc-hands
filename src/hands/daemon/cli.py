@@ -119,7 +119,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # no crash, however long the start took that its last heartbeat may read as gone quiet.
             after_crash = arguments.restarted is None and crashed_before(home)
             heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
-            audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+            audit_log = audit_log_of(home)
             # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
             # or a crash the next run must read. A restart's run holds it already: the run before it beat starting under
             # this pid, which it keeps.
@@ -358,13 +358,18 @@ def display(finding: readiness.Finding) -> tuple[str, str]:
             return "unknown", "WARNING"
 
 
+def audit_log_of(home: Home) -> audit.AuditLog:
+    """The audit log of `home`, on the wall clock: every command's events, and a run's, land in the one log."""
+    return audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+
+
 def login(home: Home) -> int:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
     from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, starting_settings
     from hands.brain.process import login as brain_login
     from hands.core.wire import UPSTREAM
 
-    audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    audit_log = audit_log_of(home)
     # [LAW:nothing-unseen] a login is a unit of work: whether it wrote the brain's settings, whether it took Claude Code's
     # first run, and the account it ended on. Recorded in the audit log alone, as the plugin's render is: logging in never
     # waits on a collector, or on a config.toml the daemon has yet to accept.
@@ -393,7 +398,7 @@ def install_fritter(home: Home) -> int:
     except Rejected as error:
         print(f"hands: {error}", file=sys.stderr)
         return 1
-    audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    audit_log = audit_log_of(home)
     # [LAW:nothing-unseen] an install is a unit of work: the fritter it copied from, where it put it and the claude
     # beside it, and whether PATH finds that claude, through the same export edge as the run's events.
     with exporting(settings.config.collector, audit_log.record) as record, wide.unit("fritter.install", record):
@@ -419,7 +424,7 @@ def install_fritter(home: Home) -> int:
 
 
 def render_plugin(home: Home) -> int:
-    audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    audit_log = audit_log_of(home)
     # [LAW:nothing-unseen] Claude Code runs this once per session: the interpreter the hooks run on, the plugin it
     # printed, and whether that plugin was written now or a session before had. Recorded in the audit log alone: Claude
     # Code waits for this command to exit before the session starts, so, like the shim, it waits on no collector and
@@ -461,7 +466,7 @@ def recall_moments(home: Home, words: Sequence[str], most: int) -> int:
     except Rejected as error:
         print(f"hands: {error}", file=sys.stderr)
         return 1
-    audit_log = audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    audit_log = audit_log_of(home)
     # [LAW:nothing-unseen] a recall is a unit of work: what it was asked, how much of the log it read, and what it found,
     # zeros included, through the same export edge as the run's events.
     with exporting(settings.config.collector, audit_log.record) as record, wide.unit("memory.recall", record, ("lines", "unreadable", "moments", "matched", "printed")):

@@ -7,11 +7,8 @@ own (`hands.brain.asides`). What it says is read from the wire, not from its scr
 from the wire, derivative ones from the harness], and the harness is heard only through the hooks it posts to a
 listener of hands' own: that a typed turn was taken, and that it ended, or that the API failed it.
 
-Its login, settings, and skills live in a directory hands owns, set up once, as any Claude Code is, by running it there:
-
-    mkdir -p ~/.hands/brain/cwd && cd ~/.hands/brain/cwd && CLAUDE_CONFIG_DIR=~/.hands/brain claude
-
-and it runs in that empty directory of hands' own, never in a project. What it may use, what it may do without asking,
+Its login, settings, and skills live in a directory hands owns, set up once by `hands login`, which runs Claude Code's
+own first run there, as any Claude Code is set up, and it runs in that directory's empty cwd, never in a project. What it may use, what it may do without asking,
 and which MCP servers it has are that directory's to say, as they are for any Claude Code: its settings.json and its
 .claude.json. hands adds only its own server, its hooks, and the skills it ships for the brain's own jobs, and keeps out
 what the login brings from the account.
@@ -228,44 +225,61 @@ def brain_claude(inherited: Mapping[str, str]) -> Path:
 
 @dataclass(frozen=True)
 class Login:
-    """What `hands login` left the brain holding: the subscription account, and whether that took Claude Code's first run."""
+    """What `hands login` left the brain holding: the subscription account, and why it took Claude Code's first run, if
+    it did."""
 
     account: str
-    first_run: bool
+    first_run: str | None
 
 
-def onboarded(config_dir: Path) -> bool:
-    """Whether Claude Code has been through its first screens for the brain: its onboarding finished, and the directory the
-    brain runs in trusted, or a directory above it, as Claude Code records both in its own .claude.json (2.1.288). A
-    config directory made by anything else, `claude auth status` among them, has been through neither."""
+def unanswered(config_dir: Path) -> str | None:
+    """Why the brain would start on one of Claude Code's first screens, or None when it would not: Claude Code records
+    in its own .claude.json that its onboarding finished and that the directory the brain runs in, or one above it, is
+    trusted (2.1.288). A config directory made by anything else, `claude auth status` among them, has neither."""
     state = config_dir / ".claude.json"
     cwd = _cwd(config_dir).resolve()
     try:
         said = Payload.parse(state.read_bytes())
         projects = Payload.of(said.fields.get("projects", {}), "its projects").fields
-        known = [Payload.of(projects[place], place) for place in map(str, (cwd, *cwd.parents)) if place in projects]
+        trusted = any(Payload.of(projects[place], place).optional_flag("hasTrustDialogAccepted") for place in map(str, (cwd, *cwd.parents)) if place in projects)
+        onboarding = said.optional_flag("hasCompletedOnboarding")
     except FileNotFoundError:
-        return False
+        return f"no {state}"
     except Rejected as error:
-        raise LoginFailed(f"{state} is not Claude Code's state ({error})") from None
-    return said.fields.get("hasCompletedOnboarding") is True and any(place.fields.get("hasTrustDialogAccepted") is True for place in known)
+        # Claude Code's own first run is what writes this state, so it is the run that mends one hands cannot read.
+        return f"{state} unreadable: {error}"
+    if not onboarding:
+        return "its onboarding unfinished"
+    if not trusted:
+        return f"{cwd} untrusted"
+    return None
+
+
+def answered(config_dir: Path) -> None:
+    """Raises Unstartable, naming the command that answers them, while the brain would start on Claude Code's first screens."""
+    if (why := unanswered(config_dir)) is not None:
+        raise Unstartable(f"the brain has not been through Claude Code's first screens ({why}): `hands login` answers them")
 
 
 def login(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Login:
     """Log `config_dir` in to the Claude subscription with Claude Code's own login, at this terminal, in the directory the
     brain runs in; the account it holds after.
 
-    A config directory Claude Code has never finished its first run on gets that first run, its screens, its login among
+    A config directory whose first screens are unanswered gets Claude Code's first run, its screens, its login among
     them, answered once here: `claude auth login` alone leaves them for the brain's first start, where nobody is at its
     keyboard."""
-    first_run = not onboarded(config_dir)
+    # Before any run of Claude Code on it, which would sync what the brain's settings do not keep out.
+    account_kept_out(config_dir)
+    first_run = unanswered(config_dir)
     # [LAW:one-source-of-truth] the brain's own claude, environment, and settings sources, so the login lands in its config
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with.
-    argv, ran = (["--setting-sources", "user"], "the brain's first run of Claude Code") if first_run else (["auth", "login", "--claudeai"], "`claude auth login` for the brain")
+    argv, ran = (["auth", "login", "--claudeai"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
     signed = subprocess.run([brain_claude(inherited), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
+    # A first run quit before its last screen exits 0 as one that answered them all.
+    answered(config_dir)
     return Login(logged_in(config_dir, base_url, inherited), first_run)
 
 
