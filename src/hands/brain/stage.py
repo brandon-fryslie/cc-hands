@@ -218,7 +218,9 @@ class BrainStage(FrameProcessor):
         # what it hands the brain, so a session's story is heard in the order it happened.
         self._contexts: deque[tuple[str, Seconds, Seconds | None, asyncio.Task[UserAsked]]] = deque()
         self._hands: deque[tuple[Narrated | Aloud, Seconds]] = deque()
-        # When the user last let go of the key on words not yet handed to the brain: what their wait is timed from.
+        # When the user last let go of the key on words not yet handed to the brain: what their wait is timed from. One, not
+        # one per hold: a hold let go of while an earlier one is still transcribed joins that hold's turn (KeyTurnStop), and
+        # the turn's one context follows the last release of the holds it took in.
         self._released: Seconds | None = None
         self._waiting = asyncio.Event()
         self._turn: _Turn | None = None
