@@ -38,6 +38,7 @@ from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 from hands.brain.mcp import SERVER_NAME
 from hands.brain.process import NOBODY, SPOKEN_OVER, Asked
 from hands.core.effects import Deny
+from hands.core.front import InFront, told
 from hands.core.permissions import heard
 from hands.core.session import SessionId
 from hands.core.wire import (
@@ -59,7 +60,7 @@ from hands.core.wire import (
     tool_answers,
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
-from hands.sessions.audit import Asker, BrainAnswered, BrainInterrupted, BrainSpoke, Record
+from hands.sessions.audit import Asker, BrainAnswered, BrainInterrupted, BrainSpoke, HandsAsked, Record, UserAsked
 from hands.voice.player import Mark
 from hands.voice.speech import Aloud, Narrated, brain_asks
 from hands.voice.tools import Result, Tool, silent, whole
@@ -143,10 +144,19 @@ class BrainStage(FrameProcessor):
     """The LLM stage under the brain: a context in, the brain's words out as LLM text frames, and a barge-in passed on."""
 
     def __init__(
-        self, brain: Asking, tools: Sequence[Tool], tail: Callable[[], str], refocus: Callable[[SessionId], Awaitable[None]], record: Record, clock: Callable[[], float] = time.monotonic
+        self,
+        brain: Asking,
+        tools: Sequence[Tool],
+        tail: Callable[[], str],
+        refocus: Callable[[SessionId], Awaitable[None]],
+        front: Callable[[], Awaitable[InFront]],
+        record: Record,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._brain = brain
+        # What is in front on the Mac's screen, read as the user's turn is submitted.
+        self._front = front
         # Moves the focus to a session whose telling the brain takes.
         self._refocus = refocus
         # What hands appends to each request of a turn, composed as that request leaves.
@@ -204,14 +214,20 @@ class BrainStage(FrameProcessor):
                 case str() as text:
                     # A context frame is a call to answer, not a message: one that gained the brain nothing asks nothing.
                     if text:
-                        await self._ask(text, "user", (), arrived)
+                        asker = await self._read_front()
+                        await self._ask("\n\n".join(part for part in (text, told(asker.front)) if part), asker, (), arrived)
                 case Narrated(text=text, unsaid=unsaid, session=session):
                     # [LAW:no-ambient-temporal-coupling] moved as the telling is taken, with the user's last turn ended and
                     # none waiting, since they go first, and before the brain is asked, so its request reads the new focus.
                     await self._refocus(session)
-                    await self._ask(text, "hands", (unsaid,), arrived)
+                    await self._ask(text, HandsAsked(), (unsaid,), arrived)
                 case Aloud(spoken=spoken):
                     await self.push_frame(spoken)
+
+    async def _read_front(self) -> UserAsked:
+        began = self._now()
+        front = await self._front()
+        return UserAsked(front, (self._now() - began) * 1000)
 
     async def _upcoming(self) -> tuple[str | Narrated | Aloud, float]:
         """What is next: the user's words while any wait, since what they said goes ahead of what hands has to tell, all

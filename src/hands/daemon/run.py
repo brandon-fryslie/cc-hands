@@ -20,7 +20,7 @@ import atexit
 import subprocess
 import sys
 import time
-from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -39,9 +39,11 @@ from hands.daemon.config import ANTHROPIC_URL, LLM, Anthropic, Claude, OpenAI, S
 from hands.sessions import heartbeat
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
+from hands.core.front import InFront
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
 from hands.sessions.audit import LLMChosen, ProxyListening, Record, SettingsRead, TapListening, VoiceChosen, failures_to
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT, PERMISSION_DEADLINE_SECONDS
+from hands.sessions.front import read_front
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.statusfile import keep_reading_statuses
 from hands.sessions.tail import Tails, keep_tailing
@@ -62,7 +64,7 @@ from hands.voice.phonepage import serve_phone
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus
 from hands.voice.vocabulary import Lexicon
-from hands.voice.readback import spoken_name
+from hands.voice.readback import identifier, spoken_name
 from hands.voice.pipeline import (
     AnthropicBackend,
     ClaudeCodeBackend,
@@ -227,10 +229,16 @@ class Mind:
     summariser: Callable[[str, int, float], Summariser]
 
 
+async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFront:
+    """What is in front on the Mac's screen among the sessions running now, read off the event loop."""
+    running = {listing.session.membership.id: (listing.session.membership.pid, identifier(listing)) for listing in sessions.live()}
+    return await asyncio.to_thread(read_front, running, environment)
+
+
 @asynccontextmanager
 async def mind(
-    config: VoiceConfig, tools: Sequence[Tool], tail: Callable[[], str], refocus: Refocus, proxy_url: str, wire: Wire, store: Store, fritter: Path, log: Path, record: Record,
-    environment: Mapping[str, str],
+    config: VoiceConfig, tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
+    fritter: Path, log: Path, record: Record, environment: Mapping[str, str],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
     through, the stage that speaks for it from the wire, the keeper of its context, and what answers hands' side questions."""
@@ -252,7 +260,7 @@ async def mind(
                     # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
                     # its own: nothing but the user's turns and their stops is ever typed into the brain.
                     asides = Asides(station, record)
-                    stage = BrainStage(brain, tools, tail, refocus, record)
+                    stage = BrainStage(brain, tools, tail, refocus, front, record)
                     keeper = Keeper(brain.session, asides.ask, store, EVERY, record)
                     with wire.joined(Kept(stage, keeper, brain, asides)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
@@ -334,7 +342,7 @@ async def run(
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, record), heart, sessions.live_count, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, lambda: as_sent(sessions, home), refocus, proxy.url, wire, store, home.fritter, home.audit, record, environment) as minded:
+            async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), refocus, proxy.url, wire, store, home.fritter, home.audit, record, environment) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(record, minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)

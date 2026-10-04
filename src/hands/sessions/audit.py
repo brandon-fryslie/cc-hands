@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 from hands.core.attention import Amount, Attention, Delivery, EndedRoute, Overlay, Route
 from hands.core.effects import AfterEnd, Allow, AuditRecord, Deny, Effect, Heard, Holding, Input, Type, Unclosed, Unmatched, Unregistered, Unsettled
 from hands.core.events import Event
+from hands.core.front import InFront
 from hands.core.place import Place
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
@@ -291,8 +292,22 @@ class BrainInterrupted:
     stopped: bool
 
 
-# Whose turn the brain answered: the user's words, or what hands handed it to tell.
-Asker = Literal["user", "hands"]
+@dataclass(frozen=True)
+class UserAsked:
+    """The user's words: what was in front on the Mac's screen as they were submitted, and how long reading it took, in
+    milliseconds."""
+
+    front: InFront
+    read_ms: float
+
+
+@dataclass(frozen=True)
+class HandsAsked:
+    """What hands handed the brain to tell."""
+
+
+# Whose turn the brain answered.
+Asker = UserAsked | HandsAsked
 
 
 @dataclass(frozen=True)

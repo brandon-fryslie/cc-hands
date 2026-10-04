@@ -30,11 +30,38 @@ def terminal_processes() -> list[Terminal]:
     return [process for pid in _own_pids() if (process := _terminal(pid)) is not None]
 
 
-# libproc: struct proc_bsdinfo (136 bytes: flags, status, exit status, pid, then the parent's pid) and struct
-# proc_vnodepathinfo (two vnode_info_path of 1176 bytes, the cwd's first, its path after a 152-byte vnode_info).
+@dataclass(frozen=True)
+class Process:
+    """A process of this user's: its parent, and the device number of the terminal it is controlled by, which is
+    `st_rdev` of that terminal's /dev path; None for a process with no controlling terminal, as an app or a daemon has none."""
+
+    pid: int
+    parent: int
+    tty: int | None
+
+
+def process_table() -> dict[int, Process]:
+    """Every process of this user's, by pid, as it stands now."""
+    return {process.pid: process for pid in _own_pids() if (process := _process(pid)) is not None}
+
+
+def _process(pid: int) -> Process | None:
+    """The process under pid; None if it has exited since it was listed."""
+    try:
+        bsd = _pidinfo(pid, _PROC_PIDTBSDINFO, _BSDINFO_SIZE)
+    except _Exited:
+        return None
+    controlled = ctypes.c_uint32.from_buffer(bsd, 0).value & _PROC_FLAG_CONTROLT
+    tty = ctypes.c_uint32.from_buffer(bsd, _TTY_AT).value if controlled else None
+    return Process(pid, ctypes.c_uint32.from_buffer(bsd, _PARENT_AT).value, tty)
+
+
+# libproc: struct proc_bsdinfo (136 bytes: flags, status, exit status, pid, then the parent's pid; the controlling
+# terminal's device, e_tdev, at 108) and struct proc_vnodepathinfo (two vnode_info_path of 1176 bytes, the cwd's first,
+# its path after a 152-byte vnode_info).
 _libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
 _PROC_UID_ONLY = 4
-_PROC_PIDTBSDINFO, _BSDINFO_SIZE, _PARENT_AT = 3, 136, 16
+_PROC_PIDTBSDINFO, _BSDINFO_SIZE, _PARENT_AT, _TTY_AT = 3, 136, 16, 108
 _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE, _CWD_PATH_AT, _MAXPATHLEN = 9, 2352, 152, 1024
 _PROC_FLAG_CONTROLT = 0x80
 # kern.procargs2.<pid>: argc, the path the process was exec'd by as execve was given it, padding, its arguments, and

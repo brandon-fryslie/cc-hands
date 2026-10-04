@@ -18,7 +18,10 @@ from hands.core.events import Abandoned, Closed, Joined, Prompted, Read, StatusR
 from hands.core.session import Membership, PromptId, RequestId, SessionId, Told
 from hands.daemon import cli
 from hands.sessions import audit
+from hands.core.front import NoSessionInFront, SessionInFront
 from hands.sessions.audit import (
+    HandsAsked,
+    UserAsked,
     Applied,
     AuditLog,
     AsideAnswered,
@@ -51,6 +54,7 @@ STOP_HEARD = Stamp(1500)
 STOP_REQUEST = RequestId("stop")
 
 AT = datetime(2026, 9, 14, 12, 0, 0, 123000, tzinfo=UTC)
+ASKED = UserAsked(NoSessionInFront("Safari"), 12.5)
 
 
 def member() -> Membership:
@@ -115,8 +119,8 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
     log.record(Named(session="s1", outcome="kept", before="a b", name=None, reply="a b", error=None, seconds=0.1))
     log.record(Named(session="s1", outcome="failed", before="a b", name=None, reply=None, error="timed out", seconds=0.1))
     log.record(AsideAnswered("q", "", True, SessionId("s2"), 0.0, 9.0))
-    log.record(BrainSpoke(("x1",), "", (), False, "user", 0.0, ModelReplyEmpty()))
-    log.record(BrainSpoke(("x1",), "Sent.", (), False, "user", 0.0, None))
+    log.record(BrainSpoke(("x1",), "", (), False, ASKED, 0.0, ModelReplyEmpty()))
+    log.record(BrainSpoke(("x1",), "Sent.", (), False, ASKED, 0.0, None))
     log.record(Called("tell_turn", {}, {"error": "no running session has the id 'x'"}))
     # An "error" deep in a line, in what a tool handed back, does not make the line hands' error.
     log.record(Called("read_turn", {}, {"turn": {"error": {"type": "rate_limit_error"}}}))
@@ -601,6 +605,16 @@ async def test_what_was_heard_where_nothing_waits_on_it_still_fails_loudly() -> 
 
 def test_a_brain_turn_that_failed_is_written_with_what_it_failed_of(tmp_path: Path) -> None:
     path = tmp_path / "audit"
-    AuditLog(path, clock=lambda: AT).record(BrainSpoke(("x1",), "", (), False, "user", 0.0, ModelFailed(ErrorCategory.SERVER)))
+    AuditLog(path, clock=lambda: AT).record(BrainSpoke(("x1",), "", (), False, ASKED, 0.0, ModelFailed(ErrorCategory.SERVER)))
     [line] = lines(path)
     assert line["failed"] == {"type": "ModelFailed", "category": "server"}
+
+
+def test_a_brain_turn_is_written_with_what_was_in_front_as_the_user_asked_it_and_none_for_hands(tmp_path: Path) -> None:
+    path = tmp_path / "audit"
+    log = AuditLog(path, clock=lambda: AT)
+    log.record(BrainSpoke(("x1",), "", (), False, UserAsked(SessionInFront("iTerm2", SessionId("s1"), "hands, docs"), 4.2), 0.0, None))
+    log.record(BrainSpoke(("x2",), "", (), False, HandsAsked(), 0.0, None))
+    user, hands = lines(path)
+    assert user["asker"] == {"type": "UserAsked", "front": {"type": "SessionInFront", "app": "iTerm2", "session": "s1", "name": "hands, docs"}, "read_ms": 4.2}
+    assert hands["asker"] == {"type": "HandsAsked"}
