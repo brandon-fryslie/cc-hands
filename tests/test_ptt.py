@@ -110,7 +110,7 @@ def test_the_way_the_user_talks_sets_whether_they_can_see_a_screen() -> None:
     assert key.modality == "screen"
 
 
-def test_a_switch_by_voice_holds_until_the_user_talks_from_the_other_place() -> None:
+def test_a_switch_by_voice_holds_until_hands_moves_between_the_desk_and_the_phone() -> None:
     key = PushToTalk(lambda _: None)
     key.switch("audio-only")
     # Turns at the place it was switched at keep it.
@@ -129,7 +129,7 @@ def test_a_switch_by_voice_holds_until_the_user_talks_from_the_other_place() -> 
 
 async def test_set_modality_switches_it_says_so_and_refuses_what_is_neither() -> None:
     key = PushToTalk(lambda _: None)
-    switch = modality_tool(key)
+    switch = modality_tool(key.switch)
     assert await switch.body(modality="audio-only") == {"modality": "audio-only", "readback": "Okay, audio only."}
     assert key.modality == "audio-only"
     assert await switch.body(modality="screen") == {"modality": "screen", "readback": "Okay, you can see a screen."}

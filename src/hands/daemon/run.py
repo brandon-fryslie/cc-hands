@@ -342,7 +342,7 @@ async def run(
         # [LAW:one-source-of-truth] one owner of where the user is: the voice's edges move it, set_modality switches it,
         # and the brain's stage reads it.
         key = PushToTalk(record)
-        tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key)]
+        tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch)]
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, record), heart, sessions.live_count, quit_event)
         if config is not None:

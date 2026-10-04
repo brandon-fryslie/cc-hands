@@ -37,7 +37,7 @@ async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
 
 def tools(sessions: Sessions, home: Home) -> dict[str, Tool]:
     """The tools as the daemon gives them, focus defaulting and all."""
-    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(lambda _entry: None))
+    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(lambda _entry: None).switch)
     return {tool.name: tool for tool in given}
 
 

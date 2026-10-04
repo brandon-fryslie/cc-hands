@@ -143,7 +143,7 @@ class PushToTalk:
         self._become(self._gate.moved(to), "call")
 
     def switch(self, to: Modality) -> None:
-        """Report that the user asked to be taken as `to` from now on, until they next talk from the other place."""
+        """Report that the user asked to be taken as `to` from now on, until hands next moves between the desk and the phone."""
         self._modality = to
 
     def _become(self, gate: Gate, by: Literal["turn", "call"]) -> None:
