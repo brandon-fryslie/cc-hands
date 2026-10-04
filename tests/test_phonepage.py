@@ -21,11 +21,16 @@ esac
 
 def tailscale(directory: Path, cert: str) -> str:
     """A `tailscale` that says this machine's name, and runs `cert` when asked for its certificate; the PATH it is on."""
-    command = directory / "bin" / "tailscale"
-    command.parent.mkdir()
-    command.write_text(NAMED % cert)
-    command.chmod(0o755)
-    return f"{command.parent}{os.pathsep}{os.environ['PATH']}"
+    return command(directory, NAMED % cert)
+
+
+def command(directory: Path, script: str) -> str:
+    """A `tailscale` that is `script`; the PATH it is on."""
+    written = directory / "bin" / "tailscale"
+    written.parent.mkdir()
+    written.write_text(script)
+    written.chmod(0o755)
+    return f"{written.parent}{os.pathsep}{os.environ['PATH']}"
 
 
 async def test_the_tailnet_is_the_name_tailscale_says_and_the_certificate_it_issues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -40,12 +45,24 @@ async def test_a_certificate_tailscale_refuses_is_untailed_in_its_words(tmp_path
     assert await tailnet(Home(tmp_path)) == Untailed("tailscale cert failed (3): not logged in")
 
 
-async def test_a_certificate_tailscale_never_issues_is_untailed_and_its_command_killed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PATH", tailscale(tmp_path, "exec sleep 30"))
+async def test_a_tailscale_that_never_answers_is_untailed_and_killed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pid = tmp_path / "pid"
+    monkeypatch.setenv("PATH", command(tmp_path, f"#!/bin/sh\necho $$ > {pid}\nexec sleep 30\n"))
     monkeypatch.setattr(phonepage, "TAILSCALE_TIMEOUT_SECONDS", 0.2)
-    assert await tailnet(Home(tmp_path)) == Untailed("tailscale cert took over 0s")
-    with pytest.raises(ChildProcessError):
-        os.waitpid(-1, os.WNOHANG)
+    assert await tailnet_name() == Untailed("tailscale status took over 0s")
+    # Gone, not merely dead: a killed child nobody reaped would still take the signal.
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid.read_text()), 0)
+
+
+async def test_a_tailscale_that_cannot_be_started_is_untailed_in_the_systems_words(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # No interpreter line: found on the PATH, and refused by the system when run.
+    monkeypatch.setenv("PATH", command(tmp_path, "not a program\n"))
+    match await tailnet_name():
+        case Untailed(reason=reason):
+            assert reason.startswith("cannot run tailscale status: [Errno 8]")
+        case name:
+            raise AssertionError(f"named {name}")
 
 
 # A loop that ends while Tailscale is asked: asyncio.run cancels the asking wherever its command happens to be, from
