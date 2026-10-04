@@ -21,7 +21,7 @@ from loguru import logger
 from hands.core.front import FrontUnread, InFront
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import NOBODY, SLIM, STOP_SECONDS, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, account_kept_out, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, account_kept_out, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -41,6 +41,7 @@ from hands.sessions.proxy import Wire
 from hands.sessions.sentences import Sentences
 from hands.sessions.wrapper import MARK
 from hands.sessions.home import Home
+from hands.sessions.pseudoterminal import STOP_SECONDS
 from hands.sessions.registry import Sessions
 from hands.voice.refocus import Refocus
 from hands.voice.sentences import SummaryStore

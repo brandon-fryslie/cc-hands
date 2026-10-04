@@ -27,7 +27,8 @@ from uuid import uuid4
 
 from loguru import logger
 
-from hands.brain.process import ClaudeCode, Station, Unstartable, brain_claude, slim, spawn
+from hands.brain.process import Station, Unstartable, brain_claude, slim, spawn
+from hands.sessions.pseudoterminal import ClaudeCode
 from hands.core.effects import Command
 from hands.core.session import CommandName, SessionId, pasted
 from hands.core.trace import Span

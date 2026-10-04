@@ -125,6 +125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("login", help="set the brain (the claude backend of the home's config.toml) up on a home with none, or log it in again or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
+    commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
@@ -244,6 +245,11 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             return render_plugin(home, record)
         case "restart":
             return asked_to_restart(home)
+        case "smoke":
+            # Imported here so that no other command loads aiortc.
+            from hands.daemon.smoke import run_smoke
+
+            return run_smoke(home)
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
             # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits

@@ -480,12 +480,12 @@ def backwards(directory: Path) -> Iterator[str]:
 def follow(directory: Path, offset: int, poll: Callable[[], None]) -> Iterator[str]:
     """Each complete line written to the log past offset, calling poll between reads, for as long as the caller asks."""
     while True:
-        lines, offset = _past(directory, offset)
+        lines, offset = past(directory, offset)
         yield from lines
         poll()
 
 
-def _past(directory: Path, offset: int) -> tuple[list[str], int]:
+def past(directory: Path, offset: int) -> tuple[list[str], int]:
     """The complete lines past offset in the segment that holds it, and the log offset to read from next."""
     # [LAW:no-ambient-temporal-coupling] listed before the segment is read: a segment with a later one in this listing was
     # closed before it, so the read has every line the segment will ever hold, and reading goes on at the later one.

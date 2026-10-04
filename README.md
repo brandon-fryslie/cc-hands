@@ -74,6 +74,21 @@ is not, what does it; it exits 0 only when every step is done.
    hands check        # in another terminal: every line ok
    ```
 
+10. The smoke test, in another terminal while hands runs. It calls hands as the phone's
+    page does and takes three spoken turns in macOS's voice: it asks hands to have a
+    session it starts in `~/.hands/smoke` name the one file there, sends the draft, and
+    asks what the session said. Each part of the pipeline gets an `ok` line, and the run
+    stops at the first part that did not do its share and names it; it exits 0 only when
+    every part did. It runs a model turn in that session, on your Claude Code login.
+
+    ```
+    hands smoke
+    ```
+
+    The first time, Claude Code may ask whether to trust `~/.hands/smoke`; the run then
+    stops at `joined` and shows that question. Run `claude` there once, accept, and run
+    the smoke test again.
+
 ## The intermediary
 
 The intermediary makes the workflow eyes-free as well as hands-free: a full
