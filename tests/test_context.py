@@ -37,7 +37,8 @@ from hands.core.wire import (
     classify,
     edited,
 )
-from hands.sessions.audit import Entry, ResultsStubbed
+from hands.sessions.audit import Entry
+from hands.sessions.wide import WideEvent
 
 BRAIN = SessionId("brain")
 MARKED = {"type": "ephemeral"}
@@ -180,6 +181,11 @@ async def rig() -> Rig:
     return Rig()
 
 
+def stubbings(recorded: list[Entry]) -> list[tuple[Mapping[str, object], Mapping[str, int]]]:
+    """Each batch reached: its facts and its counts."""
+    return [(entry.facts, entry.counts) for entry in recorded if isinstance(entry, WideEvent) and entry.event == "context.stubbing"]
+
+
 async def test_each_result_is_asked_about_once_after_its_turn_ends_and_goes_as_its_line_once_its_batch_comes(rig: Rig) -> None:
     worker = asyncio.create_task(rig.keeper.keep_asking())
     try:
@@ -193,7 +199,7 @@ async def test_each_result_is_asked_about_once_after_its_turn_ends_and_goes_as_i
     assert stubs[6] == stubs[7] == [Stub(f"call{n}", f"Read: file /{n} holds its digit.") for n in range(3)]
     # The stubs go before the stage's own tail.
     assert routes[7] == Send((*stubs[7], Tail("[hands] tail")))
-    assert [entry for entry in rig.recorded if isinstance(entry, ResultsStubbed)] == [ResultsStubbed(("call0", "call1", "call2"), ())]
+    assert stubbings(rig.recorded) == [({"stubbed": ("call0", "call1", "call2"), "whole": ()}, {"stubbed": 3, "whole": 0})]
 
 
 async def test_a_result_with_no_sentence_when_its_batch_comes_goes_whole_for_good_and_says_so(rig: Rig) -> None:
@@ -213,7 +219,7 @@ async def test_a_result_with_no_sentence_when_its_batch_comes_goes_whole_for_goo
         worker.cancel()
         logger.remove(sink)
     assert isinstance(route, Send) and [change.call for change in route.changes if isinstance(change, Stub)] == ["call0", "call2"]
-    assert [entry for entry in rig.recorded if isinstance(entry, ResultsStubbed)] == [ResultsStubbed(("call0", "call2"), ("call1",))]
+    assert stubbings(rig.recorded) == [({"stubbed": ("call0", "call2"), "whole": ("call1",)}, {"stubbed": 2, "whole": 1})]
     assert [error for error in errors if "call1" in error] == ["no sentence for Read call call1: no answer in 120s"]
 
 

@@ -6,16 +6,15 @@ nothing of the project.
 """
 
 import asyncio
-import time
 from collections.abc import Callable, Sequence
-
-from loguru import logger
+from enum import StrEnum
 
 from hands.core.session import Membership
-from hands.sessions.audit import Named, NamingOutcome, Record
+from hands.sessions.audit import Record
 from hands.sessions.names import Finished, Names
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import session_name
+from hands.sessions.wide import annotate, fail, unit
 from hands.voice.summary import SUMMARY_FAILURES, Summariser
 
 NAME_INSTRUCTION = """\
@@ -51,6 +50,16 @@ CLOSING_SHOWN = 1500
 NAME_WORDS = 3
 
 
+class Judged(StrEnum):
+    """What came of judging a session's name."""
+
+    RENAMED = "renamed"
+    KEPT = "kept"
+    UNREAD = "unread"
+    FAILED = "failed"
+    REFUSED = "refused"
+
+
 class NotAName(Exception):
     """The model's reply is not a name hands can give a session."""
 
@@ -62,42 +71,45 @@ async def keep_naming(names: Names, live: Callable[[], Sequence[Membership]], na
 
 
 async def judge(turn: Finished, names: Names, live: Sequence[Membership], name: Summariser, record: Record) -> None:
-    """Ask whether the session's name still fits the turn it finished; hold a new one for its next prompt; audit the judging."""
-    began = time.monotonic()
+    """Ask whether the session's name still fits the turn it finished, and hold a new one for its next prompt, as one
+    unit of work."""
     session = turn.membership.id
     others = [other for other in live if other.cwd == turn.membership.cwd and other.id != session]
-
-    def judged(outcome: NamingOutcome, before: str | None, named: str | None, reply: str | None, error: str | None) -> None:
-        record(Named(session, outcome, before, named, reply, error, time.monotonic() - began))
-
-    try:
-        held = await asyncio.to_thread(lambda: [session_name(each.transcript) for each in (turn.membership, *others)])
-    except (Rejected, OSError) as error:
-        # [LAW:no-silent-failure] names hands cannot read cannot be judged against; the session keeps its own, and the
-        # log says why.
-        logger.error(f"cannot read the names of session {session} and those beside it in {turn.membership.cwd}, so it is not judged: {error}")
-        judged("unread", None, None, None, str(error))
-        return
-    # [LAW:one-source-of-truth] a name decided and not yet given is the session's name from its next prompt on, so it is
-    # the one judged, and the one the others' are.
-    before, *beside = [names.current(each.id, given) for each, given in zip((turn.membership, *others), held, strict=True)]
-    try:
-        reply = await name(asked(before, [each for each in beside if each is not None], turn.closing))
-    except SUMMARY_FAILURES as error:
-        logger.error(f"the model gave no name for session {session}: {type(error).__name__}: {error}")
-        judged("failed", before, None, None, f"{type(error).__name__}: {error}")
-        return
-    try:
-        decided = parsed(reply, before)
-    except NotAName as error:
-        logger.error(f"the model's name for session {session} is not one: {error}")
-        judged("refused", before, None, reply, str(error))
-        return
-    if decided == before:
-        judged("kept", before, decided, reply, None)
-        return
-    names.rename(session, decided, held[0])
-    judged("renamed", before, decided, reply, None)
+    # [LAW:nothing-unseen] `judged` says what came of it: `renamed` decided a new name, given at the session's next
+    # prompt; `kept` found the name it has still fits; `unread` could not read the name it has; `failed` had no answer
+    # from the model; `refused` had an answer that is not a name, which `reply` holds. The last three fail the unit.
+    with unit("name.judged", record):
+        annotate(session=session)
+        try:
+            held = await asyncio.to_thread(lambda: [session_name(each.transcript) for each in (turn.membership, *others)])
+        except (Rejected, OSError) as error:
+            # [LAW:no-silent-failure] names hands cannot read cannot be judged against; the session keeps its own.
+            annotate(judged=Judged.UNREAD)
+            fail(f"cannot read the names of the session and those beside it in {turn.membership.cwd}: {error}")
+            return
+        # [LAW:one-source-of-truth] a name decided and not yet given is the session's name from its next prompt on, so
+        # it is the one judged, and the one the others' are.
+        before, *beside = [names.current(each.id, given) for each, given in zip((turn.membership, *others), held, strict=True)]
+        annotate(before=before)
+        try:
+            reply = await name(asked(before, [each for each in beside if each is not None], turn.closing))
+        except SUMMARY_FAILURES as error:
+            annotate(judged=Judged.FAILED)
+            fail(f"the model gave no name: {type(error).__name__}: {error}")
+            return
+        annotate(reply=reply)
+        try:
+            decided = parsed(reply, before)
+        except NotAName as error:
+            annotate(judged=Judged.REFUSED)
+            fail(f"the model's name is not one: {error}")
+            return
+        annotate(name=decided)
+        if decided == before:
+            annotate(judged=Judged.KEPT)
+            return
+        names.rename(session, decided, held[0])
+        annotate(judged=Judged.RENAMED)
 
 
 def asked(before: str | None, beside: Sequence[str], closing: str) -> str:

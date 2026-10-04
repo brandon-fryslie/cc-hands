@@ -1,5 +1,5 @@
 """The namer: after a turn, a session keeps a name that still fits its work, is given a new one when the work moves on,
-and a reply that is not a name of three words at most is refused; every judging is one audit line."""
+and a reply that is not a name of three words at most is refused; every judging is one wide event."""
 
 import json
 from pathlib import Path
@@ -7,9 +7,10 @@ from pathlib import Path
 import pytest
 
 from hands.core.session import Membership, SessionId
-from hands.sessions.audit import Entry, Named
+from hands.sessions.audit import Entry
+from hands.sessions.wide import WideEvent
 from hands.sessions.names import Due, Finished, Names
-from hands.voice.naming import NotAName, asked, judge, parsed
+from hands.voice.naming import Judged, NotAName, asked, judge, parsed
 from hands.voice.summary import SummaryFailed
 
 SID = SessionId("s1")
@@ -37,12 +38,12 @@ def answering(reply: str, heard: list[str] | None = None):
     return name
 
 
-async def judged(path: Path, reply: str, names: Names, heard: list[str] | None = None, beside: tuple[Membership, ...] = ()) -> Named:
+async def judged(path: Path, reply: str, names: Names, heard: list[str] | None = None, beside: tuple[Membership, ...] = ()) -> WideEvent:
     recorded: list[Entry] = []
     turn = Finished(member(path), "I fixed how sessions are named.")
     await judge(turn, names, (turn.membership, *beside), answering(reply, heard), recorded.append)
     [line] = recorded
-    assert isinstance(line, Named)
+    assert isinstance(line, WideEvent) and line.event == "name.judged" and line.facts["session"] == SID
     return line
 
 
@@ -50,7 +51,7 @@ async def test_a_session_whose_work_moved_on_is_given_a_new_name_at_its_next_pro
     names = Names()
     heard: list[str] = []
     line = await judged(transcript(tmp_path, "auth refactor"), '"Naming fix."', names, heard)
-    assert (line.outcome, line.before, line.name) == ("renamed", "auth refactor", "Naming fix")
+    assert (line.outcome, line.facts["judged"], line.facts["before"], line.facts["name"]) == ("ok", Judged.RENAMED, "auth refactor", "Naming fix")
     assert names.due(SID) == Due("Naming fix", "auth refactor")
     # The model is shown the name the session has now, and the last thing it said.
     assert heard == [asked("auth refactor", [], "I fixed how sessions are named.")]
@@ -60,7 +61,7 @@ async def test_a_session_whose_work_moved_on_is_given_a_new_name_at_its_next_pro
 async def test_a_session_with_no_name_yet_is_given_its_first(tmp_path: Path) -> None:
     names = Names()
     line = await judged(transcript(tmp_path), "naming fix", names)
-    assert (line.outcome, line.before, line.name) == ("renamed", None, "naming fix")
+    assert (line.facts["judged"], line.facts["before"], line.facts["name"]) == (Judged.RENAMED, None, "naming fix")
     assert names.due(SID) == Due("naming fix", None)
 
 
@@ -68,14 +69,15 @@ async def test_a_name_that_still_fits_is_kept_and_nothing_is_given(tmp_path: Pat
     names = Names()
     # Whoever set it: a name given at the keyboard is judged as one hands gave.
     line = await judged(transcript(tmp_path, "old name", "naming fix"), "naming fix", names)
-    assert (line.outcome, line.name) == ("kept", "naming fix")
+    assert (line.outcome, line.facts["judged"], line.facts["name"]) == ("ok", Judged.KEPT, "naming fix")
     assert names.due(SID) is None
 
 
 async def test_a_reply_longer_than_three_words_is_refused_and_the_session_keeps_its_name(tmp_path: Path) -> None:
     names = Names()
     line = await judged(transcript(tmp_path, "auth refactor"), "fixing the session naming bug", names)
-    assert (line.outcome, line.name, line.reply) == ("refused", None, "fixing the session naming bug")
+    assert (line.outcome, line.facts["judged"], line.facts["reply"]) == ("failed", Judged.REFUSED, "fixing the session naming bug")
+    assert "name" not in line.facts
     assert names.due(SID) is None
 
 
@@ -88,7 +90,7 @@ async def test_a_model_that_fails_leaves_the_name_as_it_is_and_says_why(tmp_path
 
     await judge(Finished(member(transcript(tmp_path, "auth refactor")), "done"), names, (), failing, recorded.append)
     [line] = recorded
-    assert isinstance(line, Named) and line.outcome == "failed" and "no summary" in (line.error or "")
+    assert isinstance(line, WideEvent) and (line.outcome, line.facts["judged"]) == ("failed", Judged.FAILED) and "no summary" in (line.error or "")
     assert names.due(SID) is None
 
 
@@ -97,7 +99,7 @@ async def test_a_name_that_cannot_be_read_is_not_judged(tmp_path: Path) -> None:
     path.write_text('{"type":"custom-title"}\n')
     heard: list[str] = []
     line = await judged(path, "naming fix", Names(), heard)
-    assert line.outcome == "unread" and heard == []
+    assert (line.outcome, line.facts["judged"]) == ("failed", Judged.UNREAD) and heard == []
 
 
 async def test_a_later_name_replaces_one_not_yet_given(tmp_path: Path) -> None:
@@ -114,7 +116,7 @@ async def test_a_name_decided_and_not_yet_given_is_the_one_judged_and_kept(tmp_p
     heard: list[str] = []
     # The session has not prompted since, so Claude Code still holds the old name; the decided one is what it will have.
     line = await judged(path, "naming fix", names, heard)
-    assert (line.outcome, line.before) == ("kept", "naming fix")
+    assert (line.facts["judged"], line.facts["before"]) == (Judged.KEPT, "naming fix")
     assert "Its name now: naming fix" in heard[0]
     # Still decided against the name Claude Code holds, which is what the prompt checks before giving it.
     assert names.due(SID) == Due("naming fix", "auth refactor")
@@ -123,7 +125,7 @@ async def test_a_name_decided_and_not_yet_given_is_the_one_judged_and_kept(tmp_p
 async def test_a_name_longer_than_three_words_the_session_already_has_is_kept(tmp_path: Path) -> None:
     names = Names()
     line = await judged(transcript(tmp_path, "auth token refresh rework"), "auth token refresh rework", names)
-    assert (line.outcome, line.name) == ("kept", "auth token refresh rework")
+    assert (line.facts["judged"], line.facts["name"]) == (Judged.KEPT, "auth token refresh rework")
     assert names.due(SID) is None
 
 

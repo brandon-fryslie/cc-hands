@@ -99,7 +99,7 @@ def moments(entries: Iterable[Mapping[str, object]]) -> list[Moment]:
             # A session goes by the title hands gave it, the one it was found with, or the user's own /rename.
             case (
                 {"type": "WideEvent", "event": "hook", "facts": {"session": str(session), "name": {"type": "NameGiven", "name": str(name)} | {"type": "NameWithheld", "held": str(name)}}}
-                | {"type": "Named", "session": str(session), "before": str(name)}
+                | {"type": "WideEvent", "event": "name.judged", "facts": {"session": str(session), "before": str(name)}}
             ):
                 names[session] = name
             case {"type": "WideEvent", "event": "applied", "at": str(at), "facts": {"applied": object() as applied, "effects": object() as effects}}:

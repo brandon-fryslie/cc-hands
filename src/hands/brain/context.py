@@ -37,8 +37,9 @@ from hands.core.wire import (
     Stub,
     tool_answers,
 )
-from hands.sessions.audit import Record, ResultsStubbed
+from hands.sessions.audit import Record
 from hands.sessions.proxy import Listener
+from hands.sessions.wide import annotate, count, unit
 
 # Turns a long result goes whole before it goes as a line, and how many turns' results go at once.
 EVERY = 5
@@ -151,8 +152,13 @@ class Keeper:
             said = self._store.known(key(result))
             self._decided[result.call] = None if said is None else line(result, said)
         if fresh:
-            unsaid = tuple(result.call for result in fresh if self._decided[result.call] is None)
-            self._record(ResultsStubbed(tuple(result.call for result in fresh if result.call not in unsaid), unsaid))
+            # [LAW:nothing-unseen] a batch reached is one unit of work: the calls whose results go as a line from now on,
+            # and those that go whole because no sentence had been said of them by then.
+            with unit("context.stubbing", self._record, counts=("stubbed", "whole")):
+                stubbed = tuple(result.call for result in fresh if self._decided[result.call] is not None)
+                whole = tuple(result.call for result in fresh if self._decided[result.call] is None)
+                annotate(stubbed=stubbed, whole=whole)
+                count(stubbed=len(stubbed), whole=len(whole))
 
     def _stubs(self, body: object) -> tuple[Change, ...]:
         return tuple(Stub(answer.call, said) for answer in tool_answers(body) if (said := self._decided.get(answer.call)) is not None)
