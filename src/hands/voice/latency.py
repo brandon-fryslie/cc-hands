@@ -56,15 +56,16 @@ class Window:
 
 @dataclass
 class Turn:
-    """The user's turn being taken in, since the last one ended: whether any hold of it had words, and the window its
-    last release opened.
+    """The user's turn being taken in, since the last one ended: whether any hold of it had words, whether a stage
+    failed while it was taken in, and the window its last release opened.
 
     A turn is Pipecat's and takes in every hold pressed before Whisper was done with the one before (see
     hands.voice.turnstop), so whether anything is sent to the model is a fact of the turn and of no one hold: a hold
-    with nothing said in it, released after one whose words are in, is still answered.
+    with nothing said in it, or one Whisper failed on, released beside one whose words are in, is still answered.
     """
 
     said: bool = False
+    failed: bool = False
     released: Window | None = None
 
 
@@ -77,6 +78,8 @@ class LatencyObserver(BaseObserver):
         self._told = told
         self._window: Window | None = None
         self._turn = Turn()
+        # The last error taken, by its frame's id.
+        self._erred: int | None = None
         # Who is sounding, on each side of the conversation. Every frame below is pushed once per processor
         # boundary it crosses, so what these two record is the transition, and the transition is the event:
         # the speaker going from silent to sounding is the first audio, and the user falling silent is the
@@ -128,17 +131,26 @@ class LatencyObserver(BaseObserver):
             # find a turn nothing was released in.
             turn, self._turn = self._turn, Turn()
             if self._window is not None and self._window is turn.released and not turn.said:
-                # A turn with no words sends the model nothing, so no reply is coming to wait for. The window closes
-                # with it, so the next thing hands says unasked is not timed as its answer.
-                self._take(self._window, "no words", now)
+                # A turn with no words sends the model nothing, so no reply is coming to wait for: Whisper found
+                # nothing said in it, or failed on it. The window closes with it, so the next thing hands says, the
+                # failure included, is not timed as its answer.
+                self._take(self._window, "failed" if turn.failed else "no words", now)
                 self._window = None
             return
         if isinstance(frame, ErrorFrame):
-            if self._window is not None:
-                # A stage failed while a release waited on its reply: Whisper on the hold, the model on the turn. What
-                # hands says next is the failure, said by the system channel, and no answer to time.
-                self._take(self._window, "failed", now)
-                self._window = None
+            # One error is one failure, however many boundaries its frame crosses: taken by the frame's identity, since
+            # it is still crossing them, upstream, while the turn it failed in ends downstream.
+            if frame.id != self._erred:
+                self._erred = frame.id
+                if self._window is not None and self._window is not self._turn.released:
+                    # The turn this release was of has been sent, so what failed is its reply. What hands says next
+                    # is the failure, said by the system channel, and no answer to time.
+                    self._take(self._window, "failed", now)
+                    self._window = None
+                else:
+                    # The turn is still being taken in, so nothing has been asked of the model for it: a hold Whisper
+                    # failed on ends the wait only if the turn ends with no words from any other.
+                    self._turn.failed = True
             return
         if isinstance(frame, TranscriptionFrame):
             self._turn.said = True

@@ -1807,7 +1807,9 @@ mark arriving, so it is the wait as felt at the phone, the network included.
 `no words` is a fact of the turn and not of a hold: the user aggregator says the
 turn ended, and no hold it took in had words, so nothing is sent to the model. A
 silent hold released after one whose words are in is answered with the rest of its
-turn. `failed` is a pipeline error while a release waits on its reply. Both end
+turn. `failed` is a pipeline error that leaves the release unanswered: one after
+the turn was sent, which is its reply failing, or one while the turn was taken in
+where the turn then ends with no words, which is Whisper failing on it. Both end
 the turn's latency window, so what hands says next, the failure itself included,
 is not timed as the answer. `first audio` is the first sound after the release,
 whatever hands said with it, and the page says only that hands spoke.

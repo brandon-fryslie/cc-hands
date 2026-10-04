@@ -131,6 +131,28 @@ async def test_a_stage_failing_while_a_release_waits_is_told_as_failed_and_never
     assert lines[-1] == "latency: first audio, answering no user turn"
 
 
+async def test_a_hold_whisper_failed_on_in_a_turn_that_has_words_fails_nothing_and_the_reply_is_timed() -> None:
+    """The turn is sent with the other hold's words and answered. The error's frame is still crossing boundaries
+    upstream after the turn has ended, and is the same failure it was."""
+    error = ErrorFrame("Whisper could not transcribe hold 1")
+    lines, marks = await observed(
+        TurnOpened(hold=1),
+        VADUserStoppedSpeakingFrame(),
+        TurnOpened(hold=2),
+        VADUserStoppedSpeakingFrame(),
+        error,
+        TurnResolved(hold=1),
+        TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
+        TurnResolved(hold=2),
+        UserStoppedSpeakingFrame(),
+        error,
+        LLMTextFrame("Hi"),
+        BotStartedSpeakingFrame(),
+    )
+    assert marks == ["released", "released", "transcript", "first LLM token", "first audio"]
+    assert "after key release" in lines[-1]
+
+
 async def test_the_model_failing_after_the_words_were_heard_is_told_as_failed() -> None:
     marks = await told(
         TurnOpened(hold=1),
