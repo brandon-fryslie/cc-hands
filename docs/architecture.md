@@ -1640,18 +1640,23 @@ turn's `UserAsked` says it:
 | `engaged conversation` | engaged by one hold of Right Shift; then Silero confirms speech on the desk microphone (`hands.voice.engaged`) | Smart Turn judges the speech complete, or the silence after it runs past its `stop_secs`; another hold disengages |
 | `button` | a HID button or headset button pressed | released |
 | `phone button` | the phone page's talk button pressed | released |
-| `wake word` | the wake word heard | Silero VAD reports silence for the configured gap |
+| `wake word` | openWakeWord hears "Hey Jarvis" on the desk microphone (`hands.voice.wake`) | as `engaged conversation`'s, once what is asked has started after the wake word |
 
 The wake-word edge is the only one that opens the mic without a hand, and it is
-half-duplex: while the output transport is playing, the wake-word detector is deaf,
-because an open mic in a room with speakers hears the pipeline's own voice.
+half-duplex: while hands speaks, the wake-word detector hears silence in place of the
+room, because an open mic in a room with speakers hears the pipeline's own voice. The
+pause after "Hey Jarvis," is no end of the turn: Smart Turn judges the vocative
+complete, so a stop goes to it only once speech has started again after the wake word.
+Asked in one breath, with no pause, the turn ends on the silence after it. The edge
+shares engaged conversation's driver and models (`hands.voice.engaged.drive`); the
+desk listens for as long as it is in use, so the wake word is in the turn's audio.
 
 **The trigger is the desk's edge, one choice switched by voice** (`hands.voice.trigger`).
 The phone's button is there for every call; at the desk, the edge that drives the gate is
 the `Trigger` in use, one value `Triggers` holds while hands runs: the brain's
 `trigger_in_use` says it, and `set_trigger` switches it: the old edge stops and the new
-one starts (`Triggers.drive`), so the next turn opens the new way. Built: the `held key` and
-`engaged conversation`. A trigger not built is refused by the tool's closed set, and the one
+one starts (`Triggers.drive`), so the next turn opens the new way. Built: the `held key`,
+`engaged conversation`, and the `wake word`. A trigger not built is refused by the tool's closed set, and the one
 in use stays.
 
 **An engaged desk listens between turns.** Engaged conversation moves the gate with the

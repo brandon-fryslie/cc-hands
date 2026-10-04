@@ -17,6 +17,7 @@ dependencies = [
     "ifaddr>=0.2",
     "segno>=1.6",
     "livekit>=1.1.20,<2",
+    "openwakeword>=0.6,<0.7",
 ]
 
 [project.scripts]
@@ -44,3 +45,8 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 # Every test here is a function, so nothing is collected by class name. Without this a domain type whose name
 # begins with Test, such as the Tested step, is taken for a test case the moment a test module imports it.
+
+[tool.uv]
+# hands is a Mac app (CoreAudio, Quartz event taps), so the lock is resolved for macOS alone: openWakeWord's Linux-only
+# tflite-runtime has no wheel for the Python hands runs on.
+environments = ["sys_platform == 'darwin'"]

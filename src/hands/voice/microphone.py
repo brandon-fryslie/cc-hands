@@ -155,6 +155,11 @@ class Speaker(LocalAudioOutputTransport):
         self.quiet = asyncio.Event()
         self.quiet.set()
 
+    @property
+    def hands_speaking(self) -> bool:
+        """Whether hands is speaking, between its sender's start and stop."""
+        return "hands" in self._speaking
+
     async def setup(self, setup: FrameProcessorSetup) -> None:
         # [LAW:one-source-of-truth] Pipecat's local setup is only the base's and an open; the open is open_stream's, so
         # the stream is opened one way at setup and at every reopen.

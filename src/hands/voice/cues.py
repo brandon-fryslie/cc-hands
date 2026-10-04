@@ -38,10 +38,10 @@ OPENED = Cue("turn: started", ((660.0, 990.0),))
 SENT = Cue("turn: ended", ((990.0, 660.0),))
 DROPPED = Cue("turn: dropped", ((330.0, 330.0), (330.0, 330.0)))
 EXPIRED = Cue(f"turn: dropped, open {TURN_LIMIT_SECONDS:.0f}s", DROPPED.glides)
-# Engaged conversation's edges: two rising tones as hands starts listening for every turn, two falling as it stops. Two
-# tones, so neither is taken for a turn opening or ending.
-ENGAGED = Cue("engaged: listening", ((660.0, 990.0), (660.0, 990.0)))
-DISENGAGED = Cue("disengaged: not listening", ((990.0, 660.0), (990.0, 660.0)))
+# The desk starting and stopping listening for every turn, under engaged conversation or the wake word: two rising tones
+# as it starts, two falling as it stops. Two tones, so neither is taken for a turn opening or ending.
+LISTENING = Cue("desk: listening", ((660.0, 990.0), (660.0, 990.0)))
+DEAF = Cue("desk: not listening", ((990.0, 660.0), (990.0, 660.0)))
 
 
 @dataclass(frozen=True)
@@ -75,9 +75,9 @@ def cues(move: Move) -> tuple[Cue, ...]:
         case "arm" | "disarm":
             return ()
         case "listen":
-            return (ENGAGED,)
+            return (LISTENING,)
         case "deafen":
-            return (DISENGAGED,)
+            return (DEAF,)
 
 
 @cache

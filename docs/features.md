@@ -286,6 +286,12 @@ Need 8. Where the microphone is.
   disengages; each is cued. Done when one press is followed by three turns with no
   key touched, a pause mid-sentence does not send half of it, and room talk after
   disengaging opens no turn.
+- **Wake word.** Saying "Hey Jarvis" opens a turn with no key at all, and
+  end-of-turn detection closes it as in an engaged conversation. openWakeWord's
+  pretrained model listens to the echo-cancelled desk microphone, and hears silence
+  while hands speaks. Done when, with speakers on, a turn completes with no key and
+  none of hands' own words in its transcript, and room talk without the wake word
+  opens no turn.
 - **Phone over WebRTC.** A hold-to-talk page served over HTTPS on the LAN and the
   tailnet, beside the desk for the whole run; the place the last turn opened at is
   where hands hears and speaks. Done when a full turn round-trips from a phone with
