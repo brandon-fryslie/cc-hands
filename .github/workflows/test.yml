@@ -1,0 +1,38 @@
+# Every PR into master runs `make check` on the macOS a release builds on; the check named `test` is required on
+# master, so a red one cannot merge, and release.yml publishes only commits on master, so this is its gate.
+name: test
+
+on:
+  pull_request:
+    branches: [master]
+  # A cache a PR saves is that PR's alone; the runs on master save the ones every PR restores.
+  push:
+    branches: [master]
+
+concurrency:
+  group: test-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-14
+    # The suite takes ~4 minutes here; a hung test fails the check instead of holding it for GitHub's 6 hours.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # hatch-vcs reads the version from the history's tags when `uv sync` installs the checkout.
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      # The wake word tests fetch openWakeWord's models into pytest's cache; kept across runs, a download outage
+      # cannot fail a PR that never touched the wake word.
+      - uses: actions/cache@v4
+        with:
+          path: .pytest_cache/d/wake-word
+          key: wake-word-${{ hashFiles('src/hands/voice/wake.py') }}
+      # [LAW:one-source-of-truth] the versions the suite runs on are uv.lock's; a lock out of step with pyproject fails here.
+      - name: Install the locked environment
+        run: uv sync --locked
+      # [LAW:one-source-of-truth] the suite is the Makefile's: pytest, pyright and fritter's go tests.
+      - name: make check
+        run: make check
