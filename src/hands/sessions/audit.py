@@ -17,14 +17,14 @@ to it again.
 """
 
 import fcntl
+import io
 import itertools
 import json
-import mmap
 import os
 import re
 from bisect import bisect_right
 from collections.abc import Callable, Generator, Iterator, Mapping
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -462,9 +462,10 @@ def tail(directory: Path, count: int) -> tuple[list[str], int]:
     *closed, active = bases
     # [LAW:no-ambient-temporal-coupling] the end is found once, and the lines are read back from it: a line written
     # while they are read is past the offset, and is following's to tell.
-    end = _complete(segment(directory, active))
-    older = (line for base in reversed(closed) for line in _newest_first(segment(directory, base)))
-    newest = list(itertools.islice(itertools.chain(_before(segment(directory, active), end), older), max(count, 0)))
+    with _held(segment(directory, active)) as log:
+        end = _complete(log)
+        older = (line for base in reversed(closed) for line in _newest_first(segment(directory, base)))
+        newest = list(itertools.islice(itertools.chain(_before(log, end), older), max(count, 0)))
     return newest[::-1], active + end
 
 
@@ -533,41 +534,57 @@ def _lines(path: Path, start: int) -> tuple[list[str], int]:
 
 def _newest_first(path: Path) -> Iterator[str]:
     """The complete lines of path, newest first."""
-    return _before(path, _complete(path))
+    # [LAW:no-ambient-temporal-coupling] the end is found in the file the lines are read back from: opened once, it is
+    # the same segment for both, whatever its path comes to name.
+    with _held(path) as log:
+        yield from _before(log, _complete(log))
 
 
-def _complete(path: Path) -> int:
-    """How many bytes of path are complete lines: a line still being written is not among them."""
-    with _mapped(path) as held:
-        return held.rfind(b"\n") + 1
+def _complete(log: BinaryIO) -> int:
+    """How many bytes of log are complete lines: a line still being written is not among them."""
+    size = log.seek(0, os.SEEK_END)
+    return next((start + block.rfind(b"\n") + 1 for start, block in _back(log, size) if b"\n" in block), 0)
 
 
-def _before(path: Path, end: int) -> Iterator[str]:
-    """The lines of path that end at byte end, where one does, and each before it, newest first."""
-    with _mapped(path) as held:
-        # The newline that ends the line being read: the one before it is where the line begins.
-        ending = end - 1
-        while ending >= 0:
-            start = held.rfind(b"\n", 0, ending) + 1
-            yield _text(held[start:ending])
-            ending = start - 1
+def _before(log: BinaryIO, end: int) -> Iterator[str]:
+    """The line of log that ends at byte end, where one does, and each before it, newest first."""
+    if end == 0:
+        return
+    # The blocks of the line being read that lie past the block in hand, the nearest first.
+    later: list[bytes] = []
+    # The newline at end - 1 ends the newest line: every newline before it ends an older one.
+    for _, block in _back(log, end - 1):
+        head, *rest = block.split(b"\n")
+        if rest:
+            yield _text(rest.pop() + b"".join(reversed(later)))
+            yield from map(_text, reversed(rest))
+            later = []
+        later.append(head)
+    yield _text(b"".join(reversed(later)))
+
+
+# How much of a segment is read at a time, going back from its end.
+_BLOCK = 64 * 1024
+
+
+def _back(log: BinaryIO, end: int) -> Iterator[tuple[int, bytes]]:
+    """The bytes of log before end a block at a time, the block nearest end first, each with the offset it begins at:
+    reading back from the end costs what is read, and not the segment's size."""
+    for past in range(end, 0, -_BLOCK):
+        start = max(0, past - _BLOCK)
+        log.seek(start)
+        yield start, log.read(past - start)
 
 
 @contextmanager
-def _mapped(path: Path) -> Generator[mmap.mmap | bytes]:
-    """The bytes of path as it stands, memory-mapped: only the pages a reader looks at are read from disk, so reading back
-    from the end costs what is read and not the segment's size. A segment that is empty, or that retention has deleted,
-    holds none."""
+def _held(path: Path) -> Generator[BinaryIO]:
+    """path, open to read. A segment retention has deleted holds nothing."""
     try:
-        log = path.open("rb")
+        log: BinaryIO = path.open("rb")
     except FileNotFoundError:
-        yield b""
-        return
+        log = io.BytesIO()
     with log:
-        size = os.fstat(log.fileno()).st_size
-        # An empty file cannot be mapped.
-        with mmap.mmap(log.fileno(), size, access=mmap.ACCESS_READ) if size > 0 else nullcontext(b"") as held:
-            yield held
+        yield log
 
 
 def _text(line: bytes) -> str:
