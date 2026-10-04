@@ -87,12 +87,25 @@ class Unsaid:
 
 
 @dataclass(frozen=True)
+class Levels:
+    """How loud one hold's audio was, as its mean power in dBFS, None where it was digital silence: as the microphone
+    captured it, and as Whisper heard it, with the echo canceller between the two. What the canceller took out is the
+    difference; at the phone, heard through no canceller, the two are the same."""
+
+    captured_dbfs: float | None
+    heard_dbfs: float | None
+
+
+@dataclass(frozen=True)
 class HoldHeard:
-    """What Whisper made of one hold: what it took as said, None where nothing was, and each segment it dropped."""
+    """What Whisper made of one hold: what it took as said, None where nothing was, each segment it dropped, and how
+    loud the hold was before and after the echo canceller, which tells a transcript made of the reply's echo left over
+    (loud captured, quiet heard) from one of the room with nobody speaking (quiet both)."""
 
     hold: int
     said: str | None
     dropped: tuple[Unsaid, ...]
+    levels: Levels
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,7 @@ import pytest
 from aiohttp import web
 from pipecat.frames.frames import ErrorFrame, Frame, TranscriptionFrame
 
-from hands.sessions.audit import Entry, HoldHeard, Unsaid
+from hands.sessions.audit import Entry, HoldHeard, Levels, Unsaid
 from hands.voice import whisper as whisper_module
 from hands.voice.turnstop import TurnResolved
 from hands.voice.whisper import Whisper
@@ -101,8 +101,12 @@ def wav(seconds: float) -> bytes:
     return out.getvalue()
 
 
+# How loud each hold queued here was, as the key's release measured it.
+LEVELS = Levels(captured_dbfs=-12.5, heard_dbfs=-40.0)
+
+
 async def transcribe(whisper: Whisper, hold: int, audio: bytes) -> list[Frame]:
-    whisper._transcribing.append(hold)  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
+    whisper._transcribing.append((hold, LEVELS))  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
     return [frame async for frame in whisper.run_stt(audio)]
 
 
@@ -142,11 +146,11 @@ async def test_what_a_primed_whisper_makes_of_noise_is_not_said(lowtalker: LowTa
     assert said == ["Okay."]
     # Each hold is recorded with what was dropped from it and why, so a hold that sent nothing can be looked into.
     assert recorded == [
-        HoldHeard(1, None, ()),
-        HoldHeard(2, None, (Unsaid(".", 0.11, -0.5),)),
-        HoldHeard(3, None, (Unsaid("and slow-talking.", 0.68, -2.84),)),
-        HoldHeard(4, None, (Unsaid(("and turnstop, " * 12).strip(), 17.1, -0.24),)),
-        HoldHeard(5, "Okay.", ()),
+        HoldHeard(1, None, (), LEVELS),
+        HoldHeard(2, None, (Unsaid(".", 0.11, -0.5),), LEVELS),
+        HoldHeard(3, None, (Unsaid("and slow-talking.", 0.68, -2.84),), LEVELS),
+        HoldHeard(4, None, (Unsaid(("and turnstop, " * 12).strip(), 17.1, -0.24),), LEVELS),
+        HoldHeard(5, "Okay.", (), LEVELS),
     ]
 
 

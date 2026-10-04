@@ -19,7 +19,7 @@ from pipecat.utils.errors import ErrorCategory
 from conftest import unprimed
 from hands.sessions import heartbeat
 from hands.daemon.cli import crashed_before
-from hands.sessions.audit import Announced, Entry, HoldHeard
+from hands.sessions.audit import Announced, Entry, HoldHeard, Levels
 from hands.daemon import notify
 from hands.daemon.notify import notification_command, post_notification
 from hands.sessions.home import Home
@@ -342,12 +342,12 @@ async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
 async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_nothing_in(monkeypatch: pytest.MonkeyPatch) -> None:
     said: list[str | None | Exception] = []
 
-    async def transcribe(_self: Whisper, hold: int, _audio: bytes) -> HoldHeard:
+    async def transcribe(_self: Whisper, hold: int, levels: Levels, _audio: bytes) -> HoldHeard:
         match said.pop():
             case Exception() as error:
                 raise error
             case text:
-                return HoldHeard(hold, text, ())
+                return HoldHeard(hold, text, (), levels)
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
     whisper = Whisper(url="http://unused/v1", prompt=unprimed, record=lambda _: None)
@@ -362,7 +362,7 @@ async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_
     gate = Gate()
     for _ in range(3):
         for gate in (gate.after("start", "desk"), gate.after("start", "desk").after("stop", "desk")):
-            await whisper.process_audio_frame(gate.framed(b"\x00\x00", 16000, 1, "desk"), FrameDirection.DOWNSTREAM)
+            await whisper.process_audio_frame(gate.framed(b"\x00\x00", b"\x00\x00", 16000, 1, "desk"), FrameDirection.DOWNSTREAM)
     # Every transcription ends with Whisper done with its hold, and one it heard nothing in yields nothing else: no
     # frame that could reach the speaker. (Every frame has an id of its own, so frames made here are told by their kind.)
     said.append(None)

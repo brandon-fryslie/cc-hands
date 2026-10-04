@@ -43,6 +43,9 @@ class KeyedAudio(InputAudioRawFrame):
     reads the gate as it was when this sound was recorded, never as it is by the time the frame arrives.
     """
 
+    # The same sound as the microphone captured it, before the echo canceller and as long as `audio`, muted by the key
+    # as it is; the phone is heard through no canceller, so there it is `audio` itself.
+    captured: bytes
     key: Key
     # How many turns the gate has sent, and thrown away, by this frame.
     sent: int
@@ -137,9 +140,12 @@ class Gate:
         # only decides its content.
         return audio if self.key in ("listening", "arming", "down") else bytes(len(audio))
 
-    def framed(self, audio: bytes, sample_rate: int, num_channels: int, place: Place) -> KeyedAudio:
-        """Audio captured at `place`, as the pipeline hears it, tagged with this gate."""
-        return KeyedAudio(audio=self.audible(audio), sample_rate=sample_rate, num_channels=num_channels, key=self.key, sent=self.sent, dropped=self.dropped, place=place)
+    def framed(self, audio: bytes, captured: bytes, sample_rate: int, num_channels: int, place: Place) -> KeyedAudio:
+        """Audio captured at `place`, as the pipeline hears it and as the microphone `captured` it, tagged with this gate."""
+        return KeyedAudio(
+            audio=self.audible(audio), captured=self.audible(captured), sample_rate=sample_rate, num_channels=num_channels,
+            key=self.key, sent=self.sent, dropped=self.dropped, place=place,
+        )
 
 
 class PushToTalk:

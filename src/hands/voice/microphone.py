@@ -429,7 +429,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
         # phone, the desk's frames are not the pipeline's at all, so its stream is the phone's unbroken.
         if not gate.hears("desk"):
             return None, pyaudio.paContinue
-        frame = gate.framed(cleaned, self._sample_rate, self._params.audio_in_channels, "desk")
+        frame = gate.framed(cleaned, in_data, self._sample_rate, self._params.audio_in_channels, "desk")
         asyncio.run_coroutine_threadsafe(self.push_audio_frame(frame), loop)
         return None, pyaudio.paContinue
 

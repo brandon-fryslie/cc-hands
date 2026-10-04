@@ -259,9 +259,10 @@ Need 2.
   branch, then every running session's project and name, newest last, at most
   40 of them and the oldest dropped until the rest fit the 111 prompt tokens LowTalker
   keeps. Each hold's words and their token count are a `Primed` line in the audit log,
-  and what Whisper made of it, with each segment dropped as not said, a `HoldHeard`
-  line: primed, Whisper turns noise into "." or a guess ("and slow-talking.", average
-  log probability -2.8) or a loop (compression ratio 17), which are dropped. Measured
+  and what Whisper made of it, with each segment dropped as not said and how loud the
+  hold was before and after the echo canceller, a `HoldHeard` line: primed, Whisper turns
+  noise into "." or a guess ("and slow-talking.", average log probability -2.8) or a loop
+  (compression ratio 17), which are dropped. Measured
   2026-10-03 through that code, ten sentences said by `say` in a repository with
   `authMiddleware.ts` among thirty files: `authMiddleware` 8/10 primed, 0/10
   unprimed; both misses were a voice saying "middle way". Built:

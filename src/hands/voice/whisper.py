@@ -6,9 +6,11 @@ LowTalker (~/code/low-talker) keeps its Whisper resident on the Neural Engine fo
 OpenAI's POST /audio/transcriptions, so hands uploads each hold there rather than running a second Whisper of its own.
 """
 
+import math
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
 
+import numpy as np
 from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
@@ -23,7 +25,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.tracing.service_decorators import traced_stt  # pyright: ignore[reportUnknownVariableType]  (untyped in Pipecat)
 
-from hands.sessions.audit import HoldHeard, Record, Unsaid
+from hands.sessions.audit import HoldHeard, Levels, Record, Unsaid
 from hands.core.place import Place
 from hands.voice import transcription
 from hands.voice.ptt import Key, KeyedAudio
@@ -72,9 +74,12 @@ class Whisper(SegmentedSTTService):
         self._dropped = 0
         # The number of the last hold the key opened.
         self._opened = 0
-        # The holds whose audio is queued for transcription, oldest first. Pipecat transcribes its queue one segment at
-        # a time, in order, so each transcription is of the oldest.
-        self._transcribing: deque[int] = deque()
+        # The holds whose audio is queued for transcription, oldest first, each with how loud it was. Pipecat transcribes
+        # its queue one segment at a time, in order, so each transcription is of the oldest.
+        self._transcribing: deque[tuple[int, Levels]] = deque()
+        # [LAW:nothing-unseen] the microphone's audio before the echo canceller, for the very frames Pipecat's
+        # `_audio_buffer` holds, so a hold is measured on both sides of the canceller over the audio it is transcribed from.
+        self._uncancelled = bytearray()
 
     # Only the key cuts holds: a VAD frame from anywhere else, which Pipecat's segmenting would act on, moves nothing.
     async def _handle_user_started_speaking(self, frame: VADUserStartedSpeakingFrame) -> None:
@@ -90,6 +95,7 @@ class Whisper(SegmentedSTTService):
         if frame.place != self._heard_at:
             # A turn is heard at one place: what the other's microphone heard before it is no part of it.
             self._audio_buffer.clear()
+            self._uncancelled.clear()
             self._heard_at = frame.place
         # [LAW:no-ambient-temporal-coupling] a turn ends as the gate's counts move, not as its key is next seen at rest: a
         # turn can end and the next arm between two frames, with no frame captured at rest between them.
@@ -97,7 +103,8 @@ class Whisper(SegmentedSTTService):
             case "down", True, _ if self.is_usable:
                 # Sent: the hold's audio is queued, to be transcribed and sent.
                 stopped = VADUserStoppedSpeakingFrame()
-                self._transcribing.append(self._opened)
+                # Measured as the hold is cut, before Pipecat pads it with silence for Whisper.
+                self._transcribing.append((self._opened, Levels(_dbfs(self._uncancelled), _dbfs(self._audio_buffer))))
                 await super()._handle_user_stopped_speaking(stopped)
                 await self.push_frame(stopped)
                 self._captured = "up"
@@ -142,15 +149,19 @@ class Whisper(SegmentedSTTService):
             # press is heard as speech from the start: nothing it hears is trimmed while HOLD_SECONDS runs, however long.
             self._user_speaking = True
         await super().process_audio_frame(frame, direction)
+        # [LAW:one-source-of-truth] Pipecat's buffer alone says which audio a hold is made of: it is cut only from its
+        # front, here and wherever it is cleared above, and this is cut to its length, frame for frame.
+        self._uncancelled += frame.captured
+        del self._uncancelled[: len(self._uncancelled) - len(self._audio_buffer)]
 
     @traced_stt
     async def _handle_transcription(self, transcript: str, is_final: bool, language: Language | None = None) -> None:
         """Pipecat's span for a transcription, which its tracing decorator opens around this."""
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
-        hold = self._transcribing.popleft()
+        hold, levels = self._transcribing.popleft()
         try:
-            heard = await self._heard(hold, audio)
+            heard = await self._heard(hold, levels, audio)
         except Exception as error:
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from Whisper aloud.
             yield ErrorFrame(error=f"Whisper could not transcribe hold {hold}: {type(error).__name__}: {error}", exception=error)
@@ -167,7 +178,7 @@ class Whisper(SegmentedSTTService):
         # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
         yield TurnResolved(hold=hold)
 
-    async def _heard(self, hold: int, audio: bytes) -> HoldHeard:
+    async def _heard(self, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
         """What was said in a hold's WAV, primed with the vocabulary as it is now.
 
         A segment with no word in it is dropped, as are one the decoder repeated itself in and one Whisper only guessed
@@ -189,4 +200,12 @@ class Whisper(SegmentedSTTService):
                 said.append(segment.text)
             else:
                 dropped.append(segment)
-        return HoldHeard(hold, " ".join(said).strip() or None, tuple(dropped))
+        return HoldHeard(hold, " ".join(said).strip() or None, tuple(dropped), levels)
+
+
+def _dbfs(audio: bytes | bytearray) -> float | None:
+    """The mean power of 16-bit audio in dB below full scale, to a tenth; None where no sample of it sounds."""
+    samples = np.frombuffer(audio, dtype=np.int16).astype(np.float64) / 32768
+    power = float(np.dot(samples, samples))
+    # [LAW:types-are-the-program] digital silence has no level in dB: it is said as an absence, not as a floor.
+    return round(10 * math.log10(power / samples.size), 1) if power else None

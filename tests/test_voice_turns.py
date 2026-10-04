@@ -7,6 +7,7 @@ than hoped for. Whisper, the user aggregator, and the stop strategy are the ones
 """
 
 import asyncio
+import struct
 import wave
 from pathlib import Path
 from collections.abc import AsyncGenerator, Callable, Sequence
@@ -30,7 +31,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import running, unprimed
 from hands.core.place import Place
-from hands.sessions.audit import Entry, HoldHeard
+from hands.sessions.audit import Entry, HoldHeard, Levels
 from hands.sessions.wide import Fact
 from hands.voice import pipeline as built
 from hands.voice.conversation import cue_receipt
@@ -142,9 +143,10 @@ class Rig:
     # The gate the last frame was captured under.
     gate: Gate = field(default_factory=Gate)
 
-    async def hold(self, keys: Sequence[Captured], sound: bytes = b"\x00\x00" * 320, at: Place = "desk") -> None:
+    async def hold(self, keys: Sequence[Captured], sound: bytes = b"\x00\x00" * 320, at: Place = "desk", captured: bytes | None = None) -> None:
         """A frame captured under each key, counted as the gate counts them: the key leaving down for a rest sends the
-        turn, and for a press (a key pressed while it was held) or "dropped" throws it away."""
+        turn, and for a press (a key pressed while it was held) or "dropped" throws it away. `captured` is the sound
+        before the echo canceller, where the canceller changed it."""
         frames: list[KeyedAudio] = []
         for held in keys:
             match self.gate.key, held:
@@ -155,13 +157,13 @@ class Rig:
                 case _:
                     pass
             self.gate = replace(self.gate, key="up" if held == "dropped" else held)
-            frames.append(self.gate.framed(sound, 16000, 1, at))
+            frames.append(self.gate.framed(sound, sound if captured is None else captured, 16000, 1, at))
         await self.worker.queue_frames(frames)
 
     async def capture(self, gate: Gate, sound: bytes) -> None:
         """A frame captured under `gate`, as it stands after whatever moves made it."""
         self.gate = gate
-        await self.worker.queue_frame(gate.framed(sound, 16000, 1, gate.place))
+        await self.worker.queue_frame(gate.framed(sound, sound, 16000, 1, gate.place))
 
     async def until(self, what: Callable[[], bool]) -> None:
         async with asyncio.timeout(PATIENCE_SECS):
@@ -204,11 +206,11 @@ async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator
     texts: asyncio.Queue[str] = asyncio.Queue()
     heard: list[bytes] = []
 
-    async def transcribe(_self: Whisper, hold: int, audio: bytes) -> HoldHeard:
+    async def transcribe(_self: Whisper, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
         # The hold as uploaded, a WAV: its samples are what the microphone heard.
         with wave.open(BytesIO(audio)) as uploaded:
             heard.append(uploaded.readframes(uploaded.getnframes()))
-        return HoldHeard(hold, await texts.get() or None, ())
+        return HoldHeard(hold, await texts.get() or None, (), levels)
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
     # The floor sits where build_voice puts it, between Whisper and the user aggregator.
@@ -222,6 +224,33 @@ async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
     await rig.hold(["down", "down", "up"])
     await rig.texts.put("what time is it")
     assert await rig.everything_sent(holds=1) == ["what time is it"]
+
+
+def holds_heard(rig: Rig) -> list[HoldHeard]:
+    return [entry for entry in rig.recorded if isinstance(entry, HoldHeard)]
+
+
+async def test_a_holds_record_says_how_loud_it_was_before_and_after_the_echo_canceller(rig: Rig) -> None:
+    # Half of full scale captured, a tenth of that left by the canceller: -6.0 and -26.0 dBFS, 20 dB of echo taken out.
+    loud, residual = struct.pack("<h", 16384) * 320, struct.pack("<h", 1638) * 320
+    # What the key was up over is no part of the hold, however loud: the levels are of the audio transcribed alone.
+    await rig.hold(["up", "arming", "down", "down", "up"], sound=residual, captured=loud)
+    await rig.texts.put("run")
+    await rig.until(lambda: len(holds_heard(rig)) == 1)
+    assert holds_heard(rig) == [HoldHeard(1, "run", (), Levels(captured_dbfs=-6.0, heard_dbfs=-26.0))]
+    # The record is of the audio Whisper was given: the three frames from the press on, then Pipecat's silence.
+    assert rig.heard[0].rstrip(b"\x00") == residual * 3
+
+
+async def test_a_hold_of_digital_silence_has_no_level_and_a_hold_at_the_phone_has_one_level(rig: Rig) -> None:
+    await rig.hold(["down", "up"])
+    await rig.texts.put("")
+    await rig.until(lambda: len(holds_heard(rig)) == 1)
+    quiet = struct.pack("<h", 3277) * 320  # a tenth of full scale
+    await rig.hold(["down", "up"], sound=quiet, at="phone")
+    await rig.texts.put("hello")
+    await rig.until(lambda: len(holds_heard(rig)) == 2)
+    assert [hold.levels for hold in holds_heard(rig)] == [Levels(None, None), Levels(-20.0, -20.0)]
 
 
 async def test_a_turn_is_received_once_its_words_are_written_and_a_turn_with_none_is_not(rig: Rig) -> None:
