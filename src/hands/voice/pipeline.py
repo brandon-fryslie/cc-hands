@@ -53,7 +53,7 @@ from hands.voice.phone import Phone
 from hands.sessions.audit import Record
 from hands.voice.player import Marks, Player
 from hands.voice.ptt import PushToTalk
-from hands.voice.spoken import FenceAggregator, SpokenForm
+from hands.voice.spoken import EndsReplies, FenceAggregator, SpokenForm
 from hands.voice.tools import RunsReplies, Tool, context_tools
 from hands.voice.turnstop import KeyTurnStop
 from hands.voice import voices
@@ -172,6 +172,10 @@ def build_llm(
             )
 
 
+class Speaker(EndsReplies, PocketTTSService):
+    """pocket-tts, taking each of the model's replies as over at its end."""
+
+
 @dataclass(frozen=True)
 class Voice:
     """The assembled pipeline plus the handles its edges need: the key, the audio devices, the phone, the three services that report failures, and the two sides of the conversation."""
@@ -182,7 +186,7 @@ class Voice:
     phone: Phone
     stt: Whisper
     llm: FrameProcessor
-    tts: PocketTTSService
+    tts: Speaker
     user_turns: LLMUserAggregator
     assistant_turns: LLMAssistantAggregator
 
@@ -210,7 +214,7 @@ def build_voice(
     # three that keep their text say in their own comments that the context is kept so the model can
     # answer about what the user heard, and before this filter it held what was sent to the speaker,
     # which was never the same string. See voice/spoken.py, which also records what it costs.
-    tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice, language=voices.LANGUAGE), text_filters=[SpokenForm()])
+    tts = Speaker(settings=Speaker.Settings(voice=config.voice, language=voices.LANGUAGE), text_filters=[SpokenForm()])
     # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())
