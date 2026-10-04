@@ -5,12 +5,14 @@ from collections.abc import Callable
 from loguru import logger
 from pipecat.frames.frames import (
     Frame,
+    FunctionCallCancelFrame,
     FunctionCallResultFrame,
+    FunctionCallResultProperties,
+    FunctionCallsStartedFrame,
     InterruptionFrame,
     LLMAssistantPushAggregationFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
-    TextFrame,
 )
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
@@ -29,21 +31,25 @@ class AssistantTurns(LLMAssistantAggregator):
     """Pipecat's assistant aggregator, which also ends the turn of a line hands says as written and keeps in the
     context: written once it is said, as heard whole, or with the model's turn where one is open.
 
-    [LAW:single-enforcer] the one place such a line's turn is ended, under either model, so whoever says a line sends
-    the line alone. Pipecat's TTS service ends it only while it takes no reply as under way, and one that pushes its own
-    text frames, as pocket-tts does, takes a reply as under way from its start frame to the next barge-in (1.10.0,
-    `tts_service.py:858`): the line stayed an open turn, written at the next key press as cut off.
+    [LAW:single-enforcer] the one place such a line's turn is ended inside the model's turn or after it, under either
+    model, so whoever says a line sends the line alone. Pipecat's TTS service ends it only while it takes no reply as
+    under way, which is never inside the model's turn, and one that pushes its own text frames, as pocket-tts does,
+    takes a reply as under way from its start frame to the next barge-in (1.10.0, `tts_service.py:858`): the line stayed
+    an open turn, written at the next key press as cut off.
 
     [LAW:no-ambient-temporal-coupling] the extent of the model's turn is held here, where the context is written: open
-    from a reply's start to its end, while a call it made is in progress, and from a result the model is run on until
+    from a reply's start to its end, while a call it made is unanswered, and from a result the model is run on until
     the reply that answers it starts. A line written inside it would follow the call's result in the context, and the
     request that answers the call would end on an assistant message, which Claude refuses as a prefill. So a line said
     inside the model's turn is written with it: by the end of the reply that answers the call, or, where the model is
-    not run again, as the last of its calls is answered.
+    not run again, as the last of its calls is answered or cancelled.
     """
 
     _replying = False
     _answering = False
+    # The calls the model made that are neither answered nor cancelled, read off the frames that say so: Pipecat's own
+    # count keeps a call cancelled before its in-progress frame arrived, a frame the audio ahead of it holds back (1.10.0).
+    _calls: frozenset[str] = frozenset()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         match frame:
@@ -51,24 +57,32 @@ class AssistantTurns(LLMAssistantAggregator):
                 self._replying, self._answering = True, False
             case LLMFullResponseEndFrame():
                 self._replying = False
+            case FunctionCallsStartedFrame(function_calls=calls):
+                self._calls |= {call.tool_call_id for call in calls}
+            case FunctionCallResultFrame(tool_call_id=call, properties=None | FunctionCallResultProperties(is_final=True)) | FunctionCallCancelFrame(tool_call_id=call):
+                self._calls -= {call}
             case InterruptionFrame():
-                # A barge-in drops the reply under way and the request for the one that would have answered a call.
+                # A barge-in drops the reply under way and the request for the one that would have answered a call. A
+                # line waiting on either was heard whole, its text arriving behind its audio: written as that, ahead of
+                # Pipecat writing a reply under way as cut off.
+                if self._aggregation and not self._replying:
+                    await self._end_turn()
                 self._replying = self._answering = False
             case _:
                 pass
         await super().process_frame(frame, direction)
-        match frame:
-            # The two arrivals that can leave something said and unwritten with no turn of the model's open: the line
-            # itself, which the output transport passes on once its audio has played, and the result that ends a turn.
-            case TextFrame() | FunctionCallResultFrame() if self.aggregation_string() and not self._open:
-                # Ended as Pipecat's own service ends a line's turn, by the frame it sends for one.
-                await super().process_frame(LLMAssistantPushAggregationFrame(), direction)
-            case _:
-                pass
+        # Whatever the frame, so whichever one closes the model's turn writes what was said inside it: a line itself,
+        # which the output transport passes on once its audio has played, where no turn is open.
+        if self._aggregation and not self._open:
+            await self._end_turn()
 
     @property
     def _open(self) -> bool:
-        return self._replying or self._answering or self.has_function_calls_in_progress
+        return self._replying or self._answering or bool(self._calls)
+
+    async def _end_turn(self) -> None:
+        # Ended as Pipecat's own service ends a line's turn, by the frame it sends for one.
+        await super().process_frame(LLMAssistantPushAggregationFrame(), FrameDirection.DOWNSTREAM)
 
     async def _maybe_push_context_after_function_result(self) -> None:
         # [LAW:one-source-of-truth] Pipecat's aggregator decides here, and nowhere else, that the model is run on a

@@ -292,7 +292,10 @@ class BrainStage(FrameProcessor):
                 if stop:
                     self._brain.interrupt()
                 if turn is not None and not turn.interrupted:
-                    # A barge-in the turn goes on through cut off none of what it is still to say of the sessions.
+                    # A barge-in ends the reply under way for everything behind this stage, and the turn goes on
+                    # through it: what it says next is a reply started again, written whole at its end.
+                    await self.push_frame(LLMFullResponseStartFrame())
+                    # It cut off none of what the turn is still to say of the sessions.
                     await self.push_frame(Resumed(turn.utterances))
             case _:
                 await self.push_frame(frame, direction)

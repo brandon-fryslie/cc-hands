@@ -7,11 +7,13 @@ from dataclasses import dataclass, field
 
 from pipecat.frames.frames import (
     Frame,
+    FunctionCallCancelFrame,
     FunctionCallFromLLM,
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
     FunctionCallResultProperties,
     FunctionCallsStartedFrame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
@@ -58,6 +60,10 @@ class Conversation:
         taken = asyncio.Event()
         await self.pipeline.worker.queue_frames([*frames, Mark(taken.set)])
         await asyncio.wait_for(taken.wait(), 2.0)
+
+    async def barge_in(self) -> None:
+        """A barge-in, which overtakes whatever is still on its way and drops a mark sent behind it."""
+        await self.pipeline.worker.queue_frame(InterruptionFrame())
 
     async def replies(self, count: int) -> list[Entry]:
         """What the audit log is told, once `count` replies are written."""
@@ -174,6 +180,47 @@ async def test_a_line_said_while_a_call_runs_that_is_the_whole_reply_is_written_
         await conversation.said(*calling("c1", TTSSpeakFrame("That was the last of it.")), result("c1", run_llm=False))
 
         assert await conversation.replies(2) == [CHECKING, Replied("That was the last of it.", interrupted=False)]
+
+
+async def test_a_line_said_while_a_call_runs_is_written_as_the_call_is_cancelled() -> None:
+    """A call cancelled with the model not run again ends the model's turn as an answered one does."""
+    async with conversing() as conversation:
+        await conversation.said(*calling("c1", TTSSpeakFrame("The session api is gone.")))
+        await conversation.said(FunctionCallCancelFrame("list_sessions", "c1"))
+
+        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone.", interrupted=False)]
+
+
+async def test_a_line_heard_whole_while_a_call_runs_is_written_as_heard_whole_at_a_barge_in() -> None:
+    """The barge-in ends the model's turn, and cut off nothing of the line said inside it."""
+    async with conversing() as conversation:
+        await conversation.said(*calling("c1", TTSSpeakFrame("The session api is gone.")))
+        await conversation.barge_in()
+
+        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone.", interrupted=False)]
+
+
+async def test_a_call_cancelled_before_it_is_told_as_in_progress_holds_no_line_said_after_it() -> None:
+    """A barge-in while the reply that made the call still plays: the cancellation overtakes the in-progress frame, which
+    the audio holds back, and Pipecat's aggregator keeps the call as open from then on (1.10.0)."""
+    call = FunctionCallFromLLM("list_sessions", "c1", {}, None)
+    async with conversing() as conversation:
+        await conversation.said(LLMFullResponseStartFrame(), LLMTextFrame("Checking."), FunctionCallsStartedFrame([call]), LLMFullResponseEndFrame())
+        await conversation.said(FunctionCallCancelFrame("list_sessions", "c1"))
+        await conversation.said(FunctionCallInProgressFrame("list_sessions", "c1", {}, cancel_on_interruption=True), TTSSpeakFrame("The session api is gone."))
+
+        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone.", interrupted=False)]
+
+
+async def test_a_reply_started_again_after_a_barge_in_it_goes_on_through_is_written_whole_at_its_end() -> None:
+    """The brain's stage starts the reply again where its turn goes on through a barge-in: each sentence said after one
+    would otherwise be a turn of its own."""
+    async with conversing() as conversation:
+        await conversation.said(LLMFullResponseStartFrame())
+        await conversation.barge_in()
+        await conversation.said(LLMFullResponseStartFrame(), LLMTextFrame("It opened pull request 68. "), LLMTextFrame("Nothing else changed."), LLMFullResponseEndFrame())
+
+        assert (await conversation.replies(2))[-1] == Replied("It opened pull request 68. Nothing else changed.", interrupted=False)
 
 
 async def test_a_line_said_after_a_call_that_was_the_whole_reply_is_written_once_it_is_said() -> None:

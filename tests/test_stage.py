@@ -1148,6 +1148,8 @@ async def test_a_barge_in_before_the_brain_has_sent_the_turn_stops_nothing_and_t
     # Still waiting for the input: nothing of it has left, so there is nothing to stop, and the user's words follow it.
     await rig.interrupt()
     assert rig.brain.interrupts == 0
+    # The reply goes on through the barge-in, which ended it for whatever writes it: started again, so it is written whole.
+    await rig.until(lambda: rig.out.shape() == ["LLMFullResponseStartFrame", "InterruptionFrame", "LLMFullResponseStartFrame"])
     _, route = rig.request()
     assert route == Send((Tail(TAIL),), refusal="final", span=APART)
     rig.brain.end()
