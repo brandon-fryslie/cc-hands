@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import termios
 import sys
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterator, Sequence
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -30,7 +30,7 @@ from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
-from hands.sessions.terminals import Terminal
+from hands.sessions.terminals import Terminal, attended, terminal_processes
 from hands.sessions.wrapper import shim_script
 from hands.voice.backends import ClaudeCodeBackend
 
@@ -197,30 +197,33 @@ def installed(root: Path) -> str:
 
 
 @contextlib.contextmanager
-def at_a_terminal(executable: Path, cwd: Path) -> Generator[int]:
-    """A process running executable in cwd with a terminal of its own, as a session runs; its pid, once it runs executable."""
+def at_a_terminal(executable: Path, cwd: Path, arguments: Sequence[str] = ("30",), piped: bool = False) -> Generator[int]:
+    """A process running executable in cwd with a terminal of its own, as a session runs, its stdin a pipe if piped; its
+    pid, once it runs executable."""
     controller, terminal = pty.openpty()
     # Popen returns only once the child has exec'd, so the process is executable from the first look at it.
     process = subprocess.Popen(
-        [executable, "30"],
+        [executable, *arguments],
         cwd=cwd,
-        stdin=terminal,
+        stdin=subprocess.PIPE if piped else terminal,
         stdout=terminal,
         stderr=terminal,
         start_new_session=True,
-        preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0),
+        preexec_fn=lambda: fcntl.ioctl(1, termios.TIOCSCTTY, 0),
     )
     try:
         yield process.pid
     finally:
         process.kill()
         process.wait()
+        if process.stdin is not None:
+            process.stdin.close()
         os.close(controller)
         os.close(terminal)
 
 
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
-    assert readiness.sessions(Home(root / "home"), installed(root)) == Ready("running sessions hands knows of: 0, and each can be typed into")
+    assert readiness.sessions(Home(root / "home"), installed(root)) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: 0, and each can be typed into")
 
 
 def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: Path) -> None:
@@ -241,7 +244,7 @@ def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: 
             sleeper.kill()
             sleeper.wait()
     assert isinstance(found, Missing)
-    assert found.said.startswith("running sessions hands knows of: 3, and hands cannot reach these:")
+    assert found.said.startswith("running sessions hands knows of: 3, runs of claude at a terminal that are none: 0, and hands cannot reach these:")
     assert f"/code/unwrapped (pid {sleepers[1].pid}) was started outside fritter" in found.said
     assert f"/code/orphaned (pid {sleepers[2].pid}) has lost its fritter, whose socket {root / 'gone.sock'} is gone" in found.said
     assert "/code/wrapped" not in found.said
@@ -252,7 +255,7 @@ def test_a_session_whose_process_has_ended_is_not_running(root: Path) -> None:
     ended = subprocess.Popen(["true"])
     ended.wait()
     joined(home, "ended", ended.pid, None)
-    assert readiness.sessions(home, installed(root)) == Ready("running sessions hands knows of: 0, and each can be typed into")
+    assert readiness.sessions(home, installed(root)) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: 0, and each can be typed into")
 
 
 def test_an_unreadable_membership_file_is_named_and_left_where_it_is(root: Path) -> None:
@@ -273,6 +276,43 @@ def test_a_session_that_never_ran_a_hook_is_named_by_cwd_and_pid_with_the_fix(ro
     with at_a_terminal(root / "install" / "9.9.9", project) as pid:
         found = readiness.sessions(home, path)
     assert isinstance(found, Missing) and f"{project} (pid {pid}) is a session hands has no record of" in found.said
+
+
+def test_a_claude_printing_or_piped_into_at_a_terminal_is_no_session(root: Path) -> None:
+    home = Home(root / "home")
+    path = installed(root)
+    shell = root / "install" / "9.9.7"
+    shutil.copy("/bin/zsh", shell)
+    # The shell waits on its sleep, so it is still the process its -p was given to.
+    with at_a_terminal(shell, root, ["-c", "sleep 30; :", "-p", "hello"]), at_a_terminal(root / "install" / "9.9.9", root, piped=True):
+        found = readiness.sessions(home, path)
+    assert found == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: 2, and each can be typed into")
+
+
+def test_the_kernel_says_what_a_process_at_a_terminal_was_started_with_and_whether_it_reads_and_writes_it(root: Path) -> None:
+    with at_a_terminal(Path("/bin/sleep"), root) as reading, at_a_terminal(Path("/bin/sleep"), root, ["31"], piped=True) as piped:
+        found = {process.pid: process for process in terminal_processes()}
+        said = {pid: (found[pid].arguments, attended(found[pid])) for pid in (reading, piped)}
+    assert said == {reading: (("30",), True), piped: (("31",), False)}
+
+
+def test_a_process_reading_its_terminal_as_dev_tty_reads_its_terminal(root: Path) -> None:
+    controller, terminal = pty.openpty()
+
+    def reopened() -> None:
+        # As `xargs -o` and `< /dev/tty` give a run its stdin: the terminal, opened by the name each process has for its own.
+        fcntl.ioctl(1, termios.TIOCSCTTY, 0)
+        os.dup2(os.open("/dev/tty", os.O_RDWR), 0)
+
+    process = subprocess.Popen(["/bin/sleep", "30"], cwd=root, stdin=subprocess.DEVNULL, stdout=terminal, stderr=terminal, start_new_session=True, preexec_fn=reopened)
+    try:
+        found = next(found for found in terminal_processes() if found.pid == process.pid)
+        assert attended(found)
+    finally:
+        process.kill()
+        process.wait()
+        os.close(controller)
+        os.close(terminal)
 
 
 def test_a_reused_pid_of_an_ended_session_hides_no_session_hands_has_no_record_of(root: Path) -> None:
@@ -308,18 +348,27 @@ def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
             found = readiness.sessions(home, path)
     finally:
         listening.close()
-    assert found == Ready("running sessions hands knows of: 1, and each can be typed into")
+    assert found == Ready("running sessions hands knows of: 1, runs of claude at a terminal that are none: 0, and each can be typed into")
 
 
 CONFIG = Path("/home/.claude")
+# The terminal a process made by `terminal` reads and writes, unless it is made with another, as a piped one is.
+ATTENDED, PIPED = 1, 2
 
 
-def terminal(pid: int, executable: str, cwd: str = "/code", parent: int = 0, config: Path = CONFIG) -> Terminal:
-    return Terminal(pid, parent, Path(executable), Path(cwd), {"CLAUDE_CONFIG_DIR": str(config)})
+def terminal(
+    pid: int, executable: str, cwd: str = "/code", parent: int = 0, config: Path = CONFIG, arguments: tuple[str, ...] = (), tty: int = ATTENDED
+) -> Terminal:
+    return Terminal(pid, parent, Path(executable), Path(cwd), {"CLAUDE_CONFIG_DIR": str(config)}, arguments, tty)
+
+
+
+def reads_its_terminal(process: Terminal) -> bool:
+    return process.tty == ATTENDED
 
 
 def unjoined(claude: str, terminals: list[Terminal], members: set[int] | None = None, home: Home = Home(Path("/h"))) -> list[Terminal]:
-    return [session.process for session in readiness.unjoined(home, Path(claude), CONFIG, terminals, members or set())]
+    return [session.process for session in readiness.unjoined(home, Path(claude), CONFIG, terminals, members or set(), reads_its_terminal).sessions]
 
 
 def test_a_session_is_a_terminal_process_of_any_version_of_the_real_claudes_install() -> None:
@@ -357,11 +406,23 @@ def test_a_sessions_own_helper_run_from_its_executable_is_not_a_session() -> Non
     assert unjoined("/v/2.1.288", [session, helper], {10}) == []
 
 
+def test_a_claude_the_shim_would_not_have_run_as_a_session_is_not_named() -> None:
+    printing, piped = terminal(1, "/v/2.1.288", arguments=("-p", "hello")), terminal(2, "/v/2.1.288", tty=PIPED)
+    prompted = terminal(3, "/v/2.1.288", arguments=("--", "-p"))
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), CONFIG, [printing, piped, prompted], set(), reads_its_terminal)
+    assert ([session.process for session in found.sessions], found.runs) == ([prompted], 2)
+
+
+def test_the_helper_of_a_claude_that_is_no_session_is_no_session_either() -> None:
+    printing, helper = terminal(10, "/v/2.1.288", arguments=("-p", "hello")), terminal(11, "/v/2.1.288", parent=10)
+    assert unjoined("/v/2.1.288", [printing, helper]) == []
+
+
 def test_a_session_started_outside_fritter_is_told_to_restart_and_one_inside_to_reload(root: Path) -> None:
     home = Home(root / "home")
     fritter = terminal(5, str(home.fritter))
     inside, outside = terminal(10, "/v/2.1.288", "/code/in", parent=5), terminal(11, "/v/2.1.288", "/code/out", parent=6)
-    found = readiness.sessions_found([], set(), [], readiness.unjoined(home, Path("/v/2.1.288"), CONFIG, [fritter, inside, outside], set()))
+    found = readiness.sessions_found([], set(), [], readiness.unjoined(home, Path("/v/2.1.288"), CONFIG, [fritter, inside, outside], set(), reads_its_terminal))
     assert isinstance(found, Missing)
     assert "/code/in (pid 10) is a session hands has no record of, so it cannot be reached: /reload-plugins in it" in found.said
     assert "/code/out (pid 11) is a session hands has no record of, started outside fritter, so it cannot be typed into: restart it" in found.said
