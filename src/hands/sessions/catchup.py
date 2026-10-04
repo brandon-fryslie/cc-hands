@@ -85,11 +85,16 @@ def _fold(entries: Iterable[Mapping[str, object]], since: datetime | None, unrea
     announced: dict[str, int] = {}
     for entry in entries:
         match entry:
-            # A turn is told once however its telling went: one whose summary failed still finished.
-            case {"type": "Performed" | "EffectFailed", "effect": {"type": "Summarise", "session": str(session), "closing": str() | None as closing}}:
-                closings.setdefault(SessionId(session), []).append(closing)
-            case {"type": "Performed" | "EffectFailed", "effect": {"type": "SessionGone", "session": str(session)}}:
-                ended[SessionId(session)] = None
+            case {"type": "WideEvent", "event": "applied", "facts": {"effects": object() as effects}}:
+                for performed in cast(list[object], effects):
+                    match performed:
+                        # A turn is told once however its telling went: one whose summary failed still finished.
+                        case {"outcome": "ok" | "failed", "effect": {"type": "Summarise", "session": str(session), "closing": str() | None as closing}}:
+                            closings.setdefault(SessionId(session), []).append(closing)
+                        case {"outcome": "ok" | "failed", "effect": {"type": "SessionGone", "session": str(session)}}:
+                            ended[SessionId(session)] = None
+                        case _:
+                            pass
             case {"type": "Announced", "text": str(text)}:
                 announced[text] = announced.get(text, 0) + 1
             case _:

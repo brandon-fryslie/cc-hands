@@ -19,7 +19,7 @@ from hands.core.session import Gone, Idle, Membership, Opened, PromptId, Registr
 from hands.core import status
 from hands.core.status import Busy, Report, Stamp
 from hands.core.turn import AgentId, AgentTask
-from hands.sessions.audit import Applied, Entry, ProgressTold, Relayed, Routed, encoded
+from hands.sessions.audit import Entry, ProgressTold, Relayed, Routed, encoded, jsonable
 from hands.sessions.tail import Tails
 from hands.voice.speech import Aloud, Pushed, Tailed, Unprompted, frames, relay
 from hands.voice.summary import SummaryFailed
@@ -318,7 +318,7 @@ def test_what_a_session_last_set_out_to_do_is_in_its_listing() -> None:
 
 def test_calls_read_are_a_line_the_audit_log_can_write() -> None:
     # Found live: a set of prompt ids is no line, and the event that carried one went unrecorded.
-    assert encoded(Applied(Progressed(SID, (TURN,), (TESTS,), at=7.0)))["event"] == {
+    assert jsonable(Progressed(SID, (TURN,), (TESTS,), at=7.0)) == {
         "type": "Progressed",
         "session": SID,
         "of": ["p1"],

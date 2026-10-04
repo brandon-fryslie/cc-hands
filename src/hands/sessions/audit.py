@@ -35,25 +35,12 @@ if TYPE_CHECKING:
     from loguru import Message
 
 from hands.core.attention import Amount, Attention, Delivery, EndedRoute, Overlay, Route
-from hands.core.effects import AfterEnd, Allow, AuditRecord, Deny, Effect, Heard, Holding, Input, Type, Unclosed, Unmatched, Unregistered, Unsettled
-from hands.core.events import Event
+from hands.core.effects import Allow, Deny, Heard, Input, Type
 from hands.core.place import Place
 from hands.core.session import SessionId
 from hands.core.trace import Span
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
 from hands.sessions.wide import WideEvent, chain
-
-
-@dataclass(frozen=True)
-class Applied:
-    """An event that changed the registry or called for an effect. One that did neither, such as a quiet tick, is not a line."""
-
-    event: Event
-
-
-@dataclass(frozen=True)
-class Performed:
-    effect: Effect
 
 
 @dataclass(frozen=True)
@@ -71,12 +58,6 @@ class TypingFailed:
 
     effect: Type[Input]
     reason: str
-
-
-@dataclass(frozen=True)
-class EffectFailed:
-    effect: Effect
-    error: str
 
 
 @dataclass(frozen=True)
@@ -609,12 +590,8 @@ class Failure:
 
 
 Entry = (
-    AuditRecord
-    | Applied
-    | Performed
-    | Typing
+    Typing
     | TypingFailed
-    | EffectFailed
     | LLMChosen
     | SettingsRead
     | SettingsEdited
@@ -671,13 +648,13 @@ Level = Literal["error", "info"]
 
 
 def level(entry: Entry) -> Level:
-    """Whether a line tells of something that went wrong: a Failure; a start refused; an effect, a backlog read, or a unit of work that failed; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
+    """Whether a line tells of something that went wrong: a Failure; a start refused; a backlog read or a unit of work that failed; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
     broke off; or a brain turn or side question that came to nothing."""
     # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | TypingFailed() | EffectFailed() | Exported(error=str()) | BacklogUnread() | StartRefused() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
+        case Failure() | TypingFailed() | Exported(error=str()) | BacklogUnread() | StartRefused() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)
@@ -696,8 +673,7 @@ def level(entry: Entry) -> Level:
         case Primed(failed=failed) | SettingsEdited(refused=failed):
             return "info" if failed is None else "error"
         case (
-            Unregistered() | AfterEnd() | Unmatched() | Unclosed() | Holding() | Unsettled()
-            | Applied() | Performed() | Typing() | LLMChosen() | SettingsRead() | Exported() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
+            Typing() | LLMChosen() | SettingsRead() | Exported() | VoiceChosen() | ProxyListening() | TapListening() | DisplayListening() | PhoneServing() | Moved() | PhoneUntailed() | PhoneArrived() | PhoneLeft() | PhoneUnreached() | CopiesLost()
             | BrainLaunched() | BrainOffered() | BrainRefused() | BrainPermission() | BrainAsked() | ResultsStubbed() | BrainInterrupted() | BrainExited()
             | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Yielded() | Cued() | Relayed() | Routed() | EndedRouted() | Recounted() | Summarised()
             | TurnsSummarised() | Restarting() | Rolled()

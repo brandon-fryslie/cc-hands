@@ -10,13 +10,14 @@ import pytest
 
 from hands.core.trace import Span
 from hands.core.effects import Allow, AllowWith, Approve, Command, Deny, HookReply, Input, Key, Reply, Text, Type, Withdraw
-from hands.core.events import Attached, PermissionRequested
+from hands.core.events import Attached, Event, PermissionRequested, Tick
 from hands.core.session import AskedQuestion, Blocker, CommandName, Membership, Option, Permission, Plan, PromptText, Question, RequestId, SessionId
 from hands.daemon import cli
-from hands.sessions.audit import Applied, AuditLog, Entry, Performed, Replied, Transcribed, Typing, TypingFailed, segment
+from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed, Typing, TypingFailed, segment
 from hands.sessions.home import Home
 from hands.sessions.names import NameGiven, NameWithheld
 from hands.sessions.recall import Moment, recall
+from hands.sessions.registry import Performed
 from hands.sessions.wide import WideEvent
 
 MORNING = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
@@ -41,12 +42,17 @@ def typed(prompt: str) -> Typing:
     return Typing(Type(BILLING, Path("/tmp/fritter/session.sock"), 42, Text(PromptText(prompt))), SPAN)
 
 
-def asked(request: str, on: Blocker) -> Applied:
-    return Applied(PermissionRequested(BILLING, 1.0, RequestId(request), on, "default"))
+def applied(event: Event, *effects: Reply) -> WideEvent:
+    """The event of the registry applying `event`, each of its effects performed."""
+    return WideEvent("applied", "e" * 32, "f" * 16, None, MORNING, 1.0, "ok", None, (), {}, {"applied": event, "effects": tuple(Performed(effect, "ok", 0.5, None) for effect in effects)})
 
 
-def answered(request: str, reply: HookReply) -> Performed:
-    return Performed(Reply(BILLING, RequestId(request), reply))
+def asked(request: str, on: Blocker) -> WideEvent:
+    return applied(PermissionRequested(BILLING, 1.0, RequestId(request), on, "default"))
+
+
+def answered(request: str, reply: HookReply) -> WideEvent:
+    return applied(Tick(2.0), Reply(BILLING, RequestId(request), reply))
 
 
 def prompted(name: NameGiven | NameWithheld) -> WideEvent:
@@ -203,7 +209,7 @@ def test_a_session_hands_saw_join_goes_by_its_project_as_hands_speaks_it_and_a_s
     times = written(
         home,
         [
-            Applied(Attached(Membership(BILLING, 42, Path("/code/home-infra"), Path("/t.jsonl")))),
+            applied(Attached(Membership(BILLING, 42, Path("/code/home-infra"), Path("/t.jsonl")))),
             typed("plan the atlantis wait"),
             Replied("", interrupted=False),
             prompted(NameGiven("atlantis plan wait")),

@@ -82,20 +82,33 @@ class _Open:
 _open: ContextVar[_Open | Span | None] = ContextVar("the unit of work open here", default=None)
 
 
+@dataclass(frozen=True)
+class Begun:
+    """A unit of work that began before the body that runs it opened: its span, and when it began, on the wall clock and
+    by time.monotonic(). Work started for it in between is its child all the same, and its event is timed from here."""
+
+    span: Span
+    started_at: datetime
+    began: float
+
+
+def begun() -> Begun:
+    """A unit of work beginning here, now, inside the unit open here, in its trace, or the root of a new one."""
+    return Begun(_minted(), datetime.now(UTC), time.monotonic())
+
+
 @contextmanager
-def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] = ()) -> Generator[None]:
+def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] = (), began: Begun | None = None) -> Generator[None]:
     """Run the body as one unit of work named `event`, and emit its event as the body ends, however it ends.
 
-    The body's exception is the body's: it is recorded on the event and raised on, never swallowed here.
+    `began` is the unit `begun` here before the body opened it; by default it begins as it opens. The body's exception is
+    the body's: it is recorded on the event and raised on, never swallowed here.
     """
-    match _open.get():
-        case None:
-            # The W3C Trace Context size of a trace id, as OTLP carries it: 16 bytes, in hex.
-            trace_id, parent_id = uuid4().hex, None
-        case _Open(trace_id=trace_id, span_id=parent_id) | Span(trace_id=trace_id, span_id=parent_id):
-            pass
-    opened = _Open(trace_id, _span_id(), parent_id, emit, dict.fromkeys(counts, 0))
-    started_at, began = datetime.now(UTC), time.monotonic()
+    if began is not None and began.span.parent_id != _minted().parent_id:
+        # [LAW:no-silent-failure] a unit begun under another would be written into a trace it is no part of.
+        raise LookupError(f"{event} was begun under another unit of work than the one open here")
+    beginning = began or begun()
+    opened = _Open(beginning.span.trace_id, beginning.span.span_id, beginning.span.parent_id, emit, dict.fromkeys(counts, 0))
     token = _open.set(opened)
     outcome: Outcome = "ok"
     error: str | None = None
@@ -115,8 +128,7 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
         # A task the body started copied this unit along and may outlive it: what it adds now would change an event
         # already emitted and never reach the log, so it is refused instead.
         opened.closed = True
-        duration_ms = round((time.monotonic() - began) * 1000, 3)
-        emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, started_at, duration_ms, outcome, error, trace, opened.counts, opened.facts))
+        emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, beginning.started_at, since(beginning.began), outcome, error, trace, opened.counts, opened.facts))
 
 
 @contextmanager
@@ -166,6 +178,21 @@ def here() -> Span:
     """The span of the unit of work open here, for a part of it that runs where the unit is not open."""
     opened = _current()
     return Span(opened.trace_id, opened.span_id, opened.parent_id)
+
+
+def _minted() -> Span:
+    """The span a unit of work opened here would have: inside the unit open here, in its trace, or the root of a new one."""
+    match _open.get():
+        case None:
+            # The W3C Trace Context size of a trace id, as OTLP carries it: 16 bytes, in hex.
+            return Span(uuid4().hex, _span_id(), None)
+        case _Open(trace_id=trace_id, span_id=parent_id) | Span(trace_id=trace_id, span_id=parent_id):
+            return Span(trace_id, _span_id(), parent_id)
+
+
+def since(began: float) -> float:
+    """The milliseconds since `began`, a reading of time.monotonic(), as every event's duration is written."""
+    return round((time.monotonic() - began) * 1000, 3)
 
 
 def within(parent: Span) -> Span:

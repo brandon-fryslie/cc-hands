@@ -2,7 +2,7 @@
 
 The log is the long memory [LAW:one-source-of-truth]: the user's words are its Transcribed lines, hands' words its
 Replied lines, what was typed into a session its Typing lines (and a TypingFailed after one that never arrived), and how
-a permission was answered the Reply that settled a PermissionRequested. Nothing here keeps a record of its own; it folds
+a permission was answered the Reply an applied event performed for a PermissionRequested. Nothing here keeps a record of its own; it folds
 the log's lines into moments, oldest first.
 """
 
@@ -102,9 +102,24 @@ def moments(entries: Iterable[Mapping[str, object]]) -> list[Moment]:
                 | {"type": "Named", "session": str(session), "before": str(name)}
             ):
                 names[session] = name
-            # Every event that carries a session's membership says where it works.
-            case {"type": "Applied", "event": {"membership": {"id": str(session), "cwd": str(cwd)}}}:
-                projects[session] = Path(cwd)
+            case {"type": "WideEvent", "event": "applied", "at": str(at), "facts": {"applied": object() as applied, "effects": object() as effects}}:
+                match applied:
+                    # Every event that carries a session's membership says where it works.
+                    case {"membership": {"id": str(session), "cwd": str(cwd)}}:
+                        projects[session] = Path(cwd)
+                    case {"type": "PermissionRequested", "request": str(request), "on": object() as on}:
+                        asked[request] = _blocker(on)
+                    case _:
+                        pass
+                for performed in cast(list[object], effects):
+                    match performed:
+                        # A reply to a hook no request was seen for, as a Stop's is, answers no permission.
+                        case {"outcome": "ok", "effect": {"type": "Reply", "session": str(session), "request": str(request), "reply": object() as reply}} if request in asked:
+                            if (answer := _answer(reply)) is not None:
+                                verb, told = answer
+                                said.append(_Said(datetime.fromisoformat(at), f"{verb} in", session, f"{asked.pop(request)}{told}"))
+                        case _:
+                            pass
             case {"type": "Transcribed", "at": str(at), "text": str(text)}:
                 said.append(_Said(datetime.fromisoformat(at), "user", None, text))
             # A turn hands ended without a word said nothing.
@@ -116,13 +131,6 @@ def moments(entries: Iterable[Mapping[str, object]]) -> list[Moment]:
             case {"type": "TypingFailed", "effect": object() as effect, "reason": str(reason)}:
                 if (index := sending.pop(json.dumps(effect, sort_keys=True), None)) is not None:
                     said[index] = replace(said[index], verb="not sent to", text=f"{said[index].text}, because: {reason}")
-            case {"type": "Applied", "event": {"type": "PermissionRequested", "request": str(request), "on": object() as on}}:
-                asked[request] = _blocker(on)
-            # A reply to a hook no request was seen for, as a Stop's is, answers no permission.
-            case {"type": "Performed", "at": str(at), "effect": {"type": "Reply", "session": str(session), "request": str(request), "reply": object() as reply}} if request in asked:
-                if (answer := _answer(reply)) is not None:
-                    verb, told = answer
-                    said.append(_Said(datetime.fromisoformat(at), f"{verb} in", session, f"{asked.pop(request)}{told}"))
             case _:
                 pass
     return [Moment(each.at, each.verb if each.session is None else f"{each.verb} {_spoken(each.session, projects, names)}", each.text) for each in said]

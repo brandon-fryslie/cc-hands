@@ -202,7 +202,7 @@ async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to
     written = [json.loads(line) for line in tail(path, 1000)[0]]
     trace = [(kind(line), line.get("text") or line.get("facts", {}).get("tool")) for line in written]
     assert trace == [
-        ("Applied", None),
+        ("applied", None),
         ("Transcribed", "tell cc-hands to run the tests"),
         ("tool.run", "stage_draft"),
     ]

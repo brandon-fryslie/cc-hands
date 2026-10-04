@@ -1,9 +1,11 @@
 """The one owner of the session registry."""
 
 import asyncio
-from collections.abc import Callable
+import time
+from collections import Counter
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, get_args
 
 from loguru import logger
 
@@ -16,8 +18,9 @@ from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
 from hands.core.status import Stamp
-from hands.sessions.audit import Applied, EffectFailed, Performed, Record, Typing, TypingFailed
-from hands.sessions.wide import here
+from hands.sessions.audit import Record, Typing, TypingFailed
+from hands.sessions import wide
+from hands.sessions.wide import Begun, annotate, begun, continuing, count, here, since, unit
 from hands.sessions.clock import stamp_now
 from hands.sessions.hookconfig import STOP_HOLD_SECONDS
 from hands.sessions.delta import Changes, NoChanges
@@ -28,6 +31,21 @@ from hands.sessions.typing import Untyped, type_into
 
 # How a Stop's hook ended: decided inside the hold, or let go at it with Claude Code going on undecided.
 StopHeld = Literal["decided", "let go"]
+
+# Every kind of effect the core decides, each counted on the event of what called for it, 0 for one it did not.
+EFFECT_KINDS = tuple(kind.__name__ for kind in get_args(Effect))
+
+
+@dataclass(frozen=True)
+class Performed:
+    """An effect an applied event called for and how its performing went: "ok"; "failed", with why; "cancelled" partway;
+    or "not performed", because one of its session's effects decided before it failed first, or the daemon stopped
+    before its turn. `duration_ms` is how long it took, None for one never begun."""
+
+    effect: Effect
+    outcome: wide.Outcome | Literal["not performed"]
+    duration_ms: float | None
+    error: str | None
 
 
 @dataclass(frozen=True)
@@ -57,7 +75,7 @@ class Sessions:
         # it and a transcript read through on it, and the two are compared.
         self._stamp = stamp
         self._stop_hold = stop_hold
-        # [LAW:single-enforcer] every event and every effect passes through here, so here is where each becomes an audit line.
+        # [LAW:single-enforcer] every event and every effect passes through here, so here is where each becomes a wide event.
         self._record = record
         # What a turn did to the repository it ran in. A daemon given none tells every turn by its steps alone.
         self._changes = changes or NoChanges()
@@ -76,7 +94,7 @@ class Sessions:
         # Each session's latest performing still under way: what the next of that session's waits on.
         self._performing: dict[SessionId, asyncio.Task[None]] = {}
         # What was heard where nothing waits on it, still being performed.
-        self._hearing: set[asyncio.Future[list[None]]] = set()
+        self._hearing: set[asyncio.Future[None]] = set()
 
     def now(self) -> Instant:
         return self._clock()
@@ -94,45 +112,68 @@ class Sessions:
         self._hearing.add(hearing)
         hearing.add_done_callback(self._performed)
 
-    def _performed(self, hearing: asyncio.Future[list[None]]) -> None:
+    def _performed(self, hearing: asyncio.Future[None]) -> None:
         self._hearing.discard(hearing)
         if not hearing.cancelled() and (error := hearing.exception()) is not None:
-            # [LAW:no-silent-failure] nothing awaits it to raise to: the effect that failed is its own audit line already.
+            # [LAW:no-silent-failure] nothing awaits it to raise to, so it is said here; an effect that failed is named on
+            # its applied event as well.
             logger.error(f"performing what was heard failed: {type(error).__name__}: {error}")
 
-    def _decided(self, event: Event) -> asyncio.Future[list[None]]:
-        """The event reduced now, and its effects scheduled."""
+    def _decided(self, event: Event) -> asyncio.Future[None]:
+        """The event reduced now, and its effects scheduled, under the event of its applying."""
         before = self._registry
         self._registry, effects = reduce(before, event)
-        if effects or self._registry != before:
-            self._record(Applied(event))
-        return self._scheduled(effects)
+        performed = _unperformed(effects)
+        # Begun now, as it is decided, in the context of whatever unit of work applied it: inside a hook post's, it is that
+        # post's child.
+        applying = begun()
+        # [LAW:no-ambient-temporal-coupling] the effects are scheduled as they are decided, before the applying opens its
+        # unit, so they are started inside its span: what an effect opens, such as a repository mark, is its child, and
+        # the applying is timed from before any of them ran.
+        with continuing(applying.span):
+            scheduled = self._scheduled(performed)
+        if _quiet(before, self._registry, effects):
+            return scheduled
+        return asyncio.ensure_future(self._applied(event, performed, scheduled, applying))
 
-    def _scheduled(self, effects: list[Effect]) -> asyncio.Future[list[None]]:
+    async def _applied(self, applied: Event | Answer, performed: list[Performed], performing: Awaitable[None], applying: Begun) -> None:
+        # [LAW:nothing-unseen] one event for each event or answer the registry applies, open until every effect it
+        # called for is performed: what was applied, each effect with its outcome and time, and the effects counted by
+        # kind. [LAW:one-source-of-truth] it is the one record of them; no line beside it repeats an effect.
+        with unit("applied", self._record, counts=EFFECT_KINDS, began=applying):
+            annotate(applied=applied)
+            try:
+                await performing
+            finally:
+                annotate(effects=tuple(performed))
+                count(**Counter(type(each.effect).__name__ for each in performed))
+
+    def _scheduled(self, performed: list[Performed]) -> asyncio.Future[None]:
         """The effects being performed, each session's once what was decided before them of that session is.
 
         [LAW:no-ambient-temporal-coupling] one session's effects are performed in the order they were decided, and no
         session's wait on another's: the turn queued behind a turn told from the wire is marked before that turn's Stop
         hook lets Claude Code go on to run it, and a turn is told before its session is said to be gone.
         """
-        grouped: dict[SessionId | None, list[Effect]] = {}
-        for effect in effects:
-            grouped.setdefault(_ordered_by(effect), []).append(effect)
-        return asyncio.gather(*(self._chained(session, group) for session, group in grouped.items()))
+        grouped: dict[SessionId | None, list[int]] = {}
+        for index, each in enumerate(performed):
+            grouped.setdefault(_ordered_by(each.effect), []).append(index)
+        # Each chain started now, as it is decided, never once the applying first runs.
+        return asyncio.ensure_future(_all([self._chained(session, performed, group) for session, group in grouped.items()]))
 
-    def _chained(self, session: SessionId | None, effects: list[Effect]) -> asyncio.Task[None]:
+    def _chained(self, session: SessionId | None, performed: list[Performed], indices: list[int]) -> asyncio.Task[None]:
         after = None if session is None else self._performing.get(session)
-        performing = asyncio.create_task(self._perform_after(after, effects))
+        performing = asyncio.create_task(self._perform_after(after, performed, indices))
         if session is not None:
             self._performing[session] = performing
             performing.add_done_callback(lambda done: self._performing.pop(session) if self._performing.get(session) is done else None)
         return performing
 
-    async def _perform_after(self, after: asyncio.Task[None] | None, effects: list[Effect]) -> None:
+    async def _perform_after(self, after: asyncio.Task[None] | None, performed: list[Performed], indices: list[int]) -> None:
         if after is not None:
             # Only its order matters here: how it went is its own caller's to hear.
             await asyncio.wait({after})
-        await self._perform_all(effects)
+        await self._perform_all(performed, indices)
 
     async def stop(self, event: Stopped) -> StopHeld:
         """Apply a Stop, and return once the reducer has decided whose it is, or once the hold has passed without that,
@@ -201,8 +242,13 @@ class Sessions:
                 self._let_go.add(request)
 
     async def answer(self, request: RequestId, decision: Decision) -> Outcome:
-        self._registry, outcome, effects = answer(self._registry, Answer(request, decision))
-        await self._perform_all(effects)
+        answered = Answer(request, decision)
+        before = self._registry
+        self._registry, outcome, effects = answer(before, answered)
+        if not _quiet(before, self._registry, effects):
+            performed = _unperformed(effects)
+            # Performed at once, in no session's order: the session is waiting on this very reply.
+            await self._applied(answered, performed, self._perform_all(performed, list(range(len(performed)))), begun())
         return outcome
 
     async def draft(self, request: DraftRequest) -> DraftOutcome:
@@ -290,24 +336,23 @@ class Sessions:
         known = self._registry.sessions.get(session)
         return None if known is None else _listing(known)
 
-    async def _perform_all(self, effects: list[Effect]) -> None:
-        for effect in effects:
-            match effect:
-                case Audit(record=record):
-                    # The effect is the line itself; its record is written as it is, not wrapped as performed.
-                    self._record(record)
-                case _:
-                    pass
+    async def _perform_all(self, performed: list[Performed], indices: list[int]) -> None:
+        """Perform the effects at `indices` in order, each written back into `performed` as it ends; the first to fail
+        raises, and those after it stay not performed."""
+        # [LAW:no-shared-mutable-globals] `performed` is owned by the one applying that made it: each effect's slot is
+        # written by the one chain that performs it, and read by the applying once every chain has ended.
+        for index in indices:
+            effect = performed[index].effect
+            began = time.monotonic()
             try:
                 await self._perform(effect)
-            except Exception as error:
-                self._record(EffectFailed(effect, str(error)))
+            except asyncio.CancelledError:
+                performed[index] = Performed(effect, "cancelled", since(began), None)
                 raise
-            match effect:
-                case Audit():
-                    pass
-                case _:
-                    self._record(Performed(effect))
+            except Exception as error:
+                performed[index] = Performed(effect, "failed", since(began), f"{type(error).__name__}: {error}")
+                raise
+            performed[index] = Performed(effect, "ok", since(began), None)
 
     async def _perform(self, effect: Effect) -> None:
         match effect:
@@ -354,6 +399,24 @@ class Sessions:
                 return
         # [LAW:no-silent-failure] said with its cause, in the words the hook's own close uses for a reply it never got.
         logger.warning(f"reply {reply} for session {session} request {request} was never delivered: {why}")
+
+
+def _unperformed(effects: list[Effect]) -> list[Performed]:
+    return [Performed(effect, "not performed", None, None) for effect in effects]
+
+
+def _quiet(before: Registry, after: Registry, effects: list[Effect]) -> bool:
+    """Whether what the registry applied changed nothing and called for nothing, as a quiet tick or an answer to a request
+    no session waits on: no unit of work, so no event, where the ticker alone would leave one every second. An answer that
+    did nothing is said on the event of the tool call that gave it."""
+    return not effects and after == before
+
+
+async def _all(performing: list[asyncio.Task[None]]) -> None:
+    """Every one of `performing` ended, however each ended; then the first to fail raises."""
+    for ended in await asyncio.gather(*performing, return_exceptions=True):
+        if isinstance(ended, BaseException):
+            raise ended
 
 
 def _ordered_by(effect: Effect) -> SessionId | None:
