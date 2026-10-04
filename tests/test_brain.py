@@ -22,7 +22,7 @@ from loguru import logger
 from hands.core.front import FrontUnread, InFront
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import BROKEN, NOBODY, SLIM, STOPPED, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, STOPPED, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -873,7 +873,7 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
         brain._launched = here()  # pyright: ignore[reportPrivateUsage]
     # The elicitation that breaks is a part of the turn in flight: it was declined before it was heard, so the turn runs on.
     loop = asyncio.get_running_loop()
-    turn = _Turn(loop.create_future(), loop.create_future(), unasked, begun())  # pyright: ignore[reportPrivateUsage]
+    turn = _Turn(loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS)  # pyright: ignore[reportPrivateUsage]
     turn.taken.set_result("p1")
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
     brain._held = set()  # pyright: ignore[reportPrivateUsage]
