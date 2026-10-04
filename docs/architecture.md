@@ -329,7 +329,7 @@ The hook runs as a child of that process and inherits it, so the address reaches
 outside fritter has no address, and a send to it is refused by name rather than written
 into nothing. Nobody has to remember to wrap one: `hands install-fritter` puts a `claude`
 in `<hands home>/bin` that runs every interactive claude under fritter, and runs a pipe, a
-script, or `claude -p` as the real claude with no address (`hands.sessions.wrapper`). Inheritance also hands the address to a session started from inside a
+script, a subcommand, or `claude -p` as the real claude with no address (`hands.sessions.wrapper`). Inheritance also hands the address to a session started from inside a
 wrapped one, so an address alone does not say which session it reaches: every request
 names the session's `Membership.pid`, and fritter refuses one that is not the process it
 wrapped.

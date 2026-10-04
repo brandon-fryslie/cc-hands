@@ -294,8 +294,10 @@ export PATH="$HOME/.hands/bin:$PATH"            # in your shell's startup file
 ```
 
 That `claude` runs the next `claude` on `PATH` under fritter when a terminal is on both
-ends and there is no `-p` or `--print`; a pipe, a script, and `claude -p` run the real
-claude exactly as before. `hands install-fritter` exits 0 only when `claude` on the
+ends, its first argument is no subcommand, and there is no `-p` or `--print`; a pipe, a
+script, `claude update`, and `claude -p` run the real claude exactly as before. A first
+argument that is one bare lowercase word is read as a subcommand, as Claude Code itself
+reads `claude sync`: `claude hi` runs as the real claude, and `claude "say hi"` is a session. `hands install-fritter` exits 0 only when `claude` on the
 current `PATH` is the one it wrote, and says what to add when it is not. The fritter it
 copies is the one hands' package carries, built when that package was, so no Go is
 needed to run it. Run it again after hands is upgraded, or in a checkout after fritter's

@@ -10,6 +10,7 @@ stay unwrapped until they end.
 import os
 import shlex
 import shutil
+import string
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -34,12 +35,23 @@ MARK = "# A hands claude shim, written whole by `hands install-fritter`: change 
 # so `-cp` is print too.
 PRINT = ("--print", "-p*", "-cp*")
 
+# [LAW:one-source-of-truth] a first argument that names a subcommand, as the shim's case and is_session both match it:
+# a bare word of lowercase letters, digits and hyphens. Claude Code dispatches on its first argument, and its help lists
+# only some of what it dispatches on (not remote-control, rc, sync, bridge), so no list of its subcommands is
+# complete; the word's shape is the test, and a one-word lowercase opening prompt reads as a subcommand, as `claude
+# sync` already does to Claude Code itself. The letters are spelled out, since a [a-z] range in the shell can follow
+# the locale's collation and take capitals.
+COMMAND = f"[{string.ascii_lowercase}]*"
+NOT_A_COMMAND = f"*[!{string.ascii_lowercase}{string.digits}-]*"
+
 
 def is_session(arguments: Sequence[str], terminal_stdio: bool) -> bool:
-    """Whether the shim runs claude with these arguments as a session under fritter: a terminal on both ends, and no
-    print among the options before `--`."""
+    """Whether the shim runs claude with these arguments as a session under fritter: a terminal on both ends, no
+    subcommand first, and no print among the options before `--`."""
+    first = arguments[0] if arguments else ""
+    subcommand = fnmatchcase(first, COMMAND) and not fnmatchcase(first, NOT_A_COMMAND)
     options = takewhile(lambda argument: argument != "--", arguments)
-    return terminal_stdio and not any(fnmatchcase(option, pattern) for option in options for pattern in PRINT)
+    return terminal_stdio and not subcommand and not any(fnmatchcase(option, pattern) for option in options for pattern in PRINT)
 
 
 class Uninstallable(Exception):
@@ -99,8 +111,8 @@ def shim_script(fritter: Path, wire: Path) -> str:
     # take the other for the real claude, and fritter would nest without end. fritter is handed the path, never the
     # name, or it would run a shim again. An empty PATH entry is the current directory, as it is to the shell; the colon
     # added before splitting keeps a trailing one, which splitting on IFS would drop.
-    # A session is a terminal on both ends and no print. A pipe, a script, and `claude -p` are not sessions to
-    # drive, and on a pty they would not be what they are; they run the real claude, without the address of any
+    # A session is a terminal on both ends, no subcommand, and no print. A pipe, a script, `claude update`, and
+    # `claude -p` are not sessions to drive, and on a pty they would not be what they are; they run the real claude, without the address of any
     # session they were started from, so none of them claims a fritter that does not type into it. is_session is this
     # same test, asked of a claude already running.
     # A session reaches its API as it would without the shim, ANTHROPIC_BASE_URL unchanged, so Claude Code keeps all it
@@ -134,6 +146,10 @@ fi
 
 session=yes
 [ -t 0 ] && [ -t 1 ] || session=no
+case ${{1-}} in
+  {NOT_A_COMMAND}) ;;
+  {COMMAND}) session=no ;;
+esac
 for arg; do
   case $arg in
     --) break ;;

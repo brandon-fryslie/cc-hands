@@ -458,8 +458,10 @@ def test_a_sessions_own_helper_run_from_its_executable_is_not_a_session() -> Non
 def test_a_claude_the_shim_would_not_have_run_as_a_session_is_not_named() -> None:
     printing, piped = terminal(1, "/v/2.1.288", arguments=("-p", "hello")), terminal(2, "/v/2.1.288", tty=PIPED)
     prompted = terminal(3, "/v/2.1.288", arguments=("--", "-p"))
-    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), CHECKED, [printing, piped, prompted], set(), reads_its_terminal)
-    assert ([session.process for session in found.sessions], found.runs) == ([prompted], 2)
+    controlling = terminal(4, "/v/2.1.288", arguments=("remote-control", "--spawn", "worktree"))
+    asked = terminal(5, "/v/2.1.288", arguments=("fix the readme",))
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), CHECKED, [printing, piped, prompted, controlling, asked], set(), reads_its_terminal)
+    assert ([session.process for session in found.sessions], found.runs) == ([prompted, asked], 3)
 
 
 def test_the_helper_of_a_claude_that_is_no_session_is_no_session_either() -> None:
