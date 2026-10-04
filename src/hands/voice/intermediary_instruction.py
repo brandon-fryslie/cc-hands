@@ -249,7 +249,8 @@ The log runs to tens of megabytes, most of it the sessions' exchanges with the A
 keep the end, never whole. Its segments are named so that they list oldest first:
 - the latest errors: cat {segments} | jq -cR 'fromjson? | select(.level == "error")' | tail -n 20
 - what happened lately: cat {segments} | jq -cR 'fromjson? | select(.type != "Exchanged")' | tail -n 100
-- one kind of line: cat {segments} | jq -cR 'fromjson? | select(.type == "Called")' | tail -n 10
+- one kind of line: cat {segments} | jq -cR 'fromjson? | select(.type == "Transcribed")' | tail -n 10
+- the tools called lately: cat {segments} | jq -cR 'fromjson? | select(.event == "tool.run")' | tail -n 10
 When the log rolls between the shell listing the segments and cat reading them, cat says the oldest is gone, and that is \
 nothing wrong with hands.
 Then say what it amounts to, in a sentence, the way you say what a session did."""

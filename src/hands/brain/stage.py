@@ -37,7 +37,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext, LLMSpecificMe
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
-from hands.brain.mcp import SERVER_NAME
+from hands.brain.mcp import SERVER_NAME, CallSpans
 from hands.brain.process import NOBODY, SPOKEN_OVER, Asked
 from hands.core.effects import Deny
 from hands.core import place
@@ -125,11 +125,13 @@ COUNTS = ("round_trips", "tools")
 @dataclass
 class _Call:
     """A call one of a turn's replies made: its tool, when its block was whole and Claude Code ran it, by the stage's clock
-    and the wall's, and when the request carrying its result left, and whether that result was an error."""
+    and the wall's, its span in the turn's trace, and when the request carrying its result left, and whether that result
+    was an error."""
 
     tool: str
     ran: Seconds
     at: datetime
+    span: Span
     answered: Seconds | None = None
     is_error: bool = False
 
@@ -202,6 +204,7 @@ class BrainStage(FrameProcessor):
         modality: Callable[[], Modality],
         opened: Callable[[], Edge],
         record: Record,
+        spans: CallSpans,
         clock: Callable[[], Seconds] = time.monotonic,
     ) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
@@ -217,6 +220,8 @@ class BrainStage(FrameProcessor):
         # What hands appends to each request of a turn, composed as that request leaves.
         self._tail = tail
         self._record = record
+        # Each call's span, where hands' MCP server finds it as the call's run reaches it.
+        self._spans = spans
         self._now = clock
         self._tools = {wire_name(tool): tool for tool in tools}
         # How many of the context's messages the brain has been handed: the rest are new to it.
@@ -396,10 +401,11 @@ class BrainStage(FrameProcessor):
             queued_ms=_ms(taken - arrived),
         )
         count(round_trips=len(turn.exchanges), tools=len(turn.tools))
+        self._spans.ended(turn.tools)
         for call, ran in turn.tools.items():
             # A call whose result never left ran until the turn ended without it.
             outcome = "cancelled" if ran.answered is None else "failed" if ran.is_error else "ok"
-            child("tool.call", ran.at, _ms((ended if ran.answered is None else ran.answered) - ran.ran), outcome, call=call, tool=ran.tool)
+            child("tool.call", ran.span, ran.at, _ms((ended if ran.answered is None else ran.answered) - ran.ran), outcome, call=call, tool=ran.tool)
 
     async def _unsaid(self, unsaid: Sequence[str]) -> None:
         """What hands had for the brain to tell, said as written since the brain did not: a system fact, kept out of the context."""
@@ -535,7 +541,8 @@ class BrainStage(FrameProcessor):
             case Heard(exchange=exchange, event=BlockStopped(index=index)) if exchange in turn.exchanges and index in turn.opening:
                 call, name = turn.opening.pop(index)
                 turn.calls[call] = name
-                turn.tools[call] = _Call(name, now, datetime.now(UTC))
+                ran = turn.tools[call] = _Call(name, now, datetime.now(UTC), within(turn.span))
+                self._spans.opened(call, ran.span)
             # [LAW:one-source-of-truth] why a turn failed is the wire's, as the API variants read it off their own calls: the
             # head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
             # told before its 502. Its own requests are held final, so Claude Code asks once; a 401 it asks again after

@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from loguru import logger
@@ -23,6 +23,7 @@ from hands.core.session import CommandName, Membership, PromptText, SessionId
 from hands.core.status import Busy, Idle, Report, Stamp, Waiting
 from hands.sessions.typing import Untyped
 from hands.sessions.audit import AuditLog, Entry, Record, Typing, TypingFailed, tail
+from hands.sessions.wide import unit
 from hands.sessions.registry import Sessions
 from hands.voice.conversation import record_turns
 from hands.voice.tools import audited, cued, draft_tools, keyboard_tools, pipecat_function, Replies, Result, Tool, tool
@@ -55,8 +56,15 @@ async def joined(tmp: Path, record: Record = unrecorded) -> tuple[Sessions, Sess
 
 
 async def call(tools: list[Tool], name: str, **arguments: object) -> dict[str, object]:
+    """A call to the tool named, inside a unit of work, as every call the daemon makes is."""
     [tool] = [tool for tool in tools if tool.name == name]
-    return dict(await tool.body(**arguments))
+    with unit("tool.run", unrecorded):
+        return dict(await tool.body(**arguments))
+
+
+def kind(line: dict[str, Any]) -> str:
+    """What a line of the log is: a wide event's own name, and any other line's type."""
+    return line["event"] if line["type"] == "WideEvent" else line["type"]
 
 
 async def test_a_draft_staged_amended_and_discarded_is_read_back_at_each_step(tmp_path: Path) -> None:
@@ -192,13 +200,13 @@ async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to
     await fire(assistant, "on_assistant_turn_stopped", AssistantTurnStoppedMessage("", False, "t2"))
 
     written = [json.loads(line) for line in tail(path, 1000)[0]]
-    trace = [(line["type"], line.get("text") or line.get("tool")) for line in written]
+    trace = [(kind(line), line.get("text") or line.get("facts", {}).get("tool")) for line in written]
     assert trace == [
         ("Applied", None),
         ("Transcribed", "tell cc-hands to run the tests"),
-        ("Called", "stage_draft"),
+        ("tool.run", "stage_draft"),
     ]
-    assert written[2]["result"] == {"says": "Draft for cc-hands: run the tests"}
+    assert written[2]["facts"]["called"]["result"] == {"says": "Draft for cc-hands: run the tests"}
     assert [datetime.fromisoformat(line["at"]) for line in written] == sorted(datetime.fromisoformat(line["at"]) for line in written)
 
 
@@ -301,8 +309,10 @@ async def test_what_is_typed_is_in_the_audit_log_before_the_readback(tmp_path: P
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     await call(tools, "send_draft", session=id)
     written = [json.loads(line) for line in tail(path, 1000)[0]]
-    assert [line["type"] for line in written][-2:] == ["Typing", "Called"]
+    assert [kind(line) for line in written][-2:] == ["Typing", "tool.run"]
     assert written[-2]["effect"]["input"] == {"type": "Text", "prompt": "run the tests"}
+    # What was typed is joined to the call that typed it by the call's span.
+    assert written[-2]["span"]["span_id"] == written[-1]["span_id"] and written[-1]["facts"]["tool"] == "send_draft"
 
 
 async def test_a_command_with_blank_arguments_is_typed_without_them(tmp_path: Path) -> None:
@@ -385,7 +395,7 @@ async def test_a_command_is_in_the_audit_log_before_the_readback(tmp_path: Path)
     sessions, id = await wrapped(tmp_path, lambda _: None, record)
     await call([audited(tool, record) for tool in keyboard_tools(sessions)], "send_command", session=id, command="compact")
     written = [json.loads(line) for line in tail(path, 1000)[0]]
-    assert [line["type"] for line in written][-2:] == ["Typing", "Called"]
+    assert [kind(line) for line in written][-2:] == ["Typing", "tool.run"]
     assert written[-2]["effect"]["input"] == {"type": "Command", "name": "compact", "args": None}
 
 

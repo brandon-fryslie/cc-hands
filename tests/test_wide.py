@@ -13,7 +13,8 @@ import pytest
 
 from hands.sessions.audit import AuditLog, segment, segments
 from hands.sessions.otlp import spans
-from hands.sessions.wide import WideEvent, annotate, child, count, fail, here, unit, within
+from hands.core.trace import Span
+from hands.sessions.wide import WideEvent, annotate, child, continuing, count, fail, here, unit, within
 
 
 def test_a_unit_that_ends_well_is_one_event_with_its_facts_and_its_counts_zeros_included() -> None:
@@ -126,10 +127,40 @@ def test_a_part_timed_elsewhere_is_its_own_event_under_the_unit_in_its_trace() -
     emitted: list[WideEvent] = []
     at = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
     with unit("turn", emitted.append):
-        child("tool.call", at, 700.0, "ok", call="t1")
+        span = within(here())
+        child("tool.call", span, at, 700.0, "ok", call="t1")
     part, turn = emitted
     assert (part.event, part.started_at, part.duration_ms, part.outcome, part.facts) == ("tool.call", at, 700.0, "ok", {"call": "t1"})
-    assert (part.trace_id, part.parent_id) == (turn.trace_id, turn.span_id) and part.span_id != turn.span_id
+    assert (part.trace_id, part.span_id, part.parent_id) == (turn.trace_id, span.span_id, turn.span_id) and part.span_id != turn.span_id
+
+
+def test_a_part_minted_under_another_unit_is_refused_rather_than_written_into_a_trace_it_is_no_part_of() -> None:
+    emitted: list[WideEvent] = []
+    with unit("turn", emitted.append):
+        earlier = within(here())
+    with unit("turn", emitted.append), pytest.raises(LookupError, match="tool.call is no part of the unit of work open here"):
+        child("tool.call", earlier, datetime.now(UTC), 1.0, "ok")
+    assert [event.event for event in emitted] == ["turn", "turn"]
+
+
+def test_a_unit_opened_for_a_span_begun_elsewhere_continues_its_trace_and_one_for_none_is_a_root() -> None:
+    emitted: list[WideEvent] = []
+    with unit("turn", emitted.append):
+        part = within(here())
+    with continuing(part):
+        with unit("tool.run", emitted.append):
+            pass
+    with unit("turn", emitted.append), continuing(None):
+        with unit("tool.run", emitted.append):
+            pass
+    _, ran, rooted, _ = emitted
+    assert (ran.trace_id, ran.parent_id) == (part.trace_id, part.span_id) and ran.span_id != part.span_id
+    assert rooted.parent_id is None and rooted.trace_id != part.trace_id
+
+
+def test_a_fact_inside_a_continued_span_with_no_unit_open_is_refused() -> None:
+    with continuing(Span("t" * 32, "s" * 16, None)), pytest.raises(LookupError):
+        annotate(session="s1")
 
 
 def test_a_unit_hands_its_span_to_a_part_of_it_that_runs_where_it_is_not_open() -> None:
@@ -206,13 +237,13 @@ def test_a_fact_neither_the_audit_log_nor_otlp_can_carry_is_refused_by_pyright_w
     annotated = tmp_path / "annotated.py"
     annotated.write_text(
         "import socket\n"
-        "from hands.sessions.wide import annotate, child\n"
+        "from hands.sessions.wide import annotate, child, here, within\n"
         "from datetime import UTC, datetime\n"
         "annotate(n=1, words=('a', 'b'), pairs=frozenset({(None, 1.5)}))\n"
         "annotate(socket=socket.socket())\n"
         "annotate(listed=[1])\n"
         "annotate(by={'a': 1})\n"
-        "child('part', datetime.now(UTC), 1.0, 'ok', handler=print)\n"
+        "child('part', within(here()), datetime.now(UTC), 1.0, 'ok', handler=print)\n"
         "from enum import Enum\n"
         "class Held(Enum):\n"
         "    SOCKET = socket.socket()\n"

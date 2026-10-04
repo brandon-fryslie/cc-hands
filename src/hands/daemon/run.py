@@ -98,7 +98,7 @@ from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
 from hands.voice.trigger import Edge, Trigger, Triggers
 from hands.voice.tools import Tool, audited, intermediary_tools
-from hands.brain.mcp import serve_mcp
+from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import Asides
 from hands.brain.process import Brain, Launch, NotLoggedIn, Station, Unstartable, account_kept_out, logged_in, start as start_brain, workdir
 from hands.brain.context import EVERY, Keeper, Kept, Store
@@ -257,7 +257,8 @@ async def mind(
                 lambda instruction, max_tokens, timeout: summariser(backend, instruction, max_tokens, timeout),
             )
         case ClaudeCodeBackend(model=model, config_dir=config_dir):
-            server = await serve_mcp(tools, record)
+            spans = CallSpans()
+            server = await serve_mcp(tools, record, spans)
             try:
                 station = Station(config_dir, workdir(config_dir), model, proxy_url, environment)
                 try:
@@ -269,7 +270,7 @@ async def mind(
                     # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
                     # its own: nothing but the user's turns and their stops is ever typed into the brain.
                     asides = Asides(station, record)
-                    stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record)
+                    stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans)
                     keeper = Keeper(brain.session, asides.ask, store, EVERY, record)
                     with wire.joined(Kept(stage, keeper, brain, asides)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))

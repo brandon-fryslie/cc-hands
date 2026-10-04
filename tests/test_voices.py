@@ -13,7 +13,8 @@ from pipecat.services.tts_service import TTSService
 from pipecat.transcriptions.language import Language
 
 from conftest import running
-from hands.sessions.audit import Called, Entry
+from hands.sessions.audit import Entry
+from hands.sessions.wide import WideEvent
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice import voices
@@ -152,5 +153,5 @@ async def test_each_voice_tool_answers_with_the_voice_spoken_in_after_it_and_ref
         assert (await tools["voices_on_offer"].body())["speaking_in"] == "eve"
         refused = await tools["use_voice"].body(name="Zed")
         assert "no voice called 'Zed'" in str(refused["error"])
-    assert [type(entry) for entry in recorded] == [Called] * 5
+    assert [(entry.event, entry.outcome) for entry in recorded if isinstance(entry, WideEvent)] == [("tool.run", "ok")] * 4 + [("tool.run", "failed")] and len(recorded) == 5
     assert chosen(Home(tmp_path)) == "eve"

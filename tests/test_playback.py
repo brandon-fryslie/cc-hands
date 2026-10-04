@@ -29,7 +29,8 @@ from hands.core.playback import (
     resume,
     skip,
 )
-from hands.sessions.audit import Called, CutOff, Entry
+from hands.sessions.audit import CutOff, Entry
+from hands.sessions.wide import WideEvent
 from hands.voice.player import Player, said
 from hands.voice.tools import audited, playback_tools
 
@@ -225,7 +226,7 @@ async def test_each_playback_tool_answers_with_what_was_said_and_how_many_readin
         recorded.clear()
         assert await tools["resume"].body() == {"said": ("A.", "B."), "waiting": 0}
         assert await tools["skip"].body() == {"said": ("Nothing was cut off to go back to.",), "waiting": 0}
-        assert [type(entry) for entry in recorded] == [Called, Called]
+        assert [(type(entry), entry.event) for entry in recorded if isinstance(entry, WideEvent)] == [(WideEvent, "tool.run")] * 2 and len(recorded) == 2
 
 
 def test_skipping_the_last_sentence_says_so() -> None:

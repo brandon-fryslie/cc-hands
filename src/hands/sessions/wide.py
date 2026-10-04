@@ -3,7 +3,7 @@
     with unit("delta.read", record, counts=("commits", "files")):
         annotate(session=session)       # a fact about this run, from anywhere inside it
         count(commits=len(commits))     # added to a count it declared; one it never counted is written as 0
-        child("git.log", at, ms, "ok")  # a part of this run measured where it happened, as a span under it
+        child("git.log", within(here()), at, ms, "ok")  # a part of this run measured where it happened, as a span under it
         fail("the forge refused")       # this run failed, said rather than raised: it ends failed, and nothing is thrown
 
 Code inside a unit of work never emits; it annotates the event the nearest open unit holds, and the unit emits it, once,
@@ -76,9 +76,10 @@ class _Open:
     closed: bool = False
 
 
-# [LAW:no-shared-mutable-globals] owned by unit alone, which sets it as a unit opens and resets it as it closes; a task
-# started inside a unit copies the context it was started in, so its annotations land on that unit's event.
-_open: ContextVar[_Open | None] = ContextVar("the unit of work open here", default=None)
+# [LAW:no-shared-mutable-globals] owned by unit and continuing alone, each setting it for its body and resetting it
+# after; a task started inside a unit copies the context it was started in, so its annotations land on that unit's
+# event. A Span is a part of a trace begun elsewhere, which the next unit opened here continues.
+_open: ContextVar[_Open | Span | None] = ContextVar("the unit of work open here", default=None)
 
 
 @contextmanager
@@ -87,9 +88,13 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
 
     The body's exception is the body's: it is recorded on the event and raised on, never swallowed here.
     """
-    enclosing = _open.get()
-    # The W3C Trace Context size of a trace id, as OTLP carries it: 16 bytes, in hex.
-    opened = _Open(uuid4().hex if enclosing is None else enclosing.trace_id, _span_id(), None if enclosing is None else enclosing.span_id, emit, dict.fromkeys(counts, 0))
+    match _open.get():
+        case None:
+            # The W3C Trace Context size of a trace id, as OTLP carries it: 16 bytes, in hex.
+            trace_id, parent_id = uuid4().hex, None
+        case _Open(trace_id=trace_id, span_id=parent_id) | Span(trace_id=trace_id, span_id=parent_id):
+            pass
+    opened = _Open(trace_id, _span_id(), parent_id, emit, dict.fromkeys(counts, 0))
     started_at, began = datetime.now(UTC), time.monotonic()
     token = _open.set(opened)
     outcome: Outcome = "ok"
@@ -114,6 +119,17 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
         emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, started_at, duration_ms, outcome, error, trace, opened.counts, opened.facts))
 
 
+@contextmanager
+def continuing(parent: Span | None) -> Generator[None]:
+    """Run the body as work done for `parent`, a span of a trace begun elsewhere, as W3C Trace Context propagates one
+    with a request: a unit opened inside is its child, in its trace. None is no trace to continue: such a unit is a root."""
+    token = _open.set(parent)
+    try:
+        yield
+    finally:
+        _open.reset(token)
+
+
 def annotate(**facts: Fact) -> None:
     """Add facts to the event of the unit of work open here. A later fact of the same name replaces an earlier one."""
     _current().facts.update(facts)
@@ -135,11 +151,15 @@ def fail(error: str) -> None:
     _current().failure = error
 
 
-def child(event: str, started_at: datetime, duration_ms: float, outcome: Outcome, error: str | None = None, **facts: Fact) -> None:
+def child(event: str, span: Span, started_at: datetime, duration_ms: float, outcome: Outcome, error: str | None = None, **facts: Fact) -> None:
     """Emit a part of the unit of work open here that was timed where it happened rather than run inside it, such as a
-    request another process made on its behalf: its own event, in the unit's trace, naming the unit as its parent."""
+    request another process made on its behalf: its own event, as `span`, which `within` made inside the unit's, minted
+    as the part began so that work done for it elsewhere can be its child."""
     opened = _current()
-    opened.emit(WideEvent(event, opened.trace_id, _span_id(), opened.span_id, started_at, duration_ms, outcome, error, (), {}, facts))
+    if (span.trace_id, span.parent_id) != (opened.trace_id, opened.span_id):
+        # [LAW:no-silent-failure] a span minted under another unit would be written into a trace it is no part of.
+        raise LookupError(f"{event} is no part of the unit of work open here")
+    opened.emit(WideEvent(event, span.trace_id, span.span_id, span.parent_id, started_at, duration_ms, outcome, error, (), {}, facts))
 
 
 def here() -> Span:
@@ -160,7 +180,7 @@ def _span_id() -> str:
 
 def _current() -> _Open:
     opened = _open.get()
-    if opened is None or opened.closed:
+    if not isinstance(opened, _Open) or opened.closed:
         # [LAW:no-silent-failure] a fact with no unit to land on is code running outside the layer it was written for.
         raise LookupError("no unit of work is open here to annotate")
     return opened
