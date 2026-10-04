@@ -31,6 +31,7 @@ from hands.sessions.wide import WideEvent, begun
 from hands.voice import phonepage
 from hands.voice.phonepage import RENEW_DAYS, Tailnet, Untailed, own_certificate, phone_app, phone_key
 from hands.voice.ptt import KeyedAudio, PushToTalk
+from conftest import events
 
 KEY = "the-phone-key"
 PAGE_RATE = 48000
@@ -124,6 +125,23 @@ async def test_a_call_puts_hands_at_the_phone(call: Call) -> None:
     # A call's one event is written as it ends.
     assert call.recorded == []
 
+
+
+async def test_the_moves_a_call_makes_are_part_of_its_trace() -> None:
+    recorded: list[Entry] = []
+    key = PushToTalk(recorded.append)
+    phone = Phone(key, heard_rate=16000, played_rate=24000, record=recorded.append)
+    page, offer = await a_page()
+    await page.peer.setRemoteDescription(await phone.answer(offer, "192.168.7.20", begun()))
+    async with asyncio.timeout(10):
+        while key.gate.place != "phone":
+            await asyncio.sleep(0.01)
+    await phone.hang_up("hung up")
+    [made] = calls(recorded)
+    moves = [(move.facts["after"], move.trace_id, move.parent_id) for move in events(recorded, "place.moved")]
+    assert moves == [("phone", made.trace_id, made.span_id), ("desk", made.trace_id, made.span_id)]
+    await page.peer.close()
+    await phone.stop()
 
 async def test_a_turn_holds_what_was_said_while_the_button_was_down_and_nothing_else(call: Call) -> None:
     for said in [LOUD, "press", LOUD, LOUD, "release", LOUD]:

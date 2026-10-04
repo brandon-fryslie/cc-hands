@@ -8,6 +8,7 @@ import pytest
 
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
+from conftest import events
 from hands.voice.coreaudio import DefaultDevices
 from hands.voice.devices import follow
 from hands.voice.microphone import Devices
@@ -41,7 +42,7 @@ class Follower:
         self.opened_on = self.defaults
         self.changes = Notices()
         self.opened = list(opened)
-        self.on = HEADSET
+        self.devices = HEADSET
         self.reopens = 0
         self.failing: Exception | None = None
         self.said: list[SystemFact] = []
@@ -49,7 +50,7 @@ class Follower:
         self.reopening = asyncio.Event()
         self.release = asyncio.Event()
         self.release.set()
-        self.task = asyncio.create_task(follow(self.changes, self.current, lambda: self.opened_on, lambda: self.on, self.reopen, self.say, self.recorded.append))
+        self.task = asyncio.create_task(follow(self.changes, self.current, self, self.say, self.recorded.append))
 
     async def reopen(self) -> Devices:
         self.reopens += 1
@@ -60,8 +61,8 @@ class Follower:
         self.reopening.clear()
         if self.failing is not None:
             raise self.failing
-        self.on = self.opened.pop(0)
-        return self.on
+        self.devices = self.opened.pop(0)
+        return self.devices
 
     async def current(self) -> DefaultDevices:
         return self.defaults
@@ -90,7 +91,7 @@ class Follower:
 
     @property
     def moves(self) -> list[WideEvent]:
-        return [entry for entry in self.recorded if isinstance(entry, WideEvent) and entry.event == "devices.moved"]
+        return events(self.recorded, "devices.moved")
 
     async def stop(self) -> None:
         self.task.cancel()
@@ -112,12 +113,13 @@ async def test_a_change_of_defaults_reopens_the_transport_and_says_where_the_aud
     assert follower.reopens == 1
     assert follower.said == [AudioMoved(BUILT_IN)]
     [move] = follower.moves
-    assert (move.outcome, move.facts) == ("ok", {"before": HEADSET, "defaults": DefaultDevices(input=2, output=2), "after": BUILT_IN})
+    moved = DefaultDevices(input=2, output=2)
+    assert (move.outcome, move.facts) == ("ok", {"before": HEADSET, "defaults": moved, "after": BUILT_IN, "opened_on": moved})
 
 
 async def test_a_change_that_comes_while_the_transport_reopens_is_followed_too() -> None:
     follower = Follower(HEADSET, BUILT_IN)
-    follower.on = BUILT_IN
+    follower.devices = BUILT_IN
     follower.release.clear()
     await follower.settled()
     follower.notice(DefaultDevices(input=2, output=2))  # plugged in
@@ -165,8 +167,24 @@ async def test_a_follower_stopped_during_a_reopen_waits_for_it_to_finish() -> No
     assert follower.task.cancelled()
     assert follower.opened == []  # the reopen ran to its end
     assert follower.said == []  # and nothing was said by a follower told to stop
+    [move] = follower.moves  # and the move it was stopped during says where the streams went
+    assert (move.outcome, move.facts["after"]) == ("cancelled", BUILT_IN)
+
+
+async def test_a_reopen_that_fails_while_the_follower_is_stopped_fails_its_move() -> None:
+    follower = Follower(BUILT_IN)
+    follower.failing = OSError("no default output device")
+    follower.release.clear()
+    await follower.settled()
+    follower.notice(DefaultDevices(input=2, output=2))
+    await follower.until(follower.reopening)
+    follower.task.cancel()
+    follower.release.set()
+    await asyncio.wait({follower.task})
+    with pytest.raises(OSError):
+        follower.task.result()
     [move] = follower.moves
-    assert (move.outcome, "after" in move.facts) == ("cancelled", False)
+    assert (move.outcome, move.error) == ("failed", "OSError: no default output device")
 
 
 async def test_a_reopen_that_fails_stops_the_follower_and_its_move_is_failed() -> None:

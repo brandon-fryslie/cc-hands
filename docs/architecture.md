@@ -1663,8 +1663,9 @@ It then says `Audio moved: listening on …, speaking on …` through the system
 on the new speaker, or posts it if speech is down. Closing a microphone whose device is
 gone takes 3 to 4 s, so the whole move took about 5.5 s from unplug to the sentence.
 Each move is one `devices.moved` event: the devices it left, the defaults that moved it,
-the devices it reopened on, and how long the reopen took; failed with what raised where
-the reopen did.
+the devices it reopened on and the defaults it read as it did, which the next move is
+measured from, and how long the reopen took; failed with what raised where the reopen
+did, even when the run was stopping meanwhile.
 The next turn ran end to end on the built-in devices. Every step that touches a device runs off the event loop.
 A reopen that takes longer than 10 s, or one that fails, stops the run, which reads as down, and the next
 `hands run` opens on whatever devices there are. The same path follows a headset plugged in, or a default changed in
@@ -1748,7 +1749,8 @@ turn opening moves hands, never a press still arming, which may be Shift: so a h
 at the place hands is not at keeps none of the words said before it opened a turn,
 and typing at the desk never takes a call's replies off the phone. Each move of hands
 between the places is one `place.moved` event: from where to where, whether a turn or
-a call made it, and whether a hold open at the place it left was thrown away.
+a call made it, and whether a hold open at the place it left was thrown away. A move
+a call made is part of that call's trace.
 
 **Cues say what hands is doing while it is silent** (`hands.voice.cues`). The talk
 key's edges are cued as the key moves, whether or not anything downstream takes the
