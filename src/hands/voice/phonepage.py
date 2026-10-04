@@ -34,6 +34,7 @@ from cryptography.x509.oid import NameOID
 from loguru import logger
 
 from hands.sessions.audit import Record
+from hands.sessions.child import run
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, begun, continuing, unit
@@ -69,10 +70,7 @@ class Untailed:
 
 async def tailnet_name() -> str | Untailed:
     """This machine's name on the tailnet, as Tailscale's own command says it."""
-    command = shutil.which("tailscale")
-    if command is None:
-        return Untailed("the tailscale command is not on the PATH")
-    status = await _run(command, "status", "--json")
+    status = await _tailscale("status", "--json")
     match status:
         case Untailed():
             return status
@@ -100,7 +98,7 @@ async def tailnet(home: Home) -> Tailnet | Untailed:
     found = Tailnet(name, home.phone / "tailnet.crt", home.phone / "tailnet.key")
     home.phone.mkdir(parents=True, exist_ok=True)
     # Tailscale keeps the certificate and renews it when it is due, so asking again is cheap.
-    issued = await _run("tailscale", "cert", "--cert-file", str(found.cert), "--key-file", str(found.key), name)
+    issued = await _tailscale("cert", "--cert-file", str(found.cert), "--key-file", str(found.key), name)
     match issued:
         case Untailed():
             return issued
@@ -108,18 +106,23 @@ async def tailnet(home: Home) -> Tailnet | Untailed:
             return found
 
 
-async def _run(*command: str) -> str | Untailed:
-    process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+async def _tailscale(subcommand: str, *arguments: str) -> str | Untailed:
+    """What `tailscale subcommand` said, or why it said nothing."""
+    # [LAW:one-source-of-truth] the one place the command is found: every asking runs the same tailscale.
+    command = shutil.which("tailscale")
+    if command is None:
+        return Untailed("the tailscale command is not on the PATH")
+    asked = f"tailscale {subcommand}"
     try:
-        out, err = await asyncio.wait_for(process.communicate(), TAILSCALE_TIMEOUT_SECONDS)
+        # [LAW:single-enforcer] ended where every child of hands is: killed and reaped on a timeout, and on a shutdown.
+        ran = await run(command, subcommand, *arguments, timeout=TAILSCALE_TIMEOUT_SECONDS)
     except TimeoutError:
-        process.kill()
-        # Reaped, so a renewal that times out every day leaves no process and no pipes behind.
-        await process.wait()
-        return Untailed(f"{' '.join(command[1:3])} took over {TAILSCALE_TIMEOUT_SECONDS:.0f}s")
-    if process.returncode != 0:
-        return Untailed(f"{' '.join(command[1:3])} failed ({process.returncode}): {err.decode().strip()}")
-    return out.decode()
+        return Untailed(f"{asked} took over {TAILSCALE_TIMEOUT_SECONDS:.0f}s")
+    except OSError as error:
+        return Untailed(f"cannot run {asked}: {error}")
+    if ran.returncode != 0:
+        return Untailed(f"{asked} failed ({ran.returncode}): {ran.err.decode().strip()}")
+    return ran.out.decode()
 
 
 def _private(path: Path, data: bytes) -> Path:
