@@ -5,6 +5,8 @@ The whole run, against a running hands, a LowTalker, and a working session, is w
 hand on an installed Mac, not here."""
 
 import json
+import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +15,8 @@ import pytest
 
 from hands.core.session import SessionId
 from hands.daemon.cli import main
-from hands.daemon.smoke import QUIET_SECS, SESSION_GIVEN, Ear, Line, NotReached, as_from_a_terminal, joined, parsed, proof
+from hands.daemon.smoke import FOLDER, QUIET_SECS, SESSION_GIVEN, WORDS, Ear, Line, NotReached, as_from_a_terminal, joined, parsed, proof
+from hands.sessions import heartbeat
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
 
@@ -39,10 +42,43 @@ def stop(session: SessionId) -> Line:
 
 
 def test_a_hold_is_heard_once_whisper_took_words_from_it() -> None:
-    nothing: Line = {"type": "HoldHeard", "hold": 1, "said": None, "dropped": []}
     words: Line = {"type": "HoldHeard", "hold": 2, "said": "tell the smoke session", "dropped": []}
-    assert proof("heard", [nothing], SESSION) is None
-    assert proof("heard", [nothing, words], SESSION) == "heard 'tell the smoke session'"
+    assert proof("heard", [], SESSION) is None
+    assert proof("heard", [words], SESSION) == "heard 'tell the smoke session'"
+
+
+def test_a_hold_whisper_took_no_words_from_is_never_heard_and_says_so() -> None:
+    nothing: Line = {"type": "HoldHeard", "hold": 1, "said": None, "dropped": [{"type": "Unsaid", "text": "Thank you."}]}
+    with pytest.raises(NotReached) as raised:
+        proof("heard", [nothing], SESSION)
+    assert (raised.value.stage, raised.value.why) == ("heard", "Whisper took no words from the hold; it dropped 1 segment(s)")
+
+
+def utterance(session: SessionId, delivered: Line, outcome: str = "ok", error: str | None = None) -> Line:
+    heard = {"type": "Summarise", "session": session, "turn": "8dc206d5-ceb8-4cf1-887e-e00c5c57a55c", "closing": "falcon.txt"}
+    return {"type": "WideEvent", "event": "utterance", "outcome": outcome, "error": error, "facts": {"session": session, "heard": heard, "delivered": delivered}}
+
+
+def test_the_session_s_turn_told_unasked_is_told_once_the_focus_moved_to_it() -> None:
+    def refocused(session: SessionId) -> Line:
+        return {"type": "Refocused", "session": session, "outcome": "moved", "failed": None}
+
+    spoken = utterance(SESSION, {"type": "Spoken", "amount": "full", "why": "finished"})
+    assert proof("told", [stop(SESSION), spoken, refocused(OTHER)], SESSION) is None
+    assert proof("told", [spoken, refocused(SESSION)], SESSION) == f"hands told the user of session {SESSION}'s turn"
+
+
+def test_the_session_s_turn_held_until_asked_needs_no_telling_waited_for() -> None:
+    held = {"type": "Withheld", "why": "off"}
+    assert proof("told", [utterance(OTHER, held)], SESSION) is None
+    assert proof("told", [utterance(SESSION, held)], SESSION) == f"hands holds session {SESSION}'s turn until asked (off)"
+
+
+def test_a_turn_hands_could_not_read_is_never_told_and_says_why() -> None:
+    failed = utterance(SESSION, {"type": "Spoken", "amount": "full", "why": "finished"}, "failed", "the turn could not be read: OSError: gone")
+    with pytest.raises(NotReached) as raised:
+        proof("told", [failed], SESSION)
+    assert (raised.value.stage, raised.value.why) == ("told", f"hands could not tell session {SESSION}'s turn: the turn could not be read: OSError: gone")
 
 
 def test_a_send_is_typed_only_once_the_unit_that_typed_it_has_ended() -> None:
@@ -131,3 +167,21 @@ def test_with_hands_not_running_the_run_stops_at_up_and_its_event_says_so(tmp_pa
     assert command["error"] == "exited 1"
     assert "reached" not in command["facts"]
     assert command["facts"]["transcription"] == "http://127.0.0.1:8610/v1"
+    assert command["facts"]["why"] == f"hands has not run: there is no heartbeat at {home.status}; start it with `hands run`"
+
+
+def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_stopped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = Home(tmp_path / "home")
+    now = datetime.now(UTC)
+    home.root.mkdir()
+    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, False))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert main(["--home", str(home.root), "smoke"]) == 1
+    assert capsys.readouterr().out.splitlines()[-1] == "FAILED joined: there is no `claude` on PATH"
+    [command] = events(home)
+    facts = command["facts"]
+    assert facts["word"] in WORDS and facts["folder"] == str((home.root / FOLDER).resolve())
+    assert (facts["reached"], facts["failed_at"], facts["why"], facts["daemon_errors"]) == ("up", "joined", "there is no `claude` on PATH", [])
+    assert isinstance(facts["up_ms"], int) and "joined_ms" not in facts

@@ -46,7 +46,7 @@ from hands.sessions.membership import parse_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.untap import untapped
-from hands.sessions.wide import annotate, fail
+from hands.sessions.wide import annotate
 from hands.voice import transcription
 from hands.voice.phonepage import PHONE_PORT, phone_key
 
@@ -54,8 +54,9 @@ from hands.voice.phonepage import PHONE_PORT, phone_key
 # PATH joined to hands under fritter; the call up; the user's words heard as text; hands answering aloud about the
 # session; the draft typed into the session; the session's turn finished; and what the session said told back aloud.
 Stage = Literal["up", "joined", "called", "heard", "answered", "typed", "finished", "told"]
-# The stages read off the audit log, one record each.
-Logged = Literal["heard", "typed", "finished"]
+# The stages read off the audit log, one record each; hands telling the user of the session's turn is part of telling
+# back what the session said.
+Logged = Literal["heard", "typed", "finished", "told"]
 
 # What the user says, in order: the request, the go-ahead for the draft hands reads back, and the question whose answer
 # carries the word. The session is named by its project, the folder it runs in, as hands names every session.
@@ -135,6 +136,8 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
         match stage, line:
             case "heard", {"type": "HoldHeard", "said": str(said)}:
                 return f"heard {said!r}"
+            case "heard", {"type": "HoldHeard", "said": None, "dropped": list(dropped)}:  # pyright: ignore[reportUnknownVariableType]  (counted, never read)
+                raise NotReached("heard", f"Whisper took no words from the hold; it dropped {len(dropped)} segment(s)")  # pyright: ignore[reportUnknownArgumentType]
             case "typed", {"type": "Typing", "effect": {"session": str(typed), "input": {"prompt": str(prompt)}}, "span": {"span_id": str(span)}} if typed == session:
                 sending = (span, prompt)
             case "typed", {"type": "TypingFailed", "effect": {"session": str(typed)}, "reason": str(reason)} if typed == session:
@@ -143,6 +146,14 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
                 return f"typed {sending[1]!r} into session {session}"
             case "finished", {"type": "WideEvent", "event": "hook", "facts": {"hook": "Stop", "session": str(stopped)}} if stopped == session:
                 return f"session {session} finished its turn"
+            # How the finished turn reaches the user, which hands decides at once: held until asked, or told unasked,
+            # which has been said once the focus moves to the session told of.
+            case "told", {"type": "WideEvent", "event": "utterance", "outcome": "failed", "error": str(error), "facts": {"session": str(told), "heard": {"type": "Summarise"}}} if told == session:
+                raise NotReached("told", f"hands could not tell session {session}'s turn: {error}")
+            case "told", {"type": "WideEvent", "event": "utterance", "facts": {"session": str(told), "heard": {"type": "Summarise"}, "delivered": {"type": "Withheld", "why": str(why)}}} if told == session:
+                return f"hands holds session {session}'s turn until asked ({why})"
+            case "told", {"type": "Refocused", "session": str(told)} if told == session:
+                return f"hands told the user of session {session}'s turn"
             case _:
                 pass
     return None
@@ -280,6 +291,11 @@ class Run:
         fresh, self.offset = audit.past(self.home.audit, self.offset)
         self.lines.extend(parsed(fresh))
 
+    def mark(self) -> int:
+        """Where the lines of a turn about to begin start: past every line written before it."""
+        self.read()
+        return len(self.lines)
+
     def reached(self, stage: Stage, shown: str) -> None:
         # [LAW:nothing-unseen] when each stage was reached, from the start of the run, on the command's event.
         annotate(**{f"{stage}_ms": round((time.monotonic() - self.began) * 1000), "reached": stage})
@@ -306,7 +322,7 @@ async def smoke(home: Home, environment: Mapping[str, str]) -> int:
         # The server hands transcribes with, as the settings hands runs on name it.
         smoked = Run(home, word, load(home).config.transcription, offset)
     except Rejected as error:
-        fail(f"up: {error}")
+        annotate(failed_at="up", why=f"hands cannot read its settings: {error}")
         print(f"FAILED up: hands cannot read its settings: {error}", flush=True)
         return 1
     annotate(transcription=smoked.transcription)
@@ -315,8 +331,8 @@ async def smoke(home: Home, environment: Mapping[str, str]) -> int:
     except NotReached as missed:
         smoked.read()
         said = errors(smoked.lines)
-        fail(str(missed))
-        annotate(failed_at=missed.stage, daemon_errors=tuple(said))
+        # [LAW:nothing-unseen] why, as a fact: the command's failure is its exit code, which the CLI's layer sets after this.
+        annotate(failed_at=missed.stage, why=missed.why, daemon_errors=tuple(said))
         print(f"FAILED {missed.stage}: {missed.why}", flush=True)
         for error in said:
             print(f"  hands logged: {error}", flush=True)
@@ -333,15 +349,15 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
             smoked.reached("up", heartbeat.describe(verdict, datetime.now(UTC)))
         case _:
             raise NotReached("up", f"{heartbeat.describe(verdict, datetime.now(UTC))}; start it with `hands run`")
+    claude = shutil.which("claude", path=environment.get("PATH"))
+    if claude is None:
+        raise NotReached("joined", "there is no `claude` on PATH")
     said = [await _synthesized(text) for text in SAID]
     # The folder holds the one file, named for this run's word, and nothing else.
     shutil.rmtree(folder, ignore_errors=True)
     folder.mkdir(parents=True)
     (folder / f"{smoked.word}.txt").write_text("")
     before = frozenset(path.stem for path in home.memberships.glob("*.json"))
-    claude = shutil.which("claude", path=environment.get("PATH"))
-    if claude is None:
-        raise NotReached("joined", "there is no `claude` on PATH")
     session = await on_terminal([claude], folder, as_from_a_terminal(environment, home))
     try:
         member = await _joined(smoked, folder, before, claude, session)
@@ -391,9 +407,9 @@ async def _called(home: Home, caller: Caller, tasks: list[asyncio.Task[None]]) -
         tasks.append(asyncio.create_task(caller.keep_hearing(track), name="the smoke test's ear"))
 
     await caller.peer.setLocalDescription(await caller.peer.createOffer())
-    # hands' own certificate, which names 127.0.0.1, is the one authority this call trusts.
-    trusted = ssl.create_default_context(cafile=home.phone / "own.crt")
     try:
+        # hands' own certificate, which names 127.0.0.1, is the one authority this call trusts.
+        trusted = ssl.create_default_context(cafile=home.phone / "own.crt")
         async with aiohttp.ClientSession() as client, client.post(
             f"https://127.0.0.1:{PHONE_PORT}/offer",
             json={"sdp": caller.peer.localDescription.sdp, "type": "offer", "rate": RATE},
@@ -403,7 +419,7 @@ async def _called(home: Home, caller: Caller, tasks: list[asyncio.Task[None]]) -
             if answered.status != 200:
                 raise NotReached("called", f"hands refused the call ({answered.status}): {await answered.text()}")
             answer: object = await answered.json()
-    except (OSError, Rejected, ssl.SSLError, aiohttp.ClientError) as error:
+    except (OSError, Rejected, aiohttp.ClientError, json.JSONDecodeError) as error:
         raise NotReached("called", f"hands' phone page at port {PHONE_PORT} could not be called: {error}") from error
     match answer:
         case {"sdp": str(sdp), "type": "answer"}:
@@ -445,23 +461,26 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
         return await until(stage, TURN_SECONDS, found, lambda: f"what hands said back never named {holds!r}: it said {heard[0]!r}" if heard else "hands said nothing back on the call")
 
     # The request: heard, and hands answering aloud about the session.
-    smoked.read()
-    since = len(smoked.lines)
+    since = smoked.mark()
     released = await caller.say(asking)
     smoked.reached("heard", await logged("heard", since, "transcription of the hold (HoldHeard)")())
     smoked.reached("answered", await told_back("answered", released, FOLDER))
 
     # The go-ahead: the draft typed into the session, and the session's turn run to its end.
-    since = len(smoked.lines)
+    since = smoked.mark()
     released = await caller.say(sending)
     smoked.reached("typed", await logged("typed", since, f"send to session {session} (Typing)")())
     smoked.reached("finished", await logged("finished", since, f"Stop hook from session {session}")())
 
     async def quiet() -> bool | None:
-        # Whatever hands said of the send is over before the question, so the question cuts nothing off.
         return True if caller.ear.last_voiced is None or loop.time() - caller.ear.last_voiced >= QUIET_SECS else None
 
-    await until("told", TURN_SECONDS, quiet, lambda: "hands never stopped speaking after the send")
+    # [LAW:no-ambient-temporal-coupling] hands may tell the user of the session's finished turn unasked; the question waits
+    # for the record that it was held or has been told, then for its speech to end, so the question cuts nothing off and
+    # is what is answered.
+    held_or_told = await logged("told", since, f"telling of session {session}'s turn, nor its holding (utterance, Refocused)")()
+    print(f"   {held_or_told}", flush=True)
+    await until("told", TURN_SECONDS, quiet, lambda: "hands never stopped speaking after telling of the session's turn")
 
     # The question: what the session said, told back aloud.
     released = await caller.say(questioning)
@@ -481,9 +500,10 @@ async def _synthesized(text: str) -> bytes:
     """`text` in macOS's own voice, as 16-bit mono at RATE."""
     with tempfile.TemporaryDirectory(prefix="hands-smoke-") as directory:
         spoken = Path(directory) / "said.wav"
+        # The test's own voice, no part of hands: its failure is the test's, raised, never named as a stage of the pipeline.
         ran = await run("say", "-o", str(spoken), f"--data-format=LEI16@{RATE}", text, timeout=30.0)
         if ran.returncode != 0:
-            raise NotReached("heard", f"`say` could not synthesize what the test says ({ran.returncode}): {ran.err.decode(errors='replace').strip()}")
+            raise RuntimeError(f"`say` could not synthesize what the test says ({ran.returncode}): {ran.err.decode(errors='replace').strip()}")
         with wave.open(str(spoken), "rb") as read:
             return read.readframes(read.getnframes())
 
