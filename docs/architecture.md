@@ -1841,8 +1841,12 @@ Pipecat's context summariser, configured with `LLMAutoContextSummarizationConfig
 compacts the conversation when it crosses a token threshold, keeping the recent
 turns verbatim. That is the eviction story. And because every narration, every tool
 call, and every user transcript is also a line in the audit log, nothing that was
-evicted is lost: `recall(query, since)` searches the log and `catch_up(minutes)`
-replays what was said while you were away. The log is the long memory; the context
+evicted is lost: `catch_up(minutes)` replays what was said while you were away, and
+the brain recalls the rest with its own Bash and its `hands:recall` skill, running
+`hands recall WORDS...` (`hands.sessions.recall`). That prints, one line each, what you
+said, what hands said, what was typed into a session, and how a session's permission was
+answered, keeping the newest that hold every word; hands adds no tool for it. Each recall
+is a `memory.recall` event on the log, with how many lines it read and moments it matched. The log is the long memory; the context
 window is the working memory; the same pull-not-push rule that governs session
 transcripts governs the intermediary's own past.
 

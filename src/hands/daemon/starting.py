@@ -15,6 +15,7 @@ from typing import Literal, NoReturn
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.sessions import heartbeat
 from hands.sessions.audit import Record, Restarting
+from hands.sessions.home import Home
 
 # The signals that stop a run as the q key does: closing its terminal is how a run in a terminal is most often ended.
 QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -34,6 +35,12 @@ class Ended:
 
     last_audio_out: datetime | None
     live_sessions: int
+
+
+def invocation(home: Home, *arguments: str) -> list[str]:
+    """The command line that runs `hands --home <home> <arguments>` on this Python and this code, whichever `hands` is on PATH."""
+    # -P, as the plugin's launcher runs Python: the working directory is kept off the path.
+    return [sys.executable, "-P", "-m", "hands.daemon", "--home", str(home.root), *arguments]
 
 
 def again(argv: list[str], record: Record) -> NoReturn:

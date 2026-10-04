@@ -167,7 +167,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert argv[0] == "/real/claude" and "-p" not in argv and "--print" not in argv
     # Its tools, what it may do without asking, and its MCP servers are its config directory's: nothing here narrows them.
     assert not {"--tools", "--disallowedTools", "--permission-mode", "--strict-mcp-config", "--system-prompt", "--bare"} & set(argv)
-    assert argv[argv.index("--allowedTools") + 1 : argv.index("--plugin-dir")] == ["mcp__hands", "Skill(hands:chat)", "Skill(hands:prompt)"]
+    assert argv[argv.index("--allowedTools") + 1 : argv.index("--plugin-dir")] == ["mcp__hands", "Skill(hands:chat)", "Skill(hands:prompt)", "Skill(hands:recall)"]
     assert argv[argv.index("--mcp-config") + 1] == launch(tmp_path).mcp_config
     # Beside its setup's skills, hands gives it its own: how it talks with the user, and how it writes a session's prompt.
     plugin = Path(argv[argv.index("--plugin-dir") + 1])
@@ -736,10 +736,10 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     async def unread() -> InFront:
         return FrontUnread("not read in this test")
 
-    async with mind(api, [], lambda: "", unread, lambda: "screen", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", recorded.append, os.environ) as minded:
+    async with mind(api, [], lambda: "", unread, lambda: "screen", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, AnthropicLLMService) and minded.watches == () and minded.telling == Pushed()
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com"), whisper_model="w", voice=voices.DEFAULT)
-    async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", recorded.append, os.environ) as minded:
+    async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed()
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
         [launched] = [entry for entry in recorded if isinstance(entry, BrainLaunched)]

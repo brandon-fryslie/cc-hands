@@ -900,6 +900,12 @@ def tail(directory: Path, count: int) -> tuple[list[str], int]:
     return (lines[-count:] if count > 0 else []), bases[-1] + end
 
 
+def forwards(directory: Path) -> Iterator[str]:
+    """Every complete line of the log, oldest first, reading a segment only once the caller asks past the one before it."""
+    for base in segments(directory):
+        yield from _lines(segment(directory, base), 0)[0]
+
+
 def backwards(directory: Path) -> Iterator[str]:
     """Every complete line of the log, newest first, reading an older segment only once the caller asks past the newer."""
     for base in reversed(segments(directory)):
