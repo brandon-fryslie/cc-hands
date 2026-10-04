@@ -37,7 +37,7 @@ def test_the_command_prints_the_plugin_once_written_and_the_same_one_after(tmp_p
     # Nothing left beside it: no second copy, no half-staged one.
     assert list(home.plugins.iterdir()) == [plugin]
     # [LAW:nothing-unseen] each run's event: the interpreter, what it copied, what it printed, and whether it wrote it.
-    events = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line["type"] == "WideEvent"]
+    events = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "plugin.render"]
     facts = {"interpreter": sys.executable, "packaged": str(PACKAGED), "plugin": str(plugin)}
     assert [(event["event"], event["outcome"], event["facts"]) for event in events] == [
         ("plugin.render", "ok", {**facts, "written": True}),
@@ -86,7 +86,7 @@ def test_a_render_that_fails_is_a_failed_event(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(Path, "rename", full_disk)
     with pytest.raises(OSError, match="No space left"):
         main(["--home", str(home.root), "plugin"])
-    [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line["type"] == "WideEvent"]
+    [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "plugin.render"]
     assert (event["event"], event["outcome"], event["error"]) == ("plugin.render", "failed", "OSError: [Errno 28] No space left on device")
     assert event["facts"] == {"interpreter": sys.executable, "packaged": str(PACKAGED)}
 
