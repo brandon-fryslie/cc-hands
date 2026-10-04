@@ -2,6 +2,7 @@
 # verify-wheel.sh WHEEL VERSION: install the wheel as a stranger would, with no Go and a fresh uv tool directory, and
 # check that the hands it gives prints VERSION and the fritter inside its package runs a program.
 set -eu
+[ $# -eq 2 ] || { echo "verify-wheel: usage: verify-wheel.sh WHEEL VERSION (given: $*)" >&2; exit 2; }
 wheel=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 expected=$2
 uv=$(command -v uv)
@@ -9,8 +10,13 @@ fresh=$(mktemp -d)
 trap 'rm -rf "$fresh"' EXIT
 # No go on this PATH: the install and everything it runs must do without one.
 # Of this machine's environment, only how it reaches the network passes: its certificates and its proxy.
-network=$(env | grep -E '^(SSL_CERT_FILE|SSL_CERT_DIR|HTTPS?_PROXY|https?_proxy|NO_PROXY|no_proxy)=' || [ $? -eq 1 ])
-stranger() { env -i $network HOME="$fresh/home" PATH="$fresh/bin:/usr/bin:/bin" UV_TOOL_DIR="$fresh/tools" UV_TOOL_BIN_DIR="$fresh/bin" UV_CACHE_DIR="$fresh/cache" UV_PYTHON_INSTALL_DIR="$fresh/python" "$@"; }
+# Each passes as one word, whatever spaces or globs its value holds.
+stranger() {
+  for name in SSL_CERT_FILE SSL_CERT_DIR HTTPS_PROXY HTTP_PROXY https_proxy http_proxy NO_PROXY no_proxy; do
+    value=$(printenv "$name") && set -- "$name=$value" "$@"
+  done
+  env -i HOME="$fresh/home" PATH="$fresh/bin:/usr/bin:/bin" UV_TOOL_DIR="$fresh/tools" UV_TOOL_BIN_DIR="$fresh/bin" UV_CACHE_DIR="$fresh/cache" UV_PYTHON_INSTALL_DIR="$fresh/python" "$@"
+}
 mkdir -p "$fresh/home"
 stranger sh -c '! command -v go' >/dev/null || { echo "verify-wheel: go is still on the stranger's PATH" >&2; exit 1; }
 # A Mac has its own Python, 3.9, which uv would otherwise take; hands needs 3.12, which uv fetches.

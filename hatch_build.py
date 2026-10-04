@@ -20,7 +20,8 @@ class FritterHook(BuildHookInterface[Any]):
             return
         root = Path(self.root)
         built = root / "build" / "fritter"
-        environ = {**os.environ, "GOOS": "darwin", "GOARCH": "arm64"}
+        # No cgo: Go links fritter itself, so the binary's oldest macOS is Go's, which TAG names, not the build host's SDK.
+        environ = {**os.environ, "GOOS": "darwin", "GOARCH": "arm64", "CGO_ENABLED": "0"}
         # [LAW:no-silent-failure] no Go, or a failed build, fails the wheel: a hands wheel without fritter is no release.
         subprocess.run(["go", "build", "-trimpath", "-o", str(built), "."], cwd=root / "fritter", env=environ, check=True)
         build_data["force_include"][str(built)] = PACKAGED

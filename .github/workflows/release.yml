@@ -21,12 +21,15 @@ jobs:
           go-version-file: fritter/go.mod
           cache-dependency-path: fritter/go.sum
       - uses: astral-sh/setup-uv@v6
+      # [LAW:parse-dont-validate] the trigger's glob admits tags like v1.2.3-rc.1, whose PEP 440 version is not the tag's
+      # text; a release tag is vX.Y.Z exactly, so the version hatch-vcs writes is the tag without its v.
+      - name: The tag is vX.Y.Z
+        run: echo "$GITHUB_REF_NAME" | grep -Eqx 'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)' || { echo "release: $GITHUB_REF_NAME is not vX.Y.Z" >&2; exit 1; }
       - name: Build the wheel
         run: uv build --wheel
+      # [LAW:one-source-of-truth] the wheel's name, platform tag included, is hatch_build.py's; dist holds the one wheel.
       - name: Install it as a stranger would, and run it
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          scripts/verify-wheel.sh "dist/hands-${version}-py3-none-macosx_12_0_arm64.whl" "$version"
+        run: scripts/verify-wheel.sh dist/*.whl "${GITHUB_REF_NAME#v}"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
