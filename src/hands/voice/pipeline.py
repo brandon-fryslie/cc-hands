@@ -31,7 +31,6 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregator,
-    LLMContextAggregatorPair,
     LLMUserAggregator,
     LLMUserAggregatorParams,
 )
@@ -44,6 +43,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from hands.sessions.audit import Record
 from hands.sessions.model_facts import ModelFault, ModelReplyEmpty
+from hands.voice.beside import UserTurns
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus, Refocusing
 from hands.voice.latency import LatencyObserver
@@ -188,7 +188,7 @@ class Voice:
 
 
 def build_voice(
-    config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, key: PushToTalk, player: Player, floor: Floor, refocus: Refocus, prompt: Callable[[], Awaitable[str | None]], record: Record
+    config: VoiceConfig, tools: Sequence[Tool], llm: FrameProcessor, user_turns: UserTurns, key: PushToTalk, player: Player, floor: Floor, refocus: Refocus, prompt: Callable[[], Awaitable[str | None]], record: Record
 ) -> Voice:
     """Wire mic, push-to-talk, Whisper as LowTalker serves it, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
@@ -220,11 +220,10 @@ def build_voice(
         stop=[KeyTurnStop()],
     )
     context = LLMContext(tools=context_tools(tools, player.lines, llm))
-    pair = LLMContextAggregatorPair(
-        context,
-        user_params=LLMUserAggregatorParams(user_turn_strategies=turns),
-    )
-    user_aggregator, assistant_aggregator = pair.user(), pair.assistant()
+    # The two halves Pipecat's pair would make on one context, the user's as the model's variant has its turns written.
+    # The pair also hands the assistant's half the user's, which only a speech-to-speech service reads (1.10.0).
+    user_aggregator = user_turns(context, LLMUserAggregatorParams(user_turn_strategies=turns))
+    assistant_aggregator = LLMAssistantAggregator(context)
 
     # Ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
     # context or the model's stage takes it, and follows the user's words when given back.

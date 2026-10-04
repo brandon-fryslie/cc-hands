@@ -11,11 +11,13 @@ import struct
 import wave
 from pathlib import Path
 from collections.abc import AsyncGenerator, Callable, Sequence
+from contextlib import asynccontextmanager
 from io import BytesIO
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import Literal, cast
 
 import pytest
+from aiohttp import web
 from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
@@ -29,8 +31,11 @@ from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import running, unprimed
+from conftest import Endpoint, ServeApi, events, running, unprimed
+from hands.core.front import InFront, SessionInFront
 from hands.core.place import Place
+from hands.voice.backends import AnthropicBackend, OpenAICompatibleBackend
+from hands.voice.beside import NotedTurns, UserTurns, unnoted
 from hands.sessions.audit import Entry, HoldHeard, Levels
 from hands.sessions.wide import Fact
 from hands.voice import pipeline as built
@@ -48,6 +53,7 @@ from hands.core.status import Busy, Stamp
 from hands.voice.speech import Pushed, Unprompted
 from hands.voice.turnstop import TurnOpened, TurnResolved
 from hands.voice.whisper import Whisper
+from test_llm import Shape, anthropic_stream, openai_stream
 from test_narrator import heard
 from hands.voice import voices
 
@@ -189,12 +195,20 @@ class Rig:
 
 @pytest.fixture
 async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator[Rig, None]:
+    async with rigged(monkeypatch, tmp_path, FrameProcessor(), unnoted, []) as made:
+        yield made
+
+
+@asynccontextmanager
+async def rigged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProcessor, user_turns: UserTurns, behind: list[FrameProcessor]) -> AsyncGenerator[Rig]:
+    """The rig, its user turns written as `user_turns` writes them for `llm`, with `behind` run behind what records them."""
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
     voice = built.build_voice(
         built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), transcription="http://unused/v1", voice=voices.DEFAULT),
         tools=[],
-        llm=FrameProcessor(),
+        llm=llm,
+        user_turns=user_turns,
         key=PushToTalk(recorded.append),
         player=Player(recorded.append),
         floor=Floor(Pushed(), lambda id: id, dict),
@@ -216,7 +230,7 @@ async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator
     # The floor sits where build_voice puts it, between Whisper and the user aggregator.
     received: list[None] = []
     cue_receipt(voice.user_turns, lambda: received.append(None))
-    async with running([voice.stt, Floor(Pushed(), lambda id: id, lambda: live, clock), voice.user_turns, out]) as run:
+    async with running([voice.stt, Floor(Pushed(), lambda id: id, lambda: live, clock), voice.user_turns, out, *behind]) as run:
         yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received)
 
 
@@ -452,6 +466,65 @@ async def test_a_request_for_an_api_model_while_the_key_is_held_joins_the_contex
     await rig.until(lambda: len(rig.out.order) == 5)
     assert rig.out.order[:4] == ["started", "marker", "stopped", "sent: what time is it"]
     assert rig.out.order[4].startswith("sent: [hands] The Claude Code session api is waiting for permission to use Bash")
+
+
+def user_texts(request: dict[str, object]) -> list[str]:
+    """Each text a request's user messages hold, in order, in either API's shape: a string, or blocks of text."""
+    texts: list[str] = []
+    for message in cast(list[dict[str, str | list[dict[str, str]]]], request["messages"]):
+        match message:
+            case {"role": "user", "content": str() as text}:
+                texts.append(text)
+            case {"role": "user", "content": list() as blocks}:
+                texts.extend(block["text"] for block in blocks)
+            case _:
+                pass
+    return texts
+
+
+@pytest.mark.parametrize("shape", ["openai", "anthropic"])
+async def test_an_api_models_request_carries_hands_notes_beside_the_users_words_and_beside_nothing_hands_tells(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi, shape: Shape
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    def answering(stream: list[str]) -> Endpoint:
+        async def answer(request: web.Request) -> web.StreamResponse:
+            requests.append(await request.json())
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            for event in stream:
+                await response.write(event.encode())
+            return response
+
+        return answer
+
+    api = await api_server(answering(openai_stream("words")), answering(anthropic_stream("words")))
+    backend = OpenAICompatibleBackend(base_url=api.url, api_key="k", model="m") if shape == "openai" else AnthropicBackend(base_url=api.anthropic_url, api_key="k", model="m")
+    llm = built.build_llm(backend, instruction="Speak.", max_tokens=50)
+    noted: list[Entry] = []
+
+    async def front() -> InFront:
+        return SessionInFront("iTerm2", API, "api")
+
+    async with rigged(monkeypatch, tmp_path, llm, lambda context, params: NotedTurns(context, params, front, lambda: "audio-only", noted.append), [llm]) as rig:
+        await rig.hold(["down", "up"])
+        await rig.texts.put("what time is it")
+        await rig.until(lambda: len(requests) == 1)
+        # What hands tells of a session is no turn of the user's: it is asked with no note of its own.
+        rig.live[API] = waiting_on(API, "r1")
+        await rig.worker.queue_frame(asking(API, "r1"))
+        await rig.until(lambda: len(requests) == 2)
+    note = (
+        '[hands] As the user said this, iTerm2 was in front on the Mac\'s screen, showing the session "api" (id api). Say nothing about this unless it bears on what they said.'
+        "\n\n[hands] The user is audio-only: they cannot see a screen."
+    )
+    assert user_texts(requests[0]) == ["what time is it", note]
+    words, noted_once, told = user_texts(requests[1])
+    assert (words, noted_once) == ("what time is it", note) and told.startswith("[hands] The Claude Code session api is waiting for permission")
+    # [LAW:nothing-unseen] the one turn noted is one event: what was read, and where the user was.
+    [asked] = events(noted, "voice.asked")
+    assert asked.outcome == "ok" and asked.facts == {"front": SessionInFront("iTerm2", API, "api"), "modality": "audio-only"}
 
 
 async def test_two_sessions_finishing_during_one_held_key_are_told_asks_first_and_one_telling_a_session(rig: Rig) -> None:

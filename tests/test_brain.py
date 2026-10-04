@@ -28,6 +28,8 @@ from hands.core.session import Permission
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, level, segment
 from conftest import events, onboard
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
 from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
@@ -47,6 +49,7 @@ from hands.voice.refocus import Refocus
 from hands.voice.sentences import SummaryStore
 from hands.voice.speech import Pushed, Tailed
 from hands.voice.backends import AnthropicBackend, ClaudeCodeBackend
+from hands.voice.beside import NotedTurns, unnoted
 from hands.voice.pipeline import VoiceConfig
 from hands.voice.summary import SummaryFailed, aside
 from hands.sessions.wide import Fact, WideEvent, continuing, here, root, unit, within
@@ -1046,9 +1049,11 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
 
     async with mind(api, [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, AnthropicLLMService) and minded.watches == () and minded.telling == Pushed()
+        # An API model's turns are noted as they are written; the brain's stage notes its own.
+        assert isinstance(minded.user_turns(LLMContext(), LLMUserAggregatorParams()), NotedTurns)
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com"), transcription="http://w/v1", voice=voices.DEFAULT)
     async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
-        assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed()
+        assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed() and minded.user_turns is unnoted
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
         [launched] = events(recorded, "brain.launch")
         assert (launched.facts["cwd"], launched.facts["account"]) == (tmp_path / "brain" / "cwd", "brain@example.com")

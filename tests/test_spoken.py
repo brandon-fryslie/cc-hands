@@ -26,6 +26,7 @@ from hands.core.turn import Said
 from hands.sessions.backfill import read_transcript
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
+from hands.voice.beside import unnoted
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus, Refocusing
 from hands.voice.player import Player
@@ -362,6 +363,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         ),
         tools=[],
         llm=FrameProcessor(),
+        user_turns=unnoted,
         key=PushToTalk(lambda _: None),
         player=(player := Player(lambda _: None)),
         floor=Floor(Pushed(), lambda id: id, dict),

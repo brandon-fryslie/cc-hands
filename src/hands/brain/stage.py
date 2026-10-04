@@ -40,10 +40,10 @@ from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 from hands.brain.mcp import SERVER_NAME, CallSpans
 from hands.brain.process import NOBODY, SPOKEN_OVER, Asked, BrainAnswered
 from hands.core.effects import Deny
-from hands.core import place
+from hands.core.beside import beside
 from hands.core.place import Modality
 from hands.core.permissions import heard
-from hands.core.front import InFront, told
+from hands.core.front import InFront
 from hands.core.session import SessionId
 from hands.core.trace import Span
 from hands.core.wire import (
@@ -307,7 +307,7 @@ class BrainStage(FrameProcessor):
             match waiting:
                 case (str() as text, reading):
                     asker = await reading
-                    await self._ask("\n\n".join(part for part in (text, told(asker.front), place.told(asker.modality)) if part), asker, (), (), arrived, released, taken)
+                    await self._ask(f"{text}\n\n{beside(asker.front, asker.modality)}", asker, (), (), arrived, released, taken)
                 case Narrated(text=text, unsaid=unsaid, session=session, utterances=utterances):
                     # [LAW:no-ambient-temporal-coupling] moved as the telling is taken, with the user's last turn ended and
                     # none waiting, since they go first, and before the brain is asked, so its request reads the new focus.

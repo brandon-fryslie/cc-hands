@@ -1098,6 +1098,14 @@ screen (`core/place.py`'s `Modality`), read as their words reach the stage and r
 move to the phone `audio-only`, and the brain's `set_modality` tool switches it until the
 next move. It is a hint the brain chooses by, never a limit on what hands does.
 
+**The same notes on an API backend.** Built: `core/beside.py` composes both notes for
+either model. Under an API model the user aggregator is `voice/beside.py`'s `NotedTurns`,
+which writes them into the context as a message behind each turn of the user's it writes,
+from the same two readers, before the model is asked; what hands tells of the sessions
+enters the context by `LLMMessagesAppendFrame` and is followed by none. Each turn noted is
+one `voice.asked` wide event: its `front` and `modality` facts are what was read, and its
+duration is the read.
+
 The rest of this section is planned: step summaries built as steps arrive, and streaming.
 
 **Spoken form.** Built: `core/spoken.py` is a pure function from text to speakable
