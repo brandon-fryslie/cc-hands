@@ -1030,6 +1030,19 @@ it, timed as the stage heard it on the wire. Each model round trip is the proxy'
 span inside the turn's (`span`), and reaches the collector as a `proxy.exchange` span under it: no second record of a
 round trip is kept. A turn hands stopped mid-way still emits its event, cancelled, with what it had done.
 
+**What is in front.** Built: as the user's words reach the brain's stage, hands reads once
+what is in front on the Mac's screen (`sessions/front.py`, decided by the pure
+`core/front.py`), and the brain reads it after the user's words: the app in front and the
+session its front tab shows, or that it shows none. It is never watched between turns, and
+a narration is not read against it. The app in front is the one LaunchServices says is
+(`lsappinfo front`), whether or not a window of its is on screen; an app that says by AppleScript which terminal its front tab shows
+(iTerm2, Terminal) is asked, and any other shows every terminal under it, which names the
+session when it holds one. A tab running tmux shows the pane its client is on. A session is
+in front when that terminal is on its line of ancestors: its fritter's, its tab's or its
+pane's. A screen hands cannot read (no app in front, a refused or unanswered AppleScript,
+several sessions under the terminals it shows) is left out of the turn, and the `voice.turn` event's `asker` fact, a
+`UserAsked`, records what was read or why it was not, and how long the read took.
+
 The rest of this section is planned: step summaries built as steps arrive, and streaming.
 
 **Spoken form.** Built: `core/spoken.py` is a pure function from text to speakable
