@@ -24,9 +24,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
-
-from loguru import logger
+from urllib.request import ProxyHandler, Request, build_opener
 
 from hands.sessions.audit import Entry, Exported, Record, jsonable
 from hands.sessions.wide import Outcome, WideEvent
@@ -46,6 +44,9 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _STATUS: Mapping[Outcome, int] = {"cancelled": 0, "ok": 1, "failed": 2}
 # OTLP's SPAN_KIND_INTERNAL: a unit of work inside hands, neither serving a request nor making one.
 _INTERNAL = 1
+# Straight to the address the settings name, past every proxy: the environment's, which in a session fritter taps is the
+# tap (hands.sessions.untap), and the system's.
+_DIRECT = build_opener(ProxyHandler({}))
 
 
 @contextmanager
@@ -86,7 +87,11 @@ class Exporter:
         # [LAW:no-shared-mutable-globals] close alone writes it, once, finite from then on; the thread reads it as it
         # sends each batch, and send to know the queue's end is marked.
         self._deadline = math.inf
-        # [LAW:no-shared-mutable-globals] send puts, the thread alone takes; nothing else reads it.
+        # [LAW:no-shared-mutable-globals] the thread alone writes it, as each send begins; close reads it once the thread
+        # has outlived the timeout.
+        self._sending: tuple[str, ...] = ()
+        # [LAW:no-shared-mutable-globals] send puts and the thread takes; close takes what is left once the thread has
+        # outlived the timeout.
         self._queue: queue.SimpleQueue[WideEvent | _Closed] = queue.SimpleQueue()
         # [LAW:no-ambient-temporal-coupling] held by send and close alike, so no event is put behind the end's mark.
         self._marking = threading.Lock()
@@ -113,8 +118,10 @@ class Exporter:
             self._queue.put(_CLOSED)
         self._thread.join(self._timeout + 1)
         if self._thread.is_alive():
-            # [LAW:no-silent-failure] the last batch is still in flight and dies with the process.
-            logger.warning(f"the last batch of wide events to {self._collector} was still being sent as hands stopped")
+            # [LAW:nothing-unseen] a send that outlived the timeout, which bounds each socket operation and not a name's
+            # resolution: what it holds and what is queued behind it are said here, as the process may end before it.
+            unsent = [taken.span_id for taken in _drained(self._queue) if isinstance(taken, WideEvent)]
+            self._record(Exported(self._collector, (*self._sending, *unsent), 0.0, f"{STOPPED}: a send was still waiting on the collector"))
 
     def _run(self) -> None:
         closed = False
@@ -143,19 +150,29 @@ class Exporter:
     def _deliver(self, batch: Sequence[WideEvent]) -> None:
         began = time.monotonic()
         left = min(self._timeout, self._deadline - began)
+        self._sending = tuple(event.span_id for event in batch)
         refused = self._sent(batch, left) if left > 0 else STOPPED
-        self._record(Exported(self._collector, tuple(event.span_id for event in batch), (time.monotonic() - began) * 1000, refused))
+        self._record(Exported(self._collector, self._sending, (time.monotonic() - began) * 1000, refused))
 
     def _sent(self, batch: Sequence[WideEvent], timeout: float) -> str | None:
         """Why the collector did not take `batch`, None where it took every span."""
         try:
             request = Request(f"{self._collector}/v1/traces", data=json.dumps(spans(batch), ensure_ascii=False, allow_nan=False).encode(), headers={"Content-Type": "application/json"}, method="POST")
-            with urlopen(request, timeout=timeout) as response:
+            with _DIRECT.open(request, timeout=timeout) as response:
                 return rejected(response.read(), len(batch))
         except Exception as error:
             # Unreachable, an HTTP error status, or an event that would not encode: the batch is lost to the collector
             # alike, and said alike.
             return _why(error)
+
+
+def _drained(queued: "queue.SimpleQueue[WideEvent | _Closed]") -> list[WideEvent | _Closed]:
+    taken: list[WideEvent | _Closed] = []
+    while True:
+        try:
+            taken.append(queued.get_nowait())
+        except queue.Empty:
+            return taken
 
 
 def _why(error: Exception) -> str:
@@ -171,11 +188,19 @@ def _why(error: Exception) -> str:
         return f"{said}, its body unread: {type(unread).__name__}: {unread}"
 
 
+def _json_or_none(body: bytes) -> object:
+    # A success answered with a body that is not JSON, as a gateway's "OK", says nothing of rejected spans.
+    try:
+        return json.loads(body)
+    except ValueError:
+        return None
+
+
 def rejected(body: bytes, sent: int) -> str | None:
     """Why the collector rejected spans of a batch of `sent` it answered with success, from its
     ExportTraceServiceResponse; None where it took them all."""
     # rejectedSpans is an int64, which OTLP's JSON may spell as a string; a body of any other shape rejects nothing.
-    match json.loads(body) if body.strip() else None:
+    match _json_or_none(body):
         case {"partialSuccess": {"rejectedSpans": int() | str() as count, "errorMessage": str(why)}} if str(count).isdecimal() and int(count) > 0:
             return f"the collector rejected {int(count)} of {sent} spans: {why}"
         case {"partialSuccess": {"rejectedSpans": int() | str() as count}} if str(count).isdecimal() and int(count) > 0:

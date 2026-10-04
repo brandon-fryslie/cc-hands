@@ -77,11 +77,14 @@ def test_the_collector_is_an_http_address_spelled_without_a_trailing_slash() -> 
     assert config.parse("").collector is None
     assert config.parse('[telemetry]\ncollector = "http://otel.example:4318/"\n').collector == "http://otel.example:4318"
     assert config.parse('[telemetry]\ncollector = "https://[::1]:4318/otel"\n').collector == "https://[::1]:4318/otel"
-    # No scheme, a bracket left open, no host, a port out of range, the traces endpoint itself, a query: none is a
+    # No scheme, a bracket left open, no host, a port out of range, the traces endpoint itself, a query, credentials
+    # urllib would take for part of the host and the log would hold: none is a
     # base address a batch could ever be posted under, so each is refused as the file is read, not batch by batch.
-    for unusable in ("otel.example:4317", "http://[::1:4318", "http://:4318", "http://otel.example:99999", "http://otel.example:4318/v1/traces", "http://otel.example:4318?x=1"):
-        with pytest.raises(Rejected, match="is not an OTLP/HTTP collector's base address"):
+    for unusable in ("otel.example:4317", "http://[::1:4318", "http://:4318", "http://otel.example:99999", "http://otel.example:4318/v1/traces", "http://otel.example:4318?x=1", "http://user:secret@otel.example:4318"):
+        with pytest.raises(Rejected, match="is not an OTLP/HTTP collector's base address") as refused:
             config.parse(f'[telemetry]\ncollector = "{unusable}"\n')
+        # A refused edit is a log line: the address it refused is not in it.
+        assert "secret" not in str(refused.value)
     with pytest.raises(Rejected, match="\\[telemetry\\] has no 'endpoint'"):
         config.parse('[telemetry]\nendpoint = "http://otel.example:4318"\n')
 
@@ -187,7 +190,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
 
     def prompted() -> run.Configured:
         answered.wait()
-        return run.Configured(config, home.config, "http://otel.example:4318")
+        return run.Configured(config, run.Settings(b"", Config(collector="http://otel.example:4318")))
 
     recorded: list[Entry] = []
     starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda: None, home, sessions, recorded.append), heart, sessions.live_count, asyncio.Event()))

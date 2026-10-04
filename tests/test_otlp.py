@@ -14,6 +14,7 @@ from typing import Any, cast
 import pytest
 
 from hands.sessions.audit import AuditLog, Entry, Exported, segment, segments
+from hands.sessions import otlp
 from hands.sessions.otlp import BATCH_SPANS, STOPPED, Exporter, exporting, rejected, spans
 from hands.sessions.wide import WideEvent, annotate, count, unit
 
@@ -244,7 +245,14 @@ def test_an_error_answer_cut_short_is_said_and_the_batches_after_it_are_still_se
                 except OSError:
                     return
                 with connection:
-                    connection.recv(1 << 20)
+                    # The whole request read first, so the client is reading the answer, not still sending, as it is cut.
+                    received = b""
+                    while b"\r\n\r\n" not in received:
+                        received += connection.recv(1 << 16)
+                    head, body = received.split(b"\r\n\r\n", 1)
+                    length = int(next(line.split(b":")[1] for line in head.split(b"\r\n") if line.lower().startswith(b"content-length")))
+                    while len(body) < length:
+                        body += connection.recv(1 << 16)
                     connection.sendall(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 100\r\n\r\ncut")
 
         threading.Thread(target=answer, daemon=True).start()
@@ -258,3 +266,36 @@ def test_an_error_answer_cut_short_is_said_and_the_batches_after_it_are_still_se
         exporter.close()
     assert [exported.spans for exported in recorded] == [(first.span_id,), (second.span_id,)]
     assert recorded[0].error is not None and "IncompleteRead" in recorded[0].error
+
+
+def test_a_batch_goes_straight_to_the_collector_past_a_proxy_in_the_environment(collector: Collector, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A daemon started inside a session fritter taps holds the tap as its proxy, and the tap is not the way to the collector.
+    monkeypatch.setenv("HTTP_PROXY", _stopped())
+    monkeypatch.setenv("http_proxy", _stopped())
+    recorded: list[Entry] = []
+    with exporting(collector.url, recorded.append) as record:
+        with unit("delta.read", record):
+            pass
+    _, exported = _sent(recorded)
+    assert exported.error is None and len(collector.spans()) == 1
+
+
+def test_a_send_still_waiting_as_the_stop_gives_up_is_said_with_every_event_queued_behind_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A send that outlives its timeout, as one waiting on a name that will not resolve does.
+    sending = threading.Event()
+
+    class Stuck:
+        def open(self, request: object, timeout: float) -> object:
+            sending.set()
+            time.sleep(3)
+            raise TimeoutError("never answered")
+
+    monkeypatch.setattr(otlp, "_DIRECT", Stuck())
+    recorded: list[Exported] = []
+    exporter = Exporter("http://otel.example:4318", recorded.append, linger=0.01, timeout=0.2)
+    first, behind = _event(span_id="0000000000000001"), _event(span_id="0000000000000002")
+    exporter.send(first)
+    sending.wait()
+    exporter.send(behind)
+    exporter.close()
+    assert [(exported.spans, exported.error) for exported in recorded] == [((first.span_id, behind.span_id), f"{STOPPED}: a send was still waiting on the collector")]

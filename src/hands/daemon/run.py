@@ -181,12 +181,10 @@ def keychain_password(service: str) -> str | None:
 
 @dataclass(frozen=True)
 class Configured:
-    """The configuration a run starts with, the settings file it was read from, None where the home has none, and the
-    collector its wide events are also sent to."""
+    """The configuration a run starts with, and the settings it was read from."""
 
     voice: VoiceConfig
-    settings: Path | None
-    collector: str | None
+    settings: Settings
 
 
 def configured_from(home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
@@ -199,7 +197,7 @@ def configured_from(home: Home, settings: Settings, environment: Mapping[str, st
         llm = backend(settings.config.llm, home, environment)
     except Rejected as error:
         sys.exit(f"hands: {error}")
-    return Configured(VoiceConfig(llm=llm, whisper_model=settings.config.whisper_model, voice=_voice(home)), settings.path(home), settings.config.collector)
+    return Configured(VoiceConfig(llm=llm, whisper_model=settings.config.whisper_model, voice=_voice(home)), settings)
 
 
 def _voice(home: Home) -> voices.Voice:
@@ -356,7 +354,8 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[], N
     config = read.voice
     # [LAW:nothing-unseen] which file the settings came from, and the server, model, and collector they chose, is read from the log,
     # not re-derived from a shell.
-    record(SettingsRead(path=None if read.settings is None else str(read.settings), whisper_model=config.whisper_model, collector=read.collector))
+    read_from = read.settings.path(home)
+    record(SettingsRead(path=None if read_from is None else str(read_from), whisper_model=config.whisper_model, collector=read.settings.config.collector))
     record(LLMChosen(backend=type(config.llm).__name__, base_url=_server(config.llm), model=config.llm.model, account=_account(config.llm)))
     record(VoiceChosen(voice=config.voice))
     return config

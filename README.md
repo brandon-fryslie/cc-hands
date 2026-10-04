@@ -87,7 +87,7 @@ collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTT
 ```
 
 With a collector set, each wide event hands writes to its audit log is also sent there as a
-span, so it can be found in whatever stores and Grafana sit behind the collector. The log stays
+span, straight to that address and past any proxy, so it can be found in whatever stores and Grafana sit behind the collector. The log stays
 the whole record either way, and each batch sent is an `Exported` line in it, naming its spans and, where the
 collector did not take them, why.
 
