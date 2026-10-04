@@ -80,6 +80,7 @@ FOREIGN_CREDENTIALS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE
 # and the brain hears why.
 NOBODY = "Nobody can be asked: no turn of the user's is in flight to ask in, so what this Claude Code's settings would ask about is refused."
 UNREAD = "hands could not read this permission request, so it is refused."
+BROKEN = "hands failed while it settled this permission request, so it is refused."
 UNVOICED = "Nobody sees this dialog: ask the user in your reply instead, and they will answer in their next turn."
 UNANSWERED = "No answer came from the user in time, so it did not run."
 SPOKEN_OVER = "The user spoke over this turn before they could be asked, so it did not run."
@@ -451,14 +452,22 @@ class Brain:
         loop = asyncio.get_running_loop()
         turn = self._turn = _Turn(loop.create_future(), loop.create_future(), asks, begun())
         # An asker that stops waiting leaves the turn to be typed and to run to its end, which is still the brain's to hear.
-        self._keep(self._send(text, turn))
+        self._keep(self._send(text, turn), turn)
         return await asyncio.shield(turn.answered)
 
-    def _keep(self, typing: Coroutine[None, None, None]) -> None:
-        """Runs on in a task of the brain's own, whoever asked for it."""
-        task = asyncio.create_task(typing)
+    def _keep(self, work: Coroutine[None, None, None], turn: _Turn | None) -> None:
+        """Runs on in a task of the brain's own, whoever asked for it, for `turn`, the turn in flight it was begun in."""
+        task = asyncio.create_task(work)
         self._typing.add(task)
         task.add_done_callback(self._typing.discard)
+        task.add_done_callback(lambda done: done.cancelled() or (error := done.exception()) is None or self._broke(turn, error))
+
+    def _broke(self, turn: _Turn | None, error: BaseException) -> None:
+        """[LAW:single-enforcer] what the brain's own work raised that nothing in it expected: said once, with where it
+        came from, and the end of the turn it was done for, so its asker is answered and the turns behind it are typed."""
+        logger.opt(exception=error).error(f"the brain's own work failed: {error!r}")
+        if turn is not None:
+            self._over(turn, error)
 
     async def _send(self, text: str, turn: _Turn) -> None:
         # [LAW:nothing-unseen] the turn is one event of the brain's own, from its typing to its end, however long its asker
@@ -491,7 +500,7 @@ class Brain:
         and no hook says a turn was stopped, so the turn ends where it is pressed."""
         turn = self._turn
         if turn is not None:
-            self._keep(self._stop(turn))
+            self._keep(self._stop(turn), turn)
 
     async def _stop(self, turn: _Turn) -> None:
         # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: a turn ended
@@ -578,17 +587,25 @@ class Brain:
     async def _hear_hooks(self, hooks: "asyncio.Queue[_Posted]") -> None:
         while True:
             posted = await hooks.get()
-            match posted.event:
-                case "PermissionRequest":
-                    self._keep(self._permit(posted))
-                case "Elicitation":
-                    # A dialog is kept shut, whatever it says.
-                    posted.reply.set_result(DECLINED)
-                    self._refused(posted.body)
-                case _:
-                    # Asks nothing of the turn, so it is answered at once, whatever it says.
-                    posted.reply.set_result({})
-                    self._hook(posted.body)
+            turn = self._turn
+            try:
+                self._answer(posted, turn)
+            except Exception as error:
+                # One hook that breaks is that hook's: the hooks after it are still heard.
+                self._broke(turn, error)
+
+    def _answer(self, posted: _Posted, turn: _Turn | None) -> None:
+        match posted.event:
+            case "PermissionRequest":
+                self._keep(self._permit(posted), turn)
+            case "Elicitation":
+                # A dialog is kept shut, whatever it says.
+                posted.reply.set_result(DECLINED)
+                self._refused(posted.body)
+            case _:
+                # Asks nothing of the turn, so it is answered at once, whatever it says.
+                posted.reply.set_result({})
+                self._hook(posted.body)
 
     async def _permit(self, posted: _Posted) -> None:
         """Answers a permission request: held while the user is asked, when a turn of theirs is in flight to ask in.
@@ -604,25 +621,30 @@ class Brain:
                 posted.reply.set_result(hook_output(Deny(UNREAD)))
             return
         with self._dialog("brain.permission", prompt) as turn:
-            match asked:
-                case Permission() if turn is not None:
-                    held = Asked(asked, asyncio.get_running_loop().create_future())
-                    self._held.add(held)
-                    try:
-                        turn.asks(held)
-                        await asyncio.wait({held.decision}, timeout=PERMISSION_DEADLINE_SECONDS)
-                    finally:
-                        self._held.discard(held)
-                    held.settle(Deny(UNANSWERED))
-                    decision = held.decision.result()
-                case Permission():
-                    decision = Deny(NOBODY)
-                case _:
-                    # A dialog of questions or a plan is never put to the user by voice: the brain's own words ask them.
-                    decision = Deny(UNVOICED)
-            annotate(tool=tool, decision=decision)
-            # Answered inside its unit: whatever its event's writing meets, the brain's dialog is not left waiting on it.
-            posted.reply.set_result(hook_output(decision))
+            # What hands could not decide is refused: a dialog left open would take the next turn's Return for a yes.
+            decision: Allow | Deny = Deny(BROKEN)
+            try:
+                match asked:
+                    case Permission() if turn is not None:
+                        held = Asked(asked, asyncio.get_running_loop().create_future())
+                        self._held.add(held)
+                        try:
+                            turn.asks(held)
+                            await asyncio.wait({held.decision}, timeout=PERMISSION_DEADLINE_SECONDS)
+                        finally:
+                            self._held.discard(held)
+                        held.settle(Deny(UNANSWERED))
+                        decision = held.decision.result()
+                    case Permission():
+                        decision = Deny(NOBODY)
+                    case _:
+                        # A dialog of questions or a plan is never put to the user by voice: the brain's own words ask them.
+                        decision = Deny(UNVOICED)
+                annotate(tool=tool, decision=decision)
+            finally:
+                # Answered inside its unit, however its body ended: whatever its event's writing meets, the brain's dialog
+                # is not left waiting on it.
+                posted.reply.set_result(hook_output(decision))
 
     @contextlib.contextmanager
     def _dialog(self, event: str, prompt: str | None) -> Generator[_Turn | None]:
@@ -675,7 +697,7 @@ class Brain:
             case _:
                 logger.warning(f"the brain's {event} hook for prompt {prompt} does not fit the turn in flight (prompt {turn.prompt})")
 
-    def _over(self, turn: _Turn, outcome: BrainAnswered | Exception) -> None:
+    def _over(self, turn: _Turn, outcome: BrainAnswered | BaseException) -> None:
         if self._turn is turn:
             self._turn = None
         if turn.answered.done():
