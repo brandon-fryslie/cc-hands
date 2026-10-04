@@ -1117,7 +1117,7 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
             text: The prompt.
             resolutions: Each spoken phrase you turned into something exact, such as a file name, with what you made of it. Empty when you resolved nothing.
         """
-        return await _answer("stage_draft", sessions, session, lambda id: StageDraft(id, parse_draft(text, resolutions)), sessions.draft, aloud)
+        return await _answer(sessions, session, lambda id: StageDraft(id, parse_draft(text, resolutions)), sessions.draft, aloud)
 
     async def amend_draft(session: str, text: str, resolutions: list[Resolved]) -> Result:
         """Replace a session's staged draft with a corrected one when the user changes it.
@@ -1129,7 +1129,7 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
             text: The whole corrected prompt, not only the changed words.
             resolutions: Every resolution the corrected prompt relies on.
         """
-        return await _answer("amend_draft", sessions, session, lambda id: AmendDraft(id, parse_draft(text, resolutions)), sessions.draft, aloud)
+        return await _answer(sessions, session, lambda id: AmendDraft(id, parse_draft(text, resolutions)), sessions.draft, aloud)
 
     async def discard_draft(session: str) -> Result:
         """Throw away a session's staged draft without sending it.
@@ -1137,7 +1137,7 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        return await _answer("discard_draft", sessions, session, DiscardDraft, sessions.draft, _for_the_model(readback))
+        return await _answer(sessions, session, DiscardDraft, sessions.draft, _for_the_model(readback))
 
     async def send_draft(session: str) -> Result:
         """Type a session's staged draft into it and press Return. Call it only once the user has said to send it.
@@ -1147,7 +1147,7 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        return await _answer("send_draft", sessions, session, SendDraft, sessions.draft, _for_the_model(readback))
+        return await _answer(sessions, session, SendDraft, sessions.draft, _for_the_model(readback))
 
     # A barge-in must not cancel a draft call part way: the draft would change, or be sent, without its readback heard.
     return [
@@ -1164,7 +1164,6 @@ def _for_the_model[O](say: Callable[[O, str], str]) -> Callable[[O, str], Result
 
 
 async def _answer[R, O](
-    name: str,
     sessions: Sessions,
     session: object,
     request: Callable[[SessionId], R],
@@ -1194,7 +1193,7 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
             command: The command's name, such as "compact" or "model".
             args: What follows the name, such as "opus" for model. Empty when the user gave nothing.
         """
-        return await _answer("send_command", sessions, session, lambda id: SendCommand(id, parse_command(command, args)), sessions.keyboard, _for_the_model(keyboard_readback))
+        return await _answer(sessions, session, lambda id: SendCommand(id, parse_command(command, args)), sessions.keyboard, _for_the_model(keyboard_readback))
 
     async def interrupt_session(session: str) -> Result:
         """Stop what a session is doing, as pressing Escape at its keyboard does. At a permission dialog that is the dialog's no.
@@ -1204,7 +1203,7 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        return await _answer("interrupt_session", sessions, session, Interrupt, sessions.keyboard, _for_the_model(keyboard_readback))
+        return await _answer(sessions, session, Interrupt, sessions.keyboard, _for_the_model(keyboard_readback))
 
     # A barge-in must not cancel either part way: it would be typed without its readback heard.
     return [tool(body, completes=True) for body in (send_command, interrupt_session)]
@@ -1223,7 +1222,7 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
             decision: "allow" to let the tool run, or "deny" to refuse it.
             message: Only when denying: what the user wants the session to know or do instead, in their words.
         """
-        return await _decide("answer_permission", sessions, request, lambda: parse_decision(decision, message))
+        return await _decide(sessions, request, lambda: parse_decision(decision, message))
 
     async def answer_question(request: str, answers: list[str]) -> Result:
         """Answer the questions a session asked with what the user chose. Call it only once the user has answered every one.
@@ -1234,7 +1233,7 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
             request: The request id given with the questions.
             answers: One answer per question, in the order they were asked: the label of the option the user chose, or their own words when no option fits. Where more than one may be chosen, join the labels with ", ". An empty answer when the user chose none.
         """
-        return await _decide("answer_question", sessions, request, lambda: parse_answers(answers))
+        return await _decide(sessions, request, lambda: parse_answers(answers))
 
     async def answer_plan(request: str, decision: str, message: str = "") -> Result:
         """Answer a session's plan with what the user decided. Call it only after the user has approved the plan or asked for changes.
@@ -1246,13 +1245,13 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
             decision: "approve" to approve the plan and go on in the mode the session had before it planned; "auto-accept edits" or "manually approve edits" only when the user says how edits should go; or "keep planning" to send it back.
             message: Only when it keeps planning: what the user wants changed, in their words.
         """
-        return await _decide("answer_plan", sessions, request, lambda: parse_plan_decision(decision, message))
+        return await _decide(sessions, request, lambda: parse_plan_decision(decision, message))
 
     # A barge-in must not cancel an answer part way: the user would never hear whether it went through.
     return [tool(body, completes=True) for body in (answer_permission, answer_question, answer_plan)]
 
 
-async def _decide(name: str, sessions: Sessions, request: object, decision: Callable[[], Decision]) -> Result:
+async def _decide(sessions: Sessions, request: object, decision: Callable[[], Decision]) -> Result:
     # [LAW:no-silent-failure] the model hears a refused answer and says it; the tool's event keeps it.
     try:
         outcome = await sessions.answer(_request_id(request), decision())
