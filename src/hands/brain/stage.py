@@ -64,7 +64,6 @@ from hands.core.wire import (
     ToolAnswer,
     Unreached,
     tool_answers,
-    tool_names,
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Record
@@ -175,8 +174,6 @@ class _Turn:
     interrupted: bool = False
     # The calls running when the user barged in, which the turn's event names with whether the brain was told to stop.
     running: tuple[str, ...] = ()
-    # The tools the turn's latest request offered the model: what the brain's own setup gave it, beside hands' tools.
-    offered: tuple[str, ...] = ()
     # The permissions the turn has put to the user, oldest first, which are asked one at a time.
     asked: list[Asked] = field(default_factory=list[Asked])
     # The permission whose question the user has heard to its end: what they say next answers it while it is open. Only a
@@ -395,9 +392,8 @@ class BrainStage(FrameProcessor):
             # [LAW:nothing-unseen] what the turn did is on its event however it ended, a turn cancelled mid-way included.
             self._account(turn, asker, arrived, released, taken, ended)
         # A brain that failed the turn itself has no answer to read.
-        answered = None if asked.exception() is not None else asked.result()
-        failure = None if answered is None else _failed(turn, answered.error)
-        annotate(prompt=None if answered is None else answered.prompt, failed=None if failure is None else failure.fact)
+        failure = None if asked.exception() is not None else _failed(turn, asked.result().error)
+        annotate(failed=None if failure is None else failure.fact)
         if (error := asked.exception()) is not None:
             failed = f"the brain failed a turn: {error}"
             fail(failed)
@@ -432,7 +428,6 @@ class BrainStage(FrameProcessor):
             interrupted=turn.interrupted,
             running=turn.running,
             stopped=turn.stopped,
-            offered=turn.offered,
             # The wait, then where it went: transcribing what was said, waiting behind the turn before it, and the rest,
             # from the turn leaving its lane to its first word: what was left of reading the screen (the asker's read_ms
             # is the whole read, begun as the words arrived), then the model's and its tools', as its parts show.
@@ -544,7 +539,6 @@ class BrainStage(FrameProcessor):
         turn.readbacks.extend(says for _, _, result in answers if result is not None and isinstance(says := result.get("says"), str))
         if not (turn.interrupted or whole([tool is not None and result is not None and silent(tool, result) for tool, _, result in answers])):
             turn.exchanges.append(sent.exchange)
-            turn.offered = tool_names(sent.body)
             turn.opening, turn.calls, turn.failure = {}, {}, _UNNAMED
             # Refused once is the turn's failure, said at once as the API variants say theirs, who ask once. The proxy's
             # record of the request is the turn's round trip to the model: a span inside the turn's.

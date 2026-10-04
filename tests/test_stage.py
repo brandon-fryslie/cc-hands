@@ -472,15 +472,12 @@ async def test_a_narration_the_brain_fails_is_said_as_written_with_its_question(
     assert rig.out.said() == [unsaid]
 
 
-async def test_a_turns_event_says_what_was_typed_into_the_brain_the_prompt_it_took_it_as_and_the_tools_offered(rig: Rig) -> None:
+async def test_a_turns_event_says_what_was_typed_into_the_brain(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "what is api doing?"})
-    rig.request({"messages": [{"role": "user", "content": "hi"}], "tools": [{"name": "Read"}, {"name": "mcp__hands__read_session"}]})
     rig.brain.end()
     await rig.until(lambda: bool(turns(rig.recorded)))
     [turn] = turns(rig.recorded)
-    assert {fact: turn.facts[fact] for fact in ("asked", "prompt", "offered", "running", "stopped")} == {
-        "asked": rig.brain.asked[0], "prompt": "p1", "offered": ("Read", "mcp__hands__read_session"), "running": (), "stopped": False,
-    }
+    assert {fact: turn.facts[fact] for fact in ("asked", "running", "stopped")} == {"asked": rig.brain.asked[0], "running": (), "stopped": False}
 
 
 async def test_a_users_turn_the_brain_fails_has_nothing_said_for_it(rig: Rig) -> None:

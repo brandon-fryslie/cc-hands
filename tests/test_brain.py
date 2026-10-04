@@ -263,7 +263,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == env["CLAUDE_CODE_DISABLE_CRON"] == "1"
 
 
-async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_and_run_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_turns_and_run_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
     try:
@@ -274,9 +274,13 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     assert (tmp_path / "brain" / "cwd").is_dir()
     # Behind a space, so a turn that opens with a slash is the words it is and not a command.
     assert typed(tmp_path) == [["prompt", " what is running?"], ["prompt", " /and now?"]]
-    # The turns are the voice turn's to record, which asked them: the brain's own record is its launch and its run.
-    launched, ran = recorded
-    assert isinstance(launched, WideEvent) and isinstance(ran, WideEvent)
+    launched, first, second, ran = recorded
+    assert isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent)
+    # Each turn is its own, with the prompt Claude Code took it as.
+    assert [(turn.event, turn.outcome, turn.facts) for turn in (first, second)] == [
+        ("brain.turn", "ok", {"prompt": "p1", "offered": ()}),
+        ("brain.turn", "ok", {"prompt": "p2", "offered": ()}),
+    ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
         "session": "b1", "account": "brain@example.com", "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "pid": brain.pid,
@@ -333,14 +337,22 @@ async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: 
     try:
         with unit("voice.turn", recorded.append):
             asking = here()
-            assert await asyncio.wait_for(brain.ask("write", held.append), 10) == BrainAnswered("p1", None)
+            turn = asyncio.create_task(brain.ask("write", held.append))
+            await until(lambda: len(held) == 1)
+            # The turn's request, read off the wire while the turn holds its permission.
+            brain.hear(Sent("x1", SessionId("b1"), MainTurn(None), {"messages": [], "tools": [{"name": "Write"}, {"name": "mcp__hands__read_session"}]}))
+            assert await asyncio.wait_for(turn, 10) == BrainAnswered("p1", None)
     finally:
         await brain.stop()
     assert held[0].decision.result() == Deny(UNANSWERED)
     assert permissions(recorded) == [("p1", "Write", Deny(UNANSWERED))]
-    # A part of the turn it was held for, timed from its post to its answer.
+    # The brain's turn is a part of the voice turn that asked it, with the tools its request offered; the permission is a
+    # part of the brain's turn it was held for, timed from its post to its answer.
+    [brain_turn] = events(recorded, "brain.turn")
+    assert (brain_turn.trace_id, brain_turn.parent_id) == (asking.trace_id, asking.span_id)
+    assert brain_turn.facts == {"prompt": "p1", "offered": ("Write", "mcp__hands__read_session")}
     [permission] = events(recorded, "brain.permission")
-    assert (permission.trace_id, permission.parent_id) == (asking.trace_id, asking.span_id) and permission.duration_ms >= 300
+    assert (permission.trace_id, permission.parent_id) == (asking.trace_id, brain_turn.span_id) and permission.duration_ms >= 300
     assert not (tmp_path / "notes.txt").exists()
 
 
@@ -421,12 +433,23 @@ async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answ
 
 
 async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_failed_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
-    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
     try:
         assert await brain.ask("fail", unasked) == BrainAnswered("p1", "unknown: API Error: 400 refused")
-        assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
+        # An asker that stops waiting leaves the turn to run to its end, and its event still says what failed it.
+        asking = asyncio.create_task(brain.ask("fail", unasked))
+        await until(lambda: sum(line[0] == "prompt" for line in typed(tmp_path)) == 2)
+        asking.cancel()
+        await until(lambda: len(events(recorded, "brain.turn")) == 2)
+        assert await brain.ask("and now?", unasked) == BrainAnswered("p3", None)
     finally:
         await brain.stop()
+    failed, left, _ = events(recorded, "brain.turn")
+    assert [(turn.outcome, turn.error, turn.facts["prompt"]) for turn in (failed, left)] == [
+        ("failed", "the brain's turn ended in error: unknown: API Error: 400 refused", "p1"),
+        ("failed", "the brain's turn ended in error: unknown: API Error: 400 refused", "p2"),
+    ]
 
 
 async def test_an_interrupt_is_escape_and_ends_the_turn_in_flight_and_the_next_turn_is_its_own(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
@@ -619,6 +642,7 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
     brain = object.__new__(Brain)
     brain.session = SessionId("b1")
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
+    brain._turn = None  # pyright: ignore[reportPrivateUsage]
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
@@ -632,7 +656,7 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
     finally:
         logger.remove(sink)
     assert errors == ["the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (('Read',))"]
-    # What a turn's requests offered is on its voice turn's event.
+    # What a turn's requests offered is on its brain turn's event.
     assert recorded == []
 
 

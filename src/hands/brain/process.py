@@ -30,7 +30,7 @@ import subprocess
 import tempfile
 import termios
 import threading
-from collections.abc import Callable, Coroutine, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,7 +48,7 @@ from hands.sessions.hooks import called, hook_output
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
-from hands.sessions.wide import Begun, annotate, begun, continuing, fail, here, opened, unit
+from hands.sessions.wide import Begun, annotate, begun, continuing, fail, here, unit
 from hands.sessions.wrapper import real_claude
 
 # What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu, 2.1.284).
@@ -457,9 +457,10 @@ class _Turn:
     taken: asyncio.Future[str]  # the prompt id Claude Code gave the turn when it took it
     # Told of each permission the turn holds at its hook, to put it to the user.
     asks: Callable[[Asked], None]
-    # The span of the unit of work that asked the turn, under which each dialog it holds is an event; None for a turn
-    # asked outside any.
-    span: Span | None
+    # The turn's own unit of work, begun as it was asked: each dialog it holds is a part of it.
+    began: Begun
+    # The tools the turn's latest request offered the model: what the brain's own setup gave it, beside hands' tools.
+    offered: tuple[str, ...] = ()
 
     @property
     def prompt(self) -> str | None:
@@ -519,7 +520,7 @@ class Brain:
         if self._exit.done():
             raise BrainGone(f"the brain had exited ({self._exit.result()}) before it was asked")
         loop = asyncio.get_running_loop()
-        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), asks, opened())
+        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), asks, begun())
         # An asker that stops waiting leaves the turn to be typed and to run to its end, which is still the brain's to hear.
         self._keep(self._send(text, turn))
         return await asyncio.shield(turn.answered)
@@ -531,19 +532,30 @@ class Brain:
         task.add_done_callback(self._typing.discard)
 
     async def _send(self, text: str, turn: _Turn) -> None:
-        try:
-            # [LAW:no-ambient-temporal-coupling] the input is the turn's from its first key until Claude Code says it took
-            # the turn. Claude Code reads keys that reach it together as one paste, and a Return inside a paste sends
-            # nothing: what was typed 10ms behind a turn joined the turn's prompt, or was left in the input with it
-            # (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
-            async with self._input:
-                # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
-                await self._type(lambda typist: typist.type(Text(pasted(text)).typed))
-                await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
-            if not (turn.taken.done() or turn.answered.done()):
-                raise Untaken(f"the brain did not take the turn typed into it in {TAKE_SECONDS:.0f}s; if it is on a setup screen, run: {setup(self._config_dir)}")
-        except (BrainGone, Untaken) as error:
-            self._over(turn, error)
+        # [LAW:nothing-unseen] the turn is one event of the brain's own, from its typing to its end, however long its asker
+        # still waits on it: a turn left to run on is still heard to its end.
+        with unit("brain.turn", self._record, began=turn.began):
+            try:
+                # [LAW:no-ambient-temporal-coupling] the input is the turn's from its first key until Claude Code says it
+                # took the turn. Claude Code reads keys that reach it together as one paste, and a Return inside a paste
+                # sends nothing: what was typed 10ms behind a turn joined the turn's prompt, or was left in the input with
+                # it (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
+                async with self._input:
+                    # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
+                    await self._type(lambda typist: typist.type(Text(pasted(text)).typed))
+                    await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+                if not (turn.taken.done() or turn.answered.done()):
+                    raise Untaken(f"the brain did not take the turn typed into it in {TAKE_SECONDS:.0f}s; if it is on a setup screen, run: {setup(self._config_dir)}")
+            except (BrainGone, Untaken) as error:
+                self._over(turn, error)
+            await asyncio.wait({turn.answered})
+            annotate(prompt=turn.prompt, offered=turn.offered)
+            match turn.answered.exception():
+                case None:
+                    if (error := turn.answered.result().error) is not None:
+                        fail(f"the brain's turn ended in error: {error}")
+                case failed:
+                    fail(f"the brain failed the turn: {failed}")
 
     def interrupt(self) -> None:
         """Stop the turn in flight with Escape, as at the keyboard. Returns at once: the Escape is the brain's to press,
@@ -587,10 +599,12 @@ class Brain:
         self._over(turn, BrainAnswered(turn.taken.result(), None))
 
     def hear(self, observed: Observed) -> None:
-        """The brain's own requests, read from the wire: whether a turn reached hands' tools."""
+        """The brain's own requests, read from the wire: the tools its turn offered the model, and whether they reached hands'."""
         match observed:
             case Sent(session=session, kind=MainTurn(), body=body) if session == self.session:
                 tools = tool_names(body)
+                if self._turn is not None:
+                    self._turn.offered = tools
                 if not any(name.startswith(f"mcp__{SERVER_NAME}__") for name in tools):
                     # [LAW:no-silent-failure] a brain without hands' tools answers every question about the sessions from nothing.
                     logger.error(f"the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server ({tools})")
@@ -615,10 +629,10 @@ class Brain:
             raise BrainGone(f"the brain cannot be typed into: {error}") from error
 
     async def _run_out(self, up: Begun) -> int:
-        code = await asyncio.shield(self._claude.exit)
         # [LAW:nothing-unseen] the brain's run, from its input coming up to its process's end, is one event as it ends:
-        # its exit code, and the last of what it showed on its terminal.
+        # its exit code, and the last of what it showed on its terminal; or that hands stopped waiting for its end.
         with unit("brain.run", self._record, began=up):
+            code = await asyncio.shield(self._claude.exit)
             annotate(pid=self.pid, code=code, shown=self._claude.shown())
             self._settle(Deny(f"the brain exited ({code})"))
             # [LAW:no-silent-failure] a turn that can never end is said to have failed, not left waiting.
@@ -648,17 +662,15 @@ class Brain:
         brain's launch where no turn of the user's was in flight to ask in."""
         try:
             said = Payload.parse(posted.body)
-            prompt, asked = said.optional_text("prompt_id"), called(said)
+            prompt, tool, asked = said.optional_text("prompt_id"), said.text("tool_name"), called(said)
         except Rejected as error:
             with unit("brain.permission", self._record):
                 fail(f"hands could not read the permission request: {error}")
-            posted.reply.set_result(hook_output(Deny(UNREAD)))
+                posted.reply.set_result(hook_output(Deny(UNREAD)))
             return
-        turn = self._owner(prompt)
-        with continuing(self._launched if turn is None else turn.span), unit("brain.permission", self._record):
-            annotate(prompt=prompt)
+        with self._dialog("brain.permission", prompt) as turn:
             match asked:
-                case Permission(tool=tool) if turn is not None:
+                case Permission() if turn is not None:
                     held = Asked(asked, asyncio.get_running_loop().create_future())
                     self._held.add(held)
                     try:
@@ -668,19 +680,25 @@ class Brain:
                         self._held.discard(held)
                     held.settle(Deny(UNANSWERED))
                     decision = held.decision.result()
-                case Permission(tool=tool):
+                case Permission():
                     decision = Deny(NOBODY)
                 case _:
                     # A dialog of questions or a plan is never put to the user by voice: the brain's own words ask them.
-                    decision, tool = Deny(UNVOICED), said.text("tool_name")
+                    decision = Deny(UNVOICED)
             annotate(tool=tool, decision=decision)
-        posted.reply.set_result(hook_output(decision))
+            # Answered inside its unit: whatever its event's writing meets, the brain's dialog is not left waiting on it.
+            posted.reply.set_result(hook_output(decision))
 
-    def _owner(self, prompt: str | None) -> _Turn | None:
-        """The turn in flight a dialog of `prompt` was posted for; None for one a turn before it left behind, or one posted between turns."""
+    @contextlib.contextmanager
+    def _dialog(self, event: str, prompt: str | None) -> Generator[_Turn | None]:
+        """A dialog the brain posted, as one unit of work `event`: a part of the turn in flight it was posted for, which it
+        yields, or else of the brain's launch, for one a turn before it left behind or one posted between turns."""
         turn = self._turn
         # [LAW:single-enforcer] the turn's own, as its Stop is: one a turn before it left behind is nobody's to answer.
-        return turn if turn is not None and not turn.answered.done() and turn.prompt == prompt else None
+        owner = turn if turn is not None and not turn.answered.done() and turn.prompt == prompt else None
+        with continuing(self._launched if owner is None else owner.began.span), unit(event, self._record):
+            annotate(prompt=prompt)
+            yield owner
 
     def _settle(self, decision: Allow | Deny) -> None:
         """Settles every permission held now: its turn is over, so no answer of the user's can reach it."""
@@ -697,9 +715,8 @@ class Brain:
             with unit("brain.elicitation", self._record):
                 fail(f"hands could not read the Elicitation hook: {error}")
             return
-        turn = self._owner(prompt)
-        with continuing(self._launched if turn is None else turn.span), unit("brain.elicitation", self._record):
-            annotate(prompt=prompt, server=server)
+        with self._dialog("brain.elicitation", prompt):
+            annotate(server=server)
 
     def _hook(self, body: bytes) -> None:
         try:
