@@ -775,8 +775,10 @@ def failures() -> tuple[list[str], int]:
 
 
 async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_once_and_the_next_turn_is_its_own(
-    tmp_path: Path, fake_claude: Path, fritter: Path
+    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Nothing was typed, so Claude Code never takes the turn, and its stop ends it once it was not taken in time.
+    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
     said, sink = failures()
@@ -795,10 +797,12 @@ async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_on
     assert (failed.outcome, failed.error) == ("failed", "OSError: jammed")
 
 
-async def test_a_permission_that_fails_unexpectedly_is_refused_fails_its_turn_and_says_so_once(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_and_says_so_once(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
+    asked: list[Asked] = []
 
-    def asks(_held: Asked) -> None:
+    def asks(held: Asked) -> None:
+        asked.append(held)
         raise RuntimeError("no voice")
 
     brain = await start(launch(tmp_path, fritter), recorded.append)
@@ -813,8 +817,11 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_fails_its_turn_an
         logger.remove(sink)
         await brain.stop()
     assert said == ["the brain's own work failed: RuntimeError('no voice')"]
+    # The user's side is told the refusal the brain heard, and the turn is stopped as an Escape stops it.
+    assert [held.decision.result() for held in asked] == [Deny(BROKEN)]
+    assert ["escape", ""] in typed(tmp_path)
     [permission] = events(recorded, "brain.permission")
-    assert (permission.outcome, permission.error) == ("failed", "RuntimeError: no voice")
+    assert (permission.outcome, permission.error, permission.facts["decision"]) == ("failed", "RuntimeError: no voice", Deny(BROKEN))
     assert not (tmp_path / "notes.txt").exists()
 
 

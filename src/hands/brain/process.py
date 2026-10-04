@@ -391,6 +391,8 @@ class _Turn:
     began: Begun
     # The tools the turn's latest request offered the model: what the brain's own setup gave it, beside hands' tools.
     offered: tuple[str, ...] = ()
+    # What broke in the brain's own work for the turn: it ends with this once Claude Code's turn is stopped.
+    broken: BaseException | None = None
 
     @property
     def prompt(self) -> str | None:
@@ -459,15 +461,29 @@ class Brain:
         """Runs on in a task of the brain's own, whoever asked for it, for `turn`, the turn in flight it was begun in."""
         task = asyncio.create_task(work)
         self._typing.add(task)
-        task.add_done_callback(self._typing.discard)
-        task.add_done_callback(lambda done: done.cancelled() or (error := done.exception()) is None or self._broke(turn, error))
+        task.add_done_callback(lambda done: self._kept(done, turn))
+
+    def _kept(self, task: "asyncio.Task[None]", turn: _Turn | None) -> None:
+        self._typing.discard(task)
+        if not task.cancelled() and (error := task.exception()) is not None:
+            self._broke(turn, error)
+
+    @contextlib.contextmanager
+    def _done_for(self, turn: _Turn | None) -> Generator[None]:
+        """The brain's own work done for `turn`, or for no turn: what it raises that nothing in it expected is `_broke`'s."""
+        try:
+            yield
+        except Exception as error:
+            self._broke(turn, error)
 
     def _broke(self, turn: _Turn | None, error: BaseException) -> None:
         """[LAW:single-enforcer] what the brain's own work raised that nothing in it expected: said once, with where it
-        came from, and the end of the turn it was done for, so its asker is answered and the turns behind it are typed."""
+        came from, and the end of the turn it was done for, stopped as an Escape stops it, so no dialog of it is left open
+        for the next turn's Return, its asker is answered, and the turns behind it are typed."""
         logger.opt(exception=error).error(f"the brain's own work failed: {error!r}")
-        if turn is not None:
-            self._over(turn, error)
+        if turn is not None and turn.broken is None:
+            turn.broken = error
+            self._keep(self._stop(turn), turn)
 
     async def _send(self, text: str, turn: _Turn) -> None:
         # [LAW:nothing-unseen] the turn is one event of the brain's own, from its typing to its end, however long its asker
@@ -503,6 +519,14 @@ class Brain:
             self._keep(self._stop(turn), turn)
 
     async def _stop(self, turn: _Turn) -> None:
+        try:
+            await self._escape(turn)
+        finally:
+            # A broken turn ends with what broke it however its stop went, even unstopped: nothing else is left to end it.
+            if turn.broken is not None:
+                self._over(turn, turn.broken)
+
+    async def _escape(self, turn: _Turn) -> None:
         # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: a turn ended
         # while its UserPromptSubmit hook is still coming would leave that hook to be taken for the next turn's.
         await asyncio.wait({turn.taken, turn.answered}, timeout=TAKE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
@@ -587,17 +611,15 @@ class Brain:
     async def _hear_hooks(self, hooks: "asyncio.Queue[_Posted]") -> None:
         while True:
             posted = await hooks.get()
-            turn = self._turn
-            try:
-                self._answer(posted, turn)
-            except Exception as error:
-                # One hook that breaks is that hook's: the hooks after it are still heard.
-                self._broke(turn, error)
+            # A hook is answered before it is heard, so one whose hearing breaks is no turn's: the hooks after it are heard.
+            with self._done_for(None):
+                self._answer(posted)
 
-    def _answer(self, posted: _Posted, turn: _Turn | None) -> None:
+    def _answer(self, posted: _Posted) -> None:
         match posted.event:
             case "PermissionRequest":
-                self._keep(self._permit(posted), turn)
+                # What breaks in its dialog is the turn's it was held for, which `_dialog` finds; anything else is no turn's.
+                self._keep(self._permit(posted), None)
             case "Elicitation":
                 # A dialog is kept shut, whatever it says.
                 posted.reply.set_result(DECLINED)
@@ -612,39 +634,43 @@ class Brain:
 
         [LAW:nothing-unseen] each is one event, however it was settled: a part of the turn it was held for, or of the
         brain's launch where no turn of the user's was in flight to ask in."""
+        # What hands could not decide is refused, however its settling ended: a dialog left open would take the next
+        # turn's Return for a yes.
+        decision: Allow | Deny = Deny(BROKEN)
         try:
-            said = Payload.parse(posted.body)
-            prompt, tool, asked = said.optional_text("prompt_id"), said.text("tool_name"), called(said)
-        except Rejected as error:
-            with unit("brain.permission", self._record):
-                fail(f"hands could not read the permission request: {error}")
-                posted.reply.set_result(hook_output(Deny(UNREAD)))
-            return
-        with self._dialog("brain.permission", prompt) as turn:
-            # What hands could not decide is refused: a dialog left open would take the next turn's Return for a yes.
-            decision: Allow | Deny = Deny(BROKEN)
             try:
-                match asked:
-                    case Permission() if turn is not None:
-                        held = Asked(asked, asyncio.get_running_loop().create_future())
-                        self._held.add(held)
-                        try:
-                            turn.asks(held)
-                            await asyncio.wait({held.decision}, timeout=PERMISSION_DEADLINE_SECONDS)
-                        finally:
-                            self._held.discard(held)
-                        held.settle(Deny(UNANSWERED))
-                        decision = held.decision.result()
-                    case Permission():
-                        decision = Deny(NOBODY)
-                    case _:
-                        # A dialog of questions or a plan is never put to the user by voice: the brain's own words ask them.
-                        decision = Deny(UNVOICED)
-                annotate(tool=tool, decision=decision)
-            finally:
-                # Answered inside its unit, however its body ended: whatever its event's writing meets, the brain's dialog
-                # is not left waiting on it.
-                posted.reply.set_result(hook_output(decision))
+                said = Payload.parse(posted.body)
+                prompt, tool, asked = said.optional_text("prompt_id"), said.text("tool_name"), called(said)
+            except Rejected as error:
+                decision = Deny(UNREAD)
+                with unit("brain.permission", self._record):
+                    fail(f"hands could not read the permission request: {error}")
+                return
+            with self._dialog("brain.permission", prompt) as turn:
+                annotate(tool=tool)
+                try:
+                    match asked:
+                        case Permission() if turn is not None:
+                            held = Asked(asked, asyncio.get_running_loop().create_future())
+                            self._held.add(held)
+                            try:
+                                turn.asks(held)
+                                await asyncio.wait({held.decision}, timeout=PERMISSION_DEADLINE_SECONDS)
+                                held.settle(Deny(UNANSWERED))
+                            finally:
+                                self._held.discard(held)
+                                # The user's side is told the refusal Claude Code is sent, and is not left waiting on it.
+                                held.settle(Deny(BROKEN))
+                            decision = held.decision.result()
+                        case Permission():
+                            decision = Deny(NOBODY)
+                        case _:
+                            # A dialog of questions or a plan is never put to the user by voice: the brain's own words ask them.
+                            decision = Deny(UNVOICED)
+                finally:
+                    annotate(decision=decision)
+        finally:
+            posted.reply.set_result(hook_output(decision))
 
     @contextlib.contextmanager
     def _dialog(self, event: str, prompt: str | None) -> Generator[_Turn | None]:
@@ -653,7 +679,7 @@ class Brain:
         turn = self._turn
         # [LAW:single-enforcer] the turn's own, as its Stop is: one a turn before it left behind is nobody's to answer.
         owner = turn if turn is not None and not turn.answered.done() and turn.prompt == prompt else None
-        with continuing(self._launched if owner is None else owner.began.span), unit(event, self._record):
+        with self._done_for(owner), continuing(self._launched if owner is None else owner.began.span), unit(event, self._record):
             annotate(prompt=prompt)
             yield owner
 
@@ -702,11 +728,14 @@ class Brain:
             self._turn = None
         if turn.answered.done():
             return
-        match outcome:
-            case BrainAnswered():
-                turn.answered.set_result(outcome)
-            case _:
-                turn.answered.set_exception(outcome)
+        # A broken turn ends with what broke it, whatever ended it: its Stop, its stop's Escape, or the brain's exit.
+        match outcome if turn.broken is None else turn.broken:
+            case BrainAnswered() as answered:
+                turn.answered.set_result(answered)
+            case failed:
+                turn.answered.set_exception(failed)
+                # Said already, by the turn's own event or by `_broke`: not again by asyncio for an asker that stopped waiting.
+                turn.answered.exception()
 
 
 async def start(launch: Launch, record: Record) -> Brain:
