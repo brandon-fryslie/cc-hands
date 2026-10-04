@@ -45,7 +45,8 @@ from hands.sessions.registry import Sessions
 from hands.voice.refocus import Refocus
 from hands.voice.sentences import SummaryStore
 from hands.voice.speech import Pushed, Tailed
-from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, VoiceConfig
+from hands.voice.backends import AnthropicBackend, ClaudeCodeBackend
+from hands.voice.pipeline import VoiceConfig
 from hands.voice.summary import SummaryFailed, aside
 from hands.sessions.wide import Fact, WideEvent, continuing, here, root, unit, within
 from hands.voice.tools import Called, Result, audited, tool

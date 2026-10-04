@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, TextIO, cast
 from loguru import logger
 
 from hands.daemon import readiness
+from hands.daemon.backend import backend
 from hands.daemon.config import Config, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
@@ -118,7 +119,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
     running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID, if it is still running, is kept rather than another started")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
-    commands.add_parser("check", help="say whether hands is set up to work here: its plugin, the claude shim on PATH, this terminal's Input Monitoring grant, and the running sessions; exits 0 only when every piece is there, 1 when one is missing, 2 when one could not be looked at")
+    commands.add_parser("check", help="say of each step of the README's install whether it is done here: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the backend's key or login, LowTalker transcribing, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
     commands.add_parser("login", help="set the brain (the claude backend of the home's config.toml) up on a home with none, or log it in again or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
@@ -365,20 +366,28 @@ async def launch(
 def reachable(home: Home, settings: Config) -> None:
     """Raises Rejected where a start on `settings` could not reach its model: the start's own check, made before the
     restart an edit asks for, so an edit naming a key or a login hands lacks is refused and outlived, not restarted on."""
-    # Imported here, as in loaded, so that `hands status` answers without loading Pipecat; an edit weighed while the
-    # start imports it waits on that import.
-    from hands.daemon.run import backend
-
     backend(settings.llm, home, os.environ)
 
 
 def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, after_crash: bool, run_start: Start) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
-    from hands.daemon.run import configured_from, run
+    from hands.daemon.run import Configured, configured_from, run
 
     path = os.environ.get("PATH", "")
-    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), lambda: survey(readiness.check(home, path, granted=True)), home, heart, record, quit_event, after_crash, os.environ, run_start)
+    # This run is hands running, and the backend it reaches is the one it was configured on.
+    running = readiness.Ready(f"hands is running here: pid {os.getpid()}")
+
+    def surveyed(read: Configured | CannotStart) -> None:
+        match read:
+            case Configured(voice=voice):
+                reached: readiness.Finding = readiness.reaching(voice.llm)
+            case CannotStart() as error:
+                # Refused on its backend or on its kept voice: the reason names which, so the line claims neither.
+                reached = readiness.Missing(f"hands cannot start on its settings: {error}")
+        survey(readiness.check(home, path, True, reached, readiness.transcription(settings.config.transcription), running))
+
+    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, quit_event, after_crash, os.environ, run_start)
 
 
 def start_indicator(home: Home) -> int:
@@ -424,7 +433,8 @@ def report(home: Home) -> int:
 
 
 def check(home: Home, granted: bool) -> int:
-    findings = readiness.check(home, os.environ.get("PATH", ""), granted)
+    reached, heard = readiness.configured(home, os.environ)
+    findings = readiness.check(home, os.environ.get("PATH", ""), granted, reached, heard, readiness.daemon(home, datetime.now(UTC)))
     wide.annotate(findings=tuple(findings))
     for finding in findings:
         print(f"{display(finding)[0]:<8} {finding.said}")

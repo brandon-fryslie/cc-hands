@@ -1,29 +1,42 @@
-"""Whether hands is set up to work here: each piece it needs, named, and found or missing.
+"""Whether hands is set up to work here: each step of the README's install, named, and done or missing.
 
-    hands check     # one line a piece; exits 0 only when every piece is there
+    hands check     # one line a step; exits 0 only when every step is done
 
-The pieces are the plugin that joins sessions to hands, the claude shim that runs them under fritter, the Input
-Monitoring grant that lets hands hear the talk key, and the running sessions themselves. `hands run` says the same
-lines as it starts, and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
+The steps, in the README's order: Claude Code from its installer; PortAudio, which the microphone opens through; the
+installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
+the plugin that joins sessions to hands; a backend with its key or login; LowTalker serving transcription; the Input
+Monitoring grant that lets hands hear the talk key; hands running; and the running sessions themselves. `hands run` says the same lines as it starts,
+and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
 """
 
+import asyncio
 import filecmp
+import io
 import os
 import re
 import shutil
 import subprocess
+import wave
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
+from importlib.metadata import version
 from pathlib import Path
+
+import aiohttp
 
 from hands.core.events import Attached
 from hands.core.session import Membership
-from hands.sessions import liveness, wrapper
+from hands.daemon.backend import backend as resolve
+from hands.daemon.config import load
+from hands.sessions import heartbeat, liveness, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import process_starts
 from hands.sessions.terminals import Terminal, terminal_processes
+from hands.voice import backends
+from hands.voice import transcription as transcribing
 
 
 @dataclass(frozen=True)
@@ -45,12 +58,127 @@ Finding = Ready | Missing | Unknown
 
 # `claude plugin list` answers in a quarter of a second; one that has not answered in this long is not going to.
 LIST_TIMEOUT_SECONDS = 20.0
+# `hands --version` imports hands' CLI, a couple of seconds; one that has not answered in this long is not going to.
+VERSION_TIMEOUT_SECONDS = 30.0
+# LowTalker answers silence at once; one still loading its model answers 503 at once.
+TRANSCRIBE_TIMEOUT_SECONDS = 10.0
+INSTALL_CLAUDE = "`curl -fsSL https://claude.ai/install.sh | bash`"
 
 
-def check(home: Home, path: str, granted: bool) -> list[Finding]:
-    """Every piece, in the order a user sets them up. `path` is the PATH sessions are started from; `granted`, this terminal's grant."""
-    # [LAW:dataflow-not-control-flow] every piece is looked at every time: one that is missing hides none after it.
-    return [plugin(path), shim(home, path), grant(granted), sessions(home, path)]
+def check(home: Home, path: str, granted: bool, reached: Finding, heard: Finding, running: Finding) -> list[Finding]:
+    """Every step, in the README's order. `path` is the PATH sessions are started from; `granted`, this terminal's grant;
+    `reached`, whether the settings' backend has its key or login; `heard`, whether their transcription server
+    transcribes; `running`, whether hands is up."""
+    # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
+    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), reached, heard, grant(granted), running, sessions(home, path)]
+
+
+def claude(path: str) -> Finding:
+    """Whether this PATH has a Claude Code of its own, apart from any hands shim, installed as its installer puts it."""
+    match claude_code(wrapper.real_claude(path)):
+        case Unfindable(said):
+            return Missing(f"no Claude Code that hands can join its sessions of: {said}. Claude Code's installer puts it in: {INSTALL_CLAUDE}")
+        case executable:
+            return Ready(f"Claude Code is installed: {executable}")
+
+
+def portaudio() -> Finding:
+    """Whether PyAudio, which hands opens the microphone through, can load Homebrew's PortAudio."""
+    try:
+        import pyaudio
+    except ImportError as error:
+        return Missing(f"PyAudio cannot load PortAudio ({error}), so hands cannot open the microphone: `brew install portaudio`")
+    return Ready(f"PortAudio is there for the microphone: {pyaudio.get_portaudio_version_text()}")
+
+
+def installed(path: str) -> Finding:
+    """Whether `hands` on this PATH, which Claude Code runs for the plugin's hooks and skills, is this hands."""
+    this = f"hands {version('hands')}"
+    found = shutil.which("hands", path=path)
+    if found is None:
+        return Missing(
+            f"this PATH has no `hands`, so Claude Code cannot run `hands plugin` and no session gets hands' hooks: "
+            f"`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH"
+        )
+    try:
+        said = subprocess.run([found, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=VERSION_TIMEOUT_SECONDS)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        return Unknown(f"cannot ask {found} which hands it is: {error}")
+    if said.returncode != 0:
+        return Unknown(f"`{found} --version` failed ({said.returncode}), so which hands it is is unknown: {said.stderr.strip()}")
+    # [LAW:one-source-of-truth] the plugin's hooks are whichever hands Claude Code finds, so one that is not this hands
+    # is said here, where this hands' own lines would otherwise vouch for it.
+    if said.stdout.strip() != this:
+        return Missing(f"`hands` on this PATH, {found}, is {said.stdout.strip()}, not this {this}, so sessions run its hooks: put this one first on PATH, or install it again")
+    return Ready(f"`hands` on this PATH is {found}, {this}: Claude Code runs it for the plugin in every session")
+
+
+def configured(home: Home, environment: Mapping[str, str]) -> tuple[Finding, Finding]:
+    """Whether the backend the home's config.toml names has the key or the login it reaches its model with, and whether
+    its transcription server transcribes."""
+    try:
+        config = load(home).config
+    except Rejected as error:
+        return Missing(f"hands cannot read its settings: {error}"), Unknown("which server transcribes is in the settings hands cannot read")
+    try:
+        reached: Finding = reaching(resolve(config.llm, home, environment))
+    except Rejected as error:
+        reached = Missing(f"hands has no model to talk with: {error}")
+    except OSError as error:
+        # The keychain or the brain's claude could not be asked, which says nothing of whether they hold a key or a login.
+        reached = Unknown(f"cannot tell whether the [llm] backend can reach its model: {error}")
+    return reached, transcription(config.transcription)
+
+
+def reaching(reached: backends.LLMBackend) -> Ready:
+    """What a backend that has its key or login reaches, never its key."""
+    match backends.account(reached):
+        case None:
+            return Ready(f"the [llm] backend reaches {reached.model} at {backends.server(reached)} with its key")
+        case account:
+            return Ready(f"the brain is logged in as {account}, and reaches {reached.model}")
+
+
+def transcription(url: str) -> Finding:
+    """Whether the transcription server at `url` transcribes: a quarter second of silence, uploaded as the voice uploads
+    a hold, comes back as segments, which LowTalker gives none of."""
+    silence = io.BytesIO()
+    with wave.open(silence, "wb") as written:
+        written.setnchannels(1)
+        written.setsampwidth(2)
+        written.setframerate(16_000)
+        written.writeframes(bytes(8_000))
+    # [LAW:no-silent-failure] what the server said back is said, so a refusal names its own cause.
+    try:
+        asyncio.run(transcribing.segments(url, silence.getvalue(), "silence.wav", None, TRANSCRIBE_TIMEOUT_SECONDS))
+    except transcribing.Refused as refused:
+        if refused.status == 503:
+            return Missing(f"the transcription server at {url} is not ready (503: {refused.refusal}): LowTalker answers once its menu says the model is ready")
+        return Missing(f"the transcription server at {url} does not transcribe a hold: {refused}")
+    except transcribing.TranscriptionFailed as failed:
+        return Missing(f"the server at {url} answered a hold with no transcription the voice can read: {failed}")
+    except aiohttp.ClientConnectorError as error:
+        return Missing(
+            f"nothing transcribes at {url} ({error.os_error}), so hands cannot hear what is said: install LowTalker's network build "
+            f"(https://github.com/brandon-fryslie/low-talker) and switch Serve Transcription on in its menu"
+        )
+    except (TimeoutError, aiohttp.ClientError, OSError) as error:
+        # A connect or an answer that timed out is a server that may be there, slow: not one known to be missing.
+        return Unknown(f"cannot tell whether {url} transcribes: {type(error).__name__}: {error}")
+    return Ready(f"the transcription server at {url} transcribes a hold")
+
+
+def daemon(home: Home, now: datetime) -> Finding:
+    """Whether hands is running, from its heartbeat."""
+    verdict = heartbeat.look(home.status, now)
+    said = heartbeat.describe(verdict, now)
+    match verdict:
+        case heartbeat.Up():
+            return Ready(said)
+        case heartbeat.Unreadable():
+            return Unknown(said)
+        case heartbeat.NeverRan() | heartbeat.Down() | heartbeat.Unresponsive() | heartbeat.Stopped() | heartbeat.Refused():
+            return Missing(f"{said}: `hands run`, in a terminal that has the Input Monitoring grant")
 
 
 def plugin(path: str) -> Finding:

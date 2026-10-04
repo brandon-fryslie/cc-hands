@@ -4,6 +4,76 @@ Hands-free control of Claude Code. You speak; an intermediary agent cleans up wh
 said, types it into the right session, watches what comes back, and tells you about it.
 It's your hands when your own hands are otherwise occupied.
 
+## Installing on a new Mac
+
+hands runs on macOS on Apple silicon. These steps take a Mac with none of it to a spoken
+turn, in this order. `hands check` says of each one whether it is done and, of one that
+is not, what does it; it exits 0 only when every step is done.
+
+1. Claude Code, from its own installer:
+
+   ```
+   curl -fsSL https://claude.ai/install.sh | bash
+   ```
+
+2. Homebrew's PortAudio, which the microphone is opened through, and uv:
+
+   ```
+   brew install portaudio
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+3. hands, from a [release](https://github.com/brandon-fryslie/cc-hands/releases), with the
+   versions it was tested on. Set `version` to the newest release's number:
+
+   ```
+   version=X.Y.Z
+   release=https://github.com/brandon-fryslie/cc-hands/releases/download/v$version
+   uv tool install --python 3.12 --constraints $release/constraints.txt $release/hands-$version-py3-none-macosx_12_0_arm64.whl
+   uv tool update-shell       # puts ~/.local/bin, where hands is, on PATH; open a new terminal after
+   ```
+
+4. The `claude` that starts every session under fritter, first on `PATH`
+   ([Wrapping every session](#wrapping-every-session)):
+
+   ```
+   hands install-fritter
+   echo 'export PATH="$HOME/.hands/bin:$PATH"' >> ~/.zshrc     # then open a new terminal
+   ```
+
+5. The plugin, whose hooks join every session to hands. Claude Code shows you the command
+   `hands plugin` and asks you to accept it ([Installing the hooks](#installing-the-hooks)):
+
+   ```
+   claude plugin marketplace add brandon-fryslie/cc-hands
+   claude plugin install hands@cc-hands
+   ```
+
+6. A model to talk with. The default is Claude Sonnet 5 on Anthropic's API, keyed by
+   `ANTHROPIC_API_KEY` or, when that is not set, by the keychain's `HANDS_LLM_ANT_KEY`:
+
+   ```
+   security add-generic-password -s HANDS_LLM_ANT_KEY -a "$USER" -w     # asks for the key
+   ```
+
+   Or the brain, on a Claude subscription: `backend = "claude"` under `[llm]` in
+   `~/.hands/config.toml`, then `hands login`. The other backends are under
+   [Shape](#shape).
+
+7. [LowTalker](https://github.com/brandon-fryslie/low-talker)'s network build, which
+   transcribes what you say, with Serve Transcription switched on in its menu.
+
+8. The Input Monitoring grant for the terminal app hands runs in, so it hears the talk
+   key from other apps: System Settings > Privacy & Security > Input Monitoring, then
+   restart that app. `hands run` asks macOS to show the prompt when the grant is missing.
+
+9. hands itself, in that terminal; then hold Right Shift in any app to talk:
+
+   ```
+   hands run
+   hands check        # in another terminal: every line ok
+   ```
+
 ## The intermediary
 
 The intermediary makes the workflow eyes-free as well as hands-free: a full
@@ -248,6 +318,9 @@ uv run python -m hands.sessions.hookconfig > src/hands/sessions/plugin/hooks/hoo
 
 ## Running
 
+From a checkout, every command runs through uv; an installed hands is the same command
+without `uv run`.
+
 ```
 uv sync
 uv run hands run                        # the backend ~/.hands/config.toml names; hold Right Shift in any app to talk, release to send; q in its terminal quits
@@ -263,12 +336,16 @@ make check                              # pytest, pyright, and fritter's Go test
 uv run python evals/intermediary.py    # conversations through the intermediary's prompt and tools; needs the model to be up
 ```
 
-`hands check` looks at each piece hands needs and says it is there or what puts it
-there: the plugin, installed and enabled; `claude` on this `PATH` being hands' shim; this
-terminal's Input Monitoring grant; each running session hands knows of that cannot be
-typed into; and each running session hands has no record of, such as one started before
-the plugin was installed; both by its directory and pid. `hands run` says the same lines as it starts. An
-up daemon is not a working hands: `hands status` says only whether the daemon is running.
+`hands check` looks at each step of [Installing on a new Mac](#installing-on-a-new-mac)
+and says it is done or what does it: the native `claude` on this `PATH`; PortAudio;
+`hands` on this `PATH` being this hands, since Claude Code runs it for the plugin;
+`claude` on this `PATH` being hands' shim; the plugin, installed and enabled; the
+backend's key or login; the transcription server transcribing a quarter second of
+silence; this terminal's Input Monitoring grant; hands running; each running session hands
+knows of that cannot be typed into; and each running session hands has no record of, such
+as one started before the plugin was installed; both by its directory and pid. `hands run`
+says the same lines as it starts, the backend as it reached it. An up daemon is not a
+working hands: `hands status` says only whether the daemon is running.
 
 `hands run` needs the Input Monitoring grant for the terminal app it runs in (System Settings > Privacy &
 Security > Input Monitoring) to hear Right Shift from other apps; without it, it names the grant and exits.

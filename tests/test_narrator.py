@@ -28,7 +28,7 @@ from hands.core.pending import Finished, News, Pending
 from hands.voice.narrator import Recount, Recounts, narrate, recount
 from hands.voice.speech import REPLY_SHOWN, Names, Narrated, Pushed, Tailed, Telling, Told, Unprompted, frames, sent, told
 from hands.voice.utterance import Utterance, Utterances, Uttered, Uttering
-from hands.voice.pipeline import AnthropicBackend, OpenAICompatibleBackend
+from hands.voice.backends import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.summary import SummaryFailed, summariser
 
 from conftest import ServeChat

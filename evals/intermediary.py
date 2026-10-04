@@ -63,12 +63,13 @@ from pipecat.services.openai.llm import OpenAILLMService
 from hands.core.spoken import spoken
 from hands.sessions.home import Home, default_home
 from hands.daemon.config import load
-from hands.daemon.run import backend as backend_of
+from hands.daemon.backend import backend as backend_of
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
 from hands.voice.briefing import briefing
 from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION
-from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, LLMBackend, OpenAICompatibleBackend, VoiceConfig, build_llm
+from hands.voice.backends import AnthropicBackend, ClaudeCodeBackend, LLMBackend, OpenAICompatibleBackend
+from hands.voice.pipeline import VoiceConfig, build_llm
 from hands.voice.sentences import SummaryStore
 from hands.voice.narrator import Recounts
 from hands.voice.player import Player

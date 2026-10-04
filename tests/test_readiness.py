@@ -1,6 +1,8 @@
 """`hands check`: each piece hands needs, found or named as missing, through the same edges a user's machine has."""
 
 import contextlib
+import http.server
+import threading
 import fcntl
 import json
 import os
@@ -10,8 +12,12 @@ import socket
 import subprocess
 import tempfile
 import termios
-from collections.abc import Generator, Iterator
+import sys
+from collections.abc import Callable, Generator, Iterator
+from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -19,13 +25,14 @@ from hands.core.session import Membership, SessionId
 from hands.daemon import readiness
 from hands.daemon.cli import main
 from hands.daemon.readiness import Missing, Ready, Unknown
-from hands.sessions import liveness, wrapper
+from hands.sessions import audit, heartbeat, liveness, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.terminals import Terminal
 from hands.sessions.wrapper import shim_script
+from hands.voice.backends import ClaudeCodeBackend
 
 
 @pytest.fixture
@@ -388,34 +395,334 @@ def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: 
     assert isinstance(found, Unknown) and "sysctl refused" in found.said
 
 
+# Claude Code
+
+
+def test_a_native_claude_on_path_is_ready(root: Path) -> None:
+    found = readiness.claude(installed(root))
+    assert found == Ready(f"Claude Code is installed: {root / 'install' / '9.9.9'}")
+
+
+def test_no_claude_on_path_is_missing_and_names_its_installer(root: Path) -> None:
+    found = readiness.claude(f"{root / 'empty'}:/usr/bin:/bin")
+    assert isinstance(found, Missing) and "no `claude` of its own" in found.said and "https://claude.ai/install.sh" in found.said
+
+
+def test_a_claude_that_is_a_script_is_missing_and_names_the_native_one(root: Path) -> None:
+    executable(root / "real" / "claude", "#!/bin/sh\n")
+    found = readiness.claude(f"{root / 'real'}:/usr/bin:/bin")
+    assert isinstance(found, Missing) and "is a script" in found.said and "https://claude.ai/install.sh" in found.said
+
+
+# PortAudio
+
+
+def test_portaudio_that_pyaudio_loads_is_ready() -> None:
+    found = readiness.portaudio()
+    assert isinstance(found, Ready) and "PortAudio" in found.said
+
+
+def test_a_pyaudio_that_cannot_load_is_missing_and_names_homebrews_portaudio(monkeypatch: pytest.MonkeyPatch) -> None:
+    # As when Homebrew's portaudio is gone: importing PyAudio's extension fails.
+    monkeypatch.setitem(sys.modules, "pyaudio", None)
+    found = readiness.portaudio()
+    assert isinstance(found, Missing) and "`brew install portaudio`" in found.said
+
+
+# hands on PATH
+
+
+def hands_printing(root: Path, said: str, code: int = 0) -> str:
+    """A PATH whose `hands --version` prints said and exits code."""
+    executable(root / "tools" / "hands", f"#!/bin/sh\necho '{said}'\nexit {code}\n")
+    return f"{root / 'tools'}:/usr/bin:/bin"
+
+
+def test_this_hands_on_path_is_ready(root: Path) -> None:
+    found = readiness.installed(hands_printing(root, f"hands {version('hands')}"))
+    assert isinstance(found, Ready) and str(root / "tools" / "hands") in found.said
+
+
+def test_no_hands_on_path_is_missing_and_says_how_uv_puts_it_there(root: Path) -> None:
+    found = readiness.installed(f"{root / 'empty'}:/usr/bin:/bin")
+    assert isinstance(found, Missing) and "`hands plugin`" in found.said and "`uv tool update-shell`" in found.said
+
+
+def test_another_hands_on_path_is_missing_naming_both(root: Path) -> None:
+    # As after an upgrade that left an older install ahead on PATH: sessions would run its hooks.
+    found = readiness.installed(hands_printing(root, "hands 0.0.1"))
+    assert isinstance(found, Missing) and "is hands 0.0.1, not this hands" in found.said
+
+
+def test_a_hands_that_cannot_say_its_version_is_unknown(root: Path) -> None:
+    found = readiness.installed(hands_printing(root, "broken", 3))
+    assert isinstance(found, Unknown) and "(3)" in found.said
+
+
+# The backend
+
+
+def keyed(home: Home, transcription: str = "http://127.0.0.1:9/v1") -> None:
+    home.root.mkdir(parents=True, exist_ok=True)
+    home.config.write_text(f'[llm]\nbackend = "openai"\n\n[transcription]\nurl = "{transcription}"\n')
+
+
+def test_a_backend_with_its_key_is_ready_and_never_says_the_key(root: Path) -> None:
+    home = Home(root / "home")
+    keyed(home)
+    found, _ = readiness.configured(home, {"OPENAI_API_KEY": "sk-secret"})
+    assert isinstance(found, Ready) and "with its key" in found.said and "sk-secret" not in found.said
+
+
+def test_a_backend_without_its_key_is_missing_and_names_it(root: Path) -> None:
+    home = Home(root / "home")
+    keyed(home)
+    found, _ = readiness.configured(home, {})
+    assert isinstance(found, Missing) and "OPENAI_API_KEY is not set" in found.said
+
+
+def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> None:
+    home = Home(root / "home")
+    home.root.mkdir(parents=True)
+    home.config.write_text("[llm\n")
+    reached, heard = readiness.configured(home, {})
+    assert isinstance(reached, Missing) and str(home.config) in reached.said
+    # Where the server is was never read: the step is not known missing, and is not said twice.
+    assert heard == Unknown("which server transcribes is in the settings hands cannot read")
+
+
+def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path) -> None:
+    home = Home(root / "home")
+    keyed(home)
+    found, _ = readiness.configured(home, {"OPENAI_API_KEY": "k", "HANDS_DEBUG": "1"})
+    assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
+
+
+def test_a_backend_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(root / "home")
+    keyed(home)
+
+    def unspawnable(*_: object) -> object:
+        raise PermissionError("claude is not executable")
+
+    monkeypatch.setattr(readiness, "resolve", unspawnable)
+    found, _ = readiness.configured(home, {})
+    assert isinstance(found, Unknown) and "claude is not executable" in found.said
+
+
+def test_the_brain_says_its_account_and_never_a_key() -> None:
+    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account="brain@example.com"))
+    assert found == Ready("the brain is logged in as brain@example.com, and reaches claude-sonnet-5")
+
+
+# Transcription
+
+
+class Transcriber(http.server.BaseHTTPRequestHandler):
+    """A transcription server answering every upload with the server's status and text."""
+
+    def do_POST(self) -> None:
+        server = cast(Answering, self.server)
+        length = int(self.headers["Content-Length"])
+        server.uploads.append((self.path, self.rfile.read(length)))
+        self.send_response(server.status)
+        self.end_headers()
+        self.wfile.write(server.text.encode())
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+class Answering(http.server.ThreadingHTTPServer):
+    def __init__(self, status: int, text: str) -> None:
+        super().__init__(("127.0.0.1", 0), Transcriber)
+        self.status = status
+        self.text = text
+        self.uploads: list[tuple[str, bytes]] = []
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server_address[1]}/v1"
+
+
+@contextlib.contextmanager
+def serving(status: int = 200, text: str = '{"text": "", "segments": []}') -> Generator[Answering]:
+    server = Answering(status, text)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_server_that_transcribes_silence_is_ready_and_was_sent_a_wav() -> None:
+    with serving() as server:
+        assert readiness.transcription(server.url) == Ready(f"the transcription server at {server.url} transcribes a hold")
+    [(path, body)] = server.uploads
+    assert path == "/v1/audio/transcriptions" and b"RIFF" in body and b'name="model"' in body
+
+
+def test_nothing_listening_is_missing_and_names_lowtalker() -> None:
+    found = readiness.transcription("http://127.0.0.1:9/v1")
+    assert isinstance(found, Missing) and "low-talker" in found.said and "Serve Transcription" in found.said
+
+
+def test_a_server_still_loading_its_model_is_missing_and_says_so() -> None:
+    with serving(503, "model not ready") as server:
+        found = readiness.transcription(server.url)
+    assert isinstance(found, Missing) and "not ready (503: " in found.said and "model not ready" in found.said
+
+
+def test_a_server_that_refuses_a_hold_is_missing_and_says_its_answer() -> None:
+    with serving(429, "busy") as server:
+        found = readiness.transcription(server.url)
+    assert isinstance(found, Missing) and "answered 429" in found.said and "busy" in found.said
+
+
+def test_a_server_answering_with_no_segments_is_missing_as_every_hold_would_fail() -> None:
+    with serving(200, '{"text": ""}') as server:
+        found = readiness.transcription(server.url)
+    assert isinstance(found, Missing) and "not verbose_json" in found.said
+
+
+def test_a_server_that_does_not_answer_in_time_is_unknown_not_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Accepts the connection and never answers.
+    listening = socket.create_server(("127.0.0.1", 0))
+    monkeypatch.setattr(readiness, "TRANSCRIBE_TIMEOUT_SECONDS", 0.2)
+    with listening:
+        found = readiness.transcription(f"http://127.0.0.1:{listening.getsockname()[1]}/v1")
+    assert isinstance(found, Unknown) and "TimeoutError" in found.said
+
+
+# hands running
+
+
+def beating(home: Home) -> None:
+    home.root.mkdir(parents=True, exist_ok=True)
+    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
+    heart.beat("running", None, 0, listening=True, deaf=False)
+
+
+def test_hands_up_is_ready(root: Path) -> None:
+    home = Home(root / "home")
+    beating(home)
+    found = readiness.daemon(home, datetime.now(UTC))
+    assert isinstance(found, Ready) and found.said.startswith("hands is up")
+
+
+def test_hands_that_never_ran_is_missing_and_says_to_run_it(root: Path) -> None:
+    found = readiness.daemon(Home(root / "home"), datetime.now(UTC))
+    assert isinstance(found, Missing) and "hands has not run" in found.said and "`hands run`" in found.said
+
+
+def test_a_heartbeat_hands_cannot_read_is_unknown(root: Path) -> None:
+    home = Home(root / "home")
+    home.root.mkdir(parents=True)
+    home.status.write_text("not json")
+    assert isinstance(readiness.daemon(home, datetime.now(UTC)), Unknown)
+
+
 # hands check
 
 
-@pytest.mark.parametrize(
-    ("granted", "plugins", "code", "marks"),
-    [
-        (True, [listed(PLUGIN_ID, True)], 0, ["ok", "ok", "ok", "ok"]),
-        (False, [listed(PLUGIN_ID, True)], 1, ["ok", "ok", "missing", "ok"]),
-        (True, "unreadable", 2, ["unknown", "ok", "ok", "ok"]),
-        (False, "unreadable", 1, ["unknown", "ok", "missing", "ok"]),
-    ],
-    ids=["ready", "missing", "unknown", "missing-outranks-unknown"],
-)
-def test_check_says_every_piece_and_exits_by_the_worst(
-    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], granted: bool, plugins: object, code: int, marks: list[str]
-) -> None:
+STEPS = ["claude", "portaudio", "hands", "shim", "plugin", "backend", "transcription", "grant", "running", "sessions"]
+
+
+@pytest.fixture
+def lowtalker() -> Iterator[Answering]:
+    with serving() as server:
+        yield server
+
+
+def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: object, transcriber: Answering) -> Home:
+    """A home on which every step of the README is done, with `plugins` listed by its claude."""
     home = Home(root / "home")
     home.bin.mkdir(parents=True)
     shutil.copy2(fritter, home.bin / "fritter")
     executable(home.shim, shim_script(home.bin / "fritter", home.wire))
-    monkeypatch.setenv("PATH", f"{home.bin}:{claude_listing(root, plugins)}")
-    monkeypatch.setattr("hands.voice.talkkey.granted", lambda: granted)
+    keyed(home, transcriber.url)
+    beating(home)
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    hands_printing(root, f"hands {version('hands')}")
+    monkeypatch.setenv("PATH", f"{home.bin}:{root / 'tools'}:{claude_listing(root, plugins)}")
+    monkeypatch.setattr("hands.voice.talkkey.granted", lambda: True)
 
     # The fake claude is a script, whose sessions cannot be told; take it for a native one that runs nowhere.
     def native(_claude: Path | None) -> Path:
         return root / "versions" / "9.9.9"
 
     monkeypatch.setattr(readiness, "claude_code", native)
-    assert main(["--home", str(home.root), "check"]) == code
-    lines = capsys.readouterr().out.splitlines()
-    assert [line.split()[0] for line in lines] == marks
+    return home
+
+
+def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
+    lines = [line for line in capsys.readouterr().out.splitlines() if not line.startswith(" ")]
+    assert len(lines) == len(STEPS)
+    return {step: line.split()[0] for step, line in zip(STEPS, lines)}
+
+
+def test_every_step_done_is_ok_and_exits_0(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], lowtalker: Answering) -> None:
+    home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)], lowtalker)
+    assert main(["--home", str(home.root), "check"]) == 0
+    assert marks(capsys) == dict.fromkeys(STEPS, "ok")
+
+
+# Each undoes one step of a home set_up made.
+type Undo = Callable[[Path, Home, pytest.MonkeyPatch], None]
+
+
+def no_hands(root: Path, _home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+    (root / "tools" / "hands").unlink()
+
+
+def unshimmed(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+    home.shim.unlink()
+
+
+def no_plugin(root: Path, _home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+    claude_listing(root, [])
+
+
+def no_key(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY")
+
+
+def ungranted(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
+
+
+def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+    home.status.unlink()
+
+
+def not_transcribing(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+    keyed(home)
+
+
+@pytest.mark.parametrize(
+    ("undo", "step"),
+    [(no_hands, "hands"), (unshimmed, "shim"), (no_plugin, "plugin"), (no_key, "backend"), (not_transcribing, "transcription"), (ungranted, "grant"), (not_running, "running")],
+    ids=["hands", "shim", "plugin", "backend", "transcription", "grant", "running"],
+)
+def test_a_home_missing_one_step_names_that_step_and_exits_1(
+    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], lowtalker: Answering, undo: Undo, step: str
+) -> None:
+    home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)], lowtalker)
+    undo(root, home, monkeypatch)
+    assert main(["--home", str(home.root), "check"]) == 1
+    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), step: "missing"}
+    # The command's event carries every step's finding, in the same order.
+    [event] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
+    assert [finding["type"] for finding in event["facts"]["findings"]] == ["Missing" if each == step else "Ready" for each in STEPS]
+
+
+def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
+    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], lowtalker: Answering
+) -> None:
+    home = set_up(root, fritter, monkeypatch, "unreadable", lowtalker)
+    assert main(["--home", str(home.root), "check"]) == 2
+    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), "plugin": "unknown"}
+    monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
+    assert main(["--home", str(home.root), "check"]) == 1
+    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), "plugin": "unknown", "grant": "missing"}
