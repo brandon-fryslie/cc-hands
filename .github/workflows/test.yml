@@ -5,9 +5,12 @@ name: test
 on:
   pull_request:
     branches: [master]
+  # A cache a PR saves is that PR's alone; the runs on master save the ones every PR restores.
+  push:
+    branches: [master]
 
 concurrency:
-  group: test-${{ github.head_ref }}
+  group: test-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
