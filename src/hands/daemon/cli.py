@@ -401,7 +401,10 @@ def recall_moments(home: Home, words: Sequence[str], most: int) -> int:
     with exporting(settings.config.collector, audit_log.record) as record, wide.unit("memory.recall", record, ("lines", "unreadable", "moments", "matched", "printed")):
         wide.annotate(words=tuple(words), most=most)
         found = recall.recall(home.audit, words, most)
+        wide.annotate(since=found.since)
         wide.count(lines=found.lines, unreadable=found.unreadable, moments=found.found, matched=found.matched, printed=len(found.moments))
+        # Retention keeps the log by size, so how far back it reaches is said, and an empty answer is bounded by it.
+        print("The log is empty." if found.since is None else f"The log reaches back to {found.since.astimezone():%a %d %b %H:%M}.")
         for moment in found.moments:
             # One line a moment, so a reader can grep it again; the time is this Mac's, as the user says it.
             print(f"{moment.at.astimezone():%a %d %b %H:%M} {moment.heading}: {' '.join(moment.text.split())}".translate(VISIBLE))

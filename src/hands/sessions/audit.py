@@ -63,6 +63,14 @@ class Typing:
 
 
 @dataclass(frozen=True)
+class TypingFailed:
+    """What a Typing line said was about to be typed, and why it was not: the send never reached its session."""
+
+    effect: Type[Input]
+    reason: str
+
+
+@dataclass(frozen=True)
 class EffectFailed:
     effect: Effect
     error: str
@@ -617,6 +625,7 @@ Entry = (
     | Applied
     | Performed
     | Typing
+    | TypingFailed
     | EffectFailed
     | LLMChosen
     | SettingsRead
@@ -683,7 +692,7 @@ def level(entry: Entry) -> Level:
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | EffectFailed() | Exported(error=str()) | BacklogUnread() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
+        case Failure() | TypingFailed() | EffectFailed() | Exported(error=str()) | BacklogUnread() | PhoneRefused() | PhoneLeft(reason="failed") | PhoneUnreached(reason="failed"):
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)

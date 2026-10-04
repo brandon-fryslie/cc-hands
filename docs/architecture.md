@@ -1443,7 +1443,8 @@ A draft is staged, amended, discarded, and sent with `send_draft`, as the Type e
 `Key` (`hands.core.keyboard`). fritter holds the session's
 pseudo-terminal and `Typist` types into it over a unix socket, so there is no window to
 find, no focus to steal and no macOS permission to ask for. A send appends a `Typing`
-audit record before it types, so "did it send something I didn't approve" is answered by
+audit record before it types, and a `TypingFailed` with the same effect when the typing
+fails, so "did it send something I didn't approve", and "did it arrive", are answered by
 one file.
 
 ## The summary store
