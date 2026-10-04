@@ -61,7 +61,7 @@ from hands.core.wire import (
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Entry
-from hands.sessions.wide import WideEvent
+from hands.sessions.wide import WideEvent, root
 from hands.voice.player import Mark
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
@@ -979,7 +979,7 @@ RESETS = datetime(2026, 9, 30, 18, 0, tzinfo=UTC).timestamp()
 
 def unreached(exchange: str) -> Exchanged:
     """The proxy's record of a request it could not get to the API, told before it answers the brain 502."""
-    return Exchanged(exchange, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("ClientConnectorError: no route", 0.0), True, None)
+    return Exchanged(exchange, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("ClientConnectorError: no route", 0.0), True, root())
 
 
 @pytest.mark.parametrize(

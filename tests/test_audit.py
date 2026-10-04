@@ -39,7 +39,7 @@ from hands.sessions.audit import (
 from hands.sessions.delta import NoChanges
 from hands.sessions.home import Home
 from hands.sessions.model_facts import ModelFailed
-from hands.sessions.wide import WideEvent, annotate, fail, unit
+from hands.sessions.wide import WideEvent, annotate, fail, root, unit
 from hands.sessions.registry import EFFECT_KINDS, Performed, Sessions
 from hands.voice.tools import Called, audited, tool
 from hands.core.status import Busy, Report, Stamp
@@ -157,7 +157,7 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
         Unreached("ClientConnectorError: no route", 0.0),
         Uncopied("the copy broke off", 0.0),
     ):
-        log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False, None))
+        log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False, root()))
     assert [(line["type"], line["level"]) for line in lines(path)] == [
         ("Failure", "error"),
         ("WideEvent", "info"),

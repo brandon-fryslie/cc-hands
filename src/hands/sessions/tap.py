@@ -24,6 +24,7 @@ from hands.sessions.audit import CopiesLost, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.replies import Reader, reply_reader, sent_of, shielded
 from hands.sessions.server import claim_socket
+from hands.sessions.wide import root
 
 # The longest line a copy may hold: a request carries a session's whole history, base64 in JSON.
 LINE_LIMIT = 1 << 28
@@ -158,7 +159,7 @@ async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], 
         record(CopiesLost(sent.session, request.lost))
     tell(sent)
     reply = await _reply(reader, sent.kind, lambda event: tell(Heard(sent.exchange, event)), clock)
-    tell(Exchanged(sent.exchange, sent.session, sent.kind, request.method, request.path, len(request.body), (), request.at, request.at, reply, False, None))
+    tell(Exchanged(sent.exchange, sent.session, sent.kind, request.method, request.path, len(request.body), (), request.at, request.at, reply, False, root()))
 
 
 def _opened(raw: bytes) -> tuple[Request, Sent]:

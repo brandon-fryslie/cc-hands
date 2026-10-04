@@ -41,6 +41,7 @@ from hands.core.wire import (
     edited,
 )
 from hands.sessions.replies import reply_reader, sent_of, shielded, spent
+from hands.sessions.wide import root
 
 # Headers that describe one hop's connection rather than the request or reply, so each hop sets its own.
 HOP_BY_HOP = frozenset({"connection", "content-length", "host", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"})
@@ -136,8 +137,8 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
         def exchanged(changes: tuple[Change, ...], reply: Reached | Unreached | Held, final: bool) -> Exchanged:
             return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply, final, span)
 
-        # A held request is no part of any unit's trace: the API never saw it.
-        span = routed.span if isinstance(routed, Send) else None
+        # A request made for no unit of work, a held one among them, is the root of a trace of its own.
+        span = routed.span if isinstance(routed, Send) and routed.span is not None else root()
         match routed:
             case Hold(said=said):
                 content_type, answer = _held(parsed, said)

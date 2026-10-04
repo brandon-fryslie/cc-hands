@@ -900,9 +900,10 @@ class Exchanged:
     reply: Reached | Unreached | Held | Uncopied
     # The client was answered the proxy's own refusal, told final (x-should-retry: false), in place of the API's answer.
     final: bool
-    # [LAW:one-source-of-truth] the exchange's own span in the trace of the unit of work it was made for, so this record
-    # is that unit's part and no second one is kept of it; None for a request made as part of none.
-    span: Span | None
+    # [LAW:one-source-of-truth] the exchange's own span: in the trace of the unit of work it was made for, so this record
+    # is that unit's part and no second one is kept of it, or the root of a trace of its own for a request made as part of
+    # none, so every exchange is in the trace record.
+    span: Span
 
 
 Observed = Sent | Heard | Answering | Exchanged

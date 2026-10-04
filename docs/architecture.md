@@ -1053,7 +1053,8 @@ Its `waited_ms` is how long the user waited from letting go of the key to the tu
 turn together are timed from the last of them. Each call the brain's replies made (`tool.call`) is a child event under
 it, timed as the stage heard it on the wire. Each model round trip is the proxy's own `Exchanged` line, which carries a
 span inside the turn's (`span`), and reaches the collector as a `proxy.exchange` span under it: no second record of a
-round trip is kept. A turn hands stopped mid-way still emits its event, cancelled, with what it had done.
+round trip is kept. An exchange made for no unit of work, a wrapped session's through the tap, the brain's outside a
+turn, or one hands held, is a `proxy.exchange` span at the root of a trace of its own. A turn hands stopped mid-way still emits its event, cancelled, with what it had done.
 The event also says what was typed into the brain (`asked`), and, where the user barged in, the calls running then
 (`running`) and whether the brain was told to stop at once (`stopped`).
 

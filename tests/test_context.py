@@ -38,7 +38,7 @@ from hands.core.wire import (
     edited,
 )
 from hands.sessions.audit import Entry
-from hands.sessions.wide import WideEvent
+from hands.sessions.wide import WideEvent, root
 
 BRAIN = SessionId("brain")
 MARKED = {"type": "ephemeral"}
@@ -153,7 +153,7 @@ def sent(body: object, kind: Kind | None = None, session: SessionId = BRAIN) -> 
 
 def ended(kind: Kind = MainTurn(None)) -> Exchanged:
     message = Message("m", "claude-opus-5-5", (Text("done"),), "end_turn", {})
-    return Exchanged("x", BRAIN, kind, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Streamed(message)), False, None)
+    return Exchanged("x", BRAIN, kind, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Streamed(message)), False, root())
 
 
 class Rig:

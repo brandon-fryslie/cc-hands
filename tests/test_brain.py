@@ -46,7 +46,7 @@ from hands.voice.sentences import SummaryStore
 from hands.voice.speech import Pushed, Tailed
 from hands.voice.pipeline import AnthropicBackend, ClaudeCodeBackend, VoiceConfig
 from hands.voice.summary import SummaryFailed, aside
-from hands.sessions.wide import Fact, WideEvent, continuing, here, unit, within
+from hands.sessions.wide import Fact, WideEvent, continuing, here, root, unit, within
 from hands.voice.tools import Called, Result, audited, tool
 from hands.voice import voices
 
@@ -212,7 +212,7 @@ def running(tmp: Path) -> list[str]:
 
 def answered(session: str, words: str, stop: str = "end_turn", exchange: str = "x1") -> Exchanged:
     message = Message("m1", "claude-sonnet-5", (Said(words),) if words else (), stop, {})
-    return Exchanged(exchange, SessionId(session), Fork(), "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Streamed(message)), False, None)
+    return Exchanged(exchange, SessionId(session), Fork(), "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Streamed(message)), False, root())
 
 
 def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_own_login_through_the_proxy(tmp_path: Path) -> None:

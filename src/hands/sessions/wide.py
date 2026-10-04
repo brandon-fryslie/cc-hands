@@ -197,8 +197,7 @@ def _minted() -> Span:
     """The span a unit of work opened here would have: inside the unit open here, in its trace, or the root of a new one."""
     match _open.get():
         case None:
-            # The W3C Trace Context size of a trace id, as OTLP carries it: 16 bytes, in hex.
-            return Span(uuid4().hex, _span_id(), None)
+            return root()
         case _Open(trace_id=trace_id, span_id=parent_id) | Span(trace_id=trace_id, span_id=parent_id):
             return Span(trace_id, _span_id(), parent_id)
 
@@ -206,6 +205,12 @@ def _minted() -> Span:
 def since(began: float) -> float:
     """The milliseconds since `began`, a reading of time.monotonic(), as every event's duration is written."""
     return round((time.monotonic() - began) * 1000, 3)
+
+
+def root() -> Span:
+    """The root span of a new trace, for work done as part of no unit of work."""
+    # The W3C Trace Context size of a trace id, as OTLP carries it: 16 bytes, in hex.
+    return Span(uuid4().hex, _span_id(), None)
 
 
 def within(parent: Span) -> Span:

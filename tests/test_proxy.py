@@ -47,6 +47,7 @@ from hands.daemon.run import wire_to
 from hands.sessions.audit import Entry
 from hands.sessions.proxy import Proxy, serve_proxy
 from hands.sessions.replies import spent
+from hands.sessions.wide import root
 
 REQUEST = (
     b'{"model": "claude-opus-5-5", "tools": [{"name": "Read"}], "stream": true, "messages": '
@@ -541,6 +542,18 @@ async def test_a_request_made_as_part_of_a_unit_of_work_is_recorded_with_its_spa
     assert only_exchange(wire).span == span
 
 
+@pytest.mark.parametrize("route", [Send(), Hold("(stayed silent)")], ids=["sent", "held"])
+async def test_a_request_made_as_part_of_no_unit_of_work_is_the_root_of_a_trace_of_its_own(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], route: Send | Hold) -> None:
+    _, wire = await serve(streamed)
+    wire.route = lambda _sent: route
+    await post(wire.proxy.url)
+    await post(wire.proxy.url)
+    first, second = [seen.span for seen in wire.seen if isinstance(seen, Exchanged)]
+    assert first.parent_id is None and second.parent_id is None
+    # Each its own trace, at the sizes OTLP carries.
+    assert first.trace_id != second.trace_id and (len(first.trace_id), len(first.span_id)) == (32, 16)
+
+
 async def test_a_request_the_tail_cannot_be_appended_to_goes_on_as_it_came(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     wire.route = lambda _sent: Send((Tail("tail"),))
@@ -595,7 +608,7 @@ async def test_a_route_that_raises_is_logged_and_the_request_goes_on_as_it_came(
 def test_the_daemon_keeps_one_audit_line_per_exchange_and_nothing_per_event() -> None:
     lines: list[Entry] = []
     observe = wire_to(lines.append)
-    exchange = Exchanged("e1", None, MainTurn(None), "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0), False, None)
+    exchange = Exchanged("e1", None, MainTurn(None), "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0), False, root())
     observe(Sent("e1", None, MainTurn(None), None))
     observe(Heard("e1", TextDelta(0, "hi")))
     observe(exchange)
