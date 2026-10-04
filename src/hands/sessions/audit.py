@@ -426,7 +426,8 @@ _AUDITED = "audited"
 def said(error: str) -> None:
     """Say on the terminal an error the audit log already holds, as a failed unit of work's event: logged, and never
     written again as a Failure line beside it."""
-    logger.bind(**{_AUDITED: True}).error(error)
+    # At its caller's line, as the terminal names where each line was said.
+    logger.opt(depth=1).bind(**{_AUDITED: True}).error(error)
 
 
 def failures_to(record: Record) -> "Callable[[Message], None]":

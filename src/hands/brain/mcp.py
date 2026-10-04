@@ -142,8 +142,9 @@ async def serve_mcp(tools: Sequence[Tool], record: Record, spans: CallSpans) -> 
         except Exception as error:
             # The tool's event holds what it raised; the model hears that the tool failed. [LAW:no-silent-failure] the
             # exception ends here, so it is said here.
-            said(f"{tool.name} failed: {type(error).__name__}: {error}")
-            return _result(id, {"content": [{"type": "text", "text": f"{tool.name} failed: {type(error).__name__}: {error}"}], "isError": True})
+            failed = f"{tool.name} failed: {type(error).__name__}: {error}"
+            said(failed)
+            return _result(id, {"content": [{"type": "text", "text": failed}], "isError": True})
         # A refusal is a result like any other: Claude Code turns an isError result into an error of its own wording, out
         # of which the brain's stage could not read the refusal back.
         return _result(id, {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False})

@@ -410,7 +410,6 @@ def focus_session_tool(sessions: Sessions, home: Home) -> Tool:
             to = None if _unnamed(session) else _session_id(session)
             await move_focus(sessions, home, to)
         except (Rejected, NotRunning, OSError) as error:
-            logger.error(f"focus_session could not focus {session!r}: {error}")
             return {"error": str(error)}
         return {"readback": "No session is focused now." if to is None else f"Now on {spoken_name(sessions, to)}."}
 
@@ -873,7 +872,6 @@ def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -
         try:
             missed = await asyncio.to_thread(catchup.missed, home.audit, opening)
         except OSError as error:
-            logger.error(f"catch_up could not read the audit log: {error}")
             return {"error": f"hands could not read its log: {error}"}
         share = max(CATCH_UP_LEAST, CATCH_UP_CLOSINGS // max(1, len(missed.finished)))
         return {
@@ -925,7 +923,6 @@ def attention_tool(home: Home) -> Tool:
             said = [_change(change) for change in _items(changes, "changes")]
             to = await asyncio.to_thread(settings.asked, home, said)
         except (Rejected, OSError) as error:
-            logger.error(f"attention could not set {changes!r}: {error}")
             return {"error": str(error)}
         return {"readback": settings.described(to)}
 
@@ -1067,7 +1064,6 @@ def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
                 raise Rejected(f"no running session has the id {id!r}; take one from list_sessions")
             await asyncio.to_thread(overlays.set, id, overlay)
         except (Rejected, OSError) as error:
-            logger.error(f"set_overlay could not set session {session!r} to {overlay!r}: {error}")
             return {"error": str(error)}
         # [LAW:one-source-of-truth] the delivery the narrator computes, from what is set as it reads it, so the readback
         # says what will happen to the session's next turn.
@@ -1175,12 +1171,11 @@ async def _answer[R, O](
     apply: Callable[[R], Awaitable[O]],
     say: Callable[[O, str], Result],
 ) -> Result:
-    # [LAW:no-silent-failure] the model hears each failure and says it; the log keeps it.
+    # [LAW:no-silent-failure] the model hears each failure and says it; the tool's event keeps it.
     try:
         id = _session_id(session)
         outcome = await apply(request(id))
     except Rejected as error:
-        logger.error(f"{name} refused its arguments: {error}")
         return {"error": str(error)}
     return say(outcome, spoken_name(sessions, id))
 
@@ -1258,11 +1253,10 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
 
 
 async def _decide(name: str, sessions: Sessions, request: object, decision: Callable[[], Decision]) -> Result:
-    # [LAW:no-silent-failure] the model hears a refused answer and says it; the log keeps it.
+    # [LAW:no-silent-failure] the model hears a refused answer and says it; the tool's event keeps it.
     try:
         outcome = await sessions.answer(_request_id(request), decision())
     except Rejected as error:
-        logger.error(f"{name} refused its arguments: {error}")
         return {"error": str(error)}
     return {"readback": answer_readback(outcome, lambda id: spoken_name(sessions, id))}
 
