@@ -210,7 +210,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     reads its terminal raw, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
-    is never taken, "late" is taken only once the next prompt is sent, ahead of it, "later" is too, and runs a second before its Stop, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
+    is never taken, "late" is taken only once the next prompt is sent, ahead of it, "later" is too, and then runs LATER_SECONDS before its Stop, what is sent while it runs queued behind it until its Stop or an Escape that stops it puts the queue back in the input, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
@@ -245,7 +245,7 @@ def typed(line):
 tty.setraw(0)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h> ")
-pending, box, turn, turn_text, prompts, late = b"", "", None, "", 0, None
+pending, box, turn, turn_text, prompts, late, running, behind = b"", "", None, "", 0, None, None, []
 # A prompt as Claude Code's UserPromptSubmit says it took it (2.1.289): a paste of four lines or more in its tags, with a
 # line end added where it had none, and any other with its trailing whitespace trimmed.
 def taken(text):
@@ -253,7 +253,7 @@ def taken(text):
         return text.rstrip()
     return '\\n\\n<pasted_content id="4c2e">\\n' + (text if text.endswith("\\n") else text + "\\n") + '</pasted_content id="4c2e">\\n'
 def submit(text):
-    global turn, turn_text, prompts, late
+    global turn, turn_text, prompts, late, running
     if text.startswith("/btw "):
         if text == "/btw stubborn":
             signal.signal(signal.SIGTERM, lambda *_: typed(["sigterm", text, session]))
@@ -262,6 +262,15 @@ def submit(text):
             os.write(1, b"bye\\r\\n")
             sys.exit(3)
         return
+    if running is not None:
+        behind.append(text)
+        return
+    if late is not None and late[1].strip() == "later":
+        # Taken late, and runs on: what was sent is queued behind it.
+        post("UserPromptSubmit", prompt_id=late[0], prompt=taken(late[1]))
+        running, late = (late[0], late[1], time.monotonic() + float(os.environ["LATER_SECONDS"])), None
+        behind.append(text)
+        return
     typed(["prompt", text])
     prompts += 1
     prompt = f"p{{prompts}}"
@@ -269,8 +278,6 @@ def submit(text):
     if late is not None:
         # Taken late, as Claude Code takes a prompt it read after its turn had ended: then the prompt sent behind it.
         post("UserPromptSubmit", prompt_id=late[0], prompt=taken(late[1]))
-        if late[1].strip() == "later":
-            time.sleep(1.0)
         post("Stop", prompt_id=late[0], last_assistant_message="Late.")
         late = None
     if said == "deaf":
@@ -322,6 +329,13 @@ if end < len(sys.argv):
     [opening] = sys.argv[end + 1:]
     submit(opening)
 while True:
+    if running is not None and not select.select([0], [], [], max(0.0, running[2] - time.monotonic()))[0]:
+        post("Stop", prompt_id=running[0], last_assistant_message="Late.")
+        running, queued = None, behind
+        behind = []
+        for text in queued:
+            submit(text)
+        continue
     data = os.read(0, 65536)
     if not data:
         break
@@ -343,6 +357,10 @@ while True:
         elif pending.startswith(b"\\x1b"):
             pending = pending[1:]
             typed(["escape", box])
+            if running is not None:
+                # As Claude Code does, the stopped prompt is put back in the input, and the queue behind it with it; no Stop.
+                box, running = running[1] + "".join(behind), None
+                behind = []
             if turn is not None:
                 # As Claude Code does, the stopped prompt is put back in the input.
                 box, turn = turn_text, None
@@ -365,6 +383,7 @@ while True:
     monkeypatch.setenv("PATH", f"{script.parent}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("LOGGED_IN", "1")
     monkeypatch.setenv("TYPED", str(tmp_path / "typed.jsonl"))
+    monkeypatch.setenv("LATER_SECONDS", "1")
     return script
 
 

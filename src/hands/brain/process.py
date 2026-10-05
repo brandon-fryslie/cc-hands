@@ -400,7 +400,7 @@ class _Turn:
     asks: Callable[[Asked], None]
     # The turn's own unit of work, begun as it was asked: each dialog it holds is a part of it.
     began: Begun
-    # How long the turn has to be taken, read once as it is asked: its typing and its stop wait the same, in `_taking`.
+    # How long the turn has to be taken, read once as it is asked: each typing of it and its stop wait the same time.
     take: float
     # What the turn types into the brain's input.
     typed: PromptText
@@ -452,11 +452,9 @@ class Brain:
         # presses no Escape while the user is being asked.
         self._held: set[Asked] = set()
         self._typing: set[asyncio.Task[None]] = set()
-        # The prompts Claude Code took that are no turn's, from their UserPromptSubmit until their Stop: one typed for a
-        # turn that had ended untaken, or a task's notification. A turn typed behind one is read only once it ends.
+        # The prompts Claude Code took that are no turn's, from their UserPromptSubmit until their Stop or the Escape that
+        # stops them: one typed for a turn that had ended untaken, or a task's notification.
         self._unowned: set[str] = set()
-        # Resolved, and replaced, each time `_unowned` changes.
-        self._unowned_changed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         # When the last stop pressed Ctrl-C, on the event loop's clock.
         self._cleared = float("-inf")
         with continuing(launched):
@@ -518,7 +516,6 @@ class Brain:
                 # sends nothing: what was typed 10ms behind a turn joined the turn's prompt, or was left in the input with
                 # it (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
                 async with self._input:
-                    await self._type(lambda typist: typist.type(turn.typed))
                     taken = await self._taking(turn)
                 if not taken:
                     raise Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; if it is on one of Claude Code's first screens, `hands login` answers them")
@@ -534,26 +531,42 @@ class Brain:
                     fail(f"the brain failed the turn: {failed}")
 
     async def _taking(self, turn: _Turn) -> bool:
-        """[LAW:single-enforcer] waits for `turn` to be taken, or to end, and says whether it was. It has `turn.take`
-        seconds while Claude Code runs nothing that is no turn's; one it runs holds what was typed behind it until it
-        ends, however long that is, and the turn then has its whole time again."""
-        while not (turn.taken.done() or turn.answered.done()):
+        """Types `turn`, with the input held, and waits `turn.take` seconds for it to be taken, or to end: says whether it
+        was. [LAW:single-enforcer] a prompt Claude Code took that is no turn's runs ahead of what is typed behind it, for
+        an ask that already failed or one nobody made: it is stopped before the turn is typed, and when one ran through the
+        turn's wait, it is stopped and the turn typed again, with its whole time."""
+        while True:
             if self._unowned:
-                logger.info(f"the brain's turn waits to be taken behind prompts {sorted(self._unowned)}, which are no turn's")
-            changed = self._unowned_changed
-            timeout = None if self._unowned else turn.take
-            done, _ = await asyncio.wait({turn.taken, turn.answered, changed}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-            if not done:
+                stopped = await self._clear()
+                turn.others += tuple(prompt for prompt in stopped if prompt not in turn.others)
+            await self._type(lambda typist: typist.type(turn.typed))
+            await asyncio.wait({turn.taken, turn.answered}, timeout=turn.take, return_when=asyncio.FIRST_COMPLETED)
+            if turn.taken.done() or turn.answered.done():
+                return True
+            if not self._unowned:
                 return False
-        return True
 
-    def _unowned_is(self, prompt: str, running: bool) -> None:
-        if running:
-            self._unowned.add(prompt)
-        else:
-            self._unowned.discard(prompt)
-        self._unowned_changed.set_result(None)
-        self._unowned_changed = asyncio.get_running_loop().create_future()
+    async def _clear(self) -> tuple[str, ...]:
+        """Stops whatever Claude Code runs and empties its input, with the input held, and returns the prompts that were
+        no turn's it stopped. Escape posts no hook for the prompt it stops, so they are no longer running from here."""
+        stopped = tuple(sorted(self._unowned))
+        await self._type(lambda typist: typist.press("escape"))
+        # Escape refuses a permission held at its dialog and leaves its hook unanswered for good (2.1.288, spike
+        # hands-brain-d8g.aur): it is settled here, and nothing can answer it later.
+        self._settle(Deny(STOPPED))
+        # Escape puts a prompt stopped before any reply back in the input, and with it what was typed queued behind the
+        # prompt (2.1.289: its cancel pops the queue into the input), which the next turn typed would join; Ctrl-C clears
+        # it. On an input left empty it arms Claude Code's exit instead, which a second Ctrl-C within 800ms takes,
+        # whatever was typed between (2.1.285, read from its source 2026-09-30); so no two are pressed that close,
+        # counted from when each went and with room for Claude Code to read the first late.
+        loop = asyncio.get_running_loop()
+        await asyncio.sleep(self._cleared + EXIT_SECONDS - loop.time())
+        await self._type(lambda typist: typist.press("ctrl_c"))
+        self._cleared = loop.time()
+        self._unowned.difference_update(stopped)
+        if stopped:
+            logger.warning(f"the brain stopped prompts {list(stopped)}, which were no turn's")
+        return stopped
 
     def interrupt(self) -> None:
         """Stop the turn in flight with Escape, as at the keyboard. Returns at once: the Escape is the brain's to press,
@@ -582,7 +595,7 @@ class Brain:
     async def _escape(self, turn: _Turn) -> None:
         # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: until then
         # nothing of the turn's runs for it to stop.
-        await self._taking(turn)
+        await asyncio.wait({turn.taken, turn.answered}, timeout=turn.take, return_when=asyncio.FIRST_COMPLETED)
         if self._turn is not turn:
             return
         if not turn.taken.done():
@@ -593,18 +606,7 @@ class Brain:
             async with self._input:
                 if self._turn is not turn:
                     return
-                await self._type(lambda typist: typist.press("escape"))
-                # Escape refuses a permission held at its dialog and leaves its hook unanswered for good (2.1.288, spike
-                # hands-brain-d8g.aur): it is settled here, and nothing can answer it later.
-                self._settle(Deny(STOPPED))
-                # Escape puts a prompt stopped before any reply back in the input, which the next turn typed would join;
-                # Ctrl-C clears it. On an input left empty it arms Claude Code's exit instead, which a second Ctrl-C within
-                # 800ms takes, whatever was typed between (2.1.285, read from its source 2026-09-30); so no two are
-                # pressed that close, counted from when each went and with room for Claude Code to read the first late.
-                loop = asyncio.get_running_loop()
-                await asyncio.sleep(self._cleared + EXIT_SECONDS - loop.time())
-                await self._type(lambda typist: typist.press("ctrl_c"))
-                self._cleared = loop.time()
+                await self._clear()
         except BrainGone as error:
             self._over(turn, error)
             return
@@ -781,15 +783,15 @@ class Brain:
             case "UserPromptSubmit", str(words) if turn is not None and waiting and _kept(words) == _kept(turn.typed):
                 turn.taken.set_result(prompt)
             case "UserPromptSubmit", _:
-                # Runs as a whole turn of Claude Code's, ahead of what was typed behind it.
-                self._unowned_is(prompt, True)
+                # Runs as a whole turn of Claude Code's, ahead of what was typed behind it, until it ends or is stopped.
+                self._unowned.add(prompt)
                 if turn is not None and waiting:
                     turn.others += (prompt,)
                 logger.warning(f"the brain took prompt {prompt}, which is no turn's: one typed for a turn that ended before it was taken, or a task's notification")
             case ("Stop" | "StopFailure"), _ if turn is not None and turn.prompt == prompt:
                 self._over(turn, BrainAnswered(prompt, None if event == "Stop" else failed))
             case ("Stop" | "StopFailure"), _ if prompt in self._unowned:
-                self._unowned_is(prompt, False)
+                self._unowned.discard(prompt)
             case _ if turn is None:
                 # A turn's own hook arriving after an Escape ended it, or a hook no turn of this brain's asked for.
                 logger.info(f"the brain's {event} hook for prompt {prompt} came with no turn of its own in flight")
