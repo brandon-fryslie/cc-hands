@@ -71,7 +71,7 @@ from hands.sessions.wide import annotate, child, continuing, count, fail, here, 
 from hands.voice.player import Mark
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
-from hands.voice.speech import Aloud, Narrated, as_a_turn, brain_asks
+from hands.voice.speech import Aloud, Narrated, brain_asks
 from hands.voice.utterance import Resumed, Utterance, Uttered, Uttering, uttering
 from hands.voice.tool import Result, Tool, silent, whole
 
@@ -172,6 +172,8 @@ class _Turn:
     # What hands says for the calls of a held request once the turn's own words are said, since the model is not asked to.
     readbacks: list[str] = field(default_factory=list[str])
     interrupted: bool = False
+    # A reply of the turn's is under way for whatever hears it: started, and not yet ended.
+    replying: bool = False
     # The calls running when the user barged in, which the turn's event names with whether the brain was told to stop.
     running: tuple[str, ...] = ()
     # The permissions the turn has put to the user, oldest first, which are asked one at a time.
@@ -292,7 +294,11 @@ class BrainStage(FrameProcessor):
                 if stop:
                     self._brain.interrupt()
                 if turn is not None and not turn.interrupted:
-                    # A barge-in the turn goes on through cut off none of what it is still to say of the sessions.
+                    if turn.replying:
+                        # A barge-in ends the reply under way for everything behind this stage, and the turn goes on
+                        # through it: what it says next is a reply started again, written whole at its end.
+                        await self.push_frame(LLMFullResponseStartFrame())
+                    # It cut off none of what the turn is still to say of the sessions.
                     await self.push_frame(Resumed(turn.utterances))
             case _:
                 await self.push_frame(frame, direction)
@@ -327,7 +333,7 @@ class BrainStage(FrameProcessor):
                     await self.push_frame(Uttered(utterances))
                 case Aloud(spoken=spoken, utterances=utterances):
                     # In hands' lane no turn of the brain's is under way.
-                    for frame in uttering(utterances, as_a_turn(spoken)):
+                    for frame in uttering(utterances, (spoken,)):
                         await self.push_frame(frame)
 
     async def _read_front(self, modality: Modality, opened: Edge) -> UserAsked:
@@ -388,8 +394,7 @@ class BrainStage(FrameProcessor):
             await asyncio.wait({turn.speaking})
             for readback in turn.readbacks:
                 # Said by hands, since the model that would have said it was not asked to go on.
-                for frame in as_a_turn(TTSSpeakFrame(readback)):
-                    await self.push_frame(frame)
+                await self.push_frame(TTSSpeakFrame(readback))
         finally:
             # [LAW:nothing-unseen] what the turn did is on its event however it ended, a turn cancelled mid-way included.
             self._account(turn, asker, arrived, released, taken, ended)
@@ -462,8 +467,15 @@ class BrainStage(FrameProcessor):
         turn.asked.append(asked)
         turn.said.put_nowait(asked)
 
+    async def _reply(self, turn: _Turn, under_way: bool) -> None:
+        """Starts or ends the turn's reply for whatever hears it."""
+        # [LAW:no-ambient-temporal-coupling] noted ahead of the frame that says so, with nothing awaited between: a
+        # barge-in the turn goes on through starts again only a reply that has not ended.
+        turn.replying = under_way
+        await self.push_frame(LLMFullResponseStartFrame() if under_way else LLMFullResponseEndFrame())
+
     async def _speak(self, turn: _Turn) -> None:
-        await self.push_frame(LLMFullResponseStartFrame())
+        await self._reply(turn, True)
         while (words := await turn.said.get()) is not None:
             match words:
                 case str():
@@ -472,20 +484,19 @@ class BrainStage(FrameProcessor):
                 case Asked(permission=permission) as asked if asked.open:
                     # Said by hands, as its own sentence once the brain's words before it are: the response so far ends
                     # first, so what TTS holds of it is said ahead of the question.
-                    await self.push_frame(LLMFullResponseEndFrame())
-                    for frame in as_a_turn(TTSSpeakFrame(brain_asks(permission))):
-                        await self.push_frame(frame)
+                    await self._reply(turn, False)
+                    await self.push_frame(TTSSpeakFrame(brain_asks(permission)))
                     # [LAW:no-ambient-temporal-coupling] answerable once the speaker has played it to its end, which the
                     # mark is told of, and never if a barge-in cut it off.
                     await self.push_frame(Mark(partial(turn.hear, asked)))
                     # One question at a time, so what the user answers is the question they heard last.
                     await asyncio.wait({asked.decision})
-                    await self.push_frame(LLMFullResponseStartFrame())
+                    await self._reply(turn, True)
                 case Asked():
                     # Settled before its turn came to be said, by the deadline, the turn's end, or an answer: nothing asks.
                     pass
         # Not on a barge-in, which cancels this: an end would have TTS say the sentence the user spoke over.
-        await self.push_frame(LLMFullResponseEndFrame())
+        await self._reply(turn, False)
 
     def _news(self, context: LLMContext) -> str:
         """What the context gained since the brain last heard it, as one message: the user's words and hands' notes."""

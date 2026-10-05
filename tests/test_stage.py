@@ -20,7 +20,6 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     LLMContextFrame,
     LLMFullResponseEndFrame,
-    LLMAssistantPushAggregationFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
     TTSSpeakFrame,
@@ -174,7 +173,7 @@ class Spoken(FrameProcessor):
             case VADUserStoppedSpeakingFrame():
                 self.releases += 1
                 await self.push_frame(frame, direction)
-            case LLMFullResponseStartFrame() | LLMFullResponseEndFrame() | LLMTextFrame() | TTSSpeakFrame() | LLMAssistantPushAggregationFrame() | InterruptionFrame():
+            case LLMFullResponseStartFrame() | LLMFullResponseEndFrame() | LLMTextFrame() | TTSSpeakFrame() | InterruptionFrame():
                 self.frames.append(frame)
                 if isinstance(frame, LLMTextFrame | TTSSpeakFrame):
                     self.uttering.append(frame.text)
@@ -395,7 +394,7 @@ async def test_a_line_said_as_written_in_hands_lane_is_sent_between_its_marks(ri
     await rig.worker.queue_frame(Aloud(TTSSpeakFrame("The session api is gone."), (unasked(),)))
     await rig.until(lambda: rig.out.uttering[-1:] == ["Uttered"])
     assert rig.out.uttering == ["Uttering", "The session api is gone.", "Uttered"]
-    assert rig.out.shape() == ["TTSSpeakFrame", "LLMAssistantPushAggregationFrame"]
+    assert rig.out.shape() == ["TTSSpeakFrame"]
 
 
 async def test_a_narration_moves_the_focus_as_the_brain_takes_it_ahead_of_what_the_user_says_meanwhile(rig: Rig) -> None:
@@ -837,8 +836,8 @@ async def test_a_readback_a_call_hands_hands_ends_the_turn_and_is_said_by_hands_
     assert route == Hold(SILENT, APART)
     rig.brain.end()
     await rig.until(lambda: rig.out.said() == ["amended for api: add tests too"])
-    # hands-readback-ddk: said after the turn's reply has ended, and a turn of its own, over once it is said.
-    await rig.until(lambda: rig.out.shape() == ["LLMFullResponseStartFrame", "LLMFullResponseEndFrame", "TTSSpeakFrame", "LLMAssistantPushAggregationFrame"])
+    # hands-readback-ddk: said after the turn's reply has ended, where it is a turn of its own, over once it is said.
+    await rig.until(lambda: rig.out.shape() == ["LLMFullResponseStartFrame", "LLMFullResponseEndFrame", "TTSSpeakFrame"])
 
 
 async def test_a_barge_in_while_a_draft_hands_reads_back_lands_lets_it_finish_and_its_readback_is_said(rig: Rig) -> None:
@@ -1149,6 +1148,8 @@ async def test_a_barge_in_before_the_brain_has_sent_the_turn_stops_nothing_and_t
     # Still waiting for the input: nothing of it has left, so there is nothing to stop, and the user's words follow it.
     await rig.interrupt()
     assert rig.brain.interrupts == 0
+    # The reply goes on through the barge-in, which ended it for whatever writes it: started again, so it is written whole.
+    await rig.until(lambda: rig.out.shape() == ["LLMFullResponseStartFrame", "InterruptionFrame", "LLMFullResponseStartFrame"])
     _, route = rig.request()
     assert route == Send((Tail(TAIL),), refusal="final", span=APART)
     rig.brain.end()

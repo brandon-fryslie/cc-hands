@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePath
 
-from pipecat.frames.frames import DataFrame, Frame, LLMAssistantPushAggregationFrame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
+from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
 
 from hands.core.attention import Amount, Attention, Overlay, Route, progress_route
 from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Progress, SessionGone, Speak
@@ -101,18 +101,6 @@ class Aloud(DataFrame, UninterruptibleFrame):
 
     spoken: TTSSpeakFrame
     utterances: tuple[Utterance, ...]
-
-
-def as_a_turn(spoken: TTSSpeakFrame) -> tuple[Frame, Frame]:
-    """A line hands says as written with no reply of the model's under way, as a turn of its own: over once it is said.
-
-    [LAW:no-ambient-temporal-coupling] the end of the turn is sent behind the line by whoever knows no reply is under
-    way. Pipecat's service ends the turn of a line kept in the context itself only while it takes no reply as under way,
-    and one that pushes its own text frames, as pocket-tts does, takes a reply as under way from its start frame to the
-    next barge-in (1.10.0): the line stayed an open turn, written at the next key press as cut off. A line kept out of
-    the context opens no turn, and the end sent behind it ends none.
-    """
-    return (spoken, LLMAssistantPushAggregationFrame())
 
 
 @dataclass(frozen=True)

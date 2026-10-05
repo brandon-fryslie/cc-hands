@@ -13,7 +13,7 @@ import pytest
 from loguru import logger
 from pipecat.frames.frames import Frame, FunctionCallResultProperties, TTSSpeakFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import AssistantTurnStoppedMessage, LLMContextAggregatorPair, UserTurnMessageAddedMessage
+from pipecat.processors.aggregators.llm_response_universal import AssistantTurnStoppedMessage, LLMUserAggregatorParams, UserTurnMessageAddedMessage
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import FunctionCallParams
 
@@ -25,7 +25,7 @@ from hands.sessions.typing import Untyped
 from hands.sessions.audit import AuditLog, Entry, Record, Typing, TypingFailed, tail
 from hands.sessions.wide import unit
 from hands.sessions.registry import Sessions
-from hands.voice.conversation import record_turns
+from hands.voice.conversation import record_turns, turns
 from hands.voice.tool import Result, Tool, tool
 from hands.voice.tools import audited, cued, draft_tools, keyboard_tools, pipecat_function, Replies
 
@@ -191,8 +191,7 @@ async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to
     record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
     sessions, id = await joined(tmp_path, record)
     tools = [audited(tool, record) for tool in draft_tools(sessions)]
-    pair = LLMContextAggregatorPair(LLMContext())
-    user, assistant = pair.user(), pair.assistant()
+    user, assistant = turns(LLMContext(), LLMUserAggregatorParams())
     record_turns(user, assistant, record)
 
     await fire(user, "on_user_turn_message_added", UserTurnMessageAddedMessage("tell cc-hands to run the tests", "t1"))
@@ -216,8 +215,7 @@ async def test_what_was_heard_is_shown_in_the_terminal_in_the_words_heard() -> N
 
     lines: list[str] = []
     sink = logger.add(lambda message: lines.append(message.record["message"]), filter=on_terminal)
-    pair = LLMContextAggregatorPair(LLMContext())
-    user, assistant = pair.user(), pair.assistant()
+    user, assistant = turns(LLMContext(), LLMUserAggregatorParams())
     record_turns(user, assistant, unrecorded)
     try:
         await fire(user, "on_user_turn_message_added", UserTurnMessageAddedMessage("Don't say \"stop\",\n  can you hear me?", "t1"))
@@ -232,8 +230,7 @@ async def test_a_control_in_what_was_heard_reaches_the_terminal_as_its_escape_an
 
     terminal = io.StringIO()
     sink = to_terminal(terminal)
-    pair = LLMContextAggregatorPair(LLMContext())
-    user, assistant = pair.user(), pair.assistant()
+    user, assistant = turns(LLMContext(), LLMUserAggregatorParams())
     record_turns(user, assistant, unrecorded)
     try:
         await fire(user, "on_user_turn_message_added", UserTurnMessageAddedMessage("\x1b[2Kgone\x07 back\x08\x08 {x}\x9b2J\x7f\u202eo", "t1"))
