@@ -1067,10 +1067,11 @@ runs from then until its process ends, with its exit code and the last of what i
 (`brain.turn`), a part of the `voice.turn` that asked it, runs from its typing to its end, with the prompt id Claude
 Code took it as (`prompt`), the tools its latest request offered the model (`offered`), and the prompt ids Claude
 Code took while the turn waited to be taken that were not its own (`others`), or with the error that failed it. A turn
-is taken only by a `UserPromptSubmit` whose `prompt` holds the text it typed, so a turn that ended untaken and was taken
-later is never the next turn's; a turn whose asker stopped waiting is still heard to its end. Each dialog it posts to hands' listener is one
-event: a `brain.permission`, with the tool, the decision, and how long it was held, and a `brain.elicitation`, which
-is always declined. A dialog posted for the turn in flight is a part of that `brain.turn`; any other is a part of the
+is taken only by a `UserPromptSubmit` whose `prompt` is the text it typed, as Claude Code keeps it: out of the tags a
+long paste comes in, trailing whitespace trimmed. A turn that ended untaken and was taken later is never the next
+turn's, unless the two typed the same words; a turn whose asker stopped waiting is still heard to its end. Each dialog
+it posts to hands' listener is one event: a `brain.permission`, with the tool, the decision, and how long it was held,
+and a `brain.elicitation`, which is always declined. A dialog posted for the turn in flight is a part of that `brain.turn`; any other is a part of the
 launch. A body hands cannot read is answered as its hook asks, and its event fails saying so. Whatever else fails in
 the brain's own work, a turn's typing, a dialog, a hook heard, is said once on the terminal with its traceback. The turn
 it was done for, if any, is stopped as an Escape stops it and ends with that error; a permission it broke is refused, and

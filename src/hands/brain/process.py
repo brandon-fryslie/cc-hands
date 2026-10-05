@@ -17,6 +17,7 @@ what the login brings from the account.
 import asyncio
 import contextlib
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -91,6 +92,9 @@ DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elici
 # dialog about to open. Escape ends a turn with none of them (measured on 2.1.285), so a turn told to stop is over when
 # it is told.
 HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation")
+# A paste of four lines or more, as a UserPromptSubmit hook's `prompt` holds it: what was pasted, with a line end added
+# where it had none, inside a tag pair (2.1.289, measured 2026-10-04).
+PASTE = re.compile(r'\n\n<pasted_content id="(\w+)">\n(.*)</pasted_content id="\1">\n', re.DOTALL)
 
 # `claude auth status` answers in about a second; one that has not answered in this long is not going to.
 AUTH_STATUS_SECONDS = 20.0
@@ -104,6 +108,13 @@ TAKE_SECONDS = 30.0
 # How far apart two Ctrl-Cs are pressed into the brain: Claude Code exits on a second within 800ms of one that found its
 # input empty.
 EXIT_SECONDS = 1.0
+
+
+def _kept(prompt: str) -> str:
+    """A prompt as Claude Code keeps what was typed: out of a paste's tags, and without its trailing whitespace, which
+    Claude Code trims from what it takes (2.1.289, measured 2026-10-04)."""
+    paste = PASTE.fullmatch(prompt)
+    return (prompt if paste is None else paste[2]).rstrip()
 
 
 @dataclass(frozen=True)
@@ -542,8 +553,8 @@ class Brain:
                 self._over(turn, turn.broken)
 
     async def _escape(self, turn: _Turn) -> None:
-        # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: a turn ended
-        # while its UserPromptSubmit hook is still coming would leave that hook to be taken for the next turn's.
+        # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: until then
+        # nothing of the turn's runs for it to stop.
         await asyncio.wait({turn.taken, turn.answered}, timeout=turn.take, return_when=asyncio.FIRST_COMPLETED)
         if self._turn is not turn:
             return
@@ -726,8 +737,8 @@ class Brain:
             said = Payload.parse(body)
             event, session = said.text("hook_event_name"), said.session_id()
             prompt = said.text("prompt_id")
-            # What Claude Code took, on the hook that says it took a prompt.
-            submitted = said.optional_text("prompt")
+            # What Claude Code took, on the hook that says it took a prompt: there it is never absent.
+            submitted = said.text("prompt") if event == "UserPromptSubmit" else None
             failed = f"{said.optional_text('error')}: {said.optional_text('last_assistant_message')}"
         except Rejected as error:
             logger.warning(f"the brain posted a hook that does not parse: {error}")
@@ -738,10 +749,9 @@ class Brain:
             logger.info(f"the brain's {event} hook for prompt {prompt} came with no turn of its own in flight")
             return
         match event, submitted:
-            # [LAW:single-enforcer] a turn is taken by the prompt that holds what it typed, never by the next to come: a
-            # turn ended untaken may still be taken, and its prompt and its Stop are then no later turn's. A prompt pasted
-            # over lines comes wrapped, its text whole inside (2.1.289, measured 2026-10-04), so it holds what was typed.
-            case "UserPromptSubmit", str(words) if not turn.taken.done() and turn.typed in words:
+            # [LAW:single-enforcer] a turn is taken by the prompt that is what it typed, never by the next to come: a turn
+            # ended untaken may still be taken, and its prompt and its Stop are then no later turn's.
+            case "UserPromptSubmit", str(words) if not turn.taken.done() and _kept(words) == _kept(turn.typed):
                 turn.taken.set_result(prompt)
             case "UserPromptSubmit", _ if not turn.taken.done():
                 turn.others += (prompt,)

@@ -246,6 +246,12 @@ tty.setraw(0)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h> ")
 pending, box, turn, turn_text, prompts, late = b"", "", None, "", 0, None
+# A prompt as Claude Code's UserPromptSubmit says it took it (2.1.289): a paste of four lines or more in its tags, with a
+# line end added where it had none, and any other with its trailing whitespace trimmed.
+def taken(text):
+    if text.count("\\n") < 3:
+        return text.rstrip()
+    return '\\n\\n<pasted_content id="4c2e">\\n' + (text if text.endswith("\\n") else text + "\\n") + '</pasted_content id="4c2e">\\n'
 def submit(text):
     global turn, turn_text, prompts, late
     if text.startswith("/btw "):
@@ -262,7 +268,7 @@ def submit(text):
     said = text.strip()
     if late is not None:
         # Taken late, as Claude Code takes a prompt it read after its turn had ended: then the prompt sent behind it.
-        post("UserPromptSubmit", prompt_id=late[0], prompt=late[1])
+        post("UserPromptSubmit", prompt_id=late[0], prompt=taken(late[1]))
         post("Stop", prompt_id=late[0], last_assistant_message="Late.")
         late = None
     if said == "deaf":
@@ -270,7 +276,7 @@ def submit(text):
     if said == "late":
         late = prompt, text
         return
-    post("UserPromptSubmit", prompt_id=prompt, prompt=text)
+    post("UserPromptSubmit", prompt_id=prompt, prompt=taken(text))
     if said == "die":
         os.write(1, b"bye\\r\\n")
         sys.exit(3)

@@ -772,12 +772,23 @@ async def test_a_turn_claude_code_takes_after_it_ended_untaken_is_not_the_next_t
         with monkeypatch.context() as short, pytest.raises(Untaken):
             short.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
             await brain.ask("late", unasked)
-        # Its prompt and its Stop come while the next turn is in flight, ahead of that turn's own.
-        assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p2", None)
+        # Its prompt and its Stop come while the next turn is in flight, ahead of that turn's own: words the next turn's
+        # are a part of are still not the next turn's.
+        assert await asyncio.wait_for(brain.ask("lat", unasked), 10) == BrainAnswered("p2", None)
     finally:
         await brain.stop()
     _, answered_turn = events(recorded, "brain.turn")
     assert answered_turn.facts == {"prompt": "p2", "offered": (), "others": ("p1",)}
+
+
+async def test_a_turn_is_taken_as_claude_code_keeps_what_it_typed(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    try:
+        # A long paste comes back in its tags, and a closing backslash's space comes back trimmed.
+        assert await asyncio.wait_for(brain.ask("one\ntwo\nthree\nfour", unasked), 10) == BrainAnswered("p1", None)
+        assert await asyncio.wait_for(brain.ask("path C:\\", unasked), 10) == BrainAnswered("p2", None)
+    finally:
+        await brain.stop()
 
 
 class _Jammed:
