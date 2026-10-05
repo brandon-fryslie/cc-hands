@@ -387,11 +387,10 @@ def test_an_error_answer_cut_short_is_said_and_the_batches_after_it_are_still_se
 
         threading.Thread(target=answer, daemon=True).start()
         recorded: list[Exported] = []
-        exporter = Exporter(f"http://127.0.0.1:{cut.getsockname()[1]}", recorded.append, linger=0.01)
+        # No linger, so each event is a batch of its own however the lanes' threads are scheduled.
+        exporter = Exporter(f"http://127.0.0.1:{cut.getsockname()[1]}", recorded.append, linger=0)
         first, second = _event(span_id="0000000000000001"), _event(span_id="0000000000000002")
         exporter.send(first)
-        while not recorded:
-            time.sleep(0.01)
         exporter.send(second)
         exporter.close()
     for signal in ("traces", "logs"):
@@ -553,7 +552,9 @@ def test_a_batch_to_a_collector_that_never_answers_waits_one_timeout_for_both_si
         exporter = Exporter(f"http://127.0.0.1:{silent.getsockname()[1]}", recorded.append, linger=0.01, timeout=0.4)
         began = time.monotonic()
         exporter.send(_event())
+        deadline = time.monotonic() + TIMEOUT_SECONDS * 2
         while len(recorded) < 2:
+            assert time.monotonic() < deadline, "no Exported line for each signal"
             time.sleep(0.01)
         waited = time.monotonic() - began
         exporter.close()
