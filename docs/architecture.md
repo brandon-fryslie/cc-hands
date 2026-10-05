@@ -1931,7 +1931,8 @@ thing that failed `[LAW:no-silent-failure]`:
    without having said `stopped`.
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, the count of live sessions, whether a turn is
-   open, and whether the microphone is open on no device. `hands status` prints it. The
+   open, and each way it is running degraded (the first: the microphone is open on no
+   device), each in its own words. `hands status` prints it, saying every degradation. The
    daemon running is its one writer: a run locks `~/.hands/hands.lock` before it reads the
    heartbeat or listens, so a second `hands run` on a home a daemon holds is refused there,
    says that hands is already running and the pid the lock names, and leaves the heartbeat
@@ -1941,12 +1942,13 @@ thing that failed `[LAW:no-silent-failure]`:
    terminal's Ctrl-C takes it down first. It lives while the process that started it does,
    and once that is gone, until the light leaves up: it posts that notice and exits. Once a second it judges the heartbeat through `heartbeat.look`, the one
    read-and-judge that `hands status`, the crash check at start, and the hook shim also use. Its title
-   shows one of seven lights: up, deaf (up, with no microphone to hear through), not
+   shows one of six lights: up, not
    responding, down, refused (a start that ended before it ran, with its reason), off (stopped or never ran), and unreadable. An unreadable heartbeat
-   is warned of as loudly as a dead daemon. It posts a notification when the light
-   changes into deaf or out of a running light (up or deaf) into a warning, at most once a minute, so a loop that
+   is warned of as loudly as a dead daemon. Up with any degradation is still the up light, its title
+   a warning naming every degradation. It posts a notification when the light
+   leaves up for a warning, or a degradation the look before did not show arrives, at most once a minute, so a loop that
    stalls and recovers over and over is not announced every time. A departure inside that
-   minute is held, and posted when the minute is up if hands is still not up. A daemon it finds already
+   minute is held, and posted when the minute is up if hands is still not up and whole. A daemon it finds already
    down on its first look is shown but not announced. A heartbeat whose pid is outside
    macOS's `1..99999` does not parse, since no process can have it. A pid counts as the
    daemon only while the process holding it started no later than the heartbeat's

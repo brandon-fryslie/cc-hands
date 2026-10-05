@@ -185,7 +185,7 @@ def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbe
     holder = holding(root, "import sys; sys.stdin.read()")
     listening = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        heartbeat.Heart(home.status, holder.pid, datetime.now(UTC), timedelta(seconds=2)).beat("running", None, 1, listening=True, deaf=False)
+        heartbeat.Heart(home.status, holder.pid, datetime.now(UTC), timedelta(seconds=2)).beat("running", None, 1, listening=True, degraded=())
         live = home.status.read_bytes()
         listening.bind(str(home.socket))
         listening.listen()

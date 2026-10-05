@@ -93,7 +93,7 @@ def hooks(recorded: list[Entry]) -> list[tuple[str, str | None, dict[str, Fact]]
 
 def beat(home: Home, pid: int, written_ago: timedelta, pipeline: heartbeat.PipelineState = "running") -> None:
     now = datetime.now(UTC)
-    heartbeat.write(home.status, heartbeat.Status(pid, now, now - written_ago, heartbeat.HEARTBEAT, pipeline, None, 0, False, False))
+    heartbeat.write(home.status, heartbeat.Status(pid, now, now - written_ago, heartbeat.HEARTBEAT, pipeline, None, 0, False, ()))
 
 
 @pytest.mark.parametrize("payload", [PROMPT, ASK], ids=["prompt", "permission"])

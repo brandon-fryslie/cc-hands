@@ -24,6 +24,9 @@ from hands.sessions.payload import Rejected
 
 NOW = datetime(2026, 9, 14, 12, 0, 0, tzinfo=UTC)
 BEAT = timedelta(seconds=2)
+DEAF = (heartbeat.NO_MICROPHONE,)
+# A second way to be degraded, for as long as the daemon itself has only the one.
+SLOW = heartbeat.Degradation("is slow", "is slow, as something made it so")
 
 
 def beat(**changes: object) -> heartbeat.Status:
@@ -36,7 +39,7 @@ def beat(**changes: object) -> heartbeat.Status:
         "last_audio_out": NOW - timedelta(seconds=12),
         "live_sessions": 2,
         "listening": False,
-        "deaf": False,
+        "degraded": (),
         **changes,
     }
     return heartbeat.Status(**fields)  # pyright: ignore[reportArgumentType]
@@ -63,23 +66,43 @@ def test_a_heartbeat_from_before_turns_were_written_reads_as_no_turn_open(tmp_pa
 
 
 def test_a_heartbeat_from_before_hearing_was_written_reads_as_able_to_hear(tmp_path: Path) -> None:
-    written = beat(deaf=False)
-    old = {key: value for key, value in json.loads(heartbeat.encode(written)).items() if key != "deaf"}
+    written = beat()
+    old = {key: value for key, value in json.loads(heartbeat.encode(written)).items() if key != "degraded"}
     (tmp_path / "status.json").write_text(json.dumps(old))
     assert heartbeat.read(tmp_path / "status.json") == written
 
 
+@pytest.mark.parametrize("deaf, degraded", [(True, DEAF), (False, ())])
+def test_a_heartbeat_from_before_degradations_reads_its_deaf_flag_as_having_no_microphone(tmp_path: Path, deaf: bool, degraded: tuple[heartbeat.Degradation, ...]) -> None:
+    old = {key: value for key, value in json.loads(heartbeat.encode(beat())).items() if key != "degraded"}
+    (tmp_path / "status.json").write_text(json.dumps({**old, "deaf": deaf}))
+    assert heartbeat.read(tmp_path / "status.json") == beat(degraded=degraded)
+
+
+def test_degradations_read_back_in_the_order_they_were_written(tmp_path: Path) -> None:
+    written = beat(degraded=(SLOW, heartbeat.NO_MICROPHONE))
+    heartbeat.write(tmp_path / "status.json", written)
+    assert heartbeat.read(tmp_path / "status.json") == written
+
+
+@pytest.mark.parametrize("degraded", [[{"brief": "", "said": "is slow"}], [{"brief": "is slow"}], ["is slow"]])
+def test_a_degradation_that_does_not_say_what_is_wrong_is_refused(tmp_path: Path, degraded: list[object]) -> None:
+    (tmp_path / "status.json").write_text(json.dumps({**json.loads(heartbeat.encode(beat())), "degraded": degraded}))
+    with pytest.raises(Rejected):
+        heartbeat.read(tmp_path / "status.json")
+
+
 def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT)
-    heart.beat("starting", None, 0, listening=False, deaf=True)
+    heart.beat("starting", None, 0, listening=False, degraded=DEAF)
     first = heartbeat.read(heart.path)
-    heart.beat("running", NOW, 2, listening=True, deaf=False)
+    heart.beat("running", NOW, 2, listening=True, degraded=())
     second = heartbeat.read(heart.path)
     assert first is not None and second is not None
     assert (first.pid, first.started_at, first.heartbeat, first.pipeline, first.live_sessions) == (4242, NOW, BEAT, "starting", 0)
     assert (second.pid, second.started_at, second.heartbeat, second.pipeline, second.last_audio_out) == (4242, NOW, BEAT, "running", NOW)
     assert (first.listening, second.listening) == (False, True)
-    assert (first.deaf, second.deaf) == (True, False)
+    assert (first.degraded, second.degraded) == (DEAF, ())
     assert second.written_at >= first.written_at
 
 
@@ -301,7 +324,7 @@ async def test_a_process_exits_without_waiting_for_work_left_running_off_the_loo
 def test_each_verdict_has_its_own_light_and_the_broken_ones_warn(tmp_path: Path) -> None:
     verdicts: list[heartbeat.Verdict] = [
         heartbeat.Up(beat()),
-        heartbeat.Up(beat(deaf=True)),
+        heartbeat.Up(beat(degraded=DEAF)),
         heartbeat.Unresponsive(beat()),
         heartbeat.Down(beat()),
         heartbeat.Refused(heartbeat.Refusal("OPENAI_API_KEY is not set"), beat().written_at),
@@ -309,7 +332,7 @@ def test_each_verdict_has_its_own_light_and_the_broken_ones_warn(tmp_path: Path)
         heartbeat.Unreadable(tmp_path, "not JSON"),
     ]
     shown = [indicator.show(None, verdict, NOW) for verdict in verdicts]
-    assert [seen.light for seen in shown] == ["up", "deaf", "not responding", "down", "refused", "off", "unreadable"]
+    assert [seen.light for seen in shown] == ["up", "up", "not responding", "down", "refused", "off", "unreadable"]
     assert len({seen.title for seen in shown}) == len(shown)
     assert [seen.title.startswith("⚠︎") for seen in shown] == [False, True, True, True, True, False, True]
     assert indicator.show(None, heartbeat.Stopped(beat(pipeline="stopped")), NOW).light == "off"
@@ -326,14 +349,26 @@ def test_an_open_turn_shows_in_the_menu_bar_and_is_never_a_notice() -> None:
     assert indicator.show(talking, heartbeat.Unresponsive(beat(listening=True)), NOW).title == "⚠︎ hands stuck"
 
 
-def test_a_daemon_that_cannot_hear_shows_its_own_light_and_says_so_in_words() -> None:
-    deaf = indicator.show(None, heartbeat.Up(beat(deaf=True, listening=True)), NOW)
-    assert (deaf.light, deaf.title) == ("deaf", "⚠︎ hands can't hear")
+def test_a_daemon_that_cannot_hear_says_so_in_the_menu_bar_and_in_words() -> None:
+    deaf = indicator.show(None, heartbeat.Up(beat(degraded=DEAF, listening=True)), NOW)
+    assert (deaf.light, deaf.title) == ("up", "⚠︎ hands can't hear")
     assert deaf.text.startswith("hands is up but cannot hear, as there is no microphone: pid 4242")
 
 
+def test_every_degradation_present_is_said_in_the_menu_bar_and_in_words() -> None:
+    both = indicator.show(None, heartbeat.Up(beat(degraded=(heartbeat.NO_MICROPHONE, SLOW))), NOW)
+    assert (both.light, both.title) == ("up", "⚠︎ hands can't hear, is slow")
+    assert both.text.startswith("hands is up but cannot hear, as there is no microphone, and is slow, as something made it so: pid 4242")
+
+
+def test_a_degradation_joining_another_is_announced_and_one_leaving_is_not() -> None:
+    deaf, both = heartbeat.Up(beat(degraded=DEAF)), heartbeat.Up(beat(degraded=(heartbeat.NO_MICROPHONE, SLOW)))
+    at = [NOW + timedelta(seconds=seconds) for seconds in (0, 100, 200, 300)]
+    assert shown_over(list(zip([deaf, both, deaf, both], at))) == [(), (heartbeat.describe(both, at[1]),), (), (heartbeat.describe(both, at[3]),)]
+
+
 def test_losing_the_microphone_is_announced_and_so_is_a_deaf_daemon_going_down() -> None:
-    up, deaf, down = heartbeat.Up(beat()), heartbeat.Up(beat(deaf=True)), heartbeat.Down(beat())
+    up, deaf, down = heartbeat.Up(beat()), heartbeat.Up(beat(degraded=DEAF)), heartbeat.Down(beat())
     at = [NOW + timedelta(seconds=seconds) for seconds in (0, 100, 110, 200, 300, 400)]
     looks = list(zip([up, deaf, deaf, up, deaf, down], at))
     assert shown_over(looks) == [(), (heartbeat.describe(deaf, at[1]),), (), (), (heartbeat.describe(deaf, at[4]),), (heartbeat.describe(down, at[5]),)]
@@ -347,16 +382,16 @@ def test_a_start_refused_after_it_beat_starting_is_announced_with_its_reason() -
 
 
 def test_a_stuck_daemon_that_recovers_unable_to_hear_says_so() -> None:
-    up, stuck, deaf = heartbeat.Up(beat()), heartbeat.Unresponsive(beat()), heartbeat.Up(beat(deaf=True))
+    up, stuck, deaf = heartbeat.Up(beat()), heartbeat.Unresponsive(beat()), heartbeat.Up(beat(degraded=DEAF))
     at = [NOW + timedelta(seconds=seconds) for seconds in (0, 100, 200)]
     assert shown_over(list(zip([up, stuck, deaf], at))) == [(), (heartbeat.describe(stuck, at[1]),), (heartbeat.describe(deaf, at[2]),)]
 
 
 def test_a_deaf_daemon_is_read_from_the_heartbeat_by_hands_status(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path)
-    heartbeat.write(home.status, beat(pid=os.getpid(), started_at=datetime.now(UTC), written_at=datetime.now(UTC), deaf=True))
+    heartbeat.write(home.status, beat(pid=os.getpid(), started_at=datetime.now(UTC), written_at=datetime.now(UTC), degraded=(heartbeat.NO_MICROPHONE, SLOW)))
     assert main(["--home", str(tmp_path), "status"]) == 0
-    assert capsys.readouterr().out.startswith(f"hands is up but cannot hear, as there is no microphone: pid {os.getpid()}")
+    assert capsys.readouterr().out.startswith(f"hands is up but cannot hear, as there is no microphone, and is slow, as something made it so: pid {os.getpid()}")
 
 
 def shown_over(looks: Sequence[tuple[heartbeat.Verdict, datetime]]) -> list[tuple[str, ...]]:

@@ -413,7 +413,7 @@ def test_a_run_crashed_when_its_last_heartbeat_was_not_a_stop_and_it_is_not_beat
     home = Home(tmp_path)
     now = datetime.now(UTC)
     if pipeline is not None:
-        heartbeat.write(home.status, heartbeat.Status(dead_pid() if pid == GONE else int(pid), now, now - timedelta(seconds=written_ago), heartbeat.HEARTBEAT, pipeline, None, 0, False, False))
+        heartbeat.write(home.status, heartbeat.Status(dead_pid() if pid == GONE else int(pid), now, now - timedelta(seconds=written_ago), heartbeat.HEARTBEAT, pipeline, None, 0, False, ()))
     assert crashed_before(home) is crashed
 
 
@@ -421,7 +421,7 @@ def test_a_heartbeat_whose_pid_a_later_process_took_is_a_crash(tmp_path: Path) -
     home = Home(tmp_path)
     day_ago = datetime.now(UTC) - timedelta(days=1)
     # This process holds the pid, but it started long after the run that wrote the heartbeat.
-    heartbeat.write(home.status, heartbeat.Status(os.getpid(), day_ago, day_ago, heartbeat.HEARTBEAT, "running", None, 0, False, False))
+    heartbeat.write(home.status, heartbeat.Status(os.getpid(), day_ago, day_ago, heartbeat.HEARTBEAT, "running", None, 0, False, ()))
     assert crashed_before(home) is True
 
 
