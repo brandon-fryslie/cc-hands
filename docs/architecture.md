@@ -1931,8 +1931,8 @@ thing that failed `[LAW:no-silent-failure]`:
    without having said `stopped`.
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, the count of live sessions, whether a turn is
-   open, and each way it is running degraded (the first: the microphone is open on no
-   device), each in its own words. `hands status` prints it, saying every degradation. The
+   open, and each way it is running degraded (the microphone is open on no device; the
+   collector has taken none of a signal's last few batches), each in its own words. `hands status` prints it, saying every degradation. The
    daemon running is its one writer: a run locks `~/.hands/hands.lock` before it reads the
    heartbeat or listens, so a second `hands run` on a home a daemon holds is refused there,
    says that hands is already running and the pid the lock names, and leaves the heartbeat
@@ -2061,7 +2061,10 @@ depends on the network. Events are sent in batches from a thread of their own, s
 or absent collector costs a unit of work nothing. Each batch is an `Exported` line naming
 each event by its span id, how long the send took, and, where the collector did not take
 it, why `[LAW:nothing-unseen]`; a stop waits on the batches still queued for one timeout
-in all, and records those it leaves unsent. The `hands.start` event names the collector. Only
+in all, and records those it leaves unsent. Those lines are folded, per signal, into how many
+batches in a row the collector has not taken (`otlp.failing`); from the third on, the up heartbeat
+carries it as a degradation naming the signal, since when, and the last error, until a batch is
+taken or the collector is unset. The `hands.start` event names the collector. Only
 `hands run` sends to it. Every other command is one `hands.command` event, written by the
 dispatcher every command passes through (`hands.daemon.cli.commanded`), carrying the command,
 the home it ran on, its arguments as parsed, its exit code, and how long it took; it ends failed where the command

@@ -226,7 +226,8 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, heart: heartbeat.Heart, record: Record, quit_event: asyncio.Event, after_crash: bool,
+    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, heart: heartbeat.Heart, record: Record,
+    degraded: Callable[[], tuple[heartbeat.Degradation, ...]], quit_event: asyncio.Event, after_crash: bool,
     environment: Mapping[str, str],
     run_start: Start,
 ) -> Ended:
@@ -293,7 +294,7 @@ async def run(
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, minded.noting, key, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, heart, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, run_start)
+                    await converse(voice, home, sessions, heart, degraded, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, run_start)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
@@ -327,6 +328,7 @@ async def converse(
     home: Home,
     sessions: Sessions,
     heart: heartbeat.Heart,
+    degraded: Callable[[], tuple[heartbeat.Degradation, ...]],
     quit_event: asyncio.Event,
     after_crash: bool,
     record: Record,
@@ -353,7 +355,7 @@ async def converse(
     def beat() -> None:
         # A turn opened with no microphone hears nothing, so it is not listening.
         deaf = voice.audio.deaf
-        heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(heartbeat.NO_MICROPHONE,) if deaf else ())
+        heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if deaf else ()), *degraded()))
 
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead

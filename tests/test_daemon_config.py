@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -302,7 +302,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     recorded: list[Entry] = []
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, asyncio.Event(), False, {}, run_start)
+            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), asyncio.Event(), False, {}, run_start)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -333,7 +333,7 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     monkeypatch.setattr(cli, "to_terminal", kept)
     monkeypatch.setattr(cli.logger, "remove", kept)
 
-    def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _after_crash: bool, run_start: Start) -> cli.Run:
+    def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start) -> cli.Run:
         sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=record)
 
         async def refused(quit_event: asyncio.Event) -> Ended:

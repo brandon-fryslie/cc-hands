@@ -24,7 +24,7 @@ from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, r
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
 from hands.sessions import audit, heartbeat, marketplace, recall, wide, wrapper
 from hands.sessions.home import Home, default_home
-from hands.sessions.otlp import exporting
+from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 
@@ -378,9 +378,11 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Set
     kept = None if restarted is None else still_shown(restarted)
     shown = start_indicator(home) if kept is None else kept
     threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
-    with exporting(settings.config.collector, audit_log.record) as exported:
+    # [LAW:one-source-of-truth] what the collector is failing to take is folded from the Exported lines as they are written.
+    exports = Exports(audit_log.record, lambda: datetime.now(UTC))
+    with exporting(settings.config.collector, exports.record) as exported:
         record = said_failed(exported)
-        ending = asyncio.run(launch(lambda: loaded(home, settings, heart, record, after_crash, run_start), heart, lambda: edited(home, record, partial(reachable, home), settings), record, run_start))
+        ending = asyncio.run(launch(lambda: loaded(home, settings, heart, record, exports.degraded, after_crash, run_start), heart, lambda: edited(home, record, partial(reachable, home), settings), record, run_start))
     return ending, shown
 
 
@@ -456,7 +458,7 @@ def reachable(home: Home, settings: Config) -> None:
     backend(settings.llm, home, os.environ)
 
 
-def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, after_crash: bool, run_start: Start) -> Run:
+def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import Configured, configured_from, run
@@ -474,7 +476,7 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
                 reached = readiness.Missing(f"hands cannot start on its settings: {error}")
         survey(readiness.check(home, path, True, reached, running))
 
-    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, quit_event, after_crash, os.environ, run_start)
+    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, quit_event, after_crash, os.environ, run_start)
 
 
 def start_indicator(home: Home) -> int:
