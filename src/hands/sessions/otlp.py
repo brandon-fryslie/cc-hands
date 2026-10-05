@@ -78,12 +78,11 @@ def exporting(collector: str | None, record: Record) -> Generator[Record]:
 
 @dataclass(frozen=True)
 class Failing:
-    """A run of a signal's batches the collector did not take, each after the one before: how many, when the first was
-    said, and why the last was not taken."""
+    """A run of a signal's batches the collector did not take all of, each after the one before: how many, and when the
+    first was said. Why each was not taken is in its Exported line."""
 
     batches: int
     since: datetime
-    error: str
 
 
 def failing(streak: Failing | None, exported: Exported, at: datetime) -> Failing | None:
@@ -92,19 +91,20 @@ def failing(streak: Failing | None, exported: Exported, at: datetime) -> Failing
     match exported.error, streak:
         case None, _:
             return None
-        case str(error), None:
-            return Failing(1, at, error)
-        case str(error), Failing(batches=batches, since=since):
-            return Failing(batches + 1, since, error)
+        case str(), None:
+            return Failing(1, at)
+        case str(), Failing(batches=batches, since=since):
+            return Failing(batches + 1, since)
 
 
 def degradation(collector: str, signal: Signal, streak: Failing | None) -> Degradation | None:
     """What hands says of `signal`'s run of untaken batches, once it is long enough to be more than a blip."""
     if streak is None or streak.batches < FAILING_BATCHES:
         return None
-    # The words hold no count, which every batch would change: the same failure is not news again each time it repeats.
-    since = streak.since.astimezone().strftime("%H:%M:%S")
-    return Degradation(f"can't export {signal}", f"the collector at {collector} has taken none of its {signal} since {since}, the last for {streak.error}")
+    # The words hold nothing a batch would change, neither a count nor an error: the same failure is not news again each
+    # time it repeats, however the collector words it. Each error is in its Exported line.
+    since = streak.since.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    return Degradation(f"can't export {signal}", f"the collector at {collector} has not taken all of its {signal} since {since}")
 
 
 class Exports:

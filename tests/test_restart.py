@@ -138,7 +138,7 @@ async def test_settings_edited_end_a_run_as_a_restart(tmp_path: Path) -> None:
         return EDITED
 
     recorded: list[audit.Entry] = []
-    assert await launch(lambda: run, heart, edited, recorded.append, Start(restarted=False)) == "restart"
+    assert await launch(lambda: run, heart, lambda: (), edited, recorded.append, Start(restarted=False)) == "restart"
     # Told to stop before it was ready, the start ends cancelled.
     assert recorded[0] == EDITED and start_outcomes(recorded) == ["cancelled"] and len(recorded) == 2
 
@@ -159,7 +159,7 @@ async def test_settings_edited_as_a_run_ends_are_taken_up_by_the_next_start_and_
         return EDITED
 
     recorded: list[audit.Entry] = []
-    assert await launch(lambda: run, heart, edited, recorded.append, Start(restarted=False)) == "quit"
+    assert await launch(lambda: run, heart, lambda: (), edited, recorded.append, Start(restarted=False)) == "quit"
     assert start_outcomes(recorded) == ["cancelled"] and len(recorded) == 1
 
 
@@ -175,7 +175,7 @@ async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: 
 
     recorded: list[audit.Entry] = []
     with pytest.raises(PermissionError, match="config.toml"):
-        await launch(lambda: run, heart, edited, recorded.append, Start(restarted=False))
+        await launch(lambda: run, heart, lambda: (), edited, recorded.append, Start(restarted=False))
     # A start that ends raising is failed, with what it raised.
     assert [(entry.outcome, entry.error) for entry in recorded if isinstance(entry, WideEvent)] == [("failed", "PermissionError: config.toml")]
     # As a run whose background task failed: its last heartbeat does not read as stopped.
@@ -209,7 +209,7 @@ async def test_the_restart_signal_ends_a_run_as_a_restart_whose_last_heartbeat_s
         await quit_event.wait()
         return Ended(NOW, 3)
 
-    launched = asyncio.create_task(launch(lambda: run, heart, unedited, lambda _entry: None, Start(restarted=False)))
+    launched = asyncio.create_task(launch(lambda: run, heart, lambda: (), unedited, lambda _entry: None, Start(restarted=False)))
     while not told:
         await asyncio.sleep(0.005)
     os.kill(os.getpid(), RESTART_SIGNAL)
@@ -230,7 +230,7 @@ async def test_a_restart_asked_while_a_quit_winds_the_run_down_does_not_start_it
         await asyncio.sleep(0.05)
         return Ended(None, 0)
 
-    launched = asyncio.create_task(launch(lambda: run, heart, unedited, lambda _entry: None, Start(restarted=False)))
+    launched = asyncio.create_task(launch(lambda: run, heart, lambda: (), unedited, lambda _entry: None, Start(restarted=False)))
     await winding_down.wait()
     os.kill(os.getpid(), RESTART_SIGNAL)
     assert await launched == "quit"

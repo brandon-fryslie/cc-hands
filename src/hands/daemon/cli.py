@@ -382,7 +382,7 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Set
     exports = Exports(audit_log.record, lambda: datetime.now(UTC))
     with exporting(settings.config.collector, exports.record) as exported:
         record = said_failed(exported)
-        ending = asyncio.run(launch(lambda: loaded(home, settings, heart, record, exports.degraded, after_crash, run_start), heart, lambda: edited(home, record, partial(reachable, home), settings), record, run_start))
+        ending = asyncio.run(launch(lambda: loaded(home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, home), settings), record, run_start))
     return ending, shown
 
 
@@ -391,7 +391,7 @@ type Run = Callable[[asyncio.Event], Coroutine[object, object, Ended]]
 
 
 async def launch(
-    load: Callable[[], Run], heart: heartbeat.Heart, edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record, run_start: Start
+    load: Callable[[], Run], heart: heartbeat.Heart, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record, run_start: Start
 ) -> Ending:
     """The run `load` makes, with that load, which imports Pipecat, as the first step of its start; then how it was told to end.
     A run that ends before it was ready ends its start here: failed with what it raised, or cancelled, told to stop first.
@@ -435,7 +435,7 @@ async def launch(
     try:
         with run_start.ending(record):
             # No session has joined before the hooks are served, which is after the import.
-            run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, quit_event)
+            run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, degraded, quit_event)
             last = Ended(None, 0) if run is None else await run(quit_event)
             if failed:
                 raise failed[0]

@@ -284,14 +284,14 @@ async def run(
         quiet_cues = QuietCues()
         tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, lambda: quiet_cues.owe(WORKING))]
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, quit_event)
+        config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, quit_event)
         if config is not None:
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
             async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.fritter, home.audit, shlex.join(invocation(home, "recall")), record, environment) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)
-                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, minded.noting, key, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, quit_event)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, minded.noting, key, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, degraded, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, heart, degraded, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, run_start)

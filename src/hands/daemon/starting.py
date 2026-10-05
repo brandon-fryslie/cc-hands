@@ -130,7 +130,8 @@ def again(argv: list[str]) -> NoReturn:
     os.execv(argv[0], argv)
 
 
-async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: heartbeat.Heart, live: Callable[[], int], quit_event: asyncio.Event) -> T | None:
+async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: heartbeat.Heart, live: Callable[[], int], degraded: Callable[[], tuple[heartbeat.Degradation, ...]], quit_event: asyncio.Event
+) -> T | None:
     """What `prepare` makes, while the loop beats "starting"; None when told to stop first.
 
     [LAW:single-enforcer] one beater says "starting" for each step of the start. Its slow steps run off the loop:
@@ -139,7 +140,7 @@ async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: h
     a stuck loop as not responding.
     """
     preparing = asyncio.create_task(prepare())
-    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, live(), listening=False, degraded=()), heart.period.total_seconds()))
+    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, live(), listening=False, degraded=degraded()), heart.period.total_seconds()))
     quitting = asyncio.create_task(quit_event.wait())
     try:
         await asyncio.wait({preparing, starting, quitting}, return_when=asyncio.FIRST_COMPLETED)
