@@ -41,7 +41,7 @@ from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, fail, here, unit
-from hands.sessions.wrapper import PACKAGED, real_claude
+from hands.sessions.wrapper import Unpackaged, packaged, real_claude
 
 # What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu, 2.1.284).
 # LSP needs no switch: it comes only from plugins, the brain's own setup installs none, and hands' own declares none.
@@ -832,7 +832,14 @@ async def start(launch: Launch, record: Record) -> Brain:
     station = launch.station
     # [LAW:nothing-unseen] the launch is one event, from the spawn until the brain's input is up, or what failed it.
     with unit("brain.launch", record):
-        annotate(session=launch.session, account=launch.account, model=station.model, config_dir=station.config_dir, cwd=station.cwd, fritter=PACKAGED)
+        annotate(session=launch.session, account=launch.account, model=station.model, config_dir=station.config_dir, cwd=station.cwd)
+        # [LAW:one-source-of-truth] the fritter built with this hands, never a copy installed apart from it: what hands
+        # asks of fritter and what the brain's fritter answers are one build's.
+        try:
+            fritter = packaged()
+        except Unpackaged as error:
+            raise Unstartable(str(error)) from error
+        annotate(fritter=fritter)
         claude = brain_claude(station.inherited)
         hooks: asyncio.Queue[_Posted] = asyncio.Queue()
         listener, url = await _listen(hooks)
@@ -840,9 +847,7 @@ async def start(launch: Launch, record: Record) -> Brain:
         sockets = Path(tempfile.mkdtemp(prefix="hands-brain-"))
         running: ClaudeCode | None = None
         try:
-            # [LAW:one-source-of-truth] the fritter built with this hands, never a copy installed apart from it: what hands
-            # asks of fritter and what the brain's fritter answers are one build's.
-            running = await spawn(station, [str(PACKAGED), "--socket-dir", str(sockets), "--", *command(launch, claude, url)])
+            running = await spawn(station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url)])
             annotate(pid=running.pid)
             typist = await _typist(running, sockets, launch.session)
         except BaseException:

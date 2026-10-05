@@ -13,6 +13,7 @@ from hands.core.wire import UPSTREAM
 from hands.daemon.config import ANTHROPIC_URL, LLM, Anthropic, Claude, OpenAI
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+from hands.sessions.wrapper import Unpackaged, packaged
 from hands.voice.backends import AnthropicBackend, ClaudeCodeBackend, LLMBackend, OpenAICompatibleBackend
 
 # Where the Anthropic key lives when ANTHROPIC_API_KEY is not set: a generic password in the keychain.
@@ -46,7 +47,9 @@ def backend(llm: LLM, home: Home, environment: Mapping[str, str]) -> LLMBackend:
                 account = logged_in(home.brain, UPSTREAM, environment)
                 answered(home.brain)
                 account_kept_out(home.brain)
-            except (NotLoggedIn, Unstartable) as error:
+                # The brain runs under the fritter hands' package carries: a hands built without it is refused here, not at its start.
+                packaged()
+            except (NotLoggedIn, Unstartable, Unpackaged) as error:
                 raise Rejected(str(error)) from error
             return ClaudeCodeBackend(model=model, config_dir=home.brain, account=account)
 

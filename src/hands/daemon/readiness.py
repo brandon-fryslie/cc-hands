@@ -188,6 +188,11 @@ def plugin_listed(raw: str) -> Finding:
 def shim(home: Home, path: str) -> Finding:
     """Whether `claude` on this PATH is the shim this hands writes, with the fritter this hands carries, so it starts
     every interactive session under fritter."""
+    # Every fix below is `hands install-fritter`'s, which a hands built without its fritter cannot run: the rebuild is said instead.
+    try:
+        carried = wrapper.packaged()
+    except wrapper.Unpackaged as error:
+        return Missing(str(error))
     found = shutil.which("claude", path=path)
     claude = None if found is None else Path(found)
     # [LAW:dataflow-not-control-flow] what to do is read off what is there: an installed shim wants only the PATH.
@@ -204,11 +209,11 @@ def shim(home: Home, path: str) -> Finding:
             # [LAW:one-source-of-truth] the fritter in a home's bin is a copy of the packaged one, so a copy that has
             # drifted from it, as one does when hands is upgraded or a checkout's fritter rebuilt, is said, never trusted.
             try:
-                current = filecmp.cmp(runs, wrapper.PACKAGED, shallow=False)
+                current = filecmp.cmp(runs, carried, shallow=False)
             except OSError as error:
-                return Unknown(f"cannot tell whether {runs} is the fritter this hands carries, {wrapper.PACKAGED}: {error}")
+                return Unknown(f"cannot tell whether {runs} is the fritter this hands carries, {carried}: {error}")
             if not current:
-                return Missing(f"`claude` on this PATH is hands' shim, {found}, but its fritter {runs} is not the one this hands carries, {wrapper.PACKAGED}: run `hands install-fritter`")
+                return Missing(f"`claude` on this PATH is hands' shim, {found}, but its fritter {runs} is not the one this hands carries, {carried}: run `hands install-fritter`")
             return Ready(f"`claude` on this PATH is hands' shim, {found}: every interactive session started from it can be typed into")
 
 
