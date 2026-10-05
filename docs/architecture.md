@@ -1547,7 +1547,7 @@ the task asks the summariser for what is due, twenty things to a call, leaves be
 parents keyed by their sentences. Each pass is one `summary.backlog` event: how many
 things the backlog has, how many were known, said, and still unsaid at its end, its rounds,
 calls, failed calls, and stray reply lines, and the things a reply left out (`left_out`) and
-what each failed call raised (`errors`), and whether lit has a workspace there (`tracked`). A
+what each failed call raised (`errors`), and, once lit has answered, whether it has a workspace there (`tracked`). A
 directory lit has none in — `lit init` never ran, or it is in no git repository — has no
 backlog: its pass is ok, `tracked` false and every count zero, and `read_backlog` answers an
 empty backlog with `tracked` false. A pass fails with lit's error when the export could not
