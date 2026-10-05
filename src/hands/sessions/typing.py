@@ -67,6 +67,13 @@ class Typist:
         match answer:
             case {"ok": True}:
                 return
+            # A session keeps the fritter it started under for its whole life, so one started before hands was updated
+            # refuses a kind added since in exactly fritter's words (control.go, `no request kind named %q`).
+            case {"ok": False, "reason": str() as reason} if reason == f"no request kind named {json.dumps(request['kind'])}":
+                raise Untyped(
+                    f"session {self.session} runs a fritter older than this hands, one with no {request['kind']} request: "
+                    "restart that session so it starts under the fritter hands installed"
+                )
             case {"ok": False, "reason": str() as reason}:
                 raise Untyped(f"fritter did not type into session {self.session}: {reason}")
             case other:

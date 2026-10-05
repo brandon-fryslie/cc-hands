@@ -117,6 +117,23 @@ def test_anything_but_a_yes_is_raised_with_what_fritter_said(short_dir: Path, an
         asked(short_dir / "f.sock", answer, lambda t: t.type(PromptText("hello")))
 
 
+def test_a_session_under_an_older_fritter_is_refused_naming_it_and_the_restart(short_dir: Path) -> None:
+    # What the fritter of Sep 30 answered the live run of 2026-10-05, which asked whether the session was pasting.
+    old = b'{"ok":false,"reason":"no request kind named \\"pasting\\""}\n'
+    with pytest.raises(Untyped) as refused:
+        asked(short_dir / "f.sock", old, lambda t: t.pasting())
+    assert str(refused.value) == (
+        f"session {SID} runs a fritter older than this hands, one with no pasting request: "
+        "restart that session so it starts under the fritter hands installed"
+    )
+
+
+def test_an_unknown_kind_hands_did_not_send_is_said_as_fritter_said_it(short_dir: Path) -> None:
+    answer = b'{"ok":false,"reason":"no request kind named \\"shout\\""}\n'
+    with pytest.raises(Untyped, match=re.escape('no request kind named "shout"')):
+        asked(short_dir / "f.sock", answer, lambda t: t.pasting())
+
+
 def test_a_socket_nobody_is_listening_on_says_so(short_dir: Path) -> None:
     # The common case: the session's process ended and took its fritter with it.
     path = short_dir / "gone.sock"
