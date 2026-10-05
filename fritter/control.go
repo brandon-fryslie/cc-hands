@@ -20,7 +20,7 @@ import (
 // that has to guess.
 type request struct {
 	Pid     int    `json:"pid"`     // the process the caller means to type into; see inject
-	Kind    string `json:"kind"`    // "text", "command" or "key"
+	Kind    string `json:"kind"`    // "text", "command", "key", or "pasting", which types nothing
 	Text    string `json:"text"`    // kinds "text" and "command": the characters to paste, already escaped by the caller
 	Command string `json:"command"` // kind "command": the command, typed as keys ahead of its text
 	Key     string `json:"key"`     // kind "key": one of the names in keystrokes
@@ -119,6 +119,15 @@ func (w *Wrapped) inject(asked request) response {
 	// wrapped, so this is where a request meant for some other session is turned away.
 	if child := w.cmd.Process.Pid; asked.Pid != child {
 		return refuse(fmt.Sprintf("this socket types into process %d and the request is for process %d. An address inherited from another session reaches that session, not this one", child, asked.Pid))
+	}
+	// [LAW:one-source-of-truth] Whether the child has turned bracketed paste on is read here,
+	// where its output is: Claude Code turns it on once its input is up, so a caller about to
+	// type a first prompt waits on the child's own word instead of a guess at how long it takes.
+	if asked.Kind == "pasting" {
+		if !w.paste.enabled() {
+			return refuse("this session has not turned bracketed paste on")
+		}
+		return response{OK: true}
 	}
 	keys, err := w.keys(asked)
 	if err != nil {

@@ -50,6 +50,11 @@ class Typist:
         """Press one named chord."""
         self._ask({"pid": self.pid, "kind": "key", "key": key})
 
+    def pasting(self) -> None:
+        """Returns if the session has turned bracketed paste on, which Claude Code does once its input is up, and raises
+        Untyped saying why if it has not. Types nothing."""
+        self._ask({"pid": self.pid, "kind": "pasting"})
+
     def _ask(self, request: dict[str, object]) -> None:
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:

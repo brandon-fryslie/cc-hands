@@ -737,16 +737,33 @@ async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_en
 ) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
-    with pytest.raises(BrainGone, match="exited"):
-        await brain.ask("die", unasked)
-    assert await brain.exited() == 3
-    with pytest.raises(BrainGone, match="before it was asked"):
-        await brain.ask("anyone?", unasked)
-    # The watch that saw it die and the stop at teardown both wait on the one exit.
-    await brain.stop()
+    try:
+        # Bounded, so a brain that never dies fails here, naming the wait it hung in.
+        async with asyncio.timeout(TAKE_SECONDS * 2):
+            with pytest.raises(BrainGone, match="exited"):
+                await brain.ask("die", unasked)
+            assert await brain.exited() == 3
+            with pytest.raises(BrainGone, match="before it was asked"):
+                await brain.ask("anyone?", unasked)
+    finally:
+        # The watch that saw it die and this stop both wait on the one exit; a brain that did not die is ended here.
+        await brain.stop()
     [ran] = events(recorded, "brain.run")
     shown = ran.facts["shown"]
     assert ran.facts["code"] == 3 and isinstance(shown, str) and "bye" in shown
+
+
+async def test_a_brain_slow_to_read_its_terminal_is_typed_into_once_its_input_is_up(
+    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A loaded machine starts it slowly: a turn typed before it reads raw has its Return made a newline, and is untaken.
+    monkeypatch.setenv("STARTS_AFTER", "1")
+    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    try:
+        async with asyncio.timeout(TAKE_SECONDS * 2):
+            assert await brain.ask("what is running?", unasked) == BrainAnswered("p1", None)
+    finally:
+        await brain.stop()
 
 
 async def test_a_turn_never_taken_fails_naming_hands_login_and_the_next_turn_is_its_own(
@@ -1052,6 +1069,16 @@ async def test_a_fritter_that_cannot_be_run_is_refused_with_what_its_terminal_sh
     unrunnable.chmod(0o644)
     with pytest.raises(Unstartable, match=r"(?s)fritter exited \(126\).*[Pp]ermission denied"):
         await start(launch(tmp_path, unrunnable), lambda _entry: None)
+
+
+async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_showed_and_left_not_running(
+    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("hands.brain.process.START_SECONDS", 1.0)
+    fake_claude.write_text("#!/bin/sh\necho stuck on a screen\nsleep 30\n")
+    with pytest.raises(Unstartable, match=r"(?s)had not turned its input on \(.*bracketed paste.*\) after 1s.*stuck on a screen"):
+        await start(launch(tmp_path, fritter), lambda _entry: None)
+    await until(lambda: not running(tmp_path))
 
 
 async def test_a_brain_with_no_fritter_to_run_under_is_refused_naming_the_install(tmp_path: Path, fake_claude: Path) -> None:
