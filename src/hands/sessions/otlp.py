@@ -1,4 +1,5 @@
-"""The OTLP export edge: each wide event the audit log records is also sent to an OpenTelemetry collector, as a span.
+"""The OTLP export edge: each wide event the audit log records is also sent to an OpenTelemetry collector, as a span and
+as a log record.
 
     [telemetry]
     collector = "http://otel.example:4318"
@@ -6,12 +7,13 @@
 The audit log stays the whole record, written first and whatever becomes of the collector: hands reads it back (the
 catch-up, `hands log`), so what it holds never depends on a network [LAW:dataflow-not-control-flow]. The collector is
 sent the same event, encoded as OTLP/HTTP JSON, so the homelab's stores and Grafana hold it beside every other
-service's. What sits behind the collector is the homelab's: hands names only its address.
+service's: the span for the trace store, and the log record, carrying the span's trace and span ids, for the event
+store. What sits behind the collector is the homelab's: hands names only its address.
 
-[LAW:nothing-unseen] each batch sent is an Exported line in the log, naming each span by its id, how long the send took,
-and, where the collector did not take it, why: a telemetry failure is itself telemetry, and a run whose events all
-reached the collector says so rather than saying nothing. Events are sent from a thread of their own, in batches, so a
-collector that is slow or gone costs a unit of work nothing.
+[LAW:nothing-unseen] each batch sent as each signal is an Exported line in the log, naming each event by its span id, how
+long the send took, and, where the collector did not take it, why: a telemetry failure is itself telemetry, and a run
+whose events all reached the collector says so rather than saying nothing. Events are sent from a thread of their own,
+in batches, so a collector that is slow or gone costs a unit of work nothing.
 """
 
 import json
@@ -23,12 +25,12 @@ from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Literal, cast
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
-from hands.sessions.audit import Entry, Exported, Record, Signal, jsonable, level
+from hands.sessions.audit import Entry, Exported, Level, Record, Signal, jsonable, level
 from hands.sessions.heartbeat import Degradation
 from hands.sessions.wide import Fact, Outcome, WideEvent
 
@@ -41,8 +43,6 @@ BATCH_SPANS = 512
 TIMEOUT_SECONDS = 5.0
 # Why a batch a stop left no time for, or one sent once the exporter was closed, was not sent.
 STOPPED = "hands stopped before the batch could be sent"
-# The signal each event is sent as: a span.
-SIGNAL: Signal = "traces"
 # How many of a signal's batches in a row the collector must not take before hands says it is failing: one is a blip.
 FAILING_BATCHES = 3
 
@@ -51,6 +51,10 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _STATUS: Mapping[Outcome, int] = {"cancelled": 0, "ok": 1, "failed": 2}
 # OTLP's SPAN_KIND_INTERNAL: a unit of work inside hands, neither serving a request nor making one.
 _INTERNAL = 1
+# Each batch is sent as each signal, in this order.
+SIGNALS: tuple[Signal, ...] = ("traces", "logs")
+# OTLP's SeverityNumber of each audit level: INFO and ERROR.
+_SEVERITY: Mapping[Level, int] = {"info": 9, "error": 17}
 # Straight to the address the settings name, past every proxy: the environment's, which in a session fritter taps is the
 # tap (hands.sessions.untap), and the system's.
 _DIRECT = build_opener(ProxyHandler({}))
@@ -184,9 +188,10 @@ class Exporter:
         # [LAW:no-shared-mutable-globals] close alone writes it, once, finite from then on; the thread reads it as it
         # sends each batch, and send to know the queue's end is marked.
         self._deadline = math.inf
-        # [LAW:no-shared-mutable-globals] the thread alone writes it, as each send begins; close reads it once the thread
-        # has outlived the timeout.
-        self._sending: tuple[str, ...] = ()
+        # [LAW:no-shared-mutable-globals] the thread alone writes it, as each send begins: the batch's span ids and the
+        # signals it is still to be sent as, the one being sent first; close reads it once the thread has outlived the
+        # timeout.
+        self._sending: tuple[tuple[str, ...], tuple[Signal, ...]] = ((), ())
         # [LAW:no-shared-mutable-globals] send puts and the thread takes; close takes what is left once the thread has
         # outlived the timeout.
         self._queue: queue.SimpleQueue[WideEvent | _Closed] = queue.SimpleQueue()
@@ -202,7 +207,8 @@ class Exporter:
             if not closed:
                 self._queue.put(event)
         if closed:
-            self._record(Exported(self._collector, SIGNAL, (event.span_id,), 0.0, STOPPED))
+            for signal in SIGNALS:
+                self._record(Exported(self._collector, signal, (event.span_id,), 0.0, STOPPED))
 
     def close(self) -> None:
         """Send what is queued and stop: every event sent before this is in an Exported line when it returns. The batches
@@ -217,8 +223,12 @@ class Exporter:
         if self._thread.is_alive():
             # [LAW:nothing-unseen] a send that outlived the timeout, which bounds each socket operation and not a name's
             # resolution: what it holds and what is queued behind it are said here, as the process may end before it.
-            unsent = [taken.span_id for taken in _drained(self._queue) if isinstance(taken, WideEvent)]
-            self._record(Exported(self._collector, SIGNAL, (*self._sending, *unsent), 0.0, f"{STOPPED}: a send was still waiting on the collector"))
+            unsent = tuple(taken.span_id for taken in _drained(self._queue) if isinstance(taken, WideEvent))
+            sending, owed = self._sending
+            # A signal the batch was already taken as owes only what is queued behind it.
+            for signal in SIGNALS:
+                if held := (*(sending if signal in owed else ()), *unsent):
+                    self._record(Exported(self._collector, signal, held, 0.0, f"{STOPPED}: a send was still waiting on the collector"))
 
     def _run(self) -> None:
         closed = False
@@ -245,18 +255,21 @@ class Exporter:
         return batch, False
 
     def _deliver(self, batch: Sequence[WideEvent]) -> None:
-        began = time.monotonic()
-        left = min(self._timeout, self._deadline - began)
-        self._sending = tuple(event.span_id for event in batch)
-        refused = self._sent(batch, left) if left > 0 else STOPPED
-        self._record(Exported(self._collector, SIGNAL, self._sending, (time.monotonic() - began) * 1000, refused))
+        ids = tuple(event.span_id for event in batch)
+        for index, signal in enumerate(SIGNALS):
+            began = time.monotonic()
+            left = min(self._timeout, self._deadline - began)
+            self._sending = (ids, SIGNALS[index:])
+            refused = self._sent(signal, batch, left) if left > 0 else STOPPED
+            self._record(Exported(self._collector, signal, ids, (time.monotonic() - began) * 1000, refused))
 
-    def _sent(self, batch: Sequence[WideEvent], timeout: float) -> str | None:
-        """Why the collector did not take `batch`, None where it took every span."""
+    def _sent(self, signal: Signal, batch: Sequence[WideEvent], timeout: float) -> str | None:
+        """Why the collector did not take `batch` as `signal`, None where it took every event."""
         try:
-            request = Request(f"{self._collector}/v1/{SIGNAL}", data=json.dumps(spans(batch), ensure_ascii=False, allow_nan=False).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            body = json.dumps(_ENCODED[signal](batch), ensure_ascii=False, allow_nan=False).encode()
+            request = Request(f"{self._collector}/v1/{signal}", data=body, headers={"Content-Type": "application/json"}, method="POST")
             with _DIRECT.open(request, timeout=timeout) as response:
-                return rejected(response.read(), len(batch))
+                return rejected(signal, response.read(), len(batch))
         except Exception as error:
             # Unreachable, an HTTP error status, or an event that would not encode: the batch is lost to the collector
             # alike, and said alike.
@@ -293,15 +306,25 @@ def _json_or_none(body: bytes) -> object:
         return None
 
 
-def rejected(body: bytes, sent: int) -> str | None:
-    """Why the collector rejected spans of a batch of `sent` it answered with success, from its
-    ExportTraceServiceResponse; None where it took them all."""
-    # rejectedSpans is an int64, which OTLP's JSON may spell as a string; a body of any other shape rejects nothing.
-    match _json_or_none(body):
-        case {"partialSuccess": {"rejectedSpans": int() | str() as count, "errorMessage": str(why)}} if str(count).isdecimal() and int(count) > 0:
-            return f"the collector rejected {int(count)} of {sent} spans: {why}"
-        case {"partialSuccess": {"rejectedSpans": int() | str() as count}} if str(count).isdecimal() and int(count) > 0:
-            return f"the collector rejected {int(count)} of {sent} spans"
+# The field of each signal's Export*ServiceResponse that counts what the collector rejected, and what it counts.
+_REJECTED: Mapping[Signal, tuple[str, str]] = {"traces": ("rejectedSpans", "spans"), "logs": ("rejectedLogRecords", "log records")}
+
+
+def rejected(signal: Signal, body: bytes, sent: int) -> str | None:
+    """Why the collector rejected events of a batch of `sent` it answered with success, from its response for `signal`;
+    None where it took them all."""
+    field, what = _REJECTED[signal]
+    match parsed := _json_or_none(body):
+        case {"partialSuccess": dict()}:
+            # A JSON object's keys are strings.
+            said = cast(dict[str, dict[str, object]], parsed)["partialSuccess"]
+        case _:
+            # A body of any other shape rejects nothing.
+            return None
+    # The count is an int64, which OTLP's JSON may spell as a string.
+    match said.get(field), said.get("errorMessage"):
+        case int() | str() as count, why if str(count).isdecimal() and int(count) > 0:
+            return f"the collector rejected {int(count)} of {sent} {what}" + (f": {why}" if isinstance(why, str) and why else "")
         case _:
             return None
 
@@ -318,11 +341,35 @@ def spans(events: Sequence[WideEvent]) -> dict[str, object]:
     }
 
 
-def _span(event: WideEvent) -> dict[str, object]:
-    # [LAW:one-source-of-truth] the attributes are the event's own fields under the names its audit line gives them, so
-    # one query reads either; counts and facts are flattened under their names, as OTLP attributes are spelled.
-    started = (event.started_at - _EPOCH) // timedelta(microseconds=1) * 1000
+def logs(events: Sequence[WideEvent]) -> dict[str, object]:
+    """An OTLP ExportLogsServiceRequest, in its JSON encoding, holding each event as one log record."""
+    return {
+        "resourceLogs": [
+            {
+                "resource": {"attributes": _attributes({"service.name": SERVICE})},
+                "scopeLogs": [{"scope": {"name": "hands.sessions.wide"}, "logRecords": [_log_record(event) for event in events]}],
+            }
+        ]
+    }
+
+
+_ENCODED: Mapping[Signal, Callable[[Sequence[WideEvent]], dict[str, object]]] = {"traces": spans, "logs": logs}
+
+
+def _started(event: WideEvent) -> int:
+    """When `event` began, in nanoseconds since the epoch, to the microsecond."""
+    return (event.started_at - _EPOCH) // timedelta(microseconds=1) * 1000
+
+
+def _fields(event: WideEvent) -> dict[str, object]:
+    # [LAW:one-source-of-truth] the event's own fields under the names its audit line gives them, so one query reads
+    # either; counts and facts are flattened under their names, as OTLP attributes are spelled.
     failed: dict[str, object] = {} if event.error is None else {"error": event.error, "trace": "\n".join(event.trace)}
+    return {"outcome": event.outcome, **failed, **{f"counts.{name}": n for name, n in event.counts.items()}, **{f"facts.{name}": fact for name, fact in event.facts.items()}}
+
+
+def _span(event: WideEvent) -> dict[str, object]:
+    started = _started(event)
     return {
         "traceId": event.trace_id,
         "spanId": event.span_id,
@@ -332,10 +379,23 @@ def _span(event: WideEvent) -> dict[str, object]:
         "kind": _INTERNAL,
         "startTimeUnixNano": str(started),
         "endTimeUnixNano": str(started + round(event.duration_ms * 1_000_000)),
-        "attributes": _attributes(
-            {"outcome": event.outcome, **failed, **{f"counts.{name}": n for name, n in event.counts.items()}, **{f"facts.{name}": fact for name, fact in event.facts.items()}}
-        ),
+        "attributes": _attributes(_fields(event)),
         "status": {"code": _STATUS[event.outcome], "message": "" if event.error is None else event.error},
+    }
+
+
+def _log_record(event: WideEvent) -> dict[str, object]:
+    # The event store's row of the event: its name as the body, its audit level as the severity, and its span's ids, which
+    # open the trace it is part of. A log record has no end, so how long it took is an attribute.
+    severity = level(event)
+    return {
+        "timeUnixNano": str(_started(event)),
+        "severityNumber": _SEVERITY[severity],
+        "severityText": severity.upper(),
+        "body": {"stringValue": event.event},
+        "attributes": _attributes({"duration_ms": event.duration_ms, **_fields(event)}),
+        "traceId": event.trace_id,
+        "spanId": event.span_id,
     }
 
 

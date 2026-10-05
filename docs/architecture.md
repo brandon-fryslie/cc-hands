@@ -2063,13 +2063,15 @@ unit opened inside another names that one's as its `parent_id`, so a run's units
 trace.
 
 With `[telemetry] collector` set, the export edge also sends each event to that
-OpenTelemetry collector, as an OTLP/HTTP span carrying `service.name=hands`
-(`hands.sessions.otlp`). The event is written to the log first, whatever becomes of the
+OpenTelemetry collector over OTLP/HTTP, carrying `service.name=hands`
+(`hands.sessions.otlp`), twice over: as a span, for the trace store, and as a log record
+whose body is the event's name and which carries the span's ids, for the event store, so
+an event's row opens its trace. The event is written to the log first, whatever becomes of the
 collector, because hands reads the log back (`catch_up`, `hands log`): what it holds never
 depends on the network. Events are sent in batches from a thread of their own, so a slow
-or absent collector costs a unit of work nothing. Each batch is an `Exported` line naming
-each event by its span id, how long the send took, and, where the collector did not take
-it, why `[LAW:nothing-unseen]`; a stop waits on the batches still queued for one timeout
+or absent collector costs a unit of work nothing. Each batch sent as each signal is an
+`Exported` line naming the signal, each event by its span id, how long the send took, and,
+where the collector did not take it, why `[LAW:nothing-unseen]`; a stop waits on the batches still queued for one timeout
 in all, and records those it leaves unsent. Those lines are folded, per signal, into how many
 batches in a row the collector has not taken all of (`otlp.failing`); from the third on, every heartbeat
 hands beats while up, starting included, carries it as a degradation naming the signal and since when (why each batch was not taken is its own line, so a failure worded anew is not news again), until a batch is
