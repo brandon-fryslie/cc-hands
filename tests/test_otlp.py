@@ -390,7 +390,8 @@ def test_an_error_answer_cut_short_is_said_and_the_batches_after_it_are_still_se
         exporter = Exporter(f"http://127.0.0.1:{cut.getsockname()[1]}", recorded.append, linger=0.01)
         first, second = _event(span_id="0000000000000001"), _event(span_id="0000000000000002")
         exporter.send(first)
-        while not recorded:
+        # Each signal gathers its batch on its own thread, so the second is sent only once both have sent the first alone.
+        while {exported.signal for exported in recorded} != {"traces", "logs"}:
             time.sleep(0.01)
         exporter.send(second)
         exporter.close()
