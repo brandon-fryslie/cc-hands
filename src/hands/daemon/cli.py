@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import fcntl
 import os
+import signal
 import struct
 import sys
 import threading
@@ -13,7 +14,7 @@ from datetime import UTC, datetime
 from functools import partial
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO, cast
+from typing import TYPE_CHECKING, Literal, TextIO, cast
 
 from loguru import logger
 
@@ -141,7 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
     commands = parser.add_subparsers(dest="command", required=True)
     running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
-    running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID, if it is still running, is kept rather than another started")
+    running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     commands.add_parser("check", help="say of each step of the README's install whether it is done here: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the backend's key or login, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
@@ -375,8 +376,10 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Set
     # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its models load,
     # seconds of silence in which the file would otherwise still name the process that died.
     heart.beat("starting", None, 0, listening=False, degraded=())
-    kept = None if restarted is None else still_shown(restarted)
-    shown = start_indicator(home) if kept is None else kept
+    # [LAW:dataflow-not-control-flow] every run shows itself through an indicator it started, on the code it runs: one
+    # kept across a restart would judge this run's heartbeat by the code the run before had.
+    run_start.heard(previous_indicator=None if restarted is None else retire(restarted))
+    shown = start_indicator(home)
     threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
     # [LAW:one-source-of-truth] what the collector is failing to take is folded from the Exported lines as they are written.
     exports = Exports(audit_log.record, lambda: datetime.now(UTC))
@@ -484,24 +487,67 @@ def start_indicator(home: Home) -> int:
     # [LAW:single-enforcer] the indicator ends itself once the run that started it is gone (menubar.show), however the
     # run ended; a session of its own keeps the terminal's Ctrl-C and hangup from ending it first, before it has said so.
     # Its output shares this terminal, so an indicator that fails is seen where the daemon's own failures are. A restart
-    # keeps the pid, so the indicator carries on into the run after it, which reaps it by that pid.
+    # keeps the pid, so the indicator stays a child of the run after it, which ends it by that pid (retire).
     argv = invocation(home, "indicator", "--parent", str(os.getpid()))
     return os.posix_spawn(sys.executable, argv, os.environ, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)], setsid=True)
 
 
-def still_shown(indicator: int) -> int | None:
-    """The indicator a restart handed on, while it runs; one that exited is reaped here, or was by the run before."""
+# What became of the indicator the run before a restart showed: ended as this run asked, killed by it once it had not
+# within the grace, found exited on its own and said, or reaped already by the run before, which said so as it did.
+type Retired = Literal["ended", "killed", "exited", "reaped"]
+
+# How long the indicator has to end once asked before its process group is killed.
+RETIRE_GRACE_SECONDS = 1.0
+
+
+def retire(indicator: int, grace: float = RETIRE_GRACE_SECONDS) -> Retired:
+    """End the indicator the run before a restart showed, so the one this run starts is the only one in the menu bar."""
     try:
-        exited, _ = os.waitpid(indicator, os.WNOHANG)
+        exited, status = os.waitpid(indicator, os.WNOHANG)
     except ChildProcessError:
-        return None
-    return indicator if exited == 0 else None
+        return "reaped"
+    if exited:
+        said_exited(status)
+        return "exited"
+    # Still this process's child and unreaped, so the pid is the indicator's and no other process's. Its group goes
+    # with it, the notices it was posting included, as Child.killed ends a child hands started.
+    signalled(indicator, signal.SIGTERM)
+    statuses: list[int] = []
+    waiter = threading.Thread(target=lambda: statuses.append(os.waitpid(indicator, 0)[1]), name="retire", daemon=True)
+    waiter.start()
+    waiter.join(grace)
+    if waiter.is_alive():
+        signalled(indicator, signal.SIGKILL)
+        waiter.join()
+    # [LAW:no-silent-failure] the status says how it ended, not the asking: one that crashed as it was asked is said.
+    code = os.waitstatus_to_exitcode(statuses[0])
+    if code in (0, -signal.SIGTERM):
+        return "ended"
+    if code == -signal.SIGKILL:
+        logger.info(f"killed the menu-bar indicator ({indicator}) and everything it started, because it had not ended {grace:.1f}s after it was asked to")
+        return "killed"
+    said_exited(statuses[0])
+    return "exited"
+
+
+def signalled(group: int, signum: signal.Signals) -> None:
+    """Send `signum` to the process group `group` leads, where any of it has yet to exit."""
+    try:
+        os.killpg(group, signum)
+    except (ProcessLookupError, PermissionError):
+        # Every process in the group had exited: gone, ProcessLookupError; exited and not yet reaped, macOS says
+        # PermissionError. The wait that follows reaps the leader all the same.
+        pass
 
 
 def reap(shown: int) -> None:
     """Wait on the indicator, so one that exits early is reaped and said, not left a zombie under the run."""
     # It exits of its own accord only once the run is gone, so an exit this process lives to see is a failure.
     _, status = os.waitpid(shown, 0)
+    said_exited(status)
+
+
+def said_exited(status: int) -> None:
     logger.error(f"the menu-bar indicator exited ({os.waitstatus_to_exitcode(status)}) while hands runs; hands is not shown in the menu bar")
 
 

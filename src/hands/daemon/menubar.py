@@ -5,18 +5,19 @@
 
 It reads the heartbeat file and nothing else, so a daemon that hangs is shown as stuck, and one that dies is announced
 by this process on its way out: it lives as long as the process that started it, `hands run` in a terminal, and then
-until the heartbeat stops saying up.
+until the heartbeat stops saying up; or until the run after a restart ends it for one of its own.
 """
 
 import asyncio
 import os
+import signal
 import threading
 from datetime import UTC, datetime
 
 import AppKit
 from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
 from loguru import logger
-from PyObjCTools import AppHelper
+from PyObjCTools import AppHelper, MachSignals
 
 from hands.daemon import indicator
 from hands.sessions import heartbeat
@@ -51,7 +52,8 @@ def show(home: Home, run: int) -> int:
 
     def end(how: int | Exception) -> None:
         nonlocal ending
-        ending = how
+        # The first ending says how it went: a restart's SIGTERM after a look that raised does not make it a clean exit.
+        ending = how if ending is None else ending
         timer.invalidate()
         # An open menu tracks events in a loop of its own, which a posted event would wait behind until it closed.
         menu.cancelTracking()
@@ -85,6 +87,9 @@ def show(home: Home, run: int) -> int:
             # instead raises the failure into the terminal the run prints to, and takes the stale light away.
             end(error)
 
+    # A restart's run ends this indicator for its own with SIGTERM: delivered on the run loop, it ends through `end` as
+    # the run going does, so the command returns and its event is written.
+    MachSignals.signal(signal.SIGTERM, lambda _signum: end(0))
     timer = NSTimer.timerWithTimeInterval_repeats_block_(LOOK_SECONDS, True, look)
     # The common modes include the one the run loop is in while the menu is open, so an open menu keeps up too.
     NSRunLoop.currentRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)

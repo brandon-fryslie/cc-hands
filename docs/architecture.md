@@ -1945,7 +1945,10 @@ thing that failed `[LAW:no-silent-failure]`:
    `osascript`. `hands indicator` is a menu-bar status item in a process of its own,
    which `hands run` starts in a session of its own, so neither the daemon dying nor the
    terminal's Ctrl-C takes it down first. It lives while the process that started it does,
-   and once that is gone, until the light leaves up: it posts that notice and exits. Once a second it judges the heartbeat through `heartbeat.look`, the one
+   and once that is gone, until the light leaves up: it posts that notice and exits. A
+   restart keeps the process, and the run after it ends the indicator the run before showed
+   (SIGTERM to its process group, which it ends on as it would by itself, then SIGKILL to the
+   group if it has not within a second) and starts its own, on the code it runs. Once a second it judges the heartbeat through `heartbeat.look`, the one
    read-and-judge that `hands status`, the crash check at start, and the hook shim also use. Its title
    shows one of six lights: up, not
    responding, down, refused (a start that ended before it ran, with its reason), off (stopped or never ran), and unreadable. An unreadable heartbeat
@@ -2019,7 +2022,8 @@ counts as a crash: the run raises, exits nonzero, and reads as down until it is 
 
 A start is one `hands.start` event (`hands.daemon.starting.Start`), timed from the moment
 `hands run` began to the moment the pipeline reported started, so its duration is how
-long hands took to be ready. It says which run it is (`pid`, `restarted`, `after_crash`),
+long hands took to be ready. It says which run it is (`pid`, `restarted`, `after_crash`, and on a restart what became
+of the `previous_indicator`: ended, killed, exited on its own, or reaped already),
 which settings won (the file, the collector, the backend, server,
 model, and account, the voice), and what the run listens on (the hook socket, the proxy
 and its upstream, the tap, the display route), each added as the step that learns it is

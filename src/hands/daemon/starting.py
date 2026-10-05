@@ -39,7 +39,8 @@ class Start:
     """A start of hands, from `hands run` beginning to its pipeline reported started, or to what ended it first.
 
     Its one event, `hands.start`, is timed from the start's first moment, so its duration is how long hands took to be
-    ready. Its facts say which run it is (`pid`, `restarted`, `after_crash`), which settings won, and what the run listens
+    ready. Its facts say which run it is (`pid`, `restarted`, `after_crash`, and what became of the `previous_indicator`
+    a restart replaced), which settings won, and what the run listens
     on, each added as the step that learns it is taken, so a start that ended first says how far it got. It ends ok when
     ready, failed with what raised (a CannotStart's reason, where it was refused), or cancelled, told to stop first.
 
@@ -121,8 +122,8 @@ def again(argv: list[str]) -> NoReturn:
     """Start the run again as `argv`, in this process: the same pid, terminal, and children, with the code on disk now.
     The start after it says it was restarted.
 
-    [LAW:one-source-of-truth] the pid stays the run's, so the menu-bar indicator watching it carries on, and the
-    sessions a run lists are read again from the home, where they outlive any one run.
+    [LAW:one-source-of-truth] the pid stays the run's, so the menu-bar indicator watching it waits out the start until
+    the run after ends it for its own, and the sessions a run lists are read again from the home, where they outlive any one run.
     """
     # exec replaces the process without running Python's exit: what is buffered for the terminal is written first.
     sys.stdout.flush()
