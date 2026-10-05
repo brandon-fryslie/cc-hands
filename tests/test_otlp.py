@@ -1,6 +1,7 @@
-"""The OTLP export edge: each wide event goes to the audit log, and to the collector where one is set, as a span; each
-batch sent is said in the log, by span id, with why where the collector did not take it."""
+"""The OTLP export edge: each wide event goes to the audit log, and to the collector where one is set, as a span and as a
+log record; each batch sent as each signal is said in the log, by span id, with why where the collector did not take it."""
 
+import io
 import json
 import os
 import socket
@@ -12,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
+from urllib.request import Request
 
 import pytest
 
@@ -23,17 +25,17 @@ from hands.daemon.cli import main
 from hands.sessions import heartbeat, otlp
 from hands.sessions.audit import AuditLog, Entry, Exported, segment, segments
 from hands.sessions.home import Home
-from hands.sessions.otlp import BATCH_SPANS, FAILING_BATCHES, STOPPED, TIMEOUT_SECONDS, Exporter, Exports, Failing, degradation, exporting, failing, rejected, spans, traced
+from hands.sessions.otlp import BATCH_SPANS, ENCODINGS, FAILING_BATCHES, LOGS, STOPPED, TIMEOUT_SECONDS, TRACES, Exporter, Exports, Failing, answered, degradation, exporting, failing, logs, spans, traced
 from hands.sessions.wide import WideEvent, annotate, count, root, unit
 
 STARTED = datetime(2026, 10, 3, 12, 0, 0, 250_000, tzinfo=UTC)
 
 
 class Collector:
-    """A stand-in for the collector's OTLP/HTTP receiver: it keeps every request body posted to /v1/traces and answers
-    with `answer`."""
+    """A stand-in for the collector's OTLP/HTTP receiver: it keeps every request body posted to it, and answers a post to
+    /v1/<signal> with `status` where `refusing` names the signal and 200 otherwise, `answer` the body either way."""
 
-    def __init__(self, answer: bytes = b"{}", status: int = 200) -> None:
+    def __init__(self, answer: bytes = b"{}", status: int = 200, refusing: tuple[str, ...] = ("traces", "logs")) -> None:
         self.bodies: list[dict[str, object]] = []
         # What it answers each request with from now on, so a collector that refused can come back.
         self.status = status
@@ -45,7 +47,7 @@ class Collector:
             def do_POST(self) -> None:
                 received.paths.append(self.path)
                 received.bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-                self.send_response(received.status)
+                self.send_response(received.status if self.path.removeprefix("/v1/") in refusing else 200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(received.answer)
@@ -62,13 +64,22 @@ class Collector:
         self._server.server_close()
 
     def spans(self) -> list[dict[str, Any]]:
-        return [span for body in self.bodies for span in _spans(body)]
+        return [span for body in self.bodies if "resourceSpans" in body for span in _spans(body)]
+
+    def log_records(self) -> list[dict[str, Any]]:
+        return [record for body in self.bodies if "resourceLogs" in body for record in _log_records(body)]
 
 
 def _spans(request: dict[str, object]) -> list[dict[str, Any]]:
     """The spans of an ExportTraceServiceRequest, as JSON reads them."""
     resources = cast(list[dict[str, Any]], request["resourceSpans"])
     return [span for resource in resources for scope in resource["scopeSpans"] for span in scope["spans"]]
+
+
+def _log_records(request: dict[str, object]) -> list[dict[str, Any]]:
+    """The log records of an ExportLogsServiceRequest, as JSON reads them."""
+    resources = cast(list[dict[str, Any]], request["resourceLogs"])
+    return [record for resource in resources for scope in resource["scopeLogs"] for record in scope["logRecords"]]
 
 
 @pytest.fixture
@@ -126,6 +137,23 @@ def test_a_failed_event_is_an_error_span_carrying_what_it_raised_and_a_cancelled
     assert cancelled["status"] == {"code": 0, "message": ""}
 
 
+def test_an_event_is_one_log_record_named_by_its_body_at_its_audit_level_carrying_its_span_and_its_attributes() -> None:
+    sent = logs([_event(), _event(outcome="failed", error="RuntimeError: the disk is full", trace=("RuntimeError: the disk is full",))])
+    [resource] = cast(list[dict[str, Any]], sent["resourceLogs"])
+    assert resource["resource"] == {"attributes": [{"key": "service.name", "value": {"stringValue": "hands"}}]}
+    ok, failed = _log_records(sent)
+    # Its span's ids, which open the trace it is part of in the trace store.
+    assert (ok["traceId"], ok["spanId"], ok["body"]) == ("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7", {"stringValue": "delta.read"})
+    # Stamped as it ended, as its audit line is.
+    assert (ok["timeUnixNano"], ok["severityNumber"], ok["severityText"]) == ("1791028800262500000", 9, "INFO")
+    # The span's attributes, and how long it took and the unit it ran inside, which a log record has no end or parent to say.
+    assert ok["attributes"] == [{"key": "duration_ms", "value": {"doubleValue": 12.5}}, {"key": "parent_id", "value": {}}, *_spans(spans([_event()]))[0]["attributes"]]
+    [child] = _log_records(logs([_event(parent_id="1111111111111111")]))
+    assert {"key": "parent_id", "value": {"stringValue": "1111111111111111"}} in child["attributes"]
+    assert (failed["severityNumber"], failed["severityText"]) == (17, "ERROR")
+    assert {"key": "error", "value": {"stringValue": "RuntimeError: the disk is full"}} in failed["attributes"]
+
+
 def test_with_a_collector_each_event_is_in_the_log_and_reaches_the_collector_and_a_unit_inside_another_is_its_child(collector: Collector, tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit", clock=datetime.now)
     with exporting(collector.url, log.record) as record:
@@ -134,15 +162,21 @@ def test_with_a_collector_each_event_is_in_the_log_and_reaches_the_collector_and
                 annotate(session="s1")
                 count(commits=1)
     lines = _lines(tmp_path / "audit")
-    assert [line["type"] for line in lines] == ["WideEvent", "WideEvent", "Exported"]
-    inner, outer, exported = lines
-    # A batch the collector took is said too, so a run whose events all reached it is told from one that sent none.
-    assert (exported["level"], exported["collector"], exported["spans"], exported["error"]) == ("info", collector.url, [inner["span_id"], outer["span_id"]], None)
-    assert collector.paths == ["/v1/traces"]
+    assert [line["type"] for line in lines] == ["WideEvent", "WideEvent", "Exported", "Exported"]
+    inner, outer, *exported = lines
+    # A batch the collector took is said too, as each signal, so a run whose events all reached it is told from one that sent none.
+    assert sorted((line["signal"], line["level"], line["collector"], line["spans"], line["error"]) for line in exported) == [
+        (signal, "info", collector.url, [inner["span_id"], outer["span_id"]], None) for signal in ("logs", "traces")
+    ]
+    assert sorted(collector.paths) == ["/v1/logs", "/v1/traces"]
     sent = {span["spanId"]: span for span in collector.spans()}
     assert set(sent) == {inner["span_id"], outer["span_id"]}
     assert sent[inner["span_id"]]["parentSpanId"] == outer["span_id"] and sent[outer["span_id"]]["parentSpanId"] == ""
     assert {sent[line["span_id"]]["traceId"] for line in (inner, outer)} == {outer["trace_id"]}
+    # The event store's rows of the same events, each opening the trace above.
+    assert [(row["body"]["stringValue"], row["traceId"], row["spanId"]) for row in collector.log_records()] == [
+        (line["event"], line["trace_id"], line["span_id"]) for line in (inner, outer)
+    ]
 
 
 TURN = _event(event="voice.turn")
@@ -193,20 +227,26 @@ def test_with_the_collector_stopped_each_event_is_in_the_log_and_said_unexported
     with exporting(collector, log.record) as record:
         with unit("delta.read", record):
             pass
-    event, exported = _lines(tmp_path / "audit")
+    event, *exported = _lines(tmp_path / "audit")
     assert event["type"] == "WideEvent"
-    assert (exported["type"], exported["level"], exported["collector"], exported["spans"]) == ("Exported", "error", collector, [event["span_id"]])
-    assert "Connection refused" in str(exported["error"])
+    assert sorted((line["signal"], line["type"], line["level"], line["collector"], line["spans"]) for line in exported) == [
+        (signal, "Exported", "error", collector, [event["span_id"]]) for signal in ("logs", "traces")
+    ]
+    assert all("Connection refused" in str(line["error"]) for line in exported)
 
 
-def _sent(recorded: list[Entry]) -> tuple[WideEvent, Exported]:
-    event, exported = recorded
-    assert isinstance(event, WideEvent) and isinstance(exported, Exported)
-    return event, exported
+def _sent(recorded: list[Entry]) -> tuple[WideEvent, Exported, Exported]:
+    """The one event recorded, and the batch holding it as it was sent as spans and as log records, in whichever order
+    the two signals' threads recorded them."""
+    event, *exported = recorded
+    assert isinstance(event, WideEvent) and all(isinstance(line, Exported) for line in exported)
+    by_signal = {line.signal: line for line in cast(list[Exported], exported)}
+    assert len(exported) == 2 and set(by_signal) == {"traces", "logs"}
+    return event, by_signal["traces"], by_signal["logs"]
 
 
-def test_spans_the_collector_rejected_are_said_with_its_reason(tmp_path: Path) -> None:
-    refusing = Collector(json.dumps({"partialSuccess": {"rejectedSpans": "1", "errorMessage": "span too old"}}).encode())
+def test_events_the_collector_rejected_are_said_with_its_reason(tmp_path: Path) -> None:
+    refusing = Collector(json.dumps({"partialSuccess": {"rejectedSpans": "1", "rejectedLogRecords": "1", "errorMessage": "too old"}}).encode())
     try:
         recorded: list[Entry] = []
         with exporting(refusing.url, recorded.append) as record:
@@ -214,8 +254,9 @@ def test_spans_the_collector_rejected_are_said_with_its_reason(tmp_path: Path) -
                 pass
     finally:
         refusing.close()
-    event, exported = _sent(recorded)
-    assert (exported.collector, exported.spans, exported.error) == (refusing.url, (event.span_id,), "the collector rejected 1 of 1 spans: span too old")
+    event, traces, logged = _sent(recorded)
+    assert (traces.collector, traces.spans, traces.error) == (refusing.url, (event.span_id,), "the collector rejected 1 of 1 spans: too old")
+    assert (logged.spans, logged.error) == ((event.span_id,), "the collector rejected 1 of 1 log records: too old")
 
 
 def test_a_request_the_collector_refused_is_said_with_the_reason_its_answer_gave() -> None:
@@ -227,18 +268,53 @@ def test_a_request_the_collector_refused_is_said_with_the_reason_its_answer_gave
                 pass
     finally:
         refusing.close()
-    _, exported = _sent(recorded)
-    assert exported.error is not None and "400" in exported.error and "invalid traceId" in exported.error
+    _, traces, _ = _sent(recorded)
+    assert traces.error is not None and "400" in traces.error and "invalid traceId" in traces.error
 
 
-def test_a_collector_that_took_every_span_answers_with_no_rejection() -> None:
-    assert rejected(b"", 3) is None
-    assert rejected(b"{}", 3) is None
-    assert rejected(b'{"partialSuccess": {}}', 3) is None
-    # A body of another shape than an ExportTraceServiceResponse rejects nothing; it does not turn a taken batch into a failed one.
-    assert rejected(b"null", 3) is None
-    assert rejected(b'{"partialSuccess": {"rejectedSpans": ""}}', 3) is None
-    assert rejected(b'{"partialSuccess": {"rejectedSpans": 2}}', 3) == "the collector rejected 2 of 3 spans"
+def test_a_collector_that_takes_the_spans_and_refuses_the_log_records_is_said_to_have_refused_only_those(tmp_path: Path) -> None:
+    # A collector with no logs pipeline, which answers its logs path 404.
+    refusing = Collector(status=404, refusing=("logs",))
+    try:
+        log = AuditLog(tmp_path / "audit", clock=datetime.now)
+        with exporting(refusing.url, log.record) as record:
+            with unit("delta.read", record):
+                pass
+    finally:
+        refusing.close()
+    exported = {line["signal"]: line for line in _lines(tmp_path / "audit")[1:]}
+    assert (exported["traces"]["level"], exported["traces"]["error"]) == ("info", None)
+    assert exported["logs"]["level"] == "error" and "404" in str(exported["logs"]["error"])
+
+
+def test_a_collector_that_took_every_event_answers_with_no_rejection() -> None:
+    assert answered(TRACES, b"", 3) == (None, None)
+    assert answered(TRACES, b"{}", 3) == (None, None)
+    assert answered(TRACES, b'{"partialSuccess": {}}', 3) == (None, None)
+    # A body of another shape than an Export*ServiceResponse rejects nothing; it does not turn a taken batch into a failed one.
+    assert answered(TRACES, b"null", 3) == (None, None)
+    assert answered(TRACES, b'{"partialSuccess": {"rejectedSpans": ""}}', 3) == (None, None)
+    assert answered(TRACES, b'{"partialSuccess": {"rejectedSpans": 2}}', 3) == ("the collector rejected 2 of 3 spans", None)
+    # Each signal's response counts what it rejected under its own name, and never under the other's.
+    assert answered(LOGS, b'{"partialSuccess": {"rejectedSpans": 2}}', 3) == (None, None)
+    assert answered(LOGS, b'{"partialSuccess": {"rejectedLogRecords": "2"}}', 3) == ("the collector rejected 2 of 3 log records", None)
+
+
+def test_a_collector_that_took_every_event_and_warned_of_something_is_said_to_have_warned() -> None:
+    # OTLP's warning: a partial success that rejected nothing, with a message.
+    warned = b'{"partialSuccess": {"rejectedLogRecords": "0", "errorMessage": "attribute truncated"}}'
+    assert answered(LOGS, warned, 3) == (None, "attribute truncated")
+    assert answered(LOGS, b'{"partialSuccess": {"errorMessage": ""}}', 3) == (None, None)
+    warning = Collector(warned)
+    try:
+        recorded: list[Entry] = []
+        with exporting(warning.url, recorded.append) as record:
+            with unit("delta.read", record):
+                pass
+    finally:
+        warning.close()
+    _, traces, logged = _sent(recorded)
+    assert (traces.error, traces.warning) == (None, "attribute truncated") and (logged.error, logged.warning) == (None, "attribute truncated")
 
 
 def test_a_fact_json_has_no_number_for_is_sent_as_proto3_json_spells_it() -> None:
@@ -265,7 +341,8 @@ def test_a_stop_waits_on_a_collector_that_never_answers_for_one_timeout_and_says
         exporter.close()
         stopped = time.monotonic() - began
     assert stopped < 1.0
-    assert sorted(span for exported in recorded for span in exported.spans) == sorted(event.span_id for event in events)
+    for signal in ("traces", "logs"):
+        assert sorted(span for exported in recorded if exported.signal == signal for span in exported.spans) == sorted(event.span_id for event in events)
     assert all(exported.error is not None for exported in recorded)
     assert any(exported.error == STOPPED for exported in recorded)
 
@@ -282,7 +359,7 @@ def test_an_event_sent_once_the_exporter_is_closed_is_recorded_unsent(collector:
     exporter.close()
     late = _event()
     exporter.send(late)
-    assert [(exported.spans, exported.error) for exported in recorded] == [((late.span_id,), STOPPED)]
+    assert [(exported.signal, exported.spans, exported.error) for exported in recorded] == [("traces", (late.span_id,), STOPPED), ("logs", (late.span_id,), STOPPED)]
 
 
 def test_an_error_answer_cut_short_is_said_and_the_batches_after_it_are_still_sent() -> None:
@@ -317,8 +394,10 @@ def test_an_error_answer_cut_short_is_said_and_the_batches_after_it_are_still_se
             time.sleep(0.01)
         exporter.send(second)
         exporter.close()
-    assert [exported.spans for exported in recorded] == [(first.span_id,), (second.span_id,)]
-    assert recorded[0].error is not None and "IncompleteRead" in recorded[0].error
+    for signal in ("traces", "logs"):
+        cut_short, after = (exported for exported in recorded if exported.signal == signal)
+        assert (cut_short.spans, after.spans) == ((first.span_id,), (second.span_id,))
+        assert cut_short.error is not None and "IncompleteRead" in cut_short.error
 
 
 def test_a_batch_goes_straight_to_the_collector_past_a_proxy_in_the_environment(collector: Collector, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -329,33 +408,62 @@ def test_a_batch_goes_straight_to_the_collector_past_a_proxy_in_the_environment(
     with exporting(collector.url, recorded.append) as record:
         with unit("delta.read", record):
             pass
-    _, exported = _sent(recorded)
-    assert exported.error is None and len(collector.spans()) == 1
+    _, traces, logged = _sent(recorded)
+    assert traces.error is None and logged.error is None and len(collector.spans()) == len(collector.log_records()) == 1
+
+
+class _Stuck:
+    """A way to the collector on which a send to any of `paths` outlives its timeout, as one waiting on a name that will
+    not resolve does, until the test releases it; a send to any other path is taken whole."""
+
+    def __init__(self, *paths: str) -> None:
+        self.paths = paths
+        self.sending = threading.Event()
+        self.released = threading.Event()
+
+    def open(self, request: Request, timeout: float) -> object:
+        if not request.full_url.endswith(self.paths):
+            return io.BytesIO(b"{}")
+        self.sending.set()
+        self.released.wait()
+        raise TimeoutError("never answered")
 
 
 def test_a_send_still_waiting_as_the_stop_gives_up_is_said_with_every_event_queued_behind_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A send that outlives its timeout, as one waiting on a name that will not resolve does.
-    sending = threading.Event()
-
-    class Stuck:
-        def open(self, request: object, timeout: float) -> object:
-            sending.set()
-            time.sleep(3)
-            raise TimeoutError("never answered")
-
-    monkeypatch.setattr(otlp, "_DIRECT", Stuck())
+    stuck_on = _Stuck("/v1/traces", "/v1/logs")
+    monkeypatch.setattr(otlp, "_DIRECT", stuck_on)
     recorded: list[Exported] = []
     exporter = Exporter("http://otel.example:4318", recorded.append, linger=0.01, timeout=0.2)
     first, behind = _event(span_id="0000000000000001"), _event(span_id="0000000000000002")
     exporter.send(first)
-    sending.wait()
+    stuck_on.sending.wait()
     exporter.send(behind)
     exporter.close()
-    assert [(exported.spans, exported.error) for exported in recorded] == [((first.span_id, behind.span_id), f"{STOPPED}: a send was still waiting on the collector")]
+    stuck_on.released.set()
+    stuck = f"{STOPPED}: a send was still waiting on the collector"
+    assert sorted((exported.signal, exported.spans, exported.error) for exported in recorded) == [(signal, (first.span_id, behind.span_id), stuck) for signal in ("logs", "traces")]
+
+
+def test_a_send_stuck_on_the_log_records_holds_up_none_of_the_spans(monkeypatch: pytest.MonkeyPatch) -> None:
+    stuck_on = _Stuck("/v1/logs")
+    monkeypatch.setattr(otlp, "_DIRECT", stuck_on)
+    recorded: list[Exported] = []
+    exporter = Exporter("http://otel.example:4318", recorded.append, linger=0.01, timeout=0.2)
+    first, behind = _event(span_id="0000000000000001"), _event(span_id="0000000000000002")
+    exporter.send(first)
+    stuck_on.sending.wait()
+    exporter.send(behind)
+    exporter.close()
+    stuck_on.released.set()
+    stuck = f"{STOPPED}: a send was still waiting on the collector"
+    # Each span taken, in one batch or two: `behind` may come within the spans' linger after `first`.
+    traces = [exported for exported in recorded if exported.signal == "traces"]
+    assert [span for exported in traces for span in exported.spans] == [first.span_id, behind.span_id] and {exported.error for exported in traces} == {None}
+    assert [(exported.spans, exported.error) for exported in recorded if exported.signal == "logs"] == [((first.span_id, behind.span_id), stuck)]
 
 
 def _refused(error: str = "HTTPError: HTTP Error 503: Service Unavailable") -> Exported:
-    return Exported("http://otel.example:4318", "traces", ("00f067aa0ba902b7",), 3.0, error)
+    return Exported("http://otel.example:4318", "traces", ("00f067aa0ba902b7",), 3.0, error, None)
 
 
 def test_a_run_of_untaken_batches_is_folded_from_the_exported_lines_and_a_taken_one_ends_it() -> None:
@@ -381,10 +489,11 @@ def test_a_signal_is_said_failing_only_once_its_run_is_more_than_a_blip_and_in_w
     assert said(FAILING_BATCHES + 5) == failing_now
 
 
-def test_a_collector_that_keeps_refusing_is_said_by_the_heartbeat_the_menu_bar_a_notice_and_hands_status_until_it_takes_a_batch(
+def test_a_collector_that_keeps_refusing_one_signal_is_said_by_the_heartbeat_the_menu_bar_a_notice_and_hands_status_until_it_takes_a_batch(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    refusing = Collector(b'{"code": 14, "message": "the store is down"}', status=503)
+    # It takes the log records all along: only the spans are failing.
+    refusing = Collector(b'{"code": 14, "message": "the store is down"}', status=503, refusing=("traces",))
     home = Home(tmp_path)
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
     entries: list[Entry] = []
@@ -396,11 +505,12 @@ def test_a_collector_that_keeps_refusing_is_said_by_the_heartbeat_the_menu_bar_a
         return indicator.show(before, heartbeat.look(home.status, datetime.now(UTC)), datetime.now(UTC))
 
     def batch(span_id: str) -> None:
-        seen = len(entries)
+        # Once the batch is said as every signal.
+        owed = len(entries) + len(ENCODINGS)
         exporter.send(_event(span_id=span_id))
         deadline = time.monotonic() + TIMEOUT_SECONDS * 2
-        while len(entries) == seen:
-            assert time.monotonic() < deadline, f"no Exported line for {span_id}"
+        while len(entries) < owed:
+            assert time.monotonic() < deadline, f"no Exported lines for {span_id}"
             time.sleep(0.01)
 
     try:
@@ -430,5 +540,22 @@ def test_a_collector_that_keeps_refusing_is_said_by_the_heartbeat_the_menu_bar_a
         exporter.close()
         refusing.close()
     # Why each batch was not taken is said by its own line, never by the heartbeat.
-    assert [type(entry) for entry in entries] == [Exported] * (FAILING_BATCHES + 2)
-    assert "the store is down" in str(entries[0]) and "the store is still down" in str(entries[FAILING_BATCHES])
+    traces = [entry for entry in entries if isinstance(entry, Exported) and entry.signal == "traces"]
+    assert len(entries) == len(ENCODINGS) * len(traces) == len(ENCODINGS) * (FAILING_BATCHES + 2)
+    assert "the store is down" in str(traces[0]) and "the store is still down" in str(traces[FAILING_BATCHES])
+
+
+def test_a_batch_to_a_collector_that_never_answers_waits_one_timeout_for_both_signals() -> None:
+    with socket.socket() as silent:
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(16)
+        recorded: list[Exported] = []
+        exporter = Exporter(f"http://127.0.0.1:{silent.getsockname()[1]}", recorded.append, linger=0.01, timeout=0.4)
+        began = time.monotonic()
+        exporter.send(_event())
+        while len(recorded) < 2:
+            time.sleep(0.01)
+        waited = time.monotonic() - began
+        exporter.close()
+    # The two signals wait on the collector side by side: one timeout, not one after the other's.
+    assert sorted(exported.signal for exported in recorded) == ["logs", "traces"] and waited < 0.7
