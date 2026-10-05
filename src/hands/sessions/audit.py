@@ -190,14 +190,19 @@ class SettingsEdited:
     refused: str | None
 
 
+# The OTLP signals each wide event is sent to the collector as.
+Signal = Literal["traces"]
+
+
 @dataclass(frozen=True)
 class Exported:
-    """A batch of wide events sent to the collector, each named by its span id; how long the send took; and why the
-    collector did not take it, None where it took every span: it could not be reached, it refused the request, it
-    rejected spans in it without saying which, or hands stopped before the batch could be sent. Each is in the log
-    still."""
+    """A batch of wide events sent to the collector as one OTLP signal, each named by its span id; how long the send
+    took; and why the collector did not take it, None where it took every span: it could not be reached, it refused the
+    request, it rejected spans in it without saying which, or hands stopped before the batch could be sent. Each is in
+    the log still."""
 
     collector: str
+    signal: Signal
     spans: tuple[str, ...]
     duration_ms: float
     error: str | None

@@ -2,11 +2,13 @@
 batch sent is said in the log, by span id, with why where the collector did not take it."""
 
 import json
+import os
 import socket
 import threading
 import time
 from collections.abc import Generator
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
@@ -16,9 +18,12 @@ import pytest
 from hands.core.session import SessionId
 from hands.core.trace import Span
 from hands.core.wire import Answered, Exchanged, Garbled, Held, MainTurn, Reached, Unreached
+from hands.daemon import indicator
+from hands.daemon.cli import main
+from hands.sessions import heartbeat, otlp
 from hands.sessions.audit import AuditLog, Entry, Exported, segment, segments
-from hands.sessions import otlp
-from hands.sessions.otlp import BATCH_SPANS, STOPPED, Exporter, exporting, rejected, spans, traced
+from hands.sessions.home import Home
+from hands.sessions.otlp import BATCH_SPANS, FAILING_BATCHES, STOPPED, TIMEOUT_SECONDS, Exporter, Exports, Failing, degradation, exporting, failing, rejected, spans, traced
 from hands.sessions.wide import WideEvent, annotate, count, root, unit
 
 STARTED = datetime(2026, 10, 3, 12, 0, 0, 250_000, tzinfo=UTC)
@@ -30,6 +35,9 @@ class Collector:
 
     def __init__(self, answer: bytes = b"{}", status: int = 200) -> None:
         self.bodies: list[dict[str, object]] = []
+        # What it answers each request with from now on, so a collector that refused can come back.
+        self.status = status
+        self.answer = answer
         self.paths: list[str] = []
         received = self
 
@@ -37,10 +45,10 @@ class Collector:
             def do_POST(self) -> None:
                 received.paths.append(self.path)
                 received.bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-                self.send_response(status)
+                self.send_response(received.status)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(answer)
+                self.wfile.write(received.answer)
 
             def log_message(self, format: str, *args: object) -> None:
                 pass
@@ -344,3 +352,83 @@ def test_a_send_still_waiting_as_the_stop_gives_up_is_said_with_every_event_queu
     exporter.send(behind)
     exporter.close()
     assert [(exported.spans, exported.error) for exported in recorded] == [((first.span_id, behind.span_id), f"{STOPPED}: a send was still waiting on the collector")]
+
+
+def _refused(error: str = "HTTPError: HTTP Error 503: Service Unavailable") -> Exported:
+    return Exported("http://otel.example:4318", "traces", ("00f067aa0ba902b7",), 3.0, error)
+
+
+def test_a_run_of_untaken_batches_is_folded_from_the_exported_lines_and_a_taken_one_ends_it() -> None:
+    at = [STARTED + timedelta(seconds=seconds) for seconds in range(4)]
+    streak = None
+    for when, exported in zip(at, [_refused(), _refused(), _refused("URLError: Connection refused")]):
+        streak = failing(streak, exported, when)
+    # Since the first it did not take, whatever each one's error.
+    assert streak == Failing(3, at[0])
+    assert failing(streak, replace(_refused(), error=None), at[3]) is None
+
+
+def test_a_signal_is_said_failing_only_once_its_run_is_more_than_a_blip_and_in_words_its_length_does_not_change() -> None:
+    def said(batches: int) -> heartbeat.Degradation | None:
+        return degradation("http://otel.example:4318", "traces", Failing(batches, STARTED))
+
+    assert said(FAILING_BATCHES - 1) is None
+    failing_now = said(FAILING_BATCHES)
+    assert failing_now is not None and failing_now.brief == "can't export traces"
+    # Since a day and a time, so an outage begun on an earlier day does not read as one begun later today.
+    assert failing_now.said == f"the collector at http://otel.example:4318 has not taken all of its traces since {STARTED.astimezone():%Y-%m-%d %H:%M:%S}"
+    # The same failure, repeating, is not news again.
+    assert said(FAILING_BATCHES + 5) == failing_now
+
+
+def test_a_collector_that_keeps_refusing_is_said_by_the_heartbeat_the_menu_bar_a_notice_and_hands_status_until_it_takes_a_batch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    refusing = Collector(b'{"code": 14, "message": "the store is down"}', status=503)
+    home = Home(tmp_path)
+    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
+    entries: list[Entry] = []
+    exports = Exports(entries.append, lambda: datetime.now(UTC))
+    exporter = Exporter(refusing.url, exports.record, linger=0.01)
+
+    def look(before: indicator.Shown | None) -> indicator.Shown:
+        heart.beat("running", None, 0, listening=False, degraded=exports.degraded())
+        return indicator.show(before, heartbeat.look(home.status, datetime.now(UTC)), datetime.now(UTC))
+
+    def batch(span_id: str) -> None:
+        seen = len(entries)
+        exporter.send(_event(span_id=span_id))
+        deadline = time.monotonic() + TIMEOUT_SECONDS * 2
+        while len(entries) == seen:
+            assert time.monotonic() < deadline, f"no Exported line for {span_id}"
+            time.sleep(0.01)
+
+    try:
+        healthy = look(None)
+        for n in range(FAILING_BATCHES - 1):
+            batch(f"{n:016x}")
+        # One refused batch, or two, is a blip: nothing is said.
+        blip = look(healthy)
+        assert (blip.title, blip.notices) == ("✋", ())
+        batch(f"{FAILING_BATCHES:016x}")
+        failing_now = look(blip)
+        assert failing_now.title == "⚠︎ hands can't export traces"
+        assert failing_now.text.startswith(f"hands is up but the collector at {refusing.url} has not taken all of its traces since")
+        assert failing_now.notices == (failing_now.text,)
+        assert main(["--home", str(tmp_path), "status"]) == 0
+        assert capsys.readouterr().out.startswith(f"hands is up but the collector at {refusing.url} has not taken all of its traces since")
+        # Refusing on, in other words each time, it stays said and is not news again.
+        refusing.answer = b'{"code": 14, "message": "the store is still down"}'
+        batch("00000000000000ff")
+        still = look(failing_now)
+        assert (still.title, still.notices) == (failing_now.title, ())
+        # One batch it takes clears it.
+        refusing.status = 200
+        batch("0000000000000100")
+        assert look(still).title == "✋"
+    finally:
+        exporter.close()
+        refusing.close()
+    # Why each batch was not taken is said by its own line, never by the heartbeat.
+    assert [type(entry) for entry in entries] == [Exported] * (FAILING_BATCHES + 2)
+    assert "the store is down" in str(entries[0]) and "the store is still down" in str(entries[FAILING_BATCHES])

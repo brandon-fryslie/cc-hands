@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -218,12 +218,15 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         return run.Configured(config, run.Settings(b"", Config(collector="http://otel.example:4318")))
 
     run_start = Start(restarted=False)
-    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, home, sessions, run_start), heart, sessions.live_count, asyncio.Event()))
+    # A collector already failing while hands starts is said by the start's beats, as it is once hands runs.
+    exporting_down = heartbeat.Degradation("can't export traces", "the collector has not taken all of its traces")
+    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), asyncio.Event()))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
         status = heartbeat.read(heart.path)
         if status is not None and status.pipeline == "starting":
+            assert status.degraded == (exporting_down,)
             beats.add(status.written_at)
         await asyncio.sleep(0.005)
     answered.set()
@@ -252,7 +255,7 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
 
     quit_event = asyncio.Event()
     quit_event.set()
-    assert await start(lambda: run.configured(prompted, lambda _: None, home, sessions, Start(restarted=False)), heart, sessions.live_count, quit_event) is None
+    assert await start(lambda: run.configured(prompted, lambda _: None, home, sessions, Start(restarted=False)), heart, sessions.live_count, lambda: (), quit_event) is None
     never.set()
 
 
@@ -265,7 +268,7 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
 
     surveyed: list[run.Configured | CannotStart] = []
     with pytest.raises(CannotStart, match="no key"):
-        asyncio.run(start(lambda: run.configured(refused, surveyed.append, home, sessions, Start(restarted=False)), heart, sessions.live_count, asyncio.Event()))
+        asyncio.run(start(lambda: run.configured(refused, surveyed.append, home, sessions, Start(restarted=False)), heart, sessions.live_count, lambda: (), asyncio.Event()))
     # Every other step is still said: the readiness check is given the refusal, as the backend's step.
     [refusal] = surveyed
     assert isinstance(refusal, CannotStart) and str(refusal) == "no key"
@@ -283,7 +286,7 @@ def test_a_restart_lists_its_running_sessions_before_the_configuration_is_read(t
         return run.Configured(config, run.Settings(b"", Config()))
 
     monkeypatch.setattr(run, "sweep", swept)
-    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), home, sessions, Start(restarted=False)), heart, sessions.live_count, asyncio.Event()))
+    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), home, sessions, Start(restarted=False)), heart, sessions.live_count, lambda: (), asyncio.Event()))
     assert order == ["sweep", "configure", "survey"]
 
 
@@ -302,7 +305,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     recorded: list[Entry] = []
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, asyncio.Event(), False, {}, run_start)
+            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), asyncio.Event(), False, {}, run_start)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -333,12 +336,12 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     monkeypatch.setattr(cli, "to_terminal", kept)
     monkeypatch.setattr(cli.logger, "remove", kept)
 
-    def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _after_crash: bool, run_start: Start) -> cli.Run:
+    def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start) -> cli.Run:
         sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=record)
 
         async def refused(quit_event: asyncio.Event) -> Ended:
             configure = partial(run.configured_from, home, settings, {"ANTHROPIC_API_KEY": "k", "HANDS_LLM": "claude"})
-            await start(lambda: run.configured(configure, lambda _: None, home, sessions, run_start), heart, sessions.live_count, quit_event)
+            await start(lambda: run.configured(configure, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (), quit_event)
             raise AssertionError("a start with HANDS_LLM set went on")
 
         return refused

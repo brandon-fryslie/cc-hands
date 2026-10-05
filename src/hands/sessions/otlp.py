@@ -21,13 +21,15 @@ import threading
 import time
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
-from hands.sessions.audit import Entry, Exported, Record, jsonable, level
+from hands.sessions.audit import Entry, Exported, Record, Signal, jsonable, level
+from hands.sessions.heartbeat import Degradation
 from hands.sessions.wide import Fact, Outcome, WideEvent
 
 # OpenTelemetry's service.name, which every span carries on its resource.
@@ -39,6 +41,10 @@ BATCH_SPANS = 512
 TIMEOUT_SECONDS = 5.0
 # Why a batch a stop left no time for, or one sent once the exporter was closed, was not sent.
 STOPPED = "hands stopped before the batch could be sent"
+# The signal each event is sent as: a span.
+SIGNAL: Signal = "traces"
+# How many of a signal's batches in a row the collector must not take before hands says it is failing: one is a blip.
+FAILING_BATCHES = 3
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 # OTLP's Status codes: UNSET, OK, ERROR. A cancelled run neither succeeded nor failed.
@@ -68,6 +74,64 @@ def exporting(collector: str | None, record: Record) -> Generator[Record]:
         yield both
     finally:
         exporter.close()
+
+
+@dataclass(frozen=True)
+class Failing:
+    """A run of a signal's batches the collector did not take all of, each after the one before: how many, and when the
+    first was said. Why each was not taken is in its Exported line."""
+
+    batches: int
+    since: datetime
+
+
+def failing(streak: Failing | None, exported: Exported, at: datetime) -> Failing | None:
+    """The run of untaken batches once `exported`, said at `at`, follows `streak`: a batch taken ends it."""
+    # [LAW:one-source-of-truth] a fold over the Exported lines the log already holds, never a counter kept beside them.
+    match exported.error, streak:
+        case None, _:
+            return None
+        case str(), None:
+            return Failing(1, at)
+        case str(), Failing(batches=batches, since=since):
+            return Failing(batches + 1, since)
+
+
+def degradation(collector: str, signal: Signal, streak: Failing | None) -> Degradation | None:
+    """What hands says of `signal`'s run of untaken batches, once it is long enough to be more than a blip."""
+    if streak is None or streak.batches < FAILING_BATCHES:
+        return None
+    # The words hold nothing a batch would change, neither a count nor an error: the same failure is not news again each
+    # time it repeats, however the collector words it. Each error is in its Exported line.
+    since = streak.since.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    return Degradation(f"can't export {signal}", f"the collector at {collector} has not taken all of its {signal} since {since}")
+
+
+class Exports:
+    """`record`, folding each Exported line it records into what the collector is failing to take, per signal, which
+    the up heartbeat carries as its degradations."""
+
+    def __init__(self, record: Record, clock: Callable[[], datetime]) -> None:
+        self._record = record
+        self._clock = clock
+        # [LAW:no-shared-mutable-globals] replaced whole under the lock, by each signal's exporter thread and by a stop;
+        # the heartbeat reads it.
+        self._streaks: Mapping[tuple[str, Signal], Failing] = {}
+        self._folding = threading.Lock()
+
+    def record(self, entry: Entry) -> None:
+        self._record(entry)
+        if not isinstance(entry, Exported):
+            return
+        key = (entry.collector, entry.signal)
+        with self._folding:
+            streak = failing(self._streaks.get(key), entry, self._clock())
+            self._streaks = {**{held: kept for held, kept in self._streaks.items() if held != key}, **({} if streak is None else {key: streak})}
+
+    def degraded(self) -> tuple[Degradation, ...]:
+        """Each signal the collector is failing to take, as a degradation."""
+        streaks = self._streaks
+        return tuple(said for (collector, signal), streak in streaks.items() if (said := degradation(collector, signal, streak)) is not None)
 
 
 def traced(entry: Entry) -> WideEvent | None:
@@ -138,7 +202,7 @@ class Exporter:
             if not closed:
                 self._queue.put(event)
         if closed:
-            self._record(Exported(self._collector, (event.span_id,), 0.0, STOPPED))
+            self._record(Exported(self._collector, SIGNAL, (event.span_id,), 0.0, STOPPED))
 
     def close(self) -> None:
         """Send what is queued and stop: every event sent before this is in an Exported line when it returns. The batches
@@ -154,7 +218,7 @@ class Exporter:
             # [LAW:nothing-unseen] a send that outlived the timeout, which bounds each socket operation and not a name's
             # resolution: what it holds and what is queued behind it are said here, as the process may end before it.
             unsent = [taken.span_id for taken in _drained(self._queue) if isinstance(taken, WideEvent)]
-            self._record(Exported(self._collector, (*self._sending, *unsent), 0.0, f"{STOPPED}: a send was still waiting on the collector"))
+            self._record(Exported(self._collector, SIGNAL, (*self._sending, *unsent), 0.0, f"{STOPPED}: a send was still waiting on the collector"))
 
     def _run(self) -> None:
         closed = False
@@ -185,12 +249,12 @@ class Exporter:
         left = min(self._timeout, self._deadline - began)
         self._sending = tuple(event.span_id for event in batch)
         refused = self._sent(batch, left) if left > 0 else STOPPED
-        self._record(Exported(self._collector, self._sending, (time.monotonic() - began) * 1000, refused))
+        self._record(Exported(self._collector, SIGNAL, self._sending, (time.monotonic() - began) * 1000, refused))
 
     def _sent(self, batch: Sequence[WideEvent], timeout: float) -> str | None:
         """Why the collector did not take `batch`, None where it took every span."""
         try:
-            request = Request(f"{self._collector}/v1/traces", data=json.dumps(spans(batch), ensure_ascii=False, allow_nan=False).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            request = Request(f"{self._collector}/v1/{SIGNAL}", data=json.dumps(spans(batch), ensure_ascii=False, allow_nan=False).encode(), headers={"Content-Type": "application/json"}, method="POST")
             with _DIRECT.open(request, timeout=timeout) as response:
                 return rejected(response.read(), len(batch))
         except Exception as error:
