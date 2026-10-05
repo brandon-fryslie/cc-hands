@@ -16,9 +16,11 @@ is not, what does it; it exits 0 only when every step is done.
    curl -fsSL https://claude.ai/install.sh | bash
    ```
 
-2. Homebrew's PortAudio, which the microphone is opened through, and uv:
+2. Homebrew's PortAudio, which the microphone is opened through, and uv. A Mac without
+   [Homebrew](https://brew.sh) gets it first; its installer says how to put `brew` on `PATH`:
 
    ```
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
    brew install portaudio
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
