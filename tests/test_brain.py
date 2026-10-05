@@ -781,6 +781,29 @@ async def test_a_turn_claude_code_takes_after_it_ended_untaken_is_not_the_next_t
     assert answered_turn.facts == {"prompt": "p2", "offered": (), "others": ("p1",)}
 
 
+async def test_a_turn_taken_late_that_runs_past_the_take_limit_leaves_the_next_turns_taken(
+    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every turn has 0.3s to be taken, and each late one runs a second ahead of what was typed behind it.
+    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
+    try:
+        with pytest.raises(Untaken):
+            await brain.ask("later", unasked)
+        assert await asyncio.wait_for(brain.ask("next", unasked), 10) == BrainAnswered("p2", None)
+        # The same words asked again after one ended untaken: the late prompt takes the new turn, as it answers those
+        # words, and the new turn's own then runs ahead of the turn after it, which is still taken.
+        with pytest.raises(Untaken):
+            await brain.ask("later", unasked)
+        await asyncio.wait_for(brain.ask("later", unasked), 10)
+        assert await asyncio.wait_for(brain.ask("after", unasked), 10) == BrainAnswered("p5", None)
+    finally:
+        await brain.stop()
+    # Each turn that waited says what it waited behind.
+    assert [turn.facts["others"] for turn in events(recorded, "brain.turn")] == [(), ("p1",), (), (), ("p4",)]
+
+
 async def test_a_turn_is_taken_as_claude_code_keeps_what_it_typed(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     brain = await start(launch(tmp_path, fritter), lambda _entry: None)
     try:

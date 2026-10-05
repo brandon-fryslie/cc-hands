@@ -400,7 +400,7 @@ class _Turn:
     asks: Callable[[Asked], None]
     # The turn's own unit of work, begun as it was asked: each dialog it holds is a part of it.
     began: Begun
-    # How long the turn has to be taken, read once as it is asked: its typing and its stop wait the same time.
+    # How long the turn has to be taken, read once as it is asked: its typing and its stop wait the same, in `_taking`.
     take: float
     # What the turn types into the brain's input.
     typed: PromptText
@@ -452,6 +452,11 @@ class Brain:
         # presses no Escape while the user is being asked.
         self._held: set[Asked] = set()
         self._typing: set[asyncio.Task[None]] = set()
+        # The prompts Claude Code took that are no turn's, from their UserPromptSubmit until their Stop: one typed for a
+        # turn that had ended untaken, or a task's notification. A turn typed behind one is read only once it ends.
+        self._unowned: set[str] = set()
+        # Resolved, and replaced, each time `_unowned` changes.
+        self._unowned_changed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         # When the last stop pressed Ctrl-C, on the event loop's clock.
         self._cleared = float("-inf")
         with continuing(launched):
@@ -514,8 +519,8 @@ class Brain:
                 # it (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
                 async with self._input:
                     await self._type(lambda typist: typist.type(turn.typed))
-                    await asyncio.wait({turn.taken, turn.answered}, timeout=turn.take, return_when=asyncio.FIRST_COMPLETED)
-                if not (turn.taken.done() or turn.answered.done()):
+                    taken = await self._taking(turn)
+                if not taken:
                     raise Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; if it is on one of Claude Code's first screens, `hands login` answers them")
             except (BrainGone, Untaken) as error:
                 self._over(turn, error)
@@ -527,6 +532,28 @@ class Brain:
                         fail(f"the brain's turn ended in error: {error}")
                 case failed:
                     fail(f"the brain failed the turn: {failed}")
+
+    async def _taking(self, turn: _Turn) -> bool:
+        """[LAW:single-enforcer] waits for `turn` to be taken, or to end, and says whether it was. It has `turn.take`
+        seconds while Claude Code runs nothing that is no turn's; one it runs holds what was typed behind it until it
+        ends, however long that is, and the turn then has its whole time again."""
+        while not (turn.taken.done() or turn.answered.done()):
+            if self._unowned:
+                logger.info(f"the brain's turn waits to be taken behind prompts {sorted(self._unowned)}, which are no turn's")
+            changed = self._unowned_changed
+            timeout = None if self._unowned else turn.take
+            done, _ = await asyncio.wait({turn.taken, turn.answered, changed}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                return False
+        return True
+
+    def _unowned_is(self, prompt: str, running: bool) -> None:
+        if running:
+            self._unowned.add(prompt)
+        else:
+            self._unowned.discard(prompt)
+        self._unowned_changed.set_result(None)
+        self._unowned_changed = asyncio.get_running_loop().create_future()
 
     def interrupt(self) -> None:
         """Stop the turn in flight with Escape, as at the keyboard. Returns at once: the Escape is the brain's to press,
@@ -555,7 +582,7 @@ class Brain:
     async def _escape(self, turn: _Turn) -> None:
         # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: until then
         # nothing of the turn's runs for it to stop.
-        await asyncio.wait({turn.taken, turn.answered}, timeout=turn.take, return_when=asyncio.FIRST_COMPLETED)
+        await self._taking(turn)
         if self._turn is not turn:
             return
         if not turn.taken.done():
@@ -743,21 +770,29 @@ class Brain:
         except Rejected as error:
             logger.warning(f"the brain posted a hook that does not parse: {error}")
             return
-        turn = self._turn
-        if session != self.session or turn is None or turn.answered.done():
-            # A turn's own hook arriving after an Escape ended it, or a hook no turn of this brain's asked for.
-            logger.info(f"the brain's {event} hook for prompt {prompt} came with no turn of its own in flight")
+        if session != self.session:
+            logger.info(f"the brain's {event} hook for prompt {prompt} came for session {session}, not the brain's")
             return
+        turn = self._turn if self._turn is not None and not self._turn.answered.done() else None
+        waiting = turn is not None and not turn.taken.done()
         match event, submitted:
             # [LAW:single-enforcer] a turn is taken by the prompt that is what it typed, never by the next to come: a turn
             # ended untaken may still be taken, and its prompt and its Stop are then no later turn's.
-            case "UserPromptSubmit", str(words) if not turn.taken.done() and _kept(words) == _kept(turn.typed):
+            case "UserPromptSubmit", str(words) if turn is not None and waiting and _kept(words) == _kept(turn.typed):
                 turn.taken.set_result(prompt)
-            case "UserPromptSubmit", _ if not turn.taken.done():
-                turn.others += (prompt,)
-                logger.warning(f"the brain took prompt {prompt}, not the turn in flight's: one typed for a turn that ended before it was taken, or a task's notification")
-            case ("Stop" | "StopFailure"), _ if turn.prompt == prompt:
+            case "UserPromptSubmit", _:
+                # Runs as a whole turn of Claude Code's, ahead of what was typed behind it.
+                self._unowned_is(prompt, True)
+                if turn is not None and waiting:
+                    turn.others += (prompt,)
+                logger.warning(f"the brain took prompt {prompt}, which is no turn's: one typed for a turn that ended before it was taken, or a task's notification")
+            case ("Stop" | "StopFailure"), _ if turn is not None and turn.prompt == prompt:
                 self._over(turn, BrainAnswered(prompt, None if event == "Stop" else failed))
+            case ("Stop" | "StopFailure"), _ if prompt in self._unowned:
+                self._unowned_is(prompt, False)
+            case _ if turn is None:
+                # A turn's own hook arriving after an Escape ended it, or a hook no turn of this brain's asked for.
+                logger.info(f"the brain's {event} hook for prompt {prompt} came with no turn of its own in flight")
             case _:
                 logger.warning(f"the brain's {event} hook for prompt {prompt} does not fit the turn in flight (prompt {turn.prompt})")
 

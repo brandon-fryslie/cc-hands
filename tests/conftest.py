@@ -210,7 +210,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     reads its terminal raw, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
-    is never taken, "late" is taken only once the next prompt is sent, ahead of it, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
+    is never taken, "late" is taken only once the next prompt is sent, ahead of it, "later" is too, and runs a second before its Stop, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
@@ -269,11 +269,13 @@ def submit(text):
     if late is not None:
         # Taken late, as Claude Code takes a prompt it read after its turn had ended: then the prompt sent behind it.
         post("UserPromptSubmit", prompt_id=late[0], prompt=taken(late[1]))
+        if late[1].strip() == "later":
+            time.sleep(1.0)
         post("Stop", prompt_id=late[0], last_assistant_message="Late.")
         late = None
     if said == "deaf":
         return
-    if said == "late":
+    if said in ("late", "later"):
         late = prompt, text
         return
     post("UserPromptSubmit", prompt_id=prompt, prompt=taken(text))
