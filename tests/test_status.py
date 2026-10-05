@@ -92,6 +92,13 @@ def test_a_degradation_that_does_not_say_what_is_wrong_is_refused(tmp_path: Path
         heartbeat.read(tmp_path / "status.json")
 
 
+@pytest.mark.parametrize("extra", [{"degraded": [{"brief": "is slow", "said": "is slow"}] * 2}, {"deaf": True}, {"deaf": False}], ids=["twice", "deaf", "hearing"])
+def test_a_heartbeat_that_says_a_degradation_twice_or_also_in_the_old_way_is_refused(tmp_path: Path, extra: dict[str, object]) -> None:
+    (tmp_path / "status.json").write_text(json.dumps({**json.loads(heartbeat.encode(beat(degraded=DEAF))), **extra}))
+    with pytest.raises(Rejected):
+        heartbeat.read(tmp_path / "status.json")
+
+
 def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT)
     heart.beat("starting", None, 0, listening=False, degraded=DEAF)
@@ -350,9 +357,13 @@ def test_an_open_turn_shows_in_the_menu_bar_and_is_never_a_notice() -> None:
 
 
 def test_a_daemon_that_cannot_hear_says_so_in_the_menu_bar_and_in_words() -> None:
-    deaf = indicator.show(None, heartbeat.Up(beat(degraded=DEAF, listening=True)), NOW)
+    deaf = indicator.show(None, heartbeat.Up(beat(degraded=DEAF)), NOW)
     assert (deaf.light, deaf.title) == ("up", "⚠︎ hands can't hear")
     assert deaf.text.startswith("hands is up but cannot hear, as there is no microphone: pid 4242")
+
+
+def test_a_turn_open_beside_a_degradation_shows_both() -> None:
+    assert indicator.show(None, heartbeat.Up(beat(degraded=(SLOW,), listening=True)), NOW).title == "⚠︎ hands is slow 🎙"
 
 
 def test_every_degradation_present_is_said_in_the_menu_bar_and_in_words() -> None:
@@ -365,6 +376,19 @@ def test_a_degradation_joining_another_is_announced_and_one_leaving_is_not() -> 
     deaf, both = heartbeat.Up(beat(degraded=DEAF)), heartbeat.Up(beat(degraded=(heartbeat.NO_MICROPHONE, SLOW)))
     at = [NOW + timedelta(seconds=seconds) for seconds in (0, 100, 200, 300)]
     assert shown_over(list(zip([deaf, both, deaf, both], at))) == [(), (heartbeat.describe(both, at[1]),), (), (heartbeat.describe(both, at[3]),)]
+
+
+def test_a_degradation_held_back_by_the_quiet_window_is_dropped_if_it_clears_before_the_window_closes() -> None:
+    up, deaf, both = heartbeat.Up(beat()), heartbeat.Up(beat(degraded=DEAF)), heartbeat.Up(beat(degraded=(heartbeat.NO_MICROPHONE, SLOW)))
+    at = [NOW + timedelta(seconds=seconds) for seconds in (0, 1, 30, 40, 70)]
+    # Losing the microphone was told; the slowness it held back is gone by the time it could be told, so nothing is.
+    assert shown_over(list(zip([up, deaf, both, deaf, deaf], at))) == [(), (heartbeat.describe(deaf, at[1]),), (), (), ()]
+
+
+def test_three_degradations_are_said_as_a_list() -> None:
+    third = heartbeat.Degradation("is odd", "is odd")
+    text = indicator.show(None, heartbeat.Up(beat(degraded=(heartbeat.NO_MICROPHONE, SLOW, third))), NOW).text
+    assert text.startswith("hands is up but cannot hear, as there is no microphone, is slow, as something made it so, and is odd: pid")
 
 
 def test_losing_the_microphone_is_announced_and_so_is_a_deaf_daemon_going_down() -> None:

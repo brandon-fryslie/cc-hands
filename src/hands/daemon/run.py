@@ -351,7 +351,9 @@ async def converse(
     failures: list[BaseException] = []
 
     def beat() -> None:
-        heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open, degraded=(heartbeat.NO_MICROPHONE,) if voice.audio.deaf else ())
+        # A turn opened with no microphone hears nothing, so it is not listening.
+        deaf = voice.audio.deaf
+        heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(heartbeat.NO_MICROPHONE,) if deaf else ())
 
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead

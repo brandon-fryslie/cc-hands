@@ -81,8 +81,6 @@ def parse(raw: bytes) -> Status:
     # [LAW:parse-dont-validate] every reader of the heartbeat goes through here.
     fields = Payload.parse(raw)
     last_audio_out = fields.optional_text("last_audio_out")
-    # A daemon from before degradations said only whether it could not hear, as deaf.
-    deaf = (NO_MICROPHONE,) if fields.optional_flag("deaf") else ()
     return Status(
         pid=parse_pid(fields.integer("pid")),
         started_at=_instant(fields.text("started_at")),
@@ -92,7 +90,7 @@ def parse(raw: bytes) -> Status:
         last_audio_out=None if last_audio_out is None else _instant(last_audio_out),
         live_sessions=fields.integer("live_sessions"),
         listening=fields.optional_flag("listening"),
-        degraded=(*(_degradation(each) for each in fields.optional_items("degraded")), *deaf),
+        degraded=_degradations(fields),
     )
 
 
@@ -228,7 +226,7 @@ def describe(verdict: Verdict, now: datetime) -> str:
             return f"hands refused to start {_span(now - written_at)} ago: {reason}"
         case Up(status=status):
             heard = "never" if status.last_audio_out is None else f"{_span(now - status.last_audio_out)} ago"
-            state = f"up but {', and '.join(each.said for each in status.degraded)}" if status.degraded else "up"
+            state = f"up but {_listed([each.said for each in status.degraded])}" if status.degraded else "up"
             return (
                 f"hands is {state}: pid {status.pid}, up {_span(now - status.started_at)}, pipeline {status.pipeline}, "
                 f"last audio out {heard}, {live_sessions(status)}"
@@ -237,6 +235,11 @@ def describe(verdict: Verdict, now: datetime) -> str:
 
 def live_sessions(status: Status) -> str:
     return "1 live session" if status.live_sessions == 1 else f"{status.live_sessions} live sessions"
+
+
+def _listed(phrases: list[str]) -> str:
+    # A phrase may hold a comma of its own, so the last is set apart by ", and" even when there are two.
+    return phrases[0] if len(phrases) == 1 else f"{', '.join(phrases[:-1])}, and {phrases[-1]}"
 
 
 def _span(elapsed: timedelta) -> str:
@@ -260,6 +263,17 @@ def _period(milliseconds: int) -> timedelta:
     if milliseconds not in PERIODS_MS:
         raise Rejected(f"heartbeat_ms {milliseconds} is not a heartbeat period")
     return timedelta(milliseconds=milliseconds)
+
+
+def _degradations(fields: Payload) -> tuple[Degradation, ...]:
+    # A daemon from before degradations said only whether it could not hear, as deaf; no daemon says both.
+    if "deaf" in fields.fields and "degraded" in fields.fields:
+        raise Rejected("a heartbeat says it cannot hear either as deaf or among its degradations, never both")
+    deaf = (NO_MICROPHONE,) if fields.optional_flag("deaf") else ()
+    degraded = (*(_degradation(each) for each in fields.optional_items("degraded")), *deaf)
+    if len(set(degraded)) < len(degraded):
+        raise Rejected(f"each degradation is said once: {degraded}")
+    return degraded
 
 
 def _degradation(item: object) -> Degradation:

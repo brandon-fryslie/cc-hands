@@ -9,6 +9,8 @@ from hands.sessions.heartbeat import Degradation, Down, NeverRan, Refused, Statu
 # Stopped and never ran are one light: in both, nothing is running and nothing went wrong on the way to that.
 # Up is one light, degraded or not: whether it warns is whether it has any degradation.
 Light = Literal["up", "not responding", "down", "refused", "off", "unreadable"]
+# What a notice tells: the warning light hands left up for, or a degradation that arrived.
+type News = Light | Degradation
 
 # [LAW:no-silent-failure] an unreadable heartbeat is as loud as a dead daemon: nothing can say hands is up.
 TITLES: dict[Light, str] = {
@@ -30,9 +32,9 @@ QUIET = timedelta(seconds=60)
 
 def title(verdict: Verdict, light: Light) -> str:
     match verdict:
-        # A degraded daemon shows what is wrong, turn open or not: a press to talk with no microphone hears nothing.
-        case Up(status=Status(degraded=(_, *_) as degraded)):
-            return f"⚠︎ hands {', '.join(each.brief for each in degraded)}"
+        # A degraded daemon shows what is wrong, and a turn open beside it; a daemon that cannot hear never says it is listening.
+        case Up(status=Status(degraded=(_, *_) as degraded, listening=listening)):
+            return f"⚠︎ hands {', '.join(each.brief for each in degraded)}{' 🎙' if listening else ''}"
         case Up(status=Status(listening=True)):
             return LISTENING
         case _:
@@ -72,7 +74,7 @@ class Shown:
     title: str  # the menu bar's text
     text: str  # the verdict in words, under the title
     notices: tuple[str, ...]  # notifications to post now
-    owed: bool  # hands left up while the quiet window was open, and has not come back since
+    owed: frozenset[News]  # news the quiet window held back, which still holds
     posted_at: datetime | None  # when a notice last went out, which opens the quiet window
 
 
@@ -86,18 +88,24 @@ def show(before: Shown | None, verdict: Verdict, now: datetime) -> Shown:
         case None:
             # A daemon found already down at the first look is shown, not announced: only leaving up, or a degradation
             # arriving, is news.
-            return Shown(after, degraded, shown, text, (), False, None)
+            return Shown(after, degraded, shown, text, (), frozenset(), None)
         case Shown(light=was, degraded=had, owed=owed, posted_at=posted_at):
-            # A departure held back by the quiet window is owed, not dropped: it goes out when the window closes,
-            # unless hands has come back up whole by then and there is nothing left to tell. A change is news when it
-            # leaves up for a warning, or when a degradation the look before did not show arrives, from anywhere,
-            # stuck included, or beside others.
-            warning = after != "up" or bool(degraded)
-            arrived = not set(degraded) <= set(had)
-            owing = warning and (owed or arrived or (after != was and was == "up"))
+            # News is leaving up for a warning, or a degradation the look before did not show arriving, from anywhere,
+            # stuck included, or beside others. News held back by the quiet window is owed, not dropped: it goes out
+            # when the window closes if it still holds then, a departure until hands is back up, a degradation until it clears.
+            left: set[News] = {after} if after != "up" and was == "up" else set()
+            owing = frozenset[News](news for news in left | (set(degraded) - set(had)) | owed if holds(news, after, degraded))
             quiet = posted_at is not None and now - posted_at < QUIET
             notices = (text,) if owing and not quiet else ()
-            return Shown(after, degraded, shown, text, notices, owing and not notices, now if notices else posted_at)
+            return Shown(after, degraded, shown, text, notices, frozenset() if notices else owing, now if notices else posted_at)
+
+
+def holds(news: News, after: Light, degraded: tuple[Degradation, ...]) -> bool:
+    match news:
+        case Degradation():
+            return news in degraded
+        case _:
+            return after != "up"
 
 
 def finished(verdict: Verdict, orphaned: bool, run: int) -> bool:

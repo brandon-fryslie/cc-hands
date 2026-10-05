@@ -1945,10 +1945,10 @@ thing that failed `[LAW:no-silent-failure]`:
    shows one of six lights: up, not
    responding, down, refused (a start that ended before it ran, with its reason), off (stopped or never ran), and unreadable. An unreadable heartbeat
    is warned of as loudly as a dead daemon. Up with any degradation is still the up light, its title
-   a warning naming every degradation. It posts a notification when the light
+   a warning naming every degradation, and a turn open beside it; a daemon with no microphone never says a turn is open. It posts a notification when the light
    leaves up for a warning, or a degradation the look before did not show arrives, at most once a minute, so a loop that
    stalls and recovers over and over is not announced every time. A departure inside that
-   minute is held, and posted when the minute is up if hands is still not up and whole. A daemon it finds already
+   minute is held, and posted when the minute is up if what it held still holds: hands still not up, or the degradation still there. A daemon it finds already
    down on its first look is shown but not announced. A heartbeat whose pid is outside
    macOS's `1..99999` does not parse, since no process can have it. A pid counts as the
    daemon only while the process holding it started no later than the heartbeat's
