@@ -648,7 +648,7 @@ def install_fritter(home: Home, record: audit.Record) -> int:
         wide.annotate(packaged=wrapper.PACKAGED)
         try:
             installed = wrapper.install(home)
-        except wrapper.Uninstallable as error:
+        except (wrapper.Uninstallable, wrapper.Unpackaged) as error:
             wide.fail(str(error))
             print(f"hands install-fritter: {error}", file=sys.stderr)
             return 1

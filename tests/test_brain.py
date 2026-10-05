@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import pickle
+import re
 import shutil
 import signal
 import subprocess
@@ -40,6 +41,7 @@ from hands.daemon.run import mind
 from hands.daemon.starting import CannotStart
 from hands.sessions.proxy import Wire
 from hands.sessions.sentences import Sentences
+from hands.sessions import wrapper
 from hands.sessions.wrapper import MARK
 from hands.sessions.home import Home
 from hands.sessions.pseudoterminal import STOP_SECONDS
@@ -1153,7 +1155,7 @@ async def test_a_fritter_that_cannot_be_run_is_refused_with_what_its_terminal_sh
     unrunnable = tmp_path / "fritter"
     shutil.copy(fritter, unrunnable)
     unrunnable.chmod(0o644)
-    monkeypatch.setattr("hands.brain.process.PACKAGED", unrunnable)
+    monkeypatch.setattr(wrapper, "PACKAGED", unrunnable)
     with pytest.raises(Unstartable, match=r"(?s)fritter exited \(126\).*[Pp]ermission denied"):
         await start(launch(tmp_path), lambda _entry: None)
 
@@ -1358,4 +1360,26 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
     [launched] = events(recorded, "brain.launch")
     assert launched.outcome == "failed" and launched.error == "Unstartable: no claude on PATH but hands' shims, so there is no Claude Code for hands to run as its own"
     assert launched.facts["account"] == "brain@example.com" and "pid" not in launched.facts
+    assert events(recorded, "brain.run") == []
+
+
+async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: list[Entry] = []
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    refocus = Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
+    missing = tmp_path / "package" / "bin" / "fritter"
+    monkeypatch.setattr(wrapper, "PACKAGED", missing)
+
+    async def unread() -> InFront:
+        return FrontUnread("not read in this test")
+
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com"), voice=voices.DEFAULT)
+    # The words `hands install-fritter` refuses the same hands with.
+    refused = f"hands' package carries no fritter at {missing}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
+    with pytest.raises(CannotStart, match=f"^{re.escape(refused)}$"):
+        async with mind(claude, [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, dict(os.environ)):
+            pass
+    [launched] = events(recorded, "brain.launch")
+    assert launched.outcome == "failed" and launched.error == f"Unpackaged: {refused}"
+    assert launched.facts["account"] == "brain@example.com" and "fritter" not in launched.facts and "pid" not in launched.facts
     assert events(recorded, "brain.run") == []

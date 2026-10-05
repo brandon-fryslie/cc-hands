@@ -69,6 +69,22 @@ class Uninstallable(Exception):
     """fritter could not be copied, or the claude beside it could not be written. The message says which."""
 
 
+class Unpackaged(Exception):
+    """hands' package carries no fritter: a hands built without it, which only building hands again mends."""
+
+
+def packaged() -> Path:
+    """The fritter hands' package carries, or Unpackaged naming the rebuild.
+
+    [LAW:single-enforcer] the one check that this hands carries its fritter, for everything that runs or copies it: the
+    brain and `hands install-fritter` refuse a hands built without it in the same words."""
+    if not PACKAGED.is_file():
+        raise Unpackaged(
+            f"hands' package carries no fritter at {PACKAGED}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
+        )
+    return PACKAGED
+
+
 @dataclass(frozen=True)
 class Installed:
     shim: Path
@@ -196,7 +212,7 @@ esac
 
 
 def install(home: Home) -> Installed:
-    """Copy the packaged fritter and write the shim into the home's bin."""
+    """Copy the packaged fritter and write the shim into the home's bin; Unpackaged when the package carries none."""
     fritter = home.fritter
     shim = home.shim
     try:
@@ -204,14 +220,7 @@ def install(home: Home) -> Installed:
         # executable is rewritten in place, and every session under fritter is one.
         home.bin.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=home.bin, prefix=".fritter.") as staging:
-            try:
-                shutil.copy2(PACKAGED, Path(staging) / "fritter")
-            except FileNotFoundError as error:
-                # Its build put it there, so a package without it is a hands built without it: build hands again.
-                raise Uninstallable(
-                    f"hands' package carries no fritter at {PACKAGED}: install hands again, or in a checkout, "
-                    f"`uv sync --reinstall-package hands`"
-                ) from error
+            shutil.copy2(packaged(), Path(staging) / "fritter")
             os.replace(Path(staging) / "fritter", fritter)
         replace_whole(shim, shim_script(fritter, home.wire), 0o755)
     except OSError as error:
