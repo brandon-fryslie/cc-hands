@@ -12,10 +12,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from loguru import logger
 
 from conftest import NO_PYTHON, unedited
 from hands.core.session import Membership, SessionId
-from hands.daemon.cli import launch, still_shown
+from hands.daemon import cli
+from hands.daemon.cli import launch, retire
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.starting import Ended, Start
 from hands.sessions import audit, heartbeat
@@ -238,15 +240,65 @@ async def test_a_restart_asked_while_a_quit_winds_the_run_down_does_not_start_it
     assert last is not None and last.pipeline == "stopped"
 
 
-def test_a_handed_on_indicator_is_kept_only_while_it_runs() -> None:
-    shown = subprocess.Popen(["sleep", "60"])
-    try:
-        assert still_shown(shown.pid) == shown.pid
-    finally:
-        shown.kill()
-        shown.wait()
-    # Reaped by the run before, as its reap thread does with an indicator that exits.
-    assert still_shown(shown.pid) is None
-    exited = subprocess.Popen(["true"])
-    while still_shown(exited.pid) is not None:
+def spawned(*argv: str) -> int:
+    """A child of this process, as the indicator is of the run that starts it and of every run exec'd after."""
+    return os.posix_spawnp(argv[0], list(argv), os.environ)
+
+
+def test_a_restart_ends_the_indicator_the_run_before_showed() -> None:
+    shown = spawned("sleep", "60")
+    assert retire(shown) == "ended"
+    # Reaped as it was ended: no zombie is left under the run.
+    with pytest.raises(ChildProcessError):
+        os.waitpid(shown, os.WNOHANG)
+
+
+def test_an_indicator_that_exited_before_the_restart_is_reaped_and_said() -> None:
+    exited = spawned("false")
+    # Exited and not reaped, as an indicator that exits during the exec is: no reap thread outlives it.
+    while subprocess.run(["ps", "-o", "stat=", "-p", str(exited)], capture_output=True, text=True).stdout.strip() != "Z":
         time.sleep(0.01)
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR")
+    try:
+        assert retire(exited) == "exited"
+    finally:
+        logger.remove(sink)
+    assert logged == ["the menu-bar indicator exited (1) while hands runs; hands is not shown in the menu bar"]
+    # Reaped by the run before, as its reap thread does with an indicator that exits, and said there.
+    assert retire(exited) == "reaped"
+
+
+def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The run before's indicator judged the heartbeat by the code that run had; this run's is started on the code it runs.
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    previous = spawned("sleep", "60")
+    shown: list[Home] = []
+
+    def start_indicator(home: Home) -> int:
+        shown.append(home)
+        return 0
+
+    def kept(*_: object) -> None:
+        pass
+
+    def loaded(*_: object) -> cli.Run:
+        async def quits(_quit_event: asyncio.Event) -> Ended:
+            return Ended(None, 0)
+
+        return quits
+
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+    monkeypatch.setattr(cli, "start_indicator", start_indicator)
+    monkeypatch.setattr(cli, "reap", kept)
+    monkeypatch.setattr(cli, "to_terminal", kept)
+    monkeypatch.setattr(cli.logger, "remove", kept)
+    monkeypatch.setattr(cli, "loaded", loaded)
+    assert cli.main(["--home", str(home.root), "run", "--restarted", str(previous)]) == 0
+    assert shown == [home]
+    with pytest.raises(ChildProcessError):
+        os.waitpid(previous, os.WNOHANG)
+    [start] = started(home)
+    assert (start["facts"]["restarted"], start["facts"]["previous_indicator"]) == (True, "ended")
