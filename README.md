@@ -302,7 +302,8 @@ into, and `claude "review this"` is. `hands install-fritter` exits 0 only when `
 on the current `PATH` is the one it wrote, and says what to add when it is not. The
 fritter it copies is the one hands' package carries, built when that package was, so no
 Go is needed to run it. Run it again after hands is upgraded, or in a checkout after
-fritter's source changes; `hands check` says when the copy, or the shim, is not the one
+fritter's source changes: `hands run` refuses to start on a copy that is not the one
+this hands carries, and `hands check` says when the copy, or the shim, is not the one
 this hands would install. A session started before the shim stays unreachable until it
 ends.
 

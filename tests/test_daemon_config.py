@@ -412,6 +412,43 @@ def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_rest
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
 
+def test_a_home_whose_fritter_is_not_the_one_hands_carries_refuses_the_start_at_the_door_naming_install_fritter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # As after updating hands: the home's copy is the fritter an older hands carried, which may not know what this one asks.
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    home.bin.mkdir()
+    home.fritter.write_bytes(b"#!/bin/sh\n")
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+    assert cli.main(["--home", str(home.root), "run"]) == 1
+    reason = capsys.readouterr().err.removeprefix("hands: ").rstrip("\n")
+    assert f"{home.fritter} is not the fritter this hands carries, {wrapper.PACKAGED}" in reason
+    assert reason.endswith("run `hands install-fritter`, then run hands again.")
+    [refused] = [line for line in map(json.loads, audit.tail(home.audit, 10)[0]) if line["event"] == "hands.start"]
+    assert (refused["error"], refused["facts"]["fritter"]) == (f"CannotStart: {reason}", "stale")
+    # A restart's run, as follows updating a running hands, writes the refusal into the heartbeat `hands status` reads.
+    assert cli.main(["--home", str(home.root), "run", "--restarted", "0"]) == 1
+    capsys.readouterr()
+    assert cli.main(["--home", str(home.root), "status"]) == 1
+    assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
+
+
+@pytest.mark.parametrize("copy", ["current", "absent"])
+def test_a_home_whose_fritter_is_the_one_hands_carries_or_none_passes_the_door(copy: wrapper.Copy, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    if copy == "current":
+        home.bin.mkdir()
+        shutil.copy2(wrapper.PACKAGED, home.fritter)
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+    run_start = Start(restarted=False)
+    assert cli.door(home, run_start) == config.load(home)
+    events: list[WideEvent] = []
+    run_start.ended(events.append, None)
+    assert [event.facts["fritter"] for event in events] == [copy]
+
+
 def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(tmp_path: Path) -> None:
     """Charles by the name the installed pocket_tts resolves itself, until the user chooses another, which the next run
     is built in.
