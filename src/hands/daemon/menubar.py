@@ -52,7 +52,8 @@ def show(home: Home, run: int) -> int:
 
     def end(how: int | Exception) -> None:
         nonlocal ending
-        ending = how
+        # The first ending says how it went: a restart's SIGTERM after a look that raised does not make it a clean exit.
+        ending = how if ending is None else ending
         timer.invalidate()
         # An open menu tracks events in a loop of its own, which a posted event would wait behind until it closed.
         menu.cancelTracking()

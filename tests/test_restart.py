@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import select
 import subprocess
 import sys
 import time
@@ -259,15 +260,15 @@ def test_an_indicator_that_does_not_end_when_asked_is_killed_with_its_group() ->
     argv = ["sh", "-c", 'trap "" TERM; sleep 60 & echo; wait']
     stubborn = os.posix_spawnp("sh", argv, os.environ, file_actions=[(os.POSIX_SPAWN_DUP2, said, 1)], setsid=True)
     os.close(said)
-    # Its line comes once SIGTERM is ignored, so the ask below cannot land before it is.
     with os.fdopen(ready) as lines:
+        # Its line comes once SIGTERM is ignored, so the ask below cannot land before it is.
         lines.readline()
-    assert retire(stubborn, grace=0.2) == "killed"
-    with pytest.raises(ChildProcessError):
-        os.waitpid(stubborn, os.WNOHANG)
-    # The sleep it started was in its group, and went with it: gone, or exited and not yet reaped by launchd.
-    with pytest.raises((ProcessLookupError, PermissionError)):
-        os.killpg(stubborn, 0)
+        assert retire(stubborn, grace=0.2) == "killed"
+        with pytest.raises(ChildProcessError):
+            os.waitpid(stubborn, os.WNOHANG)
+        # The sleep it started holds the pipe too, so the pipe ends only once it went with the group.
+        assert select.select([lines], [], [], 5)[0] == [lines]
+        assert lines.read() == ""
 
 
 def test_an_indicator_that_exited_before_the_restart_is_reaped_and_said() -> None:
