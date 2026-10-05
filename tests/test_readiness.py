@@ -174,10 +174,12 @@ def test_a_shim_whose_fritter_is_not_the_one_hands_carries_says_to_install_it_ag
     assert f"its fritter {home.bin / 'fritter'} is not the one this hands carries, {wrapper.PACKAGED}: run `hands install-fritter`" in found.said
 
 
-def test_a_shim_on_a_hands_built_without_its_fritter_names_the_rebuild(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("installed", [True, False], ids=["shim", "none"])
+def test_a_hands_built_without_its_fritter_names_the_rebuild_not_install_fritter(root: Path, monkeypatch: pytest.MonkeyPatch, installed: bool) -> None:
     home = Home(root / "home")
-    executable(home.bin / "fritter", "#!/bin/sh\n")
-    executable(home.shim, shim_script(home.bin / "fritter", home.wire))
+    if installed:
+        executable(home.bin / "fritter", "#!/bin/sh\n")
+        executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     monkeypatch.setattr(wrapper, "PACKAGED", root / "package" / "bin" / "fritter")
     found = readiness.shim(home, f"{home.bin}")
     assert isinstance(found, Missing) and found.said.startswith(f"hands' package carries no fritter at {root / 'package' / 'bin' / 'fritter'}: install hands again")
