@@ -214,7 +214,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import itertools, json, os, select, signal, sys, time, tty, urllib.request
+import itertools, json, os, select, signal, sys, termios, time, tty, urllib.request
 first_run = sys.argv[1:] == ["--setting-sources", "user"]
 if sys.argv[1:2] == ["auth"] or first_run:
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
@@ -242,7 +242,9 @@ def post(event, **fields):
 def typed(line):
     with open(os.environ["TYPED"], "a") as log:
         log.write(json.dumps(line) + "\\n")
-tty.setraw(0)
+# Raw without flushing: Claude Code keeps what was typed while it started (2.1.289, measured 2026-10-04, keys typed
+# 0.05s in), and a fake that drops it loses a turn hands typed before a loaded machine let it get this far.
+tty.setraw(0, termios.TCSANOW)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h> ")
 pending, box, turn, turn_text, prompts, late = b"", "", None, "", 0, None
@@ -348,7 +350,9 @@ while True:
             pending = pending[1:]
             typed(["ctrl_c", box])
             box = ""
-        elif pending.startswith(b"\\r"):
+        # A Return typed before it read raw reaches it as the cooked terminal turned it, a newline: fritter types no bare
+        # newline of its own.
+        elif pending.startswith((b"\\r", b"\\n")):
             pending = pending[1:]
             if pending:
                 # A Return with more behind it in the same burst is read as pasted, and sends nothing (2.1.286).

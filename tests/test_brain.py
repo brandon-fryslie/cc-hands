@@ -737,16 +737,32 @@ async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_en
 ) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path, fritter), recorded.append)
-    with pytest.raises(BrainGone, match="exited"):
-        await brain.ask("die", unasked)
-    assert await brain.exited() == 3
-    with pytest.raises(BrainGone, match="before it was asked"):
-        await brain.ask("anyone?", unasked)
-    # The watch that saw it die and the stop at teardown both wait on the one exit.
-    await brain.stop()
+    # Bounded, so a brain that never dies fails here, naming the wait it hung in.
+    async with asyncio.timeout(TAKE_SECONDS * 2):
+        with pytest.raises(BrainGone, match="exited"):
+            await brain.ask("die", unasked)
+        assert await brain.exited() == 3
+        with pytest.raises(BrainGone, match="before it was asked"):
+            await brain.ask("anyone?", unasked)
+        # The watch that saw it die and the stop at teardown both wait on the one exit.
+        await brain.stop()
     [ran] = events(recorded, "brain.run")
     shown = ran.facts["shown"]
     assert ran.facts["code"] == 3 and isinstance(shown, str) and "bye" in shown
+
+
+async def test_a_turn_typed_while_the_brain_is_still_starting_is_taken(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    # A Claude Code a loaded machine starts slowly reads its terminal only after hands has typed into it.
+    slow = fake_claude.with_name("claude-slow")
+    fake_claude.rename(slow)
+    fake_claude.write_text(f'#!/bin/sh\nsleep 1\nexec "{slow}" "$@"\n')
+    fake_claude.chmod(0o755)
+    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    try:
+        # A turn it lost would fail Untaken, once its take limit had passed.
+        assert await brain.ask("what is running?", unasked) == BrainAnswered("p1", None)
+    finally:
+        await brain.stop()
 
 
 async def test_a_turn_never_taken_fails_naming_hands_login_and_the_next_turn_is_its_own(
