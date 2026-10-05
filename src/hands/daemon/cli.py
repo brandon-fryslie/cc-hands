@@ -195,7 +195,7 @@ def run_daemon(home: Home, restarted: int | None) -> int:
             # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
             after_crash = restarted is None and crashed_before(home)
             run_start.heard(after_crash=after_crash)
-            settings = door(home)
+            settings = door(home, run_start)
         except CannotStart as cannot:
             run_start.ended(audit_log.record, cannot)
             refuse(cannot, held)
@@ -294,9 +294,9 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
 
-def door(home: Home) -> Settings:
-    """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant, and the
-    settings it starts on. CannotStart where either is missing."""
+def door(home: Home, run_start: Start) -> Settings:
+    """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant, the
+    home's copy of fritter, and the settings it starts on. CannotStart where any is missing or stale."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
     from hands.voice import talkkey
 
@@ -306,6 +306,18 @@ def door(home: Home) -> Settings:
     if not granted:
         talkkey.ask()
         raise CannotStart(f"{readiness.grant(granted).said}, then run hands again.")
+    # [LAW:no-silent-failure] every session this home's shim starts runs the home's copy of fritter, which updating hands
+    # leaves as the older hands copied it, so this hands may ask it what it cannot do: a stale copy is refused here,
+    # naming its fix, before any brain types through it. No copy yet, a hands that carries none, or a PATH whose claude
+    # is not this home's shim, is the survey's to say.
+    try:
+        copy = wrapper.copy_of(home)
+    except OSError as error:
+        run_start.heard(fritter="unreadable")
+        raise CannotStart(f"cannot tell whether {home.fritter} is the fritter this hands carries: {error}") from error
+    run_start.heard(fritter=copy)
+    if copy == "stale":
+        raise CannotStart(f"{home.fritter} is not the fritter this hands carries, {wrapper.PACKAGED}, so sessions started under it may not do what this hands asks of them: run `hands install-fritter`, then run hands again.")
     # [LAW:single-enforcer] the one read of the settings a run starts on: the export edge, the run, and the watch for
     # an edit to them all take these.
     try:

@@ -9,7 +9,6 @@ Monitoring grant that lets hands hear the talk key; hands running; and the runni
 and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
 """
 
-import filecmp
 import os
 import re
 import shutil
@@ -209,7 +208,7 @@ def shim(home: Home, path: str) -> Finding:
             # [LAW:one-source-of-truth] the fritter in a home's bin is a copy of the packaged one, so a copy that has
             # drifted from it, as one does when hands is upgraded or a checkout's fritter rebuilt, is said, never trusted.
             try:
-                current = filecmp.cmp(runs, carried, shallow=False)
+                current = wrapper.carried(runs)
             except OSError as error:
                 return Unknown(f"cannot tell whether {runs} is the fritter this hands carries, {carried}: {error}")
             if not current:

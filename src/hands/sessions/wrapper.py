@@ -7,6 +7,7 @@ fritter around it, wraps every session nobody remembered to wrap. Sessions alrea
 stay unwrapped until they end.
 """
 
+import filecmp
 import os
 import shlex
 import shutil
@@ -83,6 +84,31 @@ def packaged() -> Path:
             f"hands' package carries no fritter at {PACKAGED}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
         )
     return PACKAGED
+
+
+def carried(fritter: Path) -> bool:
+    """Whether `fritter`, a copy `install` made, is still the fritter this hands' package carries: one an older hands
+    copied, or copied before a checkout's fritter was rebuilt, is not. OSError where either cannot be read, the packaged
+    one included."""
+    # [LAW:one-source-of-truth] the one comparison of a copy with the packaged fritter: the run's door and `hands check` ask it.
+    return filecmp.cmp(fritter, PACKAGED, shallow=False)
+
+
+# What a home's copy of fritter is to this hands: the one it carries, another one, no copy yet, or not to be compared,
+# since this hands carries none.
+type Copy = Literal["current", "stale", "absent", "unpackaged"]
+
+
+def copy_of(home: Home) -> Copy:
+    """What the home's copy of fritter is to this hands. OSError where it is there and cannot be read, a link to nothing
+    included."""
+    try:
+        packaged()
+    except Unpackaged:
+        return "unpackaged"
+    if not home.fritter.exists(follow_symlinks=False):
+        return "absent"
+    return "current" if carried(home.fritter) else "stale"
 
 
 @dataclass(frozen=True)
