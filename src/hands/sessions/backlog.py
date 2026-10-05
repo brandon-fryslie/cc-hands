@@ -27,7 +27,19 @@ BACKLOG = "backlog"
 
 
 class Unread(Exception):
-    """lit could not hand over a backlog in this directory: none is there, or lit failed. The message says which."""
+    """lit could not hand over a backlog in this directory: it failed, or refused, and the message says why."""
+
+
+@dataclass(frozen=True)
+class Untracked:
+    """A project lit was never set up in: it has no backlog, which is an answer, not a failure."""
+
+    project: Path
+
+
+# lit's ErrWorkspaceNotInitialized (internal/store/workspace_initialized.go): the one sentence lit says in a project
+# where `lit init` never ran.
+NOT_INITIALIZED = "repository not initialized with lit"
 
 
 @dataclass(frozen=True)
@@ -91,8 +103,9 @@ class Backlog:
         return Thing(BACKLOG, "", tuple(of(id) for id in self.roots()))
 
 
-async def read_backlog(project: Path) -> Backlog:
-    """The backlog lit holds for `project`; raises Unread when lit cannot say, and Rejected when what it said does not parse."""
+async def read_backlog(project: Path) -> Backlog | Untracked:
+    """The backlog lit holds for `project`, or that lit was never set up there; raises Unread when lit cannot say, and
+    Rejected when what it said does not parse."""
     try:
         ran = await run("lit", "export", timeout=EXPORT_TIMEOUT_SECONDS, cwd=project)
     except TimeoutError:
@@ -100,7 +113,12 @@ async def read_backlog(project: Path) -> Backlog:
     except OSError as error:
         raise Unread(f"cannot run lit in {project}: {error}") from error
     if ran.returncode != 0:
-        raise Unread(f"lit export in {project} exited {ran.returncode}: {ran.err.decode(errors='replace').strip()[-300:]}")
+        err = ran.err.decode(errors="replace")
+        # [LAW:parse-dont-validate] exception: lit exits 3 for this and for every other refusal alike, and prints its
+        # reason only as English, so the sentence is what tells them apart until lit says it as data (links-error-output-ckk7).
+        if NOT_INITIALIZED in err:
+            return Untracked(project)
+        raise Unread(f"lit export in {project} exited {ran.returncode}: {err.strip()[-300:]}")
     # Off the loop: the largest export takes tens of milliseconds to parse, which the voice pipeline would hear.
     return await asyncio.to_thread(parse_export, ran.out)
 

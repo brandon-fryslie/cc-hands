@@ -219,7 +219,7 @@ async def test_a_pass_says_the_whole_backlog_leaves_first_and_audits_itself(proj
     assert [summarise.asked(page) for page in summarise.pages] == [["e1.a", "e1.b"], ["t1"], ["e1"], [BACKLOG]]
     assert set(store.reckon(parse_export(export()).thing()).said) == {"e1.a", "e1.b", "t1", "e1", BACKLOG}
     [record] = records
-    assert isinstance(record, WideEvent) and (record.event, record.outcome, record.facts["project"]) == ("summary.backlog", "ok", project)
+    assert isinstance(record, WideEvent) and (record.event, record.outcome, record.facts["project"], record.facts["tracked"]) == ("summary.backlog", "ok", project, True)
     assert record.counts == {"things": 5, "known": 0, "said": 5, "unsaid": 0, "rounds": 3, "calls": 4, "failed_calls": 0, "stray": 0}
     assert (record.facts["left_out"], record.facts["errors"]) == ((), ())
 
@@ -272,6 +272,28 @@ async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path
     await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), Summariser(), records.append)
     [record] = records
     assert isinstance(record, WideEvent) and record.outcome == "failed" and "exited 1" in (record.error or "")
+    assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray"), 0)
+
+
+def never_initialized(project: Path) -> None:
+    """Make `lit export` answer as lit does in a project `lit init` never ran in."""
+    lit = Path(os.environ["PATH"].split(":")[0]) / "lit"
+    lit.write_text(
+        "#!/bin/sh\n"
+        "echo \"error (code=3): repository not initialized with lit — run 'lit init' first\" >&2\n"
+        "echo 'remediation: Do not retry unchanged — this repository has no lit workspace.' >&2\n"
+        "exit 3\n"
+    )
+
+
+async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_says_so_without_failing(project: Path, tmp_path: Path) -> None:
+    never_initialized(project)
+    summarise = Summariser()
+    records: list[Entry] = []
+    await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), summarise, records.append)
+    [record] = records
+    assert summarise.pages == []
+    assert isinstance(record, WideEvent) and (record.outcome, record.facts["tracked"]) == ("ok", False)
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray"), 0)
 
 
@@ -359,6 +381,8 @@ async def test_the_backlog_tools_say_what_they_could_not_read(project: Path, tmp
     assert await bodies["read_backlog"](session="s9") == {"error": "there is no session s9"}
     (project / "export.json").unlink()
     assert "could not be read" in str((await bodies["read_backlog"](session="s1"))["error"])
+    never_initialized(project)
+    assert await bodies["read_backlog"](session="s1") == {"error": f"{project} has no backlog: lit was never set up there"}
 
 
 @pytest.mark.skipif(shutil.which("lit") is None, reason="the brain works a tracker with lit")

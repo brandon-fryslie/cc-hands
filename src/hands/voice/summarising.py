@@ -14,7 +14,7 @@ from pathlib import Path
 
 from hands.core.sentences import Due, answered, page
 from hands.sessions.audit import Record
-from hands.sessions.backlog import Unread, read_backlog
+from hands.sessions.backlog import Unread, Untracked, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import Fact, annotate, count, fail, unit
 from hands.voice.sentences import Backlog, SummaryStore, Turns
@@ -112,6 +112,10 @@ async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summa
         except (Unread, Rejected) as error:
             # [LAW:no-silent-failure] a project hands cannot read fails its pass, saying why.
             fail(f"cannot read the backlog, so none of it is summarised: {error}")
+            return
+        # [LAW:nothing-unseen] a project lit was never set up in has nothing to say, and its event says that is why.
+        annotate(tracked=not isinstance(backlog, Untracked))
+        if isinstance(backlog, Untracked):
             return
         thing = backlog.thing()
         first = store.reckon(thing)

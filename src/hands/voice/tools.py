@@ -36,7 +36,7 @@ from hands.core.drilldown import drill
 from hands.core.sentences import Due, cut, turn_digest
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
-from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
+from hands.sessions.backlog import BACKLOG, Backlog, Unread, Untracked, read_backlog
 from hands.sessions import catchup
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, fail, unit
@@ -601,6 +601,8 @@ async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tup
         # [LAW:no-silent-failure] the model is told why it got nothing, and the log keeps it.
         logger.error(f"cannot read the backlog of session {session} in {member.cwd}: {error}")
         return f"the backlog in {member.cwd} could not be read: {error}"
+    if isinstance(backlog, Untracked):
+        return f"{member.cwd} has no backlog: lit was never set up there"
     # Every read is a sighting: what changed since the last pass is said in the background, never while this call waits.
     store.want(member.cwd)
     return member.cwd, backlog, store.reckon(backlog.thing()).said
