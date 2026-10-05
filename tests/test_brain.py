@@ -192,8 +192,8 @@ def unasked(asked: Asked) -> None:
     pytest.fail(f"a turn that asks nothing held {asked.permission}")
 
 
-def launch(tmp: Path, fritter: Path = Path("/nonexistent/fritter")) -> Launch:
-    return Launch(station(tmp), "brain@example.com", "You are hands.", '{"mcpServers": {}}', SessionId("b1"), fritter)
+def launch(tmp: Path) -> Launch:
+    return Launch(station(tmp), "brain@example.com", "You are hands.", '{"mcpServers": {}}', SessionId("b1"))
 
 
 def typed(tmp: Path) -> list[list[str]]:
@@ -274,7 +274,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
 
 async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_turns_and_run_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         assert await brain.ask("what is running?", unasked) == BrainAnswered("p1", None)
         assert await brain.ask("/and now?", unasked) == BrainAnswered("p2", None)
@@ -292,7 +292,7 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
-        "session": "b1", "account": "brain@example.com", "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "pid": brain.pid,
+        "session": "b1", "account": "brain@example.com", "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "fritter": fritter, "pid": brain.pid,
     }
     # Its run is a part of its launch, from its input coming up to its process's end.
     assert (ran.event, ran.outcome, ran.trace_id, ran.parent_id) == ("brain.run", "ok", launched.trace_id, launched.span_id)
@@ -304,13 +304,13 @@ def permissions(recorded: Sequence[Entry]) -> list[tuple[Fact, Fact, Fact]]:
     return [(event.facts["prompt"], event.facts["tool"], event.facts["decision"]) for event in events(recorded, "brain.permission")]
 
 
-async def test_a_permission_the_brains_setup_asks_about_holds_its_turn_until_answered_and_only_a_yes_runs_the_tool(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_a_permission_the_brains_setup_asks_about_holds_its_turn_until_answered_and_only_a_yes_runs_the_tool(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     held: list[Asked] = []
     notes = tmp_path / "notes.txt"
     no = heard("No, leave it.")
     assert isinstance(no, Deny)
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         turn = asyncio.create_task(brain.ask("write", held.append))
         await until(lambda: len(held) == 1)
@@ -338,11 +338,11 @@ async def test_a_permission_the_brains_setup_asks_about_holds_its_turn_until_ans
     assert [event.facts for event in events(recorded, "brain.elicitation")] == [{"prompt": "p1", "server": "probe"}, {"prompt": "p2", "server": "probe"}]
 
 
-async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("hands.brain.process.PERMISSION_DEADLINE_SECONDS", 0.3)
     recorded: list[Entry] = []
     held: list[Asked] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         with unit("voice.turn", recorded.append):
             asking = here()
@@ -365,10 +365,10 @@ async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: 
     assert not (tmp_path / "notes.txt").exists()
 
 
-async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_never_asked(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_never_asked(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     held: list[Asked] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         assert await asyncio.wait_for(brain.ask("stray", held.append), 10) == BrainAnswered("p1", None)
     finally:
@@ -381,10 +381,10 @@ async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_nev
     assert permission.parent_id == launched.span_id
 
 
-async def test_a_turn_stopped_while_it_holds_a_permission_refuses_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_a_turn_stopped_while_it_holds_a_permission_refuses_it(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     held: list[Asked] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         turn = asyncio.create_task(brain.ask("write", held.append))
         await until(lambda: len(held) == 1)
@@ -441,9 +441,9 @@ async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answ
     assert {event.parent_id for event in events(recorded, "brain.permission") + events(recorded, "brain.elicitation")} == {launched.span_id}
 
 
-async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_failed_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_failed_it(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         assert await brain.ask("fail", unasked) == BrainAnswered("p1", "unknown: API Error: 400 refused")
         # An asker that stops waiting leaves the turn to run to its end, and its event still says what failed it.
@@ -461,9 +461,9 @@ async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_fa
     ]
 
 
-async def test_an_interrupt_is_escape_and_ends_the_turn_in_flight_and_the_next_turn_is_its_own(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_an_interrupt_is_escape_and_ends_the_turn_in_flight_and_the_next_turn_is_its_own(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         # With no turn in flight there is nothing to stop, and no Escape is pressed.
         brain.interrupt()
@@ -480,9 +480,9 @@ async def test_an_interrupt_is_escape_and_ends_the_turn_in_flight_and_the_next_t
     assert typed(tmp_path) == [["prompt", " wait"], ["escape", ""], ["ctrl_c", " wait"], ["prompt", " and now?"]]
 
 
-async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_last(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_last(tmp_path: Path, fake_claude: Path) -> None:
     # A Ctrl-C that finds the input empty arms Claude Code's exit, which a second within 800ms takes.
-    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    brain = await start(launch(tmp_path), lambda _entry: None)
     pressed: list[float] = []
     try:
         for stops in (1, 2):
@@ -666,10 +666,10 @@ async def test_an_asker_told_to_leave_again_while_its_claude_code_is_ending_leav
 
 
 async def test_a_turn_is_typed_into_the_brain_at_once_while_a_side_question_waits_on_an_answer_that_never_comes(
-    tmp_path: Path, fake_claude: Path, fritter: Path
+    tmp_path: Path, fake_claude: Path
 ) -> None:
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     asides = Asides(station(tmp_path), recorded.append)
     try:
         stuck = asyncio.create_task(asides.ask(AsideKind.SUMMARY, "hold", WAITED))
@@ -733,10 +733,10 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
 
 
 async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_ended(
-    tmp_path: Path, fake_claude: Path, fritter: Path
+    tmp_path: Path, fake_claude: Path
 ) -> None:
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         # Bounded, so a brain that never dies fails here, naming the wait it hung in.
         async with asyncio.timeout(TAKE_SECONDS * 2):
@@ -754,11 +754,11 @@ async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_en
 
 
 async def test_a_brain_slow_to_read_its_terminal_is_typed_into_once_its_input_is_up(
-    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A loaded machine starts it slowly: a turn typed before it reads raw has its Return made a newline, and is untaken.
     monkeypatch.setenv("STARTS_AFTER", "1")
-    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    brain = await start(launch(tmp_path), lambda _entry: None)
     try:
         async with asyncio.timeout(TAKE_SECONDS * 2):
             assert await brain.ask("what is running?", unasked) == BrainAnswered("p1", None)
@@ -767,9 +767,9 @@ async def test_a_brain_slow_to_read_its_terminal_is_typed_into_once_its_input_is
 
 
 async def test_a_turn_never_taken_fails_naming_hands_login_and_the_next_turn_is_its_own(
-    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    brain = await start(launch(tmp_path), lambda _entry: None)
     try:
         # Only the deaf turn is held to a short limit: the next is a real turn, given the brain's own.
         with monkeypatch.context() as short, pytest.raises(Untaken, match="`hands login` answers them"):
@@ -781,10 +781,10 @@ async def test_a_turn_never_taken_fails_naming_hands_login_and_the_next_turn_is_
 
 
 async def test_a_turn_claude_code_takes_after_it_ended_untaken_is_not_the_next_turns(
-    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         with monkeypatch.context() as short, pytest.raises(Untaken):
             short.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
@@ -799,12 +799,12 @@ async def test_a_turn_claude_code_takes_after_it_ended_untaken_is_not_the_next_t
 
 
 async def test_a_turn_taken_late_that_runs_past_the_take_limit_leaves_the_next_turns_taken(
-    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Every turn has half a second to be taken, and each late one would run a second ahead of what was typed behind it.
     monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.5)
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         with pytest.raises(Untaken):
             await brain.ask("later", unasked)
@@ -834,11 +834,11 @@ async def test_a_turn_taken_late_that_runs_past_the_take_limit_leaves_the_next_t
 
 
 async def test_a_turn_taken_as_the_escape_that_stops_what_ran_ahead_of_it_goes_is_answered_by_its_typing_again(
-    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.5)
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         with pytest.raises(Untaken):
             await brain.ask("later", unasked)
@@ -852,10 +852,10 @@ async def test_a_turn_taken_as_the_escape_that_stops_what_ran_ahead_of_it_goes_i
 
 
 async def test_an_interrupt_while_a_turn_waits_behind_a_late_prompt_stops_it_once_it_is_typed_again(
-    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.5)
-    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    brain = await start(launch(tmp_path), lambda _entry: None)
     try:
         with pytest.raises(Untaken):
             await brain.ask("later", unasked)
@@ -869,11 +869,11 @@ async def test_an_interrupt_while_a_turn_waits_behind_a_late_prompt_stops_it_onc
 
 
 async def test_a_turn_is_typed_at_most_twice_when_what_ran_ahead_of_it_is_its_own_kept_as_other_words(
-    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         with pytest.raises(Untaken):
             await asyncio.wait_for(brain.ask("garbled", unasked), 10)
@@ -884,8 +884,8 @@ async def test_a_turn_is_typed_at_most_twice_when_what_ran_ahead_of_it_is_its_ow
     assert (untaken.facts["others"], untaken.facts["typings"]) == (("p1", "p2"), 2)
 
 
-async def test_a_turn_is_taken_as_claude_code_keeps_what_it_typed(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
-    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+async def test_a_turn_is_taken_as_claude_code_keeps_what_it_typed(tmp_path: Path, fake_claude: Path) -> None:
+    brain = await start(launch(tmp_path), lambda _entry: None)
     try:
         # A long paste comes back in its tags, and a closing backslash's space comes back trimmed.
         assert await asyncio.wait_for(brain.ask("one\ntwo\nthree\nfour", unasked), 10) == BrainAnswered("p1", None)
@@ -910,10 +910,10 @@ def failures() -> tuple[list[str], int]:
 
 
 async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_once_and_the_next_turn_is_its_own(
-    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     said, sink = failures()
     try:
         typist = brain._typist  # pyright: ignore[reportPrivateUsage]
@@ -933,7 +933,7 @@ async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_on
     assert (failed.outcome, failed.error) == ("failed", "OSError: jammed")
 
 
-async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_and_says_so_once(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_and_says_so_once(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     asked: list[Asked] = []
 
@@ -941,7 +941,7 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_an
         asked.append(held)
         raise RuntimeError("no voice")
 
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     said, sink = failures()
     try:
         with pytest.raises(RuntimeError, match="no voice"):
@@ -961,8 +961,8 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_an
     assert not (tmp_path / "notes.txt").exists()
 
 
-async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_and_is_never_pressed_again(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
-    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_and_is_never_pressed_again(tmp_path: Path, fake_claude: Path) -> None:
+    brain = await start(launch(tmp_path), lambda _entry: None)
     pressed: list[object] = []
 
     class Jammed(_Jammed):
@@ -1031,9 +1031,9 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
     assert [event.event for event in recorded if isinstance(event, WideEvent)] == ["brain.elicitation", "brain.permission"]
 
 
-async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_next_turn_gets_its_own(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_next_turn_gets_its_own(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path, fritter), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append)
     try:
         asked = asyncio.create_task(brain.ask("slow", unasked))
         await asyncio.sleep(0.1)
@@ -1057,7 +1057,7 @@ print(claude.pid, flush=True)
 
 
 @pytest.mark.parametrize("started", [BRAIN, ASIDE], ids=["brain", "aside"])
-async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing_it_started_running(tmp_path: Path, fake_claude: Path, fritter: Path, started: str) -> None:
+async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing_it_started_running(tmp_path: Path, fake_claude: Path, started: str) -> None:
     # hands killed outright: no stop, no cleanup, only the kernel's hangup of the terminal it held.
     # Its temp dir is the test's, so what a dead hands leaves there - the brain's socket dir - goes with the test.
     temp = Path(tempfile.mkdtemp(dir="/tmp"))  # short: the sockets in it are held to the unix socket path limit
@@ -1074,7 +1074,7 @@ async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing
     script += "".join(f"    {line}\n" for line in started.strip().splitlines()) + "    os._exit(0)\nasyncio.run(main())\n"
     hands = await asyncio.create_subprocess_exec(sys.executable, "-c", script, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
     try:
-        out, err = await asyncio.wait_for(hands.communicate(pickle.dumps(launch(tmp_path, fritter))), 30)
+        out, err = await asyncio.wait_for(hands.communicate(pickle.dumps(launch(tmp_path))), 30)
         assert hands.returncode == 0, err.decode()
         pids = [int(pid) for pid in out.split()]
         assert pids
@@ -1127,7 +1127,7 @@ print(slowest)
 """
 
 
-async def test_a_loop_ended_as_the_brain_starts_closes_and_leaves_nothing_it_started_running(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_a_loop_ended_as_the_brain_starts_closes_and_leaves_nothing_it_started_running(tmp_path: Path, fake_claude: Path) -> None:
     """The daemon's shutdown cancels the brain's launch wherever it is, and must not then wait for ever on what it spawned.
 
     Python 3.12's asyncio subprocesses did: cancelled before the transport's own task first ran, they waited for an exit
@@ -1135,7 +1135,7 @@ async def test_a_loop_ended_as_the_brain_starts_closes_and_leaves_nothing_it_sta
     temp = Path(tempfile.mkdtemp(dir="/tmp"))  # short: the sockets in it are held to the unix socket path limit
     hands = await asyncio.create_subprocess_exec(sys.executable, "-c", SHUT_DOWN, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
     try:
-        out, err = await asyncio.wait_for(hands.communicate(pickle.dumps(launch(tmp_path, fritter))), 60)
+        out, err = await asyncio.wait_for(hands.communicate(pickle.dumps(launch(tmp_path))), 60)
     except TimeoutError:
         raise AssertionError("a loop ended as the brain started never finished closing") from None
     finally:
@@ -1149,27 +1149,23 @@ async def test_a_loop_ended_as_the_brain_starts_closes_and_leaves_nothing_it_sta
     await until(lambda: not running(tmp_path))
 
 
-async def test_a_fritter_that_cannot_be_run_is_refused_with_what_its_terminal_showed(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_a_fritter_that_cannot_be_run_is_refused_with_what_its_terminal_showed(tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     unrunnable = tmp_path / "fritter"
     shutil.copy(fritter, unrunnable)
     unrunnable.chmod(0o644)
+    monkeypatch.setattr("hands.brain.process.PACKAGED", unrunnable)
     with pytest.raises(Unstartable, match=r"(?s)fritter exited \(126\).*[Pp]ermission denied"):
-        await start(launch(tmp_path, unrunnable), lambda _entry: None)
+        await start(launch(tmp_path), lambda _entry: None)
 
 
 async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_showed_and_left_not_running(
-    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("hands.brain.process.START_SECONDS", 1.0)
     fake_claude.write_text("#!/bin/sh\necho stuck on a screen\nsleep 30\n")
     with pytest.raises(Unstartable, match=r"(?s)had not turned its input on \(.*bracketed paste.*\) after 1s.*stuck on a screen"):
-        await start(launch(tmp_path, fritter), lambda _entry: None)
-    await until(lambda: not running(tmp_path))
-
-
-async def test_a_brain_with_no_fritter_to_run_under_is_refused_naming_the_install(tmp_path: Path, fake_claude: Path) -> None:
-    with pytest.raises(Unstartable, match="hands install-fritter"):
         await start(launch(tmp_path), lambda _entry: None)
+    await until(lambda: not running(tmp_path))
 
 
 def test_a_brain_with_no_login_is_refused_naming_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1317,7 +1313,7 @@ async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_w
         await summarise("fail")
 
 
-async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_variant_alone(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_variant_alone(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     wire = Wire(lambda _observed: None)
     api = VoiceConfig(llm=AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m"), voice=voices.DEFAULT)
@@ -1327,12 +1323,12 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     async def unread() -> InFront:
         return FrontUnread("not read in this test")
 
-    async with mind(api, [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
+    async with mind(api, [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, AnthropicLLMService) and minded.watches == () and minded.telling == Pushed()
         # An API model's context is noted as the user's words arrive; the brain's stage notes its own.
         assert [type(stage) for stage in minded.noting] == [Noting]
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com"), voice=voices.DEFAULT)
-    async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, fritter, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
+    async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed() and minded.noting == ()
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
         [launched] = events(recorded, "brain.launch")
@@ -1346,7 +1342,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
         pass
 
 
-async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Path, fake_claude: Path) -> None:
+async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     refocus = Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
@@ -1355,11 +1351,11 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
         return FrontUnread("not read in this test")
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com"), voice=voices.DEFAULT)
-    with pytest.raises(CannotStart, match=f"^no fritter at {tmp_path / 'no-fritter'}"):
-        async with mind(claude, [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "no-fritter", tmp_path / "audit", "hands recall", recorded.append, os.environ):
+    with pytest.raises(CannotStart, match="^no claude on PATH"):
+        async with mind(claude, [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, {"PATH": str(tmp_path)}):
             pass
     # The launch that failed is one event, saying why; no brain ran, so there is no run.
     [launched] = events(recorded, "brain.launch")
-    assert launched.outcome == "failed" and launched.error == f"Unstartable: no fritter at {tmp_path / 'no-fritter'} to run the brain under: run `hands install-fritter`"
+    assert launched.outcome == "failed" and launched.error == "Unstartable: no claude on PATH but hands' shims, so there is no Claude Code for hands to run as its own"
     assert launched.facts["account"] == "brain@example.com" and "pid" not in launched.facts
     assert events(recorded, "brain.run") == []
