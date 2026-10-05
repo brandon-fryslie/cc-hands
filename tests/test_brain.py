@@ -287,8 +287,8 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     assert isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent)
     # Each turn is its own, with the prompt Claude Code took it as.
     assert [(turn.event, turn.outcome, turn.facts) for turn in (first, second)] == [
-        ("brain.turn", "ok", {"prompt": "p1", "offered": (), "others": ()}),
-        ("brain.turn", "ok", {"prompt": "p2", "offered": (), "others": ()}),
+        ("brain.turn", "ok", {"prompts": ("p1",), "typings": 1, "offered": (), "others": ()}),
+        ("brain.turn", "ok", {"prompts": ("p2",), "typings": 1, "offered": (), "others": ()}),
     ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
@@ -359,7 +359,7 @@ async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: 
     # part of the brain's turn it was held for, timed from its post to its answer.
     [brain_turn] = events(recorded, "brain.turn")
     assert (brain_turn.trace_id, brain_turn.parent_id) == (asking.trace_id, asking.span_id)
-    assert brain_turn.facts == {"prompt": "p1", "offered": ("Write", "mcp__hands__read_session"), "others": ()}
+    assert brain_turn.facts == {"prompts": ("p1",), "typings": 1, "offered": ("Write", "mcp__hands__read_session"), "others": ()}
     [permission] = events(recorded, "brain.permission")
     assert (permission.trace_id, permission.parent_id) == (asking.trace_id, brain_turn.span_id) and permission.duration_ms >= 300
     assert not (tmp_path / "notes.txt").exists()
@@ -455,9 +455,9 @@ async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_fa
     finally:
         await brain.stop()
     failed, left, _ = events(recorded, "brain.turn")
-    assert [(turn.outcome, turn.error, turn.facts["prompt"]) for turn in (failed, left)] == [
-        ("failed", "the brain's turn ended in error: unknown: API Error: 400 refused", "p1"),
-        ("failed", "the brain's turn ended in error: unknown: API Error: 400 refused", "p2"),
+    assert [(turn.outcome, turn.error, turn.facts["prompts"]) for turn in (failed, left)] == [
+        ("failed", "the brain's turn ended in error: unknown: API Error: 400 refused", ("p1",)),
+        ("failed", "the brain's turn ended in error: unknown: API Error: 400 refused", ("p2",)),
     ]
 
 
@@ -778,7 +778,7 @@ async def test_a_turn_claude_code_takes_after_it_ended_untaken_is_not_the_next_t
     finally:
         await brain.stop()
     _, answered_turn = events(recorded, "brain.turn")
-    assert answered_turn.facts == {"prompt": "p2", "offered": (), "others": ("p1",)}
+    assert answered_turn.facts == {"prompts": ("p2",), "typings": 1, "offered": (), "others": ("p1",)}
 
 
 async def test_a_turn_taken_late_that_runs_past_the_take_limit_leaves_the_next_turns_taken(
@@ -801,7 +801,7 @@ async def test_a_turn_taken_late_that_runs_past_the_take_limit_leaves_the_next_t
     finally:
         await brain.stop()
     # Each turn that a prompt no turn's ran ahead of says which it stopped, Escape and Ctrl-C, before it was typed again.
-    assert [turn.facts["others"] for turn in events(recorded, "brain.turn")] == [(), ("p1",), (), (), ("p4",)]
+    assert [(turn.facts["others"], turn.facts["typings"]) for turn in events(recorded, "brain.turn")] == [((), 1), (("p1",), 2), ((), 1), ((), 1), (("p4",), 2)]
     # Its Escape puts the stopped prompt and the turn queued behind it back in the input, and its Ctrl-C clears them.
     assert typed(tmp_path) == [
         ["prompt", " later"],
@@ -830,6 +830,25 @@ async def test_a_turn_taken_as_the_escape_that_stops_what_ran_ahead_of_it_goes_i
     finally:
         await brain.stop()
     assert typed(tmp_path) == [["prompt", " later"], ["escape", ""], ["ctrl_c", " racy"], ["prompt", " racy"]]
+    _, answered = events(recorded, "brain.turn")
+    assert answered.facts == {"prompts": ("p2", "p3"), "typings": 2, "offered": (), "others": ("p1",)}
+
+
+async def test_an_interrupt_while_a_turn_waits_behind_a_late_prompt_stops_it_once_it_is_typed_again(
+    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.5)
+    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    try:
+        with pytest.raises(Untaken):
+            await brain.ask("later", unasked)
+        asked = asyncio.ensure_future(brain.ask("wait", unasked))
+        # Within its first wait, while the late prompt runs ahead of it.
+        await asyncio.sleep(0.1)
+        brain.interrupt()
+        assert await asyncio.wait_for(asked, 10) == BrainAnswered("p2", None)
+    finally:
+        await brain.stop()
 
 
 async def test_a_turn_is_typed_at_most_twice_when_what_ran_ahead_of_it_is_its_own_kept_as_other_words(
@@ -845,7 +864,7 @@ async def test_a_turn_is_typed_at_most_twice_when_what_ran_ahead_of_it_is_its_ow
         await brain.stop()
     assert typed(tmp_path) == [["prompt", " garbled"], ["escape", ""], ["ctrl_c", " garbled"], ["prompt", " garbled"]]
     [untaken] = events(recorded, "brain.turn")
-    assert untaken.facts["others"] == ("p1", "p2")
+    assert (untaken.facts["others"], untaken.facts["typings"]) == (("p1", "p2"), 2)
 
 
 async def test_a_turn_is_taken_as_claude_code_keeps_what_it_typed(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
@@ -968,7 +987,7 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
         brain._launched = here()  # pyright: ignore[reportPrivateUsage]
     # The elicitation that breaks is a part of the turn in flight: it was declined before it was heard, so the turn runs on.
     loop = asyncio.get_running_loop()
-    turn = _Turn(loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(" probe"))  # pyright: ignore[reportPrivateUsage]
+    turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(" probe"))  # pyright: ignore[reportPrivateUsage]
     turn.taken.set_result("p1")
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
     brain._held = set()  # pyright: ignore[reportPrivateUsage]
