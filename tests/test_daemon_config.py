@@ -433,20 +433,41 @@ def test_a_home_whose_fritter_is_not_the_one_hands_carries_refuses_the_start_at_
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
 
-@pytest.mark.parametrize("copy", ["current", "absent"])
+@pytest.mark.parametrize("copy", ["current", "absent", "unpackaged"])
 def test_a_home_whose_fritter_is_the_one_hands_carries_or_none_passes_the_door(copy: wrapper.Copy, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A hands built without its fritter passes too: the survey, and the brain at its launch, name the rebuild.
     from hands.voice import talkkey
 
-    home = Home(tmp_path)
+    home = Home(tmp_path / ".hands")
     if copy == "current":
-        home.bin.mkdir()
+        home.bin.mkdir(parents=True)
         shutil.copy2(wrapper.PACKAGED, home.fritter)
+    if copy == "unpackaged":
+        home.bin.mkdir(parents=True)
+        home.fritter.write_bytes(b"#!/bin/sh\n")
+        monkeypatch.setattr(wrapper, "PACKAGED", tmp_path / "package" / "bin" / "fritter")
     monkeypatch.setattr(talkkey, "granted", lambda: True)
     run_start = Start(restarted=False)
     assert cli.door(home, run_start) == config.load(home)
     events: list[WideEvent] = []
     run_start.ended(events.append, None)
     assert [event.facts["fritter"] for event in events] == [copy]
+
+
+def test_a_home_whose_fritter_cannot_be_read_refuses_the_start_at_the_door_saying_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A link to a fritter that is gone is a copy that cannot be read, never no copy at all.
+    from hands.voice import talkkey
+
+    home = Home(tmp_path / ".hands")
+    home.bin.mkdir(parents=True)
+    home.fritter.symlink_to(tmp_path / "gone")
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+    run_start = Start(restarted=False)
+    with pytest.raises(CannotStart, match=f"cannot tell whether {re.escape(str(home.fritter))} is the fritter this hands carries: "):
+        cli.door(home, run_start)
+    events: list[WideEvent] = []
+    run_start.ended(events.append, None)
+    assert [event.facts["fritter"] for event in events] == ["unreadable"]
 
 
 def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(tmp_path: Path) -> None:

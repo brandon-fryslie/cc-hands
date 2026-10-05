@@ -306,12 +306,14 @@ def door(home: Home, run_start: Start) -> Settings:
     if not granted:
         talkkey.ask()
         raise CannotStart(f"{readiness.grant(granted).said}, then run hands again.")
-    # [LAW:no-silent-failure] every session runs the home's copy of fritter, which updating hands leaves as the older
-    # hands copied it, so this hands may ask it what it cannot do: a stale copy is refused here, naming its fix, before
-    # any brain types through it. No copy yet, or a hands that carries none, is the survey's to say.
+    # [LAW:no-silent-failure] every session this home's shim starts runs the home's copy of fritter, which updating hands
+    # leaves as the older hands copied it, so this hands may ask it what it cannot do: a stale copy is refused here,
+    # naming its fix, before any brain types through it. No copy yet, a hands that carries none, or a PATH whose claude
+    # is not this home's shim, is the survey's to say.
     try:
         copy = wrapper.copy_of(home)
     except OSError as error:
+        run_start.heard(fritter="unreadable")
         raise CannotStart(f"cannot tell whether {home.fritter} is the fritter this hands carries: {error}") from error
     run_start.heard(fritter=copy)
     if copy == "stale":

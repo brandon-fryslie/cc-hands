@@ -88,10 +88,10 @@ def packaged() -> Path:
 
 def carried(fritter: Path) -> bool:
     """Whether `fritter`, a copy `install` made, is still the fritter this hands' package carries: one an older hands
-    copied, or copied before a checkout's fritter was rebuilt, is not. Unpackaged as `packaged` is; OSError where either
-    cannot be read."""
+    copied, or copied before a checkout's fritter was rebuilt, is not. OSError where either cannot be read, the packaged
+    one included."""
     # [LAW:one-source-of-truth] the one comparison of a copy with the packaged fritter: the run's door and `hands check` ask it.
-    return filecmp.cmp(fritter, packaged(), shallow=False)
+    return filecmp.cmp(fritter, PACKAGED, shallow=False)
 
 
 # What a home's copy of fritter is to this hands: the one it carries, another one, no copy yet, or not to be compared,
@@ -100,13 +100,15 @@ type Copy = Literal["current", "stale", "absent", "unpackaged"]
 
 
 def copy_of(home: Home) -> Copy:
-    """What the home's copy of fritter is to this hands. OSError where it is there and cannot be read."""
-    if not home.fritter.exists():
-        return "absent"
+    """What the home's copy of fritter is to this hands. OSError where it is there and cannot be read, a link to nothing
+    included."""
     try:
-        return "current" if carried(home.fritter) else "stale"
+        packaged()
     except Unpackaged:
         return "unpackaged"
+    if not home.fritter.exists(follow_symlinks=False):
+        return "absent"
+    return "current" if carried(home.fritter) else "stale"
 
 
 @dataclass(frozen=True)
