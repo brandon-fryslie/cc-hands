@@ -816,6 +816,38 @@ async def test_a_turn_taken_late_that_runs_past_the_take_limit_leaves_the_next_t
     ]
 
 
+async def test_a_turn_taken_as_the_escape_that_stops_what_ran_ahead_of_it_goes_is_answered_by_its_typing_again(
+    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.5)
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
+    try:
+        with pytest.raises(Untaken):
+            await brain.ask("later", unasked)
+        # The Escape meant for the late prompt stops the turn's own p2, which posts no Stop: p3, its typing again, answers it.
+        assert await asyncio.wait_for(brain.ask("racy", unasked), 10) == BrainAnswered("p3", None)
+    finally:
+        await brain.stop()
+    assert typed(tmp_path) == [["prompt", " later"], ["escape", ""], ["ctrl_c", " racy"], ["prompt", " racy"]]
+
+
+async def test_a_turn_is_typed_at_most_twice_when_what_ran_ahead_of_it_is_its_own_kept_as_other_words(
+    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
+    try:
+        with pytest.raises(Untaken):
+            await asyncio.wait_for(brain.ask("garbled", unasked), 10)
+    finally:
+        await brain.stop()
+    assert typed(tmp_path) == [["prompt", " garbled"], ["escape", ""], ["ctrl_c", " garbled"], ["prompt", " garbled"]]
+    [untaken] = events(recorded, "brain.turn")
+    assert untaken.facts["others"] == ("p1", "p2")
+
+
 async def test_a_turn_is_taken_as_claude_code_keeps_what_it_typed(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     brain = await start(launch(tmp_path, fritter), lambda _entry: None)
     try:

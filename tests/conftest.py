@@ -210,7 +210,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     reads its terminal raw, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
-    is never taken, "late" is taken only once the next prompt is sent, ahead of it, "later" is too, and then runs LATER_SECONDS before its Stop, what is sent while it runs queued behind it until its Stop or an Escape that stops it puts the queue back in the input, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
+    is never taken, "late" is taken only once the next prompt is sent, ahead of it, "later" is too, and then runs LATER_SECONDS before its Stop, what is sent while it runs queued behind it until its Stop or an Escape that stops it puts the queue back in the input, unless a "racy" is queued, which is then taken as the late one ends just ahead of the Escape, that stops it instead, "garbled" is taken as other words and runs until Escape, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
@@ -285,6 +285,10 @@ def submit(text):
     if said in ("late", "later"):
         late = prompt, text
         return
+    if said == "garbled":
+        post("UserPromptSubmit", prompt_id=prompt, prompt=taken(text) + " (as kept)")
+        turn, turn_text = prompt, text
+        return
     post("UserPromptSubmit", prompt_id=prompt, prompt=taken(text))
     if said == "die":
         os.write(1, b"bye\\r\\n")
@@ -357,6 +361,13 @@ while True:
         elif pending.startswith(b"\\x1b"):
             pending = pending[1:]
             typed(["escape", box])
+            if running is not None and [queued.strip() for queued in behind] == ["racy"]:
+                # The late prompt ended, and the one queued behind it was taken, just before the Escape, which stops it.
+                post("Stop", prompt_id=running[0], last_assistant_message="Late.")
+                prompts += 1
+                post("UserPromptSubmit", prompt_id=f"p{{prompts}}", prompt=taken(behind[0]))
+                box, running = behind[0], None
+                behind = []
             if running is not None:
                 # As Claude Code does, the stopped prompt is put back in the input, and the queue behind it with it; no Stop.
                 box, running = running[1] + "".join(behind), None
