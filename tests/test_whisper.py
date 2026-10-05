@@ -9,6 +9,7 @@ from io import BytesIO
 import mlx_whisper
 import numpy as np
 import pytest
+from loguru import logger
 from pipecat.frames.frames import ErrorFrame, Frame, TranscriptionFrame
 
 from conftest import events
@@ -84,6 +85,21 @@ async def test_whisper_has_loaded_the_model_its_holds_transcribe_with_once_built
     # The load is a unit of work of its own, saying which model the start waited on.
     [event] = events(recorded, "whisper.loaded")
     assert event.outcome == "ok" and event.facts["model"] == transcription.MODEL
+
+
+async def test_whisper_settings_say_the_model_and_language_its_holds_transcribe_with(model: Model) -> None:
+    """Pipecat checks a service's settings at its start and logs an error for any it was never given."""
+    whisper = Whisper(prompt=primed(None), record=lambda _: None)
+    errors: list[str] = []
+    sink = logger.add(errors.append, level="ERROR")
+    try:
+        whisper._settings.validate_complete()  # pyright: ignore[reportPrivateUsage]  (what Pipecat's start checks)
+    finally:
+        logger.remove(sink)
+
+    assert errors == []
+    assert whisper._settings.model == transcription.MODEL  # pyright: ignore[reportPrivateUsage]
+    assert whisper._settings.language == transcription.LANGUAGE  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_each_hold_is_transcribed_from_its_samples_primed_with_the_vocabulary_as_it_is_then(model: Model) -> None:

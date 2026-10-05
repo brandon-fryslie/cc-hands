@@ -20,6 +20,7 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
+from pipecat.services.settings import STTSettings
 from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
@@ -61,7 +62,8 @@ class Whisper(SegmentedSTTService):
     """
 
     def __init__(self, *, prompt: Callable[[], Awaitable[str | None]], record: Record) -> None:
-        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
+        # Pipecat checks at start that the settings say every field; these are what each hold is transcribed with.
+        super().__init__(settings=STTSettings(model=transcription.MODEL, language=LANGUAGE))  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
         # [LAW:nothing-unseen] the load is a unit of work of its own: how long the start waited on it, and on what model.
         with unit("whisper.loaded", record):
             transcription.load()
