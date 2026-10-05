@@ -2068,14 +2068,17 @@ OpenTelemetry collector over OTLP/HTTP, carrying `service.name=hands`
 whose body is the event's name and which carries the span's ids, for the event store, so
 an event's row opens its trace. The event is written to the log first, whatever becomes of the
 collector, because hands reads the log back (`catch_up`, `hands log`): what it holds never
-depends on the network. Events are sent in batches from a thread of their own, so a slow
-or absent collector costs a unit of work nothing. Each batch sent as each signal is an
-`Exported` line naming the signal, each event by its span id, how long the send took, and,
-where the collector did not take it, why `[LAW:nothing-unseen]`; a stop waits on the batches still queued for one timeout
-in all, and records those it leaves unsent. Those lines are folded, per signal, into how many
-batches in a row the collector has not taken all of (`otlp.failing`); from the third on, every heartbeat
-hands beats while up, starting included, carries it as a degradation naming the signal and since when (why each batch was not taken is its own line, so a failure worded anew is not news again), until a batch is
-taken or the collector is unset. The `hands.start` event names the collector. Only
+depends on the network. Events are sent in batches, as each signal from a thread of its
+own, so a slow or absent collector costs a unit of work nothing and holds up neither signal
+behind the other. Each batch sent as each signal is an `Exported` line naming the signal,
+each event by its span id, how long the send took, where the collector did not take it,
+why, and where it took it with a warning, the warning `[LAW:nothing-unseen]`; a stop waits
+on the batches still queued for one timeout in all, and records those it leaves unsent.
+Those lines are folded, per signal, into how many batches in a row the collector has not
+taken all of (`otlp.failing`); from the third on, every heartbeat hands beats while up,
+starting included, carries it as a degradation naming the signal and since when (why each
+batch was not taken is its own line, so a failure worded anew is not news again), until a
+batch is taken or the collector is unset. The `hands.start` event names the collector. Only
 `hands run` sends to it. Every other command is one `hands.command` event, written by the
 dispatcher every command passes through (`hands.daemon.cli.commanded`), carrying the command,
 the home it ran on, its arguments as parsed, its exit code, and how long it took; it ends failed where the command

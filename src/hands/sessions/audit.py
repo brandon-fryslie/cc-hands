@@ -200,13 +200,15 @@ class Exported:
     """A batch of wide events sent to the collector as one OTLP signal, each named by its span id; how long the send
     took; and why the collector did not take it, None where it took every event: it could not be reached, it refused
     the request, it rejected events in it without saying which, or hands stopped before the batch could be sent. Each
-    is in the log still."""
+    is in the log still. `warning` is what the collector said of a batch it took whole, as OTLP's partial success with
+    nothing rejected says it."""
 
     collector: str
     signal: Signal
     spans: tuple[str, ...]
     duration_ms: float
     error: str | None
+    warning: str | None
 
 
 @dataclass(frozen=True)

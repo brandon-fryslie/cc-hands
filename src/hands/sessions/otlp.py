@@ -12,8 +12,9 @@ store. What sits behind the collector is the homelab's: hands names only its add
 
 [LAW:nothing-unseen] each batch sent as each signal is an Exported line in the log, naming each event by its span id, how
 long the send took, and, where the collector did not take it, why: a telemetry failure is itself telemetry, and a run
-whose events all reached the collector says so rather than saying nothing. Events are sent from a thread of their own,
-in batches, so a collector that is slow or gone costs a unit of work nothing.
+whose events all reached the collector says so rather than saying nothing. Events are sent in batches, as each signal
+from a thread of its own, so a collector that is slow or gone costs a unit of work nothing, and each signal waits on it
+beside the other, never behind it.
 """
 
 import json
@@ -51,8 +52,6 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _STATUS: Mapping[Outcome, int] = {"cancelled": 0, "ok": 1, "failed": 2}
 # OTLP's SPAN_KIND_INTERNAL: a unit of work inside hands, neither serving a request nor making one.
 _INTERNAL = 1
-# Each batch is sent as each signal, in this order.
-SIGNALS: tuple[Signal, ...] = ("traces", "logs")
 # OTLP's SeverityNumber of each audit level: INFO and ERROR.
 _SEVERITY: Mapping[Level, int] = {"info": 9, "error": 17}
 # Straight to the address the settings name, past every proxy: the environment's, which in a session fritter taps is the
@@ -177,76 +176,90 @@ class _Closed:
 _CLOSED = _Closed()
 
 
+class _Lane:
+    """One signal's share of an Exporter: the events still to be sent as it, and the thread that sends them, so each
+    signal waits on the collector beside the other, never behind it."""
+
+    def __init__(self, encoding: "Encoding", run: Callable[["_Lane"], None]) -> None:
+        self.encoding = encoding
+        # [LAW:no-shared-mutable-globals] send puts and the thread takes; close takes what is left once the thread has
+        # outlived the timeout.
+        self.queue: queue.SimpleQueue[WideEvent | _Closed] = queue.SimpleQueue()
+        # [LAW:no-shared-mutable-globals] the thread alone writes it, as each send begins; close reads it once the thread
+        # has outlived the timeout.
+        self.sending: tuple[str, ...] = ()
+        self.thread = threading.Thread(target=run, args=(self,), name=f"otlp export {encoding.signal}", daemon=True)
+
+
 class Exporter:
-    """Sends wide events to `collector` in batches, from a thread of its own, recording each batch and what became of it."""
+    """Sends wide events to `collector` in batches, as each signal from a thread of its own, recording each batch and
+    what became of it."""
 
     def __init__(self, collector: str, record: Callable[[Exported], None], linger: float = LINGER_SECONDS, timeout: float = TIMEOUT_SECONDS) -> None:
         self._collector = collector
         self._record = record
         self._linger = linger
         self._timeout = timeout
-        # [LAW:no-shared-mutable-globals] close alone writes it, once, finite from then on; the thread reads it as it
-        # sends each batch, and send to know the queue's end is marked.
+        # [LAW:no-shared-mutable-globals] close alone writes it, once, finite from then on; each lane's thread reads it
+        # as it sends each batch, and send to know the queues' end is marked.
         self._deadline = math.inf
-        # [LAW:no-shared-mutable-globals] the thread alone writes it, as each send begins: the batch's span ids and the
-        # signals it is still to be sent as, the one being sent first; close reads it once the thread has outlived the
-        # timeout.
-        self._sending: tuple[tuple[str, ...], tuple[Signal, ...]] = ((), ())
-        # [LAW:no-shared-mutable-globals] send puts and the thread takes; close takes what is left once the thread has
-        # outlived the timeout.
-        self._queue: queue.SimpleQueue[WideEvent | _Closed] = queue.SimpleQueue()
         # [LAW:no-ambient-temporal-coupling] held by send and close alike, so no event is put behind the end's mark.
         self._marking = threading.Lock()
-        self._thread = threading.Thread(target=self._run, name="otlp export", daemon=True)
-        self._thread.start()
+        self._lanes = tuple(_Lane(encoding, self._run) for encoding in ENCODINGS)
+        for lane in self._lanes:
+            lane.thread.start()
 
     def send(self, event: WideEvent) -> None:
         """Queue `event`; one sent once this is closed, as work a stop did not wait for ends, is recorded unsent."""
         with self._marking:
             closed = math.isfinite(self._deadline)
             if not closed:
-                self._queue.put(event)
+                for lane in self._lanes:
+                    lane.queue.put(event)
         if closed:
-            for signal in SIGNALS:
-                self._record(Exported(self._collector, signal, (event.span_id,), 0.0, STOPPED))
+            for lane in self._lanes:
+                self._record(Exported(self._collector, lane.encoding.signal, (event.span_id,), 0.0, STOPPED, None))
 
     def close(self) -> None:
         """Send what is queued and stop: every event sent before this is in an Exported line when it returns. The batches
-        still to send share the one timeout from now, and those it leaves no time for are recorded unsent, so a collector
-        that is gone holds up a stop by the timeout, however much is queued."""
-        # [LAW:no-ambient-temporal-coupling] set before the end of the queue is marked, so every batch sent from here on
-        # reads it, whether or not the thread has reached the mark yet.
+        still to send, as every signal, share the one timeout from now, and those it leaves no time for are recorded
+        unsent, so a collector that is gone holds up a stop by the timeout, however much is queued."""
+        # [LAW:no-ambient-temporal-coupling] set before the end of the queues is marked, so every batch sent from here on
+        # reads it, whether or not its thread has reached the mark yet.
         with self._marking:
             self._deadline = time.monotonic() + self._timeout
-            self._queue.put(_CLOSED)
-        self._thread.join(self._timeout + 1)
-        if self._thread.is_alive():
-            # [LAW:nothing-unseen] a send that outlived the timeout, which bounds each socket operation and not a name's
-            # resolution: what it holds and what is queued behind it are said here, as the process may end before it.
-            unsent = tuple(taken.span_id for taken in _drained(self._queue) if isinstance(taken, WideEvent))
-            sending, owed = self._sending
-            # A signal the batch was already taken as owes only what is queued behind it.
-            for signal in SIGNALS:
-                if held := (*(sending if signal in owed else ()), *unsent):
-                    self._record(Exported(self._collector, signal, held, 0.0, f"{STOPPED}: a send was still waiting on the collector"))
+            for lane in self._lanes:
+                lane.queue.put(_CLOSED)
+        for lane in self._lanes:
+            lane.thread.join(max(0.0, self._deadline + 1 - time.monotonic()))
+        for lane in self._lanes:
+            if lane.thread.is_alive():
+                # [LAW:nothing-unseen] a send that outlived the timeout, which bounds each socket operation and not a
+                # name's resolution: what it holds and what is queued behind it are said here, as the process may end
+                # before it.
+                unsent = tuple(taken.span_id for taken in _drained(lane.queue) if isinstance(taken, WideEvent))
+                # The end marked again, so the thread ends once its send does rather than waiting on the queue forever.
+                lane.queue.put(_CLOSED)
+                stuck = f"{STOPPED}: a send was still waiting on the collector"
+                self._record(Exported(self._collector, lane.encoding.signal, (*lane.sending, *unsent), 0.0, stuck, None))
 
-    def _run(self) -> None:
+    def _run(self, lane: _Lane) -> None:
         closed = False
         while not closed:
-            first = self._queue.get()
+            first = lane.queue.get()
             if isinstance(first, _Closed):
                 return
-            batch, closed = self._gathered(first)
-            self._deliver(batch)
+            batch, closed = self._gathered(lane, first)
+            self._deliver(lane, batch)
 
-    def _gathered(self, first: WideEvent) -> tuple[list[WideEvent], bool]:
+    def _gathered(self, lane: _Lane, first: WideEvent) -> tuple[list[WideEvent], bool]:
         """A batch beginning with `first`: every event sent within the linger after it, up to BATCH_SPANS; and whether
         the exporter was closed while it gathered."""
         batch = [first]
         deadline = time.monotonic() + self._linger
         while len(batch) < BATCH_SPANS and (left := deadline - time.monotonic()) > 0:
             try:
-                taken = self._queue.get(timeout=left)
+                taken = lane.queue.get(timeout=left)
             except queue.Empty:
                 break
             if isinstance(taken, _Closed):
@@ -254,26 +267,25 @@ class Exporter:
             batch.append(taken)
         return batch, False
 
-    def _deliver(self, batch: Sequence[WideEvent]) -> None:
-        ids = tuple(event.span_id for event in batch)
-        for index, signal in enumerate(SIGNALS):
-            began = time.monotonic()
-            left = min(self._timeout, self._deadline - began)
-            self._sending = (ids, SIGNALS[index:])
-            refused = self._sent(signal, batch, left) if left > 0 else STOPPED
-            self._record(Exported(self._collector, signal, ids, (time.monotonic() - began) * 1000, refused))
+    def _deliver(self, lane: _Lane, batch: Sequence[WideEvent]) -> None:
+        began = time.monotonic()
+        left = min(self._timeout, self._deadline - began)
+        lane.sending = tuple(event.span_id for event in batch)
+        refused, warning = self._sent(lane.encoding, batch, left) if left > 0 else (STOPPED, None)
+        self._record(Exported(self._collector, lane.encoding.signal, lane.sending, (time.monotonic() - began) * 1000, refused, warning))
 
-    def _sent(self, signal: Signal, batch: Sequence[WideEvent], timeout: float) -> str | None:
-        """Why the collector did not take `batch` as `signal`, None where it took every event."""
+    def _sent(self, encoding: "Encoding", batch: Sequence[WideEvent], timeout: float) -> tuple[str | None, str | None]:
+        """Why the collector did not take `batch` as `encoding`'s signal, None where it took every event; and what it
+        warned of where it took them all."""
         try:
-            body = json.dumps(_ENCODED[signal](batch), ensure_ascii=False, allow_nan=False).encode()
-            request = Request(f"{self._collector}/v1/{signal}", data=body, headers={"Content-Type": "application/json"}, method="POST")
+            body = json.dumps(encoding.request(batch), ensure_ascii=False, allow_nan=False).encode()
+            request = Request(f"{self._collector}/v1/{encoding.signal}", data=body, headers={"Content-Type": "application/json"}, method="POST")
             with _DIRECT.open(request, timeout=timeout) as response:
-                return rejected(signal, response.read(), len(batch))
+                return answered(encoding, response.read(), len(batch))
         except Exception as error:
             # Unreachable, an HTTP error status, or an event that would not encode: the batch is lost to the collector
             # alike, and said alike.
-            return _why(error)
+            return _why(error), None
 
 
 def _drained(queued: "queue.SimpleQueue[WideEvent | _Closed]") -> list[WideEvent | _Closed]:
@@ -306,27 +318,26 @@ def _json_or_none(body: bytes) -> object:
         return None
 
 
-# The field of each signal's Export*ServiceResponse that counts what the collector rejected, and what it counts.
-_REJECTED: Mapping[Signal, tuple[str, str]] = {"traces": ("rejectedSpans", "spans"), "logs": ("rejectedLogRecords", "log records")}
-
-
-def rejected(signal: Signal, body: bytes, sent: int) -> str | None:
-    """Why the collector rejected events of a batch of `sent` it answered with success, from its response for `signal`;
-    None where it took them all."""
-    field, what = _REJECTED[signal]
+def answered(encoding: "Encoding", body: bytes, sent: int) -> tuple[str | None, str | None]:
+    """What the collector's answer of success to a batch of `sent` says, from its response for `encoding`'s signal: why
+    it rejected events of it, None where it took them all; and, where it took them all, what it warned of, None where it
+    said nothing."""
     match parsed := _json_or_none(body):
         case {"partialSuccess": dict()}:
             # A JSON object's keys are strings.
             said = cast(dict[str, dict[str, object]], parsed)["partialSuccess"]
+            message = said.get("errorMessage")
+            why = message if isinstance(message, str) and message else None
         case _:
-            # A body of any other shape rejects nothing.
-            return None
+            # A body of any other shape rejects nothing and says nothing.
+            return None, None
     # The count is an int64, which OTLP's JSON may spell as a string.
-    match said.get(field), said.get("errorMessage"):
-        case int() | str() as count, why if str(count).isdecimal() and int(count) > 0:
-            return f"the collector rejected {int(count)} of {sent} {what}" + (f": {why}" if isinstance(why, str) and why else "")
+    match said.get(encoding.rejected):
+        case int() | str() as count if str(count).isdecimal() and int(count) > 0:
+            return f"the collector rejected {int(count)} of {sent} {encoding.noun}" + (f": {why}" if why else ""), None
         case _:
-            return None
+            # OTLP's warning: a partial success that rejected nothing, with a message.
+            return None, why
 
 
 def spans(events: Sequence[WideEvent]) -> dict[str, object]:
@@ -353,12 +364,30 @@ def logs(events: Sequence[WideEvent]) -> dict[str, object]:
     }
 
 
-_ENCODED: Mapping[Signal, Callable[[Sequence[WideEvent]], dict[str, object]]] = {"traces": spans, "logs": logs}
+@dataclass(frozen=True)
+class Encoding:
+    """How a batch is sent as one OTLP signal: the request its events are encoded as, and the field of the signal's
+    Export*ServiceResponse that counts what the collector rejected, and what it counts."""
+
+    signal: Signal
+    request: Callable[[Sequence[WideEvent]], dict[str, object]]
+    rejected: str
+    noun: str
+
+
+# [LAW:one-source-of-truth] every signal a batch is sent as, and all that differs between them.
+ENCODINGS = (Encoding("traces", spans, "rejectedSpans", "spans"), Encoding("logs", logs, "rejectedLogRecords", "log records"))
+TRACES, LOGS = ENCODINGS
 
 
 def _started(event: WideEvent) -> int:
     """When `event` began, in nanoseconds since the epoch, to the microsecond."""
     return (event.started_at - _EPOCH) // timedelta(microseconds=1) * 1000
+
+
+def _ended(event: WideEvent) -> int:
+    """When `event` ended and its audit line was written, in nanoseconds since the epoch."""
+    return _started(event) + round(event.duration_ms * 1_000_000)
 
 
 def _fields(event: WideEvent) -> dict[str, object]:
@@ -378,7 +407,7 @@ def _span(event: WideEvent) -> dict[str, object]:
         "name": event.event,
         "kind": _INTERNAL,
         "startTimeUnixNano": str(started),
-        "endTimeUnixNano": str(started + round(event.duration_ms * 1_000_000)),
+        "endTimeUnixNano": str(_ended(event)),
         "attributes": _attributes(_fields(event)),
         "status": {"code": _STATUS[event.outcome], "message": "" if event.error is None else event.error},
     }
@@ -386,14 +415,15 @@ def _span(event: WideEvent) -> dict[str, object]:
 
 def _log_record(event: WideEvent) -> dict[str, object]:
     # The event store's row of the event: its name as the body, its audit level as the severity, and its span's ids, which
-    # open the trace it is part of. A log record has no end, so how long it took is an attribute.
+    # open the trace it is part of. It is stamped as it ended, as its audit line is; a log record holds one time and no
+    # parent, so how long it took and the unit it ran inside are attributes.
     severity = level(event)
     return {
-        "timeUnixNano": str(_started(event)),
+        "timeUnixNano": str(_ended(event)),
         "severityNumber": _SEVERITY[severity],
         "severityText": severity.upper(),
         "body": {"stringValue": event.event},
-        "attributes": _attributes({"duration_ms": event.duration_ms, **_fields(event)}),
+        "attributes": _attributes({"duration_ms": event.duration_ms, "parent_id": event.parent_id, **_fields(event)}),
         "traceId": event.trace_id,
         "spanId": event.span_id,
     }
