@@ -4,17 +4,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from hands.sessions.heartbeat import Down, NeverRan, Refused, Status, Stopped, Unreadable, Unresponsive, Up, Verdict, describe
+from hands.sessions.heartbeat import Degradation, Down, NeverRan, Refused, Status, Stopped, Unreadable, Unresponsive, Up, Verdict, describe
 
 # Stopped and never ran are one light: in both, nothing is running and nothing went wrong on the way to that.
-Light = Literal["up", "deaf", "not responding", "down", "refused", "off", "unreadable"]
-# The lights of a running daemon: leaving one for a worse light is news, and up is the only one that is not a warning.
-RUNNING: frozenset[Light] = frozenset({"up", "deaf"})
+# Up is one light, degraded or not: whether it warns is whether it has any degradation.
+Light = Literal["up", "not responding", "down", "refused", "off", "unreadable"]
+# What a notice tells: the warning light hands left up for, or a degradation that arrived.
+type News = Light | Degradation
 
 # [LAW:no-silent-failure] an unreadable heartbeat is as loud as a dead daemon: nothing can say hands is up.
 TITLES: dict[Light, str] = {
     "up": "✋",
-    "deaf": "⚠︎ hands can't hear",
     "not responding": "⚠︎ hands stuck",
     "down": "⚠︎ hands down",
     "refused": "⚠︎ hands refused to start",
@@ -32,18 +32,27 @@ QUIET = timedelta(seconds=60)
 
 def title(verdict: Verdict, light: Light) -> str:
     match verdict:
-        # A press to talk with no microphone opens a turn that hears nothing, so it never shows as one.
-        case Up(status=Status(listening=True, deaf=False)):
+        # A degraded daemon shows what is wrong, and a turn open beside it; a daemon that cannot hear never says it is listening.
+        case Up(status=Status(degraded=(_, *_) as degraded, listening=listening)):
+            return f"⚠︎ hands {', '.join(each.brief for each in degraded)}{' 🎙' if listening else ''}"
+        case Up(status=Status(listening=True)):
             return LISTENING
         case _:
             return TITLES[light]
 
 
-def light(verdict: Verdict) -> Light:
-    # [LAW:one-source-of-truth] the light follows heartbeat.judge's verdict; an up daemon's own word that it cannot hear splits up in two.
+def degradations(verdict: Verdict) -> tuple[Degradation, ...]:
+    """What is wrong with a daemon that is up; one that is not up says nothing of itself that holds now."""
     match verdict:
-        case Up(status=Status(deaf=True)):
-            return "deaf"
+        case Up(status=status):
+            return status.degraded
+        case _:
+            return ()
+
+
+def light(verdict: Verdict) -> Light:
+    # [LAW:one-source-of-truth] the light follows heartbeat.judge's verdict.
+    match verdict:
         case Up():
             return "up"
         case Unresponsive():
@@ -61,30 +70,42 @@ def light(verdict: Verdict) -> Light:
 @dataclass(frozen=True)
 class Shown:
     light: Light
+    degraded: tuple[Degradation, ...]  # what was wrong with hands at this look, were it up
     title: str  # the menu bar's text
     text: str  # the verdict in words, under the title
     notices: tuple[str, ...]  # notifications to post now
-    owed: bool  # hands left up while the quiet window was open, and has not come back since
+    owed: frozenset[News]  # news the quiet window held back, which still holds
     posted_at: datetime | None  # when a notice last went out, which opens the quiet window
 
 
 def show(before: Shown | None, verdict: Verdict, now: datetime) -> Shown:
     """The indicator after this look, given what it showed at the look before (None on its first look)."""
     after = light(verdict)
+    degraded = degradations(verdict)
     shown = title(verdict, after)
     text = describe(verdict, now)
     match before:
         case None:
-            # A daemon found already down at the first look is shown, not announced: only a departure from a running light is news.
-            return Shown(after, shown, text, (), False, None)
-        case Shown(light=was, owed=owed, posted_at=posted_at):
-            # A departure held back by the quiet window is owed, not dropped: it goes out when the window closes,
-            # unless hands has come back up by then and there is nothing left to tell. A change is news when either
-            # side is a running light: leaving one for a warning, or arriving at deaf from anywhere, stuck included.
-            owing = after != "up" and (owed or (after != was and (was in RUNNING or after in RUNNING)))
+            # A daemon found already down at the first look is shown, not announced: only leaving up, or a degradation
+            # arriving, is news.
+            return Shown(after, degraded, shown, text, (), frozenset(), None)
+        case Shown(light=was, degraded=had, owed=owed, posted_at=posted_at):
+            # News is leaving up for a warning, or a degradation the look before did not show arriving, from anywhere,
+            # stuck included, or beside others. News held back by the quiet window is owed, not dropped: it goes out
+            # when the window closes if it still holds then, a departure until hands is back up, a degradation until it clears.
+            left: set[News] = {after} if after != "up" and was == "up" else set()
+            owing = frozenset[News](news for news in left | (set(degraded) - set(had)) | owed if holds(news, after, degraded))
             quiet = posted_at is not None and now - posted_at < QUIET
             notices = (text,) if owing and not quiet else ()
-            return Shown(after, shown, text, notices, owing and not notices, now if notices else posted_at)
+            return Shown(after, degraded, shown, text, notices, frozenset() if notices else owing, now if notices else posted_at)
+
+
+def holds(news: News, after: Light, degraded: tuple[Degradation, ...]) -> bool:
+    match news:
+        case Degradation():
+            return news in degraded
+        case _:
+            return after != "up"
 
 
 def finished(verdict: Verdict, orphaned: bool, run: int) -> bool:

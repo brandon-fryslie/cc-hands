@@ -374,7 +374,7 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Set
     to_terminal(sys.stderr)
     # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its models load,
     # seconds of silence in which the file would otherwise still name the process that died.
-    heart.beat("starting", None, 0, listening=False, deaf=False)
+    heart.beat("starting", None, 0, listening=False, degraded=())
     kept = None if restarted is None else still_shown(restarted)
     shown = start_indicator(home) if kept is None else kept
     threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
@@ -441,7 +441,7 @@ async def launch(
         # its last heartbeat naming a pid that is gone, or, as it restarts, one that stops beating, and neither reads as stopped. [LAW:no-ambient-temporal-coupling] it
         # goes out while the handlers are in, so a restart is never asked once they are out: the heartbeat no longer
         # says running, and one asked before it reads that is heard by stop, where the first stop already decided.
-        heart.beat(LAST_BEAT[ending], last.last_audio_out, last.live_sessions, listening=False, deaf=False)
+        heart.beat(LAST_BEAT[ending], last.last_audio_out, last.live_sessions, listening=False, degraded=())
     finally:
         watching.cancel()
         # From here a signal has its default effect again: nothing is left to stop gracefully.

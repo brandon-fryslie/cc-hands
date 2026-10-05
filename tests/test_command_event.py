@@ -43,7 +43,7 @@ def test_a_command_that_exits_zero_and_one_that_exits_nonzero_each_leave_one_eve
 def test_a_status_of_a_daemon_that_is_up_carries_its_heartbeat(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
     now = datetime.now(UTC)
-    heartbeat.Heart(home.status, os.getpid(), now, heartbeat.HEARTBEAT).beat("running", None, 1, listening=True, deaf=False)
+    heartbeat.Heart(home.status, os.getpid(), now, heartbeat.HEARTBEAT).beat("running", None, 1, listening=True, degraded=())
     assert main(["--home", str(home.root), "status"]) == 0
     capsys.readouterr()
     [command] = events(home)

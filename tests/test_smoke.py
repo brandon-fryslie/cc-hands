@@ -216,7 +216,7 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     home = Home(tmp_path / "home")
     now = datetime.now(UTC)
     home.root.mkdir()
-    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, False))
+    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, ()))
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     assert main(["--home", str(home.root), "smoke"]) == 1
     assert capsys.readouterr().out.splitlines()[-1] == "FAILED joined: there is no `claude` on PATH"

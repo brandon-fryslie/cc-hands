@@ -34,6 +34,19 @@ PERIODS_MS = range(1, 3_600_001)
 
 
 @dataclass(frozen=True)
+class Degradation:
+    """One way an up daemon is running degraded, carrying the words it is said in."""
+
+    # [LAW:one-type-per-behavior] every degradation is only ever said, so each is a value of this type, and the heartbeat
+    # carries its words: a new one is a new value, and no reader of the file learns of it.
+    brief: str  # a few words for the menu bar, after "hands"
+    said: str  # the whole of it, after "hands is up but"
+
+
+NO_MICROPHONE = Degradation("can't hear", "cannot hear, as there is no microphone")
+
+
+@dataclass(frozen=True)
 class Status:
     pid: int
     started_at: datetime
@@ -43,7 +56,7 @@ class Status:
     last_audio_out: datetime | None
     live_sessions: int
     listening: bool  # a turn is open: the talk key is held and has been held long enough to mean talk
-    deaf: bool  # the microphone is open on no device, so a press to talk hears nothing
+    degraded: tuple[Degradation, ...]  # each way it is running degraded, in the order the daemon found them
 
 
 def encode(status: Status) -> str:
@@ -57,7 +70,7 @@ def encode(status: Status) -> str:
             "last_audio_out": None if status.last_audio_out is None else status.last_audio_out.isoformat(),
             "live_sessions": status.live_sessions,
             "listening": status.listening,
-            "deaf": status.deaf,
+            "degraded": [{"brief": each.brief, "said": each.said} for each in status.degraded],
         },
         indent=2,
     )
@@ -77,8 +90,7 @@ def parse(raw: bytes) -> Status:
         last_audio_out=None if last_audio_out is None else _instant(last_audio_out),
         live_sessions=fields.integer("live_sessions"),
         listening=fields.optional_flag("listening"),
-        # A daemon from before this field never said it could not hear.
-        deaf=fields.optional_flag("deaf"),
+        degraded=_degradations(fields),
     )
 
 
@@ -98,8 +110,8 @@ class Heart:
     started_at: datetime
     period: timedelta
 
-    def beat(self, pipeline: PipelineState | Refusal, last_audio_out: datetime | None, live_sessions: int, *, listening: bool, deaf: bool) -> None:
-        write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions, listening, deaf))
+    def beat(self, pipeline: PipelineState | Refusal, last_audio_out: datetime | None, live_sessions: int, *, listening: bool, degraded: tuple[Degradation, ...]) -> None:
+        write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions, listening, degraded))
 
 
 def read(path: Path) -> Status | None:
@@ -214,7 +226,7 @@ def describe(verdict: Verdict, now: datetime) -> str:
             return f"hands refused to start {_span(now - written_at)} ago: {reason}"
         case Up(status=status):
             heard = "never" if status.last_audio_out is None else f"{_span(now - status.last_audio_out)} ago"
-            state = "up but cannot hear, as there is no microphone" if status.deaf else "up"
+            state = f"up but {_listed([each.said for each in status.degraded])}" if status.degraded else "up"
             return (
                 f"hands is {state}: pid {status.pid}, up {_span(now - status.started_at)}, pipeline {status.pipeline}, "
                 f"last audio out {heard}, {live_sessions(status)}"
@@ -223,6 +235,11 @@ def describe(verdict: Verdict, now: datetime) -> str:
 
 def live_sessions(status: Status) -> str:
     return "1 live session" if status.live_sessions == 1 else f"{status.live_sessions} live sessions"
+
+
+def _listed(phrases: list[str]) -> str:
+    # A phrase may hold a comma of its own, so the last is set apart by ", and" even when there are two.
+    return phrases[0] if len(phrases) == 1 else f"{', '.join(phrases[:-1])}, and {phrases[-1]}"
 
 
 def _span(elapsed: timedelta) -> str:
@@ -246,6 +263,25 @@ def _period(milliseconds: int) -> timedelta:
     if milliseconds not in PERIODS_MS:
         raise Rejected(f"heartbeat_ms {milliseconds} is not a heartbeat period")
     return timedelta(milliseconds=milliseconds)
+
+
+def _degradations(fields: Payload) -> tuple[Degradation, ...]:
+    # A daemon from before degradations said only whether it could not hear, as deaf; no daemon says both.
+    if "deaf" in fields.fields and "degraded" in fields.fields:
+        raise Rejected("a heartbeat says it cannot hear either as deaf or among its degradations, never both")
+    deaf = (NO_MICROPHONE,) if fields.optional_flag("deaf") else ()
+    degraded = (*(_degradation(each) for each in fields.optional_items("degraded")), *deaf)
+    if len(set(degraded)) < len(degraded):
+        raise Rejected(f"each degradation is said once: {degraded}")
+    return degraded
+
+
+def _degradation(item: object) -> Degradation:
+    fields = Payload.of(item, "a degradation")
+    degradation = Degradation(fields.text("brief"), fields.text("said"))
+    if not (degradation.brief and degradation.said):
+        raise Rejected(f"a degradation says what is wrong, in brief and in full: {degradation}")
+    return degradation
 
 
 def _pipeline_fields(pipeline: PipelineState | Refusal) -> dict[str, str]:

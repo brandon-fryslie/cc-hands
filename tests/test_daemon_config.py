@@ -387,7 +387,7 @@ def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_rest
     gone = subprocess.Popen(["true"])
     gone.wait()
     crashed = heartbeat.Heart(home.status, gone.pid, datetime.now(UTC), heartbeat.HEARTBEAT)
-    crashed.beat("running", None, 0, listening=False, deaf=False)
+    crashed.beat("running", None, 0, listening=False, degraded=())
     assert cli.main(["--home", str(home.root), "run"]) == 1
     reason = capsys.readouterr().err.removeprefix("hands: ").rstrip("\n")
     assert str(home.config) in reason
