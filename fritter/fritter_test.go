@@ -554,6 +554,23 @@ func TestMultiLineTextIsRefusedWhenTheSessionWillNotBracketIt(t *testing.T) {
 	}
 }
 
+func TestPastingSaysWhetherTheChildTurnedBracketedPasteOnAndTypesNothing(t *testing.T) {
+	// hands types a brain's first prompt once the brain has turned bracketing on, which Claude
+	// Code does once its input is up: before, the prompt would go unbracketed into an input
+	// that is not there yet.
+	wrapped, ask, exited := wrap(t, "sh", "-c", "sleep 30")
+	defer ending(t, wrapped, exited)
+	if answer := ask(`{"kind":"pasting"}`); answer.OK || !strings.Contains(answer.Reason, "bracketed paste") {
+		t.Fatalf("a shell, which never turns bracketing on, was said to have it: %+v", answer)
+	}
+
+	_, askRecorded, reads := recorded(t, 1)
+	if answer := askRecorded(`{"kind":"pasting"}`); !answer.OK {
+		t.Fatalf("a child that turned bracketing on was said not to have: %s", answer.Reason)
+	}
+	onlyEnterArrived(t, askRecorded, reads)
+}
+
 // ending kills a child that reads nothing on purpose, which nothing else would ever end,
 // and waits for run to let go of the test's terminal.
 func ending(t *testing.T, wrapped *Wrapped, exited chan int) {

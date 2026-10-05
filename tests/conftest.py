@@ -207,7 +207,7 @@ def onboard(brain: Path, settings: bytes = b'{"syncClaudeAiSkills": false, "sync
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A `claude` first on PATH that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding and the trust of the directory it ran in) it recorded, made by AUTH_METHOD (claude.ai unless named), and as the brain is Claude Code at a keyboard: it
-    reads its terminal raw, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
+    reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
     is never taken, "late" is taken only once the next prompt is sent, ahead of it, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
@@ -242,8 +242,10 @@ def post(event, **fields):
 def typed(line):
     with open(os.environ["TYPED"], "a") as log:
         log.write(json.dumps(line) + "\\n")
+# As a loaded machine starts it slowly.
+time.sleep(float(os.environ.get("STARTS_AFTER", "0")))
 # Raw without flushing: Claude Code keeps what was typed while it started (2.1.289, measured 2026-10-04, keys typed
-# 0.05s in), and a fake that drops it loses a turn hands typed before a loaded machine let it get this far.
+# 0.05s in).
 tty.setraw(0, termios.TCSANOW)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h> ")
@@ -350,9 +352,9 @@ while True:
             pending = pending[1:]
             typed(["ctrl_c", box])
             box = ""
-        # A Return typed before it read raw reaches it as the cooked terminal turned it, a newline: fritter types no bare
-        # newline of its own.
-        elif pending.startswith((b"\\r", b"\\n")):
+        # A newline, as a Return typed before it read raw reaches it, is one more line in the input: Claude Code takes
+        # Ctrl+J as multiline input (its docs), and sends on a Return alone.
+        elif pending.startswith(b"\\r"):
             pending = pending[1:]
             if pending:
                 # A Return with more behind it in the same burst is read as pasted, and sends nothing (2.1.286).

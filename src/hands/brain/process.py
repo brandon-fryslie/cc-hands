@@ -98,11 +98,8 @@ PASTE = re.compile(r'\n\n<pasted_content id="(\w+)">\n(.*)</pasted_content id="\
 
 # `claude auth status` answers in about a second; one that has not answered in this long is not going to.
 AUTH_STATUS_SECONDS = 20.0
-# How long fritter has to start the brain and open its socket.
+# How long fritter has to start the brain and open its socket, and the brain to turn its input on.
 START_SECONDS = 10.0
-# How long the brain's input takes to come up after it starts (about 0.22s in, 2.1.285, measured 2026-09-30). Text
-# typed before it is up is lost, and a turn lost so is untaken, which says so.
-SETTLE_SECONDS = 0.5
 # How long a typed turn has to be taken: a cold start loads the MCP server before the input is read.
 TAKE_SECONDS = 30.0
 # How far apart two Ctrl-Cs are pressed into the brain: Claude Code exits on a second within 800ms of one that found its
@@ -222,7 +219,7 @@ class LoginFailed(Exception):
 
 
 class Unstartable(Exception):
-    """A Claude Code of hands' own could not be started: no claude to run, or for the brain no fritter to run it under, or a fritter that never opened its socket."""
+    """A Claude Code of hands' own could not be started: no claude to run, or for the brain no fritter to run it under, or a fritter that never opened its socket, or a brain that never turned its input on."""
 
 
 def brain_claude(inherited: Mapping[str, str]) -> Path:
@@ -794,7 +791,6 @@ async def start(launch: Launch, record: Record) -> Brain:
             running = await spawn(station, [str(launch.fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url)])
             annotate(pid=running.pid)
             typist = await _typist(running, sockets, launch.session)
-            await asyncio.sleep(SETTLE_SECONDS)
         except BaseException:
             # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
             # its own, which nothing but hands' own end would hang up.
@@ -830,18 +826,29 @@ async def _listen(hooks: "asyncio.Queue[_Posted]") -> tuple[web.AppRunner, str]:
 
 
 async def _typist(running: ClaudeCode, sockets: Path, session: SessionId) -> Typist:
-    """The brain as fritter types into it: the socket fritter opened under `sockets`, and the claude it started."""
+    """The brain as fritter types into it, once its input is up: the socket fritter opened under `sockets`, and the claude
+    it started.
+
+    [LAW:no-ambient-temporal-coupling] up is the brain's own word, the bracketed paste Claude Code turns on once it reads
+    its input (0.19s in, its terminal raw from 0.02s, 2.1.289, measured 2026-10-04), not a guess at how long that takes: a
+    turn typed into a terminal not yet raw has its Return made a newline, which Claude Code takes as one more line."""
     deadline = asyncio.get_running_loop().time() + START_SECONDS
+    waiting = "fritter had not started the brain and opened its socket"
     while asyncio.get_running_loop().time() < deadline and not running.exit.done():
         found = [path for path in sockets.rglob("*") if path.is_socket()]
         child = await asyncio.to_thread(_child_of, running.pid)
         if found and child is not None:
-            return Typist(session, found[0], child)
+            typist = Typist(session, found[0], child)
+            try:
+                await asyncio.to_thread(typist.pasting)
+                return typist
+            except Untyped as error:
+                waiting = f"the brain had not turned its input on ({error})"
         await asyncio.sleep(0.05)
     # What fritter's terminal showed says why: a fritter that could not be run at all fails there, in the shell it was run by.
     if running.exit.done():
-        raise Unstartable(f"fritter exited ({running.exit.result()}) before it started the brain and opened its socket; it showed:\n{running.shown()}")
-    raise Unstartable(f"fritter did not start the brain and open its socket in {START_SECONDS:.0f}s; it showed:\n{running.shown()}")
+        raise Unstartable(f"fritter exited ({running.exit.result()}) while {waiting}; it showed:\n{running.shown()}")
+    raise Unstartable(f"{waiting} after {START_SECONDS:.0f}s; it showed:\n{running.shown()}")
 
 
 def _child_of(pid: int) -> int | None:

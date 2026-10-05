@@ -79,6 +79,11 @@ would end the bracketing early and a `0x03` is a Ctrl-C. Send a `key` request fo
 keystroke. The keys are `escape`, `enter`, `ctrl_c`, `ctrl_u`, `up`, `down`, `tab` and
 `shift_tab`, and each is typed exactly as if the user had pressed it.
 
+A `pasting` request, `{"pid":4242,"kind":"pasting"}`, types nothing. It is answered ok if
+the child has turned bracketed paste on, and refused if not. Claude Code turns it on once
+its input is up, so a caller about to type the first prompt into a Claude Code it just
+started waits for this, not for a guessed length of time.
+
 The answer is `{"ok":true}` once the write is done, or `{"ok":false,"reason":"..."}` when
 the request was refused or the write failed. Writes into the child are made one at a time,
 the user's keys and requests alike, so neither lands inside the other. An `escape` keeps
