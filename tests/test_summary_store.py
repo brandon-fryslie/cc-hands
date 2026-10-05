@@ -16,7 +16,7 @@ from hands.core.sentences import Due, Thing, answered, digest, page, reckon
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
-from hands.sessions.backlog import BACKLOG, Unread, parse_export, read_backlog
+from hands.sessions.backlog import BACKLOG, Unread, Untracked, parse_export, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
@@ -275,19 +275,20 @@ async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray"), 0)
 
 
-def never_initialized(project: Path) -> None:
-    """Make `lit export` answer as lit does in a project `lit init` never ran in."""
-    lit = Path(os.environ["PATH"].split(":")[0]) / "lit"
-    lit.write_text(
-        "#!/bin/sh\n"
-        "echo \"error (code=3): repository not initialized with lit — run 'lit init' first\" >&2\n"
-        "echo 'remediation: Do not retry unchanged — this repository has no lit workspace.' >&2\n"
-        "exit 3\n"
-    )
+def fake_lit(script: str) -> None:
+    """Make the `lit` the project fixture put first on PATH run `script` instead."""
+    (Path(os.environ["PATH"].split(":")[0]) / "lit").write_text(f"#!/bin/sh\n{script}")
+
+
+NEVER_INITIALIZED = (
+    "echo \"error (code=3): repository not initialized with lit — run 'lit init' first\" >&2\n"
+    "echo 'remediation: Do not retry unchanged — this repository has no lit workspace.' >&2\n"
+    "exit 3\n"
+)
 
 
 async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_says_so_without_failing(project: Path, tmp_path: Path) -> None:
-    never_initialized(project)
+    fake_lit(NEVER_INITIALIZED)
     summarise = Summariser()
     records: list[Entry] = []
     await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), summarise, records.append)
@@ -297,9 +298,22 @@ async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_say
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray"), 0)
 
 
+async def test_a_failure_lit_joins_onto_its_no_workspace_refusal_is_unread_never_untracked(project: Path) -> None:
+    fake_lit(NEVER_INITIALIZED.replace("exit 3", "echo 'release workspace lock: permission denied' >&2\nexit 3"))
+    with pytest.raises(Unread, match="release workspace lock"):
+        await read_backlog(project)
+
+
+@pytest.mark.skipif(shutil.which("lit") is None, reason="lit's own refusals are what is matched")
+@pytest.mark.parametrize("git", [True, False], ids=["lit never initialised", "outside any git repository"])
+async def test_a_directory_real_lit_has_no_workspace_in_is_untracked(tmp_path: Path, git: bool) -> None:
+    if git:
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    assert await read_backlog(tmp_path) == Untracked(tmp_path)
+
+
 async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_running(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    lit = Path(os.environ["PATH"].split(":")[0]) / "lit"
-    lit.write_text("#!/bin/sh\necho $$ > pid\nexec sleep 30\n")
+    fake_lit("echo $$ > pid\nexec sleep 30\n")
     monkeypatch.setattr("hands.sessions.backlog.EXPORT_TIMEOUT_SECONDS", 0.5)
     with pytest.raises(Unread, match="did not answer"):
         await read_backlog(project)
@@ -381,8 +395,10 @@ async def test_the_backlog_tools_say_what_they_could_not_read(project: Path, tmp
     assert await bodies["read_backlog"](session="s9") == {"error": "there is no session s9"}
     (project / "export.json").unlink()
     assert "could not be read" in str((await bodies["read_backlog"](session="s1"))["error"])
-    never_initialized(project)
-    assert await bodies["read_backlog"](session="s1") == {"error": f"{project} has no backlog: lit was never set up there"}
+    fake_lit(NEVER_INITIALIZED)
+    # No backlog is an answer, not an error; a ticket in it is still one the brain asked for that is not there.
+    assert await bodies["read_backlog"](session="s1") == {"directory": str(project), "tracked": False, "items": []}
+    assert "has no backlog, so no ticket t1" in str((await bodies["read_ticket"](session="s1", ticket="t1"))["error"])
 
 
 @pytest.mark.skipif(shutil.which("lit") is None, reason="the brain works a tracker with lit")

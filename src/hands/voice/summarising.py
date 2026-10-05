@@ -113,10 +113,13 @@ async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summa
             # [LAW:no-silent-failure] a project hands cannot read fails its pass, saying why.
             fail(f"cannot read the backlog, so none of it is summarised: {error}")
             return
-        # [LAW:nothing-unseen] a project lit was never set up in has nothing to say, and its event says that is why.
-        annotate(tracked=not isinstance(backlog, Untracked))
-        if isinstance(backlog, Untracked):
-            return
+        # [LAW:nothing-unseen] a directory lit has no workspace in has nothing to say, and its event says that is why.
+        match backlog:
+            case Untracked():
+                annotate(tracked=False)
+                return
+            case _:
+                annotate(tracked=True)
         thing = backlog.thing()
         first = store.reckon(thing)
         count(things=len(first.said) + len(first.due) + first.waiting, known=len(first.said))
