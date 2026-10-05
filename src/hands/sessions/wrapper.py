@@ -213,6 +213,7 @@ esac
 
 def install(home: Home) -> Installed:
     """Copy the packaged fritter and write the shim into the home's bin; Unpackaged when the package carries none."""
+    source = packaged()
     fritter = home.fritter
     shim = home.shim
     try:
@@ -220,9 +221,9 @@ def install(home: Home) -> Installed:
         # executable is rewritten in place, and every session under fritter is one.
         home.bin.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=home.bin, prefix=".fritter.") as staging:
-            shutil.copy2(packaged(), Path(staging) / "fritter")
+            shutil.copy2(source, Path(staging) / "fritter")
             os.replace(Path(staging) / "fritter", fritter)
         replace_whole(shim, shim_script(fritter, home.wire), 0o755)
     except OSError as error:
-        raise Uninstallable(f"cannot install {PACKAGED} into {home.bin}: {error}") from error
+        raise Uninstallable(f"cannot install {source} into {home.bin}: {error}") from error
     return Installed(shim, fritter)

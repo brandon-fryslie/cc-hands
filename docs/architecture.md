@@ -1064,11 +1064,11 @@ The event also says what was typed into the brain (`asked`), and, where the user
 The brain's own process is four kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
 up, on which account, model, and config directory, under which fritter (the one hands' package carries), or with what
 failed it: a hands built without its fritter is refused in the words `hands install-fritter` refuses it with. Its run
-(`brain.run`), a part of the launch, runs from then until its process ends, with its exit code and the last of what
-it showed. Each turn typed into it (`brain.turn`), a part of the `voice.turn` that asked it, runs from its typing to its end, with the prompt ids Claude
-Code took it as (`prompts`), how many times it was typed (`typings`), the tools its latest request offered the model
-(`offered`), and the prompt ids that were not its own that Claude Code took while the turn waited to be taken, or that
-its typing or its stop stopped (`others`), or with the error that failed it. A turn
+(`brain.run`), a part of the launch, runs from then until its process ends, with its exit code and the last of what it
+showed. Each turn typed into it (`brain.turn`), a part of the `voice.turn` that asked it, runs from its typing to its
+end, with the prompt ids Claude Code took it as (`prompts`), how many times it was typed (`typings`), the tools its
+latest request offered the model (`offered`), and the prompt ids that were not its own that Claude Code took while the
+turn waited to be taken, or that its typing or its stop stopped (`others`), or with the error that failed it. A turn
 is taken only by a `UserPromptSubmit` whose `prompt` is the text it typed, as Claude Code keeps it: out of the tags a
 long paste comes in, trailing whitespace trimmed. A turn that ended untaken and was taken later is never the next
 turn's, unless the two typed the same words. A prompt Claude Code takes that is no turn's runs ahead of what was typed

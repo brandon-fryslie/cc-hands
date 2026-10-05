@@ -204,7 +204,9 @@ def shim(home: Home, path: str) -> Finding:
             # [LAW:one-source-of-truth] the fritter in a home's bin is a copy of the packaged one, so a copy that has
             # drifted from it, as one does when hands is upgraded or a checkout's fritter rebuilt, is said, never trusted.
             try:
-                current = filecmp.cmp(runs, wrapper.PACKAGED, shallow=False)
+                current = filecmp.cmp(runs, wrapper.packaged(), shallow=False)
+            except wrapper.Unpackaged as error:
+                return Missing(str(error))
             except OSError as error:
                 return Unknown(f"cannot tell whether {runs} is the fritter this hands carries, {wrapper.PACKAGED}: {error}")
             if not current:

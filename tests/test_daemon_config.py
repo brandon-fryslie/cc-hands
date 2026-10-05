@@ -21,7 +21,7 @@ from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, Anthropic, Claude, Config, OpenAI
 from hands.daemon.starting import CannotStart, Ended, Start, start
 from hands.daemon.backend import backend
-from hands.sessions import audit, heartbeat
+from hands.sessions import audit, heartbeat, wrapper
 from hands.sessions.audit import Entry, SettingsEdited, encoded
 from hands.sessions.hookconfig import DISPLAY_PATH
 from hands.sessions.home import Home
@@ -170,6 +170,14 @@ def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_sw
         backend(Claude(), home, os.environ)
     (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}')
     with pytest.raises(Rejected, match='its account\'s syncClaudeAiSkills: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'):
+        backend(Claude(), home, os.environ)
+
+
+def test_a_hands_built_without_its_fritter_stops_the_run_naming_the_rebuild(fake_claude: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path / ".hands")
+    onboard(home.brain)
+    monkeypatch.setattr(wrapper, "PACKAGED", tmp_path / "package" / "bin" / "fritter")
+    with pytest.raises(Rejected, match=r"hands' package carries no fritter at .*/package/bin/fritter: install hands again"):
         backend(Claude(), home, os.environ)
 
 

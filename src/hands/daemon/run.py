@@ -56,7 +56,6 @@ from hands.sessions.server import serve_display, serve_hooks
 from hands.sessions.tap import moves, serve_tap
 from hands.sessions.overlays import Overlays
 from hands.sessions.attention import attention
-from hands.sessions.wrapper import Unpackaged
 from hands.voice.devices import follow_default_devices
 from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
 from hands.voice.hold import Move
@@ -200,7 +199,7 @@ async def mind(
                 station = Station(config_dir, workdir(config_dir), model, proxy_url, environment)
                 try:
                     brain = await start_brain(Launch(station, account, brain_instruction(log, config_dir, recall), server.config(), SessionId(str(uuid4()))), record)
-                except (Unstartable, Unpackaged) as error:
+                except Unstartable as error:
                     # hands runs on no brain it could not start: its start is refused, saying why.
                     raise CannotStart(str(error)) from error
                 try:

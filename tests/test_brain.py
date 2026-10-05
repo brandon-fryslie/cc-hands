@@ -1380,6 +1380,6 @@ async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebu
         async with mind(claude, [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, dict(os.environ)):
             pass
     [launched] = events(recorded, "brain.launch")
-    assert launched.outcome == "failed" and launched.error == f"Unpackaged: {refused}"
+    assert launched.outcome == "failed" and launched.error == f"Unstartable: {refused}"
     assert launched.facts["account"] == "brain@example.com" and "fritter" not in launched.facts and "pid" not in launched.facts
     assert events(recorded, "brain.run") == []
