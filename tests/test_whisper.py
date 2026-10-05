@@ -91,7 +91,7 @@ async def test_whisper_settings_say_the_model_and_language_its_holds_transcribe_
     """Pipecat checks a service's settings at its start and logs an error for any it was never given."""
     whisper = Whisper(prompt=primed(None), record=lambda _: None)
     errors: list[str] = []
-    sink = logger.add(errors.append, level="ERROR")
+    sink = logger.add(errors.append, level="ERROR", filter="pipecat")
     try:
         whisper._settings.validate_complete()  # pyright: ignore[reportPrivateUsage]  (what Pipecat's start checks)
     finally:
