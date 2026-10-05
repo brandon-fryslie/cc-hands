@@ -490,12 +490,15 @@ def start_indicator(home: Home) -> int:
     return os.posix_spawn(sys.executable, argv, os.environ, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)], setsid=True)
 
 
-# What became of the indicator the run before a restart showed: ended by this run, found exited and reaped by it, or
-# reaped already by the run before, which said so as it did.
-type Retired = Literal["ended", "exited", "reaped"]
+# What became of the indicator the run before a restart showed: ended as this run asked, killed by it once it had not
+# within the grace, found exited on its own and said, or reaped already by the run before, which said so as it did.
+type Retired = Literal["ended", "killed", "exited", "reaped"]
+
+# How long the indicator has to end once asked before its process group is killed.
+RETIRE_GRACE_SECONDS = 1.0
 
 
-def retire(indicator: int) -> Retired:
+def retire(indicator: int, grace: float = RETIRE_GRACE_SECONDS) -> Retired:
     """End the indicator the run before a restart showed, so the one this run starts is the only one in the menu bar."""
     try:
         exited, status = os.waitpid(indicator, os.WNOHANG)
@@ -504,11 +507,35 @@ def retire(indicator: int) -> Retired:
     if exited:
         said_exited(status)
         return "exited"
-    # Still this process's child and unreaped, so the pid is the indicator's and no other process's. Ended while the
-    # heartbeat says starting, it posts nothing on its way out.
-    os.kill(indicator, signal.SIGTERM)
-    os.waitpid(indicator, 0)
-    return "ended"
+    # Still this process's child and unreaped, so the pid is the indicator's and no other process's. Its group goes
+    # with it, the notices it was posting included, as Child.killed ends a child hands started.
+    signalled(indicator, signal.SIGTERM)
+    statuses: list[int] = []
+    waiter = threading.Thread(target=lambda: statuses.append(os.waitpid(indicator, 0)[1]), name="retire", daemon=True)
+    waiter.start()
+    waiter.join(grace)
+    if waiter.is_alive():
+        signalled(indicator, signal.SIGKILL)
+        waiter.join()
+    # [LAW:no-silent-failure] the status says how it ended, not the asking: one that crashed as it was asked is said.
+    code = os.waitstatus_to_exitcode(statuses[0])
+    if code in (0, -signal.SIGTERM):
+        return "ended"
+    if code == -signal.SIGKILL:
+        logger.info(f"killed the menu-bar indicator ({indicator}) and everything it started, because it had not ended {grace:.1f}s after it was asked to")
+        return "killed"
+    said_exited(statuses[0])
+    return "exited"
+
+
+def signalled(group: int, signum: signal.Signals) -> None:
+    """Send `signum` to the process group `group` leads, where any of it has yet to exit."""
+    try:
+        os.killpg(group, signum)
+    except (ProcessLookupError, PermissionError):
+        # Every process in the group had exited: gone, ProcessLookupError; exited and not yet reaped, macOS says
+        # PermissionError. The wait that follows reaps the leader all the same.
+        pass
 
 
 def reap(shown: int) -> None:

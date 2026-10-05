@@ -242,7 +242,8 @@ async def test_a_restart_asked_while_a_quit_winds_the_run_down_does_not_start_it
 
 def spawned(*argv: str) -> int:
     """A child of this process, as the indicator is of the run that starts it and of every run exec'd after."""
-    return os.posix_spawnp(argv[0], list(argv), os.environ)
+    # A session of its own, so it leads a process group, as `start_indicator` makes the indicator.
+    return os.posix_spawnp(argv[0], list(argv), os.environ, setsid=True)
 
 
 def test_a_restart_ends_the_indicator_the_run_before_showed() -> None:
@@ -253,10 +254,27 @@ def test_a_restart_ends_the_indicator_the_run_before_showed() -> None:
         os.waitpid(shown, os.WNOHANG)
 
 
+def test_an_indicator_that_does_not_end_when_asked_is_killed_with_its_group() -> None:
+    ready, said = os.pipe()
+    argv = ["sh", "-c", 'trap "" TERM; sleep 60 & echo; wait']
+    stubborn = os.posix_spawnp("sh", argv, os.environ, file_actions=[(os.POSIX_SPAWN_DUP2, said, 1)], setsid=True)
+    os.close(said)
+    # Its line comes once SIGTERM is ignored, so the ask below cannot land before it is.
+    with os.fdopen(ready) as lines:
+        lines.readline()
+    assert retire(stubborn, grace=0.2) == "killed"
+    with pytest.raises(ChildProcessError):
+        os.waitpid(stubborn, os.WNOHANG)
+    # The sleep it started was in its group, and went with it: gone, or exited and not yet reaped by launchd.
+    with pytest.raises((ProcessLookupError, PermissionError)):
+        os.killpg(stubborn, 0)
+
+
 def test_an_indicator_that_exited_before_the_restart_is_reaped_and_said() -> None:
     exited = spawned("false")
-    # Exited and not reaped, as an indicator that exits during the exec is: no reap thread outlives it.
-    while subprocess.run(["ps", "-o", "stat=", "-p", str(exited)], capture_output=True, text=True).stdout.strip() != "Z":
+    # Exited and not reaped, as an indicator that exits during the exec is: no reap thread outlives it. A zombie in a
+    # terminal's foreground group says Z+.
+    while not subprocess.run(["ps", "-o", "stat=", "-p", str(exited)], capture_output=True, text=True).stdout.startswith("Z"):
         time.sleep(0.01)
     logged: list[str] = []
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR")
@@ -275,10 +293,16 @@ def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: 
 
     home = Home(tmp_path)
     previous = spawned("sleep", "60")
-    shown: list[Home] = []
+    # [LAW:behavior-not-structure] the order is the contract: the one before is gone before this run's is shown.
+    steps: list[str] = []
 
-    def start_indicator(home: Home) -> int:
-        shown.append(home)
+    def retired(indicator: int) -> cli.Retired:
+        steps.append("retired")
+        return retire(indicator)
+
+    def start_indicator(started: Home) -> int:
+        assert started == home
+        steps.append("started")
         return 0
 
     def kept(*_: object) -> None:
@@ -291,13 +315,14 @@ def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: 
         return quits
 
     monkeypatch.setattr(talkkey, "granted", lambda: True)
+    monkeypatch.setattr(cli, "retire", retired)
     monkeypatch.setattr(cli, "start_indicator", start_indicator)
     monkeypatch.setattr(cli, "reap", kept)
     monkeypatch.setattr(cli, "to_terminal", kept)
     monkeypatch.setattr(cli.logger, "remove", kept)
     monkeypatch.setattr(cli, "loaded", loaded)
     assert cli.main(["--home", str(home.root), "run", "--restarted", str(previous)]) == 0
-    assert shown == [home]
+    assert steps == ["retired", "started"]
     with pytest.raises(ChildProcessError):
         os.waitpid(previous, os.WNOHANG)
     [start] = started(home)
