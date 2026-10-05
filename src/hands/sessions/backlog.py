@@ -27,7 +27,33 @@ BACKLOG = "backlog"
 
 
 class Unread(Exception):
-    """lit could not hand over a backlog in this directory: none is there, or lit failed. The message says which."""
+    """lit could not hand over a backlog in this directory: it failed, or refused, and the message says why."""
+
+
+@dataclass(frozen=True)
+class Untracked:
+    """A directory lit was never set up in, or that is in no git repository: it has no backlog, which is an answer, not
+    a failure."""
+
+    project: Path
+
+
+# The exit lit refuses with, and the two reasons it gives for having no workspace here: ErrWorkspaceNotInitialized
+# (internal/store/workspace_initialized.go) where `lit init` never ran, and its outside_git_workspace refusal outside
+# any git repository. Its reason is the line after the prefix; the line after that is its remediation.
+REFUSED = 3
+NO_WORKSPACE = (
+    f"error (code={REFUSED}): repository not initialized with lit",
+    f"error (code={REFUSED}): links requires running inside a git repository",
+)
+REMEDIATION = "remediation: "
+
+
+def _no_workspace(returncode: int, err: str) -> bool:
+    """Whether lit refused only because it has no workspace here: the whole of what it said is that reason and its
+    remediation, so a failure joined onto the reason is never mistaken for it."""
+    reason, *rest = err.strip().splitlines() or [""]
+    return returncode == REFUSED and reason.startswith(NO_WORKSPACE) and all(line.startswith(REMEDIATION) for line in rest)
 
 
 @dataclass(frozen=True)
@@ -91,8 +117,9 @@ class Backlog:
         return Thing(BACKLOG, "", tuple(of(id) for id in self.roots()))
 
 
-async def read_backlog(project: Path) -> Backlog:
-    """The backlog lit holds for `project`; raises Unread when lit cannot say, and Rejected when what it said does not parse."""
+async def read_backlog(project: Path) -> Backlog | Untracked:
+    """The backlog lit holds for `project`, or that lit has no workspace there; raises Unread when lit cannot say, and
+    Rejected when what it said does not parse."""
     try:
         ran = await run("lit", "export", timeout=EXPORT_TIMEOUT_SECONDS, cwd=project)
     except TimeoutError:
@@ -100,7 +127,12 @@ async def read_backlog(project: Path) -> Backlog:
     except OSError as error:
         raise Unread(f"cannot run lit in {project}: {error}") from error
     if ran.returncode != 0:
-        raise Unread(f"lit export in {project} exited {ran.returncode}: {ran.err.decode(errors='replace').strip()[-300:]}")
+        err = ran.err.decode(errors="replace")
+        # [LAW:parse-dont-validate] exception: lit exits 3 for this and for every other refusal alike, and prints its
+        # reason only as English, so the sentence is what tells them apart until lit says it as data (links-error-output-ckk7).
+        if _no_workspace(ran.returncode, err):
+            return Untracked(project)
+        raise Unread(f"lit export in {project} exited {ran.returncode}: {err.strip()[-300:]}")
     # Off the loop: the largest export takes tens of milliseconds to parse, which the voice pipeline would hear.
     return await asyncio.to_thread(parse_export, ran.out)
 

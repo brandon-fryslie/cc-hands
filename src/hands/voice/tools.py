@@ -36,7 +36,7 @@ from hands.core.drilldown import drill
 from hands.core.sentences import Due, cut, turn_digest
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
-from hands.sessions.backlog import BACKLOG, Backlog, Unread, read_backlog
+from hands.sessions.backlog import BACKLOG, Backlog, Unread, Untracked, read_backlog
 from hands.sessions import catchup
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, fail, unit
@@ -544,6 +544,7 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         Call this when the user asks what is in the backlog, what is left to do, or what comes next. Answer from the
         sentences; call read_ticket to hear more of one. A ticket with no summary yet has only its title, and its
         sentence is being written. `directory` is where this backlog was read; lit run there works its tracker.
+        `tracked` false means lit has no workspace there, so the project has no backlog at all.
 
         Args:
             session: The id, from list_sessions, of a session working in the project.
@@ -551,6 +552,8 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         match await _backlog(sessions, store, session):
             case str() as error:
                 return {"error": error}
+            case Untracked(project):
+                return {"directory": str(project), "tracked": False, "items": []}
             case (project, backlog, said):
                 roots = backlog.roots()
                 return {
@@ -575,6 +578,8 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         match await _backlog(sessions, store, session):
             case str() as error:
                 return {"error": error}
+            case Untracked(project):
+                return {"error": f"{project} has no backlog, so no ticket {ticket}: lit has no workspace there"}
             case (_, backlog, said) if ticket not in backlog.tickets:
                 return {"error": f"the backlog has no ticket {ticket}"}
             case (_, backlog, said):
@@ -590,8 +595,9 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
     return [tool(read_backlog), tool(read_ticket)]
 
 
-async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tuple[Path, Backlog, Mapping[str, str]] | str:
-    """The session's project, its backlog read fresh, and every sentence already said of it; or why it could not be read."""
+async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tuple[Path, Backlog, Mapping[str, str]] | Untracked | str:
+    """The session's project, its backlog read fresh, and every sentence already said of it; that lit has no workspace
+    there, so it has no backlog; or why it could not be read."""
     member = sessions.membership(SessionId(session))
     if member is None:
         return f"there is no session {session}"
@@ -601,6 +607,8 @@ async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tup
         # [LAW:no-silent-failure] the model is told why it got nothing, and the log keeps it.
         logger.error(f"cannot read the backlog of session {session} in {member.cwd}: {error}")
         return f"the backlog in {member.cwd} could not be read: {error}"
+    if isinstance(backlog, Untracked):
+        return backlog
     # Every read is a sighting: what changed since the last pass is said in the background, never while this call waits.
     store.want(member.cwd)
     return member.cwd, backlog, store.reckon(backlog.thing()).said
