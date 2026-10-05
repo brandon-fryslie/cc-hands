@@ -17,12 +17,20 @@ is not, what does it; it exits 0 only when every step is done.
    ```
 
 2. Homebrew's PortAudio, which the microphone is opened through, and uv. A Mac without
-   [Homebrew](https://brew.sh) gets it first; its installer says how to put `brew` on `PATH`:
+   [Homebrew](https://brew.sh) gets it first, with `brew` on `PATH`:
 
    ```
    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+   echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+   eval "$(/opt/homebrew/bin/brew shellenv)"
+   ```
+
+   Then, with Homebrew:
+
+   ```
    brew install portaudio
    curl -LsSf https://astral.sh/uv/install.sh | sh
+   source $HOME/.local/bin/env      # puts uv on PATH in this terminal
    ```
 
 3. hands, from a [release](https://github.com/brandon-fryslie/cc-hands/releases), with the

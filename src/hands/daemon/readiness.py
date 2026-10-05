@@ -79,7 +79,7 @@ def portaudio() -> Finding:
     try:
         import pyaudio
     except ImportError as error:
-        return Missing(f"PyAudio cannot load PortAudio ({error}), so hands cannot open the microphone: `brew install portaudio`")
+        return Missing(f"PyAudio cannot load PortAudio ({error}), so hands cannot open the microphone: `brew install portaudio`, with Homebrew from https://brew.sh")
     return Ready(f"PortAudio is there for the microphone: {pyaudio.get_portaudio_version_text()}")
 
 
