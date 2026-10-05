@@ -32,7 +32,7 @@ from conftest import events, onboard
 from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
-from hands.core.session import SessionId, pasted
+from hands.core.session import PromptText, SessionId, pasted
 from hands.core.wire import Exchanged, Fork, Garbled, MainTurn, Message, Reached, Send, Sent, Streamed
 from hands.core.wire import Text as Said
 from hands.daemon.cli import main
@@ -287,8 +287,8 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     assert isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent)
     # Each turn is its own, with the prompt Claude Code took it as.
     assert [(turn.event, turn.outcome, turn.facts) for turn in (first, second)] == [
-        ("brain.turn", "ok", {"prompt": "p1", "offered": ()}),
-        ("brain.turn", "ok", {"prompt": "p2", "offered": ()}),
+        ("brain.turn", "ok", {"prompt": "p1", "offered": (), "others": ()}),
+        ("brain.turn", "ok", {"prompt": "p2", "offered": (), "others": ()}),
     ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
@@ -359,7 +359,7 @@ async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: 
     # part of the brain's turn it was held for, timed from its post to its answer.
     [brain_turn] = events(recorded, "brain.turn")
     assert (brain_turn.trace_id, brain_turn.parent_id) == (asking.trace_id, asking.span_id)
-    assert brain_turn.facts == {"prompt": "p1", "offered": ("Write", "mcp__hands__read_session")}
+    assert brain_turn.facts == {"prompt": "p1", "offered": ("Write", "mcp__hands__read_session"), "others": ()}
     [permission] = events(recorded, "brain.permission")
     assert (permission.trace_id, permission.parent_id) == (asking.trace_id, brain_turn.span_id) and permission.duration_ms >= 300
     assert not (tmp_path / "notes.txt").exists()
@@ -763,6 +763,34 @@ async def test_a_turn_never_taken_fails_naming_hands_login_and_the_next_turn_is_
         await brain.stop()
 
 
+async def test_a_turn_claude_code_takes_after_it_ended_untaken_is_not_the_next_turns(
+    tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path, fritter), recorded.append)
+    try:
+        with monkeypatch.context() as short, pytest.raises(Untaken):
+            short.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
+            await brain.ask("late", unasked)
+        # Its prompt and its Stop come while the next turn is in flight, ahead of that turn's own: words the next turn's
+        # are a part of are still not the next turn's.
+        assert await asyncio.wait_for(brain.ask("lat", unasked), 10) == BrainAnswered("p2", None)
+    finally:
+        await brain.stop()
+    _, answered_turn = events(recorded, "brain.turn")
+    assert answered_turn.facts == {"prompt": "p2", "offered": (), "others": ("p1",)}
+
+
+async def test_a_turn_is_taken_as_claude_code_keeps_what_it_typed(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    brain = await start(launch(tmp_path, fritter), lambda _entry: None)
+    try:
+        # A long paste comes back in its tags, and a closing backslash's space comes back trimmed.
+        assert await asyncio.wait_for(brain.ask("one\ntwo\nthree\nfour", unasked), 10) == BrainAnswered("p1", None)
+        assert await asyncio.wait_for(brain.ask("path C:\\", unasked), 10) == BrainAnswered("p2", None)
+    finally:
+        await brain.stop()
+
+
 class _Jammed:
     """A typist whose every key fails as a terminal gone from under it does: not the Untyped a stale socket raises."""
 
@@ -873,7 +901,7 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
         brain._launched = here()  # pyright: ignore[reportPrivateUsage]
     # The elicitation that breaks is a part of the turn in flight: it was declined before it was heard, so the turn runs on.
     loop = asyncio.get_running_loop()
-    turn = _Turn(loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS)  # pyright: ignore[reportPrivateUsage]
+    turn = _Turn(loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(" probe"))  # pyright: ignore[reportPrivateUsage]
     turn.taken.set_result("p1")
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
     brain._held = set()  # pyright: ignore[reportPrivateUsage]
