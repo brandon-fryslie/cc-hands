@@ -26,8 +26,9 @@ OPENAI_USAGE = {
 
 
 def reported(usage: Any, names: tuple[str, ...]) -> dict[str, Fact]:
-    """The `names` an Anthropic usage reports; a field it leaves out is not one it reported."""
-    return {name: value for name in names if (value := getattr(usage, name)) is not None}
+    """The `names` an Anthropic usage reports. The SDK builds what the API sent unchecked, so the usage, or any count in
+    it, may be missing: one left out is not one it reported, never a failed request."""
+    return {name: value for name in names if (value := getattr(usage, name, None)) is not None}
 
 
 def openai_usage(usage: CompletionUsage | None) -> dict[str, Fact]:
