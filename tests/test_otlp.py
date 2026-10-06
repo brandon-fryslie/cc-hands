@@ -331,21 +331,43 @@ def test_a_fact_json_has_no_number_for_is_sent_as_proto3_json_spells_it() -> Non
     ]
 
 
+class _DarkCollector:
+    """The exporter's time, and a collector the network has gone dark to: each request to it waits out its whole timeout
+    and fails, and only those waits move the clock, so the time a stop takes is the exporter's own reckoning and no
+    loaded machine's. Each request waits from when its thread last read the clock, so waits on the two signals' threads
+    overlap, as they do on a real network. No request is answered before the stop reads the clock."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self._read = threading.local()
+        self._moving = threading.Lock()
+        self._stopper = threading.current_thread()
+        self._stopping = threading.Event()
+
+    def clock(self) -> float:
+        if threading.current_thread() is self._stopper:
+            self._stopping.set()
+        with self._moving:
+            self._read.at = self.now
+            return self.now
+
+    def post(self, request: Request, timeout: float) -> bytes:
+        self._stopping.wait()
+        with self._moving:
+            self.now = max(self.now, cast(float, self._read.at) + timeout)
+        raise TimeoutError("timed out")
+
+
 def test_a_stop_waits_on_a_collector_that_never_answers_for_one_timeout_and_says_every_batch_it_could_not_send() -> None:
-    # A collector that takes the connection and never answers: a host the network has gone dark to.
-    with socket.socket() as silent:
-        silent.bind(("127.0.0.1", 0))
-        silent.listen(16)
-        recorded: list[Exported] = []
-        exporter = Exporter(f"http://127.0.0.1:{silent.getsockname()[1]}", recorded.append, linger=0.01, timeout=0.5)
-        # Three batches' worth, each of which alone could wait out the timeout.
-        events = [_event(span_id=f"{n:016x}") for n in range(3 * BATCH_SPANS)]
-        for event in events:
-            exporter.send(event)
-        began = time.monotonic()
-        exporter.close()
-        stopped = time.monotonic() - began
-    assert stopped < 1.0
+    dark = _DarkCollector()
+    recorded: list[Exported] = []
+    exporter = Exporter("http://dark.example:4318", recorded.append, linger=0.01, timeout=0.5, clock=dark.clock, post=dark.post)
+    # Three batches' worth, each of which alone could wait out the timeout.
+    events = [_event(span_id=f"{n:016x}") for n in range(3 * BATCH_SPANS)]
+    for event in events:
+        exporter.send(event)
+    exporter.close()
+    assert dark.now == 0.5
     for signal in ("traces", "logs"):
         assert sorted(span for exported in recorded if exported.signal == signal for span in exported.spans) == sorted(event.span_id for event in events)
     assert all(exported.error is not None for exported in recorded)
