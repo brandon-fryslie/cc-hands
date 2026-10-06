@@ -908,7 +908,7 @@ def trigger_tools(triggers: Triggers, wake_word: Path) -> list[Tool]:
 
         Call this when the user asks how to talk to hands, or which trigger is on. Say the returned readback.
         """
-        return {"trigger": triggers.in_use, "readback": described(triggers.in_use)}
+        return {"trigger": triggers.in_use, "readback": described(triggers.in_use, triggers.word)}
 
     async def set_trigger(trigger: Trigger) -> Result:
         """Switch the trigger the user opens their turns with at the Mac; their next turn opens the new way.
@@ -920,13 +920,13 @@ def trigger_tools(triggers: Triggers, wake_word: Path) -> list[Tool]:
             trigger: the trigger to use from now on.
         """
         try:
-            fetched = await readied(trigger, wake_word)
+            fetched = await readied(trigger, wake_word, triggers.word)
         except (aiohttp.ClientError, TimeoutError, OSError) as error:
             return {"error": f"{trigger} could not be readied: {error}", "trigger": triggers.in_use, "readback": f"The {trigger} could not be set up, so the trigger stays as it was."}
         was = triggers.choose(trigger)
         # [LAW:nothing-unseen] the trigger it replaced and the files fetched for it land on the call's event, so a switch,
         # a no-op, and a first switch that fetched read apart.
-        return {"trigger": trigger, "was": was, "fetched": list(fetched), "readback": f"{'Already on' if was == trigger else 'Okay'}. {described(trigger)}"}
+        return {"trigger": trigger, "was": was, "fetched": list(fetched), "readback": f"{'Already on' if was == trigger else 'Okay'}. {described(trigger, triggers.word)}"}
 
     return [tool(trigger_in_use), tool(set_trigger, completes=True)]
 

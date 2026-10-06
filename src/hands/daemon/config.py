@@ -11,6 +11,8 @@ run runs starts the run again, on the file as edited.
 
     [talk]
     personality = "Dry and wry, with a bit of wit."   # how hands comes across, in the user's words; hands' own by default
+    wake_word = "Hey Mycroft"     # what the wake word trigger listens for: Hey Jarvis (the default), Hey Mycroft, Hey Rhasspy, or Alexa
+    wake_word_model = "~/wake/hey_computer.onnx"      # or a model of your own, trained with openWakeWord on wake_word, said as written
 
 A file left out, or a key, is the default. Secrets are not settings: an API key comes from the environment or the
 keychain, and the brain's login from its own config directory. The voice is not either: the user chooses it by voice,
@@ -38,6 +40,7 @@ from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
+from hands.voice.wakeword import PRETRAINED, Pretrained, Trained, Word
 
 # How late an edit to the file is heard.
 EDIT_SECONDS = 1.0
@@ -82,11 +85,13 @@ type LLM = Anthropic | OpenAI | Claude
 @dataclass(frozen=True)
 class Config:
     """`collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
-    but the audit log. `personality` is how hands comes across, in the user's own words; None is hands' own."""
+    but the audit log. `personality` is how hands comes across, in the user's own words; None is hands' own. `wake` is
+    the wake word the wake word trigger listens for."""
 
     llm: LLM = Anthropic()
     collector: str | None = None
     personality: str | None = None
+    wake: Word = Pretrained()
 
 
 @dataclass(frozen=True)
@@ -260,8 +265,28 @@ def parse(text: str, model: str | None = None) -> Config:
     telemetry = _table(top, "telemetry")
     _known(telemetry, "[telemetry]", ("collector",))
     talk = _table(top, "talk")
-    _known(talk, "[talk]", ("personality",))
-    return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry), personality=_personality(talk))
+    _known(talk, "[talk]", ("personality", "wake_word", "wake_word_model"))
+    return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry), personality=_personality(talk), wake=_wake(talk))
+
+
+def _wake(table: Mapping[str, object]) -> Word:
+    """The wake word: one of openWakeWord's own, matched however it is capitalised, or, with a model, the user's own,
+    said as written. Whether the model is there is the switch to the wake word's to find (hands.voice.trigger.readied),
+    as it is for openWakeWord's own."""
+    if "wake_word_model" in table:
+        if "wake_word" not in table:
+            raise Rejected("[talk] wake_word_model needs wake_word, the phrase the model was trained on, which hands tells you to say")
+        model = Path(_text(table, "[talk]", "wake_word_model", "")).expanduser()
+        if not model.is_absolute() or model.suffix != ".onnx":
+            raise Rejected(f"[talk] wake_word_model {str(model)!r} is not a full path to an ONNX model, such as ~/wake/hey_computer.onnx")
+        return Trained(phrase=_text(table, "[talk]", "wake_word", ""), model=model)
+    if "wake_word" not in table:
+        return Pretrained()
+    said = " ".join(_text(table, "[talk]", "wake_word", "").split())
+    for phrase in PRETRAINED:
+        if said.casefold() == phrase.casefold():
+            return Pretrained(phrase)
+    raise Rejected(f"[talk] wake_word {said!r} is not one of openWakeWord's own: {', '.join(PRETRAINED)}; a wake word of your own takes wake_word_model too, the model you trained on it")
 
 
 def _personality(table: Mapping[str, object]) -> str | None:

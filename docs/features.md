@@ -291,9 +291,9 @@ Need 8. Where the microphone is.
   disengages; each is cued. Done when one press is followed by three turns with no
   key touched, a pause mid-sentence does not send half of it, and room talk after
   disengaging opens no turn.
-- **Wake word.** Saying "Hey Jarvis" opens a turn with no key at all, and
-  end-of-turn detection closes it as in an engaged conversation. openWakeWord's
-  pretrained model listens to the echo-cancelled desk microphone, and hears silence
+- **Wake word.** Saying "Hey Jarvis", or the wake word config.toml names, opens
+  a turn with no key at all, and end-of-turn detection closes it as in an engaged
+  conversation. openWakeWord's pretrained model, or one the user trained, listens to the echo-cancelled desk microphone, and hears silence
   while hands speaks. Done when, with speakers on, a turn completes with no key and
   none of hands' own words in its transcript, and room talk without the wake word
   opens no turn.

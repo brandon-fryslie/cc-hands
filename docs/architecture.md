@@ -1797,7 +1797,7 @@ turn's `UserAsked` says it:
 | `engaged conversation` | engaged by one hold of Right Shift; then Silero confirms speech on the desk microphone (`hands.voice.engaged`) | Smart Turn judges the speech complete, or the silence after it runs past its `stop_secs`; another hold disengages |
 | `button` | a HID button or headset button pressed | released |
 | `phone button` | the phone page's talk button pressed | released |
-| `wake word` | openWakeWord hears "Hey Jarvis" on the desk microphone (`hands.voice.wake`) | as `engaged conversation`'s, once what is asked has started after the wake word |
+| `wake word` | openWakeWord hears the wake word, "Hey Jarvis" unless config.toml names another, on the desk microphone (`hands.voice.wake`) | as `engaged conversation`'s, once what is asked has started after the wake word |
 
 The wake-word edge is the only one that opens the mic without a hand, and it is
 half-duplex: while hands speaks, the wake-word detector hears silence in place of the
@@ -2226,6 +2226,8 @@ variant with a real alternative or it does not exist. The fields:
 | `[llm] url` | another server that speaks the API, for `anthropic` and `openai` |
 | `[telemetry] collector` | the OpenTelemetry collector's OTLP/HTTP address each wide event is also sent to |
 | `[talk] personality` | how hands comes across, in the user's words: a section of the conversational model's instruction, last before its closing words, so it sets tone and never what hands does |
+| `[talk] wake_word` | what the `wake word` trigger listens for: one of openWakeWord's own (Hey Jarvis, the default, Hey Mycroft, Hey Rhasspy, Alexa), or with `wake_word_model` the phrase the user's model was trained on |
+| `[talk] wake_word_model` | the full path of an ONNX model the user trained with openWakeWord; checked as the trigger is switched to, as openWakeWord's own are fetched then |
 
 The voice is not a setting: the user chooses it by voice while hands runs, and it is
 kept in the home's `voice` file. The model is a setting the user may also choose by

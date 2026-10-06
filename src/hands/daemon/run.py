@@ -62,6 +62,7 @@ from hands.voice.hold import Move
 from hands.voice import wake
 from hands.voice.engaged import drive, drive_engaged, loaded, untapped
 from hands.voice.wake import WAKE
+from hands.voice.wakeword import Word
 from hands.voice.keys import drive_quit, drive_talk_key, tapped
 from hands.voice.phonepage import serve_phone
 from hands.voice.turnstop import Typed
@@ -238,6 +239,7 @@ async def run(
     environment: Mapping[str, str],
     run_start: Start,
     own: OwnModel,
+    wake_word: Word,
 ) -> Ended:
     voice: Voice | None = None
     # [LAW:single-enforcer] one owner lets go of all the run took, in reverse, whichever step of taking it raised: a run
@@ -286,7 +288,7 @@ async def run(
         key = PushToTalk(record)
         # [LAW:one-source-of-truth] one owner of which trigger opens the user's turns at the desk: set_trigger switches
         # it, and the desk is driven by its edge.
-        triggers = Triggers()
+        triggers = Triggers(wake_word)
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues()
@@ -322,12 +324,13 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[Conf
     # [LAW:nothing-unseen] which settings won is read from the start's event, not re-derived from a shell: the file they came
     # from (None where the home has none and every setting is its default), the collector they name, the
     # server and model the run reaches and the brain's account (None for a keyed variant), never its key, the voice it
-    # starts speaking in, the one the user kept or the default, and the personality it comes across in, None for hands' own.
+    # starts speaking in, the one the user kept or the default, the personality it comes across in, None for hands' own,
+    # and the wake word the wake word trigger listens for.
     read_from = read.settings.path(home)
     run_start.heard(
         settings=read_from, collector=read.settings.config.collector,
         backend=type(config.llm).__name__, base_url=backends.server(config.llm), model=config.llm.model, account=backends.account(config.llm), voice=config.voice,
-        personality=config.personality,
+        personality=config.personality, wake_word=read.settings.config.wake.phrase,
     )
     return config
 
@@ -443,7 +446,7 @@ async def converse(
                     await drive_engaged(tapped, voice.audio.input().overheard, ears, lambda move: at_desk(move, "engaged conversation"), record)
             case "wake word":
                 # As engaged conversation's, with the wake word's model beside them; the talk key is not read.
-                async with loaded(voice.audio.input().sample_rate, record) as ears, wake.loaded(voice.audio.input().sample_rate, home.wake_word, record) as word:
+                async with loaded(voice.audio.input().sample_rate, record) as ears, wake.loaded(voice.audio.input().sample_rate, home.wake_word, triggers.word, record) as word:
                     woken = wake.listening(word, lambda: voice.audio.output().hands_speaking, record)
                     await drive(WAKE, untapped, voice.audio.input().overheard, ears, woken, lambda move: at_desk(move, "wake word"), record)
 

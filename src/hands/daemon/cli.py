@@ -503,7 +503,7 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
                 reached = readiness.Missing(f"hands cannot start on its settings: {error}")
         survey(readiness.check(home, path, True, reached, running))
 
-    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, quit_event, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)))
+    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, quit_event, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)), settings.config.wake)
 
 
 def start_indicator(home: Home) -> int:

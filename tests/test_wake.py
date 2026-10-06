@@ -18,7 +18,8 @@ from hands.sessions.wide import WideEvent, unit
 from hands.voice.engaged import Act, Begun, Engagement, Event, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, Woken, drive, untapped
 from hands.voice.hold import Move, Pressed, Released, Ripe
 from hands.voice.engaged import loaded as ears_loaded
-from hands.voice.wake import EMBEDDING, MELSPECTROGRAM, SAMPLE_RATE, WAKE, WORD, WakeWord, fetched, listening, loaded, step
+from hands.voice.wake import EMBEDDING, MELSPECTROGRAM, SAMPLE_RATE, WAKE, WakeWord, fetched, listening, loaded, step
+from hands.voice.wakeword import PRETRAINED, Pretrained, Trained
 
 
 def acts(events: Sequence[Event]) -> list[Act]:
@@ -156,29 +157,51 @@ def said(text: str, at: Path) -> bytes:
 
 @pytest.fixture
 async def models(pytestconfig: pytest.Config) -> Path:
-    """The wake word's models, fetched from openWakeWord's release once and kept in pytest's cache."""
+    """The wake word's models, Hey Jarvis's and Hey Mycroft's, fetched from openWakeWord's release once and kept in
+    pytest's cache."""
     directory = pytestconfig.cache.mkdir("wake-word") if pytestconfig.cache else pytest.fail("the cache provider is off")
-    await fetched(directory)
+    for word in (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft")):
+        await fetched(directory, word)
     return directory
+
+
+def wakes(word: WakeWord, audio: bytes) -> bool:
+    """Whether `word` wakes on `audio`, heard as the desk's microphone hands it over, 20 ms at a time."""
+    word.reset()
+    return any(word.score(audio[start : start + 640]) >= 0.5 for start in range(0, len(audio), 640))
 
 
 async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(tmp_path: Path, models: Path) -> None:
     events: list[WideEvent] = []
-    async with loaded(SAMPLE_RATE, models, events.append) as word:
-        # The desk's microphone hands over 20 ms at a time.
-        def wakes(audio: bytes) -> bool:
-            word.reset()
-            return any(word.score(audio[start : start + 640]) >= 0.5 for start in range(0, len(audio), 640))
+    async with loaded(SAMPLE_RATE, models, Pretrained(), events.append) as word:
+        assert wakes(word, said("Hey Jarvis. What is the status of the build?", tmp_path / "wake.wav"))
+        assert not wakes(word, said("I was talking with Jarvis earlier about the build, and it was fine.", tmp_path / "passing.wav"))
+    assert [(event.event, event.outcome, event.facts["phrase"]) for event in events] == [("trigger.wake_word_loaded", "ok", "Hey Jarvis")]
 
-        assert wakes(said("Hey Jarvis. What is the status of the build?", tmp_path / "wake.wav"))
-        assert not wakes(said("I was talking with Jarvis earlier about the build, and it was fine.", tmp_path / "passing.wav"))
-    assert [(event.event, event.outcome) for event in events] == [("trigger.wake_word_loaded", "ok")]
+
+async def test_another_wake_word_wakes_on_itself_and_not_on_hey_jarvis(tmp_path: Path, models: Path) -> None:
+    events: list[WideEvent] = []
+    async with loaded(SAMPLE_RATE, models, Pretrained("Hey Mycroft"), events.append) as word:
+        assert wakes(word, said("Hey Mycroft. What is the status of the build?", tmp_path / "wake.wav"))
+        assert not wakes(word, said("Hey Jarvis. What is the status of the build?", tmp_path / "other.wav"))
+    assert [(event.facts["phrase"], event.facts["model"]) for event in events] == [("Hey Mycroft", str(models / PRETRAINED["Hey Mycroft"]))]
+
+
+async def test_a_wake_word_the_user_trained_is_heard_with_their_model_wherever_they_keep_it(tmp_path: Path, models: Path) -> None:
+    # openWakeWord's Hey Mycroft model stands in for one the user trained, under a name of their own.
+    trained = tmp_path / "mine" / "hey_computer.onnx"
+    trained.parent.mkdir()
+    trained.write_bytes((models / PRETRAINED["Hey Mycroft"]).read_bytes())
+    events: list[WideEvent] = []
+    async with loaded(SAMPLE_RATE, models, Trained("Hey Computer", trained), events.append) as word:
+        assert wakes(word, said("Hey Mycroft. What is the status of the build?", tmp_path / "wake.wav"))
+    assert [(event.facts["phrase"], event.facts["model"]) for event in events] == [("Hey Computer", str(trained))]
 
 
 async def test_a_microphone_at_another_rate_is_refused_out_loud() -> None:
     events: list[WideEvent] = []
     with pytest.raises(ValueError, match="16000 Hz"):
-        async with loaded(48_000, Path("unread"), events.append):
+        async with loaded(48_000, Path("unread"), Pretrained(), events.append):
             pass
     assert [(event.event, event.outcome) for event in events] == [("trigger.wake_word_loaded", "failed")]
 
@@ -211,7 +234,7 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
     async def on_move(move: Move) -> None:
         made.append(move)
 
-    async with ears_loaded(SAMPLE_RATE, events.append) as ears, loaded(SAMPLE_RATE, models, events.append) as word:
+    async with ears_loaded(SAMPLE_RATE, events.append) as ears, loaded(SAMPLE_RATE, models, Pretrained(), events.append) as word:
         driving = asyncio.create_task(drive(WAKE, untapped, overheard, ears, listening(word, lambda: False, events.append), on_move, events.append))
         async with asyncio.timeout(60.0):
             while "stop" not in made:
@@ -223,6 +246,9 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
     [awake] = [event for event in events if event.event == "trigger.awake"]
     assert dict(awake.counts)["ended_on_silence"] == 0
     assert [event.facts["complete"] for event in events if event.event == "trigger.judged"] == [True]
+
+
+JARVIS = PRETRAINED["Hey Jarvis"]
 
 
 async def test_the_models_are_fetched_whole_or_not_at_all_and_never_twice(tmp_path: Path) -> None:
@@ -253,14 +279,14 @@ async def test_the_models_are_fetched_whole_or_not_at_all_and_never_twice(tmp_pa
     port = runner.addresses[0][1]
     try:
         with pytest.raises(aiohttp.ClientResponseError):
-            await fetched(tmp_path, f"http://127.0.0.1:{port}")
+            await fetched(tmp_path, Pretrained(), f"http://127.0.0.1:{port}")
         assert sorted(path.name for path in tmp_path.iterdir()) == [MELSPECTROGRAM]
         (tmp_path / EMBEDDING).write_bytes(b"features")
         with pytest.raises(aiohttp.ClientPayloadError):
-            await fetched(tmp_path, f"http://127.0.0.1:{port}")
-        assert not (tmp_path / WORD).exists()
-        (tmp_path / WORD).write_bytes(b"word")
-        assert await fetched(tmp_path, f"http://127.0.0.1:{port}") == ()
-        assert served == [MELSPECTROGRAM, EMBEDDING, WORD]
+            await fetched(tmp_path, Pretrained(), f"http://127.0.0.1:{port}")
+        assert not (tmp_path / JARVIS).exists()
+        (tmp_path / JARVIS).write_bytes(b"word")
+        assert await fetched(tmp_path, Pretrained(), f"http://127.0.0.1:{port}") == ()
+        assert served == [MELSPECTROGRAM, EMBEDDING, JARVIS]
     finally:
         await runner.cleanup()
