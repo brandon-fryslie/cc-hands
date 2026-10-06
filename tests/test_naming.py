@@ -122,6 +122,15 @@ async def test_a_name_decided_and_not_yet_given_is_the_one_judged_and_kept(tmp_p
     assert names.due(SID) == Due("naming fix", "auth refactor")
 
 
+async def test_a_rename_since_a_decision_is_the_name_judged(tmp_path: Path) -> None:
+    names = Names()
+    await judged(transcript(tmp_path, "auth refactor"), "naming fix", names)
+    heard: list[str] = []
+    line = await judged(transcript(tmp_path, "auth refactor", "my own name"), "my own name", names, heard)
+    assert (line.facts["judged"], line.facts["before"], line.facts["pending"]) == (Judged.KEPT, "my own name", Due("naming fix", "auth refactor"))
+    assert "Its name now: my own name" in heard[0]
+
+
 async def test_a_name_longer_than_three_words_the_session_already_has_is_kept(tmp_path: Path) -> None:
     names = Names()
     line = await judged(transcript(tmp_path, "auth token refresh rework"), "auth token refresh rework", names)

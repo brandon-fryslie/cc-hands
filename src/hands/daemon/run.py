@@ -250,9 +250,9 @@ async def run(
         held.callback(logger.remove, failures)
         # What each turn changed in the repository it ran in, which no transcript record need name.
         deltas = Deltas(record, environment)
-        sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=record, changes=deltas)
         # Before the hooks are served: a turn that finishes while the models load is named once they have.
         names = Names()
+        sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=record, changes=deltas, names=names)
         hooks = await serve_hooks(home, sessions, names, record)
         held.push_async_callback(hooks.cleanup)
         run_start.heard(hooks=home.socket)

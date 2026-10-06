@@ -90,7 +90,8 @@ async def judge(turn: Finished, names: Names, live: Sequence[Membership], name: 
         # [LAW:one-source-of-truth] a name decided and not yet given is the session's name from its next prompt on, so
         # it is the one judged, and the one the others' are.
         before, *beside = [names.current(each.id, given) for each, given in zip((turn.membership, *others), held, strict=True)]
-        annotate(before=before)
+        # `pending` beside `before` says which won: a decision `before` is not the name of was overruled by a /rename.
+        annotate(before=before, pending=names.pending(session))
         try:
             reply = await name(asked(before, [each for each in beside if each is not None], turn.closing))
         except SUMMARY_FAILURES as error:
