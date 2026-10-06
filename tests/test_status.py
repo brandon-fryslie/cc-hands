@@ -346,6 +346,43 @@ def test_each_verdict_has_its_own_light_and_the_broken_ones_warn(tmp_path: Path)
     assert [seen.text for seen in shown] == [heartbeat.describe(verdict, NOW) for verdict in verdicts]
 
 
+def test_each_light_is_the_menu_bar_title_in_tmux_coloured_by_its_urgency(tmp_path: Path) -> None:
+    verdicts: dict[indicator.Light, heartbeat.Verdict] = {
+        "up": heartbeat.Up(beat()),
+        "not responding": heartbeat.Unresponsive(beat()),
+        "down": heartbeat.Down(beat()),
+        "refused": heartbeat.Refused(heartbeat.Refusal("OPENAI_API_KEY is not set"), beat().written_at),
+        "off": heartbeat.NeverRan(tmp_path),
+        "unreadable": heartbeat.Unreadable(tmp_path, "not JSON"),
+    }
+    assert {light: indicator.segment(verdict) for light, verdict in verdicts.items()} == {
+        "up": "#[fg=green]✋#[default]",
+        "not responding": "#[fg=yellow]⚠︎ hands stuck#[default]",
+        "down": "#[fg=red,bold]⚠︎ hands down#[default]",
+        "refused": "#[fg=red,bold]⚠︎ hands refused to start#[default]",
+        "off": "#[fg=colour244]✋ off#[default]",
+        # [LAW:no-silent-failure] nothing can say hands is up, so it is as loud as a dead daemon.
+        "unreadable": "#[fg=red,bold]⚠︎ hands unreadable#[default]",
+    }
+    assert indicator.segment(heartbeat.Stopped(beat(pipeline="stopped"))) == "#[fg=colour244]✋ off#[default]"
+
+
+def test_the_tmux_segment_shows_a_turn_and_a_degradation_as_the_menu_bar_does_and_a_hash_as_itself() -> None:
+    assert indicator.segment(heartbeat.Up(beat(listening=True))) == "#[fg=green]✋ 🎙#[default]"
+    assert indicator.segment(heartbeat.Up(beat(degraded=DEAF))) == "#[fg=yellow]⚠︎ hands can't hear#[default]"
+    hashed = heartbeat.Degradation("lost #[fg=green]", "lost a hash")
+    assert indicator.segment(heartbeat.Up(beat(degraded=(hashed,)))) == "#[fg=yellow]⚠︎ hands lost ##[fg=green]#[default]"
+
+
+def test_hands_tmux_status_prints_the_segment_and_exits_zero_whatever_the_verdict(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    home = Home(tmp_path)
+    assert main(["--home", str(tmp_path), "tmux-status"]) == 0
+    assert capsys.readouterr().out == "#[fg=colour244]✋ off#[default]\n"
+    home.status.write_text("{")
+    assert main(["--home", str(tmp_path), "tmux-status"]) == 0
+    assert capsys.readouterr().out == "#[fg=red,bold]⚠︎ hands unreadable#[default]\n"
+
+
 def test_an_open_turn_shows_in_the_menu_bar_and_is_never_a_notice() -> None:
     idle = indicator.show(None, heartbeat.Up(beat()), NOW)
     talking = indicator.show(idle, heartbeat.Up(beat(listening=True)), NOW)

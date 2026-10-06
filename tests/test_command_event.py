@@ -1,4 +1,4 @@
-"""Each `hands` command but `run` is one hands.command event: the command, its arguments as parsed, its exit code, and
+"""Each `hands` command but `run` and `tmux-status` is one hands.command event: the command, its arguments as parsed, its exit code, and
 how long it took, with the unit of work it ran in its trace."""
 
 import json
@@ -53,6 +53,14 @@ def test_a_status_of_a_daemon_that_is_up_carries_its_heartbeat(tmp_path: Path, c
     assert (verdict["type"], verdict["status"]["pid"], verdict["status"]["live_sessions"]) == ("Up", os.getpid(), 1)
     # A duration is written in milliseconds, as the event's own duration_ms is.
     assert verdict["status"]["heartbeat"] == heartbeat.HEARTBEAT.total_seconds() * 1000
+
+
+def test_a_tmux_status_line_refreshing_writes_nothing_to_the_audit_log(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    home = Home(tmp_path / "home")
+    for _ in range(3):
+        assert main(["--home", str(home.root), "tmux-status"]) == 0
+    capsys.readouterr()
+    assert not segment(home.audit, 0).exists()
 
 
 def test_arguments_are_on_the_event_as_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

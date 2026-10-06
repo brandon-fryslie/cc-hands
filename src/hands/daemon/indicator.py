@@ -67,6 +67,28 @@ def light(verdict: Verdict) -> Light:
             return "unreadable"
 
 
+def style(shown: Light, degraded: bool) -> str:
+    """The tmux style of a light: colour carries the urgency, and the title's ⚠︎ survives a monochrome line."""
+    match shown:
+        case "up" if not degraded:
+            return "fg=green"
+        # An up daemon that warns is up, but not well: as urgent as one that is stuck.
+        case "up" | "not responding":
+            return "fg=yellow"
+        case "down" | "refused" | "unreadable":
+            return "fg=red,bold"
+        case "off":
+            return "fg=colour244"
+
+
+def segment(verdict: Verdict) -> str:
+    """The menu bar's title as a tmux status-line segment, styled by its light."""
+    # [LAW:one-source-of-truth] one more rendering of the light and title the menu bar shows, so the two cannot disagree.
+    shown = light(verdict)
+    # tmux reads `#` in a segment as the start of a style or format; doubled, it is the character.
+    return f"#[{style(shown, bool(degradations(verdict)))}]{title(verdict, shown).replace('#', '##')}#[default]"
+
+
 @dataclass(frozen=True)
 class Shown:
     light: Light

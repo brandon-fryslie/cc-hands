@@ -402,6 +402,7 @@ uv run hands recall token helper        # what was said, sent to a session, and 
 uv run hands phone                      # the addresses a phone opens the talk page at, the first as a QR code; served while `hands run` is up
                                         # the same address with /conversation before the # is the conversation page: what was said and called, and a box to type to hands
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
+uv run hands tmux-status                # the menu bar's title for a tmux status line, coloured by the verdict
 make check                              # pytest, pyright, and fritter's Go tests; fails when any of them fails
 uv run python evals/intermediary.py    # conversations through the intermediary's prompt and tools; needs the model to be up
 ```
@@ -437,6 +438,17 @@ the daemon is up. It reads "hands stuck", "hands down", "hands refused to start"
 when something is wrong, and "✋ off" when the daemon was stopped or never ran. It posts a
 notification when the daemon stops being up, and once the daemon is gone it posts that
 and goes away too.
+
+Inside tmux, the same title shows in the status line: green while up, yellow when stuck
+or degraded, red when down, refused, or unreadable, and grey when off. Add these lines to
+`~/.tmux.conf`: tmux's own `status-right` with the segment first, since tmux cuts the end
+off at `status-right-length`, and a red warning in its place when tmux cannot run `hands`
+(not on the tmux server's PATH, say). tmux redraws it every `status-interval` (15 s unless set):
+
+```
+set -g status-right-length 80
+set -g status-right '#(hands tmux-status || echo "#[fg=red,bold]⚠︎ hands tmux-status failed#[default]") "#{=21:pane_title}" %H:%M %d-%b-%y'
+```
 
 Every heartbeat rewrites `~/.hands/status.json`, every effect and failure is a line
 in the segmented log `~/.hands/audit/` (two 32 MiB segments at most), and the daemon's output goes to its terminal. Each line's
