@@ -662,6 +662,9 @@ def _stated(state: SessionState) -> str:
     match state:
         case Unreported():
             return "not reported yet"
+        case Idle(status=Shell()):
+            # No turn runs: it does nothing until that task ends and its notification opens one.
+            return "idle, with a shell command it started in the background still running"
         case Idle():
             return "idle"
         case Running(status=going):
@@ -674,7 +677,7 @@ def _running(going: Going) -> str:
             return f"waiting at a dialog: {name}"
         case Waiting(reason=reason):
             return f"waiting at a dialog: {reason}"
-        case Busy() | Shell():
+        case Busy():
             return "working"
         case Unknown(name=name):
             return f"in a state hands does not know: {name}"

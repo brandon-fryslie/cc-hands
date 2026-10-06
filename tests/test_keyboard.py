@@ -25,6 +25,7 @@ from hands.core.session import (
     Unreported,
     Running,
 )
+from hands.core import status
 from hands.core.status import Busy, Going, Shell, Stamp, UnknownReason, Waiting
 
 SOCKET = Path("/tmp/fritter-1/session.sock")
@@ -39,7 +40,9 @@ def running(going: Going = Busy()) -> Running:
 AT_DIALOG = running(Waiting("permission prompt"))
 
 
-IDLE = Idle(Stamp(1), after=None)
+IDLE = Idle(status.Idle(), Stamp(1), after=None)
+# At its prompt with a background shell command still running.
+SHELLING = Idle(Shell(), Stamp(1), after=None)
 
 
 def registry(state: SessionState, member: Membership = ONE, turn: Turn = Told()) -> Registry:
@@ -50,7 +53,7 @@ def gone(member: Membership = ONE) -> Registry:
     return Registry(permission_deadline=60.0, sessions={ONE.id: Gone(member)}, drafts={})
 
 
-@pytest.mark.parametrize("state", [IDLE, running(), running(Shell()), Unreported()])
+@pytest.mark.parametrize("state", [IDLE, running(), SHELLING, Unreported()])
 def test_a_command_is_typed_as_itself_whatever_the_session_is_doing(state: SessionState) -> None:
     assert decide(registry(state), SendCommand(ONE.id, COMPACT)) == Type(ONE.id, SOCKET, 1, COMPACT)
 
@@ -65,10 +68,12 @@ def test_an_interrupt_presses_escape_even_at_a_dialog(state: SessionState) -> No
     assert decide(registry(state), Interrupt(ONE.id)) == Type(ONE.id, SOCKET, 1, Key("escape"))
 
 
+@pytest.mark.parametrize("state", [IDLE, SHELLING])
 @pytest.mark.parametrize("turn", [Told(), Opened(PromptId("p1"))])
-def test_a_session_at_its_prompt_has_nothing_to_interrupt_whatever_turn_was_heard(turn: Turn) -> None:
-    """Claude Code's status alone says whether anything runs: it is set busy before a prompt's hooks run."""
-    assert decide(registry(IDLE, turn=turn), Interrupt(ONE.id)) == NothingRunning(ONE.id)
+def test_a_session_at_its_prompt_has_nothing_to_interrupt_whatever_turn_was_heard(state: SessionState, turn: Turn) -> None:
+    """Claude Code's status alone says whether anything runs: it is set busy before a prompt's hooks run. A shell
+    command running in the background is no turn, and Escape at the prompt does not stop it."""
+    assert decide(registry(state, turn=turn), Interrupt(ONE.id)) == NothingRunning(ONE.id)
 
 
 @pytest.mark.parametrize("request_", [SendCommand(ONE.id, COMPACT), Interrupt(ONE.id)])

@@ -33,6 +33,7 @@ from hands.core.session import (
     Unreported,
     Running,
 )
+from hands.core import status
 from hands.core.status import Busy, Going, Shell, Stamp, UnknownReason, Waiting
 
 ONE = Membership(SessionId("s1"), pid=1, cwd=Path("/code/a"), transcript=Path("/t/s1.jsonl"))
@@ -51,7 +52,9 @@ def running(going: Going = Busy()) -> Running:
 AT_DIALOG = running(Waiting("permission prompt"))
 
 
-IDLE = Idle(Stamp(1), after=None)
+IDLE = Idle(status.Idle(), Stamp(1), after=None)
+# At its prompt with a background shell command still running.
+SHELLING = Idle(Shell(), Stamp(1), after=None)
 
 
 def registry(state: SessionState = IDLE, drafts: dict[SessionId, Staged] | None = None, member: Membership = ONE) -> Registry:
@@ -112,7 +115,7 @@ def wrapped(state: SessionState = IDLE, drafts: dict[SessionId, Staged] | None =
     return registry(state, drafts, member=WRAPPED)
 
 
-@pytest.mark.parametrize("state", [IDLE, running(), running(Shell()), Unreported()])
+@pytest.mark.parametrize("state", [IDLE, running(), SHELLING, Unreported()])
 def test_a_send_is_typed_into_the_fritter_that_wrapped_the_session_and_the_draft_is_gone_at_once(state: SessionState) -> None:
     typed = Type(ONE.id, Path("/tmp/fritter-1/session.sock"), pid=1, input=Text(FIX.text))
     assert decide(wrapped(state, {ONE.id: FIX}), SendDraft(ONE.id)) == (wrapped(state), typed)

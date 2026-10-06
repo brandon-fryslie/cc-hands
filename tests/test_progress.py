@@ -699,7 +699,7 @@ async def test_a_subagent_nothing_says_the_start_of_is_said_in_the_log_and_never
 
 def idle() -> Registry:
     # The parent's turn is over: a subagent run in the background works on after it.
-    session = Session(Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl")), Idle(Stamp(1000), TURN), mode=None, turn=Told(TURN))
+    session = Session(Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl")), Idle(status.Idle(), Stamp(1000), TURN), mode=None, turn=Told(TURN))
     return Registry(permission_deadline=60.0, sessions={SID: session}, drafts={})
 
 

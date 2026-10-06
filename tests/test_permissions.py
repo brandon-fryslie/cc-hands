@@ -7,6 +7,7 @@ import pytest
 from hands.core.effects import Allow, AllowWith, Answers, Approve, Decision, Deny, KeepPlanning, Reply
 from hands.core.permissions import Answer, Answered, NotWaiting, Unfit, answer, heard
 from hands.core.session import AskedQuestion, Blocker, Gone, Held, Idle, Membership, Option, Permission, Plan, Question, Registry, RequestId, Running, Session, SessionId
+from hands.core import status
 from hands.core.status import Busy, Going, Stamp, Waiting
 
 ONE = Membership(SessionId("s1"), pid=1, cwd=Path("/code/a"), transcript=Path("/t/s1.jsonl"))
@@ -36,7 +37,7 @@ def running(going: Going = Busy()) -> Running:
 AT_DIALOG = running(Waiting("permission prompt"))
 
 
-IDLE = Idle(Stamp(1), after=None)
+IDLE = Idle(status.Idle(), Stamp(1), after=None)
 
 
 def registry(*sessions: Session) -> Registry:
