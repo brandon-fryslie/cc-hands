@@ -135,7 +135,7 @@ async def test_a_transcript_whose_name_cannot_be_read_lists_the_session_by_its_p
 
 
 async def test_a_pane_read_that_breaks_leaves_each_session_listed_and_saying_why_its_pane_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def broken(_environment: object) -> NoReturn:
+    async def broken(_environment: object, _at: object) -> NoReturn:
         raise ValueError("not enough values to unpack")
 
     monkeypatch.setattr(tmux, "servers", broken)

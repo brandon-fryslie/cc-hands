@@ -108,13 +108,28 @@ def process_table() -> dict[int, Process]:
     return {process.pid: process for process in processes if process.pid != 0}
 
 
-def ancestor_terminals(pid: int, processes: Mapping[int, Process]) -> Iterator[int]:
-    """Every terminal on pid's line of ancestors in `processes`, its own first."""
+def ancestors(pid: int, processes: Mapping[int, Process]) -> Iterator[Process]:
+    """pid's line of ancestors in `processes`, pid itself first."""
     process = processes.get(pid)
     while process is not None:
-        if process.tty is not None:
-            yield process.tty
+        yield process
         process = processes.get(process.parent)
+
+
+def ancestor_terminals(pid: int, processes: Mapping[int, Process]) -> Iterator[int]:
+    """Every terminal on pid's line of ancestors in `processes`, its own first."""
+    return (process.tty for process in ancestors(pid, processes) if process.tty is not None)
+
+
+def environment_of(process: Process) -> Mapping[str, str] | Undescribed | None:
+    """The environment a process of this user's was started with; None if it has exited since it was listed, and the
+    refusal if the kernel would not say."""
+    try:
+        return _started_as(process.pid)[2]
+    except _Exited:
+        return None
+    except _Refused as refused:
+        return Undescribed(process.pid, process.parent, refused.call, refused.errno)
 
 
 def front_terminal(pid: int, processes: Mapping[int, Process]) -> Iterator[int]:
