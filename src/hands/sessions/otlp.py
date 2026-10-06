@@ -30,7 +30,7 @@ from typing import Literal, cast
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
+from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached, Written
 from hands.sessions.audit import Entry, Exported, Level, Record, Signal, jsonable, level
 from hands.sessions.heartbeat import Degradation
 from hands.sessions.wide import Fact, Outcome, WideEvent
@@ -165,7 +165,9 @@ def _reply_end(sent_at: float, reply: Reached | Unreached | Held | Uncopied) -> 
         case Held(answered_at=at):
             return at, None, {}
         case Reached(status=status, first_byte_at=first, last_byte_at=last, reply_bytes=size, body=body):
-            facts = {"status": status, "first_byte_ms": round((first - sent_at) * 1000, 3), "reply_bytes": size}
+            # A message says which way it came: streamed, or sent whole when Claude Code asked again without a stream.
+            written = {"streamed": body.streamed} if isinstance(body, Written) else {}
+            facts = {"status": status, "first_byte_ms": round((first - sent_at) * 1000, 3), "reply_bytes": size, **written}
             return last, body.reason if isinstance(body, Garbled) else f"the API answered {status}", facts
 
 

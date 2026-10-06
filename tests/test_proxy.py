@@ -218,6 +218,29 @@ async def test_a_message_sent_whole_is_heard_as_the_message_it_is(serve: Callabl
     assert reading is not None and (reading.in_context, reading.spent) == (100, Spent(97, 3, 1))
 
 
+async def test_a_message_sent_whole_is_heard_before_the_client_has_a_byte_of_it(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    # Claude Code runs a whole reply's tool call once it has parsed it, and hands' tools read what the wire heard.
+    answer = json.dumps({"type": "message", "id": "msg_3", "model": "m", "content": [{"type": "text", "text": "in two parts"}], "stop_reason": "end_turn"}).encode()
+
+    async def halves(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "application/json"})
+        await response.prepare(request)
+        await response.write(answer[:10])
+        # Long enough for a proxy that relays as it reads to pass the first half on before the second comes.
+        await asyncio.sleep(0.05)
+        await response.write(answer[10:])
+        await response.write_eof()
+        return response
+
+    _, wire = await serve(halves)
+    async with aiohttp.ClientSession() as client:
+        async with client.post(wire.proxy.url + "/v1/messages?beta=true", data=REQUEST, headers=HEADERS) as response:
+            first = await response.content.readany()
+            texts = [seen.event.text for seen in wire.seen if isinstance(seen, Heard) and isinstance(seen.event, TextDelta)]
+            assert texts == ["in two parts"]
+            assert first + await response.read() == answer
+
+
 async def test_a_compressed_answer_reaches_the_client_compressed_and_is_read_decompressed(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     packed = gzip.compress(b'{"input_tokens": 5583}')
 

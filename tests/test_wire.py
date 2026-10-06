@@ -381,6 +381,10 @@ def test_a_message_sent_whole_that_hands_cannot_read_garbles_the_reply_as_a_stre
     assert unstreamed(json.dumps({k: v for k, v in WHOLE.items() if k != "id"}).encode()) == Garbled(
         "a message sent whole lacks a field or has one of the wrong type: KeyError('id')"
     )
+    # Content that is not a list garbles the reply: it is no message that said nothing.
+    assert unstreamed(json.dumps({**WHOLE, "content": None}).encode()) == Garbled(
+        "a message sent whole lacks a field or has one of the wrong type: TypeError('expected an array, got NoneType')"
+    )
 
 
 def test_a_reply_that_is_not_a_stream_or_a_message_is_its_json_or_else_its_text() -> None:

@@ -410,8 +410,7 @@ def parse(frame: Frame) -> WireEvent:
 def _event(name: str, data: dict[str, object]) -> WireEvent | None:
     match name:
         case "message_start":
-            message = _object(data["message"])
-            return MessageStarted(id=_str(message["id"]), model=_str(message["model"]), usage=_object(message.get("usage", {})))
+            return _started(_object(data["message"]))
         case "content_block_start":
             return BlockStarted(index=_int(data["index"]), block=_object(data["content_block"]))
         case "content_block_delta":
@@ -443,6 +442,17 @@ def _delta(index: int, delta: Mapping[str, object]) -> WireEvent | None:
             return JsonDelta(index, _str(delta["partial_json"]))
         case _:
             return None
+
+
+def _started(message: Mapping[str, object]) -> MessageStarted:
+    """A message's head, as its stream's message_start carries it and as a message sent whole begins."""
+    return MessageStarted(id=_str(message["id"]), model=_str(message["model"]), usage=_object(message.get("usage", {})))
+
+
+def _array(value: object) -> list[object]:
+    if not isinstance(value, list):
+        raise TypeError(f"expected an array, got {type(value).__name__}")
+    return cast(list[object], value)
 
 
 def _object(value: object) -> Mapping[str, object]:
@@ -506,7 +516,7 @@ class Message:
 @dataclass(frozen=True)
 class Written:
     """A message the model wrote, every part of it read: streamed to message_stop, or sent whole when the request asked
-    for no stream, as Claude Code does after a stream fails."""
+    for no stream, as Claude Code asks again after a stream that fails before any block of it is finished (2.1.289)."""
 
     message: Message
     streamed: bool
@@ -551,7 +561,8 @@ class _Broken(Exception):
 
 
 def assemble(events: Sequence[WireEvent], streamed: bool) -> Written | Garbled:
-    """The reply a whole stream carried, folded from its events in order."""
+    """The message these events carry, folded in order: a stream's as its frames came, or the ones a message sent whole
+    stands for."""
     try:
         return Written(_fold(events), streamed)
     except _Broken as broken:
@@ -676,10 +687,10 @@ def unstreamed(data: bytes) -> tuple[WireEvent, ...] | Answered | Garbled:
 
 def _streamed(message: Mapping[str, object]) -> tuple[WireEvent, ...]:
     """The events a stream of this whole message would have carried, its usage given at its start, whole already."""
-    blocks = [_object(block) for block in _list(message["content"])]
+    blocks = [_object(block) for block in _array(message["content"])]
     stop = message.get("stop_reason")
     return (
-        MessageStarted(id=_str(message["id"]), model=_str(message["model"]), usage=_object(message.get("usage", {}))),
+        _started(message),
         *(event for index, block in enumerate(blocks) for event in (*_block_streamed(index, block), BlockStopped(index))),
         MessageDelta(stop_reason=None if stop is None else _str(stop), usage={}),
         MessageStopped(),

@@ -19,7 +19,7 @@ import pytest
 
 from hands.core.session import SessionId
 from hands.core.trace import Span
-from hands.core.wire import Answered, Exchanged, Garbled, Held, MainTurn, Reached, Unreached
+from hands.core.wire import Answered, Exchanged, Garbled, Held, MainTurn, Message, Reached, Unreached, Written
 from hands.daemon import indicator
 from hands.daemon.cli import main
 from hands.sessions import heartbeat, otlp
@@ -216,6 +216,11 @@ def test_a_request_the_api_refused_or_never_heard_is_a_failed_span_and_one_answe
     assert refused is not None and (refused.outcome, refused.error) == ("failed", "the API answered 529")
     assert unreached is not None and (unreached.outcome, unreached.error, unreached.duration_ms) == ("failed", "ClientConnectorError: no route", 250.0)
     assert answered is not None and (answered.outcome, answered.error) == ("ok", None)
+    # A message says which way it came; an answer that is not one says nothing of it.
+    message = Message("msg_1", "m", (), "end_turn", {})
+    streamed, whole = (traced(_exchanged(Reached(200, 1001.0, 1001.0, 10, Written(message, way)))) for way in (True, False))
+    assert streamed is not None and whole is not None and (streamed.facts["streamed"], whole.facts["streamed"]) == (True, False)
+    assert "streamed" not in answered.facts
     # One hands answered itself is answered whole, as the API never saw it.
     held = traced(_exchanged(Held("(stayed silent)", 1000.75)))
     assert held is not None and (held.outcome, held.error, held.duration_ms) == ("ok", None, 250.0)
