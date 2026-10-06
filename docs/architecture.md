@@ -1071,6 +1071,15 @@ still emits its event, cancelled, with what it had done.
 The event also says what was typed into the brain (`asked`), and, where the user barged in, the calls running then
 (`running`) and whether the brain was told to stop at once (`stopped`).
 
+A user's turn whose tool work is still running `ACKNOWLEDGE_SECONDS` (2 s) after its first call is acknowledged, however
+many calls the work takes, unless the user has already heard something of the turn: a word, a permission question, or
+their own barge-in. hands says a short line of its own ("One moment.", "On it.", ...), taken in turn from `ACKNOWLEDGEMENTS` so two turns in
+a row are not acknowledged alike. It goes out on the turn's speaker as a sentence of its own, the way a permission
+question does, and is kept out of the context, since the brain never said it. A call that comes straight back, a turn
+that says what it will do before it calls, and a turn hands narrates are never acknowledged. The turn's event says the
+line (`acknowledged`) and how long after the turn left its lane it was handed to the speaker (`acknowledged_ms`), as
+the turn's own words are told: a line the user spoke over before it came to be said is not told.
+
 The brain's own process is four kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
 up, on which account, model, and config directory, under which fritter (the one hands' package carries), or with what
 failed it: a hands built without its fritter is refused in the words `hands install-fritter` refuses it with. Its run
@@ -1189,9 +1198,8 @@ tried and reverted: Pipecat never tells a text filter that a reply ended, and a 
 a fence left every later utterance replaced by a block announcement.
 
 The filtered text is also what the intermediary remembers, because Pipecat builds the frame it appends
-to the assistant context out of what a filter returned. That is intended: of the five places a
-`TTSSpeakFrame` is built, the three that keep their text say in their own comments that the context is
-kept so the model can answer about what the user heard, and before this filter it held what was sent to
+to the assistant context out of what a filter returned. That is intended: the context is kept so
+the model can answer about what the user heard, and before this filter it held what was sent to
 the speaker, which was never the same string. The cost is that the model cannot read an exact path or
 sha back out of its own memory, and it has the session tools for facts. A draft readback crosses the
 same seam and does not want a summary's liberties — it is read out so the user can check what will be

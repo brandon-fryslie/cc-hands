@@ -16,6 +16,7 @@ import asyncio
 import json
 import time
 from functools import partial
+from itertools import cycle
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -111,6 +112,19 @@ Asker = UserAsked | HandsAsked
 SILENT = "(stayed silent)"
 INTERRUPTED = "(the user spoke over this reply, and nothing more of it was said)"
 
+# How long the tool work of the user's turn runs, from its first call, with nothing of the turn heard yet, before hands
+# acknowledges the turn: past a call that comes straight back with its answer said soon after, so only long work is.
+ACKNOWLEDGE_SECONDS = 2.0
+# What hands acknowledges with, one after another, so no two turns running acknowledge alike.
+ACKNOWLEDGEMENTS = ("One moment.", "On it.", "Okay, working on it.", "Give me a second.")
+
+
+@dataclass(frozen=True)
+class _Acknowledgement:
+    """Hands' own line, said ahead of a turn's words while its tools run: the user has heard the turn taken."""
+
+    line: str
+
 
 def wire_name(tool: Tool) -> str:
     """The name a hands tool has on the wire, where the brain calls it through hands' MCP server."""
@@ -141,12 +155,14 @@ class _Call:
 class _Turn:
     """One question to the brain, from its write to stdin to its result line."""
 
-    # Words heard on the wire, and permissions the turn asks the user for, not yet handed to the speaker; None once the
-    # brain has said the turn is over.
-    said: asyncio.Queue[str | Asked | None]
+    # Words heard on the wire, permissions the turn asks the user for, and hands' acknowledgement of it, not yet handed
+    # to the speaker; None once the brain has said the turn is over.
+    said: asyncio.Queue[str | Asked | _Acknowledgement | None]
     # Hands the words on to TTS until the turn is over or the user barges in.
     speaking: asyncio.Task[None] = field(init=False)
     spoken: list[str]
+    # Who asked the turn: only the user is waiting on it, so only their turn is acknowledged.
+    asker: Asker
     # What the turn says of the sessions, where hands asked it to tell them; none for the user's own turn.
     utterances: tuple[Utterance, ...]
     # The turn's span: each of its requests is a span inside it, which the proxy's record of that request carries.
@@ -185,10 +201,21 @@ class _Turn:
     stopped: bool = False
     # What the turn failed of, if it fails, as its latest request's answer told it: nothing named until that answer says.
     failure: ModelFact = _UNNAMED
+    # Waits out the turn's tool work to acknowledge it, which the turn's end cancels.
+    acknowledging: asyncio.Task[None] = field(init=False)
+    # Set at the turn's first call: its tool work has begun, and the wait to acknowledge it with it.
+    working: asyncio.Event = field(default_factory=asyncio.Event)
+    # What hands acknowledged the turn with, and when it was handed to the speaker, by the stage's clock, as the turn's own
+    # words are told: None while it has not been.
+    acknowledged: tuple[str, Seconds] | None = None
 
     def empty(self) -> bool:
         """The model answered the turn, the user did not speak over it, and nothing it answered said or did anything."""
         return bool(self.exchanges) and not (self.interrupted or self.replied)
+
+    def unheard(self) -> bool:
+        """The user asked the turn and has heard nothing of it: no word, no question, and they have not spoken over it."""
+        return isinstance(self.asker, UserAsked) and self.first_word is None and not self.asked and not self.interrupted
 
     def asking(self) -> Asked | None:
         """The permission the user's next words answer: the one they heard asked, while it is still open."""
@@ -213,6 +240,7 @@ class BrainStage(FrameProcessor):
         record: Record,
         spans: CallSpans,
         clock: Callable[[], Seconds] = time.monotonic,
+        pause: Callable[[Seconds], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._brain = brain
@@ -230,6 +258,9 @@ class BrainStage(FrameProcessor):
         # Each call's span, where hands' MCP server finds it as the call's run reaches it.
         self._spans = spans
         self._now = clock
+        # Waits out a call's time before the turn is acknowledged.
+        self._pause = pause
+        self._acknowledgements = cycle(ACKNOWLEDGEMENTS)
         self._tools = {wire_name(tool): tool for tool in tools}
         # How many of the context's messages the brain has been handed: the rest are new to it.
         self._told = 0
@@ -377,10 +408,11 @@ class BrainStage(FrameProcessor):
         text = "\n\n".join(part for part in (note, text) if part)
         # What is typed into the brain for the turn, as it is typed.
         annotate(asked=text)
-        said: asyncio.Queue[str | Asked | None] = asyncio.Queue()
+        said: asyncio.Queue[str | Asked | _Acknowledgement | None] = asyncio.Queue()
         spoken: list[str] = []
-        turn = self._turn = _Turn(said, spoken, utterances, here())
+        turn = self._turn = _Turn(said, spoken, asker, utterances, here())
         turn.speaking = asyncio.create_task(self._speak(turn), name="the brain's words")
+        turn.acknowledging = asyncio.create_task(self._acknowledge(turn), name="the turn's acknowledgement")
         # When the brain ended the turn, or it was stopped: set before anything reads it, however the turn ends.
         ended = taken
         try:
@@ -390,6 +422,8 @@ class BrainStage(FrameProcessor):
             finally:
                 self._turn = None
                 ended = self._now()
+                # [LAW:no-ambient-temporal-coupling] nothing acknowledges a turn once it is over.
+                turn.acknowledging.cancel()
                 said.put_nowait(None)
             await asyncio.wait({turn.speaking})
             for readback in turn.readbacks:
@@ -439,6 +473,9 @@ class BrainStage(FrameProcessor):
             # from the turn leaving its lane to its first word: what was left of reading the screen (the asker's read_ms
             # is the whole read, begun as the words arrived), then the model's and its tools', as its parts show.
             waited_ms=None if turn.first_word is None else _ms(turn.first_word - since),
+            # What hands acknowledged the turn with while its tools ran, and how long the user had waited for it.
+            acknowledged=None if turn.acknowledged is None else turn.acknowledged[0],
+            acknowledged_ms=None if turn.acknowledged is None else _ms(turn.acknowledged[1] - since),
             transcribed_ms=None if released is None else _ms(arrived - released),
             queued_ms=_ms(taken - arrived),
         )
@@ -482,10 +519,7 @@ class BrainStage(FrameProcessor):
                     turn.spoken.append(words)
                     await self.push_frame(LLMTextFrame(words))
                 case Asked(permission=permission) as asked if asked.open:
-                    # Said by hands, as its own sentence once the brain's words before it are: the response so far ends
-                    # first, so what TTS holds of it is said ahead of the question.
-                    await self._reply(turn, False)
-                    await self.push_frame(TTSSpeakFrame(brain_asks(permission)))
+                    await self._aside(turn, TTSSpeakFrame(brain_asks(permission)))
                     # [LAW:no-ambient-temporal-coupling] answerable once the speaker has played it to its end, which the
                     # mark is told of, and never if a barge-in cut it off.
                     await self.push_frame(Mark(partial(turn.hear, asked)))
@@ -495,8 +529,19 @@ class BrainStage(FrameProcessor):
                 case Asked():
                     # Settled before its turn came to be said, by the deadline, the turn's end, or an answer: nothing asks.
                     pass
+                case _Acknowledgement(line=line):
+                    turn.acknowledged = (line, self._now())
+                    # Kept out of the context: the brain never said it.
+                    await self._aside(turn, TTSSpeakFrame(line, append_to_context=False))
+                    await self._reply(turn, True)
         # Not on a barge-in, which cancels this: an end would have TTS say the sentence the user spoke over.
         await self._reply(turn, False)
+
+    async def _aside(self, turn: _Turn, line: TTSSpeakFrame) -> None:
+        """Says a line of hands' own in the turn, as a sentence of its own once the brain's words before it are: the response
+        so far ends first, so what TTS holds of it is said ahead of the line."""
+        await self._reply(turn, False)
+        await self.push_frame(line)
 
     def _news(self, context: LLMContext) -> str:
         """What the context gained since the brain last heard it, as one message: the user's words and hands' notes."""
@@ -562,6 +607,15 @@ class BrainStage(FrameProcessor):
         turn.readbacks.extend(said for tool, text, result in answers if tool is not None and tool.completes and (said := _owed(text, result)) is not None)
         return Hold(INTERRUPTED if turn.interrupted else SILENT, within(turn.span))
 
+    async def _acknowledge(self, turn: _Turn) -> None:
+        """Acknowledges the turn once its tool work has run its time, however many calls it took, if the user has heard
+        nothing of it: they hear it was taken, rather than silence until its answer."""
+        await turn.working.wait()
+        await self._pause(ACKNOWLEDGE_SECONDS)
+        if turn.unheard():
+            turn.said.put_nowait(_Acknowledgement(next(self._acknowledgements)))
+
+
     def _completes(self, name: str) -> bool:
         """Whether a barge-in lets the call finish, as hands' tools say: a call to a tool not hands' never does."""
         tool = self._tools.get(name)
@@ -593,6 +647,7 @@ class BrainStage(FrameProcessor):
                 turn.calls[call] = name
                 ran = turn.tools[call] = _Call(name, now, datetime.now(UTC), within(turn.span))
                 self._spans.opened(call, ran.span)
+                turn.working.set()
             # [LAW:one-source-of-truth] why a turn failed is the wire's, as the API variants read it off their own calls: the
             # head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
             # told before its 502. Its own requests are held final, so Claude Code asks once; a 401 it asks again after
