@@ -81,13 +81,13 @@ def test_a_model_named_by_hand_may_be_a_local_servers_path_with_a_space_in_it() 
     assert config.parse('[llm]\nbackend = "openai"\nmodel = "/models/ML Models/qwen3"\n').llm == OpenAI(model="/models/ML Models/qwen3")
 
 
-def test_a_model_the_file_names_but_the_run_is_not_on_is_refused_naming_the_restart_that_takes_it(tmp_path: Path) -> None:
+def test_a_model_the_file_names_but_the_run_is_not_on_is_refused_naming_both_ways_that_happens(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
     own = _own(home)
-    # Saved by hand while the run went on, as an edit `edited` refused leaves the file.
+    # Saved while the run went on: an edit `edited` has yet to take, or refused.
     home.config.write_text(SPOKEN_FILE.replace("claude-sonnet-5", "claude-opus-5-5"))
-    with pytest.raises(Rejected, match="names claude-opus-5-5 already, but hands was refused it.*hands restart"):
+    with pytest.raises(Rejected, match="names claude-opus-5-5 already and hands is not on it yet: an edit it is about to take, or one it refused.*hands restart"):
         own.weigh(" claude-opus-5-5 ")
 
 

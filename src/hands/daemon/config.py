@@ -165,9 +165,9 @@ class OwnModel:
         if chosen == self._running.config:
             raise Rejected(f"hands runs on {model} already")
         if chosen == _settings(self._home, held):
-            # The file names it, and the run is not on it: a save `edited` refused, which bytes written again would not
-            # take, since they are the bytes it refused.
-            raise Rejected(f"{self._home.config} names {model} already, but hands was refused it when it was saved; `hands restart` starts on it")
+            # The file names it, and the run is not on it: an edit `edited` has yet to take, or one it refused, which the
+            # same bytes written again would not change. Which of the two is not known here, so the reason names both.
+            raise Rejected(f"{self._home.config} names {model} already and hands is not on it yet: an edit it is about to take, or one it refused when saved, which `hands log` says and `hands restart` starts on")
         self._reachable(chosen)
         return partial(_keep, self._home, held, edited)
 
