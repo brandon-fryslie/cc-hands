@@ -387,6 +387,19 @@ def test_any_start_but_compaction_waits_for_its_status_to_be_read(before: Regist
     assert reduce(before, Joined(ONE, source))[0] == holding(Unreported())
 
 
+def test_a_fork_joins_as_a_new_session_beside_the_one_it_was_forked_from() -> None:
+    parent = Session(ONE, IDLE, mode=None)
+    assert reduce(registry(parent), Joined(TWO, "fork")) == (registry(parent, Session(TWO, Unreported(), mode=None)), [])
+
+
+def test_a_branch_ends_its_parent_quietly_and_joins_the_fork_in_the_same_process() -> None:
+    # /branch inside a running session: its end hook says `resume`, then the fork starts under a new id, same pid
+    fork = Membership(SessionId("s1-fork"), pid=ONE.pid, cwd=ONE.cwd, transcript=Path("/t/s1-fork.jsonl"))
+    ended, quiet = reduce(holding(IDLE), Ended(ONE.id, "resume"))
+    assert quiet == []
+    assert reduce(ended, Joined(fork, "fork")) == (registry(Gone(ONE), Session(fork, Unreported(), mode=None)), [])
+
+
 def test_an_ended_session_compacting_waits_for_its_status_to_be_read() -> None:
     assert reduce(GONE, Joined(ONE, "compact")) == (holding(Unreported()), [])
 

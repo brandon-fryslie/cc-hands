@@ -208,7 +208,7 @@ def _said_at_start(session: SessionId, source: StartSource) -> list[Effect]:
         case "clear":
             # The session the /clear started, in the process the cleared one ran in; the cleared one ended saying nothing.
             return [Tell(session, Cleared())]
-        case "startup" | "resume" | "compact":
+        case "startup" | "resume" | "compact" | "fork":
             return []
 
 
