@@ -13,7 +13,7 @@ from loguru import logger
 from hands.core.steps import Call, Result, recognise
 from hands.core.turn import Commanded, Interruption, Opening, Said, Step, printed, recorded
 from hands.sessions.payload import Payload
-from hands.sessions.transcript import Printed, Typed, blocks, edge_of, holds_a_tool, ref_of, reported_of, result_text, structured_result
+from hands.sessions.transcript import Ended, Printed, Typed,blocks, edge_of, holds_a_tool, ref_of, reported_of, result_text, structured_result
 
 
 @dataclass
@@ -31,6 +31,10 @@ class Turning:
     # How many steps from the start of the turn were let go of: told, and kept no longer. A slot's place counts from
     # there, so the steps held are always the turn's last ones.
     forgotten: int = 0
+    # Whether the last record read of the turn says it is over: Claude Code's record that it ended, or the user's
+    # interrupt. A record read after it, as when a Stop hook sends Claude on or an Escape flushes a queued message into
+    # the turn, says it is not.
+    ended: bool = False
 
     def consume(self, record: Payload) -> Opening | Printed | Interruption | None:
         """Read one record in, and say where it opened a turn or cut one off rather than continuing one.
@@ -39,6 +43,7 @@ class Turning:
         of the turn it was following at an opening and ends the session's turn at an interruption, and a backfill
         reading a whole morning keeps every one of them.
         """
+        self.ended = False
         reported = reported_of(record)
         if reported is not None:
             # A step of the turn it arrived in, written between that turn's records, and neither a call nor a result:
@@ -70,7 +75,12 @@ class Turning:
             case Interruption():
                 # The last step of the turn it cuts off, told in its place like any other.
                 self.slots.append(edge)
+                self.ended = True
                 return edge
+            case Ended():
+                # No step: what the turn did is told from its other records.
+                self.ended = True
+                return None
             case None:
                 pass
             case _:

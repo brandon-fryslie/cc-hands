@@ -378,22 +378,23 @@ class Tails:
             heard += [(following.reading.number, event) for event in (prompted, interrupted, *_backgrounded(session, record)) if event is not None]
         # [LAW:single-enforcer] the one place a record is decided to be history: of a file read from its start, only the
         # turn it ends in may still be running, which Claude Code's status says; every turn before it was over before
-        # hands followed the session, and says nothing to anyone.
+        # hands followed the session, and says nothing to anyone. So was that turn once its last record says it ended:
+        # Claude Code says busy while a subagent that turn started in the background works, with no turn running.
         # A turn's progress is heard while it runs, and a turn read from a file's start began before hands followed it:
         # its calls so far are history, as backfill reads them, and only the calls it makes from here on are heard.
         made = following.reading.made()
         if made and not history:
             heard.append((following.reading.number, Progressed(session, tuple(sorted(following.reading.ids)), tuple(made), self._known.now())))
         heard += [(following.reading.number, event) for event in self._delegated(session, following, history)]
-        current = following.current()
+        current, ended = following.current(), following.reading.turn.ended
         # A subagent started in the background in a turn before the one the file ends in may still be working, and only
         # its report says it is not: those are heard whatever turn they were read into, and the reducer drops a launch
         # from before Claude Code's last idle.
-        live = [event for number, event in heard if not history or number >= current or isinstance(event, Launched | ReportedBack)]
+        live = [event for number, event in heard if not history or (number >= current and not ended) or isinstance(event, Launched | ReportedBack)]
         if history and (heard or made):
             # [LAW:nothing-unseen] the decision explained: what was held back, and the turn the reading starts from.
             logger.info(
-                f"read the transcript of session {session} from its start: {len(heard) - len(live)} of {len(heard)} events are of turns before the one it is in, which goes by {sorted(following.reading.ids)}; calls that turn made before hands followed it, not heard as progress: {len(made)}"
+                f"read the transcript of session {session} from its start: {len(heard) - len(live)} of {len(heard)} events are of turns over before hands followed it; the last goes by {sorted(following.reading.ids)} and {'ended' if ended else 'may be running'}; calls that turn made before hands followed it, not heard as progress: {len(made)}"
             )
         self._transcribed += live
         # [LAW:no-ambient-temporal-coupling] after the records it covers, so a telling decided by how far the transcript
