@@ -37,7 +37,7 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 
 from hands.core.session import Membership, SessionId
-from hands.daemon.startsession import as_from_a_terminal, joined
+from hands.sessions.startsession import NotStarted, as_from_a_terminal, joined
 from hands.sessions import audit, heartbeat
 from hands.sessions.child import run
 from hands.sessions.home import Home
@@ -329,7 +329,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     folder.mkdir(parents=True)
     (folder / f"{smoked.word}.txt").write_text("")
     before = frozenset(path.stem for path in home.memberships.glob("*.json"))
-    session = await on_terminal([claude], folder, as_from_a_terminal(environment, home))
+    session = await on_terminal([claude], folder, {**as_from_a_terminal(environment), "HANDS_HOME": str(home.root)})
     try:
         member = await _joined(smoked, folder, before, claude, session)
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
@@ -353,7 +353,10 @@ async def _joined(smoked: Run, folder: Path, before: frozenset[str], claude: str
     home = smoked.home
 
     async def found() -> Membership | None:
-        return await joined(home, before, session.pid)
+        try:
+            return await joined(home, before, session.pid)
+        except NotStarted as why:
+            raise NotReached("joined", str(why)) from why
 
     member = await until(
         "joined", JOIN_SECONDS, found,

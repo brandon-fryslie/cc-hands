@@ -20,7 +20,7 @@ from hands.core.effects import Summarise, Text, Type
 from hands.core.session import PromptId, PromptText, SessionId
 from hands.core.trace import Span
 from hands.daemon.cli import main
-from hands.daemon.startsession import SESSION_GIVEN, as_from_a_terminal, joined
+from hands.sessions.startsession import joined
 from hands.daemon.smoke import FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
 from hands.sessions import heartbeat
 from hands.sessions.audit import HoldHeard, Levels, Typing, TypingFailed, Unsaid, encoded, segment
@@ -127,18 +127,6 @@ def test_only_the_smoke_session_counts_for_its_send_and_its_finish() -> None:
 
 def test_a_torn_line_is_no_evidence_and_breaks_none_of_the_rest() -> None:
     assert parsed(['{"type": "HoldHe', json.dumps({"type": "HoldHeard", "said": "hi"}), "[1]"]) == [{"type": "HoldHeard", "said": "hi"}]
-
-
-def test_the_session_is_started_as_from_a_terminal_outside_any_session(tmp_path: Path) -> None:
-    inside = {
-        **{name: "given" for name in SESSION_GIVEN},
-        # fritter's tap of the session the test was run in, and the proxy it replaced.
-        "FRITTER_TAP": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "FRITTER_OUTER_HTTPS_PROXY": "http://proxy.lan:3128",
-        # The user's own: kept.
-        "CLAUDE_CODE_USE_BEDROCK": "1", "PATH": "/Users/me/.hands/bin:/usr/bin", "HANDS_HOME": "/elsewhere",
-    }
-    started = as_from_a_terminal(inside, Home(tmp_path))
-    assert started == {"HTTPS_PROXY": "http://proxy.lan:3128", "CLAUDE_CODE_USE_BEDROCK": "1", "PATH": "/Users/me/.hands/bin:/usr/bin", "HANDS_HOME": str(tmp_path)}
 
 
 def frame(level: int) -> bytes:

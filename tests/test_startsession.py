@@ -1,4 +1,4 @@
-"""`hands start-session`: `claude` started in a tmux window of the tmux session named for its folder, as from a terminal
+"""The `start_session` tool: `claude` started in a tmux window of the tmux session named for its folder, as from a terminal
 outside any session, and the session that joined hands named. Driven through a tmux server of the test's own, with a
 `claude` that joins as the plugin's first hook does."""
 
@@ -15,12 +15,11 @@ from typing import Any
 
 import pytest
 
-from hands.brain.process import GIVEN, SETTINGS_ENV, SLIM, environment
-from hands.daemon import startsession
-from hands.daemon.cli import main
-from hands.daemon.startsession import SESSION_GIVEN, as_from_a_terminal, descends, tmux_name
+from hands.sessions import startsession
 from hands.sessions.audit import AuditLog, segment
 from hands.sessions.home import Home
+from hands.sessions.startsession import SESSION_GIVEN, as_from_a_terminal, descends, tmux_name
+from hands.voice.tools import start_session_tool
 
 TMUX = shutil.which("tmux")
 needs_tmux = pytest.mark.skipif(TMUX is None, reason="no tmux to start sessions in")
@@ -78,6 +77,12 @@ def home_in(tmp_path: Path) -> Home:
     return home
 
 
+def start(home: Home, folder: Path, model: str = "") -> dict[str, Any]:
+    """The tool called as the model calls it, in the environment hands was started in."""
+    start_session = start_session_tool(home, AuditLog(home.audit, clock=datetime.now).record, os.environ)
+    return dict(asyncio.run(start_session.body(folder=str(folder), model=model)))
+
+
 def started(home: Home) -> list[dict[str, Any]]:
     return [line for line in map(json.loads, segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "session.start"]
 
@@ -87,98 +92,83 @@ def tmux(*arguments: str) -> str:
     return subprocess.run([TMUX, *arguments], capture_output=True, text=True, check=True).stdout
 
 
-@needs_tmux
-def test_a_session_is_started_in_the_tmux_session_named_for_its_folder_and_named_once_it_joined(tmp_path: Path, terminal: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    home = home_in(tmp_path)
-    folder = tmp_path / "billing.api"
-    folder.mkdir()
-    assert main(["--home", str(home.root), "start-session", str(folder), "--model", "opus"]) == 0
-    assert main(["--home", str(home.root), "start-session", str(folder)]) == 0
-    first, second = started(home)
-    out = capsys.readouterr().out.splitlines()
-
-    # The first start made the tmux session, named as tmux spells the folder; the second opened a window beside it.
-    assert tmux_name(folder) == "billing_api"
-    assert tmux("list-windows", "-t", "=billing_api", "-F", "#{pane_current_path}").split() == [str(folder.resolve())] * 2
-    assert (first["outcome"], first["facts"]["made_tmux_session"], second["facts"]["made_tmux_session"]) == ("ok", True, False)
-    # [LAW:nothing-unseen] which session joined, where, and on what model, on the start's event and in what it printed.
-    for event, line in ((first, out[0]), (second, out[1])):
-        assert event["facts"]["session"].startswith("s") and event["facts"]["session"] != (second if event is first else first)["facts"]["session"]
-        assert line == f"Session {event['facts']['session']} joined hands, in tmux pane {event['facts']['pane']} of tmux session billing_api."
-        assert (event["facts"]["tmux_session"], event["facts"]["under_fritter"], event["facts"]["folder"]) == ("billing_api", True, str(folder))
-    assert (first["facts"]["model"], second["facts"]["model"]) == ("opus", None)
-    # Only the model it was asked for, as one argument.
-    assert (folder / "claude-args").read_text() == ""
-
-
-@needs_tmux
-def test_the_model_reaches_claude_as_one_argument(tmp_path: Path, terminal: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    home = home_in(tmp_path)
-    folder = tmp_path / "work"
-    folder.mkdir()
-    assert main(["--home", str(home.root), "start-session", str(folder), "--model", "claude-opus-5-5"]) == 0
-    capsys.readouterr()
-    assert (folder / "claude-args").read_text() == "--model=claude-opus-5-5\n"
-
-
-@needs_tmux
-def test_a_session_not_under_fritter_and_one_that_ended_are_said_and_exit_one(tmp_path: Path, terminal: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    home = home_in(tmp_path)
-    folder = tmp_path / "work"
-    folder.mkdir()
-    (folder / "unwrapped").touch()
-    assert main(["--home", str(home.root), "start-session", str(folder)]) == 1
-    assert "not under fritter, so hands cannot type into it" in capsys.readouterr().err
-    (folder / "never-joins").touch()
-    assert main(["--home", str(home.root), "start-session", str(folder)]) == 1
-    assert "ended before it joined hands" in capsys.readouterr().err
-    unfrittered, ended = started(home)
-    assert (unfrittered["outcome"], unfrittered["facts"]["under_fritter"]) == ("failed", False)
-    assert ended["outcome"] == "failed" and "session" not in ended["facts"] and ended["facts"]["made_tmux_session"] is False
-
-
-def test_a_folder_that_is_not_there_is_said(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    home = home_in(tmp_path)
-    assert main(["--home", str(home.root), "start-session", str(tmp_path / "nowhere")]) == 1
-    assert f"there is no folder {tmp_path / 'nowhere'}" in capsys.readouterr().err
-    assert started(home)[0]["outcome"] == "failed"
-
-
-def test_what_the_brain_gives_its_own_claude_codes_shell_is_exactly_what_it_adds_to_hands_environment(tmp_path: Path) -> None:
-    assert set(environment(tmp_path, "http://127.0.0.1:9", {"PATH": "/usr/bin"})) - {"PATH"} | set(SETTINGS_ENV) == set(GIVEN)
-
-
-def test_a_session_started_from_the_brains_shell_is_the_users_not_the_brains(tmp_path: Path) -> None:
-    home = Home(tmp_path)
-    users = {"PATH": "/Users/me/.hands/bin:/usr/bin", "CLAUDE_CODE_USE_BEDROCK": "1", "TMUX": "/tmp/tmux-501/default,1,0"}
-    # The brain's Bash: hands' environment, given what makes it the brain, inside a Claude Code under fritter.
-    inside_brain = {**environment(home.brain, "http://127.0.0.1:9", users), **SETTINGS_ENV, **{name: "given" for name in SESSION_GIVEN}}
-    assert as_from_a_terminal(inside_brain, home) == {**users, "HANDS_HOME": str(home.root)}
-    # A user's own setup keeps its CLAUDE_CONFIG_DIR, and a setting that shares a name with what the brain is given.
-    own = {**users, "CLAUDE_CONFIG_DIR": "/Users/me/.claude.work", **SLIM}
-    assert as_from_a_terminal(own, home) == {**own, "HANDS_HOME": str(home.root)}
-
-
 def environment_of(folder: Path) -> dict[str, str]:
     return dict(line.split("=", 1) for line in (folder / "claude-env").read_text().splitlines() if "=" in line)
 
 
 @needs_tmux
-def test_a_session_is_the_users_whatever_the_tmux_server_it_opens_in_was_started_inside(tmp_path: Path, terminal: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_a_session_is_started_in_the_tmux_session_named_for_its_folder_and_named_once_it_joined(tmp_path: Path, terminal: Path) -> None:
+    home = home_in(tmp_path)
+    folder = tmp_path / "billing.api"
+    folder.mkdir()
+    results = [start(home, folder, "opus"), start(home, folder)]
+    first, second = started(home)
+
+    # The first start made the tmux session, named as tmux spells the folder; the second opened a window beside it.
+    assert tmux_name(folder) == "billing_api"
+    assert tmux("list-windows", "-t", "=billing_api", "-F", "#{pane_current_path}").split() == [str(folder.resolve())] * 2
+    assert (first["outcome"], first["facts"]["made_tmux_session"], second["facts"]["made_tmux_session"]) == ("ok", True, False)
+    # [LAW:nothing-unseen] which session joined, where, and on what model, on the start's event and in what it returned.
+    assert results[0]["session"] != results[1]["session"]
+    for event, result in zip((first, second), results):
+        assert result == {"session": event["facts"]["session"], "tmux_session": "billing_api", "pane": event["facts"]["pane"]}
+        assert (event["facts"]["tmux_session"], event["facts"]["under_fritter"], event["facts"]["folder"]) == ("billing_api", True, str(folder))
+    assert (first["facts"]["model"], second["facts"]["model"]) == ("opus", None)
+    # Only the model it was asked for, as one argument; the window reports to this home, not the tmux server's.
+    assert (folder / "claude-args").read_text() == ""
+    assert environment_of(folder)["HANDS_HOME"] == str(home.root)
+
+
+@needs_tmux
+def test_the_model_reaches_claude_as_one_argument(tmp_path: Path, terminal: Path) -> None:
     home = home_in(tmp_path)
     folder = tmp_path / "work"
     folder.mkdir()
-    # The user's tmux server was started from the brain's shell, under fritter and tapped: each window would be given it.
+    assert "session" in start(home, folder, "claude-opus-5-5")
+    assert (folder / "claude-args").read_text() == "--model=claude-opus-5-5\n"
+
+
+@needs_tmux
+def test_a_session_not_under_fritter_and_one_that_ended_are_said(tmp_path: Path, terminal: Path) -> None:
+    home = home_in(tmp_path)
+    folder = tmp_path / "work"
+    folder.mkdir()
+    (folder / "unwrapped").touch()
+    assert "not under fritter, so hands cannot type into it" in start(home, folder)["error"]
+    (folder / "never-joins").touch()
+    assert "ended before it joined hands" in start(home, folder)["error"]
+    unfrittered, ended = started(home)
+    assert (unfrittered["outcome"], unfrittered["facts"]["under_fritter"]) == ("failed", False)
+    assert ended["outcome"] == "failed" and "session" not in ended["facts"] and ended["facts"]["made_tmux_session"] is False
+
+
+@needs_tmux
+def test_a_session_that_has_not_joined_in_time_is_said_with_what_its_pane_shows(tmp_path: Path, terminal: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(startsession, "JOIN_SECONDS", 1.0)
+    home = home_in(tmp_path)
+    folder = tmp_path / "work"
+    folder.mkdir()
+    (folder / "silent").touch()
+    error = start(home, folder)["error"]
+    assert "has not joined hands in 1 seconds, and is still running in tmux pane %" in error
+    assert "Do you trust the files in this folder?" in error
+    assert started(home)[0]["outcome"] == "failed"
+
+
+@needs_tmux
+def test_a_session_is_the_users_whatever_the_tmux_server_it_opens_in_was_started_inside(tmp_path: Path, terminal: Path) -> None:
+    home = home_in(tmp_path)
+    folder = tmp_path / "work"
+    folder.mkdir()
+    # The user's tmux server was started from a Claude Code session under fritter, tapped: each window would be given it.
     session = {name: "given" for name in SESSION_GIVEN}
-    brain = {"CLAUDE_CONFIG_DIR": str(home.brain), **SLIM, **SETTINGS_ENV, "ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}
     tap = {"FRITTER_TAP": "http://127.0.0.1:7", "HTTPS_PROXY": "http://127.0.0.1:7", "FRITTER_OUTER_HTTPS_PROXY": "http://proxy.corp:3128"}
-    for name, value in {**session, **brain, **tap}.items():
+    for name, value in {**session, **tap}.items():
         tmux("set-environment", "-g", name, value)
-    assert main(["--home", str(home.root), "start-session", str(folder)]) == 0
-    capsys.readouterr()
+    assert "session" in start(home, folder)
     given = environment_of(folder)
-    assert not set(given) & (set(session) | set(brain) | {"FRITTER_TAP", "FRITTER_OUTER_HTTPS_PROXY"})
-    assert (given["HTTPS_PROXY"], given["HANDS_HOME"]) == ("http://proxy.corp:3128", str(home.root))
+    assert not set(given) & {*session, "FRITTER_TAP", "FRITTER_OUTER_HTTPS_PROXY"}
+    assert given["HTTPS_PROXY"] == "http://proxy.corp:3128"
 
 
 @needs_tmux
@@ -202,23 +192,20 @@ def test_a_process_descends_from_itself_and_what_it_started_never_from_a_sibling
     assert [descends(pid, 10, parents) for pid in (10, 11, 12, 20, 1, 99)] == [True, True, True, False, False, False]
 
 
-@needs_tmux
-def test_a_session_that_has_not_joined_in_time_is_said_with_what_its_pane_shows(tmp_path: Path, terminal: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setattr(startsession, "JOIN_SECONDS", 1.0)
-    home = home_in(tmp_path)
-    folder = tmp_path / "work"
-    folder.mkdir()
-    (folder / "silent").touch()
-    assert main(["--home", str(home.root), "start-session", str(folder)]) == 1
-    err = capsys.readouterr().err
-    assert "has not joined hands in 1 seconds, and is still running in tmux pane %" in err
-    assert "Do you trust the files in this folder?" in err
-    assert started(home)[0]["outcome"] == "failed"
-
-
-def test_a_folder_that_is_a_symlink_loop_is_said(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_a_folder_that_is_not_there_or_is_a_symlink_loop_is_said(tmp_path: Path) -> None:
     home = home_in(tmp_path)
     loop = tmp_path / "loop"
     loop.symlink_to(loop)
-    assert main(["--home", str(home.root), "start-session", str(loop)]) == 1
-    assert f"there is no folder {loop}" in capsys.readouterr().err
+    for folder in (tmp_path / "nowhere", loop):
+        assert f"there is no folder {folder}" in start(home, folder)["error"]
+    assert [event["outcome"] for event in started(home)] == ["failed", "failed"]
+
+
+def test_a_terminal_outside_any_session_has_nothing_of_one_and_keeps_the_users_own_setup() -> None:
+    inside = {
+        **{name: "given" for name in SESSION_GIVEN},
+        # fritter's tap of the session hands was started in, and the proxy it replaced.
+        "FRITTER_TAP": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "FRITTER_OUTER_HTTPS_PROXY": "http://proxy.lan:3128",
+    }
+    users = {"PATH": "/Users/me/.hands/bin:/usr/bin", "CLAUDE_CONFIG_DIR": "/Users/me/.claude.work", "ANTHROPIC_API_KEY": "sk-mine", "HANDS_HOME": "/elsewhere"}
+    assert as_from_a_terminal({**inside, **users}) == {**users, "HTTPS_PROXY": "http://proxy.lan:3128"}

@@ -226,27 +226,26 @@ WRONG: the user asks whether a repository's tests pass, and you start by searchi
 RIGHT: you load hands:chat, then search for the repository."""
 
 
-def brain_instruction(log: Path, setup: Path, hands: str, personality: str | None) -> str:
-    """The brain's system prompt: the intermediary's, with how to read hands' log at `log`, how to recall from it and
-    start a session with `hands`, the shell command that runs hands, how to type into a session's terminal, how to work a
-    backlog, where its own setup is, and the skill it talks with, before the personality's section and its closing words."""
-    return "\n\n".join((_BODY, _reading(log), _recalling(hands), _starting(hands), _KEYS, _TRACKING, _own(setup), _TALKING, *_manner(personality), _ABOVE_ALL))
+def brain_instruction(log: Path, setup: Path, recall: str, personality: str | None) -> str:
+    """The brain's system prompt: the intermediary's, with how to read hands' log at `log`, how to recall from it with the
+    shell command `recall`, how to start a session, how to type into a session's terminal, how to work a backlog, where its own setup is, and the
+    skill it talks with, before the personality's section and its closing words."""
+    return "\n\n".join((_BODY, _reading(log), _recalling(recall), _STARTING, _KEYS, _TRACKING, _own(setup), _TALKING, *_manner(personality), _ABOVE_ALL))
 
 
-def _starting(hands: str) -> str:
-    return f"""\
+_STARTING = """\
 # Starting a session
 
 When the user asks you to start a new Claude Code session, in a project or on a model, load hands:start and start it \
-yourself. The start command is: {hands} start-session"""
+yourself."""
 
 
-def _recalling(hands: str) -> str:
+def _recalling(recall: str) -> str:
     return f"""\
 # What was said and sent earlier
 
 When the user asks about anything from earlier - what was decided, said, sent to a session, or allowed - load \
-hands:recall and search before you answer. The recall command is: {hands} recall
+hands:recall and search before you answer. The recall command is: {recall}
 
 What you remember of this conversation is only part of what was said, so "I don't remember" and an answer from memory \
 are the two replies to catch yourself reaching for: the moment itself is one quick search away."""

@@ -252,7 +252,7 @@ Its prompt names its setup's directory, so a skill you ask it by voice to instal
 Beside them, hands gives it skills of hands' own, shipped with the code they serve (`src/hands/brain/plugin`):
 `hands:prompt` is how it writes a draft for a session from what you said, a small cut of `laws:prompt` made for that one job.
 `hands:chat` is how it talks with you, a small cut of `laws:chat` made for replies you hear.
-`hands:start` is how it starts a new session when you ask for one, with `hands start-session`.
+`hands:start` is how it starts a new session when you ask for one, with hands' `start_session` tool.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
 and stops a turn with Escape, and types nothing else into it; its hooks say when a turn was taken and when it ended.
 What hands asks in the background, the Claude Code backend's summaries and the sentence an old tool result goes as,
@@ -397,7 +397,6 @@ uv run hands check                      # whether hands is set up to work here; 
 uv run hands restart                    # start the running hands again on what is on disk now, as /hands:restart does; exits 0 once it is back
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands recall token helper        # what was said, sent to a session, and answered there that holds every word; the brain recalls with it
-uv run hands start-session ~/code/app --model opus  # claude in a new window of the tmux session named for the folder; prints the session once it joined; the brain starts sessions with it
 uv run hands phone                      # the addresses a phone opens the talk page at, the first as a QR code; served while `hands run` is up
                                         # the same address with /conversation before the # is the conversation page: what was said and called, and a box to type to hands
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one

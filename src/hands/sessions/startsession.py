@@ -1,12 +1,10 @@
-"""Starting a Claude Code session for the user, as a person at a terminal starts one: `hands start-session`.
-
-    hands start-session ~/code/billing --model opus
+"""Starting a Claude Code session for the user, as a person at a terminal starts one: the `start_session` tool.
 
 The session runs `claude` in a tmux window of the tmux session named for its folder, made when there is none, so it has a
-terminal the user can attach to from any terminal app, and the brain can find and type into as it does any session's. It
-is started as from a terminal outside any session: whatever Claude Code, fritter, or hands' own Claude Code gave the
-shell that runs this is left out, so a session started from the brain's Bash is the user's, never the brain's. The
-command returns once the session joined hands, naming it, or says why it did not.
+terminal the user can attach to from any terminal app, and hands can find and type into as it does any session's. It is
+started by the daemon, in the environment hands was started in, which is the user's: never from the brain's shell, whose
+environment hands made the brain's and holds none of the user's credentials. What a session the daemon itself was started
+inside gave it is left out. The start returns once the session joined hands, naming it, or says why it did not.
 """
 
 import asyncio
@@ -17,7 +15,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from hands.brain.process import GIVEN
 from hands.core.session import Membership, SessionId
 from hands.sessions import audit, wide
 from hands.sessions.child import Ran, run
@@ -59,20 +56,14 @@ class Started:
     pane: str
 
 
-def as_from_a_terminal(environment: Mapping[str, str], home: Home) -> dict[str, str]:
-    """`environment` as a terminal outside any session has it, the home's sessions report to named: no tap, nothing else
-    of a session it may be inside, and, inside hands' own Claude Code, nothing that Claude Code was given as hands' own."""
-    # [LAW:one-source-of-truth] hands' own Claude Code is the one on the home's brain setup; a user's own
-    # CLAUDE_CONFIG_DIR, and every setting of theirs that shares a name with what the brain is given, is theirs and kept.
-    own = GIVEN if environment.get("CLAUDE_CONFIG_DIR") == str(home.brain) else ()
-    return {**{name: value for name, value in untapped(environment).items() if name not in SESSION_GIVEN and name not in own}, "HANDS_HOME": str(home.root)}
+def as_from_a_terminal(environment: Mapping[str, str]) -> dict[str, str]:
+    """`environment` as a terminal outside any session has it: no tap, and nothing else of a session it may be inside."""
+    return {name: value for name, value in untapped(environment).items() if name not in SESSION_GIVEN}
 
 
-def as_from_a_terminal_script(home: Home) -> str:
-    """as_from_a_terminal, as sh run in the environment to clean, ending by running `claude` with the script's arguments."""
-    # [LAW:one-source-of-truth] the same names, in the same order, as as_from_a_terminal; HANDS_HOME is given the window by tmux.
-    own = f'if [ "${{CLAUDE_CONFIG_DIR-}}" = {shlex.quote(str(home.brain))} ]; then unset {shlex.join(GIVEN)}; fi\n'
-    return f'{untap_script()}unset {shlex.join(SESSION_GIVEN)}\n{own}exec claude "$@"\n'
+# [LAW:one-source-of-truth] as_from_a_terminal, as sh run in the environment to clean, from the same names; it ends by
+# running `claude` with the script's arguments.
+AS_FROM_A_TERMINAL_SCRIPT = f'{untap_script()}unset {shlex.join(SESSION_GIVEN)}\nexec claude "$@"\n'
 
 
 async def joined(home: Home, before: frozenset[str], root: int) -> Membership | None:
@@ -114,7 +105,7 @@ async def start(home: Home, record: audit.Record, folder: Path, model: str | Non
     with wide.unit("session.start", record):
         wide.annotate(folder=folder, model=model)
         where = _folder(folder)
-        terminal = as_from_a_terminal(environment, home)
+        terminal = as_from_a_terminal(environment)
         tmux = shutil.which("tmux", path=terminal.get("PATH"))
         if tmux is None:
             raise NotStarted("there is no tmux on PATH, and hands starts a session in a tmux window")
@@ -123,7 +114,7 @@ async def start(home: Home, record: audit.Record, folder: Path, model: str | Non
         # it opens in holds: one already running gives a window its own environment, which a server started inside a
         # session holds that session's in. Through sh, never the user's shell, whose startup files would set a PATH of
         # their own: `claude` is the one on the window's PATH, with or without a model.
-        claude = ["/bin/sh", "-c", as_from_a_terminal_script(home), "claude", *(() if model is None else (f"--model={model}",))]
+        claude = ["/bin/sh", "-c", AS_FROM_A_TERMINAL_SCRIPT, "claude", *(() if model is None else (f"--model={model}",))]
         before = frozenset(path.stem for path in home.memberships.glob("*.json"))
         made, pane, pid = await _opened(tmux, terminal, name, where, ("-e", f"HANDS_HOME={home.root}", "--", *claude))
         wide.annotate(tmux_session=name, made_tmux_session=made, pane=pane)
@@ -198,8 +189,8 @@ def _said(ran: Ran) -> str:
 
 
 async def _tmux(tmux: str, terminal: Mapping[str, str], *arguments: str) -> Ran:
-    # The terminal's environment: a tmux server this starts takes it as every window's. A server already running gives a
-    # window its own instead, the user's, so the home the session reports to is given each window by name.
+    # The terminal's environment: a tmux server this starts takes it as every window's, so it holds nothing of hands'.
+    # The home the session reports to is given its window by name.
     return await _answered(tmux, *arguments, env=terminal)
 
 

@@ -39,7 +39,7 @@ from hands.core.sentences import Due, cut, turn_digest
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, Untracked, read_backlog
-from hands.sessions import catchup
+from hands.sessions import catchup, startsession
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, fail, unit
 from hands.sessions.focus import Unreadable, focused
@@ -1164,6 +1164,27 @@ async def _done(act: Awaitable[None], result: Result) -> Result:
 
 async def _searched(catalogue: spotify.Catalogue, query: str, kind: spotify.Kind) -> Result:
     return {"found": [spotify.said(found) for found in await catalogue.search(query, kind)]}
+
+
+def start_session_tool(home: Home, record: Record, environment: Mapping[str, str]) -> Tool:
+    """[LAW:nothing-unseen] each start is its own session.start event, inside the call's."""
+
+    async def start_session(folder: str, model: str = "") -> Result:
+        """Start a new Claude Code session for the user: `claude` in the folder, in a new window of the tmux session named
+        for the folder, as the user would start it at a terminal. Returns once the session has joined hands, with its id
+        and the tmux pane it runs in, or says why it did not. A session started has been told nothing.
+
+        Args:
+            folder: The folder the session works in, absolute or from ~.
+            model: The model it starts on, as the user named it (opus, sonnet, haiku, or a model id). Empty for Claude Code's own default.
+        """
+        try:
+            started = await startsession.start(home, record, Path(folder), model or None, environment)
+        except startsession.NotStarted as why:
+            return {"error": str(why)}
+        return {"session": started.session, "tmux_session": started.tmux_session, "pane": started.pane}
+
+    return tool(start_session)
 
 
 def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
