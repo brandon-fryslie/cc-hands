@@ -353,7 +353,7 @@ async def _joined(smoked: Run, folder: Path, before: frozenset[str], claude: str
     home = smoked.home
 
     async def found() -> Membership | None:
-        return joined(home, folder, before)
+        return await joined(home, before, session.pid)
 
     member = await until(
         "joined", JOIN_SECONDS, found,

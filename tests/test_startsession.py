@@ -2,32 +2,38 @@
 outside any session, and the session that joined hands named. Driven through a tmux server of the test's own, with a
 `claude` that joins as the plugin's first hook does."""
 
+import asyncio
 import json
+import os
 import shutil
 import subprocess
 import tempfile
 from collections.abc import Generator
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from hands.brain.process import GIVEN, SLIM, environment
+from hands.brain.process import GIVEN, SETTINGS_ENV, SLIM, environment
+from hands.daemon import startsession
 from hands.daemon.cli import main
-from hands.daemon.startsession import SESSION_GIVEN, as_from_a_terminal, tmux_name
-from hands.sessions.audit import segment
+from hands.daemon.startsession import SESSION_GIVEN, as_from_a_terminal, descends, tmux_name
+from hands.sessions.audit import AuditLog, segment
 from hands.sessions.home import Home
 
 TMUX = shutil.which("tmux")
 needs_tmux = pytest.mark.skipif(TMUX is None, reason="no tmux to start sessions in")
 
 # A `claude` that joins hands as the plugin's first hook does, writing its membership where HANDS_HOME's are kept, under
-# fritter but in a folder holding `unwrapped`; it notes its arguments beside it, and stays running. In a folder holding
-# `never-joins`, it ends before it joins. A window takes the environment of the tmux server it opens in, so what varies
-# a start is its folder, never a variable.
+# fritter but in a folder holding `unwrapped`; it notes its arguments and environment beside it, and stays running. In a
+# folder holding `never-joins`, it ends before it joins; in one holding `silent`, it asks a question and never joins. A
+# window takes the environment of the tmux server it opens in, so what varies a start is its folder, never a variable.
 CLAUDE = """#!/bin/sh
 for argument; do echo "$argument"; done > "$PWD/claude-args"
+env > "$PWD/claude-env"
 [ -e "$PWD/never-joins" ] && exit 3
+[ -e "$PWD/silent" ] && { echo "Do you trust the files in this folder?"; exec sleep 120; }
 socket=/tmp/fritter.sock
 [ -e "$PWD/unwrapped" ] && socket=
 printf '{"pid": %d, "cwd": "%s", "transcript_path": "%s/t.jsonl", "fritter_socket": "%s"}' $$ "$PWD" "$PWD" "$socket" > "$HANDS_HOME/sessions/s$$.writing"
@@ -138,16 +144,81 @@ def test_a_folder_that_is_not_there_is_said(tmp_path: Path, capsys: pytest.Captu
     assert started(home)[0]["outcome"] == "failed"
 
 
-def test_what_the_brain_gives_its_own_claude_code_is_exactly_what_it_adds_to_hands_environment(tmp_path: Path) -> None:
-    assert set(environment(tmp_path, "http://127.0.0.1:9", {"PATH": "/usr/bin"})) - {"PATH"} == set(GIVEN)
+def test_what_the_brain_gives_its_own_claude_codes_shell_is_exactly_what_it_adds_to_hands_environment(tmp_path: Path) -> None:
+    assert set(environment(tmp_path, "http://127.0.0.1:9", {"PATH": "/usr/bin"})) - {"PATH"} | set(SETTINGS_ENV) == set(GIVEN)
 
 
 def test_a_session_started_from_the_brains_shell_is_the_users_not_the_brains(tmp_path: Path) -> None:
     home = Home(tmp_path)
     users = {"PATH": "/Users/me/.hands/bin:/usr/bin", "CLAUDE_CODE_USE_BEDROCK": "1", "TMUX": "/tmp/tmux-501/default,1,0"}
     # The brain's Bash: hands' environment, given what makes it the brain, inside a Claude Code under fritter.
-    inside_brain = {**environment(home.brain, "http://127.0.0.1:9", users), **{name: "given" for name in SESSION_GIVEN}}
+    inside_brain = {**environment(home.brain, "http://127.0.0.1:9", users), **SETTINGS_ENV, **{name: "given" for name in SESSION_GIVEN}}
     assert as_from_a_terminal(inside_brain, home) == {**users, "HANDS_HOME": str(home.root)}
     # A user's own setup keeps its CLAUDE_CONFIG_DIR, and a setting that shares a name with what the brain is given.
     own = {**users, "CLAUDE_CONFIG_DIR": "/Users/me/.claude.work", **SLIM}
     assert as_from_a_terminal(own, home) == {**own, "HANDS_HOME": str(home.root)}
+
+
+def environment_of(folder: Path) -> dict[str, str]:
+    return dict(line.split("=", 1) for line in (folder / "claude-env").read_text().splitlines() if "=" in line)
+
+
+@needs_tmux
+def test_a_session_is_the_users_whatever_the_tmux_server_it_opens_in_was_started_inside(tmp_path: Path, terminal: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    home = home_in(tmp_path)
+    folder = tmp_path / "work"
+    folder.mkdir()
+    # The user's tmux server was started from the brain's shell, under fritter and tapped: each window would be given it.
+    session = {name: "given" for name in SESSION_GIVEN}
+    brain = {"CLAUDE_CONFIG_DIR": str(home.brain), **SLIM, **SETTINGS_ENV, "ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}
+    tap = {"FRITTER_TAP": "http://127.0.0.1:7", "HTTPS_PROXY": "http://127.0.0.1:7", "FRITTER_OUTER_HTTPS_PROXY": "http://proxy.corp:3128"}
+    for name, value in {**session, **brain, **tap}.items():
+        tmux("set-environment", "-g", name, value)
+    assert main(["--home", str(home.root), "start-session", str(folder)]) == 0
+    capsys.readouterr()
+    given = environment_of(folder)
+    assert not set(given) & (set(session) | set(brain) | {"FRITTER_TAP", "FRITTER_OUTER_HTTPS_PROXY"})
+    assert (given["HTTPS_PROXY"], given["HANDS_HOME"]) == ("http://proxy.corp:3128", str(home.root))
+
+
+@needs_tmux
+def test_two_sessions_started_in_one_folder_at_once_are_each_named_by_its_own_start(tmp_path: Path, terminal: Path) -> None:
+    home = home_in(tmp_path)
+    folder = tmp_path / "work"
+    folder.mkdir()
+
+    async def both() -> list[startsession.Started]:
+        record = AuditLog(home.audit, clock=datetime.now).record
+        return list(await asyncio.gather(*(startsession.start(home, record, folder, None, os.environ) for _ in range(2))))
+
+    first, second = asyncio.run(both())
+    assert first.session != second.session
+    for one in (first, second):
+        assert tmux("display-message", "-p", "-t", one.pane, "#{pane_pid}").strip() == one.session.removeprefix("s")
+
+
+def test_a_process_descends_from_itself_and_what_it_started_never_from_a_sibling() -> None:
+    parents = {10: 1, 11: 10, 12: 11, 20: 1, 1: 0}
+    assert [descends(pid, 10, parents) for pid in (10, 11, 12, 20, 1, 99)] == [True, True, True, False, False, False]
+
+
+@needs_tmux
+def test_a_session_that_has_not_joined_in_time_is_said_with_what_its_pane_shows(tmp_path: Path, terminal: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(startsession, "JOIN_SECONDS", 1.0)
+    home = home_in(tmp_path)
+    folder = tmp_path / "work"
+    folder.mkdir()
+    (folder / "silent").touch()
+    assert main(["--home", str(home.root), "start-session", str(folder)]) == 1
+    err = capsys.readouterr().err
+    assert "has not joined hands in 1 seconds, and is still running in tmux pane %" in err
+    assert "Do you trust the files in this folder?" in err
+    assert started(home)[0]["outcome"] == "failed"
+
+
+def test_a_folder_that_is_a_symlink_loop_is_said(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    home = home_in(tmp_path)
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    assert main(["--home", str(home.root), "start-session", str(loop)]) == 1
+    assert f"there is no folder {loop}" in capsys.readouterr().err

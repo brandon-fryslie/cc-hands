@@ -176,23 +176,25 @@ async def test_a_call_that_drops_stops_the_stage_being_said_and_says_why() -> No
         await peer.close()
 
 
-def test_the_smoke_session_is_the_one_that_joined_from_its_folder_since_the_test_began(tmp_path: Path) -> None:
+def test_the_smoke_session_is_the_one_that_joined_under_its_process_since_the_test_began(tmp_path: Path) -> None:
     home = Home(tmp_path / "home")
-    folder = tmp_path / "smoke"
     home.memberships.mkdir(parents=True)
+    # The test's own process stands for the `claude` the smoke run started.
+    started = os.getpid()
 
-    def member(session: SessionId, cwd: Path) -> None:
-        record = {"pid": 7, "cwd": str(cwd), "transcript_path": f"/t/{session}.jsonl", "fritter_socket": "/tmp/f/session.sock"}
+    def member(session: SessionId, pid: int) -> None:
+        record = {"pid": pid, "cwd": str(tmp_path), "transcript_path": f"/t/{session}.jsonl", "fritter_socket": "/tmp/f/session.sock"}
         home.membership(session).write_text(json.dumps(record))
 
-    member(OTHER, folder)
+    member(OTHER, started)
     before = frozenset({OTHER})
-    assert joined(home, folder, before) is None
-    member(SessionId("0844f3f7-d8fe-5134-a45d-fa50e00dc5ec"), tmp_path / "elsewhere")
+    assert asyncio.run(joined(home, before, started)) is None
+    # A session of another process's in the same folder, and one being written.
+    member(SessionId("0844f3f7-d8fe-5134-a45d-fa50e00dc5ec"), 1)
     home.membership(SessionId("0998fa11-3723-4c9a-bb7a-b454ae05dfca")).write_text('{"pid": ')
-    assert joined(home, folder, before) is None
-    member(SESSION, folder)
-    found = joined(home, folder, before)
+    assert asyncio.run(joined(home, before, started)) is None
+    member(SESSION, started)
+    found = asyncio.run(joined(home, before, started))
     assert found is not None and (found.id, found.fritter) == (SESSION, Path("/tmp/f/session.sock"))
 
 

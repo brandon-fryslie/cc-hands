@@ -753,7 +753,7 @@ def recall_moments(home: Home, record: audit.Record, words: Sequence[str], most:
 def start_session(home: Home, record: audit.Record, folder: Path, model: str | None) -> int:
     """Start a session for the user and say which joined, or why none did."""
     try:
-        started = startsession.start(home, record, folder, model, os.environ)
+        started = asyncio.run(startsession.start(home, record, folder, model, os.environ))
     except startsession.NotStarted as why:
         print(f"hands start-session: {why}", file=sys.stderr)
         return 1

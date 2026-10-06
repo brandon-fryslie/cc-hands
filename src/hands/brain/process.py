@@ -231,6 +231,13 @@ def _conversing(conversation: Conversation) -> tuple[str, str]:
             return ("--resume", session)
 
 
+# Tool search defers MCP tools behind ToolSearch, so hands' tools would reach the model only after a round trip of their
+# own on a spoken turn. Set in --settings, it outranks the brain's settings.json env and hands' environment, which a
+# process environment does not (2.1.288, measured behind a localhost base URL, hands-brain-8gb). Claude Code sets it in
+# its own environment too, so its shell commands are given it.
+SETTINGS_ENV = {"ENABLE_TOOL_SEARCH": "false"}
+
+
 def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
     """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, skills, and hooks posted to the listener at `hooks`."""
     return [
@@ -251,17 +258,14 @@ def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
             # [LAW:single-enforcer] each hook declared as the plugin declares it: a held permission's lives as long as a
             # working session's, and is denied by the same deadline.
             "hooks": {event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}", **declared(event)}]}] for event in HOOKS},
-            # Tool search defers MCP tools behind ToolSearch, so hands' tools would reach the model only after a round trip
-            # of their own on a spoken turn. Set here, it outranks the brain's settings.json env and hands' environment,
-            # which a process environment does not (2.1.288, measured behind a localhost base URL, hands-brain-8gb).
-            "env": {"ENABLE_TOOL_SEARCH": "false"},
+            "env": SETTINGS_ENV,
         }),
     ]
 
 
-# [LAW:one-source-of-truth] what environment() gives a slim Claude Code beyond hands' own environment, by name: what a
-# session started from its shell is started without (`hands.daemon.startsession`).
-GIVEN = (*SLIM, "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL")
+# [LAW:one-source-of-truth] what environment() and SETTINGS_ENV give a slim Claude Code's shell beyond hands' own
+# environment, by name: what a session started from that shell is started without (`hands.daemon.startsession`).
+GIVEN = (*SLIM, *SETTINGS_ENV, "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL")
 
 
 def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> dict[str, str]:
