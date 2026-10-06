@@ -11,19 +11,23 @@ import tempfile
 from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from hands.core.events import Joined
 from hands.core.session import Membership, SessionId
 from hands.sessions import startsession
-from hands.sessions.audit import AuditLog, segment
+from hands.sessions.audit import AuditLog, Entry, segment
 from hands.sessions.home import Home
 from hands.sessions.membership import parse_membership
+from hands.sessions.overlays import Overlays
+from hands.sessions.registry import Sessions
+from hands.sessions.wide import WideEvent
 from hands.sessions.startsession import SESSION_GIVEN, as_from_a_terminal, descends, tmux_name
 from hands.sessions.terminals import Process
 from hands.voice.tool import Result
-from hands.voice.tools import start_session_tool
+from hands.voice.tools import Called, audited, list_sessions_tool, start_session_tool
 
 TMUX = shutil.which("tmux")
 needs_tmux = pytest.mark.skipif(TMUX is None, reason="no tmux to start sessions in")
@@ -131,6 +135,36 @@ def test_a_session_is_started_in_the_tmux_session_named_for_its_folder_and_named
     # Only the model it was asked for, as one argument; the window reports to this home, not the tmux server's.
     assert (folder / "claude-args").read_text() == ""
     assert environment_of(folder)["HANDS_HOME"] == str(home.root)
+
+
+@needs_tmux
+def test_a_started_session_lists_with_the_pane_it_was_started_in_and_follows_it_to_a_new_window(tmp_path: Path, terminal: Path) -> None:
+    home = home_in(tmp_path)
+    folder = tmp_path / "work"
+    folder.mkdir()
+    result = start(home, folder)
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    for member in members(home):
+        asyncio.run(sessions.apply(Joined(member, "startup")))
+    recorded: list[Entry] = []
+    list_sessions = audited(list_sessions_tool(sessions, Overlays(home), home, os.environ), recorded.append)
+
+    async def called() -> Result:
+        return await list_sessions.body()
+
+    def listed() -> object:
+        """The session's pane, [LAW:nothing-unseen] as the call's event holds it."""
+        asyncio.run(called())
+        (event,) = [entry for entry in recorded[-1:] if isinstance(entry, WideEvent)]
+        (entry,) = cast(dict[str, Any], cast(Called, event.facts["called"]).result)["sessions"]
+        return entry["tmux"]
+
+    socket = str(Path(os.environ["TMUX_TMPDIR"]) / f"tmux-{os.getuid()}" / "default")
+    assert listed() == {"socket": socket, "pane": result["pane"], "session": "work", "window": 0}
+    # Split beside a second pane, then broken out into a window of its own: the same pane, in its new window.
+    tmux("split-window", "-d", "-t", result["pane"], "sleep", "120")
+    tmux("break-pane", "-d", "-s", result["pane"])
+    assert listed() == {"socket": socket, "pane": result["pane"], "session": "work", "window": 1}
 
 
 @needs_tmux

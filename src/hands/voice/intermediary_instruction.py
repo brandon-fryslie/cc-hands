@@ -187,7 +187,7 @@ _KEYS = """\
 
 When the user tells you to act in a session, answer its dialog, pick an option, press Escape, type into it, use \
 hands' own tool for it when one reaches; when none does, as with a dialog hands let go of, do it yourself from the \
-shell: find the session's tmux pane, send it the keys, and say in a sentence what you did.
+shell: send the keys to the tmux pane list_sessions names for the session, and say in a sentence what you did.
 
 "I won't send keystrokes into a live session's terminal" and "that needs you at the keyboard" are the replies to catch \
 yourself reaching for: they are not at the keyboard, and you are the hands that are.

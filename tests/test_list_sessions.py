@@ -3,12 +3,16 @@
 import zlib
 import json
 from pathlib import Path
+from typing import NoReturn
+
+import pytest
 
 
 from hands.core.events import Ended, Joined, PermissionRequested, Prompted, StatusReported, Taken
 from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId, Question
 from hands.core.status import Busy, Idle, Report, Shell, Stamp, Waiting
 from hands.sessions.focus import set_focus
+from hands.sessions import tmux
 from hands.sessions.home import Home
 from hands.sessions.names import Names
 from hands.sessions.overlays import Overlays
@@ -35,7 +39,8 @@ def named(path: Path, *names: str) -> None:
 
 
 async def call(sessions: Sessions, tmp_path: Path) -> object:
-    return await list_sessions_tool(sessions, Overlays(Home(tmp_path / "home")), Home(tmp_path / "home")).body()
+    # No tmux server of the test's own runs: every session is in none.
+    return await list_sessions_tool(sessions, Overlays(Home(tmp_path / "home")), Home(tmp_path / "home"), {"TMUX_TMPDIR": str(tmp_path)}).body()
 
 
 async def test_live_sessions_are_named_by_their_project_then_their_newest_name(tmp_path: Path) -> None:
@@ -66,10 +71,10 @@ async def test_live_sessions_are_named_by_their_project_then_their_newest_name(t
 
     assert await call(sessions, tmp_path) == {
         "sessions": [
-            {"id": "working", "name": "working, pipeline spike", "state": "working", "mode": "accept edits mode", "overlay": "watched"},
-            {"id": "untitled", "name": "untitled", "state": "idle", "mode": "not reported yet", "overlay": "normal"},
-            {"id": "blocked", "name": "blocked, auth refactor", "state": "waiting for permission to use Bash", "mode": "manual mode", "overlay": "normal"},
-            {"id": "asking", "name": "asking", "state": "waiting for the user to answer its question", "mode": "not reported yet", "overlay": "normal"},
+            {"id": "working", "name": "working, pipeline spike", "state": "working", "mode": "accept edits mode", "overlay": "watched", "tmux": "not in tmux"},
+            {"id": "untitled", "name": "untitled", "state": "idle", "mode": "not reported yet", "overlay": "normal", "tmux": "not in tmux"},
+            {"id": "blocked", "name": "blocked, auth refactor", "state": "waiting for permission to use Bash", "mode": "manual mode", "overlay": "normal", "tmux": "not in tmux"},
+            {"id": "asking", "name": "asking", "state": "waiting for the user to answer its question", "mode": "not reported yet", "overlay": "normal", "tmux": "not in tmux"},
         ],
         "focus": "working",
     }
@@ -81,7 +86,7 @@ async def test_a_session_that_joins_on_its_permission_request_is_listed_as_waiti
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     for event in (Joined(lagging, "startup"), PermissionRequested(lagging.id, at=1.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default")):
         await sessions.apply(event)
-    assert await call(sessions, tmp_path) == {"sessions": [{"id": "lagging", "name": "lagging", "state": "waiting for permission to use Bash", "mode": "manual mode", "overlay": "normal"}], "focus": None}
+    assert await call(sessions, tmp_path) == {"sessions": [{"id": "lagging", "name": "lagging", "state": "waiting for permission to use Bash", "mode": "manual mode", "overlay": "normal", "tmux": "not in tmux"}], "focus": None}
 
 
 async def test_a_session_at_its_prompt_with_a_background_shell_running_is_listed_idle(tmp_path: Path) -> None:
@@ -91,7 +96,7 @@ async def test_a_session_at_its_prompt_with_a_background_shell_running_is_listed
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     for event in (Joined(cleared, "clear"), StatusReported(cleared.id, Report(Shell(), Stamp(1)), at=1.0)):
         await sessions.apply(event)
-    listed = {"id": "cleared", "name": "cleared", "state": "idle, with a shell command it started in the background still running", "mode": "not reported yet", "overlay": "normal"}
+    listed = {"id": "cleared", "name": "cleared", "state": "idle, with a shell command it started in the background still running", "mode": "not reported yet", "overlay": "normal", "tmux": "not in tmux"}
     assert await call(sessions, tmp_path) == {"sessions": [listed], "focus": None}
 
 
@@ -126,10 +131,21 @@ async def test_a_transcript_whose_name_cannot_be_read_lists_the_session_by_its_p
     broken.transcript.write_text('{"type":"custom-title","sessionId":"broken"}\n')
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(broken, "startup"))
-    assert await call(sessions, tmp_path) == {"sessions": [{"id": "broken", "name": "broken", "state": "not reported yet", "mode": "not reported yet", "overlay": "normal"}], "focus": None}
+    assert await call(sessions, tmp_path) == {"sessions": [{"id": "broken", "name": "broken", "state": "not reported yet", "mode": "not reported yet", "overlay": "normal", "tmux": "not in tmux"}], "focus": None}
+
+
+async def test_a_pane_read_that_breaks_leaves_each_session_listed_and_saying_why_its_pane_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def broken(_environment: object) -> NoReturn:
+        raise ValueError("not enough values to unpack")
+
+    monkeypatch.setattr(tmux, "servers", broken)
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(membership(tmp_path, "plain"), "startup"))
+    listed = {"id": "plain", "name": "plain", "state": "not reported yet", "mode": "not reported yet", "overlay": "normal", "tmux": {"cannot_read": "ValueError: not enough values to unpack"}}
+    assert await call(sessions, tmp_path) == {"sessions": [listed], "focus": None}
 
 
 def test_the_tool_is_named_and_described_from_its_body() -> None:
-    tool = list_sessions_tool(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")))
+    tool = list_sessions_tool(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
     assert (tool.name, tool.required) == ("list_sessions", ())
     assert "running Claude Code sessions" in tool.description
