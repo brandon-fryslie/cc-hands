@@ -20,9 +20,8 @@ so a reply that ended inside a fence left every later utterance replaced by a bl
 [LAW:no-ambient-temporal-coupling]. The aggregator's lifetime is the reply's, by Pipecat's own frames.
 
 The filtered text is also what the intermediary remembers: Pipecat builds the frame it appends to the
-assistant context from the text a filter returned. Of the five places a `TTSSpeakFrame` is built, three
-keep their text — `narrator.py` twice and `speech.py` once — and both of those files say in their own
-words why: the context is kept so the model can answer about *what the user heard*. Until this filter
+assistant context from the text a filter returned. The context is kept so the model can answer about
+*what the user heard*. Until this filter
 existed it held what was sent to the speaker instead, which was never the same string. What it costs is
 that the model cannot read an exact path or sha back out of its own memory; it has the session tools for
 facts, and what it said is now what was heard.
